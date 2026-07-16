@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: done
 ---
 
 # 40a - Milestone 0 - Toolchain and Hello World
 
-**Status:: ⬜ Not started**
+**Status:: ✅ Done**
 
 ## Goal
 
@@ -13,11 +13,12 @@ Confirm the full edit → compile → run loop works before writing anything rea
 
 ## Checklist
 
-- [ ] Install Rust via `rustup`
-- [ ] `cargo new fuxx-cli`
-- [ ] Make it print something
-- [ ] `cargo run` shows the output
-- [ ] Open the project; understand what `Cargo.toml` and `src/main.rs` are
+- [x] Install Rust via `rustup` (rustc/cargo 1.97.1, stable, aarch64-apple-darwin)
+- [x] `cargo new fuxx-cli` (used `cargo init --name fuxx-cli --bin` at the repo root, so
+      the crate lives alongside `docs/`)
+- [x] Make it print something (`src/main.rs` prints the crate version via `env!`)
+- [x] `cargo run` shows the output → `fuxx-cli v0.1.0 — toolchain works.`
+- [x] Open the project; understand what `Cargo.toml` and `src/main.rs` are
 
 ## Success check
 
