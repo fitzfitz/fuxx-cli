@@ -1,0 +1,29 @@
+{
+  "collapse-filter": true,
+  "search": "",
+  "showTags": true,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    { "query": "tag:#business OR tag:#product", "color": { "a": 1, "rgb": 14839551 } },
+    { "query": "tag:#architecture", "color": { "a": 1, "rgb": 5431295 } },
+    { "query": "tag:#tech", "color": { "a": 1, "rgb": 5636095 } },
+    { "query": "tag:#development OR tag:#milestone", "color": { "a": 1, "rgb": 6094592 } },
+    { "query": "tag:#workflow OR tag:#ai", "color": { "a": 1, "rgb": 16744192 } },
+    { "query": "tag:#progress OR tag:#log", "color": { "a": 1, "rgb": 16711807 } },
+    { "query": "tag:#moc", "color": { "a": 1, "rgb": 16777215 } }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1.3,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": false,
+  "centerStrength": 0.5,
+  "repelStrength": 12,
+  "linkStrength": 1,
+  "linkDistance": 120,
+  "scale": 1
+}
