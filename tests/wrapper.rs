@@ -31,22 +31,3 @@ fn unknown_command_is_an_error() {
     assert!(!out.status.success());
 }
 
-#[test]
-fn detects_osc9_notification_on_stderr() {
-    let out = fuxx()
-        .args(["printf", r"\033]9;task done\007"])
-        .output()
-        .unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("NOTIFICATION DETECTED"),
-        "stderr was: {err:?}"
-    );
-}
-
-#[test]
-fn no_detection_without_a_sequence() {
-    let out = fuxx().args(["echo", "hello"]).output().unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!err.contains("NOTIFICATION DETECTED"), "stderr was: {err:?}");
-}

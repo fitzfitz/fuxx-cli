@@ -1,6 +1,5 @@
 mod cli;
 mod detector;
-#[allow(dead_code)] // wired into the detection branch in Task 2
 mod notifier;
 
 use std::error::Error;
@@ -100,7 +99,7 @@ fn run() -> Result<i32, Box<dyn Error>> {
                 stdout.write_all(&buf[..n])?;
                 stdout.flush()?;
                 if detector.feed(&buf[..n]) > 0 {
-                    eprintln!("NOTIFICATION DETECTED");
+                    notifier::fire("fuxx-cli", "Your agent sent a notification");
                 }
             }
             Err(_) => break, // macOS returns EIO (not 0) when the slave closes; treat as EOF
