@@ -15,7 +15,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Current status snapshot
 
 - **Current milestone:** [[42 - Milestone 2 - Detect the Signal]]
-- **Overall phase:** Milestone 0 done (toolchain + hello world); Milestone 1 complete (PTY wrapper + raw-mode I/O); Milestone 2 in progress
+- **Overall phase:** Milestone 0 done (toolchain + hello world); Milestone 1 complete (PTY wrapper + raw-mode I/O); Milestone 2 not started
 - **Repo:** `github.com/fitzfitz/fuxx-cli` (was 404 at vault creation — create it)
 
 ---
@@ -26,7 +26,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Did:** Implemented Tasks 1–3: arg parsing (cli.rs), PTY spawn + output passthrough + exit code, stdin forwarding + raw-mode guard (Drop). All 6 tests pass (2 unit, 4 integration). Manual validation with vim/bash confirmed child sees real TTY, colors render, keystrokes forward, terminal restores cleanly. Updated vault to record Milestone 1 done and crossterm dependency.
 - **Learned:** `portable-pty` provides cross-platform PTY spawning; `crossterm` raw mode prevents shell line-buffering/echo so stdin forwards instantly; Drop guards ensure cleanup even on panic; `is_terminal()` guards Drop to avoid breaking piped I/O.
 - **Blocked:** Nothing
-- **Next task:** [[42 - Milestone 2 - Detect the Signal]] — detect signals from the child (SIGCHLD) and handle graceful shutdown.
+- **Next task:** [[42 - Milestone 2 - Detect the Signal]] — scan the captured output stream for OSC 9 notification escape sequences (ESC `]9`) and log a detection.
 
 ### 2026-07-17 — Milestone 0 done + AGENTS.md operating rules
 - **Did:** Installed Rust via `rustup` (rustc/cargo 1.97.1, stable, aarch64). Scaffolded
