@@ -4,37 +4,38 @@ tags: [workflow, risks]
 
 # 52 - Known Risks and Gotchas
 
-Things likely to trip up the project, recorded so they don't surprise you (or an AI).
+Things likely to trip up **fuxx** (the terminal app), recorded so they don't surprise you (or an AI).
 
 ## Technical
 
-- **TTY vs pipe:** the wrapped agent may disable colors/interactivity when its output is
-  a pipe rather than a real terminal. Fix: a PTY. See [[21 - The Wrapper Process Model]].
-- **Bytes vs strings:** escape sequences are raw bytes; treating output as tidy UTF-8
-  text will bite. See [[22 - The Output Stream Pipeline]].
-- **Sequence variants:** OSC 9 / 99 / 777 differ in format. Start with one; don't try to
-  parse all three at once. See [[25 - OSC Sequence Detection]].
-- **Crate versions drift:** verify current versions on crates.io; don't trust an AI's
-  remembered version numbers. See [[33 - Key Crates]].
-- **macOS notifications from a CLI binary (discovered in M3):** `notify-rust` (via
-  `mac-notification-sys`) uses the **deprecated `NSUserNotification` API, which silently does
-  not display** on modern macOS (26.x) for an unbundled binary — `show()` returns `Ok` but no
-  banner appears, and no bundle-id attribution helps. fuxx uses **`osascript`
-  (`display notification`)** instead, which works. Symptom to remember: "notification call
-  succeeds but nothing shows" → it's the deprecated API, not permissions. See [[33 - Key Crates]].
+- **GPUI is pre-1.0.** Consumed as a **pinned git dependency** from the Zed repo; breaking changes
+  happen between revs. Pin the rev and bump deliberately. See [[30 - Tech Stack]].
+- **Heavy first build.** GPUI pulls a large dependency tree — the first `cargo build` is slow.
+- **GUI can't be auto-verified.** The AI can't see the window — terminal rendering, input, and rings
+  are verified by *you* (build & run, screenshots). Design each task so its success check is something
+  observable, and say so.
+- **Rendering the `alacritty_terminal` grid is the hard part** ([[41 - Milestone 1 - One Terminal Pane]])
+  — glyph shaping, colors, perf. Fallback if it's too costly: `gpui-ghostty` (needs the Zig toolchain).
+- **macOS notifications:** use **`osascript`**, not `notify-rust` (its deprecated `NSUserNotification`
+  backend silently no-ops on modern macOS). Memory: `macos-notify-rust-broken`.
+- **Crate / API drift:** verify versions and APIs via **Context7** or the source repo; don't trust
+  remembered numbers.
 
 ## Process
 
-- **Scope creep** toward a full terminal / dashboard. Guard with [[12 - Scope Boundaries]].
-- **Lost progress** between sessions if the [[60 - Progress Log]] isn't updated.
+- **Scope creep toward cmux-parity / a general IDE.** The core is a terminal + multi-agent rings;
+  split panes, browser, SSH, and a daemon are deferred ([[12 - Scope]]). Don't pull them into the core.
+- **Over-planning stalls solo projects.** One milestone at a time; don't spec far-future phases in
+  detail early.
+- **Lost progress** between sessions if [[60 - Progress Log]] isn't updated.
 - **Accepting code you don't understand** — see [[51 - Delegation Principles]].
 
-## External
+## Carried over from v1
 
-- **The GitHub repo returned 404** at vault creation. Create/repair it before pushing.
-- **Homebrew tap** is fiddly the first time; treat it as its own milestone
-  ([[44 - Milestone 4 - Ship via Homebrew]]).
+The v1 wrapper's technical risks (TTY-vs-pipe, OSC-variant parsing) are archived in
+[[90-Archive-v1-CLI-Wrapper]]. The OSC-9 detection reused in
+[[42 - Milestone 2 - Agent State Detection]] still cares about byte-level parsing across read chunks.
 
 ## Related
 
-- [[50 - Agentic Workflow]] · [[40 - Development Roadmap]]
+- [[50 - Agentic Workflow]] · [[40 - Roadmap]] · [[30 - Tech Stack]]

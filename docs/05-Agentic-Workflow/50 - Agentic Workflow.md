@@ -4,7 +4,7 @@ tags: [moc, workflow, ai]
 
 # 50 - Agentic Workflow
 
-How to use AI assistance to build fuxx-cli **without losing understanding or progress**.
+How to use AI assistance to build fuxx **without losing understanding or progress**.
 This is a workflow for *delegating tasks*, not for delegating *comprehension*.
 
 ## The core stance
@@ -18,7 +18,7 @@ See [[51 - Delegation Principles]] for the rules that keep this true.
 
 ## The loop (repeat per task)
 
-1. **Pick one task** from a milestone in [[40 - Development Roadmap]].
+1. **Pick one task** from a milestone in [[40 - Roadmap]].
 2. **Write a handoff** using [[53 - Task Handoff Template]] — goal, context, done-check.
 3. **Delegate** to the AI assistant.
 4. **Review**: read every line, ask the AI to explain anything unclear.
