@@ -1,7 +1,7 @@
 # fuxx — Knowledge Vault
 
 This is the Obsidian knowledge graph for **fuxx**, a native, GPU-accelerated **terminal app for
-running AI coding agents** — in the spirit of cmux, built in Rust.
+running AI coding agents**, built in Rust.
 
 > [!note] Project history
 > This repo began as **fuxx-cli v1**, a Rust CLI *wrapper* (PTY host + OSC 9 detection + macOS
