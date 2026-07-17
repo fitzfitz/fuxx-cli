@@ -1,26 +1,27 @@
-# fuxx-cli — Knowledge Vault
+# fuxx — Knowledge Vault
 
-This is the Obsidian knowledge graph for **fuxx-cli**, a Rust CLI tool that watches AI
-coding-agent sessions and notifies you when one finishes or needs attention — the
-"notification ring" idea from cmux, built as a standalone tool.
+This is the Obsidian knowledge graph for **fuxx**, a native, GPU-accelerated **terminal app for
+running AI coding agents** — in the spirit of cmux, built in Rust.
 
-> [!note] How to use this vault
-> Open this folder in [Obsidian](https://obsidian.md) as a vault. Use **Graph View**
-> (the connected-dots icon) to see the whole structure. Every note links to related
-> notes with `[[wikilinks]]`, which is what makes the graph render.
+> [!note] Project history
+> This repo began as **fuxx-cli v1**, a Rust CLI *wrapper* (PTY host + OSC 9 detection + macOS
+> notification) — shipped and on `origin/master`. As of 2026-07-17 the project **pivoted** to a
+> standalone terminal app and the repo was **repurposed**. The v1 wrapper docs are preserved under
+> [[90-Archive-v1-CLI-Wrapper]]; the v1 code remains in git history.
 
-## Start here — the maps of content (MOCs)
+## Start here — maps of content
 
-- [[00 - Project Home]] — the top-level map, read this first
-- [[10 - What Is fuxx-cli]] — the business / product layer
-- [[20 - Architecture Overview]] — how the tool works, high level
-- [[30 - Tech Stack Overview]] — languages, crates, tooling
-- [[40 - Development Roadmap]] — the ordered milestones
-- [[50 - Agentic Workflow]] — how to delegate work to an AI assistant safely
-- [[60 - Progress Log]] — running record so state survives across sessions
+- [[00 - Home]] — top-level map, read this first
+- [[10 - What Is fuxx]] — the product / vision
+- [[11 - Features]] — full feature catalog (phased)
+- [[12 - Scope]] — what the terminal is and is not
+- [[20 - Architecture Overview]] — GPUI + alacritty_terminal + sessions + rings
+- [[30 - Tech Stack]] — GPUI, alacritty_terminal, portable-pty, rendering
+- [[40 - Roadmap]] — the ordered milestones (M0 → M4)
+- [[70 - Terminal App Pivot — Vision and Stack]] — why we pivoted and how we chose the stack
+- [[50 - Agentic Workflow]] · [[60 - Progress Log]] — how we work + running memory (carried over from v1)
 
 ## Guiding principle
 
-You are learning Rust. AI is a **pair and tutor**, not a replacement for
-understanding your own code. Every task delegated to an AI should end with *you*
-understanding what changed and why. See [[51 - Delegation Principles]].
+Still a learning project in Rust: AI is a **pair and tutor**, not a replacement for understanding
+your own code. Ship a real, usable terminal, one small milestone at a time.
