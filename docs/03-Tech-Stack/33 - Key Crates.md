@@ -18,6 +18,13 @@ free. The de-facto standard Rust CLI parser. Powers the arg layer in
 Fires native OS notifications. This is the whole output side of
 [[26 - Notification Dispatch]]. On macOS it produces a standard banner.
 
+## crossterm — raw-mode control for our own terminal
+
+`portable-pty` manages the child's terminal; our own terminal still needs raw mode so keystrokes
+forward to the child instantly instead of being line-buffered/echoed by our shell. `crossterm`'s
+`enable_raw_mode` / `disable_raw_mode` handle this. Added in Milestone 1. Also the likely home for
+the deferred window-resize handling.
+
 ## Process handling — std first, PTY later
 
 - Start with the standard library's `std::process::Command` to spawn the agent and read
