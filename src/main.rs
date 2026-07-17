@@ -1,10 +1,10 @@
 mod cli;
-#[allow(dead_code)] // wired into the output pump in Task 2
 mod detector;
 
 use std::error::Error;
 use std::io::{Read, Write, IsTerminal};
 
+use detector::OscDetector;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 /// Puts the terminal in raw mode (only if we're actually interactive) and guarantees it is
@@ -90,12 +90,16 @@ fn run() -> Result<i32, Box<dyn Error>> {
     // Pump child output -> our stdout, byte for byte, on this (main) thread.
     let mut stdout = std::io::stdout();
     let mut buf = [0u8; 8192];
+    let mut detector = OscDetector::new();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,                       // clean EOF
             Ok(n) => {
                 stdout.write_all(&buf[..n])?;
                 stdout.flush()?;
+                if detector.feed(&buf[..n]) > 0 {
+                    eprintln!("NOTIFICATION DETECTED");
+                }
             }
             Err(_) => break, // macOS returns EIO (not 0) when the slave closes; treat as EOF
         }
