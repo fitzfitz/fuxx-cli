@@ -10,7 +10,7 @@ assistant that has no memory of past sessions.
 ## Startup
 
 1. Open [[60 - Progress Log]] and read the **most recent entry**. This is your memory.
-2. Note the **current milestone** and its status in [[40 - Development Roadmap]].
+2. Note the **current milestone** and its status in [[40 - Roadmap]].
 3. Identify the **one next task**.
 4. If using an AI, paste it the last progress-log entry + the relevant milestone note so
    it's caught up.

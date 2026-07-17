@@ -4,28 +4,29 @@ tags: [workflow, ai, template]
 
 # 53 - Task Handoff Template
 
-Copy this when delegating a task to an AI assistant. Filling it in forces clarity and
-gives the assistant everything it needs.
+Copy this when delegating a task to an AI assistant. Filling it in forces clarity and gives the
+assistant exactly what it needs.
 
 ```
 ## Task
-<one specific task — e.g. "spawn a child process and print its stdout">
+<one specific task — e.g. "render the alacritty_terminal grid in a GPUI view">
 
 ## Milestone
-<which milestone this belongs to, e.g. [[41 - Milestone 1 - Launch and Capture]]>
+<which milestone this belongs to, e.g. [[41 - Milestone 1 - One Terminal Pane]]>
 
 ## Context
-- Language: Rust. I am a beginner; explain Rust concepts as you go.
-- Project: fuxx-cli, a wrapper that watches an agent's output for notifications.
-- Architecture model: wrapper process (NOT terminal emulation). See scope note below.
+- Language: Rust (edition 2024). I am learning; explain Rust/GPUI concepts as you go.
+- Project: fuxx — a native GPU terminal for running AI coding agents.
+- Stack: GPUI (app shell) + alacritty_terminal (VT core) + portable-pty. See [[30 - Tech Stack]].
 - Current state: <what already works / paste relevant code>
 
 ## What "done" looks like
-<the success check — e.g. "cargo run -- echo hello prints hello back">
+<the success check — and for GUI work, what I should SEE when I build & run>
 
 ## Constraints
-- Do NOT add terminal emulation or libghostty (out of scope).
-- Keep it to this one task; don't build ahead.
+- Stay on this one task; don't build ahead or pull in deferred features ([[12 - Scope]]).
+- GUI behaviour is verified by me (you can't see the window) — tell me exactly what to run and
+  what to look for.
 - Explain every non-obvious line so I can learn it.
 
 ## After you're done

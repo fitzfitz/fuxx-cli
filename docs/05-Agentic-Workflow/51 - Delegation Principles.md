@@ -9,7 +9,7 @@ The rules that keep AI assistance from turning into a black-box codebase.
 ## 1. One task at a time
 
 Delegate a single milestone task, not "build the whole thing." Small tasks are
-reviewable; large ones aren't. Mirrors [[40 - Development Roadmap]]'s one-milestone rule.
+reviewable; large ones aren't. Mirrors [[40 - Roadmap]]'s one-milestone rule.
 
 ## 2. You must be able to explain every merged line
 
@@ -33,9 +33,10 @@ session. The docs are part of the deliverable, not an afterthought.
 
 ## 6. Guard the scope boundary
 
-Before accepting any suggestion that adds a feature, check it against
-[[12 - Scope Boundaries]]. "Do what cmux does" energy will try to pull you into terminal
-emulation — resist until v1 ships.
+Before accepting any suggestion that adds a feature, check it against [[12 - Scope]]. The pull
+now is the opposite of v1's: to turn fuxx into a general IDE, or to drag cmux-parity extras
+(split panes, in-app browser, SSH, daemon) into the core early. Build the terminal + the
+multi-agent rings first; resist the rest until the core is solid.
 
 ## Related
 
