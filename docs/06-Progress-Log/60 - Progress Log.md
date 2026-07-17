@@ -14,13 +14,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** 🎉 **v1 COMPLETE** (Milestones 0–3 done). Optional next: [[44 - Milestone 4 - Ship via Homebrew]] (distribution).
-- **Overall phase:** v1 done — fuxx wraps an agent on a PTY, detects OSC 9, and fires a real macOS notification.
-- **Repo:** `github.com/fitzfitz/fuxx-cli` — public; M1 merged via PR #1, M2 merged to master.
+- **Current milestone:** [[40a - Milestone 0 - Scaffold and GPUI Window]] (the **new terminal app**).
+- **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
+- **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-07-17 — Pivot to terminal app: repo repurposed, vault re-founded
+- **Did:** After shipping v1, pivoted to a new product — a native GPU terminal for running AI agents (cmux-like), in **Rust** (GPUI app shell + `alacritty_terminal` VT core + `portable-pty`, reused from v1). Chose the pure-Rust `alacritty_terminal` renderer over `gpui-ghostty` to avoid the Zig toolchain. **Repurposed this repo.** Archived the v1 wrapper docs → `docs/90-Archive-v1-CLI-Wrapper/`; wrote a fresh forward vault (Home / What Is / Scope [reverses v1] / Architecture / Tech Stack / Roadmap M0–M4 / M0 note); rewrote `AGENTS.md` for the new project.
+- **Learned:** libghostty *rendering*-embedding is Swift-only; the Rust path (GPUI + `alacritty_terminal`) is viable with real precedents (tty7, Paneflow, zTerm). `gpui-ghostty` exists (Ghostty rendering in GPUI) but needs Zig 0.14.1.
+- **Blocked:** Nothing. (Heads-up: GPUI's first build is heavy; it's a pinned git dep, pre-1.0.)
+- **Next task:** [[40a - Milestone 0 - Scaffold and GPUI Window]] — repurpose the crate + get a blank GPUI window launching.
 
 ### 2026-07-17 — Milestone 3 complete → v1 DONE (notify-rust dropped for osascript)
 - **Did:** Added a decoupled `notifier` module and wired detection → desktop notification, retiring M2's stderr signal (removed its two integration tests). **Discovered during manual verification that `notify-rust` never displays on macOS 26** (its deprecated `NSUserNotification` backend accepts the call — `show()` = `Ok` — but shows nothing, regardless of bundle-id attribution). Pivoted the notifier to shell out to **`osascript`**, which works; dropped the `notify-rust` dependency. `notifier::fire`'s signature was unchanged, so no other code moved. Confirmed a real banner fires end-to-end. 12 tests pass. **This completes v1.**

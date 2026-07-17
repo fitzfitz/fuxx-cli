@@ -4,40 +4,53 @@ tags: [moc, architecture]
 
 # 20 - Architecture Overview
 
-How fuxx-cli works, at a high level. This is the map for the architecture layer.
+How fuxx is built, high level.
 
-## The whole thing in one diagram
+## The whole thing
 
 ```
-   you type:  fuxx claude
-                  |
-                  v
-   +------------------------------+
-   |          fuxx-cli            |
-   |  1. parse args               |
-   |  2. spawn `claude` as child  | <----- [[21 - The Wrapper Process Model]]
-   |  3. read child's output      | <----- [[22 - The Output Stream Pipeline]]
-   |  4. scan for OSC 9/99/777     | <----- [[25 - OSC Sequence Detection]]
-   |  5. on match -> notify()     | <----- [[26 - Notification Dispatch]]
-   +------------------------------+
-                  |
-                  v
-        native macOS notification
+   +--------------------------------------------------+
+   |                    GPUI app                      |
+   |  Application -> Window -> root view              |
+   |                                                  |
+   |  +-----------+   +----------------------------+  |
+   |  | Sidebar   |   |  Active session pane       |  |
+   |  | sessions  |   |  (TerminalView)            |  |
+   |  | + rings   |   |                            |  |
+   |  +-----------+   +----------------------------+  |
+   +--------------------------------------------------+
+        |  each session:
+        v
+   portable-pty (child shell/agent)  <-->  alacritty_terminal (grid + VT parser)
+                                                 |
+                                    TerminalView renders the grid (GPUI)
+                                                 |
+                                   agent-state detector -> ring status
 ```
 
-## The four architectural pieces
+## The pieces
 
-- [[21 - The Wrapper Process Model]] — how fuxx-cli launches and hosts the agent
-- [[22 - The Output Stream Pipeline]] — how output flows through fuxx-cli
-- [[25 - OSC Sequence Detection]] — recognizing the "needs attention" signal
-- [[26 - Notification Dispatch]] — turning a detection into a desktop alert
+1. **App shell — GPUI.** Window, layout, sidebar, panes, input routing, the rings UI. GPUI is Zed's
+   GPU-accelerated Rust UI framework. See [[30 - Tech Stack]].
+2. **Terminal core — `alacritty_terminal`.** Owns the screen grid + VT/escape parser for each session.
+   Fed bytes from the PTY; we read its grid to render.
+3. **PTY — `portable-pty`.** Spawns the shell/agent per session and pipes bytes to/from the terminal
+   core. (Reused from v1.)
+4. **TerminalView (we build).** A GPUI view that renders one session's `alacritty_terminal` grid
+   (glyphs, colors, cursor) and routes keyboard/mouse input back to the PTY.
+5. **Session manager (we build).** Holds N sessions `(pty, term, status)`; the sidebar lists them.
+6. **Agent-state detector (we build).** Watches each session's output for signals (the OSC-9 detection
+   from v1, plus heuristics for "waiting for input") → drives each session's **ring**.
+7. **Notifications.** Fire when a background session changes state. (v1 learned: use `osascript` on
+   macOS — see [[90-Archive-v1-CLI-Wrapper]] / memory `macos-notify-rust-broken`.)
 
 ## Key decisions
 
-- [[23 - Why Not libghostty]] — why there is no terminal emulation here
-- [[24 - Future - Daemon and Dashboard]] — where the architecture could grow later
+- **Rust, not Swift** — GPUI + alacritty_terminal instead of libghostty/Swift. See
+  [[70 - Terminal App Pivot — Vision and Stack]].
+- **We render the terminal ourselves** over `alacritty_terminal` (pure Rust; no Zig/Ghostty vendoring).
+  The make-or-break milestone is proving this in [[41 - Milestone 1 - One Terminal Pane]].
 
 ## Related
 
-- [[30 - Tech Stack Overview]]
-- [[40 - Development Roadmap]]
+- [[30 - Tech Stack]] · [[40 - Roadmap]]
