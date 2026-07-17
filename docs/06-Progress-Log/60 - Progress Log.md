@@ -14,13 +14,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[43 - Milestone 3 - Fire a Notification]]
-- **Overall phase:** Milestone 0 done (toolchain + hello world); Milestone 1 complete (PTY wrapper + raw-mode I/O); Milestone 2 done (OSC 9 detection)
-- **Repo:** `github.com/fitzfitz/fuxx-cli` — public, Milestone 1 merged via PR #1
+- **Current milestone:** 🎉 **v1 COMPLETE** (Milestones 0–3 done). Optional next: [[44 - Milestone 4 - Ship via Homebrew]] (distribution).
+- **Overall phase:** v1 done — fuxx wraps an agent on a PTY, detects OSC 9, and fires a real macOS notification.
+- **Repo:** `github.com/fitzfitz/fuxx-cli` — public; M1 merged via PR #1, M2 merged to master.
 
 ---
 
 ## Entries
+
+### 2026-07-17 — Milestone 3 complete → v1 DONE (notify-rust dropped for osascript)
+- **Did:** Added a decoupled `notifier` module and wired detection → desktop notification, retiring M2's stderr signal (removed its two integration tests). **Discovered during manual verification that `notify-rust` never displays on macOS 26** (its deprecated `NSUserNotification` backend accepts the call — `show()` = `Ok` — but shows nothing, regardless of bundle-id attribution). Pivoted the notifier to shell out to **`osascript`**, which works; dropped the `notify-rust` dependency. `notifier::fire`'s signature was unchanged, so no other code moved. Confirmed a real banner fires end-to-end. 12 tests pass. **This completes v1.**
+- **Learned:** Systematic debugging to a real root cause: `show() = Ok` ≠ "displayed"; modern macOS neutered `NSUserNotification` for unbundled binaries, while `osascript`'s `display notification` (entitled system path) works. Decoupling paid off — swapping the whole notification backend touched only `notifier.rs` + `Cargo.toml`.
+- **Blocked:** Nothing. (Cosmetic: banner is attributed to "Script Editor"; a real identity needs an `.app` bundle — M4+.)
+- **Next task:** v1 is complete — **stop adding features.** Optional: [[44 - Milestone 4 - Ship via Homebrew]].
 
 ### 2026-07-17 — Milestone 2 complete: OSC 9 detection end-to-end
 - **Did:** Completed Tasks 1–3: stateful `OscDetector` module + unit tests (byte pattern scanning for ESC `]9`), wired into the pump with stderr signal, 14 tests pass (8 unit + 6 integration). Live validation confirmed detection works (`cargo run -- printf '\033]9;hi\007'` prints NOTIFICATION DETECTED to stderr). Vault updated: Milestone 2 marked done; deferred payload extraction, OSC 99/777, and ConEmu; refreshed repo status.

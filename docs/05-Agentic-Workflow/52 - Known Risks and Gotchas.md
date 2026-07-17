@@ -16,6 +16,12 @@ Things likely to trip up the project, recorded so they don't surprise you (or an
   parse all three at once. See [[25 - OSC Sequence Detection]].
 - **Crate versions drift:** verify current versions on crates.io; don't trust an AI's
   remembered version numbers. See [[33 - Key Crates]].
+- **macOS notifications from a CLI binary (discovered in M3):** `notify-rust` (via
+  `mac-notification-sys`) uses the **deprecated `NSUserNotification` API, which silently does
+  not display** on modern macOS (26.x) for an unbundled binary — `show()` returns `Ok` but no
+  banner appears, and no bundle-id attribution helps. fuxx uses **`osascript`
+  (`display notification`)** instead, which works. Symptom to remember: "notification call
+  succeeds but nothing shows" → it's the deprecated API, not permissions. See [[33 - Key Crates]].
 
 ## Process
 
