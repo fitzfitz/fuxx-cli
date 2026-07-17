@@ -14,13 +14,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[42 - Milestone 2 - Detect the Signal]]
-- **Overall phase:** Milestone 0 done (toolchain + hello world); Milestone 1 complete (PTY wrapper + raw-mode I/O); Milestone 2 not started
-- **Repo:** `github.com/fitzfitz/fuxx-cli` (was 404 at vault creation — create it)
+- **Current milestone:** [[43 - Milestone 3 - Fire a Notification]]
+- **Overall phase:** Milestone 0 done (toolchain + hello world); Milestone 1 complete (PTY wrapper + raw-mode I/O); Milestone 2 done (OSC 9 detection)
+- **Repo:** `github.com/fitzfitz/fuxx-cli` — public, Milestone 1 merged via PR #1
 
 ---
 
 ## Entries
+
+### 2026-07-17 — Milestone 2 complete: OSC 9 detection end-to-end
+- **Did:** Completed Tasks 1–3: stateful `OscDetector` module + unit tests (byte pattern scanning for ESC `]9`), wired into the pump with stderr signal, 14 tests pass (8 unit + 6 integration). Live validation confirmed detection works (`cargo run -- printf '\033]9;hi\007'` prints NOTIFICATION DETECTED to stderr). Vault updated: Milestone 2 marked done; deferred payload extraction, OSC 99/777, and ConEmu; refreshed repo status.
+- **Learned:** Stateful pattern scanning via feed() loop and state machine; cross-chunk robustness (target sequence split between reads); integration testing a PTY wrapper; detecting escape codes in real-time output streams.
+- **Blocked:** Nothing
+- **Next task:** [[43 - Milestone 3 - Fire a Notification]] — fire a native desktop notification (via `notify-rust` crate) when a detection occurs.
 
 ### 2026-07-17 — Milestone 1 complete: PTY wrapper with raw-mode I/O
 - **Did:** Implemented Tasks 1–3: arg parsing (cli.rs), PTY spawn + output passthrough + exit code, stdin forwarding + raw-mode guard (Drop). All 6 tests pass (2 unit, 4 integration). Manual validation with vim/bash confirmed child sees real TTY, colors render, keystrokes forward, terminal restores cleanly. Updated vault to record Milestone 1 done and crossterm dependency.

@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: done
 ---
 
 # 42 - Milestone 2 - Detect the Signal
 
-**Status:: ⬜ Not started**
+**Status:: ✅ Done**
 
 ## Goal
 
@@ -13,10 +13,12 @@ Spot an OSC notification sequence inside the output stream from Milestone 1.
 
 ## Checklist
 
-- [ ] Understand the byte shape of OSC 9 (ESC `]` `9` ; ... terminator)
-- [ ] Scan the captured stream for the ESC byte (`0x1b`) followed by `]9`
-- [ ] On match, print "NOTIFICATION DETECTED" (don't parse the payload yet)
+- [x] Understand the byte shape of OSC 9 (ESC `]` `9` ; ... terminator)
+- [x] Scan the captured stream for the ESC byte (`0x1b`) followed by `]9`
+- [x] On match, print "NOTIFICATION DETECTED" (don't parse the payload yet)
 - [ ] (Later) extract the payload text between the intro and the terminator
+
+**Deferred:** Payload extraction, OSC 99/777 variants, and ConEmu OSC 9 disambiguation are recorded but not yet implemented.
 
 ## Success check
 
