@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: done
 ---
 
 # 41 - Milestone 1 - Launch and Capture
 
-**Status:: ⬜ Not started**
+**Status:: ✅ Done**
 
 ## Goal
 
@@ -13,11 +13,12 @@ Launch another program from fuxx-cli and read its output. This is the heart of t
 
 ## Checklist
 
-- [ ] Parse the command + args after `fuxx` (start with raw args; add `clap` when ready)
-- [ ] Spawn that command as a child process (`std::process::Command`)
-- [ ] Read the child's stdout stream in your code
-- [ ] Pass the output through so the user still sees it
-- [ ] Exit with the child's exit code
+- [x] Parse the command + args after `fuxx` (start with raw args; add `clap` when ready)
+- [x] Spawn that command as a child process (`std::process::Command`)
+- [x] Read the child's stdout stream in your code
+- [x] Pass the output through so the user still sees it
+- [x] Exit with the child's exit code
+- [x] Implement PTY-based I/O with raw-mode terminal control (stdin forwarding + `crossterm`); defer SIGWINCH window-resize
 
 ## Success check
 

@@ -15,7 +15,7 @@ what actually happened each session.
 ## The milestones (in order — do not skip ahead)
 
 - [[40a - Milestone 0 - Toolchain and Hello World]] — ✅
-- [[41 - Milestone 1 - Launch and Capture]] — ⬜
+- [[41 - Milestone 1 - Launch and Capture]] — ✅
 - [[42 - Milestone 2 - Detect the Signal]] — ⬜
 - [[43 - Milestone 3 - Fire a Notification]] — ⬜  ← **v1 is complete here**
 - [[44 - Milestone 4 - Ship via Homebrew]] — ⬜
