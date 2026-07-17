@@ -1,4 +1,6 @@
 mod cli;
+#[allow(dead_code)] // wired into the output pump in Task 2
+mod detector;
 
 use std::error::Error;
 use std::io::{Read, Write, IsTerminal};
