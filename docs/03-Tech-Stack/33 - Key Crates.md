@@ -13,10 +13,19 @@ Handles turning `fuxx claude --foo` into structured data, plus `--help` and erro
 free. The de-facto standard Rust CLI parser. Powers the arg layer in
 [[21 - The Wrapper Process Model]].
 
-## notify-rust — desktop notifications
+## Desktop notifications — `osascript`, not `notify-rust`
 
-Fires native OS notifications. This is the whole output side of
-[[26 - Notification Dispatch]]. On macOS it produces a standard banner.
+The output side of [[26 - Notification Dispatch]]. **Originally planned to use the
+`notify-rust` crate, but dropped in Milestone 3.** `notify-rust`'s macOS backend
+(`mac-notification-sys`) relies on the **deprecated `NSUserNotification` API, which does not
+display notifications for an unbundled CLI binary on modern macOS** (verified on 26.5.2):
+`show()` returns `Ok` but no banner ever appears, and no bundle-id attribution fixes it.
+
+Instead, `src/notifier.rs` shells out to **`osascript`** (`display notification … with title …`),
+which goes through an entitled system component and works without shipping fuxx as a signed
+`.app` bundle. No crate dependency; uses `std::process::Command`. macOS-only, matching v1 scope.
+See [[52 - Known Risks and Gotchas]]. A proper app identity (instead of "Script Editor") would
+require an `.app` bundle — that's [[44 - Milestone 4 - Ship via Homebrew|Milestone 4]]+ territory.
 
 ## crossterm — raw-mode control for our own terminal
 

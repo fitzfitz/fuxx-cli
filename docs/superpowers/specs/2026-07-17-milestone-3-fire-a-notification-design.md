@@ -3,8 +3,17 @@
 **Date:** 2026-07-17
 **Milestone:** `docs/04-Development/43 - Milestone 3 - Fire a Notification.md`
 **Builds on:** Milestone 2 (OSC 9 detection in the output pump).
-**Status:** design approved; awaiting spec review before implementation planning.
+**Status:** implemented; v1 complete.
 **This completes v1.**
+
+> **Revision (2026-07-17, during implementation):** the notification backend changed from
+> `notify-rust` to **`osascript`**. `notify-rust`'s macOS backend (`mac-notification-sys`) uses
+> the deprecated `NSUserNotification` API, which does **not** display for an unbundled CLI binary
+> on modern macOS (verified 26.5.2) — `show()` returns `Ok` but no banner appears, and no
+> bundle-id attribution fixes it. `src/notifier.rs` now shells out to `osascript`
+> (`display notification`), which works without an `.app` bundle. The `notify-rust` dependency
+> was dropped; `notifier::fire(summary, body)`'s signature is unchanged, so §4's wiring and the
+> rest of this design still hold. See [[52 - Known Risks and Gotchas]] and [[33 - Key Crates]].
 
 ## 1. Goal
 
