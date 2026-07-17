@@ -1,5 +1,7 @@
 mod cli;
 mod detector;
+#[allow(dead_code)] // wired into the detection branch in Task 2
+mod notifier;
 
 use std::error::Error;
 use std::io::{Read, Write, IsTerminal};
