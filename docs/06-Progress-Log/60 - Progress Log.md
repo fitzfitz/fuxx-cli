@@ -22,6 +22,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-26 — M0 merged; D2 + D3 decided
+- **Did:** Merged `m0-gpui-window` into `master` locally (fast-forward; `cargo test` ok on the merged
+  result; not pushed). Decided **D2 = GPUI's own text system** and **D3 = `futures` crate**
+  (`futures::channel::mpsc`), both the recommended options. Started branch `m1-terminal-pane`.
+- **Learned:** D3 adds the first new *direct* dependency since M0 (`futures`), but it's already in
+  `Cargo.lock` through GPUI, so nothing new is downloaded.
+- **Blocked:** Nothing.
+- **Next task:** [[M1 Plan - One Terminal Pane]] → Task 1.
+
 ### 2026-10-26 — Milestone 0 complete: GPUI window launches without Xcode
 - **Did:** Decided **D1 = `runtime_shaders`**. Created branch `m0-gpui-window` and committed the
   pending vault/plans/mockups work (`9da5ab4`) and the crate scaffold (`71221cb`). Pinned `gpui` +

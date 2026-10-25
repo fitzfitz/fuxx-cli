@@ -12,10 +12,10 @@ updated: 2026-10-12
 | At a glance | |
 |---|---|
 | **Milestone note** | [[41 - Milestone 1 - One Terminal Pane]] |
-| **Status** | ⬜ Not started (waits for M0 ✅) |
+| **Status** | ⬜ Not started (M0 ✅ done; D2 + D3 decided) |
 | **Tasks done** | 0 / 7 |
 | **▶ Pick up here** | **Task 1, Step 1** |
-| **Decisions used** | ❓ **D2** = GPUI text system · ❓ **D3** = `futures` channel (see [[00 - Plan Tracker (Start Here)]]) |
+| **Decisions used** | ✅ **D2** = GPUI text system · ✅ **D3** = `futures` channel (see [[00 - Plan Tracker (Start Here)]]) |
 | **Needs your eyes** | 👀 Task 6 (real shell, `ls --color`, `vim`, resize, Claude Code) |
 
 **Goal:** One real, usable terminal in the GPUI window. A login shell runs on a PTY, its output is
