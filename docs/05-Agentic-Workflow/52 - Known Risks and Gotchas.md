@@ -10,6 +10,16 @@ Things likely to trip up **fuxx** (the terminal app), recorded so they don't sur
 
 - **GPUI is pre-1.0.** Consumed as a **pinned git dependency** from the Zed repo; breaking changes
   happen between revs. Pin the rev and bump deliberately. See [[30 - Tech Stack]].
+- **GPUI needs FULL Xcode on macOS.** Its Metal renderer compiles shaders at build time with
+  `xcrun metal` (Xcode-only, not Command Line Tools) — build fails with `unable to find utility
+  "metal"` otherwise. So the Rust path does NOT avoid the Xcode requirement (found at M0).
+  **Update 2026-10-12:** the `gpui_platform` feature **`runtime_shaders`** moves shader compilation
+  to app startup, so it builds with only the Command Line Tools. Compiled here; first launch not yet
+  verified (decision D1 in [[00 - Plan Tracker (Start Here)]]).
+- **GPUI renders no text without `font-kit`** (`gpui_platform` feature). Easy to miss: the
+  window opens, but every label is invisible.
+- **GPUI tutorials online are mostly outdated** for our rev (no `Application::new`, no
+  `ViewContext`, 6-arg `ShapedLine::paint`…). Use [[31 - API Fact Sheet (pinned rev)]].
 - **Heavy first build.** GPUI pulls a large dependency tree — the first `cargo build` is slow.
 - **GUI can't be auto-verified.** The AI can't see the window — terminal rendering, input, and rings
   are verified by *you* (build & run, screenshots). Design each task so its success check is something

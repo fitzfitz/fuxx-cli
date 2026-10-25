@@ -6,6 +6,7 @@ status: not-started
 # 41 - Milestone 1 - One Terminal Pane
 
 **Status:: ⬜ Not started**  ·  **The make-or-break milestone.**
+**Plan:** [[M1 Plan - One Terminal Pane]] (step-by-step, compile-verified, with status per task)
 
 ## Goal
 

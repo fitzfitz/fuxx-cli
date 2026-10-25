@@ -9,9 +9,11 @@ assistant that has no memory of past sessions.
 
 ## Startup
 
+0. Open **[[00 - Plan Tracker (Start Here)]]**. It shows the current milestone, the **▶ next
+   action**, blockers and open decisions, then links to the plan's **▶ Pick up here** step.
 1. Open [[60 - Progress Log]] and read the **most recent entry**. This is your memory.
 2. Note the **current milestone** and its status in [[40 - Roadmap]].
-3. Identify the **one next task**.
+3. Identify the **one next task** (the next unchecked step in the current plan).
 4. If using an AI, paste it the last progress-log entry + the relevant milestone note so
    it's caught up.
 

@@ -23,6 +23,11 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 - `P0` Multiple concurrent sessions, each a shell/agent on its own PTY.
 - `P0` **Session sidebar / vertical tab list**; quick-switch; bring one to front.
 - `P1` Per-session name/label; rename; reorder.
+- `P1` **Project groups** — sessions grouped under their project (a named folder) in the sidebar.
+  You assign the project when creating a session (fuxx doesn't follow a shell's `cd`). Each group
+  header shows its most urgent ring (waiting > done > working > idle); collapse/expand; "new session
+  in this project". Not included: per-project settings, nested groups, auto-detecting projects.
+  Added 2026-10-12 (user request).
 - `P1` Agent presets — launch `claude` / `opencode` / `codex` with one action, per working dir.
 - `P2` Session restore across app restarts (layout + working dirs).
 

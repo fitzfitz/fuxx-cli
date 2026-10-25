@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fuxx — Mockups</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="page-head">
+  <nav>
+    <a href="index.html" class="here">Overview</a>
+    <a href="1-first-usable-m4.html">1 · First usable (M4)</a>
+    <a href="2-daily-driver.html">2 · Daily driver (Phase 2)</a>
+    <a href="3-full-vision.html">3 · Full vision (Phase 3–4)</a>
+  </nav>
+  <h1>fuxx: what it will look like</h1>
+  <p>A native GPU terminal for running many AI coding agents in one window. Each session gets a status
+  ring that tells you when an agent is working, done, or waiting for you, so you can step away and get
+  pulled back exactly when needed.</p>
+  <p style="margin-top:8px">Three screens show the product as it grows. Every feature from the
+  <code>docs/01-Overview/11 - Features.md</code> catalog appears on one of them, tagged with its
+  priority and the milestone that builds it.</p>
+  <span class="disclaimer">Illustrative mockups, not screenshots. Nothing here is built yet; the build is at M0.</span>
+  <div class="ring-key">
+    <span><i class="ring idle"></i> Idle</span>
+    <span><i class="ring working"></i> Working</span>
+    <span><i class="ring waiting"></i> Waiting (needs you)</span>
+    <span><i class="ring done"></i> Done</span>
+  </div>
+</header>
+
+<div class="cards">
+  <a class="card" href="1-first-usable-m4.html">
+    <div class="kicker">Phase 0–1 · M0–M4</div>
+    <h3>1 · First usable version</h3>
+    <p>A GPU terminal, many sessions in a sidebar, live status rings, background notifications. Exactly what the written plans build.</p>
+  </a>
+  <a class="card" href="2-daily-driver.html">
+    <div class="kicker">Phase 2 · M5–M7</div>
+    <h3>2 · Daily driver</h3>
+    <p>Scrollback, search, selection, clickable links, your font and Ghostty theme, project groups, rename and reorder, agent presets, restore, activity feed.</p>
+  </a>
+  <a class="card" href="3-full-vision.html">
+    <div class="kicker">Phase 3–4 · M8–M12</div>
+    <h3>3 · Full vision</h3>
+    <p>Split panes, a scripting socket, in-app browser, SSH workspaces, a session daemon, and a signed <code>.app</code> from Homebrew.</p>
+  </a>
+</div>
+
+<section class="catalog">
+
+  <h2>A · Terminal core</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Feature</th><th>Priority</th><th>Milestone</th><th>Shown on</th></tr>
+    <tr><td>Render a full VT screen (text, truecolor, styles, cursor)</td><td><span class="pill p0">P0</span></td><td><span class="pill ms">M1</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #1</a></td></tr>
+    <tr><td>Run any program; keyboard input; window and PTY resize</td><td><span class="pill p0">P0</span></td><td><span class="pill ms">M1</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #2</a></td></tr>
+    <tr><td>Scrollback and scroll</td><td><span class="pill p0">P0</span></td><td><span class="pill ms">M5</span></td><td><a href="2-daily-driver.html">Screen 2 · #1</a></td></tr>
+    <tr><td>Selection, copy and paste; mouse support</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M5</span></td><td><a href="2-daily-driver.html">Screen 2 · #2</a></td></tr>
+    <tr><td>Clickable URL and path detection</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M5</span></td><td><a href="2-daily-driver.html">Screen 2 · #3</a></td></tr>
+    <tr><td>Robust resize</td><td>—</td><td><span class="pill ms">M5</span></td><td><a href="2-daily-driver.html">Screen 2 · #4</a></td></tr>
+    <tr><td>Font config (family, size, ligatures)</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M6</span></td><td><a href="2-daily-driver.html">Screen 2 · #5</a></td></tr>
+    <tr><td>Theming; read Ghostty's config</td><td><span class="pill p2">P2</span></td><td><span class="pill ms">M6</span></td><td><a href="2-daily-driver.html">Screen 2 · #6</a></td></tr>
+    <tr><td>Search in scrollback</td><td><span class="pill p2">P2</span></td><td><span class="pill open">not yet assigned</span></td><td><a href="2-daily-driver.html">Screen 2 · #7</a></td></tr>
+  </table></div>
+
+  <h2>B · Multi-agent orchestration</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Feature</th><th>Priority</th><th>Milestone</th><th>Shown on</th></tr>
+    <tr><td>Multiple concurrent sessions, each on its own PTY</td><td><span class="pill p0">P0</span></td><td><span class="pill ms">M3</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #3</a></td></tr>
+    <tr><td>Session sidebar; quick-switch</td><td><span class="pill p0">P0</span></td><td><span class="pill ms">M3</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #3</a></td></tr>
+    <tr><td>Per-session label (from the program's title)</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M3</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #4</a></td></tr>
+    <tr><td>Project groups (sessions grouped by project folder, rolled-up ring)</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M7</span></td><td><a href="2-daily-driver.html">Screen 2 · #13</a></td></tr>
+    <tr><td>Rename and reorder sessions</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M7</span></td><td><a href="2-daily-driver.html">Screen 2 · #8</a></td></tr>
+    <tr><td>Agent presets (claude / opencode / codex, per folder)</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M7</span></td><td><a href="2-daily-driver.html">Screen 2 · #9</a></td></tr>
+    <tr><td>Session restore across restarts</td><td><span class="pill p2">P2</span></td><td><span class="pill ms">M7</span></td><td><a href="2-daily-driver.html">Screen 2 · #10</a></td></tr>
+  </table></div>
+
+  <h2>C · Notification rings and agent state</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Feature</th><th>Priority</th><th>Milestone</th><th>Shown on</th></tr>
+    <tr><td>Per-session state detection (working / done / waiting)</td><td><span class="pill p0">P0</span></td><td><span class="pill ms">M2</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #7</a></td></tr>
+    <tr><td>Status ring per session in the sidebar</td><td><span class="pill p0">P0</span></td><td><span class="pill ms">M4</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #6</a></td></tr>
+    <tr><td>Desktop notifications for background sessions (focus-aware)</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M4</span></td><td><a href="1-first-usable-m4.html">Screen 1 · #8</a></td></tr>
+    <tr><td>Jump to a session from a notification</td><td><span class="pill p1">P1</span></td><td><span class="pill ms">M11 (D5)</span></td><td><a href="3-full-vision.html">Screen 3 · #8</a></td></tr>
+    <tr><td>Notification history / activity feed</td><td><span class="pill p2">P2</span></td><td><span class="pill open">not yet assigned</span></td><td><a href="2-daily-driver.html">Screen 2 · #11</a></td></tr>
+  </table></div>
+
+  <h2>D · Layout</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Feature</th><th>Priority</th><th>Milestone</th><th>Shown on</th></tr>
+    <tr><td>Tabs (or the sidebar list is the primary switcher)</td><td><span class="pill p1">P1</span></td><td><span class="pill open">open question</span></td><td><a href="2-daily-driver.html">Screen 2 · #12</a></td></tr>
+    <tr><td>Split panes</td><td><span class="pill p2">P2</span></td><td><span class="pill ms">M8</span></td><td><a href="3-full-vision.html">Screen 3 · #1</a></td></tr>
+  </table></div>
+
+  <h2>E · Programmability and integration</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Feature</th><th>Priority</th><th>Milestone</th><th>Shown on</th></tr>
+    <tr><td>Socket API per session</td><td><span class="pill p2">P2</span></td><td><span class="pill ms">M9</span></td><td><a href="3-full-vision.html">Screen 3 · #2</a></td></tr>
+    <tr><td>Scriptable automation of sessions and layout</td><td><span class="pill p3">P3</span></td><td><span class="pill ms">M9</span></td><td><a href="3-full-vision.html">Screen 3 · #3</a></td></tr>
+  </table></div>
+
+  <h2>F · cmux-parity extras</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Feature</th><th>Priority</th><th>Milestone</th><th>Shown on</th></tr>
+    <tr><td>In-app scriptable browser</td><td><span class="pill p3">P3</span></td><td><span class="pill ms">M10</span></td><td><a href="3-full-vision.html">Screen 3 · #4</a></td></tr>
+    <tr><td>SSH workspaces</td><td><span class="pill p3">P3</span></td><td><span class="pill ms">M10</span></td><td><a href="3-full-vision.html">Screen 3 · #5</a></td></tr>
+    <tr><td>Remote / tmux-compatible daemon</td><td><span class="pill p3">P3</span></td><td><span class="pill ms">M10</span></td><td><a href="3-full-vision.html">Screen 3 · #6</a></td></tr>
+  </table></div>
+
+  <h2>G · Distribution and platform</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Feature</th><th>Priority</th><th>Milestone</th><th>Shown on</th></tr>
+    <tr><td>Cross-platform-capable (macOS first, Linux via the Rust stack)</td><td><span class="pill p1">P1</span></td><td>ongoing</td><td><a href="3-full-vision.html">Screen 3 · #10</a></td></tr>
+    <tr><td>Ship as a real <code>.app</code> (bundle, signing, notarization)</td><td><span class="pill p2">P2</span></td><td><span class="pill ms">M11</span></td><td><a href="3-full-vision.html">Screen 3 · #7</a></td></tr>
+    <tr><td>Homebrew cask</td><td><span class="pill p2">P2</span></td><td><span class="pill ms">M12</span></td><td><a href="3-full-vision.html">Screen 3 · #9</a></td></tr>
+    <tr><td>Windows support</td><td><span class="pill p3">P3</span></td><td>later</td><td><a href="3-full-vision.html">Screen 3 · #10</a></td></tr>
+  </table></div>
+
+</section>
+
+<section class="note">
+  <p><strong>Where this comes from:</strong> the feature list and priorities are from <code>11 - Features</code>, the milestones from <code>40 - Roadmap</code>, and the M4 screen's colors, sizes, shortcuts and notification text from the M1–M4 plans. Out of scope for now (<code>12 - Scope</code>): being a general IDE, plugins, a config DSL.</p>
+  <p>Repo layout and which milestone adds each file: <a href="../STRUCTURE.md">STRUCTURE.md</a>.</p>
+</section>
+
+</body>
+</html>

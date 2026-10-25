@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fuxx — Daily Driver (Phase 2)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  /* M6: font + theme read from the user's Ghostty config. Illustrative values. */
+  .window.ghostty {
+    --term-bg: #1d1f27; --term-fg: #d4d7de; --side-bg: #16181e; --side-line: #262933;
+    --row-active: #2a2e3a; --row-hover: #20232c;
+    min-width: 1080px;
+  }
+  .window.ghostty .term { font-family: "JetBrains Mono", var(--mono); font-size: 13.5px; font-variant-ligatures: contextual; }
+  .window.ghostty .c1 { color: #e06c75; } .window.ghostty .c2 { color: #98c379; } .window.ghostty .c3 { color: #e5c07b; }
+  .window.ghostty .c4 { color: #61afef; } .window.ghostty .c5 { color: #c678dd; } .window.ghostty .c6 { color: #56b6c2; }
+  .window.ghostty .c8 { color: #5c6370; }
+
+  .sidebar .new { font: inherit; font-size: 12px; text-transform: none; letter-spacing: 0; color: #c9ccd4; background: #232733; border: 1px solid #343949; border-radius: 5px; padding: 1px 7px; cursor: pointer; }
+  .presets { position: relative; margin: 4px 4px 0; background: #232733; border: 1px solid #3a4052; border-radius: 8px; padding: 4px; box-shadow: 0 14px 34px rgba(0,0,0,0.5); font-size: 12.5px; }
+  .presets .item { display: flex; gap: 8px; align-items: baseline; padding: 5px 8px; border-radius: 5px; color: #d4d7de; }
+  .presets .item:hover, .presets .item.on { background: #2f3545; }
+  .presets .item small { margin-left: auto; color: #7d8494; font-size: 11px; }
+  .presets .sep { height: 1px; background: #343949; margin: 4px 2px; }
+  .presets .cwd { padding: 4px 8px 5px; color: #7d8494; font-size: 11px; }
+
+  .row .grip { color: #4b5160; font-size: 11px; width: 8px; flex: none; opacity: 0; }
+  .row:hover .grip, .row.dragging .grip { opacity: 1; }
+  .row.dragging { background: #262a36; box-shadow: 0 6px 16px rgba(0,0,0,0.45); transform: translateX(4px); }
+  .row .rename { flex: 1; min-width: 0; font: inherit; color: #fff; background: #12141a; border: 1px solid #4b6f80; border-radius: 4px; padding: 0 5px; outline: none; }
+
+  .proj { display: flex; align-items: center; gap: 7px; padding: 7px 8px 3px; font-size: 12px; font-weight: 600; color: #c9ccd4; cursor: pointer; user-select: none; }
+  .proj .caret { width: 10px; color: #6f7686; font-size: 10px; }
+  .proj .count { margin-left: auto; font-size: 11px; font-weight: 500; color: #626979; }
+  .proj .add { color: #7d8494; font-weight: 500; padding: 0 3px; border-radius: 4px; }
+  .proj .add:hover { background: #2a2e3a; color: #e8eaef; }
+  .proj.collapsed { color: #9aa1b1; }
+  .row.child { padding-left: 14px; }
+  .window.ghostty .win-body { height: 600px; }
+  .restored { margin: 2px 4px 6px; font-size: 11px; color: #9fb7a0; background: #1b2620; border: 1px solid #2b3d30; border-radius: 6px; padding: 4px 8px; }
+
+  .find { position: absolute; top: 6px; right: 18px; z-index: 11; display: flex; gap: 6px; align-items: center; background: #262a36; border: 1px solid #3a4052; border-radius: 7px; padding: 4px 6px 4px 9px; font: 12px var(--sans); color: #9aa1b1; box-shadow: 0 8px 20px rgba(0,0,0,0.4); }
+  .find .q { color: #e8eaef; font-family: "JetBrains Mono", var(--mono); background: #1a1d25; border-radius: 4px; padding: 1px 6px; min-width: 96px; }
+  .find .arr { color: #c9ccd4; padding: 0 3px; }
+  .hit { background: rgba(229,192,123,0.28); border-radius: 2px; }
+  .hit.cur { background: #e5c07b; color: #1d1f27; }
+  .sel { background: #36507a; }
+  .link { text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .link-tip { position: absolute; z-index: 11; font: 11px var(--sans); color: #ddd; background: #30343f; border: 1px solid #454b5a; border-radius: 5px; padding: 2px 7px; }
+  .scrollbar { position: absolute; top: 4px; bottom: 4px; right: 3px; width: 6px; border-radius: 3px; background: rgba(255,255,255,0.04); }
+  .scrollbar i { position: absolute; left: 0; right: 0; top: 38%; height: 22%; border-radius: 3px; background: rgba(255,255,255,0.28); }
+  .scrollbar b { position: absolute; left: -1px; right: -1px; height: 2px; background: #e5c07b; }
+  .size-badge { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 10; font: 600 13px var(--mono); color: #e8eaef; background: rgba(40,44,56,0.92); border: 1px solid #454b5a; border-radius: 8px; padding: 6px 12px; }
+  .term .inl { position: relative; display: inline-block; vertical-align: 1px; margin-left: 10px; line-height: 1.4; }
+  .mk.inl { top: auto; right: auto; margin-left: 6px; vertical-align: middle; }
+  .copied { position: absolute; z-index: 11; font: 11px var(--sans); color: #d9f2d9; background: #23402a; border: 1px solid #36613f; border-radius: 5px; padding: 2px 8px; }
+
+  .activity { width: 250px; flex: none; background: #16181e; border-left: 1px solid #262933; display: flex; flex-direction: column; position: relative; }
+  .activity h4 { margin: 0; padding: 10px 12px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #6f7686; font-weight: 600; }
+  .event { padding: 7px 12px; border-top: 1px solid #20232c; font-size: 12px; color: #9aa1b1; display: flex; gap: 8px; cursor: pointer; }
+  .event:hover { background: #1d2028; }
+  .event .ring { margin-top: 4px; }
+  .event b { color: #dfe2e8; font-weight: 600; }
+  .event time { display: block; font-size: 11px; color: #626979; }
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="1-first-usable-m4.html">1 · First usable (M4)</a>
+    <a href="2-daily-driver.html" class="here">2 · Daily driver (Phase 2)</a>
+    <a href="3-full-vision.html">3 · Full vision (Phase 3–4)</a>
+  </nav>
+  <h1>2 · The daily driver (Phase 2: M5–M7)</h1>
+  <p>The polish that makes fuxx something you live in: scrollback, selection and copy, mouse,
+  clickable links, your own font and theme, and session ergonomics (project groups, rename, reorder,
+  agent presets, restore). Plus the P1/P2 catalog items the roadmap hasn't placed yet: scrollback search,
+  notification history, and the open tabs question.</p>
+  <span class="disclaimer">Illustrative mockup, not a screenshot. Phase 2 has no detailed plan yet; exact UI gets decided when each milestone is planned.</span>
+  <div class="toolbar">
+    <button class="btn" id="toggle-marks">Hide feature markers</button>
+  </div>
+</header>
+
+<div class="stage">
+  <div class="window ghostty">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="title">fuxx — api · auth refactor</div>
+    </div>
+    <div class="win-body">
+
+      <aside class="sidebar has-mk">
+        <div class="side-head has-mk">Sessions<span class="mk" data-n="12" style="right:auto;left:72px;top:5px"></span></div>
+
+        <div class="restored has-mk">↺ Restored 3 projects, 6 sessions<span class="mk" data-n="10" style="top:-9px;right:-6px"></span></div>
+
+        <div class="has-mk" style="display:flex;flex-direction:column;gap:2px">
+          <span class="mk" data-n="13" style="top:-10px;right:-4px"></span>
+          <div class="proj"><span class="caret">▾</span><span class="pname">api</span><span class="ring working" title="Most urgent: Working"></span><span class="count">2</span><span class="add" title="New session in api">+</span></div>
+          <div class="row child active"><span class="grip">⋮⋮</span><span class="ring working"></span><span class="label">auth refactor</span></div>
+          <div class="row child"><span class="grip">⋮⋮</span><span class="ring idle"></span><span class="label">npm run dev</span></div>
+
+          <div class="proj"><span class="caret">▾</span><span class="pname">billing</span><span class="ring waiting" title="Most urgent: Waiting"></span><span class="count">2</span><span class="add">+</span></div>
+          <div class="row child"><span class="grip">⋮⋮</span><span class="ring waiting"></span><span class="label">migration</span></div>
+          <div class="row child dragging has-mk"><span class="grip">⋮⋮</span><span class="ring done"></span><input class="rename" value="invoice tests" aria-label="Rename session"><span class="mk" data-n="8" style="top:2px;right:2px"></span></div>
+
+          <div class="proj collapsed"><span class="caret">▸</span><span class="pname">docs</span><span class="ring done" title="Most urgent: Done"></span><span class="count">2</span><span class="add">+</span></div>
+        </div>
+
+        <div style="padding:6px 4px 0"><button class="new" style="width:100%;text-align:left">+ New session in api ▾</button></div>
+        <div class="presets has-mk">
+          <span class="mk" data-n="9" style="right:-6px;top:-10px"></span>
+          <div class="item on">✻ claude <small>Claude Code</small></div>
+          <div class="item">◆ opencode <small>OpenCode</small></div>
+          <div class="item">▲ codex <small>Codex CLI</small></div>
+          <div class="item">$ shell <small>login shell</small></div>
+          <div class="sep"></div>
+          <div class="cwd">in ~/code/api · change folder…</div>
+        </div>
+
+        <div class="side-foot has-mk">Font: JetBrains Mono 13.5, ligatures on<br>Theme and font from <code style="font-size:10.5px">~/.config/ghostty/config</code><span class="mk" data-n="6" style="top:-10px"></span></div>
+      </aside>
+
+      <section class="content">
+
+<div class="term"><span class="c8">[14:02:10]</span> <span class="c2">INFO</span>  starting api v2.4.1
+<span class="c8">[14:02:10]</span> <span class="c2">INFO</span>  db pool ready (8)
+<span class="c8">[14:02:11]</span> <span class="c2">INFO</span>  server listening on <span class="link c4">http://localhost:3000</span><span class="link-tip inl">Click to open in browser<span class="mk" data-n="3" style="top:-11px;right:-12px"></span></span>
+<span class="c8">[14:02:12]</span> <span class="c2">INFO</span>  GET /health 200 2ms
+<span class="sel"><span class="c8">[14:02:19]</span> <span class="c3">WARN</span>  slow query: SELECT * FROM <span class="hit">invoice</span>s WHERE customer_id = $1 </span>
+<span class="sel"><span class="c8">[14:02:19]</span> <span class="c3">WARN</span>    took 1840ms, rows 12043                             </span>
+<span class="sel"><span class="c8">[14:02:19]</span> <span class="c3">WARN</span>    hint: add an index on (customer_id, issued_at)      </span><span class="copied inl">Copied 3 lines<span class="mk" data-n="2" style="top:-11px;right:-12px"></span></span>
+<span class="c8">[14:02:25]</span> <span class="c2">INFO</span>  POST /auth/session 201 14ms
+
+<span class="c4">~/code/api</span> <span class="c5">❯</span> cargo check
+<span class="c1 b">error[E0308]</span><span class="b">: mismatched types</span>
+   <span class="c4">--&gt;</span> <span class="link">src/billing/<span class="hit cur">invoice</span>.rs:142:25</span>
+    <span class="c4">|</span>
+<span class="c4">140 |</span> fn is_settled(&amp;self, amount: u64) -&gt; Option&lt;bool&gt; {
+<span class="c4">141 |</span>     match self.status {
+<span class="c4">142 |</span>         Status::Paid =&gt; self.total &gt;= amount,<span class="mk inl" data-n="5"></span>
+    <span class="c4">|</span>                         <span class="c1 b">^^^^^^^^^^^^^^^^^^^^^ expected `Option&lt;bool&gt;`</span>
+<span class="c4">143 |</span>         Status::Void =&gt; None,
+<span class="c4">144 |</span>         _ if self.total != 0 =&gt; Some(false),
+    <span class="c4">|</span>
+<span class="c4">  = help:</span> wrap it: <span class="c2">Some(self.total &gt;= amount)</span>
+
+<span class="c4">~/code/api</span> <span class="c5">❯</span> <span class="cursor"> </span>
+<div class="scrollbar"><i></i><b style="top:31%"></b><b style="top:44%"></b><b style="top:63%"></b></div><span class="mk" data-n="1" style="top:auto;bottom:8px;right:16px"></span><div class="find"><span>Find</span><span class="q">invoice</span><span>2 of 7</span><span class="arr">↑</span><span class="arr">↓</span><span class="arr">✕</span><span class="mk" data-n="7" style="top:-11px;right:-10px"></span></div><div class="size-badge" style="top:auto;left:auto;bottom:24px;right:40px;transform:none">104 × 33<span class="mk" data-n="4" style="top:-11px;right:-12px"></span></div></div>
+
+        <aside class="activity has-mk">
+          <span class="mk" data-n="11"></span>
+          <h4>Activity</h4>
+          <div class="event"><span class="ring waiting"></span><div><b>billing · migration</b> needs your input<time>2 min ago</time></div></div>
+          <div class="event"><span class="ring done"></span><div><b>billing · invoice tests</b> finished<time>6 min ago</time></div></div>
+          <div class="event"><span class="ring done"></span><div><b>docs · release notes</b> finished<time>21 min ago</time></div></div>
+          <div class="event"><span class="ring done"></span><div><b>docs · changelog</b> finished<time>34 min ago</time></div></div>
+          <div class="event"><span class="ring done"></span><div><b>api · auth refactor</b> finished<time>1 h ago</time></div></div>
+        </aside>
+      </section>
+    </div>
+  </div>
+</div>
+
+<section class="legend">
+  <h2>What you're looking at</h2>
+  <ol>
+    <li data-n="1"><strong>Scrollback and scroll</strong><span class="tags"><span class="pill p0">P0</span><span class="pill ms">M5</span></span>
+      <span class="desc">Scroll back through past output with the trackpad or wheel. The scrollbar marks where search hits are.</span></li>
+    <li data-n="2"><strong>Selection, copy and paste, mouse</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M5</span></span>
+      <span class="desc">Drag to select, copy, paste. Mouse events go to programs that ask for them (vim, htop).</span></li>
+    <li data-n="3"><strong>Clickable URLs and paths</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M5</span></span>
+      <span class="desc">Links and <code>file:line</code> paths are detected and open on click.</span></li>
+    <li data-n="4"><strong>Robust resize</strong><span class="tags"><span class="pill ms">M5</span></span>
+      <span class="desc">Resizing reflows cleanly; the new grid size (columns × rows) flashes while you drag.</span></li>
+    <li data-n="5"><strong>Font family, size, ligatures</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M6</span></span>
+      <span class="desc">Your own font. Ligatures turn <code>=&gt;</code>, <code>-&gt;</code>, <code>&gt;=</code> and <code>!=</code> into single glyphs.</span></li>
+    <li data-n="6"><strong>Theme from your Ghostty config</strong><span class="tags"><span class="pill p2">P2</span><span class="pill ms">M6</span></span>
+      <span class="desc">Colors, font and theme are read from Ghostty's config, like cmux does, so fuxx matches your terminal.</span></li>
+    <li data-n="7"><strong>Search in scrollback</strong><span class="tags"><span class="pill p2">P2</span><span class="pill open">milestone not yet assigned</span></span>
+      <span class="desc">Find text in past output, step through matches. In the Features catalog; the roadmap hasn't placed it yet.</span></li>
+    <li data-n="8"><strong>Rename and reorder sessions</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M7</span></span>
+      <span class="desc">Double-click to rename, drag the handle to reorder (the “invoice tests” row is doing both). Hand-set names win over program titles.</span></li>
+    <li data-n="9"><strong>Agent presets</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M7</span></span>
+      <span class="desc">Start <code>claude</code>, <code>opencode</code> or <code>codex</code> in one action, in a chosen working folder.</span></li>
+    <li data-n="10"><strong>Session restore</strong><span class="tags"><span class="pill p2">P2</span><span class="pill ms">M7</span></span>
+      <span class="desc">Quit and relaunch: your projects and their sessions come back with their names, order and working folders.</span></li>
+    <li data-n="11"><strong>Notification history</strong><span class="tags"><span class="pill p2">P2</span><span class="pill open">milestone not yet assigned</span></span>
+      <span class="desc">An activity feed of what finished or asked for you, and when. Click an entry to go to that session.</span></li>
+    <li data-n="12"><strong>Tabs, or the sidebar as the switcher</strong><span class="tags"><span class="pill p1">P1</span><span class="pill open">open question</span></span>
+      <span class="desc">The catalog lists “tabs (or the sidebar list is the primary switcher)”. Shown here as sidebar-only; the choice is still open.</span></li>
+    <li data-n="13"><strong>Project groups</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M7</span></span>
+      <span class="desc">Sessions grouped under their project (a named folder). Each header shows its most urgent ring (waiting, then done, then working), so a collapsed project still tells you it needs you. <strong>+</strong> starts a session in that project. You pick the project when you create a session; fuxx doesn't follow a shell's <code>cd</code>.</span></li>
+  </ol>
+</section>
+
+<section class="note">
+  <p>Several overlays show at once here so every feature is visible in one picture. In the real app you'd see one at a time.</p>
+</section>
+
+<script src="mock.js"></script>
+</body>
+</html>

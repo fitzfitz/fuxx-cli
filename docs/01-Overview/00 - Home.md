@@ -14,14 +14,17 @@ you, with at-a-glance status across all sessions. Like cmux — but the terminal
 
 ## The maps
 
+- ▶ **[[00 - Plan Tracker (Start Here)]]**: where the build stands, the next action, open decisions
 - [[10 - What Is fuxx]] — product & vision
 - [[11 - Features]] — the full feature catalog (phased)
 - [[12 - Scope]] — in / out of scope
 - [[20 - Architecture Overview]] — how it's built
-- [[30 - Tech Stack]] — GPUI, alacritty_terminal, portable-pty
-- [[40 - Roadmap]] — milestones M0 → M4
+- [[30 - Tech Stack]] — GPUI, alacritty_terminal, portable-pty · exact APIs: [[31 - API Fact Sheet (pinned rev)]]
+- [[40 - Roadmap]] — milestones M0 → M4 (each with a step-by-step plan in `04-Development/Plans/`)
 - [[70 - Terminal App Pivot — Vision and Stack]] — the pivot decision record
 - [[50 - Agentic Workflow]] · [[60 - Progress Log]]
+- **Outside the vault (repo root):** `STRUCTURE.md` (repo layout, which milestone adds each file) ·
+  `mockups/index.html` (illustrative HTML mockups of M4, Phase 2 and the full vision; open in a browser)
 
 ## Status
 

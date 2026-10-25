@@ -8,6 +8,10 @@ The full path to a daily-usable multi-agent terminal, in **phases**. One milesto
 each before the next; record it in [[60 - Progress Log]]. Features referenced here are catalogued in
 [[11 - Features]]. Far-phase milestones are directional — they get detailed notes when we reach them.
 
+> [!tip] Step-by-step plans
+> M0–M4 each have a detailed, compile-verified implementation plan with per-task status.
+> **Start at [[00 - Plan Tracker (Start Here)]]**: current position, next action, open decisions.
+
 ## Status legend
 
 `⬜ Not started` · `🟨 In progress` · `✅ Done` · `⛔ Blocked`
@@ -16,7 +20,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 ## Phase 0 — Foundation (prove the stack)
 
-- [[40a - Milestone 0 - Scaffold and GPUI Window]] — ⬜ — repurpose the crate; a blank GPUI window launches
+- [[40a - Milestone 0 - Scaffold and GPUI Window]] — 🟨 — repurpose the crate; a blank GPUI window launches
 - [[41 - Milestone 1 - One Terminal Pane]] — ⬜ — `alacritty_terminal` + `portable-pty` rendered in a GPUI view, running the shell. **Make-or-break.**
 
 ## Phase 1 — Core multi-agent terminal (the first genuinely useful version)
@@ -29,7 +33,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 - **M5 — Terminal UX:** scrollback, selection + copy/paste, mouse, clickable URLs, robust resize.
 - **M6 — Fonts & config:** font family/size/ligatures; read Ghostty's config (theme/colors).
-- **M7 — Session ergonomics:** rename/reorder sessions, agent presets (one-tap `claude`/`opencode`), session restore.
+- **M7 — Session ergonomics:** project groups (sessions grouped by project folder, rolled-up ring), rename/reorder sessions, agent presets (one-tap `claude`/`opencode`), session restore.
 
 ## Phase 3 — Power features (cmux parity — big, deferred)
 

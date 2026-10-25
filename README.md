@@ -13,6 +13,12 @@ when an agent needs you, instead of babysitting a wall of terminal windows.
 - **Notification rings** — a per-session status badge plus desktop notifications when a background
   session finishes or needs input, and never a nag about the session you're already looking at.
 
+## See it
+
+Open [`mockups/index.html`](mockups/index.html) in a browser for illustrative mockups of the finished
+app: the first usable version (M4), the daily driver (Phase 2) and the full vision (Phase 3–4), with
+every planned feature labeled by milestone. [`STRUCTURE.md`](STRUCTURE.md) maps the repo layout.
+
 ## Built with
 
 Rust · [GPUI](https://github.com/zed-industries/zed).
