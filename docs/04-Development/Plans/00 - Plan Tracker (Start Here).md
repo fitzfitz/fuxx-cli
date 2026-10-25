@@ -21,8 +21,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 |---|---|
 | **Current milestone** | **M1 — One Terminal Pane** (make-or-break) |
 | **Status** | ⬜ Not started. M0 ✅ done 2026-10-26 (window launches, quits on close and cmd-q; on branch `m0-gpui-window`, not merged). |
-| **▶ Next action** | Decide **D2** and **D3**, then do [[M1 Plan - One Terminal Pane]] → Task 1. |
-| **Blocked on** | Nothing technical, just **D2** + **D3** (your call). |
+| **▶ Next action** | Do [[M1 Plan - One Terminal Pane]] → Task 1 (on branch `m1-terminal-pane`). |
+| **Blocked on** | Nothing. D2 + D3 decided 2026-10-26 (recommended options). |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -41,7 +41,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | # | Milestone | Plan | Status | Tasks | Success check (short) |
 |---|---|---|---|---|---|
 | M0 | Scaffold & GPUI window | [[M0 Plan - Scaffold and GPUI Window]] | ✅ | 4/4 | A window opens; closing it quits |
-| M1 | One terminal pane (**make-or-break**) | [[M1 Plan - One Terminal Pane]] | ⬜ ❓D2 D3 | 0/7 | Usable shell: `ls --color`, `vim`, resize |
+| M1 | One terminal pane (**make-or-break**) | [[M1 Plan - One Terminal Pane]] | ⬜ | 0/7 | Usable shell: `ls --color`, `vim`, resize |
 | M2 | Agent state detection | [[M2 Plan - Agent State Detection]] | ⬜ ❓D4 | 0/7 | Status log shows working → done / waiting |
 | M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ⬜ ❓D6 | 0/5 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ⬜ ❓D5 | 0/4 | Rings update; background sessions notify |
@@ -57,8 +57,8 @@ updated before anyone builds it.
 | ID | Decision | Recommended | Alternative | Affects |
 |---|---|---|---|---|
 | **D1** ✅ | How to build GPUI without full Xcode (**decided 2026-10-25: `runtime_shaders`; launch confirmed 2026-10-26**) | **Enable GPUI's `runtime_shaders` feature**: Metal shaders compile when the app starts, so no build-time `xcrun metal`. *Built 2026-10-25; launch confirmed on screen 2026-10-26.* | Install full Xcode (~10+ GB) and `xcode-select` it | M0 |
-| **D2** | How to draw terminal glyphs ([[30 - Tech Stack]] left it open: "`cosmic-text`/`glyphon` or GPUI text") | **GPUI's own text system** (`shape_line` + `paint`). This is what Zed's terminal does, and it needs no extra crate. | `cosmic-text` + `glyphon` | M1 |
-| **D3** | Channel from the PTY reader thread to the UI | **`futures` crate** (`futures::channel::mpsc`). It's what Zed uses, and it's already in `Cargo.lock` through GPUI, so there's no extra download. It's a new *direct* dependency, though. | `std::sync::mpsc` + a polling timer (no new dep, but wakes the CPU constantly) | M1 |
+| **D2** ✅ | (**decided 2026-10-26: GPUI's own text system**) How to draw terminal glyphs ([[30 - Tech Stack]] left it open: "`cosmic-text`/`glyphon` or GPUI text") | **GPUI's own text system** (`shape_line` + `paint`). This is what Zed's terminal does, and it needs no extra crate. | `cosmic-text` + `glyphon` | M1 |
+| **D3** ✅ | (**decided 2026-10-26: `futures` crate**) Channel from the PTY reader thread to the UI | **`futures` crate** (`futures::channel::mpsc`). It's what Zed uses, and it's already in `Cargo.lock` through GPUI, so there's no extra download. It's a new *direct* dependency, though. | `std::sync::mpsc` + a polling timer (no new dep, but wakes the CPU constantly) | M1 |
 | **D4** | A 4th status, **Idle** (grey hollow ring), for a fresh session that hasn't done anything yet | **Yes**. Without it, every new shell would show "Done" | Only working / waiting / done | M2, M4 |
 | **D5** | "Clicking a notification switches to that session" ([[44 - Milestone 4 - Notification Rings]]) **can't work with `osascript`**: clicking its banner opens Script Editor, not fuxx | **Move that one item to M11** (the real `.app` bundle can receive notification clicks) | Add `terminal-notifier` (new external tool, outside the plan), or drop the item | M4 |
 | **D6** | Keyboard shortcuts (the vault doesn't specify any) | **cmd-t** new session · **cmd-w** close session (kills its shell, no confirmation) · **cmd-1…9** jump · **cmd-{ / cmd-}** previous/next · **cmd-q** quit | Any other set | M0, M3 |
