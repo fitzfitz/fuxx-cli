@@ -29,4 +29,4 @@ you, with at-a-glance status across all sessions. Like cmux — but the terminal
 ## Status
 
 Pivoted from the shipped v1 CLI wrapper (see [[90-Archive-v1-CLI-Wrapper]]). Repo repurposed.
-Current milestone: [[40a - Milestone 0 - Scaffold and GPUI Window]].
+Current milestone: [[41 - Milestone 1 - One Terminal Pane]] (M0 ✅ done). See [[00 - Plan Tracker (Start Here)]].
