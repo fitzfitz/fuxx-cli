@@ -14,13 +14,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[40a - Milestone 0 - Scaffold and GPUI Window]] (the **new terminal app**). 🟨 Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** [[41 - Milestone 1 - One Terminal Pane]] (the **new terminal app**). ⬜ M0 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — Milestone 0 complete: GPUI window launches without Xcode
+- **Did:** Decided **D1 = `runtime_shaders`**. Created branch `m0-gpui-window` and committed the
+  pending vault/plans/mockups work (`9da5ab4`) and the crate scaffold (`71221cb`). Pinned `gpui` +
+  `gpui_platform` to rev `1d2a4b3f` with `font-kit` + `runtime_shaders` (`b8602af`; `Cargo.lock`
+  records the rev). `main.rs` now titles the window "fuxx", quits when the last window closes and on
+  cmd-q (`d0d92a0`). Build: 0 warnings from our code; `cargo test` ok (no tests yet). **You confirmed
+  on screen:** the window shows the placeholder text, and both the close button and cmd-q quit.
+- **Learned:** Full Xcode isn't needed: `runtime_shaders` compiles the Metal shaders at launch, so the
+  Command Line Tools are enough. GPUI ships no key bindings (cmd-q must be bound to an `actions!`
+  action), and on macOS it keeps the app alive with no windows unless `QuitMode::LastWindowClosed`.
+- **Blocked:** Decisions **D2** (how to draw glyphs) and **D3** (PTY → UI channel) before M1. The
+  branch isn't merged into `master` yet.
+- **Next task:** Decide D2 + D3, then [[M1 Plan - One Terminal Pane]] → Task 1.
 
 ### 2026-10-12 — Plan change: project groups added to M7
 - **Did:** On request, added **project groups** to the plan: [[11 - Features]] (B, `P1`) and

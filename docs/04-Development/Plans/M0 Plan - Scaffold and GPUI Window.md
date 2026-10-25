@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M0
-status: in-progress
-updated: 2026-10-12
+status: done
+updated: 2026-10-26
 ---
 
 # M0 Plan — Scaffold and GPUI Window
@@ -12,11 +12,11 @@ updated: 2026-10-12
 | At a glance | |
 |---|---|
 | **Milestone note** | [[40a - Milestone 0 - Scaffold and GPUI Window]] |
-| **Status** | 🟨 In progress: code is written in `src/main.rs` but has never built |
-| **Tasks done** | 0 / 4 |
-| **▶ Pick up here** | Decide **D1** in [[00 - Plan Tracker (Start Here)]] → **Task 1, Step 1** |
-| **Blocked on** | ❓ D1 (build path). Recommended: `runtime_shaders` |
-| **Needs your eyes** | 👀 Task 3 (does the window appear? does closing it quit?) |
+| **Status** | ✅ Done 2026-10-26 (commits `b8602af`, `d0d92a0` on `m0-gpui-window`) |
+| **Tasks done** | 4 / 4 |
+| **▶ Pick up here** | M0 complete → [[M1 Plan - One Terminal Pane]] |
+| **Blocked on** | Nothing. D1 = `runtime_shaders` |
+| **Needs your eyes** | ✅ Task 3 confirmed by you on 2026-10-26 |
 
 **Goal:** `cargo run` opens a GPUI window with a placeholder view, and closing it exits cleanly.
 This proves the GPUI toolchain before any terminal code exists.
@@ -31,6 +31,8 @@ opens one window, and renders a static `Fuxx` view.
 **Spec:** [[40a - Milestone 0 - Scaffold and GPUI Window]] · [[30 - Tech Stack]] · [[31 - API Fact Sheet (pinned rev)]]
 
 ## Where M0 actually stands (checked 2026-10-12)
+
+> Historical snapshot from before the build. M0 was completed 2026-10-26; see the Verification log.
 
 | Checklist item (from the milestone note) | State |
 |---|---|
@@ -80,9 +82,9 @@ Things no automated test covers here, which a person would trip over:
 
 ---
 
-### Task 0: Decide D1 (build path) — ❓
+### Task 0: Decide D1 (build path) — ✅
 
-- [ ] **Step 1:** Choose in [[00 - Plan Tracker (Start Here)]] → Open decisions → **D1**.
+- [x] **Step 1:** Choose in [[00 - Plan Tracker (Start Here)]] → Open decisions → **D1**.
   - **Recommended: `runtime_shaders`** → continue with Task 1 as written.
   - **Install Xcode instead:** install Xcode from the App Store, then run
     `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`,
@@ -90,20 +92,20 @@ Things no automated test covers here, which a person would trip over:
     one still fails, try `xcodebuild -downloadComponent MetalToolchain`. Then in Task 1, leave
     `runtime_shaders` **out** of the features list.
 
-### Task 1: Pin GPUI and enable the required features — ⬜
+### Task 1: Pin GPUI and enable the required features — ✅
 
 **Files:** Modify `Cargo.toml`
 
 **Interfaces:** Produces the dependency set every later milestone builds on: `gpui`, `gpui_platform` at the pinned rev.
 
-- [ ] **Step 1: Branch first** (AGENTS.md: never work directly on `master`)
+- [x] **Step 1: Branch first** (AGENTS.md: never work directly on `master`)
 
 ```bash
 git switch -c m0-gpui-window
 ```
 Expected: `Switched to a new branch 'm0-gpui-window'`. Your uncommitted M0 changes come along.
 
-- [ ] **Step 2: Replace `Cargo.toml` with exactly this**
+- [x] **Step 2: Replace `Cargo.toml` with exactly this**
 
 ```toml
 [package]
@@ -120,7 +122,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1d2a4b3f7f194184d
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d2a4b3f7f194184dccadfa7a091d16a06482752", features = ["font-kit", "runtime_shaders"] }
 ```
 
-- [ ] **Step 3: Build**
+- [x] **Step 3: Build**
 
 ```bash
 cargo build
@@ -129,21 +131,21 @@ Expected: ends with `Finished \`dev\` profile`. **The first build is slow**, bec
 a big dependency tree. A notice about `block v0.1.6, proc-macro-error2` "rejected by a future
 version of Rust" is upstream and expected. There should be **no** `unable to find utility "metal"`.
 
-- [ ] **Step 4: Confirm the lockfile pinned the rev**
+- [x] **Step 4: Confirm the lockfile pinned the rev**
 
 ```bash
 grep -A2 'name = "gpui"$' Cargo.lock
 ```
 Expected: `source = "git+https://github.com/zed-industries/zed?rev=1d2a4b3f7f194184dccadfa7a091d16a06482752#1d2a4b3f…"`
 
-- [ ] **Step 5: Commit** *(only when you say so)*
+- [x] **Step 5: Commit** *(only when you say so)*
 
 ```bash
 git add Cargo.toml Cargo.lock
 git commit -m "build(m0): pin GPUI rev 1d2a4b3f; enable font-kit + runtime_shaders"
 ```
 
-### Task 2: Quit on close, window title, cmd-q — ⬜
+### Task 2: Quit on close, window title, cmd-q — ✅
 
 **Files:** Modify `src/main.rs` (whole file)
 
@@ -154,7 +156,7 @@ M1 keeps both. Uses `application().with_quit_mode(QuitMode::LastWindowClosed)`.
 > maps a keystroke to it, and `cx.on_action` handles it app-wide. `QuitMode::LastWindowClosed`
 > overrides the macOS habit of keeping apps alive with no windows.
 
-- [ ] **Step 1: Replace `src/main.rs` with exactly this**
+- [x] **Step 1: Replace `src/main.rs` with exactly this**
 
 ```rust
 // fuxx — Milestone 0: prove the GPUI toolchain by opening a blank window.
@@ -208,62 +210,64 @@ fn main() {
 }
 ```
 
-- [ ] **Step 2: Build, checking for warnings**
+- [x] **Step 2: Build, checking for warnings**
 
 ```bash
 cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"
 ```
 Expected: **no output** (no warnings or errors from our code).
 
-- [ ] **Step 3: Tests still compile** (there are none yet; this guards the build for later)
+- [x] **Step 3: Tests still compile** (there are none yet; this guards the build for later)
 
 ```bash
 cargo test
 ```
 Expected: `test result: ok. 0 passed; 0 failed`
 
-- [ ] **Step 4: Commit** *(only when you say so)*
+- [x] **Step 4: Commit** *(only when you say so)*
 
 ```bash
 git add src/main.rs
 git commit -m "feat(m0): blank GPUI window that quits on close and on cmd-q"
 ```
 
-### Task 3: See it on screen — 👀 ⬜
+### Task 3: See it on screen — ✅
 
 The AI can't see windows. **You** run this and report what you see (a screenshot is ideal).
 
-- [ ] **Step 1:** `cargo run`
-- [ ] **Step 2:** A window titled **fuxx**, about 800×520, appears **centered**, dark grey, with
+- [x] **Step 1:** `cargo run`
+- [x] **Step 2:** A window titled **fuxx**, about 800×520, appears **centered**, dark grey, with
   the light text **"fuxx — M0: GPUI window is alive"** in the middle.
   *(With `runtime_shaders`, a brief pause before the first frame is normal.)*
-- [ ] **Step 3:** Click the red close button. The process **exits** and your terminal prompt returns.
-- [ ] **Step 4:** `cargo run` again, then press **cmd-q**. The process exits.
-- [ ] **Step 5:** Record the result in the **Verification log** below.
+- [x] **Step 3:** Click the red close button. The process **exits** and your terminal prompt returns.
+- [x] **Step 4:** `cargo run` again, then press **cmd-q**. The process exits.
+- [x] **Step 5:** Record the result in the **Verification log** below.
 
 If the window is blank or the app crashes on launch with `runtime_shaders`, stop. Run
 `superpowers:systematic-debugging` and capture the terminal output. The fallback is D1's
 alternative (install Xcode, drop the feature).
 
-### Task 4: Update the docs (the task isn't done without this) — ⬜
+### Task 4: Update the docs (the task isn't done without this) — ✅
 
-- [ ] [[40a - Milestone 0 - Scaffold and GPUI Window]]: tick the checklist, set **Status:: ✅ Done**,
+- [x] [[40a - Milestone 0 - Scaffold and GPUI Window]]: tick the checklist, set **Status:: ✅ Done**,
   replace the "Requires FULL Xcode" risk with the `runtime_shaders` finding (or note that Xcode was installed).
-- [ ] [[40 - Roadmap]]: M0 → ✅.
-- [ ] [[52 - Known Risks and Gotchas]]: amend the Xcode bullet (`runtime_shaders` avoids the
+- [x] [[40 - Roadmap]]: M0 → ✅.
+- [x] [[52 - Known Risks and Gotchas]]: amend the Xcode bullet (`runtime_shaders` avoids the
   build-time requirement; `font-kit` is required for text).
-- [ ] [[00 - Plan Tracker (Start Here)]]: M0 → ✅ 4/4; **Where we are** → M1, next action = M1 Task 1.
-- [ ] [[60 - Progress Log]]: new entry (Did / Learned / Blocked / Next task).
-- [ ] Commit docs *(when you say so)*: `git commit -m "docs(m0): mark Milestone 0 done"`
+- [x] [[00 - Plan Tracker (Start Here)]]: M0 → ✅ 4/4; **Where we are** → M1, next action = M1 Task 1.
+- [x] [[60 - Progress Log]]: new entry (Did / Learned / Blocked / Next task).
+- [x] Commit docs *(when you say so)*: `git commit -m "docs(m0): mark Milestone 0 done"`
 
 ## Verification log
 
 | Date | Check | Result | Evidence |
 |---|---|---|---|
 | 2026-10-12 | Plan code compiles (scratch crate, pinned rev, `font-kit` + `runtime_shaders`) | ✅ 0 warnings | AI build output |
-| | Window appears with visible text | | 👀 your screenshot |
-| | Close button quits | | 👀 |
-| | cmd-q quits | | 👀 |
+| 2026-10-25 | Repo build with pinned rev; `Cargo.lock` records `?rev=1d2a4b3f…` | ✅ 0 warnings from our code | AI build output |
+| 2026-10-25 | `cargo test` | ✅ ok, 0 tests (none in M0) | AI test output |
+| 2026-10-26 | Window appears with visible text | ✅ | 👀 confirmed by you |
+| 2026-10-26 | Close button quits | ✅ | 👀 confirmed by you |
+| 2026-10-26 | cmd-q quits | ✅ | 👀 confirmed by you |
 
 ## Known limitations (deliberately not in M0)
 
