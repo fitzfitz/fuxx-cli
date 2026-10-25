@@ -62,6 +62,7 @@ updated before anyone builds it.
 | **D4** | A 4th status, **Idle** (grey hollow ring), for a fresh session that hasn't done anything yet | **Yes**. Without it, every new shell would show "Done" | Only working / waiting / done | M2, M4 |
 | **D5** | "Clicking a notification switches to that session" ([[44 - Milestone 4 - Notification Rings]]) **can't work with `osascript`**: clicking its banner opens Script Editor, not fuxx | **Move that one item to M11** (the real `.app` bundle can receive notification clicks) | Add `terminal-notifier` (new external tool, outside the plan), or drop the item | M4 |
 | **D6** | Keyboard shortcuts (the vault doesn't specify any) | **cmd-t** new session · **cmd-w** close session (kills its shell, no confirmation) · **cmd-1…9** jump · **cmd-{ / cmd-}** previous/next · **cmd-q** quit | Any other set | M0, M3 |
+| **D7** | Which CPUs the shipped `.app` runs on. The vault names OSes (macOS first) but no CPU; today `cargo build` makes an Apple Silicon-only binary (`aarch64-apple-darwin`) | **Not chosen yet.** Decide when M11 gets its detailed plan | **Apple Silicon only** (what builds today) · or **universal** (Apple Silicon + Intel `x86_64`; whether GPUI works on Intel Macs at our pinned rev is unverified) | M11, M12 |
 
 ## How these plans were made (so you can trust the code)
 

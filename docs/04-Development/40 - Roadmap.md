@@ -43,7 +43,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 ## Phase 4 — Distribution
 
-- **M11 — Ship as a real `.app`:** bundle + sign/notarize → fixes the notification identity (vs "Script Editor").
+- **M11 — Ship as a real `.app`:** bundle + sign/notarize → fixes the notification identity (vs "Script Editor"). Open decision **D7**: which CPUs to ship for (Apple Silicon only vs universal) — see [[00 - Plan Tracker (Start Here)]].
 - **M12 — Homebrew cask** for install. (Later: Windows support.)
 
 ---
