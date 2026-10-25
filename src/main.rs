@@ -2,10 +2,12 @@
 // The real terminal (alacritty_terminal in a GPUI view) arrives in Milestone 1.
 
 use gpui::{
-    App, Bounds, Context, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*, px,
-    rgb, size,
+    App, Bounds, Context, KeyBinding, QuitMode, SharedString, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
+
+actions!(fuxx, [Quit]);
 
 struct Fuxx {
     text: SharedString,
@@ -26,16 +28,22 @@ impl Render for Fuxx {
 }
 
 fn main() {
-    application().run(|cx: &mut App| {
+    // macOS apps normally keep running with no windows; a terminal should quit instead.
+    application().with_quit_mode(QuitMode::LastWindowClosed).run(|cx: &mut App| {
+        // GPUI ships no default key bindings: cmd-q does nothing until we bind it.
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+
         let bounds = Bounds::centered(None, size(px(800.0), px(520.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions { title: Some("fuxx".into()), ..Default::default() }),
                 ..Default::default()
             },
             |_, cx| cx.new(|_| Fuxx { text: "fuxx".into() }),
         )
-        .unwrap();
+        .expect("failed to open the window");
         cx.activate(true);
     });
 }
