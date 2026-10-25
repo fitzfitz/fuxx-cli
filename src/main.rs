@@ -1,6 +1,7 @@
 mod colors;
 mod grid;
 mod keys;
+mod pty;
 mod terminal;
 
 // fuxx — Milestone 0: prove the GPUI toolchain by opening a blank window.
