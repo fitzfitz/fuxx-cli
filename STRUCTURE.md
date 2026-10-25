@@ -5,14 +5,14 @@ Where everything lives in this repo, and which milestone adds each source file. 
 
 To see what the finished app will look like, open [`mockups/index.html`](mockups/index.html) in a browser.
 
-## Today (M0 in progress)
+## Today (M0 done)
 
 ```
 fuxx-cli/
 ├── Cargo.toml            package manifest (crate name: fuxx); GPUI as a git dependency
 ├── Cargo.lock            exact dependency versions, incl. the resolved GPUI commit
 ├── src/
-│   └── main.rs           M0 placeholder; becomes the GPUI entry point
+│   └── main.rs           M0: GPUI entry point + placeholder window
 ├── docs/                 Obsidian vault: the source of truth for the project (see below)
 ├── mockups/              static HTML mockups of the finished app (open index.html)
 ├── README.md             project pitch

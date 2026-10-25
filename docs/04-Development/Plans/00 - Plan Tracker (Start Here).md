@@ -56,7 +56,7 @@ updated before anyone builds it.
 
 | ID | Decision | Recommended | Alternative | Affects |
 |---|---|---|---|---|
-| **D1** ✅ | How to build GPUI without full Xcode (**decided 2026-10-25: `runtime_shaders`; launch confirmed 2026-10-26**) | **Enable GPUI's `runtime_shaders` feature**: Metal shaders compile when the app starts, so no build-time `xcrun metal`. *Compiled and linked on this machine on 2026-10-12; not yet launched.* | Install full Xcode (~10+ GB) and `xcode-select` it | M0 |
+| **D1** ✅ | How to build GPUI without full Xcode (**decided 2026-10-25: `runtime_shaders`; launch confirmed 2026-10-26**) | **Enable GPUI's `runtime_shaders` feature**: Metal shaders compile when the app starts, so no build-time `xcrun metal`. *Built 2026-10-25; launch confirmed on screen 2026-10-26.* | Install full Xcode (~10+ GB) and `xcode-select` it | M0 |
 | **D2** | How to draw terminal glyphs ([[30 - Tech Stack]] left it open: "`cosmic-text`/`glyphon` or GPUI text") | **GPUI's own text system** (`shape_line` + `paint`). This is what Zed's terminal does, and it needs no extra crate. | `cosmic-text` + `glyphon` | M1 |
 | **D3** | Channel from the PTY reader thread to the UI | **`futures` crate** (`futures::channel::mpsc`). It's what Zed uses, and it's already in `Cargo.lock` through GPUI, so there's no extra download. It's a new *direct* dependency, though. | `std::sync::mpsc` + a polling timer (no new dep, but wakes the CPU constantly) | M1 |
 | **D4** | A 4th status, **Idle** (grey hollow ring), for a fresh session that hasn't done anything yet | **Yes**. Without it, every new shell would show "Done" | Only working / waiting / done | M2, M4 |
