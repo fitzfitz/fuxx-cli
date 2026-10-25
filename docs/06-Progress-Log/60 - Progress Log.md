@@ -32,7 +32,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next task:** [[M1 Plan - One Terminal Pane]] → Task 1.
 
 ### 2026-10-26 — Milestone 0 complete: GPUI window launches without Xcode
-- **Did:** Decided **D1 = `runtime_shaders`**. Created branch `m0-gpui-window` and committed the
+- **Did:** Decided **D1 = `runtime_shaders`** (2026-10-25). Created branch `m0-gpui-window` and committed the
   pending vault/plans/mockups work (`9da5ab4`) and the crate scaffold (`71221cb`). Pinned `gpui` +
   `gpui_platform` to rev `1d2a4b3f` with `font-kit` + `runtime_shaders` (`b8602af`; `Cargo.lock`
   records the rev). `main.rs` now titles the window "fuxx", quits when the last window closes and on
