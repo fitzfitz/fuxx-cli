@@ -22,6 +22,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-26 — Open decision D7 added (target CPUs for M11)
+- **Did:** On request, added **D7** to [[00 - Plan Tracker (Start Here)]] and the M11 line of
+  [[40 - Roadmap]]: which CPUs the shipped `.app` runs on. Options: Apple Silicon only (what builds
+  today, `aarch64-apple-darwin`) or universal (Apple Silicon + Intel). Not chosen yet; decide when
+  M11 gets its detailed plan. No code changed.
+- **Learned:** The vault named target OSes but never CPU architecture; GPUI on Intel Macs at our
+  pinned rev is unverified.
+- **Blocked:** Nothing.
+- **Next task:** [[M1 Plan - One Terminal Pane]] → Task 1.
+
 ### 2026-10-26 — M0 merged; D2 + D3 decided
 - **Did:** Merged `m0-gpui-window` into `master` locally (fast-forward; `cargo test` ok on the merged
   result; not pushed). Decided **D2 = GPUI's own text system** and **D3 = `futures` crate**
