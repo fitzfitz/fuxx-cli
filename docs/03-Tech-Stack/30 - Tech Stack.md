@@ -32,6 +32,11 @@ Spawns the shell/agent per session; bidirectional bytes. **Reused directly from 
 Glyph rendering in GPUI — likely `cosmic-text` (+ `glyphon`) for shaping/rasterization, or GPUI's own
 text primitives. To be pinned down in [[41 - Milestone 1 - One Terminal Pane]].
 
+**Proposed (decision D2, pending your OK):** GPUI's own text system (`shape_line` + `paint`), the
+same approach as Zed's terminal, with no extra crate. The M1 plan is written this way. Also proposed
+(D3): `futures` for the reader-thread → UI channel. Exact APIs for all of this:
+[[31 - API Fact Sheet (pinned rev)]]. Decisions: [[00 - Plan Tracker (Start Here)]].
+
 ## Notifications
 
 `osascript` shell-out on macOS (v1 finding: `notify-rust` silently fails on modern macOS — see memory

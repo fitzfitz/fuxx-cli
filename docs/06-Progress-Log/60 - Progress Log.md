@@ -14,13 +14,57 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[40a - Milestone 0 - Scaffold and GPUI Window]] (the **new terminal app**).
+- **Current milestone:** [[40a - Milestone 0 - Scaffold and GPUI Window]] (the **new terminal app**). 🟨 Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-12 — Plan change: project groups added to M7
+- **Did:** On request, added **project groups** to the plan: [[11 - Features]] (B, `P1`) and
+  [[40 - Roadmap]] (M7, alongside presets and restore, which already deal with working folders).
+  Scope kept small: you pick the project when creating a session (no tracking of `cd`), each group
+  header shows its most urgent ring, collapse/expand, and "new session in this project". Not
+  included: per-project settings, nested groups, auto-detection. Updated mockup screen 2 (grouped
+  sidebar, legend #13), the mockup catalog and `STRUCTURE.md`. M0–M4 plans unchanged.
+- **Learned:** A rolled-up ring per project keeps the payoff even when a project is collapsed.
+- **Blocked:** Still waiting on decisions **D1–D6**.
+- **Next task:** Decide **D1**, then [[M0 Plan - Scaffold and GPUI Window]] → Task 1.
+
+### 2026-10-12 — Repo layout doc + HTML mockups of the finished app
+- **Did:** Added `STRUCTURE.md` at the repo root: today's tree, the full `src/` tree after M4 with the
+  milestone that adds each file (names taken from the M0–M4 plans' Files tables), a data-flow sketch,
+  and what M5–M12 add (no file names, since those aren't planned yet). Added `mockups/`: four static
+  HTML pages (overview catalog + M4 screen + Phase 2 screen + Phase 3–4 screen) covering every
+  feature in [[11 - Features]], each tagged with priority and milestone. The M4 screen uses the
+  plans' palette, sidebar size, shortcuts and notification text; its buttons simulate the
+  focus-aware notification rule and Waiting → Idle on typing. Linked from README and [[00 - Home]].
+  Checked in Chrome: renders, no console errors, interactions behave. No code or `Cargo` changes.
+- **Learned:** Two catalog items have no milestone yet (scrollback search, notification history),
+  and "tabs vs sidebar-only" is still open. The mockups mark them that way instead of guessing.
+  The socket env-var name and the Homebrew cask name are marked illustrative until M9 / M12.
+- **Blocked:** Still waiting on decisions **D1–D6**.
+- **Next task:** Decide **D1**, then [[M0 Plan - Scaffold and GPUI Window]] → Task 1.
+
+### 2026-10-12 — Detailed, compile-verified plans for M0–M4 + plan tracker
+- **Did:** Wrote a step-by-step implementation plan for every Phase 0–1 milestone
+  (`04-Development/Plans/`: M0–M4), each with a status indicator per task, checkbox steps, a
+  **▶ Pick up here** pointer, review focus, a manual 👀 checklist and a verification log. Added
+  [[00 - Plan Tracker (Start Here)]] (where we are, next action, open decisions D1–D6) and
+  [[31 - API Fact Sheet (pinned rev)]]. All plan code was compiled and tested stage by stage in a
+  scratch crate against the pinned GPUI rev: 0 warnings; 21 / 38 / 44 / 50 unit tests passing for
+  M1 / M2 / M3 / M4. Linked the plans from the roadmap, milestone notes, Home and the startup checklist.
+  No repo code changed.
+- **Learned:** M0 is **not** stuck on Xcode: GPUI's `runtime_shaders` feature compiles Metal shaders
+  at startup (builds here with only CLT; launch unverified), and `font-kit` is required or no text
+  renders. At this GPUI rev the APIs differ from most tutorials (`gpui_platform::application()`,
+  6-arg `ShapedLine::paint`, `resolve_font`). Terminal query replies (`PtyWrite`) must be written back,
+  or vim and Claude Code hang. Synchronized updates need a timeout flush. `osascript` notifications
+  can't report clicks, so "click → jump to session" can't be done in M4 (D5).
+- **Blocked:** Waiting on decisions **D1–D6** (recommended options are already written into the plans).
+- **Next task:** Decide **D1**, then [[M0 Plan - Scaffold and GPUI Window]] → Task 1.
 
 ### 2026-07-17 — Pivot to terminal app: repo repurposed, vault re-founded
 - **Did:** After shipping v1, pivoted to a new product — a native GPU terminal for running AI agents (cmux-like), in **Rust** (GPUI app shell + `alacritty_terminal` VT core + `portable-pty`, reused from v1). Chose the pure-Rust `alacritty_terminal` renderer over `gpui-ghostty` to avoid the Zig toolchain. **Repurposed this repo.** Archived the v1 wrapper docs → `docs/90-Archive-v1-CLI-Wrapper/`; wrote a fresh forward vault (Home / What Is / Scope [reverses v1] / Architecture / Tech Stack / Roadmap M0–M4 / M0 note); rewrote `AGENTS.md` for the new project.

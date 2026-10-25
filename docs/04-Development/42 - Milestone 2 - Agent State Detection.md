@@ -6,6 +6,7 @@ status: not-started
 # 42 - Milestone 2 - Agent State Detection
 
 **Status:: ⬜ Not started**
+**Plan:** [[M2 Plan - Agent State Detection]] (step-by-step, compile-verified, with status per task)
 
 ## Goal
 

@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fuxx — Full Vision (Phase 3–4)</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .window.full { min-width: 1080px; }
+  .window.full .win-body { height: 600px; }
+  .install {
+    max-width: 1180px; margin: 0 auto 4px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+    font-size: 12.5px; color: var(--page-muted);
+  }
+  .install .cmd { font: 13px var(--mono); color: #e6e6ea; background: #15151a; border: 1px solid var(--page-line); border-radius: 7px; padding: 6px 12px; }
+  .install .cmd span { color: #6a9fb5; }
+  .install .plat { display: inline-flex; gap: 6px; }
+  .install .plat b { font-weight: 600; font-size: 11.5px; color: #c9c9cf; border: 1px solid #33333a; border-radius: 5px; padding: 1px 7px; }
+  .install .plat b.later { color: #7a7a84; border-style: dashed; font-weight: 500; }
+  .install .mk { position: static; display: inline-block; }
+  .row .where { margin-left: auto; font-size: 10.5px; color: #5c5c5c; }
+  .pane .term { font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="1-first-usable-m4.html">1 · First usable (M4)</a>
+    <a href="2-daily-driver.html">2 · Daily driver (Phase 2)</a>
+    <a href="3-full-vision.html" class="here">3 · Full vision (Phase 3–4)</a>
+  </nav>
+  <h1>3 · The full vision (Phase 3–4: M8–M12)</h1>
+  <p>Everything in the catalog, shipped: split panes, a scripting socket per session, the cmux-parity
+  extras (in-app browser, SSH workspaces, a daemon that keeps sessions alive), and a real signed
+  <code>.app</code> installed with Homebrew, whose notifications say “fuxx” and jump to the session when clicked.</p>
+  <span class="disclaimer">Illustrative mockup, not a screenshot. Each Phase 3 item is “its own project” per the roadmap; names marked illustrative get decided when that milestone is planned.</span>
+  <div class="toolbar">
+    <button class="btn" id="toggle-marks">Hide feature markers</button>
+    <button class="btn" data-sim="4:done">Simulate: training run on build-box finishes</button>
+    <button class="btn" data-sim="1:done">Simulate: the session you're viewing finishes</button>
+  </div>
+</header>
+
+<div class="install">
+  <span class="cmd"><span>$</span> brew install --cask fuxx</span>
+  <span class="mk" data-n="9"></span>
+  <span>A signed, notarized <code>fuxx.app</code></span>
+  <span class="plat"><b>macOS</b><b>Linux-capable</b><b class="later">Windows later</b></span>
+  <span class="mk" data-n="10"></span>
+</div>
+
+<div class="stage">
+  <div class="window full">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="title">fuxx — api · auth refactor</div>
+    </div>
+    <div class="win-body">
+
+      <aside class="sidebar">
+        <div class="side-group">This Mac</div>
+        <div class="row active" data-s="1"><span class="ring working"></span><span class="label">api · auth refactor</span></div>
+        <div class="row" data-s="2"><span class="ring done"></span><span class="label">web · checkout</span></div>
+        <div class="row" data-s="3"><span class="ring idle"></span><span class="label">automation</span></div>
+
+        <div class="side-group has-mk">SSH · build-box <span class="tag">ssh</span><span class="mk" data-n="5" style="top:6px"></span></div>
+        <div class="row" data-s="4"><span class="ring working"></span><span class="label">gpu · training run</span></div>
+        <div class="row" data-s="5"><span class="ring waiting"></span><span class="label">deploy</span></div>
+
+        <div class="side-group has-mk">Daemon <span class="tag">keeps running</span><span class="mk" data-n="6" style="top:6px"></span></div>
+        <div class="row" data-s="6"><span class="ring working"></span><span class="label">nightly · data import</span><span class="where">2 h</span></div>
+
+        <div class="side-foot">The daemon kept “nightly · data import” running while fuxx was closed; reopening re-attached it.</div>
+      </aside>
+
+      <section class="content has-mk">
+        <span class="mk b" data-n="1" style="right:auto;left:50%"></span>
+        <div class="splits">
+
+          <div class="pane tall focused">
+            <div class="pane-head"><span class="ring working"></span>api · auth refactor <span style="margin-left:auto">claude</span></div>
+<div class="term"><span class="c8">&gt;</span> Wire the checkout page to the new session API,
+  then open it so I can check it
+
+<span class="c2">●</span> Update <span class="b">web/src/checkout/session.ts</span>
+  <span class="c8">⎿</span>  <span class="c2">+31</span> <span class="c1">-12</span>
+<span class="c2">●</span> Bash <span class="c8">npm run dev</span>
+  <span class="c8">⎿</span>  ready on http://localhost:3000
+<span class="c2">●</span> Open <span class="b">http://localhost:3000/checkout</span>
+  <span class="c8">⎿</span>  opened in the browser pane →
+
+<span class="c3">✶ Checking the page…</span> <span class="c8">(18s)</span>
+
+<span class="c8">──────────────────────────────────────</span>
+<span class="c8">&gt;</span> <span class="cursor"> </span>
+</div>
+          </div>
+
+          <div class="pane has-mk">
+            <span class="mk" data-n="4" style="top:120px;right:10px"></span>
+            <div class="pane-head">◎ browser · localhost:3000</div>
+            <div class="browser">
+              <div class="urlbar"><span>‹ ›</span><span class="addr">http://localhost:3000/checkout</span><span>↻</span></div>
+              <div class="site">
+                <h3>Checkout</h3>
+                <div style="display:flex;gap:16px">
+                  <div style="flex:1"><div class="bar" style="width:80%"></div><div class="bar" style="width:62%"></div><div class="bar" style="width:70%"></div></div>
+                  <div style="width:120px;border:1px solid #e3e3e3;border-radius:8px;padding:9px;font-size:12px">Total <b style="float:right">$48.00</b><div style="margin-top:10px;background:#1f6feb;color:#fff;text-align:center;border-radius:5px;padding:4px 0">Pay</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pane has-mk">
+            <span class="mk" data-n="2" style="top:30px"></span>
+            <span class="mk b" data-n="3"></span>
+            <div class="pane-head"><span class="ring idle"></span>automation</div>
+<div class="term"><span class="c4">~/scripts</span> <span class="c5">❯</span> echo $FUXX_SOCKET
+/tmp/fuxx-501/session-3.sock
+<span class="c4">~/scripts</span> <span class="c5">❯</span> echo '{"cmd":"list"}' | nc -U $FUXX_SOCKET
+[{"id":1,"status":"working"},{"id":5,"status":"waiting"},
+ {"id":6,"status":"working"}, …]
+<span class="c4">~/scripts</span> <span class="c5">❯</span> ./fan-out.sh web billing docs
+<span class="c2">started</span> claude in ~/code/web     <span class="c8">(id 7)</span>
+<span class="c2">started</span> claude in ~/code/billing <span class="c8">(id 8)</span>
+<span class="c2">started</span> claude in ~/code/docs    <span class="c8">(id 9)</span>
+<span class="c4">~/scripts</span> <span class="c5">❯</span> <span class="cursor"> </span>
+</div>
+          </div>
+
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="banner clickable" id="banner">
+    <div class="app-icon fuxx">fx</div>
+    <div style="flex:1;min-width:0">
+      <div class="from"><span>FUXX</span><span>now</span></div>
+      <div class="ttl">fuxx — deploy</div>
+      <div class="msg">Needs your input</div>
+    </div>
+    <span class="mk b" data-n="7" style="right:34px"></span>
+    <span class="mk b" data-n="8" style="right:8px"></span>
+  </div>
+  <div class="toast gone" id="toast"></div>
+</div>
+
+<section class="legend">
+  <h2>What you're looking at</h2>
+  <ol>
+    <li data-n="1"><strong>Split panes</strong><span class="tags"><span class="pill p2">P2</span><span class="pill ms">M8</span></span>
+      <span class="desc">Several sessions visible at once. The focused pane has the outline; each pane keeps its own status ring.</span></li>
+    <li data-n="2"><strong>Socket API per session</strong><span class="tags"><span class="pill p2">P2</span><span class="pill ms">M9</span></span>
+      <span class="desc">Each session gets a socket path in its environment, like cmux's <code>CMUX_SOCKET_PATH</code>. <code>$FUXX_SOCKET</code> and the JSON shape are illustrative; the real names get decided in M9.</span></li>
+    <li data-n="3"><strong>Scriptable automation</strong><span class="tags"><span class="pill p3">P3</span><span class="pill ms">M9</span></span>
+      <span class="desc">Scripts drive sessions and layout through that socket, e.g. fan one agent out across three repos.</span></li>
+    <li data-n="4"><strong>In-app browser</strong><span class="tags"><span class="pill p3">P3</span><span class="pill ms">M10</span></span>
+      <span class="desc">A browser pane next to your agents, for checking what they built without leaving fuxx.</span></li>
+    <li data-n="5"><strong>SSH workspaces</strong><span class="tags"><span class="pill p3">P3</span><span class="pill ms">M10</span></span>
+      <span class="desc">Sessions on a remote machine, grouped in the sidebar, with the same rings and notifications as local ones.</span></li>
+    <li data-n="6"><strong>Remote / tmux-compatible daemon</strong><span class="tags"><span class="pill p3">P3</span><span class="pill ms">M10</span></span>
+      <span class="desc">Sessions live in a background daemon, so they keep running after you quit and re-attach when you reopen.</span></li>
+    <li data-n="7"><strong>A real <code>.app</code>, so notifications say “fuxx”</strong><span class="tags"><span class="pill p2">P2</span><span class="pill ms">M11</span></span>
+      <span class="desc">Bundled, signed and notarized. Banners show fuxx's name and icon instead of “Script Editor”.</span></li>
+    <li data-n="8"><strong>Jump to a session from a notification</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M11 (D5)</span></span>
+      <span class="desc">Click the banner and fuxx switches to that session. Needs the <code>.app</code>, which is why decision D5 moves it here from M4. Try clicking it.</span></li>
+    <li data-n="9"><strong>Install with Homebrew</strong><span class="tags"><span class="pill p2">P2</span><span class="pill ms">M12</span></span>
+      <span class="desc"><code>brew install --cask fuxx</code>. The cask name is illustrative until M12.</span></li>
+    <li data-n="10"><strong>Platforms</strong><span class="tags"><span class="pill p1">P1</span><span class="pill p3">P3</span></span>
+      <span class="desc">macOS first and Linux-capable through the Rust stack (P1). Windows support comes later (P3).</span></li>
+  </ol>
+</section>
+
+<section class="note">
+  <p>Everything from pages 1 and 2 is still here (rings, focus-aware notifications, scrollback, presets…); this page highlights only what Phase 3–4 add.</p>
+  <p>Try it: click the notification to jump to “deploy”, or use the Simulate buttons.</p>
+</section>
+
+<script src="mock.js"></script>
+</body>
+</html>

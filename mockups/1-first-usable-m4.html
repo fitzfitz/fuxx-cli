@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fuxx — First Usable (M4)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="page-head">
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="1-first-usable-m4.html" class="here">1 · First usable (M4)</a>
+    <a href="2-daily-driver.html">2 · Daily driver (Phase 2)</a>
+    <a href="3-full-vision.html">3 · Full vision (Phase 3–4)</a>
+  </nav>
+  <h1>1 · The first usable version (end of M4)</h1>
+  <p>Everything the written M0–M4 plans build: a GPU terminal, many sessions in a sidebar, a live
+  status ring per session and a desktop notification when a background session finishes or needs you.
+  Nothing on this page goes beyond those plans.</p>
+  <span class="disclaimer">Illustrative mockup, not a screenshot. Colors, sizes and text come from the plans; the real look depends on GPUI rendering.</span>
+  <div class="toolbar">
+    <button class="btn" id="toggle-marks">Hide feature markers</button>
+    <button class="btn" data-sim="4:waiting">Simulate: background “Shell 4” asks (y/n)</button>
+    <button class="btn" data-sim="1:done">Simulate: the session you're viewing finishes</button>
+    <button class="btn" data-sim="2:working">Simulate: “migrate invoices” resumes</button>
+  </div>
+</header>
+
+<div class="stage">
+  <div class="window">
+    <div class="titlebar has-mk">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="title">fuxx — Refactor auth middleware</div>
+      <span class="mk" data-n="5" style="right:auto;left:calc(50% + 140px);top:7px"></span>
+    </div>
+    <div class="win-body">
+
+      <aside class="sidebar has-mk">
+        <span class="mk b" data-n="3"></span>
+        <div class="has-mk" style="display:flex;flex-direction:column;gap:4px;padding-top:26px">
+          <span class="mk" data-n="6" style="top:2px"></span>
+          <div class="row active" data-s="1"><span class="ring working" title="Working"></span><span class="num">1</span><span class="label">Refactor auth middleware</span></div>
+          <div class="row" data-s="2"><span class="ring waiting" title="Waiting"></span><span class="num">2</span><span class="label">migrate invoices</span><span class="mk" data-n="7" style="top:2px"></span></div>
+          <div class="row" data-s="3"><span class="ring done" title="Done"></span><span class="num">3</span><span class="label">cargo test</span></div>
+          <div class="row" data-s="4"><span class="ring idle" title="Idle"></span><span class="num">4</span><span class="label">Shell 4</span><span class="mk" data-n="4" style="top:2px"></span></div>
+        </div>
+      </aside>
+
+      <section class="content has-mk">
+        <span class="mk l b" data-n="1" style="left:10px;bottom:30px"></span>
+        <span class="mk b" data-n="2" style="right:10px"></span>
+
+<div class="term" data-s="1"><span class="c4">~/code/api</span> <span class="c5">❯</span> claude
+<span class="c11">✻</span> <span class="b">Claude Code</span> <span class="c8">· cwd: ~/code/api</span>
+
+<span class="c8">&gt;</span> Refactor the auth middleware to use the new session store
+
+<span class="c2">●</span> Read <span class="b">src/middleware/auth.ts</span> <span class="c8">(212 lines)</span>
+<span class="c2">●</span> Read <span class="b">src/session/store.ts</span> <span class="c8">(96 lines)</span>
+<span class="c2">●</span> Update <span class="b">src/middleware/auth.ts</span>
+  <span class="c8">⎿</span>  <span class="c2">+14</span> <span class="c1">-9</span>
+<span class="c2">●</span> Bash <span class="c8">npm test -- auth</span>
+  <span class="c8">⎿</span>  <span class="c2">✓</span> 23 passed
+
+<span class="c3">✶ Refactoring…</span> <span class="c8">(41s · esc to interrupt)</span>
+
+<span class="c8">────────────────────────────────────────────────────────────────</span>
+<span class="c8">&gt;</span> <span class="cursor"> </span>
+</div>
+
+<div class="term" data-s="2" hidden><span class="c4">~/code/billing</span> <span class="c5">❯</span> opencode
+<span class="b c14">opencode</span> <span class="c8">· billing</span>
+
+<span class="c8">user</span>   add an index for invoice lookups by customer and date
+<span class="c8">agent</span>  I'll write a migration and run it against the dev database.
+
+  <span class="c2">created</span> migrations/0042_add_invoice_index.sql
+  <span class="c8">│</span> CREATE INDEX invoices_customer_date
+  <span class="c8">│</span>   ON invoices (customer_id, issued_at DESC);
+
+<span class="c11 b">Apply migration 0042 to dev database? (y/n)</span> <span class="cursor"> </span>
+</div>
+
+<div class="term" data-s="3" hidden><span class="c4">~/code/fuxx</span> <span class="c5">❯</span> cargo test
+<span class="c2 b">   Compiling</span> fuxx v0.1.0 (/Users/you/code/fuxx)
+<span class="c2 b">    Finished</span> `test` profile [unoptimized + debuginfo] in 4.21s
+<span class="c2 b">     Running</span> unittests src/main.rs
+
+running 50 tests
+test keys::tests::enter_backspace_tab_escape ... <span class="c2">ok</span>
+test grid::tests::bg_rects_merge_adjacent_same_color ... <span class="c2">ok</span>
+test status::tests::quiet_session_with_a_question_is_waiting ... <span class="c2">ok</span>
+test session_list::tests::next_and_prev_wrap ... <span class="c2">ok</span>
+test notifier::tests::never_nags_about_the_session_you_are_looking_at ... <span class="c2">ok</span>
+<span class="c8">…</span>
+
+test result: <span class="c2">ok</span>. 50 passed; 0 failed; 0 ignored
+
+<span class="c4">~/code/fuxx</span> <span class="c5">❯</span> <span class="cursor"> </span>
+</div>
+
+<div class="term" data-s="4" hidden><span class="c4">~</span> <span class="c5">❯</span> ls -G
+<span class="c4 b">code</span>      <span class="c4 b">Desktop</span>   <span class="c4 b">Documents</span> <span class="c4 b">Downloads</span> notes.md  <span class="c2 b">run.sh</span>
+<span class="c4">~</span> <span class="c5">❯</span> ./truecolor.sh
+<span style="background:linear-gradient(90deg,#ff3b30,#ff9500,#ffcc00,#34c759,#5ac8fa,#007aff,#af52de)">                                                                </span>
+<span class="b">bold</span> <span class="dim">dim</span> <span class="it">italic</span> <span class="u">underline</span> <span class="inv">inverse</span> <span class="c1">red</span> <span class="c2">green</span> <span class="c3">yellow</span> <span class="c4">blue</span>
+<span class="c4">~</span> <span class="c5">❯</span> <span class="cursor"> </span>
+</div>
+
+      </section>
+    </div>
+  </div>
+
+  <div class="banner" id="banner">
+    <div class="app-icon" title="osascript banners are attributed to Script Editor until M11">✎</div>
+    <div style="flex:1;min-width:0">
+      <div class="from"><span>SCRIPT EDITOR</span><span>now</span></div>
+      <div class="ttl">fuxx — migrate invoices</div>
+      <div class="msg">Needs your input</div>
+    </div>
+    <span class="mk b" data-n="8" style="right:8px"></span>
+  </div>
+  <div class="toast gone" id="toast"></div>
+</div>
+
+<section class="legend">
+  <h2>What you're looking at</h2>
+  <ol>
+    <li data-n="1"><strong>A real GPU terminal</strong><span class="tags"><span class="pill p0">P0</span><span class="pill ms">M1</span></span>
+      <span class="desc">Full VT screen from <code>alacritty_terminal</code>, drawn with GPUI's text system: 16 colors, truecolor, bold, dim, italic, underline, inverse and a block cursor. Menlo 14.</span></li>
+    <li data-n="2"><strong>Runs any program, keyboard, resize</strong><span class="tags"><span class="pill p0">P0</span><span class="pill ms">M1</span></span>
+      <span class="desc">Your login shell on a PTY (<code>portable-pty</code>). Keys become terminal bytes; resizing the window resizes the PTY. vim, htop and agents work.</span></li>
+    <li data-n="3"><strong>Session sidebar and quick-switch</strong><span class="tags"><span class="pill p0">P0</span><span class="pill ms">M3</span></span>
+      <span class="desc">220 px list, one row per session. <code>⌘T</code> new · <code>⌘W</code> close · <code>⌘1…9</code> jump · <code>⌘{</code> / <code>⌘}</code> previous / next. Click a row to switch.</span></li>
+    <li data-n="4"><strong>Labels come from the program</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M3</span></span>
+      <span class="desc">A row shows the title the program sets (OSC 0/2), else “Shell N”. Renaming by hand comes in M7.</span></li>
+    <li data-n="5"><strong>Window title follows the active session</strong><span class="tags"><span class="pill ms">M3</span></span>
+      <span class="desc">“fuxx — &lt;label&gt;”. Closing the last session closes the window.</span></li>
+    <li data-n="6"><strong>Status ring per session</strong><span class="tags"><span class="pill p0">P0</span><span class="pill ms">M4</span></span>
+      <span class="desc">Hollow grey = Idle · amber = Working · red = Waiting (needs you) · green = Done. Updates live, for every session at once.</span></li>
+    <li data-n="7"><strong>Agent-state detection</strong><span class="tags"><span class="pill p0">P0</span><span class="pill ms">M2</span></span>
+      <span class="desc">Output means Working; a prompt like “(y/n)” in the last lines means Waiting; quiet for 3 s means Done; OSC 9 counts too. Typing into a Waiting or Done session sets it back to Idle (try pressing a key).</span></li>
+    <li data-n="8"><strong>Background notifications, focus-aware</strong><span class="tags"><span class="pill p1">P1</span><span class="pill ms">M4</span></span>
+      <span class="desc">Sent through <code>osascript</code> when a session you're <em>not</em> looking at becomes Done or Waiting. Never for the active session while the window is focused. Shows as “Script Editor” until M11.</span></li>
+  </ol>
+</section>
+
+<section class="note">
+  <p><strong>Not in M4 on purpose:</strong> scrollback, selection and copy, mouse, clickable links, font settings, renaming, presets (all Phase 2: see page 2). Clicking a notification can't jump to the session yet, because <code>osascript</code> can't report clicks (decision D5 moves it to M11).</p>
+  <p>Try it: click sessions in the sidebar, use the Simulate buttons, press a key while a red or green session is active.</p>
+</section>
+
+<script>
+  // The banner starts visible, as if "migrate invoices" just asked a question, then slides away.
+  setTimeout(() => document.getElementById("banner").classList.add("gone"), 7000);
+</script>
+<script src="mock.js"></script>
+</body>
+</html>

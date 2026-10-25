@@ -6,6 +6,7 @@ status: not-started
 # 43 - Milestone 3 - Many Sessions
 
 **Status:: ⬜ Not started**
+**Plan:** [[M3 Plan - Many Sessions]] (step-by-step, compile-verified, with status per task)
 
 ## Goal
 
