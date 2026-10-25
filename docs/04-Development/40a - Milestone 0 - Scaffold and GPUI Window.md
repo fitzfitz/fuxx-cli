@@ -18,7 +18,7 @@ runs before adding the terminal core.
 - [x] Decide the crate layout in this (repurposed) repo — keep v1 source or start the app crate fresh
       (v1 code is preserved in git history regardless)
 - [x] Add GPUI as a **git dependency pinned to a Zed commit** (verify a known-good rev live)
-- [x] Minimal app: `Application::new().run(...)` → `open_window()` → a root view showing a placeholder
+- [x] Minimal app: `gpui_platform::application().run(...)` → `open_window()` → a root view showing a placeholder
 - [x] `cargo run` opens a window (you confirm visually — GUI can't be verified by the AI)
 
 ## Success check
