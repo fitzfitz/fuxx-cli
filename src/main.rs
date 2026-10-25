@@ -1,5 +1,7 @@
 mod colors;
+mod grid;
 mod keys;
+mod terminal;
 
 // fuxx — Milestone 0: prove the GPUI toolchain by opening a blank window.
 // The real terminal (alacritty_terminal in a GPUI view) arrives in Milestone 1.
