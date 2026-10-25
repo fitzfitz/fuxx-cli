@@ -10,3 +10,9 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1d2a4b3f7f194184d
 # font-kit: without it GPUI renders no text on macOS.
 # runtime_shaders: compile Metal shaders at startup instead of build time, so full Xcode is not needed.
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d2a4b3f7f194184dccadfa7a091d16a06482752", features = ["font-kit", "runtime_shaders"] }
+# Terminal core: screen grid + VT/escape parser (the engine behind Alacritty and Zed's terminal).
+alacritty_terminal = "0.26.0"
+# Pseudo-terminal: spawns the shell and pipes bytes (reused from v1).
+portable-pty = "0.9.0"
+# Channel from the PTY reader thread to the UI (decision D3). Already in Cargo.lock via GPUI.
+futures = "0.3"
