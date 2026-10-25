@@ -1,8 +1,10 @@
 [package]
-name = "fuxx-cli"
+name = "fuxx"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crossterm = "0.29.0"
-portable-pty = "0.9.0"
+# GPUI (Zed's GPU UI framework) — pre-1.0, consumed as a git dep. Pin the resolved rev
+# after the first successful build (from Cargo.lock). See docs/03-Tech-Stack/30.
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed" }
