@@ -67,7 +67,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next task:** Decide **D1**, then [[M0 Plan - Scaffold and GPUI Window]] → Task 1.
 
 ### 2026-10-12 — Repo layout doc + HTML mockups of the finished app
-- **Did:** Added `STRUCTURE.md` at the repo root: today's tree, the full `src/` tree after M4 with the
+- **Did:** On request, added `STRUCTURE.md` at the repo root: today's tree, the full `src/` tree after M4 with the
   milestone that adds each file (names taken from the M0–M4 plans' Files tables), a data-flow sketch,
   and what M5–M12 add (no file names, since those aren't planned yet). Added `mockups/`: four static
   HTML pages (overview catalog + M4 screen + Phase 2 screen + Phase 3–4 screen) covering every
