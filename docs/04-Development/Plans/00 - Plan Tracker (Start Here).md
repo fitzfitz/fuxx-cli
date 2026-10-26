@@ -20,7 +20,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M2 — Agent State Detection** |
-| **Status** | ⬜ Not started. M1 ✅ done 2026-10-26 (a usable shell in the window, all 12 on-screen checks confirmed by you; on branch `m1-terminal-pane`, not merged). |
+| **Status** | ⬜ Not started. M1 ✅ done 2026-10-26 (a usable shell in the window, all 12 on-screen checks confirmed by you; merged into `master` locally, not pushed). |
 | **▶ Next action** | Do [[M2 Plan - Agent State Detection]] → Task 1. |
 | **Blocked on** | Nothing. D4 (Idle status, M2) is still open; the plan uses the recommended option unless you say otherwise. |
 | **Last updated** | 2026-10-26 |
