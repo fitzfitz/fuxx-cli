@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M4
-status: not-started
-updated: 2026-10-12
+status: in-progress
+updated: 2026-10-26
 ---
 
 # M4 Plan — Notification Rings (first genuinely useful version)
@@ -12,10 +12,10 @@ updated: 2026-10-12
 | At a glance | |
 |---|---|
 | **Milestone note** | [[44 - Milestone 4 - Notification Rings]] |
-| **Status** | ⬜ Not started (waits for M3 ✅) |
+| **Status** | 🟨 In progress (branch `m4-notification-rings`) |
 | **Tasks done** | 0 / 4 |
-| **▶ Pick up here** | **Task 0** (decision D5), then **Task 1, Step 1** |
-| **Decisions used** | ❓ **D5** = notification click → session moves to M11 · ❓ **D4** = Idle ring |
+| **▶ Pick up here** | **Task 1, Step 1** |
+| **Decisions used** | ✅ **D5** = notification click → session moves to M11 (decided 2026-10-26) · ✅ **D4** = Idle ring |
 | **Needs your eyes** | 👀 Task 3 (rings change; background sessions notify; the active one doesn't nag) |
 
 **Goal:** Every session row in the sidebar shows a live **status ring**, and when a session you're
@@ -70,9 +70,9 @@ silent. If fuxx is in the background, even the active session notifies you.
 
 ---
 
-### Task 0: Decide D5 — ❓
+### Task 0: Decide D5 — ✅
 
-- [ ] In [[00 - Plan Tracker (Start Here)]] → **D5**. Recommended: move "clicking a notification
+- [x] *(Decided 2026-10-26: moved to M11, after comparing how Ghostty, iTerm2, Warp and Zed do it.)* In [[00 - Plan Tracker (Start Here)]] → **D5**. Recommended: move "clicking a notification
   switches to that session" to **M11** (a real `.app` can receive notification clicks). If you
   choose otherwise, this plan needs a new task *before* building. Don't improvise it.
 
