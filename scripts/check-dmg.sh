@@ -12,8 +12,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 hdiutil verify -quiet "$dmg" || fail "image is corrupt"
 
 mnt=$(mktemp -d)
-hdiutil attach -quiet -readonly -nobrowse -mountpoint "$mnt" "$dmg"
-trap 'hdiutil detach -quiet "$mnt"; rmdir "$mnt"' EXIT
+# Cleanup must not change the verdict. `set -e` still applies inside the trap, hence `|| true`.
+trap 'hdiutil detach -quiet "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true' EXIT
+hdiutil attach -quiet -readonly -nobrowse -mountpoint "$mnt" "$dmg" \
+    || fail "could not mount $dmg (already open in Finder? eject it first)"
 
 app="$mnt/fuxx.app"
 [[ -d "$app" ]] || fail "no fuxx.app in the image"

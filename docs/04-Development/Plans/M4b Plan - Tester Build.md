@@ -164,6 +164,7 @@ The AI prepares a "downloaded" copy; **you** do the rest and report what you see
 | 2026-10-26 | Gatekeeper on the trial app | ✅ `rejected` (unsigned, as expected → "Open Anyway"); `Signature=adhoc`, `Format=app bundle with Mach-O universal (x86_64 arm64)` | `spctl --assess`, `codesign -dv` |
 | 2026-10-26 | A Finder-like environment (`env -i`, launchd sets no `LANG`): login shell finds `claude`; text is UTF-8 | ✅ on this Mac (something in your shell start-up sets `LANG=C.UTF-8`) | AI `env -i … zsh -l -i` |
 | 2026-10-26 | `cargo test` | ✅ 61 passed | AI run |
+| 2026-10-26 | Final review fix: `check-dmg.sh` printed nothing when the DMG was already mounted (RED reproduced), and its exit trap stopped at the failed detach under `set -e`, leaking the temp folder | ✅ prints `FAIL: could not mount …`; no temp folder left on either path | AI run |
 | 2026-10-26 | Task 1 in the repo: Step 2 FAIL (not found) → Step 5 `OK: target/dist/fuxx-0.1.0.dmg (fuxx 0.1.0, x86_64 arm64)` → Step 6 refused, DMG unchanged; no warnings of ours | ✅ | AI run |
 
 ## Known limitations
@@ -177,6 +178,7 @@ The AI prepares a "downloaded" copy; **you** do the rest and report what you see
 | The Intel slice is only checked under Rosetta, not on a real Intel Mac | A tester with an Intel Mac |
 | A tester whose shell config sets no locale may see accented text garbled when fuxx is opened from Finder (macOS sets no `LANG` for apps; yours is fine) | Revisit if a tester reports it |
 | No auto-update: testers install each new DMG by hand | Not in the plan |
+| `bundle-mac.sh` only refuses a version whose DMG is still in `target/dist`: after `cargo clean`, or in another checkout, the same version can be built again | Keep sent DMGs (or bump the version every time) |
 
 ## Related
 
