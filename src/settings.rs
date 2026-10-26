@@ -1,4 +1,5 @@
-//! Read the user's Ghostty config files into a flat list of `key = value` entries.
+//! Read fuxx's settings file into a flat list of `key = value` entries. The format is
+//! Ghostty-style `key = value`, but fuxx reads only its own file, never Ghostty's.
 //!
 //! Pure: no filesystem access here, `load` takes a `read` closure. The conventions come from
 //! Ghostty 1.3.1: comments only on their own lines, values may be quoted, an empty value resets
@@ -38,19 +39,12 @@ pub fn parse(text: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// Ghostty's config file locations, lowest precedence first.
-pub fn config_paths(home: &Path, xdg_config_home: Option<&Path>) -> Vec<PathBuf> {
-    let xdg = xdg_config_home
+/// fuxx's own settings file: `{XDG_CONFIG_HOME or ~/.config}/fuxx/config`.
+pub fn settings_path(home: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
+    xdg_config_home
         .map(Path::to_path_buf)
         .unwrap_or_else(|| home.join(".config"))
-        .join("ghostty");
-    let support = home.join("Library/Application Support/com.mitchellh.ghostty");
-    vec![
-        xdg.join("config"),
-        xdg.join("config.ghostty"),
-        support.join("config"),
-        support.join("config.ghostty"),
-    ]
+        .join("fuxx/config")
 }
 
 /// Entries of every existing file in `paths`, in order. Each file's `config-file` includes are
@@ -152,22 +146,14 @@ mod tests {
     }
 
     #[test]
-    fn config_paths_follow_ghostty_order() {
-        let home = Path::new("/h");
+    fn settings_path_is_fuxx_own_file() {
         assert_eq!(
-            config_paths(home, None),
-            vec![
-                PathBuf::from("/h/.config/ghostty/config"),
-                PathBuf::from("/h/.config/ghostty/config.ghostty"),
-                PathBuf::from("/h/Library/Application Support/com.mitchellh.ghostty/config"),
-                PathBuf::from(
-                    "/h/Library/Application Support/com.mitchellh.ghostty/config.ghostty"
-                ),
-            ]
+            settings_path(Path::new("/h"), None),
+            PathBuf::from("/h/.config/fuxx/config")
         );
         assert_eq!(
-            config_paths(home, Some(Path::new("/x")))[1],
-            PathBuf::from("/x/ghostty/config.ghostty")
+            settings_path(Path::new("/h"), Some(Path::new("/x"))),
+            PathBuf::from("/x/fuxx/config")
         );
     }
 
