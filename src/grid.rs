@@ -53,6 +53,29 @@ pub struct GridSnapshot {
     pub cursor: Option<CursorView>,
 }
 
+impl GridSnapshot {
+    /// The last `n` non-blank screen lines (top to bottom), trailing spaces trimmed. Used by the
+    /// status heuristics to look for a question near the bottom of the screen.
+    pub fn tail_text(&self, n: usize) -> String {
+        let mut tail: Vec<String> = self
+            .lines
+            .iter()
+            .rev()
+            .map(|line| {
+                line.iter()
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .filter(|text| !text.is_empty())
+            .take(n)
+            .collect();
+        tail.reverse();
+        tail.join("\n")
+    }
+}
+
 /// Copy the visible screen out of the `Term` (call while holding its lock, then release it).
 pub fn snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     let rows = term.screen_lines();
@@ -306,6 +329,13 @@ mod tests {
         let line = vec![CellView::BLANK; 10];
         assert!(text_spans(&line).is_empty());
         assert!(bg_rects(&line, colors::BACKGROUND).is_empty());
+    }
+
+    #[test]
+    fn tail_text_returns_last_non_blank_lines() {
+        let snap = snapshot(&term_with(b"one\r\n\r\ntwo  "));
+        assert_eq!(snap.tail_text(8), "one\ntwo");
+        assert_eq!(snap.tail_text(1), "two");
     }
 
     #[test]
