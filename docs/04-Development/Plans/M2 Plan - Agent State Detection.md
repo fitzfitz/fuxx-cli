@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M2
-status: not-started
+status: done
 updated: 2026-10-26
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-10-26
 | At a glance | |
 |---|---|
 | **Milestone note** | [[42 - Milestone 2 - Agent State Detection]] |
-| **Status** | ⬜ Not started (waits for M1 ✅) |
-| **Tasks done** | 0 / 7 |
-| **▶ Pick up here** | **Task 1, Step 1** |
-| **Decisions used** | ❓ **D4** = a 4th status `Idle` (see [[00 - Plan Tracker (Start Here)]]) · ✅ **Plan change 2026-10-26:** also detect OSC 99, OSC 777 and BEL (your option b; the shell's environment stays inherited, and no Claude Code setting is documented) |
-| **Needs your eyes** | 👀 Task 6 (watch the status log while scripts and a real agent run) |
+| **Status** | ✅ Done 2026-10-26 (commits `a2da2e2`…`1843452` + docs on `m2-agent-state`) |
+| **Tasks done** | 7 / 7 |
+| **▶ Pick up here** | M2 complete → [[M3 Plan - Many Sessions]] |
+| **Decisions used** | ✅ **D4** = a 4th status `Idle` (used as recommended; plan confirmed by you 2026-10-26) (see [[00 - Plan Tracker (Start Here)]]) · ✅ **Plan change 2026-10-26:** also detect OSC 99, OSC 777 and BEL (your option b; the shell's environment stays inherited, and no Claude Code setting is documented) |
+| **Needs your eyes** | ✅ Task 6 confirmed by you on 2026-10-26 (all checks, incl. a real `claude` run) |
 
 **Goal:** Each terminal knows whether its program is **Working**, **Waiting** for you, or **Done**
 (plus **Idle** when there's nothing to report), and logs every change so you can watch it.
@@ -84,21 +84,21 @@ Failure modes worth a test or a deliberate check, most likely first:
 
 ---
 
-### Task 1: Restore v1's `OscDetector` and extend it to every notification — ⬜
+### Task 1: Restore v1's `OscDetector` and extend it to every notification — ✅
 
 **Files:** Create `src/detector.rs` · Modify `src/main.rs` (add `mod detector;`)
 
 **Interfaces:** Produces `detector::OscDetector::{new() -> OscDetector, feed(&mut self, &[u8]) -> usize}`: the number of notifications whose intro completed in this chunk. It counts OSC 9 `ESC ]9;` (but not the `ESC ]9;4;` progress bar), OSC 99 `ESC ]99;` and OSC 777 `ESC ]777;notify;`, and carries partial matches across calls. An OSC 9 is counted one or two bytes after its intro, once it's clear it isn't a progress bar.
 
-- [ ] **Step 1: Restore v1's detector from git** (it was deleted in M0; commit `eb3eaad` still has it), and add `mod detector;` to `src/main.rs`:
+- [x] **Step 1: Restore v1's detector from git** (it was deleted in M0; commit `eb3eaad` still has it), and add `mod detector;` to `src/main.rs`:
 
 ```bash
 git show eb3eaad:src/detector.rs > src/detector.rs
 ```
 
-- [ ] **Step 2: Run:** `cargo test detector`. Expected: `test result: ok. 6 passed` (v1's tests; a dead-code warning is expected until Task 4). This is the baseline.
+- [x] **Step 2: Run:** `cargo test detector`. Expected: `test result: ok. 6 passed` (v1's tests; a dead-code warning is expected until Task 4). This is the baseline.
 
-- [ ] **Step 3: Write the failing tests.** In the test module, **delete** `does_not_detect_osc_99` (OSC 99 is now a notification) and add these 7 tests at the end of the module:
+- [x] **Step 3: Write the failing tests.** In the test module, **delete** `does_not_detect_osc_99` (OSC 99 is now a notification) and add these 7 tests at the end of the module:
 
 ```rust
     #[test]
@@ -149,9 +149,9 @@ git show eb3eaad:src/detector.rs > src/detector.rs
     }
 ```
 
-- [ ] **Step 4: Run:** `cargo test detector`. Expected: `test result: FAILED. 7 passed; 5 failed`. The failures are `detects_kitty_osc_99`, `detects_ghostty_osc_777_notify`, `ignores_osc_9_progress_bar`, `ignores_progress_bar_split_across_chunks` and `osc_9_is_counted_in_the_chunk_after_its_intro`.
+- [x] **Step 4: Run:** `cargo test detector`. Expected: `test result: FAILED. 7 passed; 5 failed`. The failures are `detects_kitty_osc_99`, `detects_ghostty_osc_777_notify`, `ignores_osc_9_progress_bar`, `ignores_progress_bar_split_across_chunks` and `osc_9_is_counted_in_the_chunk_after_its_intro`.
 
-- [ ] **Step 5: Implement.** Replace everything **above** the test module with:
+- [x] **Step 5: Implement.** Replace everything **above** the test module with:
 
 ```rust
 //! Spots the "look at me" notifications agents send, in the raw PTY bytes. `alacritty_terminal`
@@ -247,10 +247,10 @@ impl OscDetector {
 }
 ```
 
-- [ ] **Step 6: Run:** `cargo test detector`. Expected: `test result: ok. 12 passed`.
-- [ ] **Step 7: Commit** *(when you say so)*: `git add src/detector.rs src/main.rs && git commit -m "feat(m2): notification detector (OSC 9/99/777, skips the 9;4 progress bar)"`
+- [x] **Step 6: Run:** `cargo test detector`. Expected: `test result: ok. 12 passed`.
+- [x] **Step 7: Commit** *(when you say so)*: `git add src/detector.rs src/main.rs && git commit -m "feat(m2): notification detector (OSC 9/99/777, skips the 9;4 progress bar)"`
 
-### Task 2: `status.rs` — the heuristics — ⬜
+### Task 2: `status.rs` — the heuristics — ✅
 
 **Files:** Create `src/status.rs` · Modify `src/main.rs` (add `mod status;`)
 
@@ -275,7 +275,7 @@ impl OscDetector {
 > | Tick: attention, or Working and quiet ≥ 3 s | → **Waiting** if a question pattern is in the last 8 lines, else **Done** |
 > | Keystroke while Waiting/Done | → **Idle** (acknowledged); clears attention |
 
-- [ ] **Step 1: Write the failing tests.** Create `src/status.rs` with only:
+- [x] **Step 1: Write the failing tests.** Create `src/status.rs` with only:
 
 ```rust
 #[cfg(test)]
@@ -401,9 +401,9 @@ mod tests {
 
 …and add `mod status;` to `src/main.rs`.
 
-- [ ] **Step 2: Run:** `cargo test status`. Expected: compile errors (`StatusTracker`, `Status`, `IDLE_AFTER` not found).
+- [x] **Step 2: Run:** `cargo test status`. Expected: compile errors (`StatusTracker`, `Status`, `IDLE_AFTER` not found).
 
-- [ ] **Step 3: Implement.** Put this above the test module:
+- [x] **Step 3: Implement.** Put this above the test module:
 
 ```rust
 //! Agent-state heuristics: is a session working, waiting for you, or done?
@@ -529,16 +529,16 @@ impl StatusTracker {
 }
 ```
 
-- [ ] **Step 4: Run:** `cargo test status`. Expected: `test result: ok. 11 passed`.
-- [ ] **Step 5: Commit** *(when you say so)*: `git add src/status.rs src/main.rs && git commit -m "feat(m2): agent status heuristics with tests"`
+- [x] **Step 4: Run:** `cargo test status`. Expected: `test result: ok. 11 passed`.
+- [x] **Step 5: Commit** *(when you say so)*: `git add src/status.rs src/main.rs && git commit -m "feat(m2): agent status heuristics with tests"`
 
-### Task 3: `GridSnapshot::tail_text` — ⬜
+### Task 3: `GridSnapshot::tail_text` — ✅
 
 **Files:** Modify `src/grid.rs`
 
 **Interfaces:** Produces `GridSnapshot::tail_text(&self, n: usize) -> String`: the last `n` non-blank screen lines, top to bottom, trailing spaces trimmed, joined with `\n`.
 
-- [ ] **Step 1: Write the failing test.** In `src/grid.rs`'s test module, add (just before `wide_glyph_spacer_is_skipped`):
+- [x] **Step 1: Write the failing test.** In `src/grid.rs`'s test module, add (just before `wide_glyph_spacer_is_skipped`):
 
 ```rust
     #[test]
@@ -549,9 +549,9 @@ impl StatusTracker {
     }
 ```
 
-- [ ] **Step 2: Run:** `cargo test tail_text`. Expected: compile error `no method named \`tail_text\``.
+- [x] **Step 2: Run:** `cargo test tail_text`. Expected: compile error `no method named \`tail_text\``.
 
-- [ ] **Step 3: Implement.** In `src/grid.rs`, directly after the `GridSnapshot` struct, add:
+- [x] **Step 3: Implement.** In `src/grid.rs`, directly after the `GridSnapshot` struct, add:
 
 ```rust
 impl GridSnapshot {
@@ -572,16 +572,16 @@ impl GridSnapshot {
 }
 ```
 
-- [ ] **Step 4: Run:** `cargo test grid`. Expected: `test result: ok. 8 passed` (7 in `grid.rs`, plus M1's `resize_changes_the_grid_and_ignores_zero`, which the filter also matches).
-- [ ] **Step 5: Commit** *(when you say so)*: `git add src/grid.rs && git commit -m "feat(m2): screen tail text for status heuristics"`
+- [x] **Step 4: Run:** `cargo test grid`. Expected: `test result: ok. 8 passed` (7 in `grid.rs`, plus M1's `resize_changes_the_grid_and_ignores_zero`, which the filter also matches).
+- [x] **Step 5: Commit** *(when you say so)*: `git add src/grid.rs && git commit -m "feat(m2): screen tail text for status heuristics"`
 
-### Task 4: Count notifications in the reader thread — ⬜
+### Task 4: Count notifications in the reader thread — ✅
 
 **Files:** Modify `src/terminal.rs`
 
 **Interfaces:** Changes `TermEvent::Output` → `TermEvent::Output { notifications: usize }` (notifications whose intro completed in that chunk, from Task 1's `OscDetector::feed`). Task 5 consumes it.
 
-- [ ] **Step 1: Write the failing test, and update the existing one.** In `src/terminal.rs`'s test module:
+- [x] **Step 1: Write the failing test, and update the existing one.** In `src/terminal.rs`'s test module:
   - In `app_cursor_mode_is_visible_to_the_ui`, change `matches!(e, TermEvent::Output)` to `matches!(e, TermEvent::Output { .. })`.
   - Add a new test at the end of the module:
 
@@ -594,9 +594,9 @@ impl GridSnapshot {
     }
 ```
 
-- [ ] **Step 2: Run:** `cargo test terminal`. Expected: compile error (`TermEvent::Output` has no field `notifications`).
+- [x] **Step 2: Run:** `cargo test terminal`. Expected: compile error (`TermEvent::Output` has no field `notifications`).
 
-- [ ] **Step 3: Implement.** Three edits in `src/terminal.rs`:
+- [x] **Step 3: Implement.** Three edits in `src/terminal.rs`:
 
   (a) Add the import next to the other `crate::` imports:
 ```rust
@@ -635,28 +635,28 @@ use crate::detector::OscDetector;
             })
 ```
 
-- [ ] **Step 4: Keep the crate compiling.** `cargo test` builds the whole crate, and
+- [x] **Step 4: Keep the crate compiling.** `cargo test` builds the whole crate, and
   `terminal_view.rs` still matches the old unit variant. In `on_term_event`, change
   `TermEvent::Output | TermEvent::Term(Event::Wakeup) => cx.notify(),` to
   `TermEvent::Output { .. } | TermEvent::Term(Event::Wakeup) => cx.notify(),` (Task 5 replaces this arm properly).
-- [ ] **Step 5: Run:** `cargo test terminal`. Expected: `test result: ok. 6 passed`.
-- [ ] **Step 6: Commit** *(when you say so)*: `git add src/terminal.rs src/terminal_view.rs && git commit -m "feat(m2): count terminal notifications in the PTY stream"`
+- [x] **Step 5: Run:** `cargo test terminal`. Expected: `test result: ok. 6 passed`.
+- [x] **Step 6: Commit** *(when you say so)*: `git add src/terminal.rs src/terminal_view.rs && git commit -m "feat(m2): count terminal notifications in the PTY stream"`
 
-### Task 5: Wire the tracker into `TerminalView` — ⬜
+### Task 5: Wire the tracker into `TerminalView` — ✅
 
 **Files:** Modify `src/terminal_view.rs` · Modify `src/main.rs` (header comment)
 
 **Interfaces:** Consumes `StatusTracker`/`Status`/`TAIL_LINES` and `on_bell` (Task 2), `tail_text` (Task 3), `TermEvent::Output { notifications }` (Task 4), and the parser's existing `TermEvent::Term(Event::Bell)`. Produces `TerminalView::status_changed(&self, Status, cx)`, the single place status changes are reported (M4 extends it).
 
-- [ ] **Step 1: Imports.** Change `use std::time::Duration;` to `use std::time::{Duration, Instant};`, and add:
+- [x] **Step 1: Imports.** Change `use std::time::Duration;` to `use std::time::{Duration, Instant};`, and add:
 ```rust
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 ```
-- [ ] **Step 2: Field + constructor.** Add `tracker: StatusTracker,` to the struct after `title`, and initialize it in `new`:
+- [x] **Step 2: Field + constructor.** Add `tracker: StatusTracker,` to the struct after `title`, and initialize it in `new`:
 ```rust
         Self { core, focus_handle, title: None, tracker: StatusTracker::new(), _events: events, _ticker: ticker }
 ```
-- [ ] **Step 3: Tick + report.** Replace `on_tick` with these two methods:
+- [x] **Step 3: Tick + report.** Replace `on_tick` with these two methods:
 ```rust
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         if self.core.flush_stale_sync() {
@@ -673,7 +673,7 @@ use crate::status::{Status, StatusTracker, TAIL_LINES};
         cx.notify();
     }
 ```
-- [ ] **Step 4: Output.** In `on_term_event`, replace the arm `TermEvent::Output { .. } | TermEvent::Term(Event::Wakeup) => cx.notify(),` (from Task 4 Step 4) with:
+- [x] **Step 4: Output.** In `on_term_event`, replace the arm `TermEvent::Output { .. } | TermEvent::Term(Event::Wakeup) => cx.notify(),` (from Task 4 Step 4) with:
 ```rust
             TermEvent::Output { notifications } => {
                 self.tracker.on_output(Instant::now(), notifications);
@@ -683,42 +683,42 @@ use crate::status::{Status, StatusTracker, TAIL_LINES};
             // A real BEL (not an OSC terminator). Must come before the `TermEvent::Term(_)` catch-all.
             TermEvent::Term(Event::Bell) => self.tracker.on_bell(Instant::now()),
 ```
-- [ ] **Step 5: Input.** In `on_key_down`, right after `self.core.write(&bytes);`, add:
+- [x] **Step 5: Input.** In `on_key_down`, right after `self.core.write(&bytes);`, add:
 ```rust
             if let Some(status) = self.tracker.on_input(Instant::now()) {
                 self.status_changed(status, cx);
             }
 ```
-- [ ] **Step 6:** Change `main.rs`'s second header line to `// Milestone 2: one terminal whose agent status (working / waiting / done) is detected.`
-- [ ] **Step 7: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
-- [ ] **Step 8: All tests:** `cargo test`. Expected: `test result: ok. 46 passed`.
-- [ ] **Step 9: Commit** *(when you say so)*: `git add src/terminal_view.rs src/main.rs && git commit -m "feat(m2): detect and log agent status per terminal"`
+- [x] **Step 6:** Change `main.rs`'s second header line to `// Milestone 2: one terminal whose agent status (working / waiting / done) is detected.`
+- [x] **Step 7: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
+- [x] **Step 8: All tests:** `cargo test`. Expected: `test result: ok. 46 passed`.
+- [x] **Step 9: Commit** *(when you say so)*: `git add src/terminal_view.rs src/main.rs && git commit -m "feat(m2): detect and log agent status per terminal"`
 
-### Task 6: Watch it work — 👀 ⬜
+### Task 6: Watch it work — 👀 ✅
 
 Run `cargo run` **from another terminal**, so you can watch its stderr log while you use the fuxx window.
 
-- [ ] **Fresh window:** no `status ->` lines appear (stays Idle).
-- [ ] **Typing** `echo hi` + enter: no status line (echo + instant output aren't work).
-- [ ] **Working → Done:** run `bash -c 'for i in $(seq 1 15); do echo working $i; sleep 0.2; done'`. You should see `status -> Working`, then about 3 s after the last line, `status -> Done`.
-- [ ] **Working → Waiting:** run `bash -c 'for i in 1 2 3; do echo step $i; sleep 0.5; done; printf "Overwrite config? (y/n) "; read x'`. You should see `Working`, then about 3 s later, `Waiting`.
-- [ ] **Acknowledge:** answer `y` + enter. You should see `status -> Idle`.
-- [ ] **Notifications:** run each of these (type a key first, so the session isn't fresh). Each should show `Working`, then `Done` **immediately** (no 3 s wait):
+- [x] **Fresh window:** no `status ->` lines appear (stays Idle).
+- [x] **Typing** `echo hi` + enter: no status line (echo + instant output aren't work).
+- [x] **Working → Done:** run `bash -c 'for i in $(seq 1 15); do echo working $i; sleep 0.2; done'`. You should see `status -> Working`, then about 3 s after the last line, `status -> Done`.
+- [x] **Working → Waiting:** run `bash -c 'for i in 1 2 3; do echo step $i; sleep 0.5; done; printf "Overwrite config? (y/n) "; read x'`. You should see `Working`, then about 3 s later, `Waiting`.
+- [x] **Acknowledge:** answer `y` + enter. You should see `status -> Idle`.
+- [x] **Notifications:** run each of these (type a key first, so the session isn't fresh). Each should show `Working`, then `Done` **immediately** (no 3 s wait):
   - OSC 9: `bash -c 'sleep 1; echo busy; sleep 1; printf "\033]9;done\007"'`
   - OSC 99: `bash -c 'sleep 1; echo busy; sleep 1; printf "\033]99;i=1:p=body;done\033\\"'`
   - OSC 777: `bash -c 'sleep 1; echo busy; sleep 1; printf "\033]777;notify;fuxx;done\007"'`
   - BEL: `bash -c 'sleep 1; echo busy; sleep 1; printf "\a"'`
-- [ ] **Progress bar isn't "done":** run `bash -c 'for i in 1 2 3 4 5; do printf "\033]9;4;1;${i}0\007"; echo step $i; sleep 0.5; done'`. You should see `Working` and **no** `Done` until about 3 s after the last step.
-- [ ] **Shell beep isn't "done":** in a fresh window, type `zzzq` then **tab** (zsh beeps: no completion). No `status ->` line should appear.
-- [ ] **Real agent:** run `claude` and give it a task. (It picks its notification type from the terminal you launched fuxx from; from Ghostty that's OSC 777, with the progress bar on.) Watch `Working` while it streams, then `Done` when it finishes, or `Waiting` when it asks permission. Note anything misread. If a prompt's wording isn't caught, add it (lowercased) to `WAITING_PATTERNS` with a test, and record the tuning in the Verification log.
+- [x] **Progress bar isn't "done":** run `bash -c 'for i in 1 2 3 4 5; do printf "\033]9;4;1;${i}0\007"; echo step $i; sleep 0.5; done'`. You should see `Working` and **no** `Done` until about 3 s after the last step.
+- [x] **Shell beep isn't "done":** in a fresh window, type `zzzq` then **tab** (zsh beeps: no completion). No `status ->` line should appear.
+- [x] **Real agent:** run `claude` and give it a task. (It picks its notification type from the terminal you launched fuxx from; from Ghostty that's OSC 777, with the progress bar on.) Watch `Working` while it streams, then `Done` when it finishes, or `Waiting` when it asks permission. Note anything misread. If a prompt's wording isn't caught, add it (lowercased) to `WAITING_PATTERNS` with a test, and record the tuning in the Verification log.
 
-### Task 7: Update the docs — ⬜
+### Task 7: Update the docs — ✅
 
-- [ ] [[42 - Milestone 2 - Agent State Detection]]: tick the checklist; **Status:: ✅ Done**; note D4 (Idle) and any tuned constants.
-- [ ] [[40 - Roadmap]]: M2 → ✅.
-- [ ] [[00 - Plan Tracker (Start Here)]]: M2 → ✅ 7/7; **Where we are** → M3 Task 1.
-- [ ] [[60 - Progress Log]]: new entry.
-- [ ] Commit docs *(when you say so)*.
+- [x] [[42 - Milestone 2 - Agent State Detection]]: tick the checklist; **Status:: ✅ Done**; note D4 (Idle) and any tuned constants.
+- [x] [[40 - Roadmap]]: M2 → ✅.
+- [x] [[00 - Plan Tracker (Start Here)]]: M2 → ✅ 7/7; **Where we are** → M3 Task 1.
+- [x] [[60 - Progress Log]]: new entry.
+- [x] Commit docs *(when you say so)*.
 
 ## Verification log
 
@@ -729,8 +729,9 @@ Run `cargo run` **from another terminal**, so you can watch its stderr log while
 | 2026-10-26 | Plan change (OSC 99/777, BEL, `9;4;` skip): Tasks 1–5 applied from this plan's text to a scratch worktree of `master` (`4a7d951`) | ✅ 0 warnings from our code | AI scratch build |
 | 2026-10-26 | Same worktree: Task 1 baseline 6 passed → new tests 7 passed / 5 failed (the 5 named) → 12 passed; status 11; grid 8; terminal 6 | ✅ | AI scratch `cargo test` |
 | 2026-10-26 | Same worktree: full `cargo test` | ✅ 46 passed | AI scratch `cargo test` |
-| | Task 6 scenarios | | 👀 stderr log |
-| | Constants tuned? | | |
+| 2026-10-26 | Repo build + `cargo test` on `1843452` | ✅ 0 warnings from our code, 46 passed | AI build/test output |
+| 2026-10-26 | Task 6 scenarios (incl. OSC 9/99/777, BEL, `9;4;` progress, tab beep, real `claude` from Ghostty) | ✅ | 👀 confirmed by you |
+| 2026-10-26 | Constants tuned? | No: `ECHO_WINDOW` 150 ms, `IDLE_AFTER` 3 s, `TAIL_LINES` 8, `WAITING_PATTERNS` unchanged | 👀 nothing misread |
 
 ## Known limitations
 

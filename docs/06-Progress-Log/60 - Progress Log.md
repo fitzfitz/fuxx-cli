@@ -14,13 +14,26 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[42 - Milestone 2 - Agent State Detection]] (the **new terminal app**). ⬜ M0 + M1 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** [[43 - Milestone 3 - Many Sessions]] (the **new terminal app**). ⬜ M0 + M1 + M2 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — Milestone 2 complete: agent status detected
+- **Did:** Built [[M2 Plan - Agent State Detection]] on branch `m2-agent-state`, one fresh agent per task,
+  each reviewed: notification detector for OSC 9 / 99 / 777 that skips the `9;4` progress bar (`a2da2e2`),
+  status heuristics with Idle / Working / Waiting / Done (`92fead3`), screen tail text (`ed7a4cb`),
+  notification counting in the reader thread (`1e05b1e`), and the tracker wired into the view with BEL
+  from the parser (`1843452`). Build: 0 warnings from our code; `cargo test`: 46 passed. **You confirmed
+  on screen** every Task 6 check, including all four notification types, the progress bar not ending
+  "working", the tab beep staying silent, and a real `claude` run launched from Ghostty.
+- **Learned:** The first-guess constants (150 ms echo window, 3 s quiet, 8 tail lines) needed no tuning.
+  D4 = Idle (recommended option) is now decided.
+- **Blocked:** D6 (shortcuts) and the two M3 proposals from the M1 review are yours to decide before M3.
+- **Next task:** Decide those, then [[M3 Plan - Many Sessions]] → Task 1.
 
 ### 2026-10-26 — Plan change: M4b tester build (unsigned .app in a DMG)
 - **Did:** On request, added **M4b** right after M4 in [[40 - Roadmap]], [[00 - Plan Tracker (Start Here)]]
