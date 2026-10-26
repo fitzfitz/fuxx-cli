@@ -2,7 +2,7 @@
 tags: [development, plan, milestone]
 milestone: M3
 status: not-started
-updated: 2026-10-12
+updated: 2026-10-26
 ---
 
 # M3 Plan — Many Sessions
@@ -13,10 +13,10 @@ updated: 2026-10-12
 |---|---|
 | **Milestone note** | [[43 - Milestone 3 - Many Sessions]] |
 | **Status** | ⬜ Not started (waits for M2 ✅) |
-| **Tasks done** | 0 / 5 |
+| **Tasks done** | 0 / 6 |
 | **▶ Pick up here** | **Task 1, Step 1** |
-| **Decisions used** | ❓ **D6** = keyboard shortcuts (see [[00 - Plan Tracker (Start Here)]]) |
-| **Needs your eyes** | 👀 Task 4 (3 sessions, switching, background keeps running) |
+| **Decisions used** | ✅ **D6** = keyboard shortcuts, recommended set (decided 2026-10-26) · ✅ **Plan change 2026-10-26:** PTY writes on a per-session writer thread (new Task 4) |
+| **Needs your eyes** | 👀 Task 5 (3 sessions, switching, background keeps running) |
 
 **Goal:** Many sessions in one window. A sidebar lists them; click or a shortcut switches the main
 pane; every session keeps running in the background; a session closes when its shell exits.
@@ -36,6 +36,7 @@ pane; every session keeps running in the background; a session closes when its s
 - Background sessions keep running because their `TerminalView` entities stay alive in the list.
   Each one owns its reader thread, event task and ticker, so it doesn't matter that they aren't drawn.
 - Switching = `SessionList::select(i)` + focus the new view's `FocusHandle`.
+- Input never blocks the UI: each session's `TerminalCore` queues writes for its own writer thread (Task 4).
 - Closing (cmd-w or shell exit) drops the `Session` → view → `TerminalCore` → `Pty`, whose `Drop` kills the child.
   Closing the last session closes the window, and `QuitMode::LastWindowClosed` quits the app.
 
@@ -51,14 +52,16 @@ pane; every session keeps running in the background; a session closes when its s
 - Session label = the title the program set (OSC 0/2), else `Shell <id>`.
 - Shortcuts (D6): `cmd-t` new · `cmd-w` close (no confirmation) · `cmd-1…9` jump · `cmd-{` / `cmd-}` previous/next · `cmd-q` quit.
 - The status is still only logged (rings are M4).
+- `TerminalCore::write` never blocks: a per-session writer thread owns the PTY writer (created once, kept for the session), fed by a `std::sync::mpsc` channel.
 
 ## Review Focus
 
 1. **Closing the active session must land focus on a sensible neighbour** → `SessionList::remove` tests (Task 1): the next one slides in, or the previous one when the last was closed.
-2. **Closing the last session must quit, not leave an empty window** → `close_at` removes the window (Task 3); Task 4 checks it.
-3. **Background sessions must keep running and stay current** → Task 4 check with a ticking clock.
-4. **Keys must go to the active session only** → focus moves on every switch (Task 3); Task 4 checks it.
-5. **Closing a session must not leave its shell running** → `Pty`'s `Drop` kills it (M1); Task 4 checks with `ps`.
+2. **Closing the last session must quit, not leave an empty window** → `close_at` removes the window (Task 3); Task 5 checks it.
+3. **Background sessions must keep running and stay current** → Task 5 check with a ticking clock.
+4. **Keys must go to the active session only** → focus moves on every switch (Task 3); Task 5 checks it.
+5. **Closing a session must not leave its shell running** → `Pty`'s `Drop` kills it (M1); Task 5 checks with `ps`.
+6. **A program that stops reading its input freezes the app, and with it every session** → test `write_never_blocks_when_the_child_stops_reading` (Task 4).
 
 ## Files
 
@@ -68,6 +71,8 @@ pane; every session keeps running in the background; a session closes when its s
 | `src/terminal_view.rs` | Replace | Emits `TerminalEvent`s; `Focusable`; no longer owns window title / quitting | 2 |
 | `src/workspace.rs` | Create | Root view: sidebar, active pane, lifecycle, actions | 3 |
 | `src/main.rs` | Replace | Key bindings; open the window with a `Workspace` | 3 |
+| `src/pty.rs` | Modify | Return the writer instead of owning it | 4 |
+| `src/terminal.rs` | Modify | Per-session writer thread; `write` only queues | 4 |
 
 ---
 
@@ -863,7 +868,90 @@ fn main() {
 - [ ] **Step 4: Tests:** `cargo test`. Expected: `test result: ok. 53 passed`.
 - [ ] **Step 5: Commit** *(when you say so)*: `git add src/terminal_view.rs src/workspace.rs src/main.rs && git commit -m "feat(m3): many sessions with a sidebar and quick-switching"`
 
-### Task 4: Use it for real — 👀 ⬜
+### Task 4: PTY writes off the UI thread — ⬜
+
+*Added 2026-10-26 (plan change, your OK; from the M1 final review).* Today `TerminalCore::write` writes
+to the PTY on the UI thread. When a program stops reading its input (raw mode, busy), the tty's input
+queue fills and the write blocks, freezing the whole app, every session included. A per-session writer
+thread takes the writes off the UI thread.
+
+**Files:** Modify `src/pty.rs`, `src/terminal.rs`
+
+**Interfaces:**
+- `Pty::spawn(cmd, dims) -> Result<(Pty, Box<dyn Read + Send>, Box<dyn Write + Send>), String>` (the writer is returned instead of stored); `Pty::write` and the `writer` field are removed.
+- `TerminalCore::write(&self, &[u8])` keeps its signature but only queues the bytes (never blocks). Callers (`TerminalView`) don't change.
+
+- [ ] **Step 1: Write the failing test.** Append to the test module in `src/terminal.rs`:
+
+```rust
+    #[test]
+    fn write_never_blocks_when_the_child_stops_reading() {
+        let (tx, _rx) = unbounded();
+        // Raw mode + not reading stdin: the tty's input queue fills and a blocking write would hang.
+        let core = TerminalCore::spawn(sh("stty raw; sleep 5"), TermDims { cols: 40, rows: 5 }, tx)
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300)); // let `stty raw` run
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..64 {
+                core.write(&[b'x'; 1024]);
+            }
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "write blocked"
+        );
+    }
+```
+
+- [ ] **Step 2: Run:** `cargo test write_never_blocks`. Expected: `test result: FAILED. 0 passed; 1 failed` after about 2 s, panicking with `write blocked`.
+
+- [ ] **Step 3: `src/pty.rs`.** Remove the `writer` field (and its doc comment) from `Pty`, remove `Pty::write`, and return the writer from `spawn` instead of storing it:
+  - signature: `-> Result<(Pty, Box<dyn Read + Send>, Box<dyn Write + Send>), String>`
+  - doc comment: `/// Spawn \`cmd\`; returns the handle plus the output reader and the input writer, each for a` / `/// dedicated thread. Keep the writer for the whole session: dropping portable-pty's writer` / `/// sends EOF (^D) to the child.`
+  - the tail becomes `Ok((Pty { master: pair.master, child }, reader, writer))`.
+
+- [ ] **Step 4: `src/terminal.rs`.**
+  - Imports: `use std::io::{ErrorKind, Read, Write};` and add `use std::sync::mpsc::Sender;`.
+  - Add a field to `TerminalCore` (after `dims`):
+```rust
+    /// Bytes for the child, written by the writer thread so a child that stops reading can't
+    /// block the UI.
+    input: Sender<Vec<u8>>,
+```
+  - In `spawn`: `let (pty, mut reader, mut writer) = Pty::spawn(cmd, dims)?;`, and just before `Ok(Self { … })` start the writer thread (then add `input,` to the `Self { … }`):
+```rust
+        // The writer thread owns the PTY writer for the whole session. It ends when every
+        // `TerminalCore` clone is dropped (the channel closes) or the child goes away.
+        let (input, queued) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::Builder::new()
+            .name("fuxx-pty-writer".into())
+            .spawn(move || {
+                for bytes in queued {
+                    if writer
+                        .write_all(&bytes)
+                        .and_then(|()| writer.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+
+```
+  - Replace `write`:
+```rust
+    /// Queue bytes for the child (keystrokes, query replies). Never blocks.
+    pub fn write(&self, bytes: &[u8]) {
+        let _ = self.input.send(bytes.to_vec());
+    }
+```
+- [ ] **Step 5: Run:** `cargo test write_never_blocks`. Expected: `test result: ok. 1 passed`. Then the build check `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"` → **no output**, and `cargo test` → `test result: ok. 54 passed`.
+- [ ] **Step 6: Commit** *(when you say so)*: `git add src/pty.rs src/terminal.rs && git commit -m "feat(m3): PTY writes on a per-session writer thread"`
+
+### Task 5: Use it for real — 👀 ⬜
 
 `cargo run`, then:
 
@@ -878,11 +966,11 @@ fn main() {
 - [ ] Closing the **last** session closes the window and **quits** the app.
 - [ ] The M2 status log still prints for every session (run from another terminal to see stderr).
 
-### Task 5: Update the docs — ⬜
+### Task 6: Update the docs — ⬜
 
 - [ ] [[43 - Milestone 3 - Many Sessions]]: tick the checklist; **Status:: ✅ Done**; record D6 shortcuts.
 - [ ] [[40 - Roadmap]]: M3 → ✅.
-- [ ] [[00 - Plan Tracker (Start Here)]]: M3 → ✅ 5/5; **Where we are** → M4 Task 0.
+- [ ] [[00 - Plan Tracker (Start Here)]]: M3 → ✅ 6/6; **Where we are** → M4 Task 0.
 - [ ] [[60 - Progress Log]]: new entry.
 - [ ] Commit docs *(when you say so)*.
 
@@ -892,8 +980,10 @@ fn main() {
 |---|---|---|---|
 | 2026-10-12 | Plan code compiles at pinned rev | ✅ 0 warnings | AI scratch build |
 | 2026-10-12 | Plan unit tests | ✅ 44 passed | AI scratch `cargo test` |
-| 2026-10-26 | M2 plan change carried over: `Output { notifications }` + the BEL arm; expected count 44 → 53 (M2 now has 9 more tests, incl. the final-review fix) | ⚠️ edited, not re-compiled | Re-verify when M3 starts |
-| | Task 4 checklist | | 👀 |
+| 2026-10-26 | M2 plan change carried over: `Output { notifications }` + the BEL arm; expected count 44 → 53 (M2 now has 9 more tests, incl. the final-review fix) | ✅ re-verified (next rows) | AI scratch build |
+| 2026-10-26 | Plan text applied to a scratch worktree of `master` (`6e82a31`): Task 4 first (RED: `write blocked` after 2 s; GREEN), then Tasks 1–3 (session_list 6 passed) | ✅ 0 warnings from our code, 54 passed | AI scratch build/test |
+| 2026-10-26 | M1 review proposal "end a session when the shell exits even if a background job holds the PTY" | ❌ not needed on macOS, dropped | Probe: after `sleep 6 &!` + `exit`, zsh exited and the reader got EOF in 23 ms (macOS revokes the tty when the session leader exits); with `nohup … &`, zsh itself refuses the first `exit` (running jobs) |
+| | Task 5 checklist | | 👀 |
 
 ## Known limitations
 
@@ -903,6 +993,8 @@ fn main() {
 | Only one session visible at a time | M8 Split panes (deferred) |
 | cmd-w doesn't ask "kill running process?" | Revisit if it bites (not in the plan) |
 | New sessions always start in `$HOME` | M7 (per-dir presets) |
+| Input queued for a program that never reads grows without limit (memory), though the UI stays responsive | Revisit if it bites |
+| On Linux, a session may stay open after `exit` while a background job holds the PTY (macOS revokes the tty, Linux doesn't) | Linux isn't a target yet |
 
 ## Related
 

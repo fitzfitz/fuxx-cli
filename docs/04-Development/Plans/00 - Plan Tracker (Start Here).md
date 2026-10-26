@@ -21,8 +21,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 |---|---|
 | **Current milestone** | **M3 — Many Sessions** |
 | **Status** | ⬜ Not started. M2 ✅ done 2026-10-26 (status detected and logged, all on-screen checks confirmed by you; merged into `master` locally, not pushed). |
-| **▶ Next action** | Decide D6 and the two M3 proposals from the M1 review (PTY writer thread; end a session when the shell itself exits), then [[M3 Plan - Many Sessions]] → Task 1. |
-| **Blocked on** | **D6** (keyboard shortcuts, M3) and the two M3 proposals above; the plan uses D6's recommended option unless you say otherwise. |
+| **▶ Next action** | [[M3 Plan - Many Sessions]] → Task 1 (on branch `m3-many-sessions`). |
+| **Blocked on** | Nothing. D6 decided (recommended set); the PTY writer thread is added to M3 (Task 4); "end a session on shell exit" was dropped (not needed on macOS, see the M3 Verification log). |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -43,7 +43,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M0 | Scaffold & GPUI window | [[M0 Plan - Scaffold and GPUI Window]] | ✅ | 4/4 | A window opens; closing it quits |
 | M1 | One terminal pane (**make-or-break**) | [[M1 Plan - One Terminal Pane]] | ✅ | 7/7 | Usable shell: `ls --color`, `vim`, resize |
 | M2 | Agent state detection | [[M2 Plan - Agent State Detection]] | ✅ | 7/7 | Status log shows working → done / waiting |
-| M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ⬜ ❓D6 | 0/5 | 3 sessions, switch, all keep running |
+| M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ⬜ | 0/6 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ⬜ ❓D5 | 0/4 | Rings update; background sessions notify |
 | M4b | Tester build (unsigned `.app` in a DMG) — *added 2026-10-26* | written when M4 is done | ⬜ ❓D7 ❓D8 | — | A tester drags fuxx to Applications and opens it |
 
@@ -62,7 +62,7 @@ updated before anyone builds it.
 | **D3** ✅ | (**decided 2026-10-26: `futures` crate**) Channel from the PTY reader thread to the UI | **`futures` crate** (`futures::channel::mpsc`). It's what Zed uses, and it's already in `Cargo.lock` through GPUI, so there's no extra download. It's a new *direct* dependency, though. | `std::sync::mpsc` + a polling timer (no new dep, but wakes the CPU constantly) | M1 |
 | **D4** ✅ | (**decided 2026-10-26: Idle**, the recommended option, used by the confirmed M2 plan) A 4th status, **Idle** (grey hollow ring), for a fresh session that hasn't done anything yet | **Yes**. Without it, every new shell would show "Done" | Only working / waiting / done | M2, M4 |
 | **D5** | "Clicking a notification switches to that session" ([[44 - Milestone 4 - Notification Rings]]) **can't work with `osascript`**: clicking its banner opens Script Editor, not fuxx | **Move that one item to M11** (the real `.app` bundle can receive notification clicks) | Add `terminal-notifier` (new external tool, outside the plan), or drop the item | M4 |
-| **D6** | Keyboard shortcuts (the vault doesn't specify any) | **cmd-t** new session · **cmd-w** close session (kills its shell, no confirmation) · **cmd-1…9** jump · **cmd-{ / cmd-}** previous/next · **cmd-q** quit | Any other set | M0, M3 |
+| **D6** ✅ | (**decided 2026-10-26: the recommended set**) Keyboard shortcuts (the vault doesn't specify any) | **cmd-t** new session · **cmd-w** close session (kills its shell, no confirmation) · **cmd-1…9** jump · **cmd-{ / cmd-}** previous/next · **cmd-q** quit | Any other set | M0, M3 |
 | **D8** | How agent-state detection works when fuxx is opened from Finder/Dock (the M4b `.app`). Launched that way the shell inherits no terminal identity, so Claude Code sends **no** notifications; only the 3 s quiet timer and the screen's question patterns apply | **Not chosen yet.** Decide when M4b gets its detailed plan | Accept the weaker detection for testers · or revisit the 2026-10-26 "keep the inherited environment" choice for app launches | M4b, M11 |
 | **D7** | Which CPUs the shipped `.app` runs on. The vault names OSes (macOS first) but no CPU; today `cargo build` makes an Apple Silicon-only binary (`aarch64-apple-darwin`) | **Not chosen yet.** Decide when M11 gets its detailed plan | **Apple Silicon only** (what builds today) · or **universal** (Apple Silicon + Intel `x86_64`; whether GPUI works on Intel Macs at our pinned rev is unverified) | M11, M12 |
 
@@ -79,8 +79,8 @@ updated before anyone builds it.
   | M0 | ✅ 0 warnings | n/a (GUI only) |
   | M1 | ✅ 0 warnings | 21 pass |
   | M2 | ✅ 0 warnings | 38 pass → **47** after the 2026-10-26 plan changes (built and run) |
-  | M3 | ✅ 0 warnings | 44 pass → 53 expected (edited, not re-compiled) |
-  | M4 | ✅ 0 warnings | 50 pass → 59 expected (edited, not re-compiled) |
+  | M3 | ✅ 0 warnings | 44 pass → **54** after the 2026-10-26 plan changes (re-verified) |
+  | M4 | ✅ 0 warnings | 50 pass → 60 expected (edited, not re-compiled) |
 
   (The only warning is an upstream one inside GPUI's own dependencies, `block` and
   `proc-macro-error2`. It isn't ours, and it can be ignored.)
