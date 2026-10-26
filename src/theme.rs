@@ -65,6 +65,60 @@ impl Default for Theme {
     }
 }
 
+/// Linear blend per channel: `t = 0` gives `a`, `t = 1` gives `b`.
+pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Rgb {
+        r: ch(a.r, b.r),
+        g: ch(a.g, b.g),
+        b: ch(a.b, b.b),
+    }
+}
+
+/// Perceived brightness on 0-1, from the simple `0.2126R + 0.7152G + 0.0722B` weights applied to
+/// the gamma-encoded channels (no sRGB linearisation: only used to call a color dark or light).
+fn luminance(c: Rgb) -> f32 {
+    (0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32) / 255.0
+}
+
+/// The window chrome (sidebar and status rings), derived from the terminal theme so the whole
+/// window matches it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiColors {
+    pub sidebar_background: Rgb,
+    pub sidebar_border: Rgb,
+    pub row_active: Rgb,
+    pub row_hover: Rgb,
+    pub text: Rgb,
+    pub text_dim: Rgb,
+    pub ring_idle: Rgb,
+    pub ring_working: Rgb,
+    pub ring_waiting: Rgb,
+    pub ring_done: Rgb,
+}
+
+impl Theme {
+    pub fn ui(&self) -> UiColors {
+        let (bg, fg) = (self.background, self.foreground);
+        let black = hex(0x000000);
+        // A dark sidebar sinks below the terminal; a light one only dips slightly.
+        let shade = if luminance(bg) < 0.5 { 0.18 } else { 0.06 };
+        let text_dim = mix(bg, fg, 0.6);
+        UiColors {
+            sidebar_background: mix(bg, black, shade),
+            sidebar_border: mix(bg, fg, 0.12),
+            row_active: mix(bg, fg, 0.12),
+            row_hover: mix(bg, fg, 0.06),
+            text: fg,
+            text_dim,
+            ring_idle: text_dim,
+            ring_working: self.palette[3],
+            ring_waiting: self.palette[1],
+            ring_done: self.palette[2],
+        }
+    }
+}
+
 /// `#rrggbb` or `rrggbb`, any case. Everything else (names, 3-digit hex) is `None`.
 pub fn parse_color(s: &str) -> Option<Rgb> {
     let s = s.trim();
@@ -301,5 +355,21 @@ mod tests {
             d[2],
             PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes")
         );
+    }
+
+    #[test]
+    fn ui_colors_follow_light_and_dark_themes() {
+        let dark = Theme::default();
+        let ui = dark.ui();
+        assert!(luminance(ui.sidebar_background) < luminance(dark.background));
+        assert_eq!(ui.ring_waiting, dark.palette[1]);
+
+        let mut light = Theme::default();
+        light.background = hex(0xffffff);
+        light.foreground = hex(0x000000);
+        let ui = light.ui();
+        assert_ne!(ui.text_dim, light.background);
+        let l = luminance(ui.row_active);
+        assert!(l > luminance(light.foreground) && l < luminance(light.background));
     }
 }

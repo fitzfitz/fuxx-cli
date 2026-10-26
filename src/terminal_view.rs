@@ -21,7 +21,6 @@ use gpui::{
     UnderlineStyle, Window, actions, canvas, div, fill, font, point, prelude::*, px, size,
 };
 
-use crate::colors;
 use crate::grid::{self, GridSnapshot};
 use crate::keys;
 use crate::links::Link;
@@ -29,6 +28,7 @@ use crate::mouse::{self, Button, Mods, MouseAction, ScrollAccumulator};
 use crate::pty;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
+use crate::theme::Theme;
 
 // Bound in main.rs with the "Terminal" key context. GPUI runs key bindings before `on_key_down`,
 // so these win over the byte mapping.
@@ -98,6 +98,7 @@ impl TerminalView {
             pty::shell_command(None),
             TermDims { cols: 80, rows: 24 },
             tx,
+            Theme::default(),
         )?;
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
@@ -479,6 +480,7 @@ impl Render for TerminalView {
         let focused = self.focus_handle.is_focused(window);
         let resize_core = self.core.clone();
         let paint_core = self.core.clone();
+        let theme = *self.core.theme();
         let layout = self.layout.clone();
         let hovered = self.hovered.clone();
         let view = cx.entity();
@@ -526,7 +528,7 @@ impl Render for TerminalView {
                             let offset = paint_core.display_offset();
                             grid::underline_cells(&mut snap, link.start, link.end, offset);
                         }
-                        paint_grid(snap, &metrics, bounds, focused, window, cx);
+                        paint_grid(snap, &theme, &metrics, bounds, focused, window, cx);
 
                         let style = if hovered.is_some() && window.modifiers().platform {
                             CursorStyle::PointingHand
@@ -608,13 +610,14 @@ pub fn hsla(c: Rgb) -> Hsla {
 
 fn paint_grid(
     mut snap: GridSnapshot,
+    theme: &Theme,
     m: &CellMetrics,
     bounds: Bounds<Pixels>,
     focused: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
-    window.paint_quad(fill(bounds, hsla(colors::BACKGROUND)));
+    window.paint_quad(fill(bounds, hsla(theme.background)));
 
     // A focused block cursor is drawn by inverting its cell, so the glyph stays readable.
     let mut outline_cursor = None;
@@ -622,8 +625,8 @@ fn paint_grid(
         if c.row < snap.rows && c.col < snap.cols {
             if focused && c.shape == CursorShape::Block {
                 let cell = &mut snap.lines[c.row][c.col];
-                cell.fg = colors::BACKGROUND;
-                cell.bg = colors::FOREGROUND;
+                cell.fg = theme.cursor_text.unwrap_or(theme.background);
+                cell.bg = theme.cursor.unwrap_or(theme.foreground);
             } else {
                 outline_cursor = Some(c);
             }
@@ -638,7 +641,7 @@ fn paint_grid(
     };
 
     for (row, line) in snap.lines.iter().enumerate() {
-        for rect in grid::bg_rects(line, colors::BACKGROUND) {
+        for rect in grid::bg_rects(line, theme.background) {
             let size = size(m.cell_width * rect.cells as f32, m.line_height);
             window.paint_quad(fill(
                 Bounds::new(cell_origin(row, rect.col), size),
@@ -692,7 +695,7 @@ fn paint_grid(
     // Unfocused block = hollow box; beam = thin bar; underline = thin bottom bar.
     if let Some(c) = outline_cursor {
         let origin = cell_origin(c.row, c.col);
-        let color = hsla(colors::FOREGROUND);
+        let color = hsla(theme.cursor.unwrap_or(theme.foreground));
         let full = Bounds::new(origin, size(m.cell_width, m.line_height));
         match c.shape {
             CursorShape::Beam => window.paint_quad(fill(

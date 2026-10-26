@@ -22,6 +22,7 @@ use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
 use crate::pty::Pty;
+use crate::theme::Theme;
 
 /// Terminal size in cells. Implements alacritty's `Dimensions` so `Term` can use it directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +90,7 @@ pub struct TerminalCore {
     input: Sender<Vec<u8>>,
     /// Built once: compiling the URL regex is not free.
     links: Arc<Mutex<LinkFinder>>,
+    theme: Theme,
 }
 
 impl TerminalCore {
@@ -96,6 +98,7 @@ impl TerminalCore {
         cmd: CommandBuilder,
         dims: TermDims,
         events: UnboundedSender<TermEvent>,
+        theme: Theme,
     ) -> Result<Self, String> {
         let (pty, mut reader, mut writer) = Pty::spawn(cmd, dims)?;
         let term = Term::new(Config::default(), &dims, Listener(events.clone()));
@@ -156,6 +159,7 @@ impl TerminalCore {
             dims: Arc::new(Mutex::new((dims, CellPx::default()))),
             input,
             links: Arc::new(Mutex::new(LinkFinder::new())),
+            theme,
         })
     }
 
@@ -257,13 +261,17 @@ impl TerminalCore {
         *self.shared.lock().term.mode()
     }
 
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
     pub fn snapshot(&self) -> GridSnapshot {
-        grid::snapshot(&self.shared.lock().term)
+        grid::snapshot(&self.shared.lock().term, &self.theme)
     }
 
     /// Color for an OSC 4/10/11/12 query reply.
     pub fn color(&self, index: usize) -> Rgb {
-        colors::resolve_index(index, self.shared.lock().term.colors())
+        colors::resolve_index(index, self.shared.lock().term.colors(), &self.theme)
     }
 
     /// Synchronized updates (DEC mode 2026, used by Claude Code and most TUIs) buffer output
@@ -329,6 +337,7 @@ mod tests {
             sh("for i in $(seq 1 40); do echo line$i; done; sleep 2"),
             TermDims { cols: 20, rows: 5 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |_| screen_text(&core).contains("line40")));
@@ -347,6 +356,7 @@ mod tests {
             sh("printf 'hello fuxx'"),
             TermDims { cols: 40, rows: 5 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Exited)));
@@ -360,6 +370,7 @@ mod tests {
             sh("printf '\\033[6n'; sleep 1"),
             TermDims { cols: 40, rows: 5 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(
@@ -375,6 +386,7 @@ mod tests {
             sh("read line; printf \"got:$line\""),
             TermDims { cols: 40, rows: 5 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         core.write(b"ping\r");
@@ -385,7 +397,13 @@ mod tests {
     #[test]
     fn resize_changes_the_grid_and_ignores_zero() {
         let (tx, _rx) = unbounded();
-        let core = TerminalCore::spawn(sh("sleep 1"), TermDims { cols: 40, rows: 5 }, tx).unwrap();
+        let core = TerminalCore::spawn(
+            sh("sleep 1"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
         core.resize(TermDims { cols: 0, rows: 0 }, CellPx::default());
         assert_eq!(core.dims(), TermDims { cols: 40, rows: 5 });
         core.resize(TermDims { cols: 60, rows: 10 }, CellPx::default());
@@ -400,6 +418,7 @@ mod tests {
             sh("sleep 1; printf '\\033[14t'; sleep 1"),
             TermDims { cols: 80, rows: 24 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         core.resize(
@@ -427,6 +446,7 @@ mod tests {
             sh("printf 'hello world'; sleep 2"),
             TermDims { cols: 20, rows: 3 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |_| screen_text(&core).contains("world")));
@@ -442,6 +462,7 @@ mod tests {
             sh("printf 'hello'; sleep 2"),
             TermDims { cols: 20, rows: 3 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |_| screen_text(&core).contains("hello")));
@@ -469,6 +490,7 @@ mod tests {
             sh("printf '\\033[?1h'; sleep 1"),
             TermDims { cols: 40, rows: 5 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Output { .. })));
@@ -482,6 +504,7 @@ mod tests {
             sh("printf '\\033]777;notify;fuxx;done\\007'; sleep 1"),
             TermDims { cols: 40, rows: 5 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |e| matches!(
@@ -494,8 +517,13 @@ mod tests {
     fn write_never_blocks_when_the_child_stops_reading() {
         let (tx, _rx) = unbounded();
         // Raw mode + not reading stdin: the tty's input queue fills and a blocking write would hang.
-        let core = TerminalCore::spawn(sh("stty raw; sleep 5"), TermDims { cols: 40, rows: 5 }, tx)
-            .unwrap();
+        let core = TerminalCore::spawn(
+            sh("stty raw; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
         std::thread::sleep(Duration::from_millis(300)); // let `stty raw` run
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -517,6 +545,7 @@ mod tests {
             sh("printf 'hello world'; sleep 2"),
             TermDims { cols: 20, rows: 3 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |_| screen_text(&core).contains("world")));
@@ -544,6 +573,7 @@ mod tests {
             sh("printf 'hello world'; sleep 2"),
             TermDims { cols: 20, rows: 3 },
             tx,
+            Theme::default(),
         )
         .unwrap();
         assert!(wait_for(&mut rx, |_| screen_text(&core).contains("world")));
