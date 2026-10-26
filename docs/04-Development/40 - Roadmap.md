@@ -9,7 +9,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 [[11 - Features]]. Far-phase milestones are directional — they get detailed notes when we reach them.
 
 > [!tip] Step-by-step plans
-> M0–M4 each have a detailed, compile-verified implementation plan with per-task status.
+> M0–M4b each have a detailed, compile-verified implementation plan with per-task status.
 > **Start at [[00 - Plan Tracker (Start Here)]]**: current position, next action, open decisions.
 
 ## Status legend
@@ -28,7 +28,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 - [[42 - Milestone 2 - Agent State Detection]] — ✅ — detect working / done / waiting per session (reuse v1's OSC-9 work)
 - [[43 - Milestone 3 - Many Sessions]] — ✅ — session manager + sidebar; quick-switch
 - [[44 - Milestone 4 - Notification Rings]] — ✅ — per-session status rings + background notifications. **← usable product.**
-- **M4b — Tester build** — ⬜ — wrap the release binary in an **unsigned `.app`**, ship it in a **DMG** (drag to Applications) so testers can try the MVP. *Added 2026-10-26 on request.* No signing/notarization (that stays M11), so testers clear Gatekeeper once (System Settings → Privacy & Security → Open Anyway). Its detailed plan is written when M4 is done. Open decisions for it: **D7** (CPUs) and **D8** (agent detection when launched from Finder) — see [[00 - Plan Tracker (Start Here)]].
+- [[44b - Milestone 4b - Tester Build]] — 🟨 — wrap the release binary in an **unsigned, universal (Apple Silicon + Intel, D7) `.app`**, ship it in a versioned **DMG** (drag to Applications) so testers can try the MVP. *Added 2026-10-26 on request.* No signing/notarization (that stays M11), so testers clear Gatekeeper once per version (System Settings → Privacy & Security → Open Anyway). Opened from Finder, detection relies on the quiet timer and screen patterns (D8). Plan: [[M4b Plan - Tester Build]].
 
 ## Phase 2 — Daily driver (polish enough to live in it)
 
@@ -44,7 +44,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 ## Phase 4 — Distribution
 
-- **M11 — Ship as a real `.app`:** take M4b's bundle and sign/notarize it → fixes the notification identity (vs "Script Editor"), and **clicking a notification switches to that session** (moved from M4 by D5, 2026-10-26). Open decision **D7**: which CPUs to ship for (Apple Silicon only vs universal) — see [[00 - Plan Tracker (Start Here)]].
+- **M11 — Ship as a real `.app`:** take M4b's bundle and sign/notarize it → fixes the notification identity (vs "Script Editor"), and **clicking a notification switches to that session** (moved from M4 by D5, 2026-10-26). Universal (Apple Silicon + Intel) per **D7**, decided 2026-10-26.
 - **M12 — Homebrew cask** for install. (Later: Windows support.)
 
 ---
