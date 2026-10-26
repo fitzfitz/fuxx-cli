@@ -22,6 +22,22 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-26 — Plan change: M2 detects OSC 99, OSC 777 and BEL too
+- **Did:** On request (option b), amended [[M2 Plan - Agent State Detection]]: the detector now counts
+  OSC 9, OSC 99 (kitty) and OSC 777 `notify` (Ghostty), and skips `OSC 9;4;` (a progress bar). A real
+  BEL from the parser counts while the session is Working. The shell's environment stays inherited,
+  and no Claude Code setting is documented: both were kept out on request. Updated [[12 - Scope]],
+  [[11 - Features]], [[42 - Milestone 2 - Agent State Detection]], and the M3/M4 plans that consume
+  the renamed `TermEvent::Output { notifications }`. Fixed the M2 plan's `cargo test grid` count (7 → 8).
+  Re-verified Tasks 1–5 from the amended plan text in a scratch worktree: 0 warnings, 46 passed.
+- **Learned:** The installed Claude Code (2.1.310) picks its notification from the inherited
+  `TERM_PROGRAM`: iTerm2 → OSC 9, kitty → OSC 99, Ghostty → OSC 777, Terminal.app → BEL, anything
+  else → nothing. Under Ghostty ≥ 1.2 / iTerm2 ≥ 3.6.6 it also sends `OSC 9;4;` progress bars while
+  working, which v1's detector would have read as "done". You launch from Ghostty 1.3.1, so this path
+  is the one that matters.
+- **Blocked:** Nothing.
+- **Next task:** [[M2 Plan - Agent State Detection]] → Task 1.
+
 ### 2026-10-26 — Milestone 1 complete: a real shell in the GPUI window
 - **Did:** Built [[M1 Plan - One Terminal Pane]] task by task (one fresh agent per task, each
   reviewed) on branch `m1-terminal-pane`: keystroke → bytes (`d4b972f`), color palette (`522122f`),
@@ -39,7 +55,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   questions: the shell inherits the launcher's terminal-identity env (decides whether Claude Code
   sends OSC 9 → M2), PTY writes can block the UI thread (→ M3), and `exit` with a disowned job
   holding the tty doesn't end the session (→ M3).
-- **Blocked:** M2 Task 1 waits on your answer to the env / OSC 9 question. Merged into `master` locally (not pushed).
+- **Blocked:** M2 Task 1 waited on the env / OSC 9 question (settled the same day, see the entry above). Merged into `master` locally, then pushed.
 - **Next task:** Decide the OSC 9 question, then [[M2 Plan - Agent State Detection]] → Task 1 (D4 still open; recommended option used by default).
 
 ### 2026-10-26 — Open decision D7 added (target CPUs for M11)

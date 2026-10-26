@@ -22,7 +22,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | **Current milestone** | **M2 — Agent State Detection** |
 | **Status** | ⬜ Not started. M1 ✅ done 2026-10-26 (a usable shell in the window, all 12 on-screen checks confirmed by you; merged into `master` locally, not pushed). |
 | **▶ Next action** | Do [[M2 Plan - Agent State Detection]] → Task 1. |
-| **Blocked on** | Nothing. D4 (Idle status, M2) is still open; the plan uses the recommended option unless you say otherwise. |
+| **Blocked on** | Nothing. The OSC 9 question is settled (plan change 2026-10-26: also detect OSC 99 / 777 / BEL). D4 (Idle status, M2) is still open; the plan uses the recommended option unless you say otherwise. |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -76,9 +76,9 @@ updated before anyone builds it.
   |---|---|---|
   | M0 | ✅ 0 warnings | n/a (GUI only) |
   | M1 | ✅ 0 warnings | 21 pass |
-  | M2 | ✅ 0 warnings | 38 pass |
-  | M3 | ✅ 0 warnings | 44 pass |
-  | M4 | ✅ 0 warnings | 50 pass |
+  | M2 | ✅ 0 warnings | 38 pass → **46** after the 2026-10-26 plan change (re-verified) |
+  | M3 | ✅ 0 warnings | 44 pass → 52 expected (edited, not re-compiled) |
+  | M4 | ✅ 0 warnings | 50 pass → 58 expected (edited, not re-compiled) |
 
   (The only warning is an upstream one inside GPUI's own dependencies, `block` and
   `proc-macro-error2`. It isn't ours, and it can be ignored.)
