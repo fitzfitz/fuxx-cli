@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
@@ -151,6 +151,32 @@ impl TerminalCore {
         let _ = self.input.send(bytes.to_vec());
     }
 
+    /// User input: snap the view back to the live bottom, drop any selection, then send the
+    /// bytes. Query replies use `write` instead so they never move the view.
+    pub fn input(&self, bytes: &[u8]) {
+        {
+            let mut guard = self.shared.lock();
+            guard.term.scroll_display(Scroll::Bottom);
+            guard.term.selection = None;
+        }
+        self.write(bytes);
+    }
+
+    /// Scroll the view through history (positive `Delta` = up).
+    pub fn scroll(&self, scroll: Scroll) {
+        self.shared.lock().term.scroll_display(scroll);
+    }
+
+    /// Lines the view is scrolled up from the live bottom (0 = live).
+    pub fn display_offset(&self) -> usize {
+        self.shared.lock().term.grid().display_offset()
+    }
+
+    /// The last `n` non-blank lines of the live screen, for the status heuristics.
+    pub fn tail_text(&self, n: usize) -> String {
+        grid::screen_tail_text(&self.shared.lock().term, n)
+    }
+
     /// Resize screen + PTY. No-op when unchanged, so it's cheap to call every frame.
     pub fn resize(&self, dims: TermDims) {
         if dims.cols == 0 || dims.rows == 0 {
@@ -236,6 +262,24 @@ mod tests {
             .map(|l| l.iter().map(|c| c.ch).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn scrolling_moves_the_view_and_input_snaps_back() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("for i in $(seq 1 40); do echo line$i; done; sleep 2"),
+            TermDims { cols: 20, rows: 5 },
+            tx,
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("line40")));
+        core.scroll(Scroll::Delta(5));
+        assert_eq!(core.display_offset(), 5);
+        core.write(b"x"); // a query reply must not move the view
+        assert_eq!(core.display_offset(), 5);
+        core.input(b"x"); // typing does
+        assert_eq!(core.display_offset(), 0);
     }
 
     #[test]
