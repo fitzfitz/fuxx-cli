@@ -3,6 +3,7 @@
 
 mod colors;
 mod detector;
+mod ghostty_config;
 mod grid;
 mod keys;
 mod links;
