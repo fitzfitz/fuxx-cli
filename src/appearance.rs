@@ -1,7 +1,7 @@
-//! The look fuxx starts with: theme, font and size from the user's Ghostty config.
+//! The look fuxx starts with: theme, font and size from fuxx's own settings file.
 //!
 //! `load` is the only place that touches the real filesystem and environment for the config; all
-//! the decisions live in the tested pure functions of `ghostty_config`, `theme` and `fonts`. It
+//! the decisions live in the tested pure functions of `settings`, `theme` and `fonts`. It
 //! runs once at startup (no live reload) and the result is an app global that views read.
 
 use std::path::{Path, PathBuf};
@@ -9,13 +9,13 @@ use std::path::{Path, PathBuf};
 use gpui::{App, Font, Global, WindowAppearance};
 
 use crate::fonts;
-use crate::ghostty_config::{self, Entry};
+use crate::settings::{self, Entry};
 use crate::theme::{self, Theme};
 
 pub struct Appearance {
     pub theme: Theme,
     pub font: Font,
-    /// In points, used as pixels as-is (as in Ghostty).
+    /// In points, used as pixels as-is (as Ghostty does).
     pub font_size: f32,
 }
 
@@ -28,38 +28,47 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Read the Ghostty config and build the appearance. Never fails: anything missing or unreadable
-/// falls back to Ghostty's defaults.
+/// Read fuxx's settings file and build the appearance. Never fails: anything missing or
+/// unreadable falls back to the defaults.
 pub fn load(cx: &App) -> Appearance {
     let home = env_path("HOME");
     let xdg = env_path("XDG_CONFIG_HOME");
-    let resources = env_path("GHOSTTY_RESOURCES_DIR");
 
     let read_file = |p: &Path| std::fs::read_to_string(p).ok();
-    let entries: Vec<Entry> = match &home {
-        Some(home) => ghostty_config::load(
-            &ghostty_config::config_paths(home, xdg.as_deref()),
-            &read_file,
-        ),
+    let (entries, config_note): (Vec<Entry>, String) = match &home {
+        Some(home) => {
+            let path = settings::settings_path(home, xdg.as_deref());
+            let text = read_file(&path);
+            let note = format!(
+                "{} ({})",
+                path.display(),
+                if text.is_some() { "found" } else { "not found" }
+            );
+            (
+                settings::load(std::slice::from_ref(&path), &read_file),
+                note,
+            )
+        }
         None => {
             eprintln!("[fuxx] config: $HOME is unset; using the defaults");
-            vec![]
+            (vec![], "none ($HOME unset)".to_string())
         }
     };
 
-    // Without $HOME there are no user theme folders, but Ghostty.app's own themes still resolve.
-    let dirs = theme::theme_dirs(
-        home.as_deref().unwrap_or(Path::new("/")),
-        xdg.as_deref(),
-        resources.as_deref(),
-    );
+    // A theme name is an absolute file, then a file in the user's theme folder, then a built-in.
+    // Without $HOME there is no user folder, only the built-ins.
+    let user_dir = home
+        .as_deref()
+        .map(|h| theme::user_theme_dir(h, xdg.as_deref()));
     let read_theme = |name: &str| {
         let path = Path::new(name);
         if path.is_absolute() {
-            read_file(path)
-        } else {
-            dirs.iter().find_map(|dir| read_file(&dir.join(name)))
+            return read_file(path);
         }
+        user_dir
+            .as_ref()
+            .and_then(|dir| read_file(&dir.join(name)))
+            .or_else(|| theme::builtin_theme(name).map(str::to_string))
     };
     let dark = !matches!(
         cx.window_appearance(),
@@ -81,7 +90,7 @@ pub fn load(cx: &App) -> Appearance {
         .filter(|v| !v.is_empty())
         .unwrap_or("default");
     eprintln!(
-        "[fuxx] config: font {} {}pt, theme {theme_name}",
+        "[fuxx] config: {config_note}, font {} {}pt, theme {theme_name}",
         font.family, settings.size
     );
 

@@ -12,7 +12,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
 use crate::colors;
-use crate::theme::{Theme, mix};
+use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellView {
@@ -107,11 +107,18 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
         }
         // After the inverse swap, so a selection always shows.
         if selection.is_some_and(|range| range.contains(indexed.point)) {
-            bg = theme
-                .selection_background
-                .unwrap_or_else(|| mix(theme.background, theme.foreground, 0.25));
-            if let Some(selected_fg) = theme.selection_foreground {
-                fg = selected_fg;
+            match theme.selection_background {
+                Some(selected_bg) => {
+                    bg = selected_bg;
+                    if let Some(selected_fg) = theme.selection_foreground {
+                        fg = selected_fg;
+                    }
+                }
+                // Unset: swap the window's colors (as Ghostty does), so gray text stays readable.
+                None => {
+                    bg = theme.foreground;
+                    fg = theme.background;
+                }
             }
         }
         lines[row as usize][col] = CellView {
@@ -423,9 +430,10 @@ mod tests {
         term.selection = Some(sel);
         let snap = snapshot(&term, &Theme::default());
         let t = Theme::default();
-        let selected = mix(t.background, t.foreground, 0.25);
-        assert_eq!(snap.lines[0][0].bg, selected);
-        assert_eq!(snap.lines[0][1].bg, selected);
+        // No selection color set: the window's colors swap, so gray text stays readable.
+        assert_eq!(snap.lines[0][0].bg, t.foreground);
+        assert_eq!(snap.lines[0][0].fg, t.background);
+        assert_eq!(snap.lines[0][1].bg, t.foreground);
         assert_eq!(snap.lines[0][2].bg, Theme::default().background);
     }
 

@@ -1,12 +1,12 @@
-//! Terminal colors from the user's Ghostty config: the `Theme` struct, color parsing, and theme
+//! Terminal colors from fuxx's settings: the `Theme` struct, color parsing, and theme
 //! file resolution.
 //!
-//! Pure: no filesystem access here. `resolve` takes a `read_theme` closure and `theme_dirs` only
-//! builds paths. The rules come from Ghostty 1.3.1: theme files are plain config files (their
+//! Pure: no filesystem access here. `resolve` takes a `read_theme` closure and `user_theme_dir`
+//! only builds a path. The rules come from Ghostty 1.3.1: theme files are plain config files (their
 //! `theme` and `config-file` keys are ignored), the user's own values override the theme's, an
 //! empty value resets a key, and `palette = N=COLOR` takes a decimal or `0x`/`0o`/`0b` index.
 
-use crate::ghostty_config::{Entry, parse};
+use crate::settings::{Entry, parse};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::{Path, PathBuf};
 
@@ -241,42 +241,56 @@ pub fn resolve(
                     .collect();
                 apply(&mut theme, &inner);
             }
-            None => eprintln!("[fuxx] config: theme {name:?} not found, using defaults"),
+            None => eprintln!(
+                "[fuxx] config: theme {name:?} not found, using defaults (built in: {})",
+                BUILTIN_THEMES.join(", ")
+            ),
         }
     }
     apply(&mut theme, entries);
     theme
 }
 
-/// Directories to look for a named theme in, in lookup order.
-pub fn theme_dirs(
-    home: &Path,
-    xdg_config_home: Option<&Path>,
-    resources_dir: Option<&Path>,
-) -> Vec<PathBuf> {
-    let config = xdg_config_home
+/// The folder for the user's own theme files: `{XDG_CONFIG_HOME or ~/.config}/fuxx/themes`.
+pub fn user_theme_dir(home: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
+    xdg_config_home
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| home.join(".config"));
-    let mut dirs = vec![config.join("ghostty/themes")];
-    if let Some(r) = resources_dir {
-        dirs.push(r.join("themes"));
-    }
-    dirs.push(PathBuf::from(
-        "/Applications/Ghostty.app/Contents/Resources/ghostty/themes",
-    ));
-    dirs.push(home.join("Applications/Ghostty.app/Contents/Resources/ghostty/themes"));
-    dirs
+        .unwrap_or_else(|| home.join(".config"))
+        .join("fuxx/themes")
+}
+
+/// The themes built into fuxx (from iTerm2-Color-Schemes, MIT; see `assets/themes/`).
+pub const BUILTIN_THEMES: [&str; 6] = [
+    "Catppuccin Mocha",
+    "Catppuccin Latte",
+    "Dracula",
+    "Nord",
+    "Gruvbox Dark",
+    "TokyoNight",
+];
+
+/// The text of a built-in theme. The name match is exact and case-sensitive.
+pub fn builtin_theme(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Catppuccin Mocha" => include_str!("../assets/themes/Catppuccin Mocha"),
+        "Catppuccin Latte" => include_str!("../assets/themes/Catppuccin Latte"),
+        "Dracula" => include_str!("../assets/themes/Dracula"),
+        "Nord" => include_str!("../assets/themes/Nord"),
+        "Gruvbox Dark" => include_str!("../assets/themes/Gruvbox Dark"),
+        "TokyoNight" => include_str!("../assets/themes/TokyoNight"),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ghostty_config::Entry;
+    use crate::settings::Entry;
     use std::path::{Path, PathBuf};
 
     const MOCHA: &str = "palette = 1=#f38ba8\nbackground = #1e1e2e\nforeground = #cdd6f4\ncursor-color = #f5e0dc\nselection-background = #585b70\ntheme = Nested\nconfig-file = evil";
     fn entries(text: &str) -> Vec<Entry> {
-        crate::ghostty_config::parse(text)
+        crate::settings::parse(text)
     }
     fn read(name: &str) -> Option<String> {
         (name == "Catppuccin Mocha").then(|| MOCHA.to_string())
@@ -347,14 +361,29 @@ mod tests {
     }
 
     #[test]
-    fn theme_dirs_search_user_then_ghostty_app() {
-        let d = theme_dirs(Path::new("/h"), None, Some(Path::new("/r")));
-        assert_eq!(d[0], PathBuf::from("/h/.config/ghostty/themes"));
-        assert_eq!(d[1], PathBuf::from("/r/themes"));
+    fn user_theme_dir_is_fuxx_own() {
         assert_eq!(
-            d[2],
-            PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes")
+            user_theme_dir(Path::new("/h"), None),
+            PathBuf::from("/h/.config/fuxx/themes")
         );
+        assert_eq!(
+            user_theme_dir(Path::new("/h"), Some(Path::new("/x"))),
+            PathBuf::from("/x/fuxx/themes")
+        );
+    }
+
+    #[test]
+    fn builtin_themes_load_and_change_colors() {
+        for name in BUILTIN_THEMES {
+            let text = builtin_theme(name).unwrap_or_else(|| panic!("{name} missing"));
+            let t = resolve(&entries(&format!("theme = {name}")), true, &|n| {
+                builtin_theme(n).map(str::to_string)
+            });
+            assert_ne!(t, Theme::default(), "{name} changed nothing");
+            assert!(text.contains("palette = 1="), "{name} has a palette");
+        }
+        assert_eq!(builtin_theme("catppuccin mocha"), None); // exact names only
+        assert_eq!(builtin_theme("Nope"), None);
     }
 
     #[test]

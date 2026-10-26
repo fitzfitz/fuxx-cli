@@ -1,4 +1,4 @@
-//! Font settings from the Ghostty config, and the bundled Symbols Nerd Font.
+//! Font settings from fuxx's settings file, and the bundled Symbols Nerd Font.
 //!
 //! `from_entries` and `parse_feature` are pure. `gpui_font` turns the settings into a GPUI font
 //! (skipping families that aren't installed). `register_symbols_font` makes the bundled icon font
@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 
 use gpui::{Font, FontFallbacks, FontFeatures, SharedString};
 
-use crate::ghostty_config::Entry;
+use crate::settings::Entry;
 
 pub const DEFAULT_SIZE: f32 = 13.0;
 pub const SYMBOLS_FAMILY: &str = "Symbols Nerd Font Mono";
@@ -27,6 +27,11 @@ pub struct FontSettings {
     pub features: Vec<(String, u32)>,
 }
 
+/// Sizes outside this range (in points) are ignored: tiny ones give a zero-height line and huge
+/// ones exhaust memory when rasterising.
+const MIN_SIZE: f32 = 4.0;
+const MAX_SIZE: f32 = 200.0;
+
 /// Fold `font-family`, `font-size` and `font-feature` entries, in order. Families and features
 /// accumulate and an empty value clears them; the last valid size wins and an empty one resets it.
 pub fn from_entries(entries: &[Entry]) -> FontSettings {
@@ -41,8 +46,11 @@ pub fn from_entries(entries: &[Entry]) -> FontSettings {
             "font-family" => s.families.push(e.value.clone()),
             "font-size" if e.value.is_empty() => s.size = DEFAULT_SIZE,
             "font-size" => match e.value.parse::<f32>() {
-                Ok(v) if v.is_finite() && v > 0.0 => s.size = v,
-                _ => eprintln!("[fuxx] config: ignoring bad font-size {:?}", e.value),
+                Ok(v) if (MIN_SIZE..=MAX_SIZE).contains(&v) => s.size = v,
+                _ => eprintln!(
+                    "[fuxx] config: ignoring bad font-size {:?} (use {MIN_SIZE}-{MAX_SIZE})",
+                    e.value
+                ),
             },
             "font-feature" if e.value.is_empty() => s.features.clear(),
             "font-feature" => {
@@ -128,8 +136,14 @@ pub fn register_symbols_font() -> bool {
     // re-registering, and without having to decode the CFError.
     static RESULT: OnceLock<bool> = OnceLock::new();
     *RESULT.get_or_init(|| {
-        let Some(home) = std::env::var_os("HOME") else {
-            eprintln!("[fuxx] font: $HOME is unset; the bundled symbols font is not registered");
+        // An empty or relative $HOME would write the cache into the current folder.
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|h| h.is_absolute());
+        let Some(home) = home else {
+            eprintln!(
+                "[fuxx] font: $HOME is unset or not absolute; the bundled symbols font is not registered"
+            );
             return false;
         };
         let dir = std::path::Path::new(&home).join("Library/Caches/fuxx");
@@ -198,7 +212,7 @@ fn register_file(path: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ghostty_config::Entry;
+    use crate::settings::Entry;
 
     fn e(k: &str, v: &str) -> Entry {
         Entry {
@@ -230,6 +244,19 @@ mod tests {
             e("font-size", ""),
         ]);
         assert_eq!((r.families.len(), r.size), (0, DEFAULT_SIZE));
+    }
+
+    #[test]
+    fn font_size_out_of_range_is_skipped() {
+        for bad in ["0.3", "0", "100000"] {
+            assert_eq!(
+                from_entries(&[e("font-size", bad)]).size,
+                DEFAULT_SIZE,
+                "{bad}"
+            );
+        }
+        assert_eq!(from_entries(&[e("font-size", "4")]).size, 4.0);
+        assert_eq!(from_entries(&[e("font-size", "200")]).size, 200.0);
     }
 
     #[test]

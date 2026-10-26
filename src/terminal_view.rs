@@ -582,8 +582,9 @@ impl CellMetrics {
         let font_id = text_system.resolve_font(&font);
         let cell_width = text_system
             .em_advance(font_id, font_size)
-            .unwrap_or(font_size * 0.6);
-        let line_height = (font_size * LINE_HEIGHT_FACTOR).round();
+            .unwrap_or(font_size * 0.6)
+            .max(px(1.0));
+        let line_height = (font_size * LINE_HEIGHT_FACTOR).round().max(px(1.0));
         Self {
             font,
             font_size,
