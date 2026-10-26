@@ -20,6 +20,7 @@ use portable_pty::CommandBuilder;
 use crate::colors;
 use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
+use crate::links::{Link, LinkFinder};
 use crate::pty::Pty;
 
 /// Terminal size in cells. Implements alacritty's `Dimensions` so `Term` can use it directly.
@@ -79,6 +80,8 @@ pub struct TerminalCore {
     /// Bytes for the child, written by the writer thread so a child that stops reading can't
     /// block the UI.
     input: Sender<Vec<u8>>,
+    /// Built once: compiling the URL regex is not free.
+    links: Arc<Mutex<LinkFinder>>,
 }
 
 impl TerminalCore {
@@ -145,7 +148,14 @@ impl TerminalCore {
             pty: Arc::new(Mutex::new(pty)),
             dims: Arc::new(Mutex::new(dims)),
             input,
+            links: Arc::new(Mutex::new(LinkFinder::new())),
         })
+    }
+
+    /// The allowed-scheme link under `point`, if any.
+    pub fn link_at(&self, point: Point) -> Option<Link> {
+        let term = &self.shared.lock().term;
+        self.links.lock().unwrap().find(term, point)
     }
 
     /// Queue bytes for the child (keystrokes, query replies). Never blocks.

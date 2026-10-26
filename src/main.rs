@@ -5,6 +5,7 @@ mod colors;
 mod detector;
 mod grid;
 mod keys;
+mod links;
 mod mouse;
 mod notifier;
 mod pty;

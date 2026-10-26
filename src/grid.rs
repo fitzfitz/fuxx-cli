@@ -6,7 +6,7 @@
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
@@ -223,13 +223,37 @@ pub fn text_spans(line: &[CellView]) -> Vec<TextSpan> {
     out
 }
 
+/// Underline every visible cell from `start` to `end` inclusive, wrapping across lines.
+pub fn underline_cells(snap: &mut GridSnapshot, start: Point, end: Point, display_offset: usize) {
+    let offset = display_offset as i32;
+    for line in start.line.0..=end.line.0 {
+        let row = line + offset;
+        if row < 0 || row as usize >= snap.rows {
+            continue;
+        }
+        let from = if line == start.line.0 {
+            start.column.0
+        } else {
+            0
+        };
+        let to = if line == end.line.0 {
+            end.column.0
+        } else {
+            snap.cols.saturating_sub(1)
+        };
+        for cell in snap.lines[row as usize].iter_mut().take(to + 1).skip(from) {
+            cell.underline = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::terminal::TermDims;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Scroll;
-    use alacritty_terminal::index::{Point, Side};
+    use alacritty_terminal::index::Side;
     use alacritty_terminal::selection::{Selection, SelectionType};
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
@@ -393,5 +417,19 @@ mod tests {
         assert_eq!(snap.lines[0][0].bg, colors::SELECTION);
         assert_eq!(snap.lines[0][1].bg, colors::SELECTION);
         assert_eq!(snap.lines[0][2].bg, colors::BACKGROUND);
+    }
+
+    #[test]
+    fn underline_cells_marks_the_link() {
+        let mut snap = snapshot(&term_with(b"ab https"));
+        underline_cells(
+            &mut snap,
+            Point::new(Line(0), Column(3)),
+            Point::new(Line(0), Column(7)),
+            0,
+        );
+        assert!(
+            !snap.lines[0][2].underline && snap.lines[0][3].underline && snap.lines[0][7].underline
+        );
     }
 }
