@@ -16,7 +16,8 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 - `P1` Selection, copy/paste; mouse support.
 - `P1` Clickable URL / path detection (open on click).
 - `P1` Font config (family/size/ligatures) via `cosmic-text`, including prompt icons (Nerd Font symbols such as powerlevel10k's, `?` boxes today). *(M6; noted 2026-10-26.)*
-- `P2` Search in scrollback; theming; **read Ghostty's config** (fonts/colors/theme) like cmux does.
+- `P2` Search in scrollback; theming via **fuxx's own settings file** and built-in themes. *(M6. Changed 2026-10-27:
+  originally "read Ghostty's config" like cmux; you chose fuxx's own file so it doesn't depend on Ghostty.)*
 
 ## B. Multi-agent orchestration (the differentiator)
 

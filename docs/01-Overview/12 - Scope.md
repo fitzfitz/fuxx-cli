@@ -20,6 +20,9 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - **Agent-state detection** (reuse v1's OSC-9 idea, extended to OSC 99 / OSC 777 / BEL, + heuristics)
   to drive the rings. The shell's environment is inherited as-is; stripping it, or documenting an
   agent setting as a workaround, was considered and kept out (2026-10-26).
+- **fuxx's own settings file** (added 2026-10-27 on request): `~/.config/fuxx/config`, plain `key = value`
+  lines using Ghostty's key names, plus theme files in `~/.config/fuxx/themes` and six built-in themes.
+  fuxx does **not** read Ghostty's config.
 - macOS first (Linux capable via the Rust stack).
 - A **tester build** after the MVP (M4b, added 2026-10-26): an unsigned `.app` in a DMG. Signing,
   notarization and Homebrew stay later (M11, M12).
@@ -27,7 +30,8 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 ## Out of scope (for now — resist scope creep)
 
 - Being a general IDE / editor.
-- A plugin ecosystem, themes marketplace, config DSL.
+- A plugin ecosystem, themes marketplace, or a config *language* (scripting, conditionals) beyond the
+  plain `key = value` settings file above.
 - Windows support (later).
 - cmux's extras until the core is solid: **embedded browser, SSH workspaces, remote/tmux daemon,
   split panes** — all deferred (see [[40 - Roadmap]] "Later").
