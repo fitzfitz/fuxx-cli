@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M5 — Terminal UX** (Phase 2). Phase 1 and the M4b tester build are complete |
-| **Status** | 🟨 In progress: [[M5 Plan - Terminal UX]] written and approved 2026-10-26. M4b ✅ done 2026-10-26 (tester DMG). |
-| **▶ Next action** | [[M5 Plan - Terminal UX]] → Task 1 (scrollback core). |
+| **Current milestone** | **M6 — Fonts & config** (Phase 2). M5 Terminal UX is complete |
+| **Status** | ⬜ Not started. M5 ✅ done 2026-10-27: scrollback, selection, copy/paste, mouse reporting, cmd-click links, pixel-accurate resize; all on-screen checks confirmed by you. |
+| **▶ Next action** | Write the M6 plan (font family/size/ligatures, Ghostty config, **prompt icons**; see [[40 - Roadmap]]). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-26 |
 
@@ -46,7 +46,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ✅ | 6/6 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ✅ | 4/4 | Rings update; background sessions notify |
 | M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
-| M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | 🟨 | 0/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
+| M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | ✅ | 8/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
@@ -67,6 +67,14 @@ updated before anyone builds it.
 | **D8** ✅ | (**decided 2026-10-26: accept the weaker detection**) How agent-state detection works when fuxx is opened from Finder/Dock (the M4b `.app`). Launched that way the shell inherits no terminal identity, so Claude Code sends **no** notifications; only the 3 s quiet timer and the screen's question patterns apply | **Accept the weaker detection for testers** (chosen "for now"; revisit if testers report missed rings) | Revisit the 2026-10-26 "keep the inherited environment" choice for app launches | M4b, M11 |
 | **D7** ✅ | (**decided 2026-10-26: universal**) Which CPUs the shipped `.app` runs on. The vault names OSes (macOS first) but no CPU; today `cargo build` makes an Apple Silicon-only binary (`aarch64-apple-darwin`) | **Universal: Apple Silicon + Intel `x86_64`** (an Intel release build at our pinned rev compiled cleanly on 2026-10-26; Zed ships Intel builds from the same rev) | Apple Silicon only | M4b, M11, M12 |
 
+## Tech debt
+
+Known problems we chose to leave for later. Each row says what we already know, so nobody re-debugs it from zero.
+
+| Since | Problem | What we know | Revisit |
+|---|---|---|---|
+| 2026-10-27 | **Tab doesn't accept Claude Code's grey example/suggestion** in fuxx (it does in Ghostty) | Not caused by M5: the M4b app behaves the same. Tab reaches the program: shell completion and Claude Code's `/hel` → `/help` work, and Ghostty and fuxx send the identical byte (`\t`) under Claude Code's keyboard modes (checked with a key logger). In a neutral test terminal Claude Code didn't fill the example either, even when it answered the kitty-keyboard, XTVERSION and device-attributes queries like Ghostty and reported focus. Not yet tried: focus *changes* (fuxx never reports focus, DEC mode 1004), Claude Code's status protocol (OSC 7501), mouse-motion reporting without a button (mode 1003). | When focus reporting or OSC 7501 is planned, or a later milestone touches input |
+
 ## How these plans were made (so you can trust the code)
 
 - APIs were read from the **exact pinned GPUI commit** (`1d2a4b3f7f19…`) and from the real
@@ -82,6 +90,7 @@ updated before anyone builds it.
   | M2 | ✅ 0 warnings | 38 pass → **47** after the 2026-10-26 plan changes (built and run) |
   | M3 | ✅ 0 warnings | 44 pass → **54** after the 2026-10-26 plan changes (re-verified) → **55** in the repo (Working fix) |
   | M4 | ✅ 0 warnings | 50 pass → 61 expected → **61** in the repo (built and run) |
+  | M5 | ✅ 0 warnings | plan: 83 → **85** in the repo (crash test for stale points + shift-extend test, added by reviews) |
 
   (The only warning is an upstream one inside GPUI's own dependencies, `block` and
   `proc-macro-error2`. It isn't ours, and it can be ignored.)

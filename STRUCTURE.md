@@ -39,13 +39,19 @@ src/
 ├── colors.rs             M1 · cell color → RGB (Alacritty palette, 256-color table)
 ├── grid.rs               M1 · GridSnapshot: a copy of the screen + paint batching
 │                         M2 · tail_text(n), the last lines for "waiting" detection
+│                         M5 · screen_tail_text (live screen), selection colour, underline_cells
 ├── pty.rs                M1 · spawn the login shell on a PTY; write; resize; kill on drop
+│                         M5 · pty_size with real pixel sizes
 ├── terminal.rs           M1 · TerminalCore: alacritty_terminal + reader thread + events
 │                         M2 · counts OSC 9 in the output stream
+│                         M5 · input (snaps to bottom), scroll, selection, link_at, CellPx resize
 ├── terminal_view.rs      M1 · GPUI view: measure, paint, keys, ticker
 │                         M2 · owns a StatusTracker
 │                         M3 · emits TitleChanged / Exited, focusable
 │                         M4 · emits StatusChanged
+│                         M5 · wheel, mouse, selection, copy/paste, cmd-click links
+├── mouse.rs              M5 · cell under the pointer, wheel accumulator, xterm mouse reports
+├── links.rs              M5 · link under the pointer (http/https/mailto only; text and OSC 8)
 │
 │   agent state
 ├── detector.rs           M2 · OscDetector: finds ESC ]9; across chunks (restored from v1)
@@ -61,7 +67,7 @@ src/
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
-21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4.
+21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5.
 
 How the pieces connect:
 
