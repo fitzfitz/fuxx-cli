@@ -1,4 +1,5 @@
-//! The GPUI view for one terminal: paints a `GridSnapshot` and turns keystrokes into PTY bytes.
+//! The GPUI view for one terminal: paints a `GridSnapshot`, turns keystrokes into PTY bytes,
+//! tracks the agent status, and reports what happened to whoever owns it (the workspace).
 
 use std::time::{Duration, Instant};
 
@@ -8,9 +9,9 @@ use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, Bounds, Context, Entity, FocusHandle, Font, FontStyle, FontWeight, Hsla, KeyDownEvent,
-    Pixels, Rgba, SharedString, Task, TextAlign, TextRun, UnderlineStyle, Window, canvas, div,
-    fill, font, point, prelude::*, px, size,
+    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Font, FontStyle,
+    FontWeight, Hsla, KeyDownEvent, Pixels, Rgba, SharedString, Task, TextAlign, TextRun,
+    UnderlineStyle, Window, canvas, div, fill, font, point, prelude::*, px, size,
 };
 
 use crate::colors;
@@ -24,17 +25,32 @@ const FONT_FAMILY: &str = "Menlo";
 const FONT_SIZE: f32 = 14.0;
 /// GPUI's default line height (1.618 x size) is too airy for a terminal.
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
-/// How often to run housekeeping (flush stuck synchronized updates).
+/// How often to run housekeeping (flush stuck synchronized updates, re-evaluate status).
 const TICK: Duration = Duration::from_millis(50);
+
+/// What a terminal tells its owner.
+pub enum TerminalEvent {
+    /// The program set (Some) or reset (None) the title via OSC 0/2.
+    TitleChanged(Option<SharedString>),
+    /// The shell exited; the session should close.
+    Exited,
+}
 
 pub struct TerminalView {
     core: TerminalCore,
     focus_handle: FocusHandle,
-    title: Option<SharedString>,
     tracker: StatusTracker,
     /// Dropping a GPUI `Task` cancels it, so these live as long as the view.
     _events: Task<()>,
     _ticker: Task<()>,
+}
+
+impl EventEmitter<TerminalEvent> for TerminalView {}
+
+impl Focusable for TerminalView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
 }
 
 impl TerminalView {
@@ -82,29 +98,10 @@ impl TerminalView {
         Self {
             core,
             focus_handle,
-            title: None,
             tracker: StatusTracker::new(),
             _events: events,
             _ticker: ticker,
         }
-    }
-
-    fn on_tick(&mut self, cx: &mut Context<Self>) {
-        if self.core.flush_stale_sync() {
-            cx.notify();
-        }
-        let core = &self.core;
-        if let Some(status) = self
-            .tracker
-            .tick(Instant::now(), || core.snapshot().tail_text(TAIL_LINES))
-        {
-            self.status_changed(status, cx);
-        }
-    }
-
-    fn status_changed(&self, status: Status, cx: &mut Context<Self>) {
-        eprintln!("[fuxx] status -> {status:?}"); // debug log, used by the M2 manual check
-        cx.notify();
     }
 
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
@@ -135,24 +132,37 @@ impl TerminalView {
                 self.core.write(reply.as_bytes());
             }
             TermEvent::Term(Event::Title(title)) => {
-                self.title = Some(title.into());
-                cx.notify();
+                cx.emit(TerminalEvent::TitleChanged(Some(title.into())))
             }
-            TermEvent::Term(Event::ResetTitle) => {
-                self.title = None;
-                cx.notify();
-            }
-            // One window, one shell (M1): when the shell exits, quit like a closed terminal.
-            TermEvent::Exited => cx.quit(),
+            TermEvent::Term(Event::ResetTitle) => cx.emit(TerminalEvent::TitleChanged(None)),
+            TermEvent::Exited => cx.emit(TerminalEvent::Exited),
             TermEvent::Term(_) => {}
         }
+    }
+
+    fn on_tick(&mut self, cx: &mut Context<Self>) {
+        if self.core.flush_stale_sync() {
+            cx.notify();
+        }
+        let core = &self.core;
+        if let Some(status) = self
+            .tracker
+            .tick(Instant::now(), || core.snapshot().tail_text(TAIL_LINES))
+        {
+            self.status_changed(status, cx);
+        }
+    }
+
+    fn status_changed(&self, status: Status, cx: &mut Context<Self>) {
+        eprintln!("[fuxx] status -> {status:?}"); // debug log, used by the M2 manual check
+        cx.notify();
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let m = &keystroke.modifiers;
         if m.platform {
-            return; // cmd-shortcuts belong to the app (cmd-q, later cmd-t ...)
+            return; // cmd-shortcuts belong to the app (cmd-q, cmd-t, ...)
         }
         // Option on a *character* key already composed a character into key_char (option-s = ß);
         // only named keys (arrows, backspace, enter, ...) get Alt-as-Meta treatment.
@@ -177,9 +187,6 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.title.clone().unwrap_or_else(|| "fuxx".into());
-        window.set_window_title(&title);
-
         let focused = self.focus_handle.is_focused(window);
         let resize_core = self.core.clone();
         let paint_core = self.core.clone();
@@ -241,7 +248,7 @@ impl CellMetrics {
     }
 }
 
-fn hsla(c: Rgb) -> Hsla {
+pub fn hsla(c: Rgb) -> Hsla {
     Rgba {
         r: c.r as f32 / 255.0,
         g: c.g as f32 / 255.0,
