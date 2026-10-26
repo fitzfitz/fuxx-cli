@@ -78,9 +78,9 @@ updated before anyone builds it.
   |---|---|---|
   | M0 | ✅ 0 warnings | n/a (GUI only) |
   | M1 | ✅ 0 warnings | 21 pass |
-  | M2 | ✅ 0 warnings | 38 pass → **46** after the 2026-10-26 plan change (re-verified) |
-  | M3 | ✅ 0 warnings | 44 pass → 52 expected (edited, not re-compiled) |
-  | M4 | ✅ 0 warnings | 50 pass → 58 expected (edited, not re-compiled) |
+  | M2 | ✅ 0 warnings | 38 pass → **47** after the 2026-10-26 plan changes (built and run) |
+  | M3 | ✅ 0 warnings | 44 pass → 53 expected (edited, not re-compiled) |
+  | M4 | ✅ 0 warnings | 50 pass → 59 expected (edited, not re-compiled) |
 
   (The only warning is an upstream one inside GPUI's own dependencies, `block` and
   `proc-macro-error2`. It isn't ours, and it can be ignored.)

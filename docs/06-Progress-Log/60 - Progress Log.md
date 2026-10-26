@@ -27,7 +27,9 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   each reviewed: notification detector for OSC 9 / 99 / 777 that skips the `9;4` progress bar (`a2da2e2`),
   status heuristics with Idle / Working / Waiting / Done (`92fead3`), screen tail text (`ed7a4cb`),
   notification counting in the reader thread (`1e05b1e`), and the tracker wired into the view with BEL
-  from the parser (`1843452`). Build: 0 warnings from our code; `cargo test`: 46 passed. **You confirmed
+  from the parser (`1843452`). Final review (opus): ready to merge; its one Important item (a settled
+  session re-read the whole screen every 50 ms after a notification) was fixed with your OK (`316c884`).
+  Build: 0 warnings from our code; `cargo test`: 47 passed. **You confirmed
   on screen** every Task 6 check, including all four notification types, the progress bar not ending
   "working", the tab beep staying silent, and a real `claude` run launched from Ghostty.
 - **Learned:** The first-guess constants (150 ms echo window, 3 s quiet, 8 tail lines) needed no tuning.

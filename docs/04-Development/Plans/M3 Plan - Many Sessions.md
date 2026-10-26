@@ -570,7 +570,7 @@ fn paint_grid(
 
 - [ ] **Step 2: Build:** `cargo build`. Expected: it compiles. Unused-code warnings about `TerminalEvent`/`session_list` are fine until Task 3.
   *(Between Task 2 and Task 3 the app doesn't quit when the shell exits. Task 3 restores that.)*
-- [ ] **Step 3: Tests:** `cargo test`. Expected: `test result: ok. 52 passed`.
+- [ ] **Step 3: Tests:** `cargo test`. Expected: `test result: ok. 53 passed`.
 - [ ] **Step 4: Commit** together with Task 3.
 
 ### Task 3: `Workspace` (sidebar + active pane) and the new `main.rs` — ⬜
@@ -860,7 +860,7 @@ fn main() {
 ```
 
 - [ ] **Step 3: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
-- [ ] **Step 4: Tests:** `cargo test`. Expected: `test result: ok. 52 passed`.
+- [ ] **Step 4: Tests:** `cargo test`. Expected: `test result: ok. 53 passed`.
 - [ ] **Step 5: Commit** *(when you say so)*: `git add src/terminal_view.rs src/workspace.rs src/main.rs && git commit -m "feat(m3): many sessions with a sidebar and quick-switching"`
 
 ### Task 4: Use it for real — 👀 ⬜
@@ -892,7 +892,7 @@ fn main() {
 |---|---|---|---|
 | 2026-10-12 | Plan code compiles at pinned rev | ✅ 0 warnings | AI scratch build |
 | 2026-10-12 | Plan unit tests | ✅ 44 passed | AI scratch `cargo test` |
-| 2026-10-26 | M2 plan change carried over: `Output { notifications }` + the BEL arm; expected count 44 → 52 (M2 now has 8 more tests) | ⚠️ edited, not re-compiled | Re-verify when M3 starts |
+| 2026-10-26 | M2 plan change carried over: `Output { notifications }` + the BEL arm; expected count 44 → 53 (M2 now has 9 more tests, incl. the final-review fix) | ⚠️ edited, not re-compiled | Re-verify when M3 starts |
 | | Task 4 checklist | | 👀 |
 
 ## Known limitations
