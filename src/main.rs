@@ -6,6 +6,7 @@ mod detector;
 mod grid;
 mod keys;
 mod pty;
+mod status;
 mod terminal;
 mod terminal_view;
 
