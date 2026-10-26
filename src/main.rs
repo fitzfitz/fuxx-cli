@@ -14,6 +14,7 @@ mod session_list;
 mod status;
 mod terminal;
 mod terminal_view;
+mod theme;
 mod workspace;
 
 use gpui::{
