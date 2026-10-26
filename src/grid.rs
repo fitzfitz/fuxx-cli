@@ -6,7 +6,7 @@
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
@@ -229,7 +229,7 @@ mod tests {
     use crate::terminal::TermDims;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Scroll;
-    use alacritty_terminal::index::Side;
+    use alacritty_terminal::index::{Point, Side};
     use alacritty_terminal::selection::{Selection, SelectionType};
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
