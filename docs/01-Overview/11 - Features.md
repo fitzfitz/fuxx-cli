@@ -34,7 +34,7 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 ## C. Notification rings & agent state (the payoff)
 
 - `P0` Per-session **state detection**: working / done / **waiting-for-input** (reuse v1's OSC-9
-  detection + heuristics on the output stream).
+  detection, extended to OSC 99 / OSC 777 / BEL on 2026-10-26, + heuristics on the output stream).
 - `P0` Visual **ring / status badge** per session in the sidebar; at-a-glance across all sessions.
 - `P1` Desktop notifications for **background** sessions (focus-aware — don't nag about the active one).
 - `P1` Jump-to-session from a notification.

@@ -17,7 +17,9 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   colors, resize.
 - **Multiple concurrent sessions** in one window, each a shell/agent on its own PTY.
 - A **session sidebar/list** with per-session **status rings** (working / done / waiting).
-- **Agent-state detection** (reuse v1's OSC-9 idea + heuristics) to drive the rings.
+- **Agent-state detection** (reuse v1's OSC-9 idea, extended to OSC 99 / OSC 777 / BEL, + heuristics)
+  to drive the rings. The shell's environment is inherited as-is; stripping it, or documenting an
+  agent setting as a workaround, was considered and kept out (2026-10-26).
 - macOS first (Linux capable via the Rust stack).
 
 ## Out of scope (for now — resist scope creep)
