@@ -9,6 +9,8 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
@@ -162,6 +164,27 @@ impl TerminalCore {
         self.write(bytes);
     }
 
+    /// Begin a selection of kind `ty` anchored at `point` (replaces any existing one).
+    pub fn start_selection(&self, ty: SelectionType, point: Point, side: Side) {
+        self.shared.lock().term.selection = Some(Selection::new(ty, point, side));
+    }
+
+    /// Move the selection's moving end; no-op when there is no selection.
+    pub fn extend_selection(&self, point: Point, side: Side) {
+        if let Some(sel) = self.shared.lock().term.selection.as_mut() {
+            sel.update(point, side);
+        }
+    }
+
+    pub fn clear_selection(&self) {
+        self.shared.lock().term.selection = None;
+    }
+
+    /// The selected text, or `None` when nothing is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.shared.lock().term.selection_to_string()
+    }
+
     /// Scroll the view through history (positive `Delta` = up).
     pub fn scroll(&self, scroll: Scroll) {
         self.shared.lock().term.scroll_display(scroll);
@@ -230,6 +253,8 @@ impl TerminalCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritty_terminal::index::{Column, Line, Point, Side};
+    use alacritty_terminal::selection::SelectionType;
     use futures::channel::mpsc::{UnboundedReceiver, unbounded};
     use std::time::Duration;
 
@@ -381,5 +406,32 @@ mod tests {
             done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
             "write blocked"
         );
+    }
+
+    #[test]
+    fn selection_text_word_and_input_clears_it() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'hello world'; sleep 2"),
+            TermDims { cols: 20, rows: 3 },
+            tx,
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("world")));
+        core.start_selection(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        core.extend_selection(Point::new(Line(0), Column(4)), Side::Right);
+        assert_eq!(core.selection_text().as_deref(), Some("hello"));
+        core.start_selection(
+            SelectionType::Semantic,
+            Point::new(Line(0), Column(7)),
+            Side::Left,
+        );
+        assert_eq!(core.selection_text().as_deref(), Some("world"));
+        core.input(b"x");
+        assert_eq!(core.selection_text(), None);
     }
 }

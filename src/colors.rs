@@ -17,6 +17,8 @@ const fn hex(v: u32) -> Rgb {
 
 pub const FOREGROUND: Rgb = hex(0xd8d8d8);
 pub const BACKGROUND: Rgb = hex(0x181818);
+/// Background of selected cells.
+pub const SELECTION: Rgb = hex(0x264f78);
 
 /// 0-7 normal, 8-15 bright.
 const ANSI_16: [Rgb; 16] = [
