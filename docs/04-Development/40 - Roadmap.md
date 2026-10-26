@@ -21,7 +21,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 ## Phase 0 — Foundation (prove the stack)
 
 - [[40a - Milestone 0 - Scaffold and GPUI Window]] — ✅ — repurpose the crate; a blank GPUI window launches
-- [[41 - Milestone 1 - One Terminal Pane]] — ⬜ — `alacritty_terminal` + `portable-pty` rendered in a GPUI view, running the shell. **Make-or-break.**
+- [[41 - Milestone 1 - One Terminal Pane]] — ✅ — `alacritty_terminal` + `portable-pty` rendered in a GPUI view, running the shell. **Make-or-break.**
 
 ## Phase 1 — Core multi-agent terminal (the first genuinely useful version)
 

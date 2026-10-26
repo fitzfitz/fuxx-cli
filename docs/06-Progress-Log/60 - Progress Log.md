@@ -14,13 +14,29 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[41 - Milestone 1 - One Terminal Pane]] (the **new terminal app**). ⬜ M0 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** [[42 - Milestone 2 - Agent State Detection]] (the **new terminal app**). ⬜ M0 + M1 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — Milestone 1 complete: a real shell in the GPUI window
+- **Did:** Built [[M1 Plan - One Terminal Pane]] task by task (one fresh agent per task, each
+  reviewed) on branch `m1-terminal-pane`: keystroke → bytes (`d4b972f`), color palette (`522122f`),
+  screen snapshot + paint batching (`adc3283`), live terminal core with PTY + `alacritty_terminal`
+  + reader thread (`d86e2b6`), and the GPUI `TerminalView` (`4a359c3`). Build: 0 warnings from our
+  code; `cargo test`: 21 passed. **You confirmed on screen** all 12 checks: prompt + block cursor,
+  typing, `ls -G` colors, `TERM=xterm-256color`, `vim`, ctrl-c/ctrl-d, resize + `tput`, `界🙂x`
+  without overlap, `seq 1 200000`, `claude`, `exit` quits, cmd-q quits.
+- **Learned:** GPUI's own text system (D2) is enough to draw a terminal grid; no `gpui-ghostty`
+  fallback needed. Programs like Claude Code send terminal queries, so replies must be written
+  back to the PTY, and synchronized updates need a periodic flush (50 ms timer).
+- **Known gaps (by plan):** no scrollback/selection/mouse (M5), fixed Menlo 14 px (M6), no IME/dead
+  keys, the cursor covers only half of a wide glyph, shell exit quits the app (changes in M3).
+- **Blocked:** Nothing. The branch isn't merged into `master` yet.
+- **Next task:** [[M2 Plan - Agent State Detection]] → Task 1 (D4 still open; recommended option used by default).
 
 ### 2026-10-26 — Open decision D7 added (target CPUs for M11)
 - **Did:** On request, added **D7** to [[00 - Plan Tracker (Start Here)]] and the M11 line of

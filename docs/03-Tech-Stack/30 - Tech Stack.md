@@ -21,21 +21,23 @@ pin the rev. App entry: `Application::new().run(...)` → `open_window()` → ro
 ## Terminal core: `alacritty_terminal`
 
 The standalone grid + VT/escape parser powering Alacritty (also used by Zed, COSMIC term). Pure Rust,
-no GUI deps. We feed it PTY bytes and read its grid to render.
+no GUI deps. We feed it PTY bytes and read its grid to render. **Version: `0.26.0`.**
 
 ## PTY: `portable-pty`
 
-Spawns the shell/agent per session; bidirectional bytes. **Reused directly from v1.**
+Spawns the shell/agent per session; bidirectional bytes. **Reused directly from v1.** **Version: `0.9.0`.**
 
 ## Terminal rendering (we build, over the grid)
 
-Glyph rendering in GPUI — likely `cosmic-text` (+ `glyphon`) for shaping/rasterization, or GPUI's own
-text primitives. To be pinned down in [[41 - Milestone 1 - One Terminal Pane]].
+**GPUI's own text system** (`shape_line` + `paint`), the same approach as Zed's terminal, with no
+extra crate (decision **D2**, 2026-10-26; built and confirmed on screen in
+[[41 - Milestone 1 - One Terminal Pane]]). Font: Menlo 14 px for now (config comes in M6).
 
-**Proposed (decision D2, pending your OK):** GPUI's own text system (`shape_line` + `paint`), the
-same approach as Zed's terminal, with no extra crate. The M1 plan is written this way. Also proposed
-(D3): `futures` for the reader-thread → UI channel. Exact APIs for all of this:
-[[31 - API Fact Sheet (pinned rev)]]. Decisions: [[00 - Plan Tracker (Start Here)]].
+## Reader thread → UI channel: `futures`
+
+`futures::channel::mpsc` (decision **D3**, 2026-10-26), declared as `futures = "0.3"` (locked at
+`0.3.32`). It's what Zed uses and was already in `Cargo.lock` through GPUI. Exact APIs for all of
+this: [[31 - API Fact Sheet (pinned rev)]]. Decisions: [[00 - Plan Tracker (Start Here)]].
 
 ## Notifications
 
