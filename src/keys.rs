@@ -146,6 +146,19 @@ pub fn key_to_bytes(
     None
 }
 
+/// Bytes to send for pasted text. Bracketed: wrapped in `ESC[200~ ... ESC[201~` with every ESC
+/// removed, so the text can't end the paste early. Plain: line breaks become Enter (`\r`).
+pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        let mut out = b"\x1b[200~".to_vec();
+        out.extend(text.replace('\x1b', "").as_bytes());
+        out.extend(b"\x1b[201~");
+        out
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +255,18 @@ mod tests {
             None
         );
         assert_eq!(k("unknown-key", None), None);
+    }
+
+    #[test]
+    fn bracketed_paste_wraps_and_strips_escape() {
+        assert_eq!(
+            paste_bytes("a\x1b[201~b\nc", true),
+            b"\x1b[200~a[201~b\nc\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn plain_paste_turns_newlines_into_enter() {
+        assert_eq!(paste_bytes("a\r\nb\nc", false), b"a\rb\rc".to_vec());
     }
 }

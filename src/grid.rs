@@ -6,7 +6,7 @@
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
@@ -81,6 +81,7 @@ pub fn snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     let cols = term.columns();
     let content = term.renderable_content();
     let overrides = content.colors;
+    let selection = content.selection;
     // Grid lines are negative when scrolled back; viewport row = line + display_offset.
     let offset = content.display_offset as i32;
     let mut lines = vec![vec![CellView::BLANK; cols]; rows];
@@ -100,6 +101,10 @@ pub fn snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         }
         if flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
+        }
+        // After the inverse swap, so a selection always shows.
+        if selection.is_some_and(|range| range.contains(indexed.point)) {
+            bg = colors::SELECTION;
         }
         lines[row as usize][col] = CellView {
             ch: if flags.contains(Flags::HIDDEN) {
@@ -224,6 +229,8 @@ mod tests {
     use crate::terminal::TermDims;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Scroll;
+    use alacritty_terminal::index::Side;
+    use alacritty_terminal::selection::{Selection, SelectionType};
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
@@ -370,5 +377,21 @@ mod tests {
         let spans = text_spans(&snap.lines[0]);
         assert_eq!(spans[0].text, "界");
         assert_eq!((spans[1].col, spans[1].text.as_str()), (2, "a"));
+    }
+
+    #[test]
+    fn selected_cells_get_the_selection_background() {
+        let mut term = term_with(b"hello");
+        let mut sel = Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        term.selection = Some(sel);
+        let snap = snapshot(&term);
+        assert_eq!(snap.lines[0][0].bg, colors::SELECTION);
+        assert_eq!(snap.lines[0][1].bg, colors::SELECTION);
+        assert_eq!(snap.lines[0][2].bg, colors::BACKGROUND);
     }
 }
