@@ -974,7 +974,7 @@ thread takes the writes off the UI thread.
 - [x] [[40 - Roadmap]]: M3 → ✅.
 - [x] [[00 - Plan Tracker (Start Here)]]: M3 → ✅ 6/6; **Where we are** → M4 Task 0.
 - [x] [[60 - Progress Log]]: new entry.
-- [ ] Commit docs *(when you say so)*.
+- [x] Commit docs *(when you say so)*.
 
 ## Verification log
 
