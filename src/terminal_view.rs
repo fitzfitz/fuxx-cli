@@ -1,6 +1,6 @@
 //! The GPUI view for one terminal: paints a `GridSnapshot` and turns keystrokes into PTY bytes.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::term::TermMode;
@@ -17,6 +17,7 @@ use crate::colors;
 use crate::grid::{self, GridSnapshot};
 use crate::keys;
 use crate::pty;
+use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{TermDims, TermEvent, TerminalCore};
 
 const FONT_FAMILY: &str = "Menlo";
@@ -30,6 +31,7 @@ pub struct TerminalView {
     core: TerminalCore,
     focus_handle: FocusHandle,
     title: Option<SharedString>,
+    tracker: StatusTracker,
     /// Dropping a GPUI `Task` cancels it, so these live as long as the view.
     _events: Task<()>,
     _ticker: Task<()>,
@@ -81,6 +83,7 @@ impl TerminalView {
             core,
             focus_handle,
             title: None,
+            tracker: StatusTracker::new(),
             _events: events,
             _ticker: ticker,
         }
@@ -90,11 +93,29 @@ impl TerminalView {
         if self.core.flush_stale_sync() {
             cx.notify();
         }
+        let core = &self.core;
+        if let Some(status) = self
+            .tracker
+            .tick(Instant::now(), || core.snapshot().tail_text(TAIL_LINES))
+        {
+            self.status_changed(status, cx);
+        }
+    }
+
+    fn status_changed(&self, status: Status, cx: &mut Context<Self>) {
+        eprintln!("[fuxx] status -> {status:?}"); // debug log, used by the M2 manual check
+        cx.notify();
     }
 
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
-            TermEvent::Output { .. } | TermEvent::Term(Event::Wakeup) => cx.notify(),
+            TermEvent::Output { notifications } => {
+                self.tracker.on_output(Instant::now(), notifications);
+                cx.notify();
+            }
+            TermEvent::Term(Event::Wakeup) => cx.notify(),
+            // A real BEL (not an OSC terminator). Must come before the `TermEvent::Term(_)` catch-all.
+            TermEvent::Term(Event::Bell) => self.tracker.on_bell(Instant::now()),
             // Replies to terminal queries (cursor position, device attributes, ...) MUST go back
             // to the child, or programs that ask (shells, vim, Claude Code) hang waiting.
             TermEvent::Term(Event::PtyWrite(text)) => self.core.write(text.as_bytes()),
@@ -146,6 +167,9 @@ impl TerminalView {
             app_cursor,
         ) {
             self.core.write(&bytes);
+            if let Some(status) = self.tracker.on_input(Instant::now()) {
+                self.status_changed(status, cx);
+            }
             cx.stop_propagation();
         }
     }
