@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M4b
-status: in-progress
+status: done
 updated: 2026-10-26
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-10-26
 | At a glance | |
 |---|---|
 | **Milestone note** | [[44b - Milestone 4b - Tester Build]] |
-| **Status** | 🟨 In progress |
-| **Tasks done** | 2 / 4 |
-| **▶ Pick up here** | Task 2 (👀 your install check) |
+| **Status** | ✅ Done 2026-10-26 (commits `170ec6a`, `bc5705b` + docs on `m4b-tester-build`) |
+| **Tasks done** | 4 / 4 |
+| **▶ Pick up here** | M4b complete → M5 (Phase 2), plan to be written |
 | **Decisions used** | ✅ **D7** = universal: Apple Silicon + Intel (decided 2026-10-26) · ✅ **D8** = accept the weaker detection when opened from Finder (decided 2026-10-26) |
-| **Needs your eyes** | 👀 Task 2: install from the DMG like a tester, on both CPU slices |
+| **Needs your eyes** | ✅ Task 2 confirmed by you on 2026-10-26 (all 7 checks) |
 
 **Goal:** One command turns the current code into `target/dist/fuxx-<version>.dmg`. A tester opens
 it, drags **fuxx** to Applications, clears Gatekeeper once, and gets the M4 app (sessions, rings,
@@ -126,32 +126,32 @@ and `scripts/check-dmg.sh <dmg>` (prints `OK: <dmg> (fuxx <version>, <archs>)` a
 - [x] **Step 7: No warnings of ours.** `grep -E "^(warning|error)"` over Step 5's output, minus the GPUI `future version` note. Expected: **no output**. `cargo test`: `test result: ok. 61 passed`.
 - [x] **Step 8: Commit** *(when you say so)*: `git add packaging scripts && git commit -m "feat(m4b): universal tester DMG (bundle-mac.sh) with check-dmg.sh"`
 
-### Task 2: Install it like a tester — 👀 ⬜
+### Task 2: Install it like a tester — 👀 ✅
 
 The AI prepares a "downloaded" copy; **you** do the rest and report what you see.
 
-- [ ] *(AI)* Copy the DMG to `~/Downloads/fuxx-0.1.0.dmg` and mark it as downloaded:
+- [x] *(AI)* Copy the DMG to `~/Downloads/fuxx-0.1.0.dmg` and mark it as downloaded:
   `xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" ~/Downloads/fuxx-0.1.0.dmg`.
-- [ ] Double-click it. A window shows **fuxx** and an **Applications** folder. Drag fuxx onto Applications.
-- [ ] Open fuxx from **Applications** (double-click). macOS blocks it ("Apple could not verify…").
+- [x] Double-click it. A window shows **fuxx** and an **Applications** folder. Drag fuxx onto Applications.
+- [x] Open fuxx from **Applications** (double-click). macOS blocks it ("Apple could not verify…").
   System Settings → Privacy & Security → **Open Anyway** → it opens. *(Expected for an unsigned build.)*
-- [ ] Opened from Finder, the first session starts in your **home folder**, `claude --version` works,
+- [x] Opened from Finder, the first session starts in your **home folder**, `claude --version` works,
   and `echo "héllo 🚀"` prints correctly.
-- [ ] M4 still works: cmd-t sessions, rings, a background `claude` turns 🟢 about 3 s after it
+- [x] M4 still works: cmd-t sessions, rings, a background `claude` turns 🟢 about 3 s after it
   finishes and a banner fires. *(D8: Claude Code sends no notification here, so Done comes from the quiet timer. Expected.)*
-- [ ] cmd-q quits. Opening it again from Applications needs **no** second "Open Anyway".
-- [ ] **Intel slice (Rosetta):** in Terminal, `arch -x86_64 /Applications/fuxx.app/Contents/MacOS/fuxx`.
+- [x] cmd-q quits. Opening it again from Applications needs **no** second "Open Anyway".
+- [x] **Intel slice (Rosetta):** in Terminal, `arch -x86_64 /Applications/fuxx.app/Contents/MacOS/fuxx`.
   The window opens and a shell works. *(This proves the Intel code runs. The graphics are still this Mac's GPU, so a real Intel Mac stays untested.)*
-- [ ] Finder → fuxx.app → Get Info shows version **0.1.0**.
+- [x] Finder → fuxx.app → Get Info shows version **0.1.0**.
 
-### Task 3: Update the docs — ⬜
+### Task 3: Update the docs — ✅
 
-- [ ] [[44b - Milestone 4b - Tester Build]]: tick the checklist; **Status:: ✅ Done**.
-- [ ] [[40 - Roadmap]]: M4b → ✅.
-- [ ] [[00 - Plan Tracker (Start Here)]]: M4b → ✅ 4/4; **Where we are** → next is M5 (Phase 2), plan to be written.
-- [ ] `STRUCTURE.md`: add `scripts/` (M4b: `bundle-mac.sh`, `check-dmg.sh`) and `packaging/macos/Info.plist`.
-- [ ] [[60 - Progress Log]]: entry "M4b complete: tester DMG".
-- [ ] Commit docs *(when you say so)*.
+- [x] [[44b - Milestone 4b - Tester Build]]: tick the checklist; **Status:: ✅ Done**.
+- [x] [[40 - Roadmap]]: M4b → ✅.
+- [x] [[00 - Plan Tracker (Start Here)]]: M4b → ✅ 4/4; **Where we are** → next is M5 (Phase 2), plan to be written.
+- [x] `STRUCTURE.md`: add `scripts/` (M4b: `bundle-mac.sh`, `check-dmg.sh`) and `packaging/macos/Info.plist`.
+- [x] [[60 - Progress Log]]: entry "M4b complete: tester DMG".
+- [x] Commit docs *(when you say so)*.
 
 ## Verification log
 
@@ -165,6 +165,7 @@ The AI prepares a "downloaded" copy; **you** do the rest and report what you see
 | 2026-10-26 | A Finder-like environment (`env -i`, launchd sets no `LANG`): login shell finds `claude`; text is UTF-8 | ✅ on this Mac (something in your shell start-up sets `LANG=C.UTF-8`) | AI `env -i … zsh -l -i` |
 | 2026-10-26 | `cargo test` | ✅ 61 passed | AI run |
 | 2026-10-26 | Final review fix: `check-dmg.sh` printed nothing when the DMG was already mounted (RED reproduced), and its exit trap stopped at the failed detach under `set -e`, leaking the temp folder | ✅ prints `FAIL: could not mount …`; no temp folder left on either path | AI run |
+| 2026-10-26 | Task 2: quarantined DMG → drag to Applications → Open Anyway → home folder, `claude --version`, `héllo 🚀`, rings + quiet-timer Done + banner, reopen without a second prompt, Intel slice under Rosetta, Get Info 0.1.0 | ✅ all 7 | 👀 confirmed by you |
 | 2026-10-26 | Task 1 in the repo: Step 2 FAIL (not found) → Step 5 `OK: target/dist/fuxx-0.1.0.dmg (fuxx 0.1.0, x86_64 arm64)` → Step 6 refused, DMG unchanged; no warnings of ours | ✅ | AI run |
 
 ## Known limitations

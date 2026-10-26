@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M4b — Tester build** (Phase 1's core is complete) |
-| **Status** | 🟨 In progress: [[M4b Plan - Tester Build]] written; D7 + D8 decided 2026-10-26. M4 ✅ done 2026-10-26 (merged into `master` and pushed). |
-| **▶ Next action** | [[M4b Plan - Tester Build]] → Task 2 (👀 install `~/Downloads/fuxx-0.1.0.dmg` like a tester). |
+| **Current milestone** | **M5 — Terminal UX** (Phase 2). Phase 1 and the M4b tester build are complete |
+| **Status** | ⬜ Not started. M4b ✅ done 2026-10-26: a universal tester DMG (`scripts/bundle-mac.sh`), all install checks confirmed by you. |
+| **▶ Next action** | Write the M5 plan (scrollback, selection + copy/paste, mouse, clickable URLs, robust resize; see [[40 - Roadmap]]). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-26 |
 
@@ -45,7 +45,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M2 | Agent state detection | [[M2 Plan - Agent State Detection]] | ✅ | 7/7 | Status log shows working → done / waiting |
 | M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ✅ | 6/6 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ✅ | 4/4 | Rings update; background sessions notify |
-| M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | 🟨 | 2/4 | A tester drags fuxx to Applications and opens it |
+| M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
