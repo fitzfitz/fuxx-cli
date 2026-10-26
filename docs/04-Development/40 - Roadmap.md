@@ -33,7 +33,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 ## Phase 2 — Daily driver (polish enough to live in it)
 
 - [[45 - Milestone 5 - Terminal UX]] — ✅ — scrollback, selection + copy/paste, mouse, clickable URLs, robust resize. Plan: [[M5 Plan - Terminal UX]].
-- **M6 — Fonts & config:** font family/size/ligatures; read Ghostty's config (theme/colors). Must also draw **prompt icons** (Nerd Font symbols, e.g. powerlevel10k's): today fuxx draws only Menlo, so they show as `?` boxes. Ghostty has them built in, so reading its config alone doesn't fix this (seen 2026-10-26, kept for M6 on request).
+- [[46 - Milestone 6 - Fonts and Config]] — 🟨 — font family/size/ligatures; read Ghostty's config (theme/colors); **prompt icons** for everyone via a bundled Symbols Nerd Font. Plan: [[M6 Plan - Fonts and Config]].
 - **M7 — Session ergonomics:** project groups (sessions grouped by project folder, rolled-up ring), rename/reorder sessions, agent presets (one-tap `claude`/`opencode`), session restore.
 
 ## Phase 3 — Power features (cmux parity — big, deferred)

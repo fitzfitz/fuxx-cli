@@ -20,8 +20,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M6 — Fonts & config** (Phase 2). M5 Terminal UX is complete |
-| **Status** | ⬜ Not started. M5 ✅ done 2026-10-27: scrollback, selection, copy/paste, mouse reporting, cmd-click links, pixel-accurate resize; all on-screen checks confirmed by you. |
-| **▶ Next action** | Write the M6 plan (font family/size/ligatures, Ghostty config, **prompt icons**; see [[40 - Roadmap]]). |
+| **Status** | 🟨 In progress: [[M6 Plan - Fonts and Config]] written and approved 2026-10-27. M5 ✅ done 2026-10-27. |
+| **▶ Next action** | [[M6 Plan - Fonts and Config]] → Task 1 (read Ghostty's config files). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-26 |
 
@@ -47,6 +47,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ✅ | 4/4 | Rings update; background sessions notify |
 | M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
 | M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | ✅ | 8/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
+| M6 | Fonts & config (Ghostty config, theme, prompt icons) | [[M6 Plan - Fonts and Config]] | 🟨 | 0/7 | Your Ghostty font and colors; prompt icons for everyone |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
