@@ -20,7 +20,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M4 — Notification Rings** |
-| **Status** | ⬜ Not started. M3 ✅ done 2026-10-26 (many sessions + sidebar, all on-screen checks confirmed by you; on branch `m3-many-sessions`, not merged yet). |
+| **Status** | ⬜ Not started. M3 ✅ done 2026-10-26 (many sessions + sidebar, all on-screen checks confirmed by you; merged into `master` locally, not pushed). |
 | **▶ Next action** | Decide **D5**, then [[M4 Plan - Notification Rings]] → Task 1 (on a new branch from `master`). |
 | **Blocked on** | ❓ **D5** (notification click with `osascript`), needed before M4 Task 1. |
 | **Last updated** | 2026-10-26 |
