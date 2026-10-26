@@ -1,6 +1,7 @@
 // fuxx — a native GPU terminal for running AI coding agents.
 // Many sessions in one window, each with a live status ring and background notifications.
 
+mod appearance;
 mod colors;
 mod detector;
 mod fonts;
@@ -63,6 +64,10 @@ fn main() {
                 KeyBinding::new("cmd-down", ScrollPageDown, Some("Terminal")),
             ]);
             cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+
+            // Read once, before any view exists: every view takes its theme and font from it.
+            let appearance = appearance::load(cx);
+            cx.set_global(appearance);
 
             let bounds = Bounds::centered(None, size(px(1100.0), px(640.0)), cx);
             cx.open_window(
