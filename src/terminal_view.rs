@@ -373,7 +373,8 @@ impl TerminalView {
         if let Some(link) = self.pressed_link.take()
             && over_pane
             && let Some((point, ..)) = at
-            && self.core.link_at(point).as_ref() == Some(&link)
+            // Compare by url: a link's grid lines shift when new output scrolls the screen.
+            && self.core.link_at(point).is_some_and(|under| under.url == link.url)
         {
             // `link_at` only returns http/https/mailto. Opened by the OS, never through a shell.
             cx.open_url(&link.url);

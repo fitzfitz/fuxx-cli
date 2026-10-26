@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Point, Side};
+use alacritty_terminal::index::{Boundary, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term, TermMode};
@@ -159,9 +159,11 @@ impl TerminalCore {
         })
     }
 
-    /// The allowed-scheme link under `point`, if any.
+    /// The allowed-scheme link under `point`, if any. The point is clamped to the grid under
+    /// the same lock, so one computed from a stale display offset can't index out of range.
     pub fn link_at(&self, point: Point) -> Option<Link> {
         let term = &self.shared.lock().term;
+        let point = point.grid_clamp(term, Boundary::Grid);
         self.links.lock().unwrap().find(term, point)
     }
 
@@ -182,19 +184,21 @@ impl TerminalCore {
     }
 
     /// Begin a selection of kind `ty` anchored at `point` (replaces any existing one).
+    /// The point is clamped to the grid under the same lock.
     pub fn start_selection(&self, ty: SelectionType, point: Point, side: Side) {
-        self.shared.lock().term.selection = Some(Selection::new(ty, point, side));
+        let term = &mut self.shared.lock().term;
+        let point = point.grid_clamp(term, Boundary::Grid);
+        term.selection = Some(Selection::new(ty, point, side));
     }
 
     /// Move the selection's moving end; no-op when there is no selection.
+    /// The point is clamped to the grid under the same lock.
     pub fn extend_selection(&self, point: Point, side: Side) {
-        if let Some(sel) = self.shared.lock().term.selection.as_mut() {
+        let term = &mut self.shared.lock().term;
+        let point = point.grid_clamp(term, Boundary::Grid);
+        if let Some(sel) = term.selection.as_mut() {
             sel.update(point, side);
         }
-    }
-
-    pub fn clear_selection(&self) {
-        self.shared.lock().term.selection = None;
     }
 
     /// The selected text, or `None` when nothing is selected.
@@ -514,5 +518,25 @@ mod tests {
         assert_eq!(core.selection_text().as_deref(), Some("world"));
         core.input(b"x");
         assert_eq!(core.selection_text(), None);
+    }
+
+    #[test]
+    fn out_of_range_points_are_clamped_not_panicking() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'hello world'; sleep 2"),
+            TermDims { cols: 20, rows: 3 },
+            tx,
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("world")));
+        let far_up = Point::new(Line(-500), Column(999));
+        let far_down = Point::new(Line(500), Column(0));
+        // A point from a stale display offset (e.g. scrollback cleared in between) must not panic.
+        assert_eq!(core.link_at(far_up), None);
+        assert_eq!(core.link_at(far_down), None);
+        core.start_selection(SelectionType::Simple, far_up, Side::Left);
+        core.extend_selection(far_down, Side::Right);
+        let _ = core.selection_text();
     }
 }
