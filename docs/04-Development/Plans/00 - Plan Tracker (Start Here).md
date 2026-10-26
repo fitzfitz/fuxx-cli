@@ -19,10 +19,10 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M3 — Many Sessions** |
-| **Status** | ⬜ Not started. M2 ✅ done 2026-10-26 (status detected and logged, all on-screen checks confirmed by you; merged into `master` locally, not pushed). |
-| **▶ Next action** | [[M3 Plan - Many Sessions]] → Task 1 (on branch `m3-many-sessions`). |
-| **Blocked on** | Nothing. D6 decided (recommended set); the PTY writer thread is added to M3 (Task 4); "end a session on shell exit" was dropped (not needed on macOS, see the M3 Verification log). |
+| **Current milestone** | **M4 — Notification Rings** |
+| **Status** | ⬜ Not started. M3 ✅ done 2026-10-26 (many sessions + sidebar, all on-screen checks confirmed by you; on branch `m3-many-sessions`, not merged yet). |
+| **▶ Next action** | Decide **D5**, then [[M4 Plan - Notification Rings]] → Task 1 (on a new branch from `master`). |
+| **Blocked on** | ❓ **D5** (notification click with `osascript`), needed before M4 Task 1. |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -43,7 +43,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M0 | Scaffold & GPUI window | [[M0 Plan - Scaffold and GPUI Window]] | ✅ | 4/4 | A window opens; closing it quits |
 | M1 | One terminal pane (**make-or-break**) | [[M1 Plan - One Terminal Pane]] | ✅ | 7/7 | Usable shell: `ls --color`, `vim`, resize |
 | M2 | Agent state detection | [[M2 Plan - Agent State Detection]] | ✅ | 7/7 | Status log shows working → done / waiting |
-| M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ⬜ | 0/6 | 3 sessions, switch, all keep running |
+| M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ✅ | 6/6 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ⬜ ❓D5 | 0/4 | Rings update; background sessions notify |
 | M4b | Tester build (unsigned `.app` in a DMG) — *added 2026-10-26* | written when M4 is done | ⬜ ❓D7 ❓D8 | — | A tester drags fuxx to Applications and opens it |
 
@@ -79,8 +79,8 @@ updated before anyone builds it.
   | M0 | ✅ 0 warnings | n/a (GUI only) |
   | M1 | ✅ 0 warnings | 21 pass |
   | M2 | ✅ 0 warnings | 38 pass → **47** after the 2026-10-26 plan changes (built and run) |
-  | M3 | ✅ 0 warnings | 44 pass → **54** after the 2026-10-26 plan changes (re-verified) |
-  | M4 | ✅ 0 warnings | 50 pass → 60 expected (edited, not re-compiled) |
+  | M3 | ✅ 0 warnings | 44 pass → **54** after the 2026-10-26 plan changes (re-verified) → **55** in the repo (Working fix) |
+  | M4 | ✅ 0 warnings | 50 pass → 61 expected (edited, not re-compiled) |
 
   (The only warning is an upstream one inside GPUI's own dependencies, `block` and
   `proc-macro-error2`. It isn't ours, and it can be ignored.)

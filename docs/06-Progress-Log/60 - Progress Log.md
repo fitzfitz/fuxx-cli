@@ -14,13 +14,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[43 - Milestone 3 - Many Sessions]] (the **new terminal app**). ⬜ M0 + M1 + M2 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** [[44 - Milestone 4 - Notification Rings]] (the **new terminal app**). ⬜ M0 + M1 + M2 + M3 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — Milestone 3 complete: many sessions
+- **Did:** Built [[M3 Plan - Many Sessions]] on branch `m3-many-sessions`, one fresh agent per task, each
+  reviewed: `SessionList` (`31b9a32`), embeddable `TerminalView` + `Workspace` with sidebar and the D6
+  shortcuts (`0350c50`), PTY writes on a per-session writer thread (`9326082`). Your on-screen check
+  found that **Working** never showed in the status log; root cause: `StatusTracker::on_output` set it
+  but never reported the change (latent since M2). Fixed with a test first (`6973016`). All checks then
+  passed on screen, plus an input-flood check (3000 cursor queries to a program that isn't reading):
+  the app stays responsive. 0 warnings, 55 tests pass.
+- **Learned:** M2's Task 6 "Working" checks couldn't have caught the bug, because the log line was never
+  printed and nothing asserted it. A status change must be *reported*, not only stored; the new test pins it.
+  The `1R;` text after the flood is zsh reading the queued replies, not an app bug.
+- **Blocked:** **D5** (notification click with `osascript`) before M4 starts.
+- **Next task:** Decide D5 → [[M4 Plan - Notification Rings]] → Task 1. M4's expected count is now 61.
 
 ### 2026-10-26 — M3 plan changes: D6, PTY writer thread; one proposal dropped
 - **Did:** On request ("recommended for all three"): **D6** = the recommended shortcuts. Added M3 **Task 4**:

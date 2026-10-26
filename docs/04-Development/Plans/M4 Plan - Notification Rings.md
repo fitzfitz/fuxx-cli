@@ -464,7 +464,7 @@ impl Render for Workspace {
 - [ ] **Step 3:** In `src/main.rs`, make sure `mod notifier;` is present (Task 1), and change the second header line to
   `// Many sessions in one window, each with a live status ring and background notifications.`
 - [ ] **Step 4: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
-- [ ] **Step 5: Tests:** `cargo test`. Expected: `test result: ok. 60 passed`.
+- [ ] **Step 5: Tests:** `cargo test`. Expected: `test result: ok. 61 passed`.
 - [ ] **Step 6: Commit** *(when you say so)*: `git add src/terminal_view.rs src/workspace.rs src/main.rs && git commit -m "feat(m4): status rings in the sidebar and background notifications"`
 
 ### Task 3: The payoff, for real — 👀 ⬜
@@ -495,6 +495,7 @@ impl Render for Workspace {
 | 2026-10-12 | Plan code compiles at pinned rev | ✅ 0 warnings | AI scratch build |
 | 2026-10-12 | Plan unit tests | ✅ 50 passed | AI scratch `cargo test` |
 | 2026-10-26 | Expected count 50 → 60 after the M2 plan changes (9 more M2 tests) and M3's writer-thread test | ⚠️ edited, not re-compiled | Re-verify when M4 starts |
+| 2026-10-26 | Expected count 60 → 61: M3's Working fix added `output_reports_working_once`, and `StatusTracker::on_output` now returns `Option<Status>` (check M4's call sites against it) | ⚠️ edited, not re-compiled | Re-verify when M4 starts |
 | | Task 3 checklist | | 👀 |
 
 ## Known limitations
