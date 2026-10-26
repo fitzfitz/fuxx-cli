@@ -50,6 +50,8 @@ pub struct StatusTracker {
     /// A notification (or a BEL while working) arrived since the last keystroke: settle on the
     /// next tick.
     attention: bool,
+    /// New output (or a BEL) arrived since the screen was last read.
+    dirty: bool,
 }
 
 impl StatusTracker {
@@ -59,6 +61,7 @@ impl StatusTracker {
             last_input: None,
             last_output: None,
             attention: false,
+            dirty: false,
         }
     }
 
@@ -84,6 +87,7 @@ impl StatusTracker {
         if notifications > 0 {
             self.attention = true;
             self.last_output = Some(now);
+            self.dirty = true;
             return;
         }
         let Some(input) = self.last_input else {
@@ -93,6 +97,7 @@ impl StatusTracker {
             return; // echo of typing
         }
         self.last_output = Some(now);
+        self.dirty = true;
         if !self.attention {
             self.status = Status::Working;
         }
@@ -105,11 +110,13 @@ impl StatusTracker {
         if self.status == Status::Working {
             self.attention = true;
             self.last_output = Some(now);
+            self.dirty = true;
         }
     }
 
-    /// Call periodically. `screen_tail` is only evaluated when the session settles.
-    /// Returns the new status when it changed.
+    /// Call periodically. `screen_tail` is evaluated only when the session is settling and there
+    /// is something new to read: a settled session is not read again until new output or a BEL
+    /// arrives. Returns the new status when it changed.
     pub fn tick(&mut self, now: Instant, screen_tail: impl FnOnce() -> String) -> Option<Status> {
         let quiet = self
             .last_output
@@ -118,6 +125,10 @@ impl StatusTracker {
         if !settling {
             return None;
         }
+        if self.attention && !self.dirty && matches!(self.status, Status::Waiting | Status::Done) {
+            return None;
+        }
+        self.dirty = false;
         let next = if looks_like_waiting(&screen_tail()) {
             Status::Waiting
         } else {
@@ -260,5 +271,29 @@ mod tests {
         assert!(looks_like_waiting("Overwrite file? (Y/n)"));
         assert!(looks_like_waiting("DO YOU WANT TO continue"));
         assert!(!looks_like_waiting("Compiling fuxx v0.1.0"));
+    }
+
+    #[test]
+    fn settled_session_does_not_reread_the_screen_until_new_output() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 1);
+        assert_eq!(
+            t.tick(t0 + ms(450), || "all done".into()),
+            Some(Status::Done)
+        );
+        // Nothing new arrived: the screen must not be read again.
+        assert_eq!(
+            t.tick(t0 + ms(500), || -> String {
+                panic!("screen read without new output")
+            }),
+            None
+        );
+        // New output arrives while settled: re-read once (and it now asks a question).
+        t.on_output(t0 + ms(600), 0);
+        assert_eq!(
+            t.tick(t0 + ms(650), || "Continue? (y/n)".into()),
+            Some(Status::Waiting)
+        );
     }
 }
