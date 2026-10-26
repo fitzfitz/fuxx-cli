@@ -45,6 +45,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M2 | Agent state detection | [[M2 Plan - Agent State Detection]] | ⬜ ❓D4 | 0/7 | Status log shows working → done / waiting |
 | M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ⬜ ❓D6 | 0/5 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ⬜ ❓D5 | 0/4 | Rings update; background sessions notify |
+| M4b | Tester build (unsigned `.app` in a DMG) — *added 2026-10-26* | written when M4 is done | ⬜ ❓D7 ❓D8 | — | A tester drags fuxx to Applications and opens it |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
@@ -62,6 +63,7 @@ updated before anyone builds it.
 | **D4** | A 4th status, **Idle** (grey hollow ring), for a fresh session that hasn't done anything yet | **Yes**. Without it, every new shell would show "Done" | Only working / waiting / done | M2, M4 |
 | **D5** | "Clicking a notification switches to that session" ([[44 - Milestone 4 - Notification Rings]]) **can't work with `osascript`**: clicking its banner opens Script Editor, not fuxx | **Move that one item to M11** (the real `.app` bundle can receive notification clicks) | Add `terminal-notifier` (new external tool, outside the plan), or drop the item | M4 |
 | **D6** | Keyboard shortcuts (the vault doesn't specify any) | **cmd-t** new session · **cmd-w** close session (kills its shell, no confirmation) · **cmd-1…9** jump · **cmd-{ / cmd-}** previous/next · **cmd-q** quit | Any other set | M0, M3 |
+| **D8** | How agent-state detection works when fuxx is opened from Finder/Dock (the M4b `.app`). Launched that way the shell inherits no terminal identity, so Claude Code sends **no** notifications; only the 3 s quiet timer and the screen's question patterns apply | **Not chosen yet.** Decide when M4b gets its detailed plan | Accept the weaker detection for testers · or revisit the 2026-10-26 "keep the inherited environment" choice for app launches | M4b, M11 |
 | **D7** | Which CPUs the shipped `.app` runs on. The vault names OSes (macOS first) but no CPU; today `cargo build` makes an Apple Silicon-only binary (`aarch64-apple-darwin`) | **Not chosen yet.** Decide when M11 gets its detailed plan | **Apple Silicon only** (what builds today) · or **universal** (Apple Silicon + Intel `x86_64`; whether GPUI works on Intel Macs at our pinned rev is unverified) | M11, M12 |
 
 ## How these plans were made (so you can trust the code)

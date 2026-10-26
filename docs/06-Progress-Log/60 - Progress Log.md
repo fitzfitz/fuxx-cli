@@ -22,6 +22,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-26 — Plan change: M4b tester build (unsigned .app in a DMG)
+- **Did:** On request, added **M4b** right after M4 in [[40 - Roadmap]], [[00 - Plan Tracker (Start Here)]]
+  and [[12 - Scope]]: wrap the release binary in an unsigned `.app` and ship it in a DMG for
+  drag-and-drop install. M11 now signs/notarizes that bundle. Added open decision **D8**: opened from
+  Finder, the shell inherits no terminal identity, so Claude Code sends no notifications. No code
+  changed; M4b's detailed plan is written when M4 is done.
+- **Learned:** An unsigned DMG still needs the tester to clear Gatekeeper once ("Open Anyway").
+  The binary needs nothing else installed: it links only macOS system frameworks (checked with
+  `otool -L`), arm64 only, declared minimum macOS 11.0 (untested below the dev machine).
+- **Blocked:** Nothing.
+- **Next task:** [[M2 Plan - Agent State Detection]] → Task 6 (your on-screen check).
+
 ### 2026-10-26 — Plan change: M2 detects OSC 99, OSC 777 and BEL too
 - **Did:** On request (option b), amended [[M2 Plan - Agent State Detection]]: the detector now counts
   OSC 9, OSC 99 (kitty) and OSC 777 `notify` (Ghostty), and skips `OSC 9;4;` (a progress bar). A real
