@@ -35,8 +35,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   back to the PTY, and synchronized updates need a periodic flush (50 ms timer).
 - **Known gaps (by plan):** no scrollback/selection/mouse (M5), fixed Menlo 14 px (M6), no IME/dead
   keys, the cursor covers only half of a wide glyph, shell exit quits the app (changes in M3).
-- **Blocked:** Nothing. The branch isn't merged into `master` yet.
-- **Next task:** [[M2 Plan - Agent State Detection]] → Task 1 (D4 still open; recommended option used by default).
+- **Final review (opus):** ready to merge; 0 Critical. Three forward-looking items raised as plan
+  questions: the shell inherits the launcher's terminal-identity env (decides whether Claude Code
+  sends OSC 9 → M2), PTY writes can block the UI thread (→ M3), and `exit` with a disowned job
+  holding the tty doesn't end the session (→ M3).
+- **Blocked:** M2 Task 1 waits on your answer to the env / OSC 9 question. Merged into `master` locally (not pushed).
+- **Next task:** Decide the OSC 9 question, then [[M2 Plan - Agent State Detection]] → Task 1 (D4 still open; recommended option used by default).
 
 ### 2026-10-26 — Open decision D7 added (target CPUs for M11)
 - **Did:** On request, added **D7** to [[00 - Plan Tracker (Start Here)]] and the M11 line of
