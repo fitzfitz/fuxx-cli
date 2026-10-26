@@ -21,6 +21,7 @@ use gpui::{
 };
 use gpui_platform::application;
 
+use terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
 use workspace::{
     CloseSession, NewSession, NextSession, PrevSession, SelectSession1, SelectSession2,
     SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7, SelectSession8,
@@ -50,6 +51,13 @@ fn main() {
                 KeyBinding::new("cmd-7", SelectSession7, None),
                 KeyBinding::new("cmd-8", SelectSession8, None),
                 KeyBinding::new("cmd-9", SelectSession9, None),
+                // Terminal pane only. Bindings run before the pane's own key handler.
+                KeyBinding::new("cmd-c", Copy, Some("Terminal")),
+                KeyBinding::new("cmd-v", Paste, Some("Terminal")),
+                KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
+                KeyBinding::new("cmd-up", ScrollPageUp, Some("Terminal")),
+                KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
+                KeyBinding::new("cmd-down", ScrollPageDown, Some("Terminal")),
             ]);
             cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 
