@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: done
 ---
 
 # 45 - Milestone 5 - Terminal UX
 
-**Status:: ⬜ Not started (plan written 2026-10-26).**  ·  **Phase 2: a terminal you can live in.**
+**Status:: ✅ Done (2026-10-27). All on-screen checks confirmed by you (scroll, select, copy/paste, vim/htop/man, links, resize, `claude`).**  ·  **Phase 2: a terminal you can live in.**
 **Plan:** [[M5 Plan - Terminal UX]] (step-by-step, with status per task)
 
 ## Goal
@@ -41,18 +41,23 @@ and `alacritty_terminal`). Say if any should change.
 
 ## Rough scope / checklist
 
-- [ ] Scrollback with wheel, page keys, snap-to-bottom on typing.
-- [ ] Selection (drag, word, line, shift-extend), copy, paste (bracketed when asked).
-- [ ] Mouse reporting for programs that request it; shift bypass; wheel → arrows in full-screen programs.
-- [ ] cmd-hover / cmd-click links (http, https, mailto only).
-- [ ] Real pixel sizes on resize.
-- [ ] Status detection unaffected by scrolling.
+- [x] Scrollback with wheel, page keys, snap-to-bottom on typing.
+- [x] Selection (drag, word, line, shift-extend), copy, paste (bracketed when asked).
+- [x] Mouse reporting for programs that request it; shift bypass; wheel → arrows in full-screen programs.
+- [x] cmd-hover / cmd-click links (http, https, mailto only).
+- [x] Real pixel sizes on resize.
+- [x] Status detection unaffected by scrolling.
 
 ## Not in M5
 
 Search in scrollback (P2), clickable file paths ([[11 - Features]] lists "URL / path"; the roadmap
 says URLs, so paths wait), copy-on-select, auto-scroll while dragging a selection past the edge,
 right-click menu, fonts/prompt icons (M6).
+
+## Found during the on-screen check
+
+- Tab doesn't accept Claude Code's grey example/suggestion in fuxx (it does in Ghostty). Not caused by M5: the M4b app
+  behaves the same. Logged as tech debt in [[00 - Plan Tracker (Start Here)]].
 
 ## Success check
 

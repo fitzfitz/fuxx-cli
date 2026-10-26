@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M5
-status: not-started
+status: done
 updated: 2026-10-26
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-10-26
 | At a glance | |
 |---|---|
 | **Milestone note** | [[45 - Milestone 5 - Terminal UX]] (the spec: every behaviour below is listed there) |
-| **Status** | ⬜ Not started |
-| **Tasks done** | 0 / 8 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | ✅ Done 2026-10-27 (branch `m5-terminal-ux`, commits `5cd0c02`…`6ee41a9`) |
+| **Tasks done** | 8 / 8 |
+| **▶ Pick up here** | M5 complete → M6 (fonts & config), plan to be written |
 | **Decisions used** | The behaviour calls in [[45 - Milestone 5 - Terminal UX]] (made by the AI, modelled on Zed; you said "go") |
-| **Needs your eyes** | 👀 Task 7: scroll, select, copy/paste, mouse apps, links, resize, on screen |
+| **Needs your eyes** | ✅ Task 7 confirmed by you on 2026-10-27 (all 8 checks) |
 
 **Goal:** The terminal pane scrolls back through history, selects/copies/pastes text, hands the
 mouse to programs that ask for it, opens links with cmd-click, and stays correct on resize.
@@ -43,7 +43,7 @@ mouse to programs that ask for it, opens links with cmd-click, and stays correct
 
 ## Global Constraints
 
-- Everything from the M0–M4b plans. **No new crates.** 0 warnings from our code. Final count **83 tests**.
+- Everything from the M0–M4b plans. **No new crates.** 0 warnings from our code. Final count **83 tests** *(85 in the repo: two tests added by reviews)*.
 - Behaviour is exactly the list in [[45 - Milestone 5 - Terminal UX]]; don't add anything it puts under "Not in M5".
 - Only `core.input` (keystrokes, paste) snaps to the bottom and clears the selection. Replies to terminal
   queries still go through `core.write` and must **not** move the view.
@@ -77,7 +77,7 @@ mouse to programs that ask for it, opens links with cmd-click, and stays correct
 
 ---
 
-### Task 1: Scrollback core + live-screen status — ⬜
+### Task 1: Scrollback core + live-screen status — ✅
 
 **Files:** Modify `src/grid.rs`, `src/terminal.rs`, `src/terminal_view.rs` (two call sites).
 
@@ -92,7 +92,7 @@ replacing `GridSnapshot::tail_text` (removed).
 > scrolled up. The status check must read the live screen: `term.grid()[Line(r)]` for
 > `r in 0..screen_lines` is always the live screen, whatever the display offset.
 
-- [ ] **Step 1: Failing tests.** In `grid.rs` tests: change `tail_text_returns_last_non_blank_lines` to call
+- [x] **Step 1: Failing tests.** In `grid.rs` tests: change `tail_text_returns_last_non_blank_lines` to call
   `screen_tail_text(&term, n)` (same assertions), and add:
 
 ```rust
@@ -132,29 +132,29 @@ fn scrolling_moves_the_view_and_input_snaps_back() {
 }
 ```
 
-- [ ] **Step 2: Run** `cargo test`. Expected: compile errors (`screen_tail_text`, `scroll`, `display_offset`, `input` not found).
-- [ ] **Step 3: Implement** `screen_tail_text` (same trimming/blank-skipping as the old `tail_text`, reading
+- [x] **Step 2: Run** `cargo test`. Expected: compile errors (`screen_tail_text`, `scroll`, `display_offset`, `input` not found).
+- [x] **Step 3: Implement** `screen_tail_text` (same trimming/blank-skipping as the old `tail_text`, reading
   `term.grid()[Line(r)][Column(c)].c`), remove `GridSnapshot::tail_text`, and the four `TerminalCore`
   methods (`scroll` → `term.scroll_display`; `display_offset` → `term.grid().display_offset()`;
   `input` → `scroll_display(Scroll::Bottom)`, `term.selection = None`, then `write`). In `terminal_view.rs`,
   `on_tick` passes `|| core.tail_text(TAIL_LINES)` and `on_key_down` calls `self.core.input(&bytes)`.
-- [ ] **Step 4: Run** `cargo test`. Expected: `test result: ok. 63 passed`.
-- [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m5): scrollback core; status reads the live screen"`
+- [x] **Step 4: Run** `cargo test`. Expected: `test result: ok. 63 passed`.
+- [x] **Step 5: Commit:** `git add src && git commit -m "feat(m5): scrollback core; status reads the live screen"`
 
-### Task 2: Selection, copy text, paste bytes — ⬜
+### Task 2: Selection, copy text, paste bytes — ✅
 
 **Files:** Modify `src/colors.rs`, `src/grid.rs`, `src/terminal.rs`, `src/keys.rs`.
 
 **Interfaces:** Produces `colors::SELECTION: Rgb` (`hex(0x264f78)`); in `terminal.rs`:
 `start_selection(&self, ty: SelectionType, point: Point, side: Side)`,
 `extend_selection(&self, point: Point, side: Side)` (no-op without a selection),
-`clear_selection(&self)`, `selection_text(&self) -> Option<String>`; in `keys.rs`:
+`clear_selection(&self)` *(removed in Task 6: nothing needed it)*, `selection_text(&self) -> Option<String>`; in `keys.rs`:
 `pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8>`. `snapshot` paints selected cells with
 `SELECTION` as their background (via `renderable_content().selection` and `SelectionRange::contains(indexed.point)`).
 Types: `alacritty_terminal::selection::{Selection, SelectionType}`, `alacritty_terminal::index::{Point, Line, Column, Side}`
 (`Side` is an alias of `Direction::{Left, Right}`, `index.rs:14`).
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
 
 ```rust
 // grid.rs
@@ -197,16 +197,16 @@ fn plain_paste_turns_newlines_into_enter() {
 }
 ```
 
-- [ ] **Step 2: Run** `cargo test`. Expected: compile errors for the new items.
-- [ ] **Step 3: Implement.** Selection methods lock the term and set/update/clear `term.selection`
+- [x] **Step 2: Run** `cargo test`. Expected: compile errors for the new items.
+- [x] **Step 3: Implement.** Selection methods lock the term and set/update/clear `term.selection`
   (`Selection::new`, `Selection::update`); `selection_text` = `term.selection_to_string()`.
   `paste_bytes`: bracketed → `ESC[200~` + text with every `\x1b` removed + `ESC[201~`; plain →
   `\r\n` and `\n` become `\r`. `snapshot`: if the cell's grid point is in the selection range,
   `bg = colors::SELECTION` (after the inverse swap, so the selection always shows).
-- [ ] **Step 4: Run** `cargo test`. Expected: `test result: ok. 67 passed`.
-- [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m5): selection, copy text and paste bytes"`
+- [x] **Step 4: Run** `cargo test`. Expected: `test result: ok. 67 passed`.
+- [x] **Step 5: Commit:** `git add src && git commit -m "feat(m5): selection, copy text and paste bytes"`
 
-### Task 3: `mouse.rs` — positions, wheel, mouse reports — ⬜
+### Task 3: `mouse.rs` — positions, wheel, mouse reports — ✅
 
 **Files:** Create `src/mouse.rs` · Modify `src/main.rs` (`mod mouse;`).
 
@@ -231,7 +231,7 @@ fn plain_paste_turns_newlines_into_enter() {
 - `pub fn alt_scroll(lines: i32) -> Vec<u8>` — `|lines|` times `ESC O A` (lines > 0) or `ESC O B`.
 - `pub fn wants_mouse(mode: TermMode, shift: bool) -> bool` — `mode.intersects(MOUSE_MODE) && !shift`.
 
-- [ ] **Step 1: Failing tests** in `src/mouse.rs` (`use alacritty_terminal::term::TermMode;`):
+- [x] **Step 1: Failing tests** in `src/mouse.rs` (`use alacritty_terminal::term::TermMode;`):
 
 ```rust
 const D: TermDims = TermDims { cols: 80, rows: 24 };
@@ -298,12 +298,12 @@ fn alt_scroll_sends_ss3_arrows() {
 }
 ```
 
-- [ ] **Step 2: Run** `cargo test mouse`. Expected: compile errors (items not defined).
-- [ ] **Step 3: Implement** the functions above in `src/mouse.rs`; add `mod mouse;` to `main.rs`.
-- [ ] **Step 4: Run** `cargo test`. Expected: `test result: ok. 75 passed` (dead-code warnings until Task 6).
-- [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m5): mouse positions, wheel accumulator and mouse reports"`
+- [x] **Step 2: Run** `cargo test mouse`. Expected: compile errors (items not defined).
+- [x] **Step 3: Implement** the functions above in `src/mouse.rs`; add `mod mouse;` to `main.rs`.
+- [x] **Step 4: Run** `cargo test`. Expected: `test result: ok. 75 passed` (dead-code warnings until Task 6).
+- [x] **Step 5: Commit:** `git add src && git commit -m "feat(m5): mouse positions, wheel accumulator and mouse reports"`
 
-### Task 4: `links.rs` — finding links, safely — ⬜
+### Task 4: `links.rs` — finding links, safely — ✅
 
 **Files:** Create `src/links.rs` · Modify `src/terminal.rs`, `src/grid.rs`, `src/main.rs` (`mod links;`).
 
@@ -322,7 +322,7 @@ fn alt_scroll_sends_ss3_arrows() {
 - `grid::underline_cells(snap: &mut GridSnapshot, start: Point, end: Point, display_offset: usize)` — sets
   `underline = true` on every visible cell from `start` to `end` inclusive (wrapping across lines).
 
-- [ ] **Step 1: Failing tests** in `src/links.rs` (helper `term_with(bytes, cols)`: a `cols`×3 `Term` fed `bytes`, as in `grid.rs`), plus one in `grid.rs`:
+- [x] **Step 1: Failing tests** in `src/links.rs` (helper `term_with(bytes, cols)`: a `cols`×3 `Term` fed `bytes`, as in `grid.rs`), plus one in `grid.rs`:
 
 ```rust
 #[test]
@@ -364,12 +364,12 @@ fn underline_cells_marks_the_link() {
 ```
 
   *(`term_with` in `grid.rs` is 10×3, so `"ab https"` fits on one line.)*
-- [ ] **Step 2: Run** `cargo test`. Expected: compile errors.
-- [ ] **Step 3: Implement** as specified; add `mod links;`.
-- [ ] **Step 4: Run** `cargo test`. Expected: `test result: ok. 80 passed`.
-- [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m5): link finder (http/https/mailto only, plain text and OSC 8)"`
+- [x] **Step 2: Run** `cargo test`. Expected: compile errors.
+- [x] **Step 3: Implement** as specified; add `mod links;`.
+- [x] **Step 4: Run** `cargo test`. Expected: `test result: ok. 80 passed`.
+- [x] **Step 5: Commit:** `git add src && git commit -m "feat(m5): link finder (http/https/mailto only, plain text and OSC 8)"`
 
-### Task 5: Resize with real pixel sizes — ⬜
+### Task 5: Resize with real pixel sizes — ✅
 
 **Files:** Modify `src/pty.rs`, `src/terminal.rs`, `src/terminal_view.rs` (resize + `TextAreaSizeRequest` call sites).
 
@@ -382,7 +382,7 @@ in `terminal.rs`; `pub fn pty_size(dims: TermDims, cell: CellPx) -> PtySize` in 
 `TextAreaSizeRequest` with `format(core.window_size())`. Update the existing
 `resize_changes_the_grid_and_ignores_zero` to the new signature.
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
 
 ```rust
 // pty.rs
@@ -419,12 +419,12 @@ fn width_change_clears_selection() {
 ```
 
   *(`wait_for` takes `FnMut`, so the closure may write `reply`.)*
-- [ ] **Step 2: Run** `cargo test`. Expected: compile errors (`CellPx`, two-argument `resize`, `window_size`).
-- [ ] **Step 3: Implement** as specified (the dims+cell "unchanged" check replaces today's dims-only check).
-- [ ] **Step 4: Run** `cargo test`. Expected: `test result: ok. 83 passed`.
-- [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m5): resize reports real pixel sizes to the PTY and CSI 14 t"`
+- [x] **Step 2: Run** `cargo test`. Expected: compile errors (`CellPx`, two-argument `resize`, `window_size`).
+- [x] **Step 3: Implement** as specified (the dims+cell "unchanged" check replaces today's dims-only check).
+- [x] **Step 4: Run** `cargo test`. Expected: `test result: ok. 83 passed`.
+- [x] **Step 5: Commit:** `git add src && git commit -m "feat(m5): resize reports real pixel sizes to the PTY and CSI 14 t"`
 
-### Task 6: Wire it into the view — ⬜
+### Task 6: Wire it into the view — ✅
 
 **Files:** Modify `src/terminal_view.rs`, `src/main.rs`.
 
@@ -436,60 +436,60 @@ in `terminal_view.rs`, bound in `main.rs` with context `Some("Terminal")`: `cmd-
 > **No unit tests here:** this is GPUI event plumbing. Every decision it makes is a call into the
 > tested functions of Tasks 1–5. It's verified by a clean build here and on screen in Task 7.
 
-- [ ] **Step 1: Layout for hit-testing.** `TerminalView` gets `layout: Rc<Cell<Option<GridLayout>>>`
+- [x] **Step 1: Layout for hit-testing.** `TerminalView` gets `layout: Rc<Cell<Option<GridLayout>>>`
   (`GridLayout { origin: Point<Pixels>, cell_width: Pixels, line_height: Pixels, dims: TermDims }`),
   written in the canvas prepaint (which also returns `window.insert_hitbox(bounds, HitboxBehavior::Normal)`
   alongside the metrics), plus `scroll: ScrollAccumulator`, `hovered: Option<Link>`, `pressed_link: Option<Link>`,
   `selecting: bool`. A helper `point_at(&self, pos: Point<Pixels>) -> Option<(Point, Side, usize, usize)>`
   returns the grid point, side and viewport col/row via `mouse::grid_point` (position minus `origin`).
-- [ ] **Step 2: Wheel** (`div().on_scroll_wheel`): `TouchPhase::Started` → `scroll.reset()`; lines =
+- [x] **Step 2: Wheel** (`div().on_scroll_wheel`): `TouchPhase::Started` → `scroll.reset()`; lines =
   `scroll.push(e.delta.pixel_delta(line_height).y, line_height)`; 0 → return. Then, in order:
   `mouse::wants_mouse(mode, shift)` → one `report(WheelUp/WheelDown, Press, …)` per line;
   else `ALT_SCREEN` and `ALTERNATE_SCROLL` set and not shift → `core.write(&alt_scroll(lines))`;
   else `core.scroll(Scroll::Delta(lines))`. `cx.notify()`.
-- [ ] **Step 3: Mouse down** (`div().on_mouse_down` for Left, Middle, Right): focus the view. Left + cmd →
+- [x] **Step 3: Mouse down** (`div().on_mouse_down` for Left, Middle, Right): focus the view. Left + cmd →
   `pressed_link = core.link_at(point)`; if some, stop. Else `wants_mouse` → `report(button, Press, …)`.
   Else Left only: `shift` → `extend_selection`; else by `click_count` 1/2/3 → `start_selection(Simple/Semantic/Lines)`;
   `selecting = true`. `cx.notify()`.
-- [ ] **Step 4: Move and up anywhere in the window.** In the canvas paint closure, register
+- [x] **Step 4: Move and up anywhere in the window.** In the canvas paint closure, register
   `window.on_mouse_event::<MouseMoveEvent>` and `::<MouseUpEvent>` (Bubble phase only), updating the view
   through a captured `Entity<TerminalView>` (so a drag that leaves the pane keeps selecting). Move:
   `selecting` with Left held → `extend_selection`; `wants_mouse` with a button held → `report(.., Drag, ..)`
   (positions clamped by `grid_point`); cmd held → `hovered = core.link_at(point)`, else `hovered = None`
   (notify only on change). Up: `pressed_link` is `Some` and equals `core.link_at(point)` → `cx.open_url(&link.url)`,
   then `pressed_link = None`; `wants_mouse` → `report(button, Release, ..)`; `selecting = false`.
-- [ ] **Step 5: Modifier changes** (`div().on_modifiers_changed`): cmd released → `hovered = None`, notify.
-- [ ] **Step 6: Actions** (`div().on_action`): Copy → `selection_text()` → `cx.write_to_clipboard(ClipboardItem::new_string(t))`
+- [x] **Step 5: Modifier changes** (`div().on_modifiers_changed`): cmd released → `hovered = None`, notify.
+- [x] **Step 6: Actions** (`div().on_action`): Copy → `selection_text()` → `cx.write_to_clipboard(ClipboardItem::new_string(t))`
   (selection kept). Paste → `cx.read_from_clipboard()` → `.text()` → `core.input(&keys::paste_bytes(&t, mode.contains(BRACKETED_PASTE)))`,
   then the same status `on_input` as a keystroke. ScrollPageUp/Down → in `ALT_SCREEN`, `cx.propagate()`
   (the program gets the key); else `core.scroll(Scroll::PageUp/PageDown)` and notify.
-- [ ] **Step 7: Paint.** After `snapshot()`, if `hovered` is set, `grid::underline_cells(&mut snap, link.start, link.end, core.display_offset())`.
+- [x] **Step 7: Paint.** After `snapshot()`, if `hovered` is set, `grid::underline_cells(&mut snap, link.start, link.end, core.display_offset())`.
   Cursor: `PointingHand` when `hovered` is set and cmd is held, else `IBeam` (`window.set_cursor_style(style, &hitbox)`).
-- [ ] **Step 8: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**. `cargo test`: `83 passed`.
-- [ ] **Step 9: Commit:** `git add src && git commit -m "feat(m5): wheel, selection, copy/paste, mouse reporting and links in the view"`
+- [x] **Step 8: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**. `cargo test`: `83 passed`.
+- [x] **Step 9: Commit:** `git add src && git commit -m "feat(m5): wheel, selection, copy/paste, mouse reporting and links in the view"`
 
-### Task 7: On screen — 👀 ⬜
+### Task 7: On screen — 👀 ✅
 
 Run `cargo run`. **You** check and report:
 
-- [ ] **Scroll:** `seq 1 3000`, then wheel/trackpad up and down; shift-PageUp/PageDown and cmd-↑/↓ page. While scrolled up, `sleep 3; echo hi` doesn't pull you down; typing a key does.
-- [ ] **Status while scrolled:** run `bash -c 'sleep 3; printf "Proceed? (y/n) "; read x'` after some output, scroll up while it waits → the ring still turns 🔴.
-- [ ] **Select:** drag across text (blue background); double-click a word; triple-click a line; shift-click extends. Dragging below the pane keeps selecting.
-- [ ] **Copy/paste:** cmd-c, then cmd-v into another session (cmd-t). A multi-line paste at the zsh prompt doesn't run each line (bracketed paste). Typing clears the selection.
-- [ ] **Mouse apps:** `vim` with `:set mouse=a` → clicking moves the cursor, the wheel scrolls the file. `htop` → clicks work. Shift-drag still selects text locally. `man ls` → the wheel scrolls (arrows).
-- [ ] **Links:** `echo https://example.com`; hold cmd and hover → underline + hand; cmd-click opens the browser; a plain click doesn't. `printf '\e]8;;https://example.com\e\\click me\e]8;;\e\\\n'` → cmd-click opens it.
-- [ ] **Resize:** drag the window edge smaller/bigger while `htop` runs and while a long line is on screen → no garbage; text reflows.
-- [ ] **Agents:** `claude` works as before; scroll back through its output; status rings unchanged.
+- [x] **Scroll:** `seq 1 3000`, then wheel/trackpad up and down; shift-PageUp/PageDown and cmd-↑/↓ page. While scrolled up, `sleep 3; echo hi` doesn't pull you down; typing a key does.
+- [x] **Status while scrolled:** run `bash -c 'sleep 3; printf "Proceed? (y/n) "; read x'` after some output, scroll up while it waits → the ring still turns 🔴.
+- [x] **Select:** drag across text (blue background); double-click a word; triple-click a line; shift-click extends. Dragging below the pane keeps selecting.
+- [x] **Copy/paste:** cmd-c, then cmd-v into another session (cmd-t). A multi-line paste at the zsh prompt doesn't run each line (bracketed paste). Typing clears the selection.
+- [x] **Mouse apps:** `vim` with `:set mouse=a` → clicking moves the cursor, the wheel scrolls the file. `htop` → clicks work. Shift-drag still selects text locally. `man ls` → the wheel scrolls (arrows).
+- [x] **Links:** `echo https://example.com`; hold cmd and hover → underline + hand; cmd-click opens the browser; a plain click doesn't. `printf '\e]8;;https://example.com\e\\click me\e]8;;\e\\\n'` → cmd-click opens it.
+- [x] **Resize:** drag the window edge smaller/bigger while `htop` runs and while a long line is on screen → no garbage; text reflows.
+- [x] **Agents:** `claude` works as before; scroll back through its output; status rings unchanged.
 
-### Task 8: Update the docs — ⬜
+### Task 8: Update the docs — ✅
 
-- [ ] [[45 - Milestone 5 - Terminal UX]]: tick the checklist; **Status:: ✅ Done**.
-- [ ] [[40 - Roadmap]]: M5 → ✅ (link the note).
-- [ ] [[00 - Plan Tracker (Start Here)]]: M5 row → ✅ 8/8; **Where we are** → M6 (fonts & config, incl. prompt icons), plan to be written.
-- [ ] [[31 - API Fact Sheet (pinned rev)]]: add the alacritty `Scroll` / `selection` / `search` and GPUI mouse/clipboard facts this plan relied on.
-- [ ] `STRUCTURE.md`: `mouse.rs`, `links.rs` (M5) and the M5 additions to `grid.rs`, `terminal.rs`, `terminal_view.rs`.
-- [ ] [[60 - Progress Log]]: entry "M5 complete: terminal UX".
-- [ ] Commit docs.
+- [x] [[45 - Milestone 5 - Terminal UX]]: tick the checklist; **Status:: ✅ Done**.
+- [x] [[40 - Roadmap]]: M5 → ✅ (link the note).
+- [x] [[00 - Plan Tracker (Start Here)]]: M5 row → ✅ 8/8; **Where we are** → M6 (fonts & config, incl. prompt icons), plan to be written.
+- [x] [[31 - API Fact Sheet (pinned rev)]]: add the alacritty `Scroll` / `selection` / `search` and GPUI mouse/clipboard facts this plan relied on.
+- [x] `STRUCTURE.md`: `mouse.rs`, `links.rs` (M5) and the M5 additions to `grid.rs`, `terminal.rs`, `terminal_view.rs`.
+- [x] [[60 - Progress Log]]: entry "M5 complete: terminal UX".
+- [x] Commit docs.
 
 ## Verification log
 
@@ -498,6 +498,10 @@ Run `cargo run`. **You** check and report:
 | 2026-10-26 | APIs read at the pinned rev / alacritty 0.26.0 (scroll, selection, search, OSC 8, GPUI mouse events, clipboard, `open_url`, hitbox cursor, key dispatch order) | ✅ | Research of Zed's `crates/terminal*` + alacritty sources, with file:line refs |
 | 2026-10-26 | Spike in a scratch copy: `scroll_display` + live `Line(0..)` tail, `Selection` Simple/Semantic/Lines + `selection_to_string`, `RegexIter` URL match, OSC 8 `hyperlink().uri()` | ✅ 3 spike tests (after correcting one expectation: the view's top row is `l24`) | AI `cargo test spike` |
 | — | Task code itself | ⚠️ not pre-compiled: this plan gives signatures and tests; Task 6's GPUI wiring is unverified until built | Verified per task during execution |
+| 2026-10-26 | Tasks 1–5 in the repo, one agent per task, each reviewed: 63 → 67 → 75 → 80 → 83 passed | ✅ | Task reviews (Task 4 by opus with adversarial link probes: only http/https/mailto can open) |
+| 2026-10-26 | Task 6 view wiring | ✅ 0 warnings | Review (opus) + fix round: stale out-of-range points clamped under the Term lock (`out_of_range_points_are_clamped_not_panicking`, failed first), links open by url, unused `clear_selection` removed → 84 passed |
+| 2026-10-26 | Whole-branch review (opus) | ✅ ready to merge, 0 Critical/Important | Fix wave: shift-drag with no selection starts one (`extend_without_a_selection_starts_one`, failed first), stale hover cleared on output → **85 passed** |
+| 2026-10-27 | Task 7 checklist (all 8) | ✅ | 👀 confirmed by you |
 
 ## Known limitations
 
@@ -509,6 +513,11 @@ Run `cargo run`. **You** check and report:
 | No copy-on-select, no right-click menu | Not planned |
 | Mouse motion without a button held isn't reported (hover effects in TUIs) | Revisit if a program needs it |
 | Prompt icons still show as `?` | M6 |
+| Pressing cmd while the pointer rests on a link shows no underline until the mouse moves | Polish, if wanted |
+| No drag threshold: a tiny wobble during a click can select one cell | Polish, if wanted |
+| Drag reports aren't de-duplicated per cell; with two buttons held only the first release is reported | Revisit if a program misbehaves |
+| cmd-hover scans the whole wrapped line (rare jank on huge one-line output) | Polish, if wanted |
+| Tab doesn't accept Claude Code's grey example/suggestion (also before M5) | Tech debt in [[00 - Plan Tracker (Start Here)]] |
 
 ## Related
 

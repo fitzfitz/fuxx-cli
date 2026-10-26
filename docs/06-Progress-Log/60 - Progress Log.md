@@ -14,13 +14,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M5 — Terminal UX** (see [[40 - Roadmap]]; the **new terminal app**). 🟨 plan approved. M0–M4 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M6 — Fonts & config** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M5 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-27 — Milestone 5 complete: terminal UX
+- **Did:** Built [[M5 Plan - Terminal UX]] on branch `m5-terminal-ux`, one fresh agent per task, each reviewed:
+  scrollback core and live-screen status (`5cd0c02`), selection/copy/paste bytes (`f4998a2`), mouse
+  positions and reports (`13cc465`), the link finder with an http/https/mailto allowlist (`55e5781`), real
+  pixel sizes on resize (`d4b2b77`), and the view wiring (`1bb7742`). Reviews added a crash fix (stale points
+  clamped under the Term lock), links opening by url, and shift-drag starting a selection (`35c55e6`, `6ee41a9`).
+  Whole-branch review: ready to merge, 0 Critical/Important. All 8 on-screen checks passed. 0 warnings, 85 tests.
+- **Learned:** Claude Code turns on mouse tracking, focus reporting and asks about the kitty keyboard protocol
+  at startup. A test binary can go stale when a scratch copy shares `target/`: give probes their own target dir.
+  Tab not accepting Claude Code's grey example/suggestion turned out to predate M5 (same in the M4b app);
+  debugged and logged as **tech debt** in [[00 - Plan Tracker (Start Here)]].
+- **Blocked:** Nothing.
+- **Next task:** Write the M6 plan (fonts & config, incl. prompt icons).
 
 ### 2026-10-26 — M5 plan written and approved
 - **Did:** You chose to skip the design questions ("go"), so the AI made the behaviour calls, modelled on

@@ -97,12 +97,40 @@ alacritty_terminal::sync::FairMutex<T>   // public; lock() / lock_unfair()
 trait EventListener { fn send_event(&self, Event) }   // called INSIDE advance, with the Term lock held. Never lock Term here
 Event::{ PtyWrite(String) /* MUST be written back to the PTY */, ColorRequest(idx, fmt), TextAreaSizeRequest(fmt), Title(String), ResetTitle, Bell, Wakeup, ... }
 ```
+**M5 additions (scrollback, selection, links):**
+```rust
+alacritty_terminal::grid::Scroll { Delta(i32) /* + = up into history */, PageUp, PageDown, Top, Bottom };  term.scroll_display(scroll)
+term.grid().display_offset();  term.grid()[Line(r)][Column(c)]  // Line(0..screen_lines) is ALWAYS the live screen
+alacritty_terminal::index::{Point, Line(i32), Column(usize), Side /* = Direction::{Left, Right} */, Boundary}
+point.grid_clamp(&term, Boundary::Grid)   // clamp a possibly stale point before indexing (indexing out of range panics)
+Selection::new(SelectionType::{Simple, Semantic, Lines}, point, side);  sel.update(point, side);  term.selection = Some(sel)
+term.selection_to_string() -> Option<String>;  renderable_content().selection: Option<SelectionRange> /* .contains(grid point) */
+// Term::resize clears the selection when the column count changes
+term::search::{RegexSearch::new(&str), RegexIter::new(start, end, Direction::Right, &term, &mut regex) /* Iterator<Item = Match = RangeInclusive<Point>> */}
+term.line_search_left(p) / line_search_right(p);  term.bounds_to_string(start, end);  cell.hyperlink().map(|h| h.uri())  // OSC 8
+Config::default(): scrolling_history 10_000, kitty_keyboard false (so `ESC[?u` gets no reply)
+```
+
 `Wakeup` and `ChildExit` are only sent by alacritty's own event loop, which we don't use. Our reader thread signals redraw/exit itself.
+
+## GPUI mouse, clipboard, links (M5)
+
+```rust
+MouseDownEvent { button, position, modifiers, click_count, first_mouse };  MouseUpEvent { button, position, modifiers, click_count }
+MouseMoveEvent { position, pressed_button: Option<MouseButton>, modifiers };  ScrollWheelEvent { position, delta, modifiers, touch_phase }
+delta.pixel_delta(line_height) -> Point<Pixels>  // + y = scroll up;  TouchPhase::Started resets an accumulator
+div().on_mouse_down(MouseButton::Left, ..) / on_scroll_wheel / on_modifiers_changed / on_action   // div listeners fire only while hovered
+window.on_mouse_event::<MouseMoveEvent>(|e, phase, window, cx| ..)   // paint phase only; sees drags that leave the element
+window.insert_hitbox(bounds, HitboxBehavior::Normal) /* prepaint */;  window.set_cursor_style(CursorStyle::PointingHand, &hitbox) /* paint */
+cx.write_to_clipboard(ClipboardItem::new_string(s));  cx.read_from_clipboard()?.text();  cx.open_url(&url)
+f32::from(pixels)   // Pixels → f32
+```
+Key **bindings run before** a view's `on_key_down` (window.rs ~4905–4960); `cx.propagate()` in an action lets the key fall through.
 
 ## portable-pty 0.9.0
 
 ```rust
-native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) -> anyhow::Result<PtyPair>
+native_pty_system().openpty(PtySize { rows, cols, pixel_width, pixel_height }) -> anyhow::Result<PtyPair>   // M5: real pixels = cells × cell size
 CommandBuilder::new_default_prog()   // login shell ($SHELL, argv0 "-zsh"); PANICS if you call .arg() on it
 cmd.cwd(dir); cmd.env("TERM", "xterm-256color");   // &mut self, returns (): not chainable
 pair.slave.spawn_command(cmd)?;  drop(pair.slave);  // drop the slave or the reader never sees EOF
