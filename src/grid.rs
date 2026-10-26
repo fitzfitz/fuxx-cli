@@ -117,7 +117,7 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
                 // Unset: swap the window's colors (as Ghostty does), so gray text stays readable.
                 None => {
                     bg = theme.foreground;
-                    fg = theme.background;
+                    fg = theme.selection_foreground.unwrap_or(theme.background);
                 }
             }
         }
@@ -435,6 +435,30 @@ mod tests {
         assert_eq!(snap.lines[0][0].fg, t.background);
         assert_eq!(snap.lines[0][1].bg, t.foreground);
         assert_eq!(snap.lines[0][2].bg, Theme::default().background);
+    }
+
+    #[test]
+    fn explicit_selection_colors_apply() {
+        let selected = |theme: &Theme| {
+            let mut term = term_with(b"hello");
+            let mut sel = Selection::new(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            sel.update(Point::new(Line(0), Column(1)), Side::Right);
+            term.selection = Some(sel);
+            let cell = snapshot(&term, theme).lines[0][0].clone();
+            (cell.bg, cell.fg)
+        };
+        let x = Rgb { r: 1, g: 2, b: 3 };
+        let y = Rgb { r: 4, g: 5, b: 6 };
+        let mut t = Theme::default();
+        t.selection_background = Some(x);
+        t.selection_foreground = Some(y);
+        assert_eq!(selected(&t), (x, y));
+        t.selection_background = None;
+        assert_eq!(selected(&t), (t.foreground, y));
     }
 
     #[test]
