@@ -94,7 +94,7 @@ impl TerminalView {
 
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
-            TermEvent::Output | TermEvent::Term(Event::Wakeup) => cx.notify(),
+            TermEvent::Output { .. } | TermEvent::Term(Event::Wakeup) => cx.notify(),
             // Replies to terminal queries (cursor position, device attributes, ...) MUST go back
             // to the child, or programs that ask (shells, vim, Claude Code) hang waiting.
             TermEvent::Term(Event::PtyWrite(text)) => self.core.write(text.as_bytes()),
