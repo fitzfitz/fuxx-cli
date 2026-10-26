@@ -22,6 +22,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-26 — M4b Task 1: the tester DMG builds
+- **Did:** Added `scripts/bundle-mac.sh` (universal release build → ad-hoc sealed `fuxx.app` →
+  `target/dist/fuxx-<version>.dmg`, refuses a version that already has a DMG) and `scripts/check-dmg.sh`
+  (the test: contents, both CPU slices, macOS 11.0 floor, version, seal) (`170ec6a`). The final review
+  found `check-dmg.sh` silent when the DMG was already open in Finder; fixed with the failure reproduced first.
+  Put a "downloaded" copy in `~/Downloads` for your install check. 61 tests pass.
+- **Learned:** In bash, `set -e` still applies inside an `EXIT` trap: one failing cleanup command ends the
+  trap early. The version guard only sees DMGs still in `target/dist` (known limitation).
+- **Blocked:** Your Task 2 install check.
+- **Next task:** [[M4b Plan - Tester Build]] → Task 2 (👀).
+
 ### 2026-10-26 — M4b plan written; D7 + D8 decided
 - **Did:** Compared how other terminals handle both decisions (Ghostty, iTerm2, kitty, Alacritty, WezTerm
   ship universal Mac apps, Zed ships separate Intel and Apple Silicon ones; nearly every terminal sets its

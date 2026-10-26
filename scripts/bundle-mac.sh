@@ -7,7 +7,8 @@ cd "$(dirname "$0")/.."
 
 version=$(cargo pkgid | sed 's/.*[#@]//')
 dmg="target/dist/fuxx-$version.dmg"
-# One DMG per version, so a tester's copy always says which build it is.
+# One DMG per version, so a tester's copy always says which build it is. This only sees DMGs still in
+# target/dist: after `cargo clean` (or in another checkout) the same version can be built again.
 [[ -e "$dmg" ]] && { echo "$dmg already exists: bump version in Cargo.toml" >&2; exit 1; }
 
 # Both slices target the same macOS floor as Info.plist's LSMinimumSystemVersion.
