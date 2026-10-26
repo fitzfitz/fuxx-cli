@@ -2,6 +2,7 @@
 // Milestone 1: one real terminal (alacritty_terminal + portable-pty) in a GPUI window.
 
 mod colors;
+mod detector;
 mod grid;
 mod keys;
 mod pty;
