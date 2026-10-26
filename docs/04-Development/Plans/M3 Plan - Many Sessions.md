@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M3
-status: not-started
+status: done
 updated: 2026-10-26
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-10-26
 | At a glance | |
 |---|---|
 | **Milestone note** | [[43 - Milestone 3 - Many Sessions]] |
-| **Status** | ⬜ Not started (waits for M2 ✅) |
-| **Tasks done** | 0 / 6 |
-| **▶ Pick up here** | **Task 1, Step 1** |
+| **Status** | ✅ Done 2026-10-26 (commits `31b9a32`…`6973016` + docs on `m3-many-sessions`) |
+| **Tasks done** | 6 / 6 |
+| **▶ Pick up here** | M3 complete → [[M4 Plan - Notification Rings]] |
 | **Decisions used** | ✅ **D6** = keyboard shortcuts, recommended set (decided 2026-10-26) · ✅ **Plan change 2026-10-26:** PTY writes on a per-session writer thread (new Task 4) |
-| **Needs your eyes** | 👀 Task 5 (3 sessions, switching, background keeps running) |
+| **Needs your eyes** | ✅ Task 5 confirmed by you on 2026-10-26 (all checks, plus the input-flood check) |
 
 **Goal:** Many sessions in one window. A sidebar lists them; click or a shortcut switches the main
 pane; every session keeps running in the background; a session closes when its shell exits.
@@ -76,7 +76,7 @@ pane; every session keeps running in the background; a session closes when its s
 
 ---
 
-### Task 1: `SessionList` — ⬜
+### Task 1: `SessionList` — ✅
 
 **Files:** Create `src/session_list.rs` · Modify `src/main.rs` (add `mod session_list;`)
 
@@ -85,7 +85,7 @@ pane; every session keeps running in the background; a session closes when its s
 `position(impl Fn(&T) -> bool) -> Option<usize>`, `push(T) -> usize` (new item becomes active),
 `select(usize) -> bool`, `select_next()`, `select_prev()` (both wrap), `remove(usize) -> Option<T>`.
 
-- [ ] **Step 1: Write the failing tests.** Create `src/session_list.rs` with only:
+- [x] **Step 1: Write the failing tests.** Create `src/session_list.rs` with only:
 
 ```rust
 #[cfg(test)]
@@ -156,8 +156,8 @@ mod tests {
 
 …and add `mod session_list;` to `src/main.rs`.
 
-- [ ] **Step 2: Run:** `cargo test session_list`. Expected: compile error (`SessionList` not found).
-- [ ] **Step 3: Implement.** Put this above the test module:
+- [x] **Step 2: Run:** `cargo test session_list`. Expected: compile error (`SessionList` not found).
+- [x] **Step 3: Implement.** Put this above the test module:
 
 ```rust
 //! The ordered list of sessions and which one is active. Generic and GPUI-free, so the
@@ -246,10 +246,10 @@ impl<T> SessionList<T> {
 }
 ```
 
-- [ ] **Step 4: Run:** `cargo test session_list`. Expected: `test result: ok. 6 passed` (dead-code warnings until Task 3).
-- [ ] **Step 5: Commit** *(when you say so)*: `git add src/session_list.rs src/main.rs && git commit -m "feat(m3): session list model with tests"`
+- [x] **Step 4: Run:** `cargo test session_list`. Expected: `test result: ok. 6 passed` (dead-code warnings until Task 3).
+- [x] **Step 5: Commit** *(when you say so)*: `git add src/session_list.rs src/main.rs && git commit -m "feat(m3): session list model with tests"`
 
-### Task 2: Make `TerminalView` embeddable — ⬜
+### Task 2: Make `TerminalView` embeddable — ✅
 
 **Files:** Replace `src/terminal_view.rs`
 
@@ -262,7 +262,7 @@ impl<T> SessionList<T> {
 > workspace move keyboard focus between terminals. Everything else (painting, keys, status
 > tracking) is unchanged.
 
-- [ ] **Step 1: Replace `src/terminal_view.rs` with:**
+- [x] **Step 1: Replace `src/terminal_view.rs` with:**
 
 ```rust
 //! The GPUI view for one terminal: paints a `GridSnapshot`, turns keystrokes into PTY bytes,
@@ -573,12 +573,12 @@ fn paint_grid(
 }
 ```
 
-- [ ] **Step 2: Build:** `cargo build`. Expected: it compiles. Unused-code warnings about `TerminalEvent`/`session_list` are fine until Task 3.
+- [x] **Step 2: Build:** `cargo build`. Expected: it compiles. Unused-code warnings about `TerminalEvent`/`session_list` are fine until Task 3.
   *(Between Task 2 and Task 3 the app doesn't quit when the shell exits. Task 3 restores that.)*
-- [ ] **Step 3: Tests:** `cargo test`. Expected: `test result: ok. 53 passed`.
-- [ ] **Step 4: Commit** together with Task 3.
+- [x] **Step 3: Tests:** `cargo test`. Expected: `test result: ok. 53 passed`.
+- [x] **Step 4: Commit** together with Task 3.
 
-### Task 3: `Workspace` (sidebar + active pane) and the new `main.rs` — ⬜
+### Task 3: `Workspace` (sidebar + active pane) and the new `main.rs` — ✅
 
 **Files:** Create `src/workspace.rs` · Replace `src/main.rs`
 
@@ -592,7 +592,7 @@ fn paint_grid(
 > `div`, where `.on_action(...)` handles them. Key bindings are matched *before* `on_key_down`, so
 > bound cmd-keys never reach the shell. macOS reports cmd-shift-] as key `}`, hence `"cmd-}"`.
 
-- [ ] **Step 1: Create `src/workspace.rs`:**
+- [x] **Step 1: Create `src/workspace.rs`:**
 
 ```rust
 //! The root view: a sidebar listing every session and the active session's terminal.
@@ -796,7 +796,7 @@ impl Render for Workspace {
 }
 ```
 
-- [ ] **Step 2: Replace `src/main.rs`:**
+- [x] **Step 2: Replace `src/main.rs`:**
 
 ```rust
 // fuxx — a native GPU terminal for running AI coding agents.
@@ -864,11 +864,11 @@ fn main() {
 }
 ```
 
-- [ ] **Step 3: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
-- [ ] **Step 4: Tests:** `cargo test`. Expected: `test result: ok. 53 passed`.
-- [ ] **Step 5: Commit** *(when you say so)*: `git add src/terminal_view.rs src/workspace.rs src/main.rs && git commit -m "feat(m3): many sessions with a sidebar and quick-switching"`
+- [x] **Step 3: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
+- [x] **Step 4: Tests:** `cargo test`. Expected: `test result: ok. 53 passed`.
+- [x] **Step 5: Commit** *(when you say so)*: `git add src/terminal_view.rs src/workspace.rs src/main.rs && git commit -m "feat(m3): many sessions with a sidebar and quick-switching"`
 
-### Task 4: PTY writes off the UI thread — ⬜
+### Task 4: PTY writes off the UI thread — ✅
 
 *Added 2026-10-26 (plan change, your OK; from the M1 final review).* Today `TerminalCore::write` writes
 to the PTY on the UI thread. When a program stops reading its input (raw mode, busy), the tty's input
@@ -881,7 +881,7 @@ thread takes the writes off the UI thread.
 - `Pty::spawn(cmd, dims) -> Result<(Pty, Box<dyn Read + Send>, Box<dyn Write + Send>), String>` (the writer is returned instead of stored); `Pty::write` and the `writer` field are removed.
 - `TerminalCore::write(&self, &[u8])` keeps its signature but only queues the bytes (never blocks). Callers (`TerminalView`) don't change.
 
-- [ ] **Step 1: Write the failing test.** Append to the test module in `src/terminal.rs`:
+- [x] **Step 1: Write the failing test.** Append to the test module in `src/terminal.rs`:
 
 ```rust
     #[test]
@@ -905,14 +905,14 @@ thread takes the writes off the UI thread.
     }
 ```
 
-- [ ] **Step 2: Run:** `cargo test write_never_blocks`. Expected: `test result: FAILED. 0 passed; 1 failed` after about 2 s, panicking with `write blocked`.
+- [x] **Step 2: Run:** `cargo test write_never_blocks`. Expected: `test result: FAILED. 0 passed; 1 failed` after about 2 s, panicking with `write blocked`.
 
-- [ ] **Step 3: `src/pty.rs`.** Remove the `writer` field (and its doc comment) from `Pty`, remove `Pty::write`, and return the writer from `spawn` instead of storing it:
+- [x] **Step 3: `src/pty.rs`.** Remove the `writer` field (and its doc comment) from `Pty`, remove `Pty::write`, and return the writer from `spawn` instead of storing it:
   - signature: `-> Result<(Pty, Box<dyn Read + Send>, Box<dyn Write + Send>), String>`
   - doc comment: `/// Spawn \`cmd\`; returns the handle plus the output reader and the input writer, each for a` / `/// dedicated thread. Keep the writer for the whole session: dropping portable-pty's writer` / `/// sends EOF (^D) to the child.`
   - the tail becomes `Ok((Pty { master: pair.master, child }, reader, writer))`.
 
-- [ ] **Step 4: `src/terminal.rs`.**
+- [x] **Step 4: `src/terminal.rs`.**
   - Imports: `use std::io::{ErrorKind, Read, Write};` and add `use std::sync::mpsc::Sender;`.
   - Add a field to `TerminalCore` (after `dims`):
 ```rust
@@ -948,30 +948,32 @@ thread takes the writes off the UI thread.
         let _ = self.input.send(bytes.to_vec());
     }
 ```
-- [ ] **Step 5: Run:** `cargo test write_never_blocks`. Expected: `test result: ok. 1 passed`. Then the build check `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"` → **no output**, and `cargo test` → `test result: ok. 54 passed`.
-- [ ] **Step 6: Commit** *(when you say so)*: `git add src/pty.rs src/terminal.rs && git commit -m "feat(m3): PTY writes on a per-session writer thread"`
+- [x] **Step 5: Run:** `cargo test write_never_blocks`. Expected: `test result: ok. 1 passed`. Then the build check `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"` → **no output**, and `cargo test` → `test result: ok. 54 passed`.
+- [x] **Step 6: Commit** *(when you say so)*: `git add src/pty.rs src/terminal.rs && git commit -m "feat(m3): PTY writes on a per-session writer thread"`
 
-### Task 5: Use it for real — 👀 ⬜
+### Task 5: Use it for real — 👀 ✅
 
 `cargo run`, then:
 
-- [ ] The window shows a **sidebar** (dark, about 220 px) with **"1  Shell 1"** highlighted, and the terminal on the right.
-- [ ] **cmd-t** twice → **"2  Shell 2"** and **"3  Shell 3"** appear; the newest is highlighted and has the cursor.
-- [ ] In session 1 run `while true; do date; sleep 1; done`. Switch to 2 (**click** it), wait 5 s, switch back (**cmd-1**). The clock **kept going** (no gap).
-- [ ] Typing goes **only** to the highlighted session (type in 2, check 1 and 3 are untouched).
-- [ ] **cmd-}** / **cmd-{** cycle forward and back, wrapping around.
-- [ ] A program that sets a title (e.g. `printf '\033]0;build\007'`) renames its row to **"build"**, and the window title follows the active session.
-- [ ] `exit` in session 2 → its row disappears and focus moves to a neighbour.
-- [ ] **cmd-w** closes the active session. Then `ps -ax | grep -c '[z]sh'` in another terminal shows the closed shell is **gone**.
-- [ ] Closing the **last** session closes the window and **quits** the app.
-- [ ] The M2 status log still prints for every session (run from another terminal to see stderr).
+- [x] The window shows a **sidebar** (dark, about 220 px) with **"1  Shell 1"** highlighted, and the terminal on the right.
+- [x] **cmd-t** twice → **"2  Shell 2"** and **"3  Shell 3"** appear; the newest is highlighted and has the cursor.
+- [x] In session 1 run `while true; do date; sleep 1; done`. Switch to 2 (**click** it), wait 5 s, switch back (**cmd-1**). The clock **kept going** (no gap).
+- [x] Typing goes **only** to the highlighted session (type in 2, check 1 and 3 are untouched).
+- [x] **cmd-}** / **cmd-{** cycle forward and back, wrapping around.
+- [x] A program that sets a title (e.g. `printf '\033]0;build\007'`) renames its row to **"build"**, and the window title follows the active session.
+- [x] `exit` in session 2 → its row disappears and focus moves to a neighbour.
+- [x] **cmd-w** closes the active session. Then `ps -ax | grep -c '[z]sh'` in another terminal shows the closed shell is **gone**.
+- [x] Closing the **last** session closes the window and **quits** the app.
+- [x] The M2 status log still prints for every session (run from another terminal to see stderr).
+- [x] *(Added during the check)* Input flood: `stty raw -echo; for i in $(seq 1 3000); do printf '\033[6n'; done; sleep 20; stty sane`
+      in one session; the app stays responsive and other sessions take input during the pause.
 
-### Task 6: Update the docs — ⬜
+### Task 6: Update the docs — ✅
 
-- [ ] [[43 - Milestone 3 - Many Sessions]]: tick the checklist; **Status:: ✅ Done**; record D6 shortcuts.
-- [ ] [[40 - Roadmap]]: M3 → ✅.
-- [ ] [[00 - Plan Tracker (Start Here)]]: M3 → ✅ 6/6; **Where we are** → M4 Task 0.
-- [ ] [[60 - Progress Log]]: new entry.
+- [x] [[43 - Milestone 3 - Many Sessions]]: tick the checklist; **Status:: ✅ Done**; record D6 shortcuts.
+- [x] [[40 - Roadmap]]: M3 → ✅.
+- [x] [[00 - Plan Tracker (Start Here)]]: M3 → ✅ 6/6; **Where we are** → M4 Task 0.
+- [x] [[60 - Progress Log]]: new entry.
 - [ ] Commit docs *(when you say so)*.
 
 ## Verification log
@@ -983,7 +985,10 @@ thread takes the writes off the UI thread.
 | 2026-10-26 | M2 plan change carried over: `Output { notifications }` + the BEL arm; expected count 44 → 53 (M2 now has 9 more tests, incl. the final-review fix) | ✅ re-verified (next rows) | AI scratch build |
 | 2026-10-26 | Plan text applied to a scratch worktree of `master` (`6e82a31`): Task 4 first (RED: `write blocked` after 2 s; GREEN), then Tasks 1–3 (session_list 6 passed) | ✅ 0 warnings from our code, 54 passed | AI scratch build/test |
 | 2026-10-26 | M1 review proposal "end a session when the shell exits even if a background job holds the PTY" | ❌ not needed on macOS, dropped | Probe: after `sleep 6 &!` + `exit`, zsh exited and the reader got EOF in 23 ms (macOS revokes the tty when the session leader exits); with `nohup … &`, zsh itself refuses the first `exit` (running jobs) |
-| | Task 5 checklist | | 👀 |
+| 2026-10-26 | Repo, Tasks 1–4 (`31b9a32`, `0350c50`, `9326082`): each reviewed, 0 Critical/Important | ✅ 0 warnings from our code, 54 passed | AI build/test output |
+| 2026-10-26 | Task 5 found **Working was never logged** (latent since M2): `StatusTracker::on_output` set Working but returned nothing, so the view never reported it. Fix: `on_output` returns `Option<Status>` (`Some(Working)` on change) and the view's Output arm calls `status_changed`; test `output_reports_working_once` RED → GREEN (`6973016`) | ✅ 0 warnings, 55 passed | AI build/test output |
+| 2026-10-26 | Input flood (3000 cursor-position queries, child not reading): headless probe queued 3000 replies in 29 ms, worst `write` 14 µs. The `1R;` text afterwards is zsh reading the queued replies (expected) | ✅ UI never blocks | AI probe + 👀 |
+| 2026-10-26 | Task 5 checklist (all 10 checks + the flood check), on `6973016` | ✅ | 👀 confirmed by you |
 
 ## Known limitations
 
