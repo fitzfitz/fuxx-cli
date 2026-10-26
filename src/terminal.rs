@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
@@ -28,6 +28,13 @@ use crate::pty::Pty;
 pub struct TermDims {
     pub cols: usize,
     pub rows: usize,
+}
+
+/// Size of one cell in whole pixels, reported to the PTY and to `CSI 14 t` / `CSI 16 t`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CellPx {
+    pub width: u16,
+    pub height: u16,
 }
 
 impl Dimensions for TermDims {
@@ -76,7 +83,7 @@ struct Shared {
 pub struct TerminalCore {
     shared: Arc<FairMutex<Shared>>,
     pty: Arc<Mutex<Pty>>,
-    dims: Arc<Mutex<TermDims>>,
+    dims: Arc<Mutex<(TermDims, CellPx)>>,
     /// Bytes for the child, written by the writer thread so a child that stops reading can't
     /// block the UI.
     input: Sender<Vec<u8>>,
@@ -146,7 +153,7 @@ impl TerminalCore {
         Ok(Self {
             shared,
             pty: Arc::new(Mutex::new(pty)),
-            dims: Arc::new(Mutex::new(dims)),
+            dims: Arc::new(Mutex::new((dims, CellPx::default()))),
             input,
             links: Arc::new(Mutex::new(LinkFinder::new())),
         })
@@ -211,23 +218,34 @@ impl TerminalCore {
     }
 
     /// Resize screen + PTY. No-op when unchanged, so it's cheap to call every frame.
-    pub fn resize(&self, dims: TermDims) {
+    pub fn resize(&self, dims: TermDims, cell: CellPx) {
         if dims.cols == 0 || dims.rows == 0 {
             return;
         }
         let mut current = self.dims.lock().unwrap();
-        if *current == dims {
+        if *current == (dims, cell) {
             return;
         }
-        *current = dims;
+        *current = (dims, cell);
         self.shared.lock().term.resize(dims);
         if let Ok(pty) = self.pty.lock() {
-            let _ = pty.resize(dims);
+            let _ = pty.resize(dims, cell);
         }
     }
 
     pub fn dims(&self) -> TermDims {
-        *self.dims.lock().unwrap()
+        self.dims.lock().unwrap().0
+    }
+
+    /// Cell counts and cell pixel size from the last resize, for `CSI 14 t` replies.
+    pub fn window_size(&self) -> WindowSize {
+        let (dims, cell) = *self.dims.lock().unwrap();
+        WindowSize {
+            num_lines: dims.rows as u16,
+            num_cols: dims.cols as u16,
+            cell_width: cell.width,
+            cell_height: cell.height,
+        }
     }
 
     pub fn mode(&self) -> TermMode {
@@ -363,11 +381,64 @@ mod tests {
     fn resize_changes_the_grid_and_ignores_zero() {
         let (tx, _rx) = unbounded();
         let core = TerminalCore::spawn(sh("sleep 1"), TermDims { cols: 40, rows: 5 }, tx).unwrap();
-        core.resize(TermDims { cols: 0, rows: 0 });
+        core.resize(TermDims { cols: 0, rows: 0 }, CellPx::default());
         assert_eq!(core.dims(), TermDims { cols: 40, rows: 5 });
-        core.resize(TermDims { cols: 60, rows: 10 });
+        core.resize(TermDims { cols: 60, rows: 10 }, CellPx::default());
         let snap = core.snapshot();
         assert_eq!((snap.cols, snap.rows), (60, 10));
+    }
+
+    #[test]
+    fn csi_14t_reports_real_pixel_size() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("sleep 1; printf '\\033[14t'; sleep 1"),
+            TermDims { cols: 80, rows: 24 },
+            tx,
+        )
+        .unwrap();
+        core.resize(
+            TermDims { cols: 80, rows: 24 },
+            CellPx {
+                width: 8,
+                height: 17,
+            },
+        );
+        let mut reply = None;
+        assert!(wait_for(&mut rx, |e| match e {
+            TermEvent::Term(Event::TextAreaSizeRequest(format)) => {
+                reply = Some(format(core.window_size()));
+                true
+            }
+            _ => false,
+        }));
+        assert_eq!(reply.as_deref(), Some("\x1b[4;408;640t"));
+    }
+
+    #[test]
+    fn width_change_clears_selection() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'hello'; sleep 2"),
+            TermDims { cols: 20, rows: 3 },
+            tx,
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("hello")));
+        core.start_selection(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        core.extend_selection(Point::new(Line(0), Column(4)), Side::Right);
+        core.resize(
+            TermDims { cols: 15, rows: 3 },
+            CellPx {
+                width: 8,
+                height: 17,
+            },
+        );
+        assert_eq!(core.selection_text(), None);
     }
 
     #[test]

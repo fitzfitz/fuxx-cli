@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::event::{Event, WindowSize};
+use alacritty_terminal::event::Event;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use futures::StreamExt;
@@ -19,7 +19,7 @@ use crate::grid::{self, GridSnapshot};
 use crate::keys;
 use crate::pty;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
-use crate::terminal::{TermDims, TermEvent, TerminalCore};
+use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
 
 const FONT_FAMILY: &str = "Menlo";
 const FONT_SIZE: f32 = 14.0;
@@ -125,14 +125,7 @@ impl TerminalView {
                 self.core.write(reply.as_bytes());
             }
             TermEvent::Term(Event::TextAreaSizeRequest(format)) => {
-                let dims = self.core.dims();
-                // Pixel cell size isn't tracked; cell counts are what programs actually use.
-                let reply = format(WindowSize {
-                    num_lines: dims.rows as u16,
-                    num_cols: dims.cols as u16,
-                    cell_width: 0,
-                    cell_height: 0,
-                });
+                let reply = format(self.core.window_size());
                 self.core.write(reply.as_bytes());
             }
             TermEvent::Term(Event::Title(title)) => {
@@ -206,7 +199,13 @@ impl Render for TerminalView {
                     // prepaint: measure cells, fit the terminal to the space we were given.
                     move |bounds, window, _cx| {
                         let metrics = CellMetrics::measure(window);
-                        resize_core.resize(metrics.dims_for(bounds));
+                        resize_core.resize(
+                            metrics.dims_for(bounds),
+                            CellPx {
+                                width: f32::from(metrics.cell_width).round() as u16,
+                                height: f32::from(metrics.line_height).round() as u16,
+                            },
+                        );
                         metrics
                     },
                     // paint: draw the current screen.

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use crate::terminal::TermDims;
+use crate::terminal::{CellPx, TermDims};
 
 /// The user's login shell (`$SHELL`, run as `-zsh` etc.), started in `cwd` or `$HOME`.
 pub fn shell_command(cwd: Option<&Path>) -> CommandBuilder {
@@ -25,12 +25,12 @@ pub fn shell_command(cwd: Option<&Path>) -> CommandBuilder {
     cmd
 }
 
-fn pty_size(dims: TermDims) -> PtySize {
+pub fn pty_size(dims: TermDims, cell: CellPx) -> PtySize {
     PtySize {
         rows: dims.rows as u16,
         cols: dims.cols as u16,
-        pixel_width: 0,
-        pixel_height: 0,
+        pixel_width: (dims.cols as u16).saturating_mul(cell.width),
+        pixel_height: (dims.rows as u16).saturating_mul(cell.height),
     }
 }
 
@@ -48,7 +48,7 @@ impl Pty {
         dims: TermDims,
     ) -> Result<(Pty, Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
         let pair = native_pty_system()
-            .openpty(pty_size(dims))
+            .openpty(pty_size(dims, CellPx::default()))
             .map_err(|e| e.to_string())?;
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         // Drop our copy of the slave: the reader only reaches EOF once every slave handle closes.
@@ -66,9 +66,9 @@ impl Pty {
     }
 
     /// Tell the child its new size (it receives SIGWINCH).
-    pub fn resize(&self, dims: TermDims) -> Result<(), String> {
+    pub fn resize(&self, dims: TermDims, cell: CellPx) -> Result<(), String> {
         self.master
-            .resize(pty_size(dims))
+            .resize(pty_size(dims, cell))
             .map_err(|e| e.to_string())
     }
 }
@@ -77,5 +77,25 @@ impl Drop for Pty {
     fn drop(&mut self) {
         // Closing a session must not leave its shell/agent running.
         let _ = self.child.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pty_size_carries_pixels() {
+        let s = pty_size(
+            TermDims { cols: 80, rows: 24 },
+            CellPx {
+                width: 8,
+                height: 17,
+            },
+        );
+        assert_eq!(
+            (s.cols, s.rows, s.pixel_width, s.pixel_height),
+            (80, 24, 640, 408)
+        );
     }
 }
