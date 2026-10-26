@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: done
 ---
 
 # 44 - Milestone 4 - Notification Rings
 
-**Status:: ⬜ Not started**  ·  **First genuinely useful version.**
+**Status:: ✅ Done (2026-10-26). Rings and background notifications confirmed on screen, incl. real `claude` runs.**  ·  **First genuinely useful version.**
 **Plan:** [[M4 Plan - Notification Rings]] (step-by-step, compile-verified, with status per task)
 
 ## Goal
@@ -16,13 +16,13 @@ the product's payoff.
 
 ## Rough scope / checklist
 
-- [ ] Render a per-session ring/badge in the sidebar (working / done / waiting), updating live.
-- [ ] Fire a desktop notification when a **non-active** session becomes done / waiting (focus-aware —
+- [x] Render a per-session ring/badge in the sidebar (working / done / waiting), updating live.
+- [x] Fire a desktop notification when a **non-active** session becomes done / waiting (focus-aware —
       don't nag about the session you're looking at).
-- [ ] ~~Clicking a notification switches to that session.~~ **Moved to M11 (D5, decided 2026-10-26).**
+- [x] ~~Clicking a notification switches to that session.~~ **Moved to M11 (D5, decided 2026-10-26).**
       Not possible with `osascript` (clicking its banner opens Script Editor); a real `.app` can receive
       the click, as Ghostty and iTerm2 do. See [[00 - Plan Tracker (Start Here)]].
-- [ ] Notifications via `osascript` (macOS; v1 finding — see memory `macos-notify-rust-broken`).
+- [x] Notifications via `osascript` (macOS; v1 finding — see memory `macos-notify-rust-broken`).
 
 ## Success check
 

@@ -19,10 +19,10 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M4 — Notification Rings** |
-| **Status** | 🟨 In progress on branch `m4-notification-rings`. M3 ✅ done 2026-10-26 (merged into `master` and pushed). |
-| **▶ Next action** | [[M4 Plan - Notification Rings]] → Task 1. |
-| **Blocked on** | Nothing. D5 decided (click → session moves to M11). |
+| **Current milestone** | **M4b — Tester build** (Phase 1's core is complete) |
+| **Status** | ⬜ Not started. M4 ✅ done 2026-10-26 (rings + background notifications, all on-screen checks confirmed by you; on branch `m4-notification-rings`, not merged yet). |
+| **▶ Next action** | Write the M4b plan (unsigned `.app` in a DMG), after deciding **D7** and **D8**. |
+| **Blocked on** | ❓ **D7** (CPUs) and ❓ **D8** (detection when launched from Finder), needed for the M4b plan. |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -44,7 +44,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M1 | One terminal pane (**make-or-break**) | [[M1 Plan - One Terminal Pane]] | ✅ | 7/7 | Usable shell: `ls --color`, `vim`, resize |
 | M2 | Agent state detection | [[M2 Plan - Agent State Detection]] | ✅ | 7/7 | Status log shows working → done / waiting |
 | M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ✅ | 6/6 | 3 sessions, switch, all keep running |
-| M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | 🟨 | 0/4 | Rings update; background sessions notify |
+| M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ✅ | 4/4 | Rings update; background sessions notify |
 | M4b | Tester build (unsigned `.app` in a DMG) — *added 2026-10-26* | written when M4 is done | ⬜ ❓D7 ❓D8 | — | A tester drags fuxx to Applications and opens it |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
@@ -80,7 +80,7 @@ updated before anyone builds it.
   | M1 | ✅ 0 warnings | 21 pass |
   | M2 | ✅ 0 warnings | 38 pass → **47** after the 2026-10-26 plan changes (built and run) |
   | M3 | ✅ 0 warnings | 44 pass → **54** after the 2026-10-26 plan changes (re-verified) → **55** in the repo (Working fix) |
-  | M4 | ✅ 0 warnings | 50 pass → 61 expected (edited, not re-compiled) |
+  | M4 | ✅ 0 warnings | 50 pass → 61 expected → **61** in the repo (built and run) |
 
   (The only warning is an upstream one inside GPUI's own dependencies, `block` and
   `proc-macro-error2`. It isn't ours, and it can be ignored.)
