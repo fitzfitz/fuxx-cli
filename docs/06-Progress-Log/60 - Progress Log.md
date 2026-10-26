@@ -14,13 +14,26 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M4b — Tester build** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M4 ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M4b — Tester build** (see [[40 - Roadmap]]; the **new terminal app**). 🟨 plan written, D7 + D8 decided. M0–M4 ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — M4b plan written; D7 + D8 decided
+- **Did:** Compared how other terminals handle both decisions (Ghostty, iTerm2, kitty, Alacritty, WezTerm
+  ship universal Mac apps, Zed ships separate Intel and Apple Silicon ones; nearly every terminal sets its
+  own `TERM_PROGRAM`, fuxx inherits it). You chose **D7 = universal** (Apple Silicon + Intel) and
+  **D8 = accept the weaker detection** when opened from Finder, "for now". Added the `x86_64-apple-darwin`
+  Rust target. Wrote [[M4b Plan - Tester Build]] and [[44b - Milestone 4b - Tester Build]] (with tester
+  install steps), after a trial run of the plan's scripts: universal DMG, 7.4 MB.
+- **Learned:** An Intel release build compiles cleanly at our pinned GPUI rev (Zed ships Intel builds from
+  it). macOS 26 is the last release for Intel Macs, but Apple still recommends universal apps. macOS gives
+  apps opened from Finder no `LANG`; your shell start-up sets one, a tester's may not (known limitation).
+- **Blocked:** Nothing.
+- **Next task:** [[M4b Plan - Tester Build]] → Task 1.
 
 ### 2026-10-26 — Milestone 4 complete: first genuinely useful version
 - **Did:** Decided **D5** with you after comparing how Ghostty, iTerm2, Warp and Zed handle notification
