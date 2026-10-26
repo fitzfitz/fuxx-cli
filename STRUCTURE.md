@@ -77,6 +77,19 @@ keyboard ─► terminal_view ─► keys ─► pty ─► shell / agent
                                             └──────► notifier (osascript)
 ```
 
+## Tester build (M4b)
+
+```
+scripts/
+├── bundle-mac.sh         M4b · universal release build → fuxx.app → target/dist/fuxx-<version>.dmg
+└── check-dmg.sh          M4b · the test: asserts a DMG is installable (both CPUs, macOS 11.0, version, seal)
+packaging/
+└── macos/Info.plist      M4b · bundle metadata (id io.github.fitzfitz.fuxx); @VERSION@ from Cargo.toml
+```
+
+To make a new tester build: bump `version` in `Cargo.toml`, run `scripts/bundle-mac.sh`, then
+`scripts/check-dmg.sh target/dist/fuxx-<version>.dmg`.
+
 ## Later (Phase 2–4)
 
 No file names yet: those milestones get detailed plans when we reach them (see

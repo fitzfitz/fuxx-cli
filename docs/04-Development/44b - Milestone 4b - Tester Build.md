@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: in-progress
+status: done
 ---
 
 # 44b - Milestone 4b - Tester Build
 
-**Status:: 🟨 In progress (plan written 2026-10-26).**  ·  **Lets testers try the MVP.**
+**Status:: ✅ Done (2026-10-26). Installed from a "downloaded" DMG and confirmed on screen, incl. the Intel slice under Rosetta.**  ·  **Lets testers try the MVP.**
 **Plan:** [[M4b Plan - Tester Build]] (step-by-step, with status per task)
 
 ## Goal
@@ -23,11 +23,11 @@ new version number. Signing, notarization and Homebrew stay later ([[40 - Roadma
 
 ## Rough scope / checklist
 
-- [ ] One command builds `target/dist/fuxx-<version>.dmg` (version from `Cargo.toml`), and refuses to reuse a version.
-- [ ] The app inside is universal (`arm64` + `x86_64`), minimum macOS 11.0, ad-hoc sealed.
-- [ ] A check script confirms a DMG is installable before it goes to testers.
-- [ ] Installed like a tester (a "downloaded" copy, Open Anyway), the M4 app works when opened from Finder.
-- [ ] The Intel slice runs (under Rosetta on this Mac).
+- [x] One command builds `target/dist/fuxx-<version>.dmg` (version from `Cargo.toml`), and refuses to reuse a version.
+- [x] The app inside is universal (`arm64` + `x86_64`), minimum macOS 11.0, ad-hoc sealed.
+- [x] A check script confirms a DMG is installable before it goes to testers.
+- [x] Installed like a tester (a "downloaded" copy, Open Anyway), the M4 app works when opened from Finder.
+- [x] The Intel slice runs (under Rosetta on this Mac).
 
 ## Success check
 

@@ -14,13 +14,24 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M4b — Tester build** (see [[40 - Roadmap]]; the **new terminal app**). 🟨 plan written, D7 + D8 decided. M0–M4 ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M5 — Terminal UX** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M4 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — Milestone 4b complete: tester build
+- **Did:** You installed `fuxx-0.1.0.dmg` like a tester (a copy marked as downloaded): drag to Applications,
+  Open Anyway once, then the shell, `claude`, accented text and emoji, rings with the quiet-timer Done and
+  banners, reopening without a second prompt, the Intel slice under Rosetta, and version 0.1.0 in Get Info.
+  All 7 checks passed. Final review: 0 Critical; its 3 Important findings were fixed or documented (`bc5705b`).
+  Updated [[44b - Milestone 4b - Tester Build]], [[40 - Roadmap]], the tracker and `STRUCTURE.md`.
+- **Learned:** A Finder-opened fuxx on this Mac behaves like the terminal-launched one, except that Claude
+  Code sends no notification (D8, as expected).
+- **Blocked:** Nothing.
+- **Next task:** Write the M5 plan (Phase 2: Terminal UX).
 
 ### 2026-10-26 — M4b Task 1: the tester DMG builds
 - **Did:** Added `scripts/bundle-mac.sh` (universal release build → ad-hoc sealed `fuxx.app` →
