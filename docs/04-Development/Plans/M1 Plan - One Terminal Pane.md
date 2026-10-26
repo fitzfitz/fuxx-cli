@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M1
-status: not-started
-updated: 2026-10-12
+status: done
+updated: 2026-10-26
 ---
 
 # M1 Plan — One Terminal Pane (make-or-break)
@@ -12,11 +12,11 @@ updated: 2026-10-12
 | At a glance | |
 |---|---|
 | **Milestone note** | [[41 - Milestone 1 - One Terminal Pane]] |
-| **Status** | ⬜ Not started (M0 ✅ done; D2 + D3 decided) |
-| **Tasks done** | 0 / 7 |
-| **▶ Pick up here** | **Task 1, Step 1** |
+| **Status** | ✅ Done 2026-10-26 (commits `d4b972f`…`4a359c3` + docs on `m1-terminal-pane`) |
+| **Tasks done** | 7 / 7 |
+| **▶ Pick up here** | M1 complete → [[M2 Plan - Agent State Detection]] |
 | **Decisions used** | ✅ **D2** = GPUI text system · ✅ **D3** = `futures` channel (see [[00 - Plan Tracker (Start Here)]]) |
-| **Needs your eyes** | 👀 Task 6 (real shell, `ls --color`, `vim`, resize, Claude Code) |
+| **Needs your eyes** | ✅ Task 6 confirmed by you on 2026-10-26 (all 12 checks) |
 
 **Goal:** One real, usable terminal in the GPUI window. A login shell runs on a PTY, its output is
 parsed by `alacritty_terminal`, the screen is drawn by a GPUI view, keystrokes go back to the
@@ -77,7 +77,7 @@ Failure modes no unit test fully pins, most likely first:
 
 ---
 
-### Task 1: Dependencies + `keys.rs` (keystroke → bytes) — ⬜
+### Task 1: Dependencies + `keys.rs` (keystroke → bytes) — ✅
 
 **Files:** Modify `Cargo.toml` · Create `src/keys.rs` · Modify `src/main.rs` (add `mod keys;`)
 
@@ -90,7 +90,7 @@ Failure modes no unit test fully pins, most likely first:
 > Arrows change form in "application cursor" mode (vim, less and Claude Code switch it on).
 > Byte table: Zed's `crates/terminal/src/mappings/keys.rs`, with three of its bugs fixed (see [[31 - API Fact Sheet (pinned rev)]]).
 
-- [ ] **Step 1: Add the dependencies.** Append to `[dependencies]` in `Cargo.toml`:
+- [x] **Step 1: Add the dependencies.** Append to `[dependencies]` in `Cargo.toml`:
 
 ```toml
 # Terminal core: screen grid + VT/escape parser (the engine behind Alacritty and Zed's terminal).
@@ -101,7 +101,7 @@ portable-pty = "0.9.0"
 futures = "0.3"
 ```
 
-- [ ] **Step 2: Write the failing tests.** Create `src/keys.rs` containing only this test module for now:
+- [x] **Step 2: Write the failing tests.** Create `src/keys.rs` containing only this test module for now:
 
 ```rust
 #[cfg(test)]
@@ -171,14 +171,14 @@ mod tests {
 mod keys;
 ```
 
-- [ ] **Step 3: Run them and watch them fail**
+- [x] **Step 3: Run them and watch them fail**
 
 ```bash
 cargo test keys
 ```
 Expected: compile error `cannot find function \`key_to_bytes\` in this scope` (red).
 
-- [ ] **Step 4: Implement.** Put this **above** the test module in `src/keys.rs`:
+- [x] **Step 4: Implement.** Put this **above** the test module in `src/keys.rs`:
 
 ```rust
 //! Translate a GPUI keystroke into the bytes a terminal program expects.
@@ -326,16 +326,16 @@ pub fn key_to_bytes(
 }
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 ```bash
 cargo test keys
 ```
 Expected: `test result: ok. 7 passed`. A `function key_to_bytes is never used` warning is expected until Task 5.
 
-- [ ] **Step 6: Commit** *(when you say so)*: `git add Cargo.toml Cargo.lock src/keys.rs src/main.rs && git commit -m "feat(m1): keystroke-to-bytes mapping with tests"`
+- [x] **Step 6: Commit** *(when you say so)*: `git add Cargo.toml Cargo.lock src/keys.rs src/main.rs && git commit -m "feat(m1): keystroke-to-bytes mapping with tests"`
 
-### Task 2: `colors.rs` (cell color → RGB) — ⬜
+### Task 2: `colors.rs` (cell color → RGB) — ✅
 
 **Files:** Create `src/colors.rs` · Modify `src/main.rs` (add `mod colors;`)
 
@@ -348,7 +348,7 @@ Expected: `test result: ok. 7 passed`. A `function key_to_bytes is never used` w
 > **Why.** `Term::colors()` is all `None` unless a program overrode a color, so the palette is
 > ours: Alacritty's defaults plus the standard xterm 256-color cube and gray ramp.
 
-- [ ] **Step 1: Write the failing tests.** Create `src/colors.rs` with only:
+- [x] **Step 1: Write the failing tests.** Create `src/colors.rs` with only:
 
 ```rust
 #[cfg(test)]
@@ -386,9 +386,9 @@ mod tests {
 
 …and add `mod colors;` to `src/main.rs`.
 
-- [ ] **Step 2: Run:** `cargo test colors`. Expected: compile errors (`indexed_rgb`, `resolve`, `FOREGROUND` not found).
+- [x] **Step 2: Run:** `cargo test colors`. Expected: compile errors (`indexed_rgb`, `resolve`, `FOREGROUND` not found).
 
-- [ ] **Step 3: Implement.** Put this above the test module:
+- [x] **Step 3: Implement.** Put this above the test module:
 
 ```rust
 //! Resolve `alacritty_terminal` cell colors to concrete RGB.
@@ -467,11 +467,11 @@ pub fn resolve(color: Color, overrides: &Colors) -> Rgb {
 }
 ```
 
-- [ ] **Step 4: Run:** `cargo test colors`. Expected: `test result: ok. 3 passed`.
+- [x] **Step 4: Run:** `cargo test colors`. Expected: `test result: ok. 3 passed`.
 
-- [ ] **Step 5: Commit** *(when you say so)*: `git add src/colors.rs src/main.rs && git commit -m "feat(m1): terminal color palette with tests"`
+- [x] **Step 5: Commit** *(when you say so)*: `git add src/colors.rs src/main.rs && git commit -m "feat(m1): terminal color palette with tests"`
 
-### Task 3: `grid.rs` (screen snapshot + paint batching) — ⬜
+### Task 3: `grid.rs` (screen snapshot + paint batching) — ✅
 
 **Files:** Create `src/terminal.rs` (only `TermDims` for now) · Create `src/grid.rs` · Modify `src/main.rs` (add `mod terminal; mod grid;`)
 
@@ -490,7 +490,7 @@ pub fn resolve(color: Color, overrides: &Colors) -> Rgb {
 > visible screen out quickly, release the lock, and paint from the copy. Batching same-style cells
 > into spans means one GPUI `shape_line` per span instead of one per cell (Zed does the same).
 
-- [ ] **Step 1: Create `src/terminal.rs` with just the size type** (Task 4 fills in the rest):
+- [x] **Step 1: Create `src/terminal.rs` with just the size type** (Task 4 fills in the rest):
 
 ```rust
 //! One live terminal (filled in by Task 4). For now: the size type.
@@ -517,7 +517,7 @@ impl Dimensions for TermDims {
 }
 ```
 
-- [ ] **Step 2: Write the failing tests.** Create `src/grid.rs` with only:
+- [x] **Step 2: Write the failing tests.** Create `src/grid.rs` with only:
 
 ```rust
 #[cfg(test)]
@@ -604,9 +604,9 @@ mod tests {
 
 …and add `mod terminal;` and `mod grid;` to `src/main.rs`.
 
-- [ ] **Step 3: Run:** `cargo test grid`. Expected: compile errors (`snapshot`, `CellView`, `bg_rects`… not found).
+- [x] **Step 3: Run:** `cargo test grid`. Expected: compile errors (`snapshot`, `CellView`, `bg_rects`… not found).
 
-- [ ] **Step 4: Implement.** Put this above the test module in `src/grid.rs`:
+- [x] **Step 4: Implement.** Put this above the test module in `src/grid.rs`:
 
 ```rust
 //! A render-ready copy of the terminal screen, plus the batching that turns a line of cells
@@ -789,11 +789,11 @@ pub fn text_spans(line: &[CellView]) -> Vec<TextSpan> {
 }
 ```
 
-- [ ] **Step 5: Run:** `cargo test grid`. Expected: `test result: ok. 6 passed`.
+- [x] **Step 5: Run:** `cargo test grid`. Expected: `test result: ok. 6 passed`.
 
-- [ ] **Step 6: Commit** *(when you say so)*: `git add src/terminal.rs src/grid.rs src/main.rs && git commit -m "feat(m1): grid snapshot and paint batching with tests"`
+- [x] **Step 6: Commit** *(when you say so)*: `git add src/terminal.rs src/grid.rs src/main.rs && git commit -m "feat(m1): grid snapshot and paint batching with tests"`
 
-### Task 4: `pty.rs` + `TerminalCore` (the live terminal) — ⬜
+### Task 4: `pty.rs` + `TerminalCore` (the live terminal) — ✅
 
 **Files:** Create `src/pty.rs` · Replace `src/terminal.rs` (full version) · Modify `src/main.rs` (add `mod pty;`)
 
@@ -814,7 +814,7 @@ pub fn text_spans(line: &[CellView]) -> Vec<TextSpan> {
 > `Term` under the same lock, so a timer can flush a stuck synchronized update (`flush_stale_sync`).
 > macOS returns `EIO` when the child exits, and portable-pty already turns that into `Ok(0)` (EOF).
 
-- [ ] **Step 1: Create `src/pty.rs`** (exercised by Task 4's tests through `TerminalCore`):
+- [x] **Step 1: Create `src/pty.rs`** (exercised by Task 4's tests through `TerminalCore`):
 
 ```rust
 //! A child process on a pseudo-terminal (portable-pty, as in v1).
@@ -886,7 +886,7 @@ impl Drop for Pty {
 }
 ```
 
-- [ ] **Step 2: Write the failing tests.** Append this test module to the bottom of `src/terminal.rs`, and add `mod pty;` to `src/main.rs`:
+- [x] **Step 2: Write the failing tests.** Append this test module to the bottom of `src/terminal.rs`, and add `mod pty;` to `src/main.rs`:
 
 ```rust
 #[cfg(test)]
@@ -968,9 +968,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run:** `cargo test terminal`. Expected: compile errors (`TerminalCore`, `TermEvent` not found).
+- [x] **Step 3: Run:** `cargo test terminal`. Expected: compile errors (`TerminalCore`, `TermEvent` not found).
 
-- [ ] **Step 4: Implement.** Replace everything **above** the test module in `src/terminal.rs` with:
+- [x] **Step 4: Implement.** Replace everything **above** the test module in `src/terminal.rs` with:
 
 ```rust
 //! One live terminal: a PTY child, an `alacritty_terminal::Term` holding its screen, and a
@@ -1144,13 +1144,13 @@ impl TerminalCore {
 }
 ```
 
-- [ ] **Step 5: Run:** `cargo test terminal`. Expected: `test result: ok. 5 passed`. These spawn real `/bin/sh` processes on PTYs, so each takes up to ~1 s.
+- [x] **Step 5: Run:** `cargo test terminal`. Expected: `test result: ok. 5 passed`. These spawn real `/bin/sh` processes on PTYs, so each takes up to ~1 s.
 
-- [ ] **Step 6: Run everything:** `cargo test`. Expected: `test result: ok. 21 passed`.
+- [x] **Step 6: Run everything:** `cargo test`. Expected: `test result: ok. 21 passed`.
 
-- [ ] **Step 7: Commit** *(when you say so)*: `git add src/pty.rs src/terminal.rs src/main.rs && git commit -m "feat(m1): live terminal core (PTY + alacritty Term + reader thread) with tests"`
+- [x] **Step 7: Commit** *(when you say so)*: `git add src/pty.rs src/terminal.rs src/main.rs && git commit -m "feat(m1): live terminal core (PTY + alacritty Term + reader thread) with tests"`
 
-### Task 5: `TerminalView` + wire it into the window — ⬜
+### Task 5: `TerminalView` + wire it into the window — ✅
 
 **Files:** Create `src/terminal_view.rs` · Replace `src/main.rs`
 
@@ -1166,7 +1166,7 @@ impl TerminalCore {
 > drains `TermEvent`s and another ticks every 50 ms. Both are stored in fields because **dropping
 > a GPUI `Task` cancels it**. Keys arrive in `on_key_down` only if no key binding matched (cmd-q is bound).
 
-- [ ] **Step 1: Create `src/terminal_view.rs`:**
+- [x] **Step 1: Create `src/terminal_view.rs`:**
 
 ```rust
 //! The GPUI view for one terminal: paints a `GridSnapshot` and turns keystrokes into PTY bytes.
@@ -1451,7 +1451,7 @@ fn paint_grid(
 }
 ```
 
-- [ ] **Step 2: Replace `src/main.rs`** (M0's placeholder `Fuxx` view goes away):
+- [x] **Step 2: Replace `src/main.rs`** (M0's placeholder `Fuxx` view goes away):
 
 ```rust
 // fuxx — a native GPU terminal for running AI coding agents.
@@ -1495,46 +1495,46 @@ fn main() {
 }
 ```
 
-- [ ] **Step 3: Build with zero warnings:**
+- [x] **Step 3: Build with zero warnings:**
 
 ```bash
 cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"
 ```
 Expected: **no output**.
 
-- [ ] **Step 4: All tests:** `cargo test`. Expected: `test result: ok. 21 passed`.
+- [x] **Step 4: All tests:** `cargo test`. Expected: `test result: ok. 21 passed`.
 
-- [ ] **Step 5: Commit** *(when you say so)*: `git add src/terminal_view.rs src/main.rs && git commit -m "feat(m1): render a live terminal in the GPUI window"`
+- [x] **Step 5: Commit** *(when you say so)*: `git add src/terminal_view.rs src/main.rs && git commit -m "feat(m1): render a live terminal in the GPUI window"`
 
-### Task 6: Use it for real — 👀 ⬜
+### Task 6: Use it for real — 👀 ✅
 
 Run `cargo run` and check each item. Report failures with a screenshot plus the terminal output, then
 run `superpowers:systematic-debugging` before changing code.
 
-- [ ] Window opens with **your shell prompt** (zsh), and the cursor is a solid block.
-- [ ] Typing shows characters; **enter** runs commands; **backspace** deletes.
-- [ ] `ls --color` (or `ls -G`) shows **colored** names.
-- [ ] `echo $TERM` prints `xterm-256color`.
-- [ ] `vim` opens **instantly** (no hang). Arrow keys move, `i` inserts, `esc` and `:q` quit, and the screen restores.
-- [ ] **ctrl-c** interrupts `sleep 100`. **ctrl-d** on an empty prompt exits.
-- [ ] **Resize** the window: the prompt re-wraps, and `tput cols; tput lines` matches the new size.
-- [ ] `echo 界🙂x`: the wide glyphs don't overlap the `x`.
-- [ ] `seq 1 200000`: it scrolls quickly, ends at `200000`, and the app stays responsive.
-- [ ] `claude` (Claude Code): its UI draws, updates smoothly, and takes input. *This exercises query replies and synchronized updates.*
-- [ ] Type `exit`: **the app quits** (one window, one shell).
-- [ ] **cmd-q** quits.
+- [x] Window opens with **your shell prompt** (zsh), and the cursor is a solid block.
+- [x] Typing shows characters; **enter** runs commands; **backspace** deletes.
+- [x] `ls --color` (or `ls -G`) shows **colored** names.
+- [x] `echo $TERM` prints `xterm-256color`.
+- [x] `vim` opens **instantly** (no hang). Arrow keys move, `i` inserts, `esc` and `:q` quit, and the screen restores.
+- [x] **ctrl-c** interrupts `sleep 100`. **ctrl-d** on an empty prompt exits.
+- [x] **Resize** the window: the prompt re-wraps, and `tput cols; tput lines` matches the new size.
+- [x] `echo 界🙂x`: the wide glyphs don't overlap the `x`.
+- [x] `seq 1 200000`: it scrolls quickly, ends at `200000`, and the app stays responsive.
+- [x] `claude` (Claude Code): its UI draws, updates smoothly, and takes input. *This exercises query replies and synchronized updates.*
+- [x] Type `exit`: **the app quits** (one window, one shell).
+- [x] **cmd-q** quits.
 
 **If rendering is fundamentally unworkable** (the milestone note's fallback): stop and discuss
 `gpui-ghostty` (needs Zig) before going further. That's a plan change ([[30 - Tech Stack]]).
 
-### Task 7: Update the docs — ⬜
+### Task 7: Update the docs — ✅
 
-- [ ] [[41 - Milestone 1 - One Terminal Pane]]: tick the checklist; **Status:: ✅ Done**; record D2 (GPUI text) as decided.
-- [ ] [[30 - Tech Stack]]: the "Terminal rendering" section says GPUI text system (D2); add `futures` (D3) and the exact `alacritty_terminal`/`portable-pty` versions.
-- [ ] [[40 - Roadmap]]: M1 → ✅.
-- [ ] [[00 - Plan Tracker (Start Here)]]: M1 → ✅ 7/7; **Where we are** → M2 Task 1.
-- [ ] [[60 - Progress Log]]: new entry.
-- [ ] Commit docs *(when you say so)*.
+- [x] [[41 - Milestone 1 - One Terminal Pane]]: tick the checklist; **Status:: ✅ Done**; record D2 (GPUI text) as decided.
+- [x] [[30 - Tech Stack]]: the "Terminal rendering" section says GPUI text system (D2); add `futures` (D3) and the exact `alacritty_terminal`/`portable-pty` versions.
+- [x] [[40 - Roadmap]]: M1 → ✅.
+- [x] [[00 - Plan Tracker (Start Here)]]: M1 → ✅ 7/7; **Where we are** → M2 Task 1.
+- [x] [[60 - Progress Log]]: new entry.
+- [x] Commit docs *(when you say so)*.
 
 ## Verification log
 
@@ -1542,7 +1542,9 @@ run `superpowers:systematic-debugging` before changing code.
 |---|---|---|---|
 | 2026-10-12 | Plan code compiles at pinned rev | ✅ 0 warnings | AI scratch build |
 | 2026-10-12 | Plan unit tests | ✅ 21 passed | AI scratch `cargo test` |
-| | Task 6 checklist | | 👀 |
+| 2026-10-26 | Repo build, pinned rev | ✅ 0 warnings from our code | AI build output |
+| 2026-10-26 | `cargo test` on `4a359c3` | ✅ 21 passed | AI test output |
+| 2026-10-26 | Task 6 checklist (all 12 items) | ✅ | 👀 confirmed by you |
 
 ## Known limitations (deliberately not in M1, and where they land)
 

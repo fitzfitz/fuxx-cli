@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: done
 ---
 
 # 41 - Milestone 1 - One Terminal Pane
 
-**Status:: ⬜ Not started**  ·  **The make-or-break milestone.**
+**Status:: ✅ Done (2026-10-26). A usable shell renders in the GPUI window; confirmed on screen**  ·  **The make-or-break milestone.**
 **Plan:** [[M1 Plan - One Terminal Pane]] (step-by-step, compile-verified, with status per task)
 
 ## Goal
@@ -16,13 +16,14 @@ PTY. Proves the whole rendering approach.
 
 ## Rough scope / checklist
 
-- [ ] Spawn a shell on a PTY (`portable-pty`, reused from v1); pump its bytes into an
+- [x] Spawn a shell on a PTY (`portable-pty`, reused from v1); pump its bytes into an
       `alacritty_terminal` `Term`.
-- [ ] A GPUI view that reads the `Term` grid and renders cells (text, colors, cursor) — glyphs via
-      `cosmic-text`/`glyphon` or GPUI text (decide + verify during the milestone).
-- [ ] Route keyboard input from the GPUI view to the PTY.
-- [ ] Handle resize (window → PTY size → `Term` resize).
-- [ ] Redraw on new output.
+- [x] A GPUI view that reads the `Term` grid and renders cells (text, colors, cursor) — glyphs via
+      `cosmic-text`/`glyphon` or GPUI text (decide + verify during the milestone). **Decided (D2,
+      2026-10-26): GPUI's own text system** (`shape_line` + `paint`), like Zed's terminal.
+- [x] Route keyboard input from the GPUI view to the PTY.
+- [x] Handle resize (window → PTY size → `Term` resize).
+- [x] Redraw on new output.
 
 ## Success check
 

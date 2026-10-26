@@ -19,10 +19,10 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M1 — One Terminal Pane** (make-or-break) |
-| **Status** | ⬜ Not started. M0 ✅ done 2026-10-26 (window launches, quits on close and cmd-q; on branch `m0-gpui-window`, not merged). |
-| **▶ Next action** | Do [[M1 Plan - One Terminal Pane]] → Task 1 (on branch `m1-terminal-pane`). |
-| **Blocked on** | Nothing. D2 + D3 decided 2026-10-26 (recommended options). |
+| **Current milestone** | **M2 — Agent State Detection** |
+| **Status** | ⬜ Not started. M1 ✅ done 2026-10-26 (a usable shell in the window, all 12 on-screen checks confirmed by you; on branch `m1-terminal-pane`, not merged). |
+| **▶ Next action** | Do [[M2 Plan - Agent State Detection]] → Task 1. |
+| **Blocked on** | Nothing. D4 (Idle status, M2) is still open; the plan uses the recommended option unless you say otherwise. |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -41,7 +41,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | # | Milestone | Plan | Status | Tasks | Success check (short) |
 |---|---|---|---|---|---|
 | M0 | Scaffold & GPUI window | [[M0 Plan - Scaffold and GPUI Window]] | ✅ | 4/4 | A window opens; closing it quits |
-| M1 | One terminal pane (**make-or-break**) | [[M1 Plan - One Terminal Pane]] | ⬜ | 0/7 | Usable shell: `ls --color`, `vim`, resize |
+| M1 | One terminal pane (**make-or-break**) | [[M1 Plan - One Terminal Pane]] | ✅ | 7/7 | Usable shell: `ls --color`, `vim`, resize |
 | M2 | Agent state detection | [[M2 Plan - Agent State Detection]] | ⬜ ❓D4 | 0/7 | Status log shows working → done / waiting |
 | M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ⬜ ❓D6 | 0/5 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ⬜ ❓D5 | 0/4 | Rings update; background sessions notify |
