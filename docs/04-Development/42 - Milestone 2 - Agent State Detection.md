@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: done
 ---
 
 # 42 - Milestone 2 - Agent State Detection
 
-**Status:: ⬜ Not started**
+**Status:: ✅ Done (2026-10-26). Status changes logged and confirmed on screen, incl. a real `claude` run.** D4 = `Idle` status used; constants not tuned (150 ms / 3 s / 8 lines).
 **Plan:** [[M2 Plan - Agent State Detection]] (step-by-step, compile-verified, with status per task)
 
 ## Goal
@@ -15,13 +15,13 @@ output stream. This drives the rings in [[44 - Milestone 4 - Notification Rings]
 
 ## Rough scope / checklist
 
-- [ ] Reuse v1's **OSC-9 detection** (the `OscDetector` logic, in git history under
+- [x] Reuse v1's **OSC-9 detection** (the `OscDetector` logic, in git history under
       [[90-Archive-v1-CLI-Wrapper]]) against the session's byte stream, **extended (plan change
       2026-10-26)** to OSC 99 (kitty) and OSC 777 `notify` (Ghostty), skipping the `OSC 9;4`
       progress bar; plus a real BEL (Terminal.app) from the parser.
-- [ ] Add heuristics for **waiting-for-input** (e.g. output idle after a prompt) and **working**
+- [x] Add heuristics for **waiting-for-input** (e.g. output idle after a prompt) and **working**
       (recent output) vs **done** (a notification / idle).
-- [ ] Expose a per-session `Status` the UI can read.
+- [x] Expose a per-session `Status` the UI can read.
 
 ## Success check
 
