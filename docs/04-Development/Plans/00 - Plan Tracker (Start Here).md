@@ -20,7 +20,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M4b — Tester build** (Phase 1's core is complete) |
-| **Status** | ⬜ Not started. M4 ✅ done 2026-10-26 (rings + background notifications, all on-screen checks confirmed by you; on branch `m4-notification-rings`, not merged yet). |
+| **Status** | ⬜ Not started. M4 ✅ done 2026-10-26 (rings + background notifications, all on-screen checks confirmed by you; merged into `master` locally, not pushed). |
 | **▶ Next action** | Write the M4b plan (unsigned `.app` in a DMG), after deciding **D7** and **D8**. |
 | **Blocked on** | ❓ **D7** (CPUs) and ❓ **D8** (detection when launched from Finder), needed for the M4b plan. |
 | **Last updated** | 2026-10-26 |
