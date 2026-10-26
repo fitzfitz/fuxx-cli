@@ -178,6 +178,7 @@ The AI prepares a "downloaded" copy; **you** do the rest and report what you see
 | No app icon (macOS shows the generic one) | Not in the plan; ask if wanted |
 | The Intel slice is only checked under Rosetta, not on a real Intel Mac | A tester with an Intel Mac |
 | A tester whose shell config sets no locale may see accented text garbled when fuxx is opened from Finder (macOS sets no `LANG` for apps; yours is fine) | Revisit if a tester reports it |
+| Prompt icons (Nerd Font symbols, e.g. powerlevel10k's) show as `?` boxes: fuxx draws only Menlo (seen on your screen 2026-10-26) | M6 (Fonts & config) |
 | No auto-update: testers install each new DMG by hand | Not in the plan |
 | `bundle-mac.sh` only refuses a version whose DMG is still in `target/dist`: after `cargo clean`, or in another checkout, the same version can be built again | Keep sent DMGs (or bump the version every time) |
 

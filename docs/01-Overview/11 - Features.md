@@ -15,7 +15,7 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 - `P0` Scrollback + scroll.
 - `P1` Selection, copy/paste; mouse support.
 - `P1` Clickable URL / path detection (open on click).
-- `P1` Font config (family/size/ligatures) via `cosmic-text`.
+- `P1` Font config (family/size/ligatures) via `cosmic-text`, including prompt icons (Nerd Font symbols such as powerlevel10k's, `?` boxes today). *(M6; noted 2026-10-26.)*
 - `P2` Search in scrollback; theming; **read Ghostty's config** (fonts/colors/theme) like cmux does.
 
 ## B. Multi-agent orchestration (the differentiator)
