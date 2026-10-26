@@ -20,7 +20,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M3 — Many Sessions** |
-| **Status** | ⬜ Not started. M2 ✅ done 2026-10-26 (status detected and logged, all on-screen checks confirmed by you; on branch `m2-agent-state`, not merged). |
+| **Status** | ⬜ Not started. M2 ✅ done 2026-10-26 (status detected and logged, all on-screen checks confirmed by you; merged into `master` locally, not pushed). |
 | **▶ Next action** | Decide D6 and the two M3 proposals from the M1 review (PTY writer thread; end a session when the shell itself exits), then [[M3 Plan - Many Sessions]] → Task 1. |
 | **Blocked on** | **D6** (keyboard shortcuts, M3) and the two M3 proposals above; the plan uses D6's recommended option unless you say otherwise. |
 | **Last updated** | 2026-10-26 |
