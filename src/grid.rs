@@ -12,6 +12,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
 use crate::colors;
+use crate::theme::{Theme, mix};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellView {
@@ -26,15 +27,17 @@ pub struct CellView {
 }
 
 impl CellView {
-    pub const BLANK: CellView = CellView {
-        ch: ' ',
-        fg: colors::FOREGROUND,
-        bg: colors::BACKGROUND,
-        bold: false,
-        italic: false,
-        underline: false,
-        spacer: false,
-    };
+    pub fn blank(theme: &Theme) -> CellView {
+        CellView {
+            ch: ' ',
+            fg: theme.foreground,
+            bg: theme.background,
+            bold: false,
+            italic: false,
+            underline: false,
+            spacer: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,7 +79,7 @@ pub fn screen_tail_text<L: EventListener>(term: &Term<L>, n: usize) -> String {
 }
 
 /// Copy the visible screen out of the `Term` (call while holding its lock, then release it).
-pub fn snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
+pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot {
     let rows = term.screen_lines();
     let cols = term.columns();
     let content = term.renderable_content();
@@ -84,7 +87,7 @@ pub fn snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     let selection = content.selection;
     // Grid lines are negative when scrolled back; viewport row = line + display_offset.
     let offset = content.display_offset as i32;
-    let mut lines = vec![vec![CellView::BLANK; cols]; rows];
+    let mut lines = vec![vec![CellView::blank(theme); cols]; rows];
 
     for indexed in content.display_iter {
         let row = indexed.point.line.0 + offset;
@@ -94,8 +97,8 @@ pub fn snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         }
         let cell = indexed.cell;
         let flags = cell.flags;
-        let mut fg = colors::resolve(cell.fg, overrides);
-        let mut bg = colors::resolve(cell.bg, overrides);
+        let mut fg = colors::resolve(cell.fg, overrides, theme);
+        let mut bg = colors::resolve(cell.bg, overrides, theme);
         if flags.contains(Flags::DIM) {
             fg = colors::dim(fg);
         }
@@ -104,7 +107,12 @@ pub fn snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         }
         // After the inverse swap, so a selection always shows.
         if selection.is_some_and(|range| range.contains(indexed.point)) {
-            bg = colors::SELECTION;
+            bg = theme
+                .selection_background
+                .unwrap_or_else(|| mix(theme.background, theme.foreground, 0.25));
+            if let Some(selected_fg) = theme.selection_foreground {
+                fg = selected_fg;
+            }
         }
         lines[row as usize][col] = CellView {
             ch: if flags.contains(Flags::HIDDEN) {
@@ -274,39 +282,39 @@ mod tests {
             ch,
             fg,
             bg,
-            ..CellView::BLANK
+            ..CellView::blank(&Theme::default())
         }
     }
 
     const RED: Rgb = Rgb {
-        r: 0xac,
-        g: 0x42,
-        b: 0x42,
+        r: 0xcc,
+        g: 0x66,
+        b: 0x66,
     };
 
     #[test]
     fn snapshot_copies_text_colors_and_cursor() {
-        let snap = snapshot(&term_with(b"hi\x1b[31mR"));
+        let snap = snapshot(&term_with(b"hi\x1b[31mR"), &Theme::default());
         assert_eq!((snap.cols, snap.rows), (10, 3));
         assert_eq!(snap.lines[0][0].ch, 'h');
         assert_eq!(snap.lines[0][1].ch, 'i');
         assert_eq!(snap.lines[0][2].ch, 'R');
         assert_eq!(snap.lines[0][2].fg, RED);
-        assert_eq!(snap.lines[0][0].fg, colors::FOREGROUND);
+        assert_eq!(snap.lines[0][0].fg, Theme::default().foreground);
         assert_eq!(snap.cursor.map(|c| (c.row, c.col)), Some((0, 3)));
     }
 
     #[test]
     fn snapshot_applies_inverse_and_hidden_cursor() {
-        let snap = snapshot(&term_with(b"\x1b[7mX\x1b[?25l"));
-        assert_eq!(snap.lines[0][0].fg, colors::BACKGROUND);
-        assert_eq!(snap.lines[0][0].bg, colors::FOREGROUND);
+        let snap = snapshot(&term_with(b"\x1b[7mX\x1b[?25l"), &Theme::default());
+        assert_eq!(snap.lines[0][0].fg, Theme::default().background);
+        assert_eq!(snap.lines[0][0].bg, Theme::default().foreground);
         assert_eq!(snap.cursor, None);
     }
 
     #[test]
     fn bg_rects_merge_adjacent_same_color() {
-        let d = colors::BACKGROUND;
+        let d = Theme::default().background;
         let line = [
             cell('a', RED, RED),
             cell('b', RED, RED),
@@ -332,8 +340,8 @@ mod tests {
 
     #[test]
     fn text_spans_split_on_style_and_skip_leading_blanks() {
-        let d = colors::BACKGROUND;
-        let f = colors::FOREGROUND;
+        let d = Theme::default().background;
+        let f = Theme::default().foreground;
         let line = [
             cell(' ', f, d),
             cell('l', f, d),
@@ -357,9 +365,9 @@ mod tests {
 
     #[test]
     fn blank_line_has_no_spans_or_rects() {
-        let line = vec![CellView::BLANK; 10];
+        let line = vec![CellView::blank(&Theme::default()); 10];
         assert!(text_spans(&line).is_empty());
-        assert!(bg_rects(&line, colors::BACKGROUND).is_empty());
+        assert!(bg_rects(&line, Theme::default().background).is_empty());
     }
 
     #[test]
@@ -382,7 +390,7 @@ mod tests {
         term.scroll_display(Scroll::Delta(3));
         // The view shows history (l24 at the top)...
         assert_eq!(
-            snapshot(&term).lines[0]
+            snapshot(&term, &Theme::default()).lines[0]
                 .iter()
                 .map(|c| c.ch)
                 .collect::<String>()
@@ -395,7 +403,7 @@ mod tests {
 
     #[test]
     fn wide_glyph_spacer_is_skipped() {
-        let snap = snapshot(&term_with("界a".as_bytes()));
+        let snap = snapshot(&term_with("界a".as_bytes()), &Theme::default());
         assert_eq!(snap.lines[0][0].ch, '界');
         assert!(snap.lines[0][1].spacer);
         let spans = text_spans(&snap.lines[0]);
@@ -413,15 +421,17 @@ mod tests {
         );
         sel.update(Point::new(Line(0), Column(1)), Side::Right);
         term.selection = Some(sel);
-        let snap = snapshot(&term);
-        assert_eq!(snap.lines[0][0].bg, colors::SELECTION);
-        assert_eq!(snap.lines[0][1].bg, colors::SELECTION);
-        assert_eq!(snap.lines[0][2].bg, colors::BACKGROUND);
+        let snap = snapshot(&term, &Theme::default());
+        let t = Theme::default();
+        let selected = mix(t.background, t.foreground, 0.25);
+        assert_eq!(snap.lines[0][0].bg, selected);
+        assert_eq!(snap.lines[0][1].bg, selected);
+        assert_eq!(snap.lines[0][2].bg, Theme::default().background);
     }
 
     #[test]
     fn underline_cells_marks_the_link() {
-        let mut snap = snapshot(&term_with(b"ab https"));
+        let mut snap = snapshot(&term_with(b"ab https"), &Theme::default());
         underline_cells(
             &mut snap,
             Point::new(Line(0), Column(3)),

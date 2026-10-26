@@ -1,44 +1,12 @@
 //! Resolve `alacritty_terminal` cell colors to concrete RGB.
 //!
 //! `Term::colors()` only holds colors a program overrode (OSC 4/10/11/12) and is otherwise all
-//! `None`, so we supply the palette ourselves: Alacritty's defaults
-//! (alacritty/src/config/color.rs). Pure, no GPUI types.
+//! `None`, so we supply the palette ourselves, from the `Theme`. Pure, no GPUI types.
 
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 
-const fn hex(v: u32) -> Rgb {
-    Rgb {
-        r: (v >> 16) as u8,
-        g: (v >> 8) as u8,
-        b: v as u8,
-    }
-}
-
-pub const FOREGROUND: Rgb = hex(0xd8d8d8);
-pub const BACKGROUND: Rgb = hex(0x181818);
-/// Background of selected cells.
-pub const SELECTION: Rgb = hex(0x264f78);
-
-/// 0-7 normal, 8-15 bright.
-const ANSI_16: [Rgb; 16] = [
-    hex(0x181818),
-    hex(0xac4242),
-    hex(0x90a959),
-    hex(0xf4bf75),
-    hex(0x6a9fb5),
-    hex(0xaa759f),
-    hex(0x75b5aa),
-    hex(0xd8d8d8),
-    hex(0x6b6b6b),
-    hex(0xc55555),
-    hex(0xaac474),
-    hex(0xfeca88),
-    hex(0x82b8c8),
-    hex(0xc28cb8),
-    hex(0x93d3c3),
-    hex(0xf8f8f8),
-];
+use crate::theme::Theme;
 
 /// Alacritty dims colors to 66% brightness.
 const DIM_FACTOR: f32 = 0.66;
@@ -52,10 +20,10 @@ pub fn dim(c: Rgb) -> Rgb {
     }
 }
 
-/// The xterm 256-color table: 16 palette colors, a 6x6x6 cube, then a 24-step gray ramp.
-pub fn indexed_rgb(i: u8) -> Rgb {
+/// The xterm 256-color table: the theme's 16 palette colors, a 6x6x6 cube, then a 24-step gray ramp.
+pub fn indexed_rgb(i: u8, theme: &Theme) -> Rgb {
     match i {
-        0..=15 => ANSI_16[i as usize],
+        0..=15 => theme.palette[i as usize],
         16..=231 => {
             let i = i - 16;
             let (r, g, b) = (i / 36, (i % 36) / 6, i % 6);
@@ -75,50 +43,67 @@ pub fn indexed_rgb(i: u8) -> Rgb {
 
 /// Default for any index in alacritty's 269-slot color table
 /// (0-255 indexed, 256 fg, 257 bg, 258 cursor, 259-266 dim 0-7, 267 bright fg, 268 dim fg).
-pub fn default_for_index(idx: usize) -> Rgb {
+pub fn default_for_index(idx: usize, theme: &Theme) -> Rgb {
     match idx {
-        0..=255 => indexed_rgb(idx as u8),
-        256 | 258 | 267 => FOREGROUND,
-        257 => BACKGROUND,
-        259..=266 => dim(ANSI_16[idx - 259]),
-        268 => dim(FOREGROUND),
-        _ => FOREGROUND,
+        0..=255 => indexed_rgb(idx as u8, theme),
+        256 | 267 => theme.foreground,
+        257 => theme.background,
+        258 => theme.cursor.unwrap_or(theme.foreground),
+        259..=266 => dim(theme.palette[idx - 259]),
+        268 => dim(theme.foreground),
+        _ => theme.foreground,
     }
 }
 
 /// A program's override wins; otherwise our palette.
-pub fn resolve_index(idx: usize, overrides: &Colors) -> Rgb {
-    overrides[idx].unwrap_or_else(|| default_for_index(idx))
+pub fn resolve_index(idx: usize, overrides: &Colors, theme: &Theme) -> Rgb {
+    overrides[idx].unwrap_or_else(|| default_for_index(idx, theme))
 }
 
-pub fn resolve(color: Color, overrides: &Colors) -> Rgb {
+pub fn resolve(color: Color, overrides: &Colors, theme: &Theme) -> Rgb {
     match color {
         Color::Spec(rgb) => rgb,
-        Color::Indexed(i) => resolve_index(i as usize, overrides),
-        Color::Named(n) => resolve_index(n as usize, overrides),
+        Color::Indexed(i) => resolve_index(i as usize, overrides, theme),
+        Color::Named(n) => resolve_index(n as usize, overrides, theme),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const fn hex(v: u32) -> Rgb {
+        Rgb {
+            r: (v >> 16) as u8,
+            g: (v >> 8) as u8,
+            b: v as u8,
+        }
+    }
+
+    use crate::theme::Theme;
     use alacritty_terminal::vte::ansi::NamedColor;
 
     #[test]
     fn palette_and_cube_and_gray_ramp() {
-        assert_eq!(indexed_rgb(1), hex(0xac4242));
-        assert_eq!(indexed_rgb(196), Rgb { r: 255, g: 0, b: 0 });
+        assert_eq!(indexed_rgb(1, &Theme::default()), hex(0xcc6666));
         assert_eq!(
-            indexed_rgb(231),
+            indexed_rgb(196, &Theme::default()),
+            Rgb { r: 255, g: 0, b: 0 }
+        );
+        assert_eq!(
+            indexed_rgb(231, &Theme::default()),
             Rgb {
                 r: 255,
                 g: 255,
                 b: 255
             }
         );
-        assert_eq!(indexed_rgb(232), Rgb { r: 8, g: 8, b: 8 });
         assert_eq!(
-            indexed_rgb(255),
+            indexed_rgb(232, &Theme::default()),
+            Rgb { r: 8, g: 8, b: 8 }
+        );
+        assert_eq!(
+            indexed_rgb(255, &Theme::default()),
             Rgb {
                 r: 238,
                 g: 238,
@@ -130,23 +115,45 @@ mod tests {
     #[test]
     fn named_defaults() {
         let none = Colors::default();
+        let t = Theme::default();
         assert_eq!(
-            resolve(Color::Named(NamedColor::Foreground), &none),
-            FOREGROUND
+            resolve(Color::Named(NamedColor::Foreground), &none, &t),
+            t.foreground
         );
         assert_eq!(
-            resolve(Color::Named(NamedColor::Background), &none),
-            BACKGROUND
+            resolve(Color::Named(NamedColor::Background), &none, &t),
+            t.background
         );
-        assert_eq!(resolve(Color::Named(NamedColor::Red), &none), hex(0xac4242));
+        assert_eq!(
+            resolve(Color::Named(NamedColor::Red), &none, &t),
+            hex(0xcc6666)
+        );
     }
 
     #[test]
     fn spec_colors_pass_through_and_overrides_win() {
         let mut colors = Colors::default();
         let pink = Rgb { r: 1, g: 2, b: 3 };
-        assert_eq!(resolve(Color::Spec(pink), &colors), pink);
+        assert_eq!(resolve(Color::Spec(pink), &colors, &Theme::default()), pink);
         colors[NamedColor::Red] = Some(pink);
-        assert_eq!(resolve(Color::Named(NamedColor::Red), &colors), pink);
+        assert_eq!(
+            resolve(Color::Named(NamedColor::Red), &colors, &Theme::default()),
+            pink
+        );
+    }
+
+    #[test]
+    fn named_colors_and_palette_follow_the_theme() {
+        let mut t = Theme::default();
+        t.background = hex(0x000000);
+        t.palette[1] = hex(0xff0000);
+        let none = Colors::default();
+        assert_eq!(
+            resolve(Color::Named(NamedColor::Background), &none, &t),
+            hex(0x000000)
+        );
+        assert_eq!(indexed_rgb(1, &t), hex(0xff0000));
+        assert_eq!(indexed_rgb(196, &t), hex(0xff0000));
+        assert_eq!(indexed_rgb(232, &t), hex(0x080808));
     }
 }

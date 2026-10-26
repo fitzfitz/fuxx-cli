@@ -3,14 +3,14 @@
 
 use gpui::{
     ClickEvent, Context, Entity, Focusable, SharedString, Subscription, Window, actions, div,
-    prelude::*, px, rgb,
+    prelude::*, px,
 };
 
-use crate::colors;
 use crate::notifier;
 use crate::session_list::SessionList;
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
+use crate::theme::{Theme, UiColors};
 
 actions!(
     workspace,
@@ -159,7 +159,7 @@ impl Workspace {
         }
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, ui: UiColors, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.sessions.active_index();
         div()
             .flex()
@@ -168,9 +168,9 @@ impl Workspace {
             .h_full()
             .p_1()
             .gap_1()
-            .bg(rgb(0x111111))
+            .bg(hsla(ui.sidebar_background))
             .border_r_1()
-            .border_color(rgb(0x2a2a2a))
+            .border_color(hsla(ui.sidebar_border))
             .children(
                 self.sessions
                     .items()
@@ -188,28 +188,29 @@ impl Workspace {
                             .py_1()
                             .rounded_md()
                             .text_sm()
-                            .text_color(rgb(if is_active { 0xf0f0f0 } else { 0x9a9a9a }))
-                            .when(is_active, |row| row.bg(rgb(0x2a2a2a)))
-                            .hover(|style| style.bg(rgb(0x222222)))
+                            .text_color(hsla(if is_active { ui.text } else { ui.text_dim }))
+                            .when(is_active, |row| row.bg(hsla(ui.row_active)))
+                            .hover(|style| style.bg(hsla(ui.row_hover)))
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.select(i, window, cx)
                             }))
-                            .child(ring(session.status))
+                            .child(ring(session.status, ui))
                             .child(format!("{}  {}", i + 1, session.label()))
                     }),
             )
     }
 }
 
-/// The status ring: hollow grey = idle, amber = working, red = needs you, green = done.
-fn ring(status: Status) -> impl IntoElement {
+/// The status ring: hollow = idle, yellow = working, red = needs you, green = done (the
+/// theme's palette colors).
+fn ring(status: Status, ui: UiColors) -> impl IntoElement {
     let dot = div().flex_none().size(px(10.0)).rounded_full();
     match status {
-        Status::Idle => dot.border_1().border_color(rgb(0x6b6b6b)),
-        Status::Working => dot.bg(rgb(0xf4bf75)),
-        Status::Waiting => dot.bg(rgb(0xc55555)),
-        Status::Done => dot.bg(rgb(0x90a959)),
+        Status::Idle => dot.border_1().border_color(hsla(ui.ring_idle)),
+        Status::Working => dot.bg(hsla(ui.ring_working)),
+        Status::Waiting => dot.bg(hsla(ui.ring_waiting)),
+        Status::Done => dot.bg(hsla(ui.ring_done)),
     }
 }
 
@@ -221,12 +222,15 @@ impl Render for Workspace {
             .map(|s| format!("fuxx — {}", s.label()))
             .unwrap_or_else(|| "fuxx".into());
         window.set_window_title(&title);
+        // Task 5 swaps in the loaded theme.
+        let theme = Theme::default();
+        let ui = theme.ui();
 
         div()
             .flex()
             .flex_row()
             .size_full()
-            .bg(hsla(colors::BACKGROUND))
+            .bg(hsla(theme.background))
             .key_context("Workspace")
             .on_action(cx.listener(|this, _: &NewSession, window, cx| this.add_session(window, cx)))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
@@ -253,7 +257,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &SelectSession7, w, cx| this.select(6, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession8, w, cx| this.select(7, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession9, w, cx| this.select(8, w, cx)))
-            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar(ui, cx))
             // Only the active terminal is rendered; background sessions keep running (their
             // reader threads and tickers live in their views, which the list keeps alive).
             .child(
