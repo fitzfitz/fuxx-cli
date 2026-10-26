@@ -2,7 +2,8 @@
 //! reader thread feeding the child's output into the Term. No GPUI here: the view talks to it
 //! through `TerminalCore` (cheap to clone, every field is an `Arc`) and an event channel.
 
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -73,6 +74,9 @@ pub struct TerminalCore {
     shared: Arc<FairMutex<Shared>>,
     pty: Arc<Mutex<Pty>>,
     dims: Arc<Mutex<TermDims>>,
+    /// Bytes for the child, written by the writer thread so a child that stops reading can't
+    /// block the UI.
+    input: Sender<Vec<u8>>,
 }
 
 impl TerminalCore {
@@ -81,7 +85,7 @@ impl TerminalCore {
         dims: TermDims,
         events: UnboundedSender<TermEvent>,
     ) -> Result<Self, String> {
-        let (pty, mut reader) = Pty::spawn(cmd, dims)?;
+        let (pty, mut reader, mut writer) = Pty::spawn(cmd, dims)?;
         let term = Term::new(Config::default(), &dims, Listener(events.clone()));
         let shared = Arc::new(FairMutex::new(Shared {
             term,
@@ -116,18 +120,35 @@ impl TerminalCore {
             })
             .map_err(|e| e.to_string())?;
 
+        // The writer thread owns the PTY writer for the whole session. It ends when every
+        // `TerminalCore` clone is dropped (the channel closes) or the child goes away.
+        let (input, queued) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::Builder::new()
+            .name("fuxx-pty-writer".into())
+            .spawn(move || {
+                for bytes in queued {
+                    if writer
+                        .write_all(&bytes)
+                        .and_then(|()| writer.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+
         Ok(Self {
             shared,
             pty: Arc::new(Mutex::new(pty)),
             dims: Arc::new(Mutex::new(dims)),
+            input,
         })
     }
 
-    /// Send bytes to the child (keystrokes, query replies).
+    /// Queue bytes for the child (keystrokes, query replies). Never blocks.
     pub fn write(&self, bytes: &[u8]) {
-        if let Ok(mut pty) = self.pty.lock() {
-            let _ = pty.write(bytes);
-        }
+        let _ = self.input.send(bytes.to_vec());
     }
 
     /// Resize screen + PTY. No-op when unchanged, so it's cheap to call every frame.
@@ -296,5 +317,25 @@ mod tests {
             e,
             TermEvent::Output { notifications: 1 }
         )));
+    }
+
+    #[test]
+    fn write_never_blocks_when_the_child_stops_reading() {
+        let (tx, _rx) = unbounded();
+        // Raw mode + not reading stdin: the tty's input queue fills and a blocking write would hang.
+        let core = TerminalCore::spawn(sh("stty raw; sleep 5"), TermDims { cols: 40, rows: 5 }, tx)
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300)); // let `stty raw` run
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..64 {
+                core.write(&[b'x'; 1024]);
+            }
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "write blocked"
+        );
     }
 }
