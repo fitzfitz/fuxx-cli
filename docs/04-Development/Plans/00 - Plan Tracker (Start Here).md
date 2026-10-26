@@ -20,8 +20,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M5 — Terminal UX** (Phase 2). Phase 1 and the M4b tester build are complete |
-| **Status** | ⬜ Not started. M4b ✅ done 2026-10-26: a universal tester DMG (`scripts/bundle-mac.sh`), all install checks confirmed by you. |
-| **▶ Next action** | Write the M5 plan (scrollback, selection + copy/paste, mouse, clickable URLs, robust resize; see [[40 - Roadmap]]). |
+| **Status** | 🟨 In progress: [[M5 Plan - Terminal UX]] written and approved 2026-10-26. M4b ✅ done 2026-10-26 (tester DMG). |
+| **▶ Next action** | [[M5 Plan - Terminal UX]] → Task 1 (scrollback core). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-26 |
 
@@ -46,6 +46,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M3 | Many sessions + sidebar | [[M3 Plan - Many Sessions]] | ✅ | 6/6 | 3 sessions, switch, all keep running |
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ✅ | 4/4 | Rings update; background sessions notify |
 | M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
+| M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | 🟨 | 0/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).

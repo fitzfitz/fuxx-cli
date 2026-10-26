@@ -14,13 +14,24 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M5 — Terminal UX** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M4 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M5 — Terminal UX** (see [[40 - Roadmap]]; the **new terminal app**). 🟨 plan approved. M0–M4 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — M5 plan written and approved
+- **Did:** You chose to skip the design questions ("go"), so the AI made the behaviour calls, modelled on
+  Zed's terminal, and listed them in [[45 - Milestone 5 - Terminal UX]] for you to veto. Wrote
+  [[M5 Plan - Terminal UX]] (8 tasks, 61 → 83 tests) after reading the exact APIs at our pinned GPUI rev
+  and `alacritty_terminal 0.26.0`, and a throwaway spike of the scroll/selection/link calls. You approved
+  it and the one-agent-per-task execution ("right").
+- **Learned:** GPUI runs key bindings before a view's own key-down handler, so terminal shortcuts can be
+  plain bindings. When scrolled back, the visible rows are history: status detection must read the live screen.
+- **Blocked:** Nothing.
+- **Next task:** [[M5 Plan - Terminal UX]] → Task 1.
 
 ### 2026-10-26 — Prompt icons show as `?`: kept for M6
 - **Did:** You checked the app's look against the M4 mockup: layout, numbered sessions, Idle rings and the
