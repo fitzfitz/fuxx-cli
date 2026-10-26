@@ -741,7 +741,9 @@ Run `cargo run` **from another terminal**, so you can watch its stderr log while
 | Status only logged | Rings in the sidebar are M4. |
 | Notification payload text ignored | Only its presence matters (OSC 9 / 99 / 777). |
 | Which notification an agent sends depends on the launching terminal | The shell inherits `TERM_PROGRAM` etc. from whatever launched fuxx (kept that way on 2026-10-26). Claude Code sends nothing when it doesn't recognize that terminal (for example fuxx launched from Finder later), and then only the 3 s quiet timer and the screen tail apply. |
-| BEL only counts while Working | A program that beeps for attention *before* producing any output isn't caught. |
+| BEL only counts while Working | A program that beeps for attention *before* producing any output isn't caught, nor a BEL in the same read as the session's first real output (the parser reports the BEL before that chunk's output). Both fall back to the 3 s quiet timer. |
+| Resizing reads as work | A resize makes the shell or TUI redraw; that output reads as **Working**, then **Done** 3 s later. In M3 this also happens the first time a session is shown at the real window size. |
+| Other OSC 9 / 99 codes count as notifications | Only `9;4;` (progress bar) is skipped. ConEmu's `9;9;<cwd>` (sent by some prompt themes at every prompt) and kitty's `99` capability query (`p=?`) would read as "done". Not seen on the dev machine. |
 
 ## Related
 
