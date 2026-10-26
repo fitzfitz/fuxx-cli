@@ -13,8 +13,8 @@ updated: 2026-10-26
 |---|---|
 | **Milestone note** | [[44b - Milestone 4b - Tester Build]] |
 | **Status** | 🟨 In progress |
-| **Tasks done** | 1 / 4 |
-| **▶ Pick up here** | Task 1 |
+| **Tasks done** | 2 / 4 |
+| **▶ Pick up here** | Task 2 (👀 your install check) |
 | **Decisions used** | ✅ **D7** = universal: Apple Silicon + Intel (decided 2026-10-26) · ✅ **D8** = accept the weaker detection when opened from Finder (decided 2026-10-26) |
 | **Needs your eyes** | 👀 Task 2: install from the DMG like a tester, on both CPU slices |
 
@@ -81,7 +81,7 @@ banners) on an **Apple Silicon or Intel** Mac.
 - [x] [[60 - Progress Log]]: entry "M4b plan written; D7 + D8 decided".
 - [x] Commit *(when you say so)*: `git add docs && git commit -m "docs(m4b): D7 universal, D8 accept weaker detection, M4b plan"`
 
-### Task 1: Bundle + check scripts — ⬜
+### Task 1: Bundle + check scripts — ✅
 
 **Files:** Create `packaging/macos/Info.plist`, `scripts/check-dmg.sh`, `scripts/bundle-mac.sh`.
 
@@ -92,7 +92,7 @@ and `scripts/check-dmg.sh <dmg>` (prints `OK: <dmg> (fuxx <version>, <archs>)` a
 > **Why a script is the test.** There's no Rust to unit-test here. The deliverable is a file a
 > tester installs, so `check-dmg.sh` asserts its properties, and it is re-run on every future version.
 
-- [ ] **Step 1: Write the test.** `scripts/check-dmg.sh <dmg>` takes the version from the file name
+- [x] **Step 1: Write the test.** `scripts/check-dmg.sh <dmg>` takes the version from the file name
   (`fuxx-<version>.dmg`) and fails with a message for each of these, in order:
   1. the file doesn't exist → `FAIL: <dmg> not found`; `hdiutil verify -quiet` fails;
   2. after `hdiutil attach -quiet -readonly -nobrowse -mountpoint <mktemp -d>` (detach via `trap … EXIT`):
@@ -101,13 +101,13 @@ and `scripts/check-dmg.sh <dmg>` (prints `OK: <dmg> (fuxx <version>, <archs>)` a
   4. for `arm64` and `x86_64`, `vtool -arch <a> -show-build` lacks `minos 11.0`;
   5. `plutil -lint -s` fails; `CFBundleShortVersionString` or `CFBundleVersion` (`plutil -extract <key> raw`) ≠ the version;
   6. `codesign --verify --strict fuxx.app` fails.
-- [ ] **Step 2: Run** `scripts/check-dmg.sh target/dist/fuxx-0.1.0.dmg`. Expected: `FAIL: target/dist/fuxx-0.1.0.dmg not found`, exit 1.
-- [ ] **Step 3: Write `packaging/macos/Info.plist`** (XML plist) with exactly: `CFBundleName` and
+- [x] **Step 2: Run** `scripts/check-dmg.sh target/dist/fuxx-0.1.0.dmg`. Expected: `FAIL: target/dist/fuxx-0.1.0.dmg not found`, exit 1.
+- [x] **Step 3: Write `packaging/macos/Info.plist`** (XML plist) with exactly: `CFBundleName` and
   `CFBundleDisplayName` = `fuxx`, `CFBundleIdentifier` = `io.github.fitzfitz.fuxx`,
   `CFBundleExecutable` = `fuxx`, `CFBundlePackageType` = `APPL`,
   `CFBundleShortVersionString` and `CFBundleVersion` = `@VERSION@`,
   `LSMinimumSystemVersion` = `11.0`, `NSHighResolutionCapable` = true.
-- [ ] **Step 4: Write `scripts/bundle-mac.sh`**, runnable from any folder (`cd "$(dirname "$0")/.."` first):
+- [x] **Step 4: Write `scripts/bundle-mac.sh`**, runnable from any folder (`cd "$(dirname "$0")/.."` first):
   1. `version` = `cargo pkgid`'s text after the last `#` or `@` (`path+file:///…#fuxx@0.1.0` → `0.1.0`);
      `dmg=target/dist/fuxx-$version.dmg`. If it exists: `<dmg> already exists: bump version in Cargo.toml` on stderr, exit 1.
   2. Export `MACOSX_DEPLOYMENT_TARGET=11.0`. For `aarch64-apple-darwin` and `x86_64-apple-darwin`:
@@ -118,13 +118,13 @@ and `scripts/check-dmg.sh <dmg>` (prints `OK: <dmg> (fuxx <version>, <archs>)` a
      template with `@VERSION@` replaced (`sed`); `codesign --force --sign - fuxx.app`;
      `ln -s /Applications Applications`.
   4. `mkdir -p target/dist`; `hdiutil create -quiet -volname "fuxx $version" -srcfolder <stage> -format UDZO <dmg>`; print the DMG path.
-- [ ] **Step 5: Run** `scripts/bundle-mac.sh && scripts/check-dmg.sh target/dist/fuxx-0.1.0.dmg`.
+- [x] **Step 5: Run** `scripts/bundle-mac.sh && scripts/check-dmg.sh target/dist/fuxx-0.1.0.dmg`.
   Expected: `codesign` notes `replacing existing signature` (the linker's), then
   `target/dist/fuxx-0.1.0.dmg`, then `OK: target/dist/fuxx-0.1.0.dmg (fuxx 0.1.0, x86_64 arm64)`.
   The first run compiles both slices (about 1–2 min each here).
-- [ ] **Step 6: Run** `scripts/bundle-mac.sh` again. Expected: `target/dist/fuxx-0.1.0.dmg already exists: bump version in Cargo.toml`, exit 1, the DMG unchanged.
-- [ ] **Step 7: No warnings of ours.** `grep -E "^(warning|error)"` over Step 5's output, minus the GPUI `future version` note. Expected: **no output**. `cargo test`: `test result: ok. 61 passed`.
-- [ ] **Step 8: Commit** *(when you say so)*: `git add packaging scripts && git commit -m "feat(m4b): universal tester DMG (bundle-mac.sh) with check-dmg.sh"`
+- [x] **Step 6: Run** `scripts/bundle-mac.sh` again. Expected: `target/dist/fuxx-0.1.0.dmg already exists: bump version in Cargo.toml`, exit 1, the DMG unchanged.
+- [x] **Step 7: No warnings of ours.** `grep -E "^(warning|error)"` over Step 5's output, minus the GPUI `future version` note. Expected: **no output**. `cargo test`: `test result: ok. 61 passed`.
+- [x] **Step 8: Commit** *(when you say so)*: `git add packaging scripts && git commit -m "feat(m4b): universal tester DMG (bundle-mac.sh) with check-dmg.sh"`
 
 ### Task 2: Install it like a tester — 👀 ⬜
 
@@ -164,6 +164,7 @@ The AI prepares a "downloaded" copy; **you** do the rest and report what you see
 | 2026-10-26 | Gatekeeper on the trial app | ✅ `rejected` (unsigned, as expected → "Open Anyway"); `Signature=adhoc`, `Format=app bundle with Mach-O universal (x86_64 arm64)` | `spctl --assess`, `codesign -dv` |
 | 2026-10-26 | A Finder-like environment (`env -i`, launchd sets no `LANG`): login shell finds `claude`; text is UTF-8 | ✅ on this Mac (something in your shell start-up sets `LANG=C.UTF-8`) | AI `env -i … zsh -l -i` |
 | 2026-10-26 | `cargo test` | ✅ 61 passed | AI run |
+| 2026-10-26 | Task 1 in the repo: Step 2 FAIL (not found) → Step 5 `OK: target/dist/fuxx-0.1.0.dmg (fuxx 0.1.0, x86_64 arm64)` → Step 6 refused, DMG unchanged; no warnings of ours | ✅ | AI run |
 
 ## Known limitations
 
