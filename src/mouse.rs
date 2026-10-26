@@ -38,10 +38,17 @@ pub fn grid_point(
         (0, Side::Left)
     } else {
         let raw = (y / line_height) as usize;
-        if raw > max_row { (max_row, Side::Right) } else { (raw, side) }
+        if raw > max_row {
+            (max_row, Side::Right)
+        } else {
+            (raw, side)
+        }
     };
 
-    (Point::new(Line(row as i32 - display_offset as i32), Column(col)), side)
+    (
+        Point::new(Line(row as i32 - display_offset as i32), Column(col)),
+        side,
+    )
 }
 
 /// Accumulates wheel pixel deltas so fractional lines are not lost between events.
@@ -103,7 +110,9 @@ pub fn report(
     if wheel && action == MouseAction::Release {
         return None;
     }
-    if action == MouseAction::Drag && !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
+    if action == MouseAction::Drag
+        && !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
+    {
         return None;
     }
 
@@ -129,12 +138,22 @@ pub fn report(
     }
 
     if mode.contains(TermMode::SGR_MOUSE) {
-        let end = if action == MouseAction::Release { 'm' } else { 'M' };
-        return Some(format!("\x1b[<{};{};{}{}", code + mod_bits, col + 1, row + 1, end).into_bytes());
+        let end = if action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
+        return Some(
+            format!("\x1b[<{};{};{}{}", code + mod_bits, col + 1, row + 1, end).into_bytes(),
+        );
     }
 
     // Normal encoding: release has no button identity (code 3).
-    let base = if action == MouseAction::Release { 3 } else { code };
+    let base = if action == MouseAction::Release {
+        3
+    } else {
+        code
+    };
     let mut out = vec![0x1b, b'[', b'M', 32 + base + mod_bits];
     let utf8 = mode.contains(TermMode::UTF8_MOUSE);
     for pos in [col, row] {
@@ -175,55 +194,110 @@ mod tests {
 
     #[test]
     fn grid_point_clamps_and_picks_side() {
-        assert_eq!(grid_point(25.0, 45.0, 10.0, 20.0, D, 0), (Point::new(Line(2), Column(2)), Side::Left));
-        assert_eq!(grid_point(29.0, 45.0, 10.0, 20.0, D, 0), (Point::new(Line(2), Column(2)), Side::Right));
-        assert_eq!(grid_point(5000.0, 9000.0, 10.0, 20.0, D, 0), (Point::new(Line(23), Column(79)), Side::Right));
+        assert_eq!(
+            grid_point(25.0, 45.0, 10.0, 20.0, D, 0),
+            (Point::new(Line(2), Column(2)), Side::Left)
+        );
+        assert_eq!(
+            grid_point(29.0, 45.0, 10.0, 20.0, D, 0),
+            (Point::new(Line(2), Column(2)), Side::Right)
+        );
+        assert_eq!(
+            grid_point(5000.0, 9000.0, 10.0, 20.0, D, 0),
+            (Point::new(Line(23), Column(79)), Side::Right)
+        );
     }
 
     #[test]
     fn grid_point_accounts_for_scrollback() {
-        assert_eq!(grid_point(0.0, 45.0, 10.0, 20.0, D, 3).0, Point::new(Line(-1), Column(0)));
+        assert_eq!(
+            grid_point(0.0, 45.0, 10.0, 20.0, D, 3).0,
+            Point::new(Line(-1), Column(0))
+        );
     }
 
     #[test]
     fn scroll_accumulator_keeps_fractions() {
         let mut acc = ScrollAccumulator::default();
-        assert_eq!([acc.push(10.0, 20.0), acc.push(15.0, 20.0), acc.push(-30.0, 20.0)], [0, 1, -1]);
+        assert_eq!(
+            [
+                acc.push(10.0, 20.0),
+                acc.push(15.0, 20.0),
+                acc.push(-30.0, 20.0)
+            ],
+            [0, 1, -1]
+        );
     }
 
     #[test]
     fn sgr_press_release_drag_and_wheel() {
         let m = Mods::default();
-        assert_eq!(report(Button::Left, MouseAction::Press, m, 0, 0, SGR).unwrap(), b"\x1b[<0;1;1M");
-        assert_eq!(report(Button::Left, MouseAction::Release, m, 0, 0, SGR).unwrap(), b"\x1b[<0;1;1m");
+        assert_eq!(
+            report(Button::Left, MouseAction::Press, m, 0, 0, SGR).unwrap(),
+            b"\x1b[<0;1;1M"
+        );
+        assert_eq!(
+            report(Button::Left, MouseAction::Release, m, 0, 0, SGR).unwrap(),
+            b"\x1b[<0;1;1m"
+        );
         let drag = SGR.union(TermMode::MOUSE_DRAG);
-        assert_eq!(report(Button::Left, MouseAction::Drag, m, 4, 2, drag).unwrap(), b"\x1b[<32;5;3M");
-        assert_eq!(report(Button::WheelUp, MouseAction::Press, m, 0, 0, SGR).unwrap(), b"\x1b[<64;1;1M");
+        assert_eq!(
+            report(Button::Left, MouseAction::Drag, m, 4, 2, drag).unwrap(),
+            b"\x1b[<32;5;3M"
+        );
+        assert_eq!(
+            report(Button::WheelUp, MouseAction::Press, m, 0, 0, SGR).unwrap(),
+            b"\x1b[<64;1;1M"
+        );
     }
 
     #[test]
     fn modifiers_add_bits() {
-        let ctrl = Mods { ctrl: true, ..Mods::default() };
-        assert_eq!(report(Button::Right, MouseAction::Press, ctrl, 0, 0, SGR).unwrap(), b"\x1b[<18;1;1M");
+        let ctrl = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            report(Button::Right, MouseAction::Press, ctrl, 0, 0, SGR).unwrap(),
+            b"\x1b[<18;1;1M"
+        );
     }
 
     #[test]
     fn normal_encoding_and_limit() {
         let normal = TermMode::MOUSE_REPORT_CLICK;
         let m = Mods::default();
-        assert_eq!(report(Button::Left, MouseAction::Press, m, 0, 0, normal).unwrap(), vec![0x1b, b'[', b'M', 32, 33, 33]);
-        assert_eq!(report(Button::Left, MouseAction::Release, m, 1, 2, normal).unwrap(), vec![0x1b, b'[', b'M', 35, 34, 35]);
-        assert_eq!(report(Button::Left, MouseAction::Press, m, 223, 0, normal), None);
+        assert_eq!(
+            report(Button::Left, MouseAction::Press, m, 0, 0, normal).unwrap(),
+            vec![0x1b, b'[', b'M', 32, 33, 33]
+        );
+        assert_eq!(
+            report(Button::Left, MouseAction::Release, m, 1, 2, normal).unwrap(),
+            vec![0x1b, b'[', b'M', 35, 34, 35]
+        );
+        assert_eq!(
+            report(Button::Left, MouseAction::Press, m, 223, 0, normal),
+            None
+        );
         let utf8 = normal.union(TermMode::UTF8_MOUSE);
-        assert_eq!(report(Button::Left, MouseAction::Press, m, 223, 0, utf8).unwrap(), [b"\x1b[M ".as_slice(), "\u{100}".as_bytes(), b"!"].concat());
+        assert_eq!(
+            report(Button::Left, MouseAction::Press, m, 223, 0, utf8).unwrap(),
+            [b"\x1b[M ".as_slice(), "\u{100}".as_bytes(), b"!"].concat()
+        );
     }
 
     #[test]
     fn no_report_without_mouse_mode_and_drag_rules() {
         let m = Mods::default();
-        assert_eq!(report(Button::Left, MouseAction::Press, m, 0, 0, TermMode::empty()), None);
+        assert_eq!(
+            report(Button::Left, MouseAction::Press, m, 0, 0, TermMode::empty()),
+            None
+        );
         assert_eq!(report(Button::Left, MouseAction::Drag, m, 0, 0, SGR), None); // click-only mode
-        assert_eq!(report(Button::WheelUp, MouseAction::Release, m, 0, 0, SGR), None);
+        assert_eq!(
+            report(Button::WheelUp, MouseAction::Release, m, 0, 0, SGR),
+            None
+        );
         assert!(wants_mouse(SGR, false) && !wants_mouse(SGR, true));
     }
 
