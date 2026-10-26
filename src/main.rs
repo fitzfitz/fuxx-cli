@@ -5,6 +5,7 @@ mod colors;
 mod detector;
 mod grid;
 mod keys;
+mod notifier;
 mod pty;
 mod session_list;
 mod status;
