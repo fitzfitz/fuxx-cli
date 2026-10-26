@@ -486,7 +486,7 @@ impl Render for Workspace {
 - [x] [[40 - Roadmap]]: M4 → ✅, and add "notification click → session" under **M11**.
 - [x] [[00 - Plan Tracker (Start Here)]]: M4 → ✅ 4/4; **Where we are** → "Phase 1 complete. Next: plan M5 (Phase 2)." *(Superseded: M4b, the tester build added 2026-10-26, comes next.)*
 - [x] [[60 - Progress Log]]: new entry ("first genuinely useful version").
-- [ ] Commit docs *(when you say so)*.
+- [x] Commit docs *(when you say so)*.
 
 ## Verification log
 
