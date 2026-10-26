@@ -1,5 +1,5 @@
-//! The root view: a sidebar listing every session and the active session's terminal.
-//! Owns session lifecycle (new / close / exit) and switching.
+//! The root view: a sidebar listing every session (with its status ring) and the active
+//! session's terminal. Owns session lifecycle, switching, and background notifications.
 
 use gpui::{
     ClickEvent, Context, Entity, Focusable, SharedString, Subscription, Window, actions, div,
@@ -7,7 +7,9 @@ use gpui::{
 };
 
 use crate::colors;
+use crate::notifier;
 use crate::session_list::SessionList;
+use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 
 actions!(
@@ -34,6 +36,7 @@ const SIDEBAR_WIDTH: f32 = 220.0;
 pub struct Session {
     pub id: u64,
     pub view: Entity<TerminalView>,
+    pub status: Status,
     pub title: Option<SharedString>,
     _subscription: Subscription,
 }
@@ -49,13 +52,21 @@ impl Session {
 pub struct Workspace {
     sessions: SessionList<Session>,
     next_id: u64,
+    window_active: bool,
+    _activation: Subscription,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            this.window_active = window.is_window_active();
+            cx.notify();
+        });
         let mut this = Self {
             sessions: SessionList::new(),
             next_id: 1,
+            window_active: window.is_window_active(),
+            _activation: activation,
         };
         this.add_session(window, cx);
         this
@@ -75,6 +86,7 @@ impl Workspace {
         self.sessions.push(Session {
             id,
             view,
+            status: Status::Idle,
             title: None,
             _subscription: subscription,
         });
@@ -95,7 +107,24 @@ impl Workspace {
         else {
             return;
         };
+        let is_active = self.sessions.active_index() == Some(index);
         match event {
+            TerminalEvent::StatusChanged(new) => {
+                let window_active = self.window_active;
+                let Some(session) = self.sessions.get_mut(index) else {
+                    return;
+                };
+                let old = session.status;
+                session.status = *new;
+                if notifier::should_notify(old, *new, is_active, window_active) {
+                    if let Some(body) = notifier::message(*new) {
+                        let summary = format!("fuxx — {}", session.label());
+                        cx.background_spawn(async move { notifier::fire(&summary, body) })
+                            .detach();
+                    }
+                }
+                cx.notify();
+            }
             TerminalEvent::TitleChanged(title) => {
                 if let Some(session) = self.sessions.get_mut(index) {
                     session.title = title.clone();
@@ -166,9 +195,21 @@ impl Workspace {
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.select(i, window, cx)
                             }))
+                            .child(ring(session.status))
                             .child(format!("{}  {}", i + 1, session.label()))
                     }),
             )
+    }
+}
+
+/// The status ring: hollow grey = idle, amber = working, red = needs you, green = done.
+fn ring(status: Status) -> impl IntoElement {
+    let dot = div().flex_none().size(px(10.0)).rounded_full();
+    match status {
+        Status::Idle => dot.border_1().border_color(rgb(0x6b6b6b)),
+        Status::Working => dot.bg(rgb(0xf4bf75)),
+        Status::Waiting => dot.bg(rgb(0xc55555)),
+        Status::Done => dot.bg(rgb(0x90a959)),
     }
 }
 

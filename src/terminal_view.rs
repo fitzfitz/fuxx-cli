@@ -30,6 +30,8 @@ const TICK: Duration = Duration::from_millis(50);
 
 /// What a terminal tells its owner.
 pub enum TerminalEvent {
+    /// The detected agent status changed (M2 heuristics).
+    StatusChanged(Status),
     /// The program set (Some) or reset (None) the title via OSC 0/2.
     TitleChanged(Option<SharedString>),
     /// The shell exited; the session should close.
@@ -157,6 +159,7 @@ impl TerminalView {
 
     fn status_changed(&self, status: Status, cx: &mut Context<Self>) {
         eprintln!("[fuxx] status -> {status:?}"); // debug log, used by the M2 manual check
+        cx.emit(TerminalEvent::StatusChanged(status));
         cx.notify();
     }
 

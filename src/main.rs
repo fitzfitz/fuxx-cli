@@ -1,5 +1,5 @@
 // fuxx — a native GPU terminal for running AI coding agents.
-// Milestone 3: many sessions in one window, a sidebar, and quick-switching.
+// Many sessions in one window, each with a live status ring and background notifications.
 
 mod colors;
 mod detector;
