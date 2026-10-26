@@ -30,7 +30,7 @@ pub struct TermDims {
     pub rows: usize,
 }
 
-/// Size of one cell in whole pixels, reported to the PTY and to `CSI 14 t` / `CSI 16 t`.
+/// Size of one cell in whole pixels, reported to the PTY and to `CSI 14 t`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellPx {
     pub width: u16,
@@ -191,13 +191,14 @@ impl TerminalCore {
         term.selection = Some(Selection::new(ty, point, side));
     }
 
-    /// Move the selection's moving end; no-op when there is no selection.
+    /// Move the selection's moving end; with no selection, starts a simple one here.
     /// The point is clamped to the grid under the same lock.
     pub fn extend_selection(&self, point: Point, side: Side) {
         let term = &mut self.shared.lock().term;
         let point = point.grid_clamp(term, Boundary::Grid);
-        if let Some(sel) = term.selection.as_mut() {
-            sel.update(point, side);
+        match term.selection.as_mut() {
+            Some(sel) => sel.update(point, side),
+            None => term.selection = Some(Selection::new(SelectionType::Simple, point, side)),
         }
     }
 
@@ -420,6 +421,21 @@ mod tests {
     }
 
     #[test]
+    fn extend_without_a_selection_starts_one() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'hello world'; sleep 2"),
+            TermDims { cols: 20, rows: 3 },
+            tx,
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("world")));
+        core.extend_selection(Point::new(Line(0), Column(0)), Side::Left);
+        core.extend_selection(Point::new(Line(0), Column(4)), Side::Right);
+        assert_eq!(core.selection_text().as_deref(), Some("hello"));
+    }
+
+    #[test]
     fn width_change_clears_selection() {
         let (tx, mut rx) = unbounded();
         let core = TerminalCore::spawn(
@@ -435,6 +451,7 @@ mod tests {
             Side::Left,
         );
         core.extend_selection(Point::new(Line(0), Column(4)), Side::Right);
+        assert_eq!(core.selection_text().as_deref(), Some("hello"));
         core.resize(
             TermDims { cols: 15, rows: 3 },
             CellPx {

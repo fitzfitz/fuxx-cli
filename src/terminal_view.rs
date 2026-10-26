@@ -152,6 +152,9 @@ impl TerminalView {
                 if let Some(status) = self.tracker.on_output(Instant::now(), notifications) {
                     self.status_changed(status, cx);
                 }
+                // Link spans are absolute grid lines that shift as output scrolls; the next
+                // mouse move recomputes the hover.
+                self.hovered = None;
                 cx.notify();
             }
             TermEvent::Term(Event::Wakeup) => cx.notify(),
