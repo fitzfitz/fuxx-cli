@@ -41,6 +41,7 @@ sessions, rings and banners.
 3. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to fuxx, and confirm.
    This is needed once per new version.
 4. Banners appear as "Script Editor" for now. That's expected.
+5. If your prompt uses icons (powerlevel10k, Starship and similar), they show as `?` boxes for now. Fonts come in a later version.
 
 ## Related
 

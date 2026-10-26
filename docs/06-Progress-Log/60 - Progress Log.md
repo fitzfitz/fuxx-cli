@@ -22,6 +22,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-26 — Prompt icons show as `?`: kept for M6
+- **Did:** You checked the app's look against the M4 mockup: layout, numbered sessions, Idle rings and the
+  window title are as planned. The `?` boxes in your powerlevel10k prompt are Nerd Font icons that Menlo
+  (the only font fuxx draws) lacks; Ghostty has them built in. On request (option 1), kept the fix for
+  **M6** and wrote it into its roadmap line and [[11 - Features]], plus a known limitation in
+  [[M4b Plan - Tester Build]] and a line in the tester install steps. No code changed.
+- **Learned:** Your Ghostty config names no font, so M6's "read Ghostty's config" alone wouldn't bring the icons.
+- **Blocked:** Nothing.
+- **Next task:** Write the M5 plan (Phase 2: Terminal UX).
+
 ### 2026-10-26 — Milestone 4b complete: tester build
 - **Did:** You installed `fuxx-0.1.0.dmg` like a tester (a copy marked as downloaded): drag to Applications,
   Open Anyway once, then the shell, `claude`, accented text and emoji, rings with the quiet-timer Done and
