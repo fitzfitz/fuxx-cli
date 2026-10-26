@@ -1,25 +1,38 @@
 //! The GPUI view for one terminal: paints a `GridSnapshot`, turns keystrokes into PTY bytes,
 //! tracks the agent status, and reports what happened to whoever owns it (the workspace).
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::Event;
+use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::index::{Point, Side};
+use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Font, FontStyle,
-    FontWeight, Hsla, KeyDownEvent, Pixels, Rgba, SharedString, Task, TextAlign, TextRun,
-    UnderlineStyle, Window, canvas, div, fill, font, point, prelude::*, px, size,
+    App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EventEmitter,
+    FocusHandle, Focusable, Font, FontStyle, FontWeight, HitboxBehavior, Hsla, KeyDownEvent,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Rgba, ScrollWheelEvent, SharedString, Task, TextAlign, TextRun, TouchPhase,
+    UnderlineStyle, Window, actions, canvas, div, fill, font, point, prelude::*, px, size,
 };
 
 use crate::colors;
 use crate::grid::{self, GridSnapshot};
 use crate::keys;
+use crate::links::Link;
+use crate::mouse::{self, Button, Mods, MouseAction, ScrollAccumulator};
 use crate::pty;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
+
+// Bound in main.rs with the "Terminal" key context. GPUI runs key bindings before `on_key_down`,
+// so these win over the byte mapping.
+actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
 
 const FONT_FAMILY: &str = "Menlo";
 const FONT_SIZE: f32 = 14.0;
@@ -38,10 +51,31 @@ pub enum TerminalEvent {
     Exited,
 }
 
+/// Where the grid was last painted, for turning mouse positions into grid points.
+#[derive(Clone, Copy)]
+struct GridLayout {
+    origin: gpui::Point<Pixels>,
+    cell_width: Pixels,
+    line_height: Pixels,
+    dims: TermDims,
+}
+
 pub struct TerminalView {
     core: TerminalCore,
     focus_handle: FocusHandle,
     tracker: StatusTracker,
+    /// Written by the canvas prepaint; `None` until the first paint (mouse events are ignored).
+    layout: Rc<Cell<Option<GridLayout>>>,
+    /// Fractional wheel lines carried between scroll events.
+    scroll: ScrollAccumulator,
+    /// The link under the pointer while cmd is held (underlined, hand cursor).
+    hovered: Option<Link>,
+    /// The link a cmd-click went down on; opened if the button comes up on the same link.
+    pressed_link: Option<Link>,
+    /// A left press started a local selection; drags extend it until the button comes up.
+    selecting: bool,
+    /// A press was reported to the program, so drags and the release are reported too.
+    mouse_reported: bool,
     /// Dropping a GPUI `Task` cancels it, so these live as long as the view.
     _events: Task<()>,
     _ticker: Task<()>,
@@ -101,6 +135,12 @@ impl TerminalView {
             core,
             focus_handle,
             tracker: StatusTracker::new(),
+            layout: Rc::new(Cell::new(None)),
+            scroll: ScrollAccumulator::default(),
+            hovered: None,
+            pressed_link: None,
+            selecting: false,
+            mouse_reported: false,
             _events: events,
             _ticker: ticker,
         }
@@ -181,6 +221,253 @@ impl TerminalView {
             cx.stop_propagation();
         }
     }
+
+    /// Grid point, cell side and viewport col/row under a window position, or `None` before the
+    /// first paint. Always in range: `grid_point` clamps to the painted dims and the live offset.
+    fn point_at(&self, pos: gpui::Point<Pixels>) -> Option<(Point, Side, usize, usize)> {
+        let layout = self.layout.get()?;
+        let display_offset = self.core.display_offset();
+        let rel = pos - layout.origin;
+        let (point, side) = mouse::grid_point(
+            f32::from(rel.x),
+            f32::from(rel.y),
+            f32::from(layout.cell_width),
+            f32::from(layout.line_height),
+            layout.dims,
+            display_offset,
+        );
+        let row = (point.line.0 + display_offset as i32) as usize;
+        Some((point, side, point.column.0, row))
+    }
+
+    fn on_scroll_wheel(
+        &mut self,
+        e: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layout) = self.layout.get() else {
+            return;
+        };
+        let line_height = f32::from(layout.line_height);
+        if line_height <= 0.0 {
+            return;
+        }
+        if e.touch_phase == TouchPhase::Started {
+            self.scroll.reset();
+        }
+        let delta = f32::from(e.delta.pixel_delta(layout.line_height).y);
+        let lines = self.scroll.push(delta, line_height);
+        if lines == 0 {
+            return;
+        }
+        let mode = self.core.mode();
+        let shift = e.modifiers.shift;
+        if mouse::wants_mouse(mode, shift) {
+            let Some((_, _, col, row)) = self.point_at(e.position) else {
+                return;
+            };
+            let wheel = if lines > 0 {
+                Button::WheelUp
+            } else {
+                Button::WheelDown
+            };
+            for _ in 0..lines.unsigned_abs() {
+                if let Some(bytes) = mouse::report(
+                    wheel,
+                    MouseAction::Press,
+                    mods(&e.modifiers),
+                    col,
+                    row,
+                    mode,
+                ) {
+                    self.core.write(&bytes);
+                }
+            }
+        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !shift {
+            self.core.write(&mouse::alt_scroll(lines));
+        } else {
+            self.core.scroll(Scroll::Delta(lines));
+        }
+        cx.notify();
+    }
+
+    fn on_mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        let Some((point, side, col, row)) = self.point_at(e.position) else {
+            return;
+        };
+        let m = &e.modifiers;
+        if e.button == MouseButton::Left && m.platform {
+            self.pressed_link = self.core.link_at(point);
+            if self.pressed_link.is_some() {
+                return;
+            }
+        }
+        let mode = self.core.mode();
+        if mouse::wants_mouse(mode, m.shift) {
+            if let Some(button) = button(e.button)
+                && let Some(bytes) =
+                    mouse::report(button, MouseAction::Press, mods(m), col, row, mode)
+            {
+                self.core.write(&bytes);
+                self.mouse_reported = true;
+            }
+        } else if e.button == MouseButton::Left {
+            // With mouse reporting on, shift is the "select locally" bypass, so a shift-press
+            // starts a selection there instead of extending one (there's usually none to extend).
+            if m.shift && !mode.intersects(TermMode::MOUSE_MODE) {
+                self.core.extend_selection(point, side);
+            } else {
+                let ty = match e.click_count {
+                    1 => SelectionType::Simple,
+                    2 => SelectionType::Semantic,
+                    _ => SelectionType::Lines,
+                };
+                // A plain click leaves an empty Simple selection, which selects nothing.
+                self.core.start_selection(ty, point, side);
+            }
+            self.selecting = true;
+        }
+        cx.notify();
+    }
+
+    /// Window-wide (registered in paint), so a drag that leaves the pane keeps selecting.
+    fn on_mouse_move(&mut self, e: &MouseMoveEvent, over_pane: bool, cx: &mut Context<Self>) {
+        let Some((point, side, col, row)) = self.point_at(e.position) else {
+            return;
+        };
+        if self.selecting && e.pressed_button == Some(MouseButton::Left) {
+            self.core.extend_selection(point, side);
+            cx.notify();
+        } else if self.mouse_reported {
+            let mode = self.core.mode();
+            if mouse::wants_mouse(mode, e.modifiers.shift)
+                && let Some(button) = e.pressed_button.and_then(button)
+                && let Some(bytes) = mouse::report(
+                    button,
+                    MouseAction::Drag,
+                    mods(&e.modifiers),
+                    col,
+                    row,
+                    mode,
+                )
+            {
+                self.core.write(&bytes);
+            }
+        }
+        let hovered = if e.modifiers.platform && over_pane {
+            self.core.link_at(point)
+        } else {
+            None
+        };
+        if hovered != self.hovered {
+            self.hovered = hovered;
+            cx.notify();
+        }
+    }
+
+    /// Window-wide (registered in paint), so a release outside the pane still ends a drag.
+    fn on_mouse_up(&mut self, e: &MouseUpEvent, over_pane: bool, cx: &mut Context<Self>) {
+        let at = self.point_at(e.position);
+        if let Some(link) = self.pressed_link.take()
+            && over_pane
+            && let Some((point, ..)) = at
+            && self.core.link_at(point).as_ref() == Some(&link)
+        {
+            // `link_at` only returns http/https/mailto. Opened by the OS, never through a shell.
+            cx.open_url(&link.url);
+        }
+        if self.mouse_reported {
+            self.mouse_reported = false;
+            if let Some((_, _, col, row)) = at
+                && let Some(button) = button(e.button)
+                && let Some(bytes) = mouse::report(
+                    button,
+                    MouseAction::Release,
+                    mods(&e.modifiers),
+                    col,
+                    row,
+                    self.core.mode(),
+                )
+            {
+                self.core.write(&bytes);
+            }
+        }
+        self.selecting = false;
+    }
+
+    fn on_modifiers_changed(
+        &mut self,
+        e: &ModifiersChangedEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !e.modifiers.platform && self.hovered.is_some() {
+            self.hovered = None;
+            cx.notify();
+        }
+    }
+
+    /// cmd-c: copy the selection; it stays selected.
+    fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.core.selection_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// cmd-v: paste as user input (snaps to the bottom, clears the selection, counts as typing).
+    fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let bracketed = self.core.mode().contains(TermMode::BRACKETED_PASTE);
+        self.core.input(&keys::paste_bytes(&text, bracketed));
+        if let Some(status) = self.tracker.on_input(Instant::now()) {
+            self.status_changed(status, cx);
+        }
+        cx.notify();
+    }
+
+    fn scroll_page_up(&mut self, _: &ScrollPageUp, _window: &mut Window, cx: &mut Context<Self>) {
+        self.scroll_page(Scroll::PageUp, cx);
+    }
+
+    fn scroll_page_down(
+        &mut self,
+        _: &ScrollPageDown,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scroll_page(Scroll::PageDown, cx);
+    }
+
+    /// Full-screen programs have no scrollback: let the key through to them instead.
+    fn scroll_page(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
+        if self.core.mode().contains(TermMode::ALT_SCREEN) {
+            cx.propagate();
+            return;
+        }
+        self.core.scroll(scroll);
+        cx.notify();
+    }
+}
+
+fn mods(m: &Modifiers) -> Mods {
+    Mods {
+        shift: m.shift,
+        alt: m.alt,
+        ctrl: m.control,
+    }
+}
+
+fn button(b: MouseButton) -> Option<Button> {
+    match b {
+        MouseButton::Left => Some(Button::Left),
+        MouseButton::Middle => Some(Button::Middle),
+        MouseButton::Right => Some(Button::Right),
+        _ => None,
+    }
 }
 
 impl Render for TerminalView {
@@ -188,15 +475,28 @@ impl Render for TerminalView {
         let focused = self.focus_handle.is_focused(window);
         let resize_core = self.core.clone();
         let paint_core = self.core.clone();
+        let layout = self.layout.clone();
+        let hovered = self.hovered.clone();
+        let view = cx.entity();
 
         div()
             .size_full()
             .track_focus(&self.focus_handle)
             .key_context("Terminal")
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::scroll_page_up))
+            .on_action(cx.listener(Self::scroll_page_down))
             .child(
                 canvas(
-                    // prepaint: measure cells, fit the terminal to the space we were given.
+                    // prepaint: measure cells, fit the terminal to the space we were given,
+                    // remember the layout for hit-testing.
                     move |bounds, window, _cx| {
                         let metrics = CellMetrics::measure(window);
                         resize_core.resize(
@@ -206,11 +506,51 @@ impl Render for TerminalView {
                                 height: f32::from(metrics.line_height).round() as u16,
                             },
                         );
-                        metrics
+                        layout.set(Some(GridLayout {
+                            origin: bounds.origin,
+                            cell_width: metrics.cell_width,
+                            line_height: metrics.line_height,
+                            dims: resize_core.dims(),
+                        }));
+                        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                        (metrics, hitbox)
                     },
-                    // paint: draw the current screen.
-                    move |bounds, metrics, window, cx| {
-                        paint_grid(paint_core.snapshot(), &metrics, bounds, focused, window, cx);
+                    // paint: draw the current screen, set the pointer, follow the mouse.
+                    move |bounds, (metrics, hitbox), window, cx| {
+                        let mut snap = paint_core.snapshot();
+                        if let Some(link) = &hovered {
+                            let offset = paint_core.display_offset();
+                            grid::underline_cells(&mut snap, link.start, link.end, offset);
+                        }
+                        paint_grid(snap, &metrics, bounds, focused, window, cx);
+
+                        let style = if hovered.is_some() && window.modifiers().platform {
+                            CursorStyle::PointingHand
+                        } else {
+                            CursorStyle::IBeam
+                        };
+                        window.set_cursor_style(style, &hitbox);
+
+                        // Move/up anywhere in the window, so a drag that leaves the pane keeps
+                        // going. Paint-phase registrations last for one frame.
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            let hitbox = hitbox.clone();
+                            move |e: &MouseMoveEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    let over_pane = hitbox.is_hovered(window);
+                                    view.update(cx, |this, cx| {
+                                        this.on_mouse_move(e, over_pane, cx)
+                                    });
+                                }
+                            }
+                        });
+                        window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                let over_pane = hitbox.is_hovered(window);
+                                view.update(cx, |this, cx| this.on_mouse_up(e, over_pane, cx));
+                            }
+                        });
                     },
                 )
                 .size_full(),
