@@ -22,6 +22,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-26 — M3 plan changes: D6, PTY writer thread; one proposal dropped
+- **Did:** On request ("recommended for all three"): **D6** = the recommended shortcuts. Added M3 **Task 4**:
+  PTY writes move to a per-session writer thread, so `TerminalCore::write` never blocks the UI. A new test
+  proved the freeze first (`write blocked` after 2 s against M2 code). Dropped the third proposal
+  (end a session when the shell exits even if a background job holds the PTY): a probe showed macOS
+  already ends it. Re-verified the whole M3 plan from its text in a scratch worktree: 0 warnings, 54 passed.
+  M4's expected count is now 60.
+- **Learned:** On macOS, when the shell (session leader) exits, the tty is revoked and the reader gets
+  EOF at once, even with a disowned job (`&!`). With `nohup … &`, zsh refuses the first `exit` itself.
+  The M1 review's concern holds only on Linux.
+- **Blocked:** Nothing.
+- **Next task:** [[M3 Plan - Many Sessions]] → Task 1.
+
 ### 2026-10-26 — Milestone 2 complete: agent status detected
 - **Did:** Built [[M2 Plan - Agent State Detection]] on branch `m2-agent-state`, one fresh agent per task,
   each reviewed: notification detector for OSC 9 / 99 / 777 that skips the `9;4` progress bar (`a2da2e2`),
