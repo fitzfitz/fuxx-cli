@@ -151,7 +151,7 @@ impl TerminalView {
         let core = &self.core;
         if let Some(status) = self
             .tracker
-            .tick(Instant::now(), || core.snapshot().tail_text(TAIL_LINES))
+            .tick(Instant::now(), || core.tail_text(TAIL_LINES))
         {
             self.status_changed(status, cx);
         }
@@ -181,7 +181,7 @@ impl TerminalView {
             m.shift,
             app_cursor,
         ) {
-            self.core.write(&bytes);
+            self.core.input(&bytes);
             if let Some(status) = self.tracker.on_input(Instant::now()) {
                 self.status_changed(status, cx);
             }

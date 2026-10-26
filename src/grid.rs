@@ -6,6 +6,7 @@
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
@@ -53,27 +54,25 @@ pub struct GridSnapshot {
     pub cursor: Option<CursorView>,
 }
 
-impl GridSnapshot {
-    /// The last `n` non-blank screen lines (top to bottom), trailing spaces trimmed. Used by the
-    /// status heuristics to look for a question near the bottom of the screen.
-    pub fn tail_text(&self, n: usize) -> String {
-        let mut tail: Vec<String> = self
-            .lines
-            .iter()
-            .rev()
-            .map(|line| {
-                line.iter()
-                    .map(|c| c.ch)
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .filter(|text| !text.is_empty())
-            .take(n)
-            .collect();
-        tail.reverse();
-        tail.join("\n")
-    }
+/// The last `n` non-blank lines of the *live* screen (top to bottom), trailing spaces trimmed.
+/// Used by the status heuristics to look for a question near the bottom of the screen. Reads
+/// `grid()[Line(r)]` directly, which is always the live screen whatever the display offset, so
+/// scrolling back through history doesn't change the agent's status.
+pub fn screen_tail_text<L: EventListener>(term: &Term<L>, n: usize) -> String {
+    let mut tail: Vec<String> = (0..term.screen_lines())
+        .rev()
+        .map(|r| {
+            (0..term.columns())
+                .map(|c| term.grid()[Line(r as i32)][Column(c)].c)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .filter(|text| !text.is_empty())
+        .take(n)
+        .collect();
+    tail.reverse();
+    tail.join("\n")
 }
 
 /// Copy the visible screen out of the `Term` (call while holding its lock, then release it).
@@ -224,6 +223,7 @@ mod tests {
     use super::*;
     use crate::terminal::TermDims;
     use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::grid::Scroll;
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
@@ -333,9 +333,33 @@ mod tests {
 
     #[test]
     fn tail_text_returns_last_non_blank_lines() {
-        let snap = snapshot(&term_with(b"one\r\n\r\ntwo  "));
-        assert_eq!(snap.tail_text(8), "one\ntwo");
-        assert_eq!(snap.tail_text(1), "two");
+        let term = term_with(b"one\r\n\r\ntwo  ");
+        assert_eq!(screen_tail_text(&term, 8), "one\ntwo");
+        assert_eq!(screen_tail_text(&term, 1), "two");
+    }
+
+    #[test]
+    fn screen_tail_ignores_scrollback() {
+        let text: String = (1..=30).map(|i| format!("l{i}\r\n")).collect();
+        let mut term = Term::new(
+            Config::default(),
+            &TermDims { cols: 10, rows: 5 },
+            VoidListener,
+        );
+        let mut p: Processor<StdSyncHandler> = Processor::new();
+        p.advance(&mut term, text.as_bytes());
+        term.scroll_display(Scroll::Delta(3));
+        // The view shows history (l24 at the top)...
+        assert_eq!(
+            snapshot(&term).lines[0]
+                .iter()
+                .map(|c| c.ch)
+                .collect::<String>()
+                .trim_end(),
+            "l24"
+        );
+        // ...but the status tail still reads the live bottom.
+        assert_eq!(screen_tail_text(&term, 1), "l30");
     }
 
     #[test]
