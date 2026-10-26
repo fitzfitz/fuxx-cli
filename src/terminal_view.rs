@@ -107,7 +107,9 @@ impl TerminalView {
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
             TermEvent::Output { notifications } => {
-                self.tracker.on_output(Instant::now(), notifications);
+                if let Some(status) = self.tracker.on_output(Instant::now(), notifications) {
+                    self.status_changed(status, cx);
+                }
                 cx.notify();
             }
             TermEvent::Term(Event::Wakeup) => cx.notify(),

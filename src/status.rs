@@ -83,24 +83,27 @@ impl StatusTracker {
     }
 
     /// The session produced output; `notifications` = OSC 9 / 99 / 777 notifications seen in it.
-    pub fn on_output(&mut self, now: Instant, notifications: usize) {
+    /// Returns the new status when it changed.
+    pub fn on_output(&mut self, now: Instant, notifications: usize) -> Option<Status> {
         if notifications > 0 {
             self.attention = true;
             self.last_output = Some(now);
             self.dirty = true;
-            return;
+            return None;
         }
         let Some(input) = self.last_input else {
-            return; // never typed in: shell startup / prompt noise
+            return None; // never typed in: shell startup / prompt noise
         };
         if now.duration_since(input) < ECHO_WINDOW {
-            return; // echo of typing
+            return None; // echo of typing
         }
         self.last_output = Some(now);
         self.dirty = true;
-        if !self.attention {
+        if !self.attention && self.status != Status::Working {
             self.status = Status::Working;
+            return Some(Status::Working);
         }
+        None
     }
 
     /// The program rang the bell (a real BEL, reported by the parser). Claude Code uses it to say
@@ -180,6 +183,18 @@ mod tests {
         let mut t = typed_at(t0);
         t.on_output(t0 + ms(400), 0);
         assert_eq!(t.status(), Status::Working);
+    }
+
+    #[test]
+    fn output_reports_working_once() {
+        let t0 = Instant::now();
+        let mut t = StatusTracker::new();
+        assert_eq!(t.on_output(t0, 0), None); // startup noise
+        t.on_input(t0 + ms(100));
+        assert_eq!(t.on_output(t0 + ms(120), 0), None); // echo of typing
+        assert_eq!(t.on_output(t0 + ms(400), 0), Some(Status::Working));
+        assert_eq!(t.on_output(t0 + ms(600), 0), None); // already working: no change to report
+        assert_eq!(t.on_output(t0 + ms(700), 1), None); // a notification marks attention, not a change
     }
 
     #[test]
