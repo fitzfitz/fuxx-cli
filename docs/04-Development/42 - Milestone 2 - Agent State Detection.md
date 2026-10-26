@@ -21,7 +21,8 @@ output stream. This drives the rings in [[44 - Milestone 4 - Notification Rings]
       progress bar; plus a real BEL (Terminal.app) from the parser.
 - [x] Add heuristics for **waiting-for-input** (e.g. output idle after a prompt) and **working**
       (recent output) vs **done** (a notification / idle).
-- [x] Expose a per-session `Status` the UI can read.
+- [x] Expose a per-session `Status` the UI can read: reported to the view on every change
+      (`TerminalView::status_changed`); M4 keeps the latest value per session.
 
 ## Success check
 
