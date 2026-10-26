@@ -1,5 +1,5 @@
 // fuxx — a native GPU terminal for running AI coding agents.
-// Milestone 1: one real terminal (alacritty_terminal + portable-pty) in a GPUI window.
+// Milestone 2: one terminal whose agent status (working / waiting / done) is detected.
 
 mod colors;
 mod detector;
