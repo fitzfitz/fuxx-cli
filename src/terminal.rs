@@ -15,6 +15,7 @@ use futures::channel::mpsc::UnboundedSender;
 use portable_pty::CommandBuilder;
 
 use crate::colors;
+use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
 use crate::pty::Pty;
 
@@ -42,8 +43,9 @@ impl Dimensions for TermDims {
 pub enum TermEvent {
     /// Something the `Term` raised while parsing (query replies, title, bell, ...).
     Term(Event),
-    /// New output was parsed into the screen: redraw.
-    Output,
+    /// New output was parsed into the screen: redraw. `notifications` = OSC 9 / 99 / 777
+    /// notifications in it.
+    Output { notifications: usize },
     /// The child closed the PTY (shell exited).
     Exited,
 }
@@ -91,17 +93,20 @@ impl TerminalCore {
             .name("fuxx-pty-reader".into())
             .spawn(move || {
                 let mut buf = [0u8; 8192];
+                // alacritty_terminal ignores notification OSCs, so a byte scanner watches the raw stream.
+                let mut detector = OscDetector::new();
                 loop {
                     match reader.read(&mut buf) {
                         // EOF. portable-pty already maps macOS's EIO-at-exit to Ok(0).
                         Ok(0) => break,
                         Ok(n) => {
+                            let notifications = detector.feed(&buf[..n]);
                             {
                                 let mut guard = reader_shared.lock();
                                 let Shared { term, processor } = &mut *guard;
                                 processor.advance(term, &buf[..n]);
                             } // lock released before waking the UI
-                            let _ = events.unbounded_send(TermEvent::Output);
+                            let _ = events.unbounded_send(TermEvent::Output { notifications });
                         }
                         Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                         Err(_) => break,
@@ -274,7 +279,22 @@ mod tests {
             tx,
         )
         .unwrap();
-        assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Output)));
+        assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Output { .. })));
         assert!(core.mode().contains(TermMode::APP_CURSOR));
+    }
+
+    #[test]
+    fn notifications_are_counted() {
+        let (tx, mut rx) = unbounded();
+        let _core = TerminalCore::spawn(
+            sh("printf '\\033]777;notify;fuxx;done\\007'; sleep 1"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |e| matches!(
+            e,
+            TermEvent::Output { notifications: 1 }
+        )));
     }
 }
