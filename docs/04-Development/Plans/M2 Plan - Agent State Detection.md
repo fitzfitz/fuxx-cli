@@ -731,6 +731,7 @@ Run `cargo run` **from another terminal**, so you can watch its stderr log while
 | 2026-10-26 | Same worktree: full `cargo test` | ✅ 46 passed | AI scratch `cargo test` |
 | 2026-10-26 | Repo build + `cargo test` on `1843452` | ✅ 0 warnings from our code, 46 passed | AI build/test output |
 | 2026-10-26 | Task 6 scenarios (incl. OSC 9/99/777, BEL, `9;4;` progress, tab beep, real `claude` from Ghostty) | ✅ | 👀 confirmed by you |
+| 2026-10-26 | Final-review fix I-1 (plan change, your OK): a settled session no longer re-reads the screen every tick; `StatusTracker` gains a private `dirty` flag, test `settled_session_does_not_reread_the_screen_until_new_output` RED → GREEN (`316c884`) | ✅ 0 warnings, 47 passed | AI build/test output |
 | 2026-10-26 | Constants tuned? | No: `ECHO_WINDOW` 150 ms, `IDLE_AFTER` 3 s, `TAIL_LINES` 8, `WAITING_PATTERNS` unchanged | 👀 nothing misread |
 
 ## Known limitations
