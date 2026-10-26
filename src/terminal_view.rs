@@ -18,9 +18,10 @@ use gpui::{
     FocusHandle, Focusable, Font, FontStyle, FontWeight, HitboxBehavior, Hsla, KeyDownEvent,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Rgba, ScrollWheelEvent, SharedString, Task, TextAlign, TextRun, TouchPhase,
-    UnderlineStyle, Window, actions, canvas, div, fill, font, point, prelude::*, px, size,
+    UnderlineStyle, Window, actions, canvas, div, fill, point, prelude::*, px, size,
 };
 
+use crate::appearance::Appearance;
 use crate::grid::{self, GridSnapshot};
 use crate::keys;
 use crate::links::Link;
@@ -34,8 +35,6 @@ use crate::theme::Theme;
 // so these win over the byte mapping.
 actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
 
-const FONT_FAMILY: &str = "Menlo";
-const FONT_SIZE: f32 = 14.0;
 /// GPUI's default line height (1.618 x size) is too airy for a terminal.
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
 /// How often to run housekeeping (flush stuck synchronized updates, re-evaluate status).
@@ -94,11 +93,12 @@ impl TerminalView {
     pub fn spawn(window: &mut Window, cx: &mut App) -> Result<Entity<Self>, String> {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         // 80x24 until the first paint measures the real size and resizes.
+        let theme = cx.global::<Appearance>().theme;
         let core = TerminalCore::spawn(
             pty::shell_command(None),
             TermDims { cols: 80, rows: 24 },
             tx,
-            Theme::default(),
+            theme,
         )?;
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
@@ -503,8 +503,8 @@ impl Render for TerminalView {
                 canvas(
                     // prepaint: measure cells, fit the terminal to the space we were given,
                     // remember the layout for hit-testing.
-                    move |bounds, window, _cx| {
-                        let metrics = CellMetrics::measure(window);
+                    move |bounds, window, cx| {
+                        let metrics = CellMetrics::measure(cx.global::<Appearance>(), window);
                         resize_core.resize(
                             metrics.dims_for(bounds),
                             CellPx {
@@ -573,14 +573,16 @@ struct CellMetrics {
 }
 
 impl CellMetrics {
-    fn measure(window: &Window) -> Self {
-        let font = font(FONT_FAMILY);
-        let font_size = px(FONT_SIZE);
+    /// The configured font and size; bold/italic runs derive from `font`, keeping its fallbacks
+    /// and features.
+    fn measure(appearance: &Appearance, window: &Window) -> Self {
+        let font = appearance.font.clone();
+        let font_size = px(appearance.font_size);
         let text_system = window.text_system();
         let font_id = text_system.resolve_font(&font);
         let cell_width = text_system
             .em_advance(font_id, font_size)
-            .unwrap_or(px(FONT_SIZE * 0.6));
+            .unwrap_or(font_size * 0.6);
         let line_height = (font_size * LINE_HEIGHT_FACTOR).round();
         Self {
             font,

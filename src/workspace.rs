@@ -6,11 +6,12 @@ use gpui::{
     prelude::*, px,
 };
 
+use crate::appearance::Appearance;
 use crate::notifier;
 use crate::session_list::SessionList;
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
-use crate::theme::{Theme, UiColors};
+use crate::theme::UiColors;
 
 actions!(
     workspace,
@@ -222,8 +223,7 @@ impl Render for Workspace {
             .map(|s| format!("fuxx — {}", s.label()))
             .unwrap_or_else(|| "fuxx".into());
         window.set_window_title(&title);
-        // Task 5 swaps in the loaded theme.
-        let theme = Theme::default();
+        let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
 
         div()
