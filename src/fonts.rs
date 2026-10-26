@@ -3,6 +3,9 @@
 //! `from_entries` and `parse_feature` are pure. `gpui_font` turns the settings into a GPUI font
 //! (skipping families that aren't installed). `register_symbols_font` makes the bundled icon font
 //! visible to CoreText so it is used as the fallback for private-use glyphs (Nerd Font icons).
+//!
+//! The bundled font is licensed under `assets/fonts/LICENSE-NerdFonts.txt`; the icon sets inside
+//! it carry their own licences, listed in `assets/fonts/NOTICE-NerdFonts-IconSets.md`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -37,18 +40,21 @@ pub fn from_entries(entries: &[Entry]) -> FontSettings {
             "font-family" if e.value.is_empty() => s.families.clear(),
             "font-family" => s.families.push(e.value.clone()),
             "font-size" if e.value.is_empty() => s.size = DEFAULT_SIZE,
-            "font-size" => {
-                if let Ok(v) = e.value.parse::<f32>()
-                    && v.is_finite()
-                    && v > 0.0
-                {
-                    s.size = v;
+            "font-size" => match e.value.parse::<f32>() {
+                Ok(v) if v.is_finite() && v > 0.0 => s.size = v,
+                _ => eprintln!("[fuxx] config: ignoring bad font-size {:?}", e.value),
+            },
+            "font-feature" if e.value.is_empty() => s.features.clear(),
+            "font-feature" => {
+                for item in e.value.split(',') {
+                    match parse_feature(item) {
+                        Some(f) => s.features.push(f),
+                        None => {
+                            eprintln!("[fuxx] config: ignoring bad font-feature {:?}", item.trim())
+                        }
+                    }
                 }
             }
-            "font-feature" if e.value.is_empty() => s.features.clear(),
-            "font-feature" => s
-                .features
-                .extend(e.value.split(',').filter_map(parse_feature)),
             _ => {}
         }
     }
@@ -90,6 +96,9 @@ pub fn parse_feature(s: &str) -> Option<(String, u32)> {
 /// Build the GPUI font: the first configured family that is installed (else JetBrains Mono, else
 /// Menlo), the other installed ones as fallbacks, then the bundled symbols font.
 pub fn gpui_font(s: &FontSettings, installed: &[String]) -> Font {
+    for f in s.families.iter().filter(|f| !installed.contains(f)) {
+        eprintln!("[fuxx] config: font-family {f:?} is not installed, skipping");
+    }
     let mut kept = s.families.iter().filter(|f| installed.contains(f)).cloned();
     let primary = kept.next().unwrap_or_else(|| {
         let jb = "JetBrains Mono";
@@ -120,23 +129,29 @@ pub fn register_symbols_font() -> bool {
     static RESULT: OnceLock<bool> = OnceLock::new();
     *RESULT.get_or_init(|| {
         let Some(home) = std::env::var_os("HOME") else {
-            eprintln!("fuxx: $HOME is unset; the bundled symbols font is not registered");
+            eprintln!("[fuxx] font: $HOME is unset; the bundled symbols font is not registered");
             return false;
         };
         let dir = std::path::Path::new(&home).join("Library/Caches/fuxx");
         let path = dir.join(SYMBOLS_FILE);
         let current = std::fs::metadata(&path).map(|m| m.len()).ok();
         if current != Some(SYMBOLS_BYTES.len() as u64) {
-            if let Err(err) =
-                std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, SYMBOLS_BYTES))
-            {
-                eprintln!("fuxx: could not write {}: {err}", path.display());
+            // Write a temp file and rename it over the target. Rename gives the path a new inode,
+            // so another fuxx that has the old file registered or mapped keeps its copy intact,
+            // and two instances starting together never see a half-written font.
+            let tmp = dir.join(format!("{SYMBOLS_FILE}.{}.tmp", std::process::id()));
+            let written = std::fs::create_dir_all(&dir)
+                .and_then(|_| std::fs::write(&tmp, SYMBOLS_BYTES))
+                .and_then(|_| std::fs::rename(&tmp, &path));
+            if let Err(err) = written {
+                let _ = std::fs::remove_file(&tmp);
+                eprintln!("[fuxx] font: could not write {}: {err}", path.display());
                 return false;
             }
         }
         let ok = register_file(path.as_os_str().as_encoded_bytes());
         if !ok {
-            eprintln!("fuxx: CoreText refused {}", path.display());
+            eprintln!("[fuxx] font: CoreText refused {}", path.display());
         }
         ok
     })
