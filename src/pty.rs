@@ -36,17 +36,17 @@ fn pty_size(dims: TermDims) -> PtySize {
 
 pub struct Pty {
     master: Box<dyn MasterPty + Send>,
-    /// Kept for the whole session: dropping portable-pty's writer sends EOF (^D) to the child.
-    writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
 }
 
 impl Pty {
-    /// Spawn `cmd`; returns the handle plus the output reader (for a dedicated thread).
+    /// Spawn `cmd`; returns the handle plus the output reader and the input writer, each for a
+    /// dedicated thread. Keep the writer for the whole session: dropping portable-pty's writer
+    /// sends EOF (^D) to the child.
     pub fn spawn(
         cmd: CommandBuilder,
         dims: TermDims,
-    ) -> Result<(Pty, Box<dyn Read + Send>), String> {
+    ) -> Result<(Pty, Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
         let pair = native_pty_system()
             .openpty(pty_size(dims))
             .map_err(|e| e.to_string())?;
@@ -58,16 +58,11 @@ impl Pty {
         Ok((
             Pty {
                 master: pair.master,
-                writer,
                 child,
             },
             reader,
+            writer,
         ))
-    }
-
-    pub fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.writer.write_all(bytes).map_err(|e| e.to_string())?;
-        self.writer.flush().map_err(|e| e.to_string())
     }
 
     /// Tell the child its new size (it receives SIGWINCH).
