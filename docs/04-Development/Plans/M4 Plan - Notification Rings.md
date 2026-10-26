@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M4
-status: in-progress
+status: done
 updated: 2026-10-26
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-10-26
 | At a glance | |
 |---|---|
 | **Milestone note** | [[44 - Milestone 4 - Notification Rings]] |
-| **Status** | 🟨 In progress (branch `m4-notification-rings`) |
-| **Tasks done** | 0 / 4 |
-| **▶ Pick up here** | **Task 1, Step 1** |
+| **Status** | ✅ Done 2026-10-26 (commits `5af9f85`, `a0990fc` + docs on `m4-notification-rings`) |
+| **Tasks done** | 4 / 4 |
+| **▶ Pick up here** | M4 complete → M4b (tester build), plan to be written |
 | **Decisions used** | ✅ **D5** = notification click → session moves to M11 (decided 2026-10-26) · ✅ **D4** = Idle ring |
-| **Needs your eyes** | 👀 Task 3 (rings change; background sessions notify; the active one doesn't nag) |
+| **Needs your eyes** | ✅ Task 3 confirmed by you on 2026-10-26 (all checks, incl. real `claude` runs) |
 
 **Goal:** Every session row in the sidebar shows a live **status ring**, and when a session you're
 **not looking at** finishes or needs input, a **desktop notification** fires. This is the payoff:
@@ -76,7 +76,7 @@ silent. If fuxx is in the background, even the active session notifies you.
   switches to that session" to **M11** (a real `.app` can receive notification clicks). If you
   choose otherwise, this plan needs a new task *before* building. Don't improvise it.
 
-### Task 1: `notifier.rs` — ⬜
+### Task 1: `notifier.rs` — ✅
 
 **Files:** Create `src/notifier.rs` · Modify `src/main.rs` (add `mod notifier;`)
 
@@ -88,7 +88,7 @@ silent. If fuxx is in the background, even the active session notifies you.
 > program-controlled, so escaping is its own tested function and drops control characters. The
 > focus-aware rule is a pure function, so the "don't nag" promise is unit-tested.
 
-- [ ] **Step 1: Write the failing tests.** Create `src/notifier.rs` with only:
+- [x] **Step 1: Write the failing tests.** Create `src/notifier.rs` with only:
 
 ```rust
 #[cfg(test)]
@@ -134,8 +134,8 @@ mod tests {
 
 …and add `mod notifier;` to `src/main.rs`.
 
-- [ ] **Step 2: Run:** `cargo test notifier`. Expected: compile errors (`should_notify`, `message`, `applescript_escape` not found).
-- [ ] **Step 3: Implement.** Put this above the test module:
+- [x] **Step 2: Run:** `cargo test notifier`. Expected: compile errors (`should_notify`, `message`, `applescript_escape` not found).
+- [x] **Step 3: Implement.** Put this above the test module:
 
 ```rust
 use std::process::Command;
@@ -190,10 +190,10 @@ pub fn message(status: Status) -> Option<&'static str> {
 }
 ```
 
-- [ ] **Step 4: Run:** `cargo test notifier`. Expected: `test result: ok. 6 passed` (dead-code warnings until Task 2).
-- [ ] **Step 5: Commit** *(when you say so)*: `git add src/notifier.rs src/main.rs && git commit -m "feat(m4): focus-aware osascript notifier with tests"`
+- [x] **Step 4: Run:** `cargo test notifier`. Expected: `test result: ok. 6 passed` (dead-code warnings until Task 2).
+- [x] **Step 5: Commit** *(when you say so)*: `git add src/notifier.rs src/main.rs && git commit -m "feat(m4): focus-aware osascript notifier with tests"`
 
-### Task 2: Status events → rings + notifications — ⬜
+### Task 2: Status events → rings + notifications — ✅
 
 **Files:** Modify `src/terminal_view.rs` · Replace `src/workspace.rs` · Modify `src/main.rs`
 
@@ -203,7 +203,7 @@ pub fn message(status: Status) -> Option<&'static str> {
 > These three edits land together. Adding the `StatusChanged` variant makes the M3 workspace's
 > `match` non-exhaustive until the new workspace handles it.
 
-- [ ] **Step 1: Emit status changes.** In `src/terminal_view.rs`:
+- [x] **Step 1: Emit status changes.** In `src/terminal_view.rs`:
   - Add the variant at the top of `pub enum TerminalEvent`:
 ```rust
     StatusChanged(Status),
@@ -217,7 +217,7 @@ pub fn message(status: Status) -> Option<&'static str> {
     }
 ```
 
-- [ ] **Step 2: Replace `src/workspace.rs` with:**
+- [x] **Step 2: Replace `src/workspace.rs` with:**
 
 ```rust
 //! The root view: a sidebar listing every session (with its status ring) and the active
@@ -461,31 +461,31 @@ impl Render for Workspace {
 }
 ```
 
-- [ ] **Step 3:** In `src/main.rs`, make sure `mod notifier;` is present (Task 1), and change the second header line to
+- [x] **Step 3:** In `src/main.rs`, make sure `mod notifier;` is present (Task 1), and change the second header line to
   `// Many sessions in one window, each with a live status ring and background notifications.`
-- [ ] **Step 4: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
-- [ ] **Step 5: Tests:** `cargo test`. Expected: `test result: ok. 61 passed`.
-- [ ] **Step 6: Commit** *(when you say so)*: `git add src/terminal_view.rs src/workspace.rs src/main.rs && git commit -m "feat(m4): status rings in the sidebar and background notifications"`
+- [x] **Step 4: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**.
+- [x] **Step 5: Tests:** `cargo test`. Expected: `test result: ok. 61 passed`.
+- [x] **Step 6: Commit** *(when you say so)*: `git add src/terminal_view.rs src/workspace.rs src/main.rs && git commit -m "feat(m4): status rings in the sidebar and background notifications"`
 
-### Task 3: The payoff, for real — 👀 ⬜
+### Task 3: The payoff, for real — 👀 ✅
 
 `cargo run`, then:
 
-- [ ] Every row has a **grey hollow ring** at first (Idle).
-- [ ] Session 1: run `bash -c 'for i in $(seq 1 15); do echo working $i; sleep 0.2; done'` and **stay on it**. The ring goes 🟠, then 🟢 about 3 s after it ends. **No notification** (you're looking at it).
-- [ ] Same command, then **immediately cmd-t** to another session. When it finishes, session 1's ring turns 🟢 **and** a banner **"fuxx — Shell 1 · Finished"** appears.
-- [ ] Session 1: `bash -c 'sleep 2; printf "Proceed? (y/n) "; read x'`, then switch away. Expect 🔴 plus a banner **"Needs your input"**. Switch back and type `y` → the ring goes grey (acknowledged).
-- [ ] Start the loop on the active session, then **click another app** so fuxx is in the background. When it finishes you **do** get a banner.
-- [ ] Real agents: `claude` in two sessions with different tasks; work in a third. You get pulled back exactly when each finishes or asks.
-- [ ] While a banner fires, typing in the active session stays smooth (no hitch).
-- [ ] *(Expected, not a bug:)* banners say **Script Editor**, and clicking one opens Script Editor (D5 → M11).
+- [x] Every row has a **grey hollow ring** at first (Idle).
+- [x] Session 1: run `bash -c 'for i in $(seq 1 15); do echo working $i; sleep 0.2; done'` and **stay on it**. The ring goes 🟠, then 🟢 about 3 s after it ends. **No notification** (you're looking at it).
+- [x] Same command, then **immediately cmd-t** to another session. When it finishes, session 1's ring turns 🟢 **and** a banner **"fuxx — Shell 1 · Finished"** appears.
+- [x] Session 1: `bash -c 'sleep 2; printf "Proceed? (y/n) "; read x'`, then switch away. Expect 🔴 plus a banner **"Needs your input"**. Switch back and type `y` → the ring goes grey (acknowledged).
+- [x] Start the loop on the active session, then **click another app** so fuxx is in the background. When it finishes you **do** get a banner.
+- [x] Real agents: `claude` in two sessions with different tasks; work in a third. You get pulled back exactly when each finishes or asks.
+- [x] While a banner fires, typing in the active session stays smooth (no hitch).
+- [x] *(Expected, not a bug:)* banners say **Script Editor**, and clicking one opens Script Editor (D5 → M11).
 
-### Task 4: Update the docs (this completes Phase 1) — ⬜
+### Task 4: Update the docs (this completes Phase 1) — ✅
 
-- [ ] [[44 - Milestone 4 - Notification Rings]]: tick the checklist (the click item → "moved to M11 per D5"); **Status:: ✅ Done**.
-- [ ] [[40 - Roadmap]]: M4 → ✅, and add "notification click → session" under **M11**.
-- [ ] [[00 - Plan Tracker (Start Here)]]: M4 → ✅ 4/4; **Where we are** → "Phase 1 complete. Next: plan M5 (Phase 2)."
-- [ ] [[60 - Progress Log]]: new entry ("first genuinely useful version").
+- [x] [[44 - Milestone 4 - Notification Rings]]: tick the checklist (the click item → "moved to M11 per D5"); **Status:: ✅ Done**.
+- [x] [[40 - Roadmap]]: M4 → ✅, and add "notification click → session" under **M11**.
+- [x] [[00 - Plan Tracker (Start Here)]]: M4 → ✅ 4/4; **Where we are** → "Phase 1 complete. Next: plan M5 (Phase 2)." *(Superseded: M4b, the tester build added 2026-10-26, comes next.)*
+- [x] [[60 - Progress Log]]: new entry ("first genuinely useful version").
 - [ ] Commit docs *(when you say so)*.
 
 ## Verification log
@@ -496,7 +496,10 @@ impl Render for Workspace {
 | 2026-10-12 | Plan unit tests | ✅ 50 passed | AI scratch `cargo test` |
 | 2026-10-26 | Expected count 50 → 60 after the M2 plan changes (9 more M2 tests) and M3's writer-thread test | ⚠️ edited, not re-compiled | Re-verify when M4 starts |
 | 2026-10-26 | Expected count 60 → 61: M3's Working fix added `output_reports_working_once`, and `StatusTracker::on_output` now returns `Option<Status>` (check M4's call sites against it) | ⚠️ edited, not re-compiled | Re-verify when M4 starts |
-| | Task 3 checklist | | 👀 |
+| 2026-10-26 | Plan text vs the merged M3 code (`8dc9b31`): the replacement `workspace.rs` is the M3 file plus the M4 additions (other differences are formatting only) | ✅ nothing from M3 dropped | AI diff |
+| 2026-10-26 | Task 1 in the repo (`5af9f85`): RED (compile errors) → GREEN, notifier 6 passed | ✅ 61 passed; 4 dead-code warnings until Task 2, as planned | AI build/test output |
+| 2026-10-26 | Task 2 in the repo (`a0990fc`): plan code compiled unchanged | ✅ 0 warnings from our code, 61 passed | AI build/test output (re-run by the controller) |
+| 2026-10-26 | Task 3 checklist (rings, focus-aware banners, Waiting → grey on input, background window notifies, real `claude`, smooth typing) | ✅ | 👀 confirmed by you |
 
 ## Known limitations
 

@@ -14,13 +14,26 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** [[44 - Milestone 4 - Notification Rings]] (the **new terminal app**). ⬜ M0 + M1 + M2 + M3 ✅ done. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M4b — Tester build** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M4 ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-26 — Milestone 4 complete: first genuinely useful version
+- **Did:** Decided **D5** with you after comparing how Ghostty, iTerm2, Warp and Zed handle notification
+  clicks: "click a notification → jump to the session" moves to **M11** (every terminal that does it is a
+  real `.app` using Apple's notification system). Built [[M4 Plan - Notification Rings]] on branch
+  `m4-notification-rings`, one fresh agent per task, each reviewed: a focus-aware `osascript` notifier with
+  AppleScript escaping for untrusted titles (`5af9f85`), then status rings in the sidebar and background
+  notifications fired off the UI thread (`a0990fc`). The plan's code compiled unchanged. All on-screen checks
+  passed, including real `claude` runs. 0 warnings, 61 tests pass.
+- **Learned:** Zed (same GPUI) shows "agent needs you" in its own pop-up window rather than a system
+  notification. Noted as an option, not adopted (outside the plan).
+- **Blocked:** **D7** and **D8** before the M4b plan can be written.
+- **Next task:** Decide D7 + D8 → write the M4b plan (unsigned `.app` in a DMG for testers).
 
 ### 2026-10-26 — Milestone 3 complete: many sessions
 - **Did:** Built [[M3 Plan - Many Sessions]] on branch `m3-many-sessions`, one fresh agent per task, each

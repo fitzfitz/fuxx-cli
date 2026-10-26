@@ -27,7 +27,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 - [[42 - Milestone 2 - Agent State Detection]] — ✅ — detect working / done / waiting per session (reuse v1's OSC-9 work)
 - [[43 - Milestone 3 - Many Sessions]] — ✅ — session manager + sidebar; quick-switch
-- [[44 - Milestone 4 - Notification Rings]] — 🟨 — per-session status rings + background notifications. **← usable product.**
+- [[44 - Milestone 4 - Notification Rings]] — ✅ — per-session status rings + background notifications. **← usable product.**
 - **M4b — Tester build** — ⬜ — wrap the release binary in an **unsigned `.app`**, ship it in a **DMG** (drag to Applications) so testers can try the MVP. *Added 2026-10-26 on request.* No signing/notarization (that stays M11), so testers clear Gatekeeper once (System Settings → Privacy & Security → Open Anyway). Its detailed plan is written when M4 is done. Open decisions for it: **D7** (CPUs) and **D8** (agent detection when launched from Finder) — see [[00 - Plan Tracker (Start Here)]].
 
 ## Phase 2 — Daily driver (polish enough to live in it)
