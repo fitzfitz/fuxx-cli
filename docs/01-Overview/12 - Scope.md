@@ -21,6 +21,8 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   to drive the rings. The shell's environment is inherited as-is; stripping it, or documenting an
   agent setting as a workaround, was considered and kept out (2026-10-26).
 - macOS first (Linux capable via the Rust stack).
+- A **tester build** after the MVP (M4b, added 2026-10-26): an unsigned `.app` in a DMG. Signing,
+  notarization and Homebrew stay later (M11, M12).
 
 ## Out of scope (for now — resist scope creep)
 
