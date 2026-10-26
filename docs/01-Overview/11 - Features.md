@@ -37,7 +37,7 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
   detection, extended to OSC 99 / OSC 777 / BEL on 2026-10-26, + heuristics on the output stream).
 - `P0` Visual **ring / status badge** per session in the sidebar; at-a-glance across all sessions.
 - `P1` Desktop notifications for **background** sessions (focus-aware — don't nag about the active one).
-- `P1` Jump-to-session from a notification.
+- `P1` Jump-to-session from a notification. *(Moved to M11 by D5, 2026-10-26: needs the real `.app`.)*
 - `P2` Notification history / activity feed.
 
 ## D. Layout

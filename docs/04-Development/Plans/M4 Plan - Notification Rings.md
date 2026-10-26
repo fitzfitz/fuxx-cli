@@ -508,6 +508,7 @@ impl Render for Workspace {
 | Clicking a notification doesn't jump to the session; banner says "Script Editor" | M11 `.app` bundle (D5) |
 | Rings don't animate (Working is a solid amber dot) | Polish, if wanted |
 | No notification history / activity feed | P2 in [[11 - Features]] |
+| A green/red ring stays lit after you switch to that session; it goes grey once you type (the ring shows the detected state, not "unseen") | By design (M2 detection); revisit if it bites |
 
 ## Related
 
