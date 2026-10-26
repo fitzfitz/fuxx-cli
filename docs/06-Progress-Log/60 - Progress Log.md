@@ -14,13 +14,25 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M6 — Fonts & config** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M5 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M6 — Fonts & config** (see [[40 - Roadmap]]; the **new terminal app**). 🟨 plan approved. M0–M5 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-27 — M6 plan written and approved
+- **Did:** Pushed M5. You skipped the design questions and asked to follow the mockup (Screen 2, #5 font and
+  #6 theme from Ghostty), so the AI made the calls in [[46 - Milestone 6 - Fonts and Config]]. Research: Ghostty
+  1.3.1's config rules from its bundled docs and tests; GPUI font fallbacks/features at the pinned rev. Your Ghostty
+  sets only `font-family = "MesloLGS NF"`. A headless spike proved how prompt icons can work for everyone: a font
+  only loaded in fuxx's memory is ignored by macOS, but registering a bundled Symbols Nerd Font file with CoreText
+  works. Wrote [[M6 Plan - Fonts and Config]] (7 tasks, 85 → 101 tests); you approved it ("right").
+- **Learned:** Ghostty 1.3 reads four config files (`config` and `config.ghostty`, in `~/.config/ghostty` and App
+  Support), later winning. GPUI silently swaps a missing font family for Helvetica, so fuxx must check installed families.
+- **Blocked:** Nothing.
+- **Next task:** [[M6 Plan - Fonts and Config]] → Task 1.
 
 ### 2026-10-27 — Milestone 5 complete: terminal UX
 - **Did:** Built [[M5 Plan - Terminal UX]] on branch `m5-terminal-ux`, one fresh agent per task, each reviewed:
