@@ -6,7 +6,7 @@
 //! file, `?`-prefixed when optional, and loaded after the including file's own lines.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// One `key = value` line. An empty `value` means "reset to the default".
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,11 +56,28 @@ pub fn config_paths(home: &Path, xdg_config_home: Option<&Path>) -> Vec<PathBuf>
 /// Entries of every existing file in `paths`, in order. Each file's `config-file` includes are
 /// expanded after its own entries; the `config-file` entries themselves are dropped.
 pub fn load(paths: &[PathBuf], read: &dyn Fn(&Path) -> Option<String>) -> Vec<Entry> {
-    let mut seen: HashSet<PathBuf> = paths.iter().cloned().collect();
+    let mut seen: HashSet<PathBuf> = paths.iter().map(|p| normalize(p)).collect();
     let mut out = Vec::new();
     for path in paths {
         if let Some(text) = read(path) {
             load_file(path, &text, read, &mut seen, &mut out);
+        }
+    }
+    out
+}
+
+/// Lexically drop `.` components and resolve `..` against the previous one (no filesystem access).
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
         }
     }
     out
@@ -90,7 +107,7 @@ fn load_file(
         if name.is_empty() {
             continue;
         }
-        let target = dir.join(name);
+        let target = normalize(&dir.join(name));
         if !seen.insert(target.clone()) {
             continue;
         }
@@ -188,6 +205,24 @@ mod tests {
         let read = |p: &Path| files.get(p.to_str().unwrap()).map(|s| s.to_string());
         assert_eq!(
             load(&[PathBuf::from("/c/a")], &read),
+            vec![e("x", "1"), e("y", "2")]
+        );
+    }
+
+    #[test]
+    fn self_include_via_dot_paths_stops() {
+        let files: HashMap<&str, &str> = HashMap::from([
+            ("/c/a", "x = 1\nconfig-file = ./a"),
+            ("/c/b", "y = 2\nconfig-file = ../c/b"),
+        ]);
+        // like a real filesystem, the read resolves `.` and `..` itself
+        let read = |p: &Path| {
+            files
+                .get(normalize(p).to_str().unwrap())
+                .map(|s| s.to_string())
+        };
+        assert_eq!(
+            load(&[PathBuf::from("/c/a"), PathBuf::from("/c/b")], &read),
             vec![e("x", "1"), e("y", "2")]
         );
     }
