@@ -18,6 +18,8 @@ pub enum Cli {
     Help(String),
     /// Send one request. `stream`: read lines until the reply line or the end (`events`, `wait`).
     Call {
+        /// The command word (`ls`, `wait`, …), for `render`.
+        command: &'static str,
         request: Request,
         json: bool,
         stream: bool,
@@ -163,19 +165,36 @@ fn usage_err(cmd: &str, what: &str) -> String {
 }
 
 /// Parse the command line (without argv[0]). `caller` is the session in `FUXX_SESSION`.
+/// Only no arguments (or macOS's `-psn_…` launch argument) opens the app; anything else that
+/// isn't a command is an error, so a typo never opens a window.
 pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
-    let Some(first) = args.first() else {
-        return Ok(Cli::Gui);
+    // `--json` may also come before the command: it's moved to just after the command word.
+    let leading_json = args.iter().take_while(|a| *a == "--json").count();
+    let rest = &args[leading_json..];
+    let Some(first) = rest.first() else {
+        return if leading_json > 0 {
+            Err("fuxx: --json needs a command (see `fuxx help`)".to_string())
+        } else {
+            Ok(Cli::Gui)
+        };
     };
+    if leading_json == 0 && first.starts_with("-psn_") {
+        return Ok(Cli::Gui);
+    }
     match first.as_str() {
         "help" | "--help" | "-h" => return Ok(Cli::Help(USAGE.to_string())),
         "mcp" => return Ok(Cli::Mcp),
         _ => {}
     }
     let Some(&(cmd, method)) = COMMANDS.iter().find(|(c, _)| *c == first.as_str()) else {
-        return Ok(Cli::Gui);
+        return Err(format!("fuxx: unknown command: {first} (see `fuxx help`)"));
     };
-    let a = Args::split(cmd, &args[1..])?;
+    let mut tail: Vec<String> = Vec::with_capacity(rest.len());
+    if leading_json > 0 {
+        tail.push("--json".to_string());
+    }
+    tail.extend_from_slice(&rest[1..]);
+    let a = Args::split(cmd, &tail)?;
     let mut params = Map::new();
     let pos = &a.pos;
     let n = pos.len();
@@ -325,6 +344,7 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
         params.insert("caller".into(), json!(c));
     }
     Ok(Cli::Call {
+        command: cmd,
         request: Request {
             id: None,
             method: method.to_string(),
@@ -528,16 +548,46 @@ mod tests {
                 request,
                 json,
                 stream,
+                ..
             } => (request, json, stream),
             _ => panic!("not a call"),
         }
     }
 
     #[test]
-    fn no_args_or_unknown_first_arg_opens_the_app() {
+    fn only_no_args_or_psn_opens_the_app() {
         assert!(matches!(p(&[]), Ok(Cli::Gui)));
         assert!(matches!(p(&["-psn_0_123"]), Ok(Cli::Gui)));
         assert!(matches!(p(&["mcp"]), Ok(Cli::Mcp)));
+    }
+
+    #[test]
+    fn an_unknown_command_is_an_error_not_a_window() {
+        let e = p(&["lss"]).unwrap_err();
+        assert!(e.contains("unknown command: lss"), "{e}");
+        assert!(e.contains("fuxx help"), "{e}");
+        assert!(p(&["--frobnicate"]).is_err());
+        assert!(p(&["--json"]).is_err());
+    }
+
+    #[test]
+    fn json_before_the_command_works_like_after() {
+        let (r, json, _) = call(p(&["--json", "ls"]));
+        assert_eq!(r.method, "session.list");
+        assert!(json);
+        match p(&["--json", "send", "s4", "--", "--enter"]).unwrap() {
+            Cli::Call {
+                command,
+                request,
+                json,
+                ..
+            } => {
+                assert_eq!(command, "send");
+                assert!(json);
+                assert_eq!(request.params["text"], "--enter");
+            }
+            _ => panic!("not a call"),
+        }
     }
 
     #[test]

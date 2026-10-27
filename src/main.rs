@@ -229,10 +229,11 @@ fn main() {
             std::process::exit(fail("mcp: not yet available in this build", 2));
         }
         Ok(Cli::Call {
+            command,
             request,
             json,
             stream,
-        }) => std::process::exit(run_command(&args[0], request, json, stream)),
+        }) => std::process::exit(run_command(command, request, json, stream)),
         // Already worded `fuxx <command>: …`.
         Err(message) => {
             eprintln!("{message}");
