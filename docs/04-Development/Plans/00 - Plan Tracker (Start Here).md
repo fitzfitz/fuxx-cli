@@ -78,6 +78,8 @@ Known problems we chose to leave for later. Each row says what we already know, 
 
 | Since | Problem | What we know | Revisit |
 |---|---|---|---|
+| 2026-10-27 | **Sessions past the bottom of the sidebar can't be reached by mouse** (no scrolling) | Found by the UI/UX review: the sidebar is a plain column with no scroll, so e.g. the 18th session is clipped. ⌘1–9 / ⌘⇧[ ] still reach some. | M11 (or sooner if it bites) |
+| 2026-10-27 | **Light themes: hover makes rows lighter, and dim text / the active row have too little contrast** (Catppuccin Latte: dim text 2.46:1, active row 1.05:1) | Found by the UI/UX review: `UiColors` in `src/theme.rs` tints toward the foreground assuming a dark theme. | M11 |
 | 2026-10-27 | **Tab doesn't accept Claude Code's grey example/suggestion** in fuxx (it does in Ghostty) | Not caused by M5: the M4b app behaves the same. Tab reaches the program: shell completion and Claude Code's `/hel` → `/help` work, and Ghostty and fuxx send the identical byte (`\t`) under Claude Code's keyboard modes (checked with a key logger). In a neutral test terminal Claude Code didn't fill the example either, even when it answered the kitty-keyboard, XTVERSION and device-attributes queries like Ghostty and reported focus. Not yet tried: focus *changes* (fuxx never reports focus, DEC mode 1004), Claude Code's status protocol (OSC 7501), mouse-motion reporting without a button (mode 1003). | When focus reporting or OSC 7501 is planned, or a later milestone touches input |
 
 ## How these plans were made (so you can trust the code)
