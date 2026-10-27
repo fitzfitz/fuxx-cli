@@ -119,19 +119,16 @@ impl TerminalView {
     }
 
     /// The terminal's text (see `grid::TextScope`).
-    #[allow(dead_code)] // used from M9 Task 5
     pub fn text(&self, scope: TextScope) -> String {
         self.core.text(scope)
     }
 
     /// Type bytes as if from the keyboard: snaps to the bottom and counts as typing.
-    #[allow(dead_code)] // used from M9 Task 5
     pub fn type_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.input_bytes(bytes, cx);
     }
 
     /// Paste text, bracketed when the program asked for it.
-    #[allow(dead_code)] // used from M9 Task 5
     pub fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
         let bracketed = self.core.mode().contains(TermMode::BRACKETED_PASTE);
         self.input_bytes(&keys::paste_bytes(text, bracketed), cx);
@@ -139,7 +136,6 @@ impl TerminalView {
     }
 
     /// Whether the program wants application-cursor arrow keys.
-    #[allow(dead_code)] // used from M9 Task 5
     pub fn app_cursor(&self) -> bool {
         self.core.mode().contains(TermMode::APP_CURSOR)
     }

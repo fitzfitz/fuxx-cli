@@ -70,6 +70,7 @@ impl ApiError {
     pub fn unknown_method(msg: impl Into<String>) -> Self {
         Self::new("unknown_method", msg)
     }
+    #[allow(dead_code)] // used by session.wait (M9 Task 6)
     pub fn timeout(msg: impl Into<String>) -> Self {
         Self::new("timeout", msg)
     }
@@ -215,6 +216,7 @@ pub fn key_bytes(name: &str, app_cursor: bool) -> Option<Vec<u8>> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // used by session.wait (M9 Task 6)
 pub enum WaitFor {
     Status(Status),
     Change,
@@ -223,6 +225,7 @@ pub enum WaitFor {
 }
 
 /// A non-empty `text` wins (empty counts as absent); otherwise `for_` (default `waiting`): `change`, `exit`, or a status name.
+#[allow(dead_code)] // used by session.wait (M9 Task 6)
 pub fn parse_wait(for_: Option<&str>, text: Option<&str>) -> Result<WaitFor, ApiError> {
     if let Some(t) = text.filter(|t| !t.is_empty()) {
         return Ok(WaitFor::Text(t.to_string()));
@@ -238,6 +241,7 @@ pub fn parse_wait(for_: Option<&str>, text: Option<&str>) -> Result<WaitFor, Api
     }
 }
 
+#[allow(dead_code)] // used by session.wait (M9 Task 6)
 pub fn wait_met(cond: &WaitFor, start: Status, now: Status, screen: &str, exited: bool) -> bool {
     match cond {
         WaitFor::Exit => exited,
