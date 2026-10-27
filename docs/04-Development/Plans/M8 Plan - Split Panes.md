@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M8
-status: built-awaiting-check
+status: done
 updated: 2026-10-27
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[48 - Milestone 8 - Split Panes]] (the spec) |
-| **Status** | 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do. |
-| **Tasks done** | 6 / 7 |
-| **▶ Pick up here** | Task 6 — your on-screen check (combined with M6b and M7) |
+| **Status** | ✅ Done (2026-10-27). All on-screen checks confirmed by you. |
+| **Tasks done** | 7 / 7 |
+| **▶ Pick up here** | — (done) |
 | **Decisions used** | **Yours (2026-10-27):** split panes in scope, built right after M7; nested splits (⌘D right, ⌘⇧D down), draggable dividers, each pane its own session. The rest are the AI's calls listed in the spec. |
 | **Needs your eyes** | 👀 Task 6, done together with the M6b and M7 checks |
 
@@ -286,17 +286,17 @@ fn layouts_round_trip_and_default_to_none() {
 - [ ] **Step 2: Run** `cargo build`, `cargo test`. Expected: 0 warnings, all pass.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m8): split layouts are saved and restored"`
 
-### Task 6: On screen — 👀 ⬜
+### Task 6: On screen — ✅
 
 Done together with the M6b and M7 checks (your choice, 2026-10-27). Run `cargo run` and report.
 
-- [ ] **Split:** ⌘D → two panes side by side, the new one focused and in the sidebar under the same group. ⌘⇧D in it → it splits into two stacked panes. Each runs its own shell; `tput cols` in each matches its width.
-- [ ] **Focus:** clicking a pane focuses it, and the others dim slightly. ⌥⌘←/→/↑/↓ move to the pane in that direction. ⌘[ / ⌘] go through them in order.
-- [ ] **Resize:** dragging a divider resizes both sides (the pointer is a resize arrow over it), and `tput cols` changes. It stops at about 10%. Pane → Equalize Panes (⌃⌘=) evens them out.
-- [ ] **Sidebar:** the on-screen sessions have a faint highlight and the focused one the normal one. Clicking a session in another layout switches the whole area to that layout.
-- [ ] **Close:** `exit` or ⌘W in a pane gives its space to the neighbour, which gets the focus. Closing the last session still quits.
-- [ ] **Restore:** quit with ⌘Q and reopen → the same panes, splits and divider positions.
-- [ ] **Unchanged:** M7 (groups, rename, reorder, presets, restore) and earlier.
+- [x] **Split:** ⌘D → two panes side by side, the new one focused and in the sidebar under the same group. ⌘⇧D in it → it splits into two stacked panes. Each runs its own shell; `tput cols` in each matches its width.
+- [x] **Focus:** clicking a pane focuses it, and the others dim slightly. ⌥⌘←/→/↑/↓ move to the pane in that direction. ⌘[ / ⌘] go through them in order.
+- [x] **Resize:** dragging a divider resizes both sides (the pointer is a resize arrow over it), and `tput cols` changes. It stops at about 10%. Pane → Equalize Panes (⌃⌘=) evens them out.
+- [x] **Sidebar:** the on-screen sessions have a faint highlight and the focused one the normal one. Clicking a session in another layout switches the whole area to that layout.
+- [x] **Close:** `exit` or ⌘W in a pane gives its space to the neighbour, which gets the focus. Closing the last session still quits.
+- [x] **Restore:** quit with ⌘Q and reopen → the same panes, splits and divider positions.
+- [x] **Unchanged:** M7 (groups, rename, reorder, presets, restore) and earlier.
 
 ### Task 7: Update the docs — ✅
 

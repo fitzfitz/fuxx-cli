@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: built-awaiting-check
+status: done
 ---
 
 # 47 - Milestone 7 - Session Ergonomics
 
-**Status:: 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do.**  ·  **Phase 2: living in fuxx all day.**
+**Status:: ✅ Done (2026-10-27). All on-screen checks confirmed by you.**  ·  **Phase 2: living in fuxx all day.**
 **Plan:** [[M7 Plan - Session Ergonomics]] (step-by-step, with status per task)
 
 ## Goal
@@ -107,11 +107,11 @@ Everything else below is the AI's call. Say if any should change.
 
 ## Rough scope / checklist
 
-- [ ] Project groups: New Session in Folder (⌘O), ⌘T joins the current group, headers with rolled-up ring, open/close, +.
-- [ ] Rename: double-click or ⌘R, Enter/Escape, emoji input, empty = automatic name.
-- [ ] Reorder: drag within a group; Move Session Up/Down.
-- [ ] Agent presets: built-in three + `agent-preset` lines, ⌃⌘1…9, command typed into the shell.
-- [ ] Session restore: `session-restore` setting + Preferences row; saved on every change; restored at launch.
+- [x] Project groups: New Session in Folder (⌘O), ⌘T joins the current group, headers with rolled-up ring, open/close, +.
+- [x] Rename: double-click or ⌘R, Enter/Escape, emoji input, empty = automatic name.
+- [x] Reorder: drag within a group; Move Session Up/Down.
+- [x] Agent presets: built-in three + `agent-preset` lines, ⌃⌘1…9, command typed into the shell.
+- [x] Session restore: `session-restore` setting + Preferences row; saved on every change; restored at launch.
 
 ## Not in M7
 

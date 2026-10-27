@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M7
-status: built-awaiting-check
+status: done
 updated: 2026-10-27
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[47 - Milestone 7 - Session Ergonomics]] (the spec) |
-| **Status** | 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do. |
-| **Tasks done** | 7 / 8 |
-| **▶ Pick up here** | Task 7 — your on-screen check (combined with M6b and M8) |
+| **Status** | ✅ Done (2026-10-27). All on-screen checks confirmed by you. |
+| **Tasks done** | 8 / 8 |
+| **▶ Pick up here** | — (done) |
 | **Decisions used** | **Yours (2026-10-27):** build before the M6b check; presets = 3 built-ins + your own; restore = layout + re-run presets, as a setting. The rest are the AI's calls listed in the spec. |
 | **Needs your eyes** | 👀 Task 7, done together with the M6b and M8 checks |
 
@@ -418,16 +418,16 @@ fn state_path_is_in_application_support() {
 - [ ] **Step 2: Run** `cargo build` and `cargo test`. Expected: 0 warnings, 137 passed.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m7): save and restore sessions; Restore sessions in Preferences"`
 
-### Task 7: On screen — 👀 ⬜
+### Task 7: On screen — ✅
 
 Done together with the M6b and M8 checks (your choice, 2026-10-27). Run `cargo run` and report.
 
-- [ ] **Groups:** ⌘O opens a folder picker; the new session's `pwd` is that folder and it sits under a header with that folder's name. ⌘T from it joins the same group. The **+** on the header adds one more. Clicking the header closes/opens the group; ⌘N to a hidden session opens it. The header ring shows the most urgent of its sessions.
-- [ ] **Rename:** double-click a session (or ⌘R), type `🖕 api` using the emoji picker (⌃⌘Space), Enter → the sidebar, window title and notifications use it. Escape cancels. An empty name goes back to the automatic one.
-- [ ] **Reorder:** drag a session onto another in the same group: they swap places. Dragging into another group does nothing. File → Move Session Up/Down work.
-- [ ] **Presets:** File → New Agent Session lists claude, opencode, codex (with ⌃⌘1/2/3). ⌃⌘1 opens a session in the current group and starts `claude`. Add `agent-preset = hello: echo hi` to the settings file, restart: "hello" is the 4th entry and prints `hi`.
-- [ ] **Restore:** quit with ⌘Q and reopen: same sessions, names, order, groups, closed groups and current session; claude starts again. Set Preferences → Restore sessions → Layout, restart: the same sessions but claude doesn't start. Off: one new session. Close every session with `exit`: next launch starts one new session.
-- [ ] **Unchanged:** M5/M6/M6b behaviours (selection, links, Mac keys, rings, Preferences).
+- [x] **Groups:** ⌘O opens a folder picker; the new session's `pwd` is that folder and it sits under a header with that folder's name. ⌘T from it joins the same group. The **+** on the header adds one more. Clicking the header closes/opens the group; ⌘N to a hidden session opens it. The header ring shows the most urgent of its sessions.
+- [x] **Rename:** double-click a session (or ⌘R), type `🖕 api` using the emoji picker (⌃⌘Space), Enter → the sidebar, window title and notifications use it. Escape cancels. An empty name goes back to the automatic one.
+- [x] **Reorder:** drag a session onto another in the same group: they swap places. Dragging into another group does nothing. File → Move Session Up/Down work.
+- [x] **Presets:** File → New Agent Session lists claude, opencode, codex (with ⌃⌘1/2/3). ⌃⌘1 opens a session in the current group and starts `claude`. Add `agent-preset = hello: echo hi` to the settings file, restart: "hello" is the 4th entry and prints `hi`.
+- [x] **Restore:** quit with ⌘Q and reopen: same sessions, names, order, groups, closed groups and current session; claude starts again. Set Preferences → Restore sessions → Layout, restart: the same sessions but claude doesn't start. Off: one new session. Close every session with `exit`: next launch starts one new session.
+- [x] **Unchanged:** M5/M6/M6b behaviours (selection, links, Mac keys, rings, Preferences).
 
 ### Task 8: Update the docs — ✅
 

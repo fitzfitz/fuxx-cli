@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M6b
-status: built-awaiting-check
+status: done
 updated: 2026-10-27
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[46b - Milestone 6b - Settings Window]] (the spec) |
-| **Status** | 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do. |
-| **Tasks done** | 6 / 7 |
-| **▶ Pick up here** | Task 5 — your on-screen check (combined with M7 and M8) |
+| **Status** | ✅ Done (2026-10-27). All on-screen checks confirmed by you. |
+| **Tasks done** | 7 / 7 |
+| **▶ Pick up here** | — (done) |
 | **Decisions used** | **Yours:** File → Preferences… + cmd-, (2026-10-27); **D9** = pick from the theme list, no typing. The rest are the AI's calls listed in the spec. |
 | **Needs your eyes** | 👀 Task 5: menus, the window, live theme/font/size/ligature changes, the saved file |
 
@@ -334,26 +334,26 @@ fn jetbrains_mono_ligatures_follow_calt() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (120), 0 warnings, fmt clean.
 - [ ] **Step 5: Commit:** `git add assets src && git commit -m "feat(m6b): bundle JetBrains Mono as the default font"`
 
-### Task 5: On screen — 👀 ⬜
+### Task 5: On screen — ✅
 
 Run `cargo run` and report.
 
-- [ ] **Menus:** fuxx (Quit fuxx ⌘Q) and File (New Session ⌘T, Close Session ⌘W, Preferences… ⌘,).
-- [ ] **Opening:** cmd-, opens Preferences, quickly (note if the font list takes more than about a second). cmd-, again brings the same window to the front rather than opening a second one. cmd-W closes it.
-- [ ] **Theme:** with two sessions open, click "Catppuccin Latte". Both sessions and the sidebar change at once, and the window shows it highlighted. Click "Default": back to the default colors.
-- [ ] **Font, size, ligatures:**
+- [x] **Menus:** fuxx (Quit fuxx ⌘Q) and File (New Session ⌘T, Close Session ⌘W, Preferences… ⌘,).
+- [x] **Opening:** cmd-, opens Preferences, quickly (note if the font list takes more than about a second). cmd-, again brings the same window to the front rather than opening a second one. cmd-W closes it.
+- [x] **Theme:** with two sessions open, click "Catppuccin Latte". Both sessions and the sidebar change at once, and the window shows it highlighted. Click "Default": back to the default colors.
+- [x] **Font, size, ligatures:**
   - Pick "MesloLGS NF". The text changes live.
   - Press + a few times: the text grows and the grid re-fits, so `tput cols` changes.
   - Press − back.
   - The ligatures switch toggles (no visible change with fonts that have no ligatures).
-- [ ] **Saving:**
+- [x] **Saving:**
   - Open `~/.config/fuxx/config`. Your other lines and comments are untouched, and only `theme`, `font-family`, `font-size` and `font-feature` changed.
   - Quit and reopen fuxx: the same look.
-- [ ] **Your override still wins:** with `background = #000000` in the file, switching themes keeps the black background.
-- [ ] **Quitting:** with Preferences open, close the terminal window. fuxx quits.
-- [ ] **Unchanged:** M5 and M6 behaviours (selection, links, Mac keys, rings).
-- [ ] **JetBrains Mono (added 2026-10-27):** with no `font-family` line (or "Default" picked), the text is JetBrains Mono. `echo "-> => != >= ==="` shows arrows/≠/≥ with Ligatures On and plain characters with Off.
-- [ ] **Session name (added on request 2026-10-27):** a new session shows `N  🖕` in the sidebar and `fuxx — 🖕` in the window title, and the emoji draws in color (not a `?` box). Implemented in `src/workspace.rs` `Session::label`; no unit test (needs a live GPUI session), checked on screen here.
+- [x] **Your override still wins:** with `background = #000000` in the file, switching themes keeps the black background.
+- [x] **Quitting:** with Preferences open, close the terminal window. fuxx quits.
+- [x] **Unchanged:** M5 and M6 behaviours (selection, links, Mac keys, rings).
+- [x] **JetBrains Mono (added 2026-10-27):** with no `font-family` line (or "Default" picked), the text is JetBrains Mono. `echo "-> => != >= ==="` shows arrows/≠/≥ with Ligatures On and plain characters with Off.
+- [x] **Session name (added on request 2026-10-27):** a new session shows `N  🖕` in the sidebar and `fuxx — 🖕` in the window title, and the emoji draws in color (not a `?` box). Implemented in `src/workspace.rs` `Session::label`; no unit test (needs a live GPUI session), checked on screen here.
 
 ### Task 6: Update the docs — ✅
 
