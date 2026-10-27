@@ -21,8 +21,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 |---|---|
 | **Current milestone** | **M6b — Settings window** (Phase 2). M6 Fonts & config is complete |
 | **Status** | ⬜ Not started. M6 ✅ done 2026-10-27: fuxx's own settings file, six built-in themes, theme-driven colors, prompt icons for everyone, Mac line/word keys; all on-screen checks confirmed by you. |
-| **▶ Next action** | Decide **D9**, then write the M6b plan (settings window: File → Preferences… / cmd-,). |
-| **Blocked on** | ❓ **D9** (how colors are entered), needed for the M6b plan. |
+| **▶ Next action** | Write the M6b plan (settings window: File → Preferences… / cmd-,; D9 = theme list, pick only). |
+| **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -48,7 +48,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
 | M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | ✅ | 8/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
 | M6 | Fonts & config (own settings file, themes, prompt icons) | [[M6 Plan - Fonts and Config]] | ✅ | 9/9 | fuxx's own settings file + themes; prompt icons for everyone |
-| M6b | Settings window (File → Preferences… / cmd-,) — *added 2026-10-27* | written when M6 is done | ⬜ ❓D9 | — | Change theme/font/size in a window; saved and applied live |
+| M6b | Settings window (File → Preferences… / cmd-,) — *added 2026-10-27* | plan to be written | ⬜ | — | Change theme/font/size in a window; saved and applied live |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
@@ -67,7 +67,7 @@ updated before anyone builds it.
 | **D5** ✅ | (**decided 2026-10-26: move to M11**, the recommended option, after comparing Ghostty / iTerm2 / Warp / Zed) "Clicking a notification switches to that session" ([[44 - Milestone 4 - Notification Rings]]) **can't work with `osascript`**: clicking its banner opens Script Editor, not fuxx | **Move that one item to M11** (the real `.app` bundle can receive notification clicks) | Add `terminal-notifier` (new external tool, outside the plan), or drop the item | M4 |
 | **D6** ✅ | (**decided 2026-10-26: the recommended set**) Keyboard shortcuts (the vault doesn't specify any) | **cmd-t** new session · **cmd-w** close session (kills its shell, no confirmation) · **cmd-1…9** jump · **cmd-{ / cmd-}** previous/next · **cmd-q** quit | Any other set | M0, M3 |
 | **D8** ✅ | (**decided 2026-10-26: accept the weaker detection**) How agent-state detection works when fuxx is opened from Finder/Dock (the M4b `.app`). Launched that way the shell inherits no terminal identity, so Claude Code sends **no** notifications; only the 3 s quiet timer and the screen's question patterns apply | **Accept the weaker detection for testers** (chosen "for now"; revisit if testers report missed rings) | Revisit the 2026-10-26 "keep the inherited environment" choice for app launches | M4b, M11 |
-| **D9** | How colors are entered in the M6b settings window: GPUI has no ready-made text box, so typing a hex color means building one | **Not chosen yet.** Decide when M6b gets its detailed plan | **Pick only** at first (theme list, font list, size stepper, ligatures switch, a small swatch picker for overrides) · or **also type hex colors** (needs a text input) | M6b |
+| **D9** ✅ | (**decided 2026-10-27: pick only — a theme list**) How colors are entered in the M6b settings window: GPUI has no ready-made text box, so typing a hex color means building one | **Pick only:** choose from the theme list (built-in + your themes folder); no hex typing, no per-color controls (overrides stay in the settings file) | **Pick only** at first (theme list, font list, size stepper, ligatures switch, a small swatch picker for overrides) · or **also type hex colors** (needs a text input) | M6b |
 | **D7** ✅ | (**decided 2026-10-26: universal**) Which CPUs the shipped `.app` runs on. The vault names OSes (macOS first) but no CPU; today `cargo build` makes an Apple Silicon-only binary (`aarch64-apple-darwin`) | **Universal: Apple Silicon + Intel `x86_64`** (an Intel release build at our pinned rev compiled cleanly on 2026-10-26; Zed ships Intel builds from the same rev) | Apple Silicon only | M4b, M11, M12 |
 
 ## Tech debt
