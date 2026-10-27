@@ -17,7 +17,6 @@ use futures::channel::mpsc::UnboundedSender;
 use portable_pty::CommandBuilder;
 
 use crate::colors;
-use crate::daemon_session;
 use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
@@ -47,6 +46,23 @@ impl Dimensions for TermDims {
     }
     fn columns(&self) -> usize {
         self.cols
+    }
+}
+
+/// The reply a terminal query wants written back to the child, if `event` is one: `PtyWrite`
+/// (DA, DSR/CPR, ...) as is, `ColorRequest` (OSC 4/10/11/12) with `color(index)`, and
+/// `TextAreaSizeRequest` (`CSI 14 t`) with `size`. Without a reply, programs that ask (shells,
+/// vim, Claude Code) hang waiting.
+pub fn query_reply(
+    event: &Event,
+    color: impl FnOnce(usize) -> Rgb,
+    size: WindowSize,
+) -> Option<String> {
+    match event {
+        Event::PtyWrite(text) => Some(text.clone()),
+        Event::ColorRequest(index, format) => Some(format(color(*index))),
+        Event::TextAreaSizeRequest(format) => Some(format(size)),
+        _ => None,
     }
 }
 
@@ -250,7 +266,7 @@ impl TerminalCore {
     /// The reply a terminal query (`PtyWrite`, `ColorRequest`, `TextAreaSizeRequest`) wants
     /// written back to the child; `None` for any other event.
     pub fn query_reply(&self, event: &Event) -> Option<String> {
-        daemon_session::query_reply(event, |index| self.color(index), self.window_size())
+        query_reply(event, |index| self.color(index), self.window_size())
     }
 
     pub fn mode(&self) -> TermMode {
@@ -440,6 +456,46 @@ mod tests {
             _ => false,
         }));
         assert_eq!(reply.as_deref(), Some("\x1b[4;408;640t"));
+    }
+
+    #[test]
+    fn query_reply_answers_the_three_query_kinds() {
+        let size = WindowSize {
+            num_lines: 24,
+            num_cols: 80,
+            cell_width: 8,
+            cell_height: 17,
+        };
+        let red = Rgb { r: 255, g: 0, b: 0 };
+        let pty = Event::PtyWrite("\x1b[1;1R".into());
+        assert_eq!(
+            query_reply(&pty, |_| unreachable!(), size).as_deref(),
+            Some("\x1b[1;1R")
+        );
+        let color = Event::ColorRequest(11, Arc::new(|c: Rgb| format!("{}:{}:{}", c.r, c.g, c.b)));
+        let mut asked = None;
+        let reply = query_reply(
+            &color,
+            |i| {
+                asked = Some(i);
+                red
+            },
+            size,
+        );
+        assert_eq!((reply.as_deref(), asked), (Some("255:0:0"), Some(11)));
+        let area = Event::TextAreaSizeRequest(Arc::new(|w: WindowSize| {
+            format!(
+                "{}x{}",
+                w.num_cols * w.cell_width,
+                w.num_lines * w.cell_height
+            )
+        }));
+        assert_eq!(
+            query_reply(&area, |_| red, size).as_deref(),
+            Some("640x408")
+        );
+        assert_eq!(query_reply(&Event::Bell, |_| red, size), None);
+        assert_eq!(query_reply(&Event::Title("t".into()), |_| red, size), None);
     }
 
     #[test]

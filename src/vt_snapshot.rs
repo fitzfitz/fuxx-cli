@@ -81,7 +81,7 @@ const MODES: [(TermMode, &str); 14] = [
 /// swap does clear any selection, mark the whole Term damaged, and reset the kitty keyboard
 /// mode bits to the top of the alt screen's stack (what they already were). All harmless for
 /// the daemon, which has no selection and does not render.
-#[allow(dead_code)] // the daemon uses the capped form; tests use this one
+#[cfg(test)] // the daemon uses the capped form
 pub fn encode<L: EventListener>(term: &mut Term<L>) -> Vec<u8> {
     encode_with_history(term, usize::MAX)
 }
@@ -118,6 +118,20 @@ pub fn encode_with_history<L: EventListener>(term: &mut Term<L>, history: usize)
         enc.out.extend_from_slice(b"\x1b[4h");
     }
     enc.out
+}
+
+/// How many history lines `encode` would write: the primary screen's scrollback, also while
+/// the alt screen is up. The Term is left as `encode` leaves it.
+pub fn history_lines<L: EventListener>(term: &mut Term<L>) -> usize {
+    if !term.mode().contains(TermMode::ALT_SCREEN) {
+        return term.grid().history_size();
+    }
+    let alt = term.grid().clone();
+    term.swap_alt();
+    let lines = term.grid().history_size();
+    term.swap_alt();
+    *term.grid_mut() = alt;
+    lines
 }
 
 /// The rendition the rebuilding Term will write cells with (its cursor template).
@@ -660,6 +674,18 @@ mod tests {
             "newest lines kept"
         );
         assert_eq!(encode_with_history(&mut a, usize::MAX), encode(&mut a));
+    }
+
+    #[test]
+    fn history_lines_counts_the_primary_screen_under_the_alt_one() {
+        let mut a = term(30, 4);
+        let lines: String = (0..50).map(|i| format!("line {i}\r\n")).collect();
+        feed(&mut a, lines.as_bytes());
+        assert_eq!(history_lines(&mut a), 47);
+        feed(&mut a, b"\x1b[?1049halt");
+        let before = state(&a);
+        assert_eq!(history_lines(&mut a), 47);
+        assert_same(&before, &state(&a));
     }
 
     #[test]

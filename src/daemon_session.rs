@@ -12,8 +12,8 @@
 //!
 //! Query replies (DA, DSR/CPR, OSC 4/10/11/12 colours, `CSI 14 t`) are answered here, with no
 //! client needed: colours from the last `set_theme` (the default theme until then), the text
-//! area size from the last cell px. `query_reply` is the shared rule; the GUI's Local backend
-//! uses it too, as it uses `pty::spawn_reader` / `spawn_writer`.
+//! area size from the last cell px, with `terminal::query_reply`, the rule the GUI's Local
+//! backend uses too (as it uses `pty::spawn_reader` / `spawn_writer`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
@@ -23,10 +23,10 @@ use std::sync::mpsc::{self, RecvError, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alacritty_terminal::event::{Event, EventListener, WindowSize};
+use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
+use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use portable_pty::CommandBuilder;
 
 use crate::colors;
@@ -35,7 +35,7 @@ use crate::grid::{self, TextScope};
 use crate::mux_proto::{self, Dims, Frame, MAX_FRAME, SessionInfo, SetMeta, Snapshot};
 use crate::pty::{self, Pty};
 use crate::status::{Status, StatusTracker, TAIL_LINES};
-use crate::terminal::{CellPx, TermDims, window_size};
+use crate::terminal::{CellPx, TermDims, query_reply, window_size};
 use crate::theme::Theme;
 use crate::vt_snapshot;
 
@@ -44,21 +44,132 @@ use crate::vt_snapshot;
 pub const QUEUE_CAPACITY: usize = 1024;
 /// Room left in a `Snapshot` frame for its binary header and JSON metadata (title excluded).
 const SNAPSHOT_HEADROOM: usize = 64 * 1024;
+/// Largest terminal a session takes, so even a snapshot with no history fits in a frame.
+pub const MAX_COLS: usize = 1000;
+pub const MAX_ROWS: usize = 500;
+/// Longest unfinished escape sequence carried into a snapshot.
+const TAIL_LIMIT: usize = 4096;
 
-/// The reply a terminal query wants written back to the child, if `event` is one: `PtyWrite`
-/// (DA, DSR/CPR, ...) as is, `ColorRequest` (OSC 4/10/11/12) with `color(index)`, and
-/// `TextAreaSizeRequest` (`CSI 14 t`) with `size`. Without a reply, programs that ask (shells,
-/// vim, Claude Code) hang waiting.
-pub fn query_reply(
-    event: &Event,
-    color: impl FnOnce(usize) -> Rgb,
-    size: WindowSize,
-) -> Option<String> {
-    match event {
-        Event::PtyWrite(text) => Some(text.clone()),
-        Event::ColorRequest(index, format) => Some(format(color(*index))),
-        Event::TextAreaSizeRequest(format) => Some(format(size)),
-        _ => None,
+/// `dims` within `MAX_COLS` x `MAX_ROWS`.
+fn clamp(dims: TermDims) -> TermDims {
+    TermDims {
+        cols: dims.cols.min(MAX_COLS),
+        rows: dims.rows.min(MAX_ROWS),
+    }
+}
+
+/// Where the output stream is, as the parser (vte) sees it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Seq {
+    #[default]
+    Ground,
+    /// After ESC.
+    Escape,
+    /// After ESC and an intermediate byte (`ESC ( B`).
+    EscIntermediate,
+    /// After `ESC [`.
+    Csi,
+    /// After `ESC ]`, until BEL or ESC.
+    Osc,
+    /// DCS, SOS, PM or APC: until ESC.
+    Str,
+}
+
+/// The raw bytes since the output stream was last between sequences: an unfinished escape
+/// sequence or UTF-8 character. The parser has taken them in but not acted on them yet, so a
+/// snapshot carries them at its end and a new replica's parser ends up in the same state.
+///
+/// Control characters inside ESC/CSI sequences are left out: the parser runs them straight
+/// away, so they are already in the snapshot. An unfinished sequence longer than `TAIL_LIMIT`
+/// is dropped and the scanner starts over (a replica attached during it shows the rest as text).
+#[derive(Default)]
+struct SequenceTail {
+    seq: Seq,
+    /// Continuation bytes still expected for a UTF-8 character.
+    utf8_left: u8,
+    tail: Vec<u8>,
+}
+
+impl SequenceTail {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.byte(b);
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.tail
+    }
+
+    fn byte(&mut self, b: u8) {
+        match b {
+            // CAN and SUB abort any sequence.
+            0x18 | 0x1a => return self.reset(),
+            // ESC starts a new one (and ends an OSC or DCS).
+            0x1b => {
+                self.reset();
+                return self.enter(Seq::Escape, b);
+            }
+            _ => {}
+        }
+        match self.seq {
+            Seq::Ground => self.utf8(b),
+            // Executed (C0) or ignored (DEL) on the spot: not replayed.
+            Seq::Escape | Seq::EscIntermediate | Seq::Csi if b < 0x20 || b == 0x7f => {}
+            Seq::Escape => match b {
+                b'[' => self.enter(Seq::Csi, b),
+                b']' => self.enter(Seq::Osc, b),
+                b'P' | b'X' | b'^' | b'_' => self.enter(Seq::Str, b),
+                0x20..=0x2f => self.enter(Seq::EscIntermediate, b),
+                0x30..=0x7e => self.reset(), // dispatched
+                _ => self.tail.push(b),
+            },
+            Seq::EscIntermediate => match b {
+                0x30..=0x7e => self.reset(),
+                _ => self.tail.push(b),
+            },
+            Seq::Csi => match b {
+                0x40..=0x7e => self.reset(), // the final byte
+                _ => self.tail.push(b),
+            },
+            Seq::Osc if b == 0x07 => self.reset(),
+            Seq::Osc | Seq::Str => self.tail.push(b),
+        }
+        if self.tail.len() > TAIL_LIMIT {
+            self.reset();
+        }
+    }
+
+    fn utf8(&mut self, b: u8) {
+        if self.utf8_left > 0 {
+            if (0x80..=0xbf).contains(&b) {
+                self.tail.push(b);
+                self.utf8_left -= 1;
+                if self.utf8_left == 0 {
+                    self.tail.clear();
+                }
+                return;
+            }
+            self.reset(); // broken: the parser already gave up on it; `b` starts afresh
+        }
+        self.utf8_left = match b {
+            0xc2..=0xdf => 1,
+            0xe0..=0xef => 2,
+            0xf0..=0xf4 => 3,
+            _ => return,
+        };
+        self.tail.push(b);
+    }
+
+    fn enter(&mut self, seq: Seq, b: u8) {
+        self.seq = seq;
+        self.tail.push(b);
+    }
+
+    fn reset(&mut self) {
+        self.seq = Seq::Ground;
+        self.utf8_left = 0;
+        self.tail.clear();
     }
 }
 
@@ -313,8 +424,10 @@ struct State {
     created_at: u64,
     /// `None` once closed; dropping it kills the child.
     pty: Option<Pty>,
-    /// To the writer thread: client input and query replies.
-    to_child: Sender<Vec<u8>>,
+    /// To the writer thread: client input and query replies. `None` once closed.
+    to_child: Option<Sender<Vec<u8>>>,
+    /// Bytes of an unfinished sequence, appended to snapshots.
+    tail: SequenceTail,
 }
 
 impl State {
@@ -326,7 +439,11 @@ impl State {
 
     /// Output from the child: parse it, number it, queue it, then act on what it raised.
     fn output(&mut self, bytes: &[u8], notifications: usize, now: Instant) {
+        if !self.alive {
+            return; // closed: what the dying child still wrote goes nowhere
+        }
         self.processor.advance(&mut self.term, bytes);
+        self.tail.feed(bytes);
         self.seq += 1;
         self.broadcast(Frame::Output {
             id: self.id,
@@ -361,7 +478,9 @@ impl State {
                     let (overrides, theme) = (self.term.colors(), &self.theme);
                     let color = |index| colors::resolve_index(index, overrides, theme);
                     if let Some(reply) = query_reply(&event, color, size) {
-                        let _ = self.to_child.send(reply.into_bytes());
+                        if let Some(to_child) = &self.to_child {
+                            let _ = to_child.send(reply.into_bytes());
+                        }
                     }
                 }
             }
@@ -394,6 +513,15 @@ impl State {
         self.handle_events(now);
     }
 
+    /// Not alive any more, and `Exited` sent: once, whether the child exited or was closed.
+    fn mark_exited(&mut self) {
+        if self.alive {
+            self.alive = false;
+            let frame = Frame::Exited { id: self.id };
+            self.broadcast(frame);
+        }
+    }
+
     fn sync_deadline(&self) -> Option<Instant> {
         self.processor.sync_timeout().sync_timeout()
     }
@@ -420,10 +548,10 @@ impl DaemonSession {
         if spec.dims.cols == 0 || spec.dims.rows == 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "zero size"));
         }
-        let (pty, reader, writer) =
-            Pty::spawn(spec.command(), spec.dims).map_err(io::Error::other)?;
+        let dims = clamp(spec.dims);
+        let (pty, reader, writer) = Pty::spawn(spec.command(), dims).map_err(io::Error::other)?;
         if spec.cell != CellPx::default() {
-            let _ = pty.resize(spec.dims, spec.cell);
+            let _ = pty.resize(dims, spec.cell);
         }
         let to_child = pty::spawn_writer(writer)?;
         if let Some(startup) = &spec.startup {
@@ -436,7 +564,7 @@ impl DaemonSession {
             .map_or(0, |d| d.as_secs());
         let state = Arc::new(FairMutex::new(State {
             id,
-            term: Term::new(Config::default(), &spec.dims, Listener(events_tx)),
+            term: Term::new(Config::default(), &dims, Listener(events_tx)),
             processor: Processor::new(),
             events,
             seq: 0,
@@ -445,7 +573,7 @@ impl DaemonSession {
             status: Status::Idle,
             title: None,
             theme: Theme::default(),
-            dims: spec.dims,
+            dims,
             cell: spec.cell,
             meta: Meta {
                 name: spec.name,
@@ -457,7 +585,8 @@ impl DaemonSession {
             alive: true,
             created_at,
             pty: Some(pty),
-            to_child,
+            to_child: Some(to_child),
+            tail: SequenceTail::default(),
         }));
 
         let reader_state = state.clone();
@@ -472,12 +601,7 @@ impl DaemonSession {
                     .lock()
                     .output(bytes, notifications, Instant::now());
             },
-            move || {
-                let mut s = eof_state.lock();
-                s.alive = false;
-                let frame = Frame::Exited { id: s.id };
-                s.broadcast(frame);
-            },
+            move || eof_state.lock().mark_exited(),
         )?;
         Ok(Self { id, state })
     }
@@ -496,12 +620,14 @@ impl DaemonSession {
         }
         let title_room = 6 * s.title.as_ref().map_or(0, String::len); // JSON escapes
         let budget = MAX_FRAME.saturating_sub(SNAPSHOT_HEADROOM + title_room);
+        let mut vt_bytes = bounded_snapshot(&mut s.term, budget);
+        vt_bytes.extend_from_slice(s.tail.bytes());
         let snapshot = Snapshot {
             id: self.id,
             seq: s.seq,
             dims: wire_dims(s.dims),
             title: s.title.clone(),
-            vt_bytes: bounded_snapshot(&mut s.term, budget),
+            vt_bytes,
         };
         s.subscribers.retain(|old| old.id != sub.id);
         s.subscribers.push(sub);
@@ -520,16 +646,20 @@ impl DaemonSession {
         if let Some(status) = s.tracker.on_input(Instant::now()) {
             s.set_status(status);
         }
-        let _ = s.to_child.send(bytes.to_vec());
+        if let Some(to_child) = &s.to_child {
+            let _ = to_child.send(bytes.to_vec());
+        }
     }
 
     /// Resize the Term and the PTY. A change of cell count is numbered into the output stream
     /// as `Resized`, before the child can redraw for it, so replicas reflow at the same byte.
-    /// Zero sizes and no-change calls are ignored.
+    /// Zero sizes and no-change calls are ignored; sizes over `MAX_COLS` x `MAX_ROWS` are
+    /// clamped.
     pub fn resize(&self, dims: TermDims, cell: CellPx) {
         if dims.cols == 0 || dims.rows == 0 {
             return;
         }
+        let dims = clamp(dims);
         let mut s = self.state.lock();
         if (s.dims, s.cell) == (dims, cell) {
             return;
@@ -577,10 +707,22 @@ impl DaemonSession {
         }
     }
 
-    /// Kill the child. The reader then sees EOF and sends `Exited`.
+    /// End the session now: `Exited` goes out (once, even if the child already exited), the
+    /// writer thread's queue closes, and the child's whole process group gets SIGHUP, as when
+    /// a terminal window closes. Then the child itself is killed (SIGHUP, then SIGKILL after a
+    /// grace period). When it exits, macOS revokes the terminal from every process still
+    /// holding it, so the reader sees EOF and ends even if a job ignored SIGHUP.
     pub fn close(&self) {
-        let pty = self.state.lock().pty.take();
-        drop(pty); // outside the lock
+        let pty = {
+            let mut s = self.state.lock();
+            s.mark_exited();
+            s.to_child = None;
+            s.pty.take()
+        };
+        if let Some(pty) = pty {
+            pty.hang_up();
+            drop(pty); // outside the lock: the kill can wait up to ~200 ms
+        }
     }
 
     /// Housekeeping, every 50 ms: flush a synchronized update stuck past its deadline, then
@@ -629,18 +771,22 @@ impl Drop for DaemonSession {
     }
 }
 
-/// `vt_snapshot::encode`, halving the history kept until it fits in `budget` bytes (the screen
-/// itself is always kept).
+/// The snapshot bytes, halving the history kept until they fit in `budget`. If even the
+/// screen alone doesn't fit (only possible with hostile output, e.g. thousands of combining
+/// marks per cell: the clamp keeps any ordinary screen well under a frame), the snapshot is
+/// just a reset: the replica starts blank and fills in as the program redraws, which beats a
+/// frame the client would reject.
 fn bounded_snapshot<L: EventListener>(term: &mut Term<L>, budget: usize) -> Vec<u8> {
-    let mut history = usize::MAX;
+    let mut history = vt_snapshot::history_lines(term);
     loop {
         let bytes = vt_snapshot::encode_with_history(term, history);
-        if bytes.len() <= budget || history == 0 {
+        if bytes.len() <= budget {
             return bytes;
         }
-        // Our Terms keep at most the default history (the primary grid's is out of reach
-        // under the alt screen, so start from the limit rather than the current size).
-        history = history.min(Config::default().scrolling_history) / 2;
+        if history == 0 {
+            return b"\x1bc".to_vec();
+        }
+        history /= 2;
     }
 }
 
@@ -766,6 +912,26 @@ mod tests {
         );
     }
 
+    /// Output fed straight into the session's output path, as the reader would.
+    fn feed(s: &DaemonSession, bytes: &[u8]) {
+        s.state.lock().output(bytes, 0, Instant::now());
+    }
+
+    /// Frames until the output so far contains `text`.
+    fn until_output(rx: &FrameReceiver, text: &str) -> Vec<Frame> {
+        let mut seen = String::new();
+        recv_until(rx, |f| {
+            seen.push_str(&output_text(std::slice::from_ref(f)));
+            seen.contains(text)
+        })
+    }
+
+    fn tail_of(chunks: &[&[u8]]) -> Vec<u8> {
+        let mut t = SequenceTail::default();
+        chunks.iter().for_each(|c| t.feed(c));
+        t.bytes().to_vec()
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("fuxx-ds-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -778,46 +944,6 @@ mod tests {
     }
 
     // --- pure pieces ---
-
-    #[test]
-    fn query_reply_answers_the_three_query_kinds() {
-        let size = WindowSize {
-            num_lines: 24,
-            num_cols: 80,
-            cell_width: 8,
-            cell_height: 17,
-        };
-        let red = Rgb { r: 255, g: 0, b: 0 };
-        let pty = Event::PtyWrite("\x1b[1;1R".into());
-        assert_eq!(
-            query_reply(&pty, |_| unreachable!(), size).as_deref(),
-            Some("\x1b[1;1R")
-        );
-        let color = Event::ColorRequest(11, Arc::new(|c: Rgb| format!("{}:{}:{}", c.r, c.g, c.b)));
-        let mut asked = None;
-        let reply = query_reply(
-            &color,
-            |i| {
-                asked = Some(i);
-                red
-            },
-            size,
-        );
-        assert_eq!((reply.as_deref(), asked), (Some("255:0:0"), Some(11)));
-        let area = Event::TextAreaSizeRequest(Arc::new(|w: WindowSize| {
-            format!(
-                "{}x{}",
-                w.num_cols * w.cell_width,
-                w.num_lines * w.cell_height
-            )
-        }));
-        assert_eq!(
-            query_reply(&area, |_| red, size).as_deref(),
-            Some("640x408")
-        );
-        assert_eq!(query_reply(&Event::Bell, |_| red, size), None);
-        assert_eq!(query_reply(&Event::Title("t".into()), |_| red, size), None);
-    }
 
     #[test]
     fn a_full_queue_drops_its_backlog_for_resync() {
@@ -850,6 +976,48 @@ mod tests {
         );
         drop(rx);
         assert!(!sub.push(Frame::Bell { id: 3 }, ID), "receiver gone");
+    }
+
+    #[test]
+    fn the_tail_is_an_unfinished_sequence_only() {
+        let cases: [(&[&[u8]], &[u8]); 18] = [
+            (&[b"plain text\r\n"], b""),
+            (&[b"ab\x1b[3"], b"\x1b[3"),
+            (&[b"\x1b[", b"3"], b"\x1b[3"),
+            (&[b"\x1b[31m"], b""),
+            (&[b"\x1b[?1049h"], b""),
+            (&[b"\x1b[3\n"], b"\x1b[3"), // the LF already ran: not replayed
+            (&[b"\x1b[3\x18x"], b""),    // CAN aborts the sequence
+            (&[b"\x1b("], b"\x1b("),
+            (&[b"\x1b(B"], b""),
+            (&[b"\x1b", b"\x1b["], b"\x1b["),
+            (&[b"ab\xc3"], b"\xc3"),
+            (&[b"\xe2\x94", b"\x80"], b""),
+            (&[b"\xe2\x94x"], b""), // broken UTF-8: the parser already gave up on it
+            (&[b"\x1b]2;ti"], b"\x1b]2;ti"),
+            (&[b"\x1b]2;title\x07"], b""),
+            (&[b"\x1b]2;title\x1b"], b"\x1b"),
+            (&[b"\x1b]2;title\x1b\\"], b""),
+            (&[b"\x1bP1$qm"], b"\x1bP1$qm"),
+        ];
+        for (chunks, tail) in cases {
+            assert_eq!(
+                tail_of(chunks),
+                tail,
+                "{:?}",
+                chunks.concat().escape_ascii().to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn an_overlong_sequence_is_dropped_from_the_tail() {
+        let mut t = SequenceTail::default();
+        t.feed(b"\x1b]52;c;");
+        t.feed(&[b'A'; TAIL_LIMIT]);
+        assert_eq!(t.bytes(), b"");
+        t.feed(b"\x07\x1b[1");
+        assert_eq!(t.bytes(), b"\x1b[1", "the scanner starts over");
     }
 
     #[test]
@@ -915,11 +1083,147 @@ mod tests {
 
     // --- with a real child ---
 
-    #[test]
-    fn output_frames_are_numbered_in_order() {
-        let s = spawn("sleep 0.2; for i in $(seq 1 30); do echo line$i; sleep 0.01; done");
+    /// Attach between `before` and `after`: the replica must match once `after` has arrived.
+    fn attach_between(before: &[u8], after: &[u8]) {
+        let s = spawn("sleep 30");
+        feed(&s, b"start ");
+        feed(&s, before);
         let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
         let snap = s.attach(sub);
+        feed(&s, after);
+        let mut replica = Replica::new(&snap);
+        while let Ok(f) = rx.try_recv() {
+            replica.apply(&f);
+        }
+        assert_same_screen(&mut replica, &s);
+    }
+
+    #[test]
+    fn attach_mid_csi_carries_the_unfinished_bytes() {
+        attach_between(b"\x1b[3", b"1mX");
+    }
+
+    #[test]
+    fn attach_mid_utf8_carries_the_unfinished_bytes() {
+        attach_between(b"\xc3", b"\xa9 done");
+    }
+
+    #[test]
+    fn attach_mid_alt_screen_switch_carries_the_unfinished_bytes() {
+        attach_between(b"\x1b[?10", b"49halt screen");
+    }
+
+    #[test]
+    fn attach_mid_osc_title_carries_the_unfinished_bytes() {
+        attach_between(b"\x1b]2;hel", b"lo\x07after");
+    }
+
+    #[test]
+    fn attach_mid_csi_does_not_replay_a_control_that_already_ran() {
+        attach_between(b"\x1b[3\n", b"1mX");
+    }
+
+    #[test]
+    fn close_ends_everything_even_while_a_job_holds_the_terminal() {
+        // The job ignores SIGHUP, leaves the session and keeps the terminal open.
+        let s = spawn(
+            r#"(trap "" HUP; exec perl -MPOSIX -e 'POSIX::setsid(); sleep 8') & echo started; sleep 30"#,
+        );
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        until_output(&rx, "started");
+        s.close();
+        // Sent by close itself, not by the reader's EOF later.
+        assert_eq!(rx.try_recv(), Ok(Frame::Exited { id: ID }));
+        assert!(!s.info().alive);
+        assert!(
+            s.state.lock().to_child.is_none(),
+            "the writer's queue is closed"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Arc::strong_count(&s.state) > 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(Arc::strong_count(&s.state), 1, "the reader thread ended");
+        s.close();
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty), "Exited only once");
+    }
+
+    #[test]
+    fn exited_is_sent_once_when_closed_after_exit() {
+        let s = spawn("read x");
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        s.input(b"\r");
+        until_exited(&rx);
+        s.close();
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn sizes_are_clamped() {
+        let s = DaemonSession::spawn(ID, sh_spec("sleep 30", 5000, 2000)).unwrap();
+        let max = Dims {
+            cols: MAX_COLS as u16,
+            rows: MAX_ROWS as u16,
+        };
+        assert_eq!(s.info().dims, max);
+        s.resize(TermDims { cols: 40, rows: 6 }, CellPx::default());
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        s.resize(
+            TermDims {
+                cols: 3000,
+                rows: 9,
+            },
+            CellPx::default(),
+        );
+        let frames = recv_until(&rx, |f| matches!(f, Frame::Resized(_)));
+        assert!(matches!(
+            frames.last(),
+            Some(Frame::Resized(r)) if (r.cols, r.rows) == (max.cols, 9)
+        ));
+        assert_eq!(s.state.lock().term.columns(), MAX_COLS);
+    }
+
+    #[test]
+    fn a_full_size_screen_with_a_colour_per_cell_is_sent_whole() {
+        let dims = TermDims {
+            cols: MAX_COLS,
+            rows: MAX_ROWS,
+        };
+        let mut term = Term::new(Config::default(), &dims, VoidListener);
+        let mut bytes = Vec::new();
+        for i in 0..MAX_COLS * MAX_ROWS {
+            let (r, g, b) = (i % 251, i % 241, i % 239);
+            bytes.extend_from_slice(format!("\x1b[38;2;{r};{g};{b}m\u{e9}").as_bytes());
+        }
+        Processor::<StdSyncHandler>::new().advance(&mut term, &bytes);
+        let budget = MAX_FRAME - SNAPSHOT_HEADROOM;
+        let snap = bounded_snapshot(&mut term, budget);
+        assert!(snap.len() <= budget, "{}", snap.len());
+        let mut rebuilt = Term::new(Config::default(), &dims, VoidListener);
+        Processor::<StdSyncHandler>::new().advance(&mut rebuilt, &snap);
+        let screen = |t: &Term<VoidListener>| grid::text_lines(t, TextScope::Screen);
+        assert_eq!(screen(&rebuilt), screen(&term));
+    }
+
+    #[test]
+    fn a_screen_too_big_for_any_frame_falls_back_to_a_blank_snapshot() {
+        let dims = TermDims { cols: 20, rows: 4 };
+        let mut term = Term::new(Config::default(), &dims, VoidListener);
+        // Combining marks are unbounded per cell, so no size limit alone can cap a screen.
+        let marks = "e".to_string() + &"\u{301}".repeat(500);
+        Processor::<StdSyncHandler>::new().advance(&mut term, marks.as_bytes());
+        assert_eq!(bounded_snapshot(&mut term, 600), b"\x1bc");
+    }
+
+    #[test]
+    fn output_frames_are_numbered_in_order() {
+        let s = spawn("read go; for i in $(seq 1 30); do echo line$i; done");
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        let snap = s.attach(sub);
+        s.input(b"\r");
         let frames = until_exited(&rx);
         let seqs = seqs(&frames);
         assert!(seqs.len() > 1, "{frames:?}");
@@ -933,14 +1237,16 @@ mod tests {
     #[test]
     fn attach_mid_stream_gives_a_snapshot_then_every_later_frame() {
         let s = spawn(
-            r"for i in $(seq 1 40); do printf '\033[3%dm' $((i % 8)); seq 1 50; sleep 0.02; done",
+            r"burst() { for i in $(seq $1 $2); do printf '\033[3%dm' $((i % 8)); seq 1 50; done; }
+              burst 1 20; echo half; read go; burst 21 40",
         );
         let (first, first_rx) = subscriber(1, QUEUE_CAPACITY);
         let first_snap = s.attach(first);
-        std::thread::sleep(Duration::from_millis(300));
+        let mut first_frames = until_output(&first_rx, "half");
         let (late, late_rx) = subscriber(2, QUEUE_CAPACITY);
         let late_snap = s.attach(late);
         assert!(late_snap.seq > first_snap.seq, "attached mid-stream");
+        s.input(b"\r");
 
         let late_frames = until_exited(&late_rx);
         let late_seqs = seqs(&late_frames);
@@ -951,22 +1257,21 @@ mod tests {
         assert_same_screen(&mut late_replica, &s);
 
         let mut first_replica = Replica::new(&first_snap);
-        until_exited(&first_rx)
-            .iter()
-            .for_each(|f| first_replica.apply(f));
+        first_frames.extend(until_exited(&first_rx));
+        first_frames.iter().for_each(|f| first_replica.apply(f));
         assert_same_screen(&mut first_replica, &s);
     }
 
     #[test]
     fn attach_during_a_synchronized_update_misses_nothing() {
         let s =
-            spawn(r"printf '\033[?2026hpart1'; sleep 0.6; printf ' part2\033[?2026l'; sleep 0.2");
+            spawn(r"stty -echo; printf '\033[?2026hpart1'; read go; printf ' part2\033[?2026l'");
         let (first, first_rx) = subscriber(1, QUEUE_CAPACITY);
         s.attach(first);
         recv_until(&first_rx, |f| matches!(f, Frame::Output { .. }));
-        std::thread::sleep(Duration::from_millis(100));
         let (late, late_rx) = subscriber(2, QUEUE_CAPACITY);
         let snap = s.attach(late);
+        s.input(b"\r");
         let mut replica = Replica::new(&snap);
         until_exited(&late_rx).iter().for_each(|f| replica.apply(f));
         assert_same_screen(&mut replica, &s);
@@ -983,10 +1288,9 @@ mod tests {
         );
         spec.env.insert("OUT".into(), dir.display().to_string());
         let s = DaemonSession::spawn(ID, spec).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while s.info().alive && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub); // only to see the exit: nothing is answered through it
+        until_exited(&rx);
         assert_eq!(read(&dir, "cpr"), "\x1b[1;1R");
     }
 
@@ -994,9 +1298,8 @@ mod tests {
     fn colour_attribute_and_size_queries_are_answered_from_the_last_theme_and_cell() {
         let dir = temp_dir("queries");
         let mut spec = sh_spec(
-            r#"stty raw -echo min 0 time 30
+            r#"read go; stty raw -echo min 0 time 30
                q() { printf "$1"; dd bs=64 count=1 2>/dev/null > "$OUT/$2"; }
-               sleep 0.3
                q '\033[c' da1; q '\033]11;?\007' bg; q '\033[14t' px"#,
             80,
             24,
@@ -1010,10 +1313,10 @@ mod tests {
         let mut theme = Theme::default();
         theme.background = crate::theme::parse_color("#123456").unwrap();
         s.set_theme(theme);
-        let deadline = Instant::now() + Duration::from_secs(8);
-        while s.info().alive && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        s.input(b"\r"); // only now does the child ask
+        until_exited(&rx);
         assert_eq!(read(&dir, "da1"), "\x1b[?6c");
         assert_eq!(read(&dir, "bg"), "\x1b]11;rgb:1212/3434/5656\x07");
         assert_eq!(read(&dir, "px"), "\x1b[4;408;640t");
@@ -1022,11 +1325,11 @@ mod tests {
     #[test]
     fn resize_is_numbered_into_the_output_stream() {
         let s = spawn(
-            "printf 'a long line that wraps past forty columns, then some'; sleep 0.5; stty size; sleep 0.2",
+            "stty -echo; printf 'a long line that wraps past forty columns, then some'; read go; stty size",
         );
         let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
         let snap = s.attach(sub);
-        let mut frames = recv_until(&rx, |f| matches!(f, Frame::Output { .. }));
+        let mut frames = until_output(&rx, "then some");
         let cell = CellPx {
             width: 8,
             height: 17,
@@ -1034,6 +1337,7 @@ mod tests {
         s.resize(TermDims { cols: 30, rows: 9 }, cell);
         s.resize(TermDims { cols: 30, rows: 9 }, cell); // unchanged: no frame
         s.resize(TermDims { cols: 0, rows: 0 }, cell); // ignored
+        s.input(b"\r");
         frames.extend(until_exited(&rx));
 
         let seqs = seqs(&frames);
@@ -1067,12 +1371,18 @@ mod tests {
 
     #[test]
     fn an_overflowing_subscriber_gets_resync() {
-        let s = spawn("for i in $(seq 1 20); do echo $i; sleep 0.01; done");
+        let s = spawn("sleep 30");
         let (slow, slow_rx) = subscriber(1, 4);
         let (watch, watch_rx) = subscriber(2, QUEUE_CAPACITY);
         s.attach(slow);
         s.attach(watch);
-        until_exited(&watch_rx);
+        for i in 1..=20 {
+            feed(&s, format!("{i}\r\n").as_bytes());
+        }
+        assert_eq!(
+            seqs(&std::iter::from_fn(|| watch_rx.try_recv().ok()).collect::<Vec<_>>()).len(),
+            20
+        );
         assert_eq!(slow_rx.try_recv(), Ok(Frame::Resync { id: ID }));
         assert_eq!(slow_rx.try_recv(), Err(TryRecvError::Disconnected));
         // Re-attaching gets a fresh snapshot.
@@ -1082,17 +1392,20 @@ mod tests {
 
     #[test]
     fn status_goes_working_then_settles_once_quiet() {
-        let s = spawn("read x; sleep 0.3; echo busy; sleep 5");
+        let s = spawn("stty -echo; sleep 30");
         let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
         s.attach(sub);
-        s.input(b"go\r");
+        s.input(b"go");
+        // Output well past the echo window, as the reader would report it.
+        let out_at = Instant::now() + Duration::from_millis(500);
+        s.state.lock().output(b"busy\r\n", 0, out_at);
         recv_until(
             &rx,
             |f| matches!(f, Frame::Status { id: ID, status } if status == "working"),
         );
         assert_eq!(s.info().status, "working");
-        assert!(s.tick(Instant::now()).is_empty(), "not quiet yet");
-        let later = Instant::now() + crate::status::IDLE_AFTER + Duration::from_millis(100);
+        assert!(s.tick(out_at).is_empty(), "not quiet yet");
+        let later = out_at + crate::status::IDLE_AFTER;
         let done = Frame::Status {
             id: ID,
             status: "done".into(),
@@ -1104,9 +1417,10 @@ mod tests {
 
     #[test]
     fn title_bell_and_exit_go_out_as_frames() {
-        let s = spawn(r"sleep 0.2; printf '\033]2;hello\007'; sleep 0.1; printf '\007'; sleep 0.3");
+        let s = spawn(r"stty -echo; read go; printf '\033]2;hello\007'; printf '\007'; read go");
         let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
         s.attach(sub);
+        s.input(b"\r");
         let frames = recv_until(&rx, |f| matches!(f, Frame::Bell { .. }));
         assert!(frames.contains(&Frame::Title {
             id: ID,
@@ -1115,13 +1429,14 @@ mod tests {
         let (again, _rx) = subscriber(2, QUEUE_CAPACITY);
         assert_eq!(s.attach(again).title.as_deref(), Some("hello"));
         assert_eq!(s.info().title.as_deref(), Some("hello"));
+        s.input(b"\r");
         until_exited(&rx);
     }
 
     #[test]
     fn startup_env_and_metadata() {
         let mut spec = sh_spec(
-            r#"read line; printf "got:$line term:$TERM t:$FUXX_T user:[$USER]"; sleep 0.3"#,
+            r#"read line; printf "got:$line term:$TERM t:$FUXX_T user:[$USER]""#,
             60,
             4,
         );
