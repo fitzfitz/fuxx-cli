@@ -110,10 +110,11 @@ impl<C> Wait<C> {
     }
 
     /// Whether the wait ends now, and how. `sessions`: every open session's (id, status) in
-    /// sidebar order; `closed`: sessions that closed since the last check; `screen`: a
-    /// session's last lines (read only for text waits).
+    /// sidebar order; `closed`: sessions closing now (they may still be in `sessions`, for a last
+    /// look at their status and screen); `screen`: a session's last lines (read only for text
+    /// waits).
     pub fn outcome(
-        &mut self,
+        &self,
         now: Instant,
         sessions: &[(u64, Status)],
         closed: &[u64],
@@ -130,7 +131,7 @@ impl<C> Wait<C> {
 
     /// The condition's outcome, deadline aside.
     fn met(
-        &mut self,
+        &self,
         sessions: &[(u64, Status)],
         closed: &[u64],
         screen: &mut dyn FnMut(u64) -> String,
@@ -138,6 +139,12 @@ impl<C> Wait<C> {
         let exit_counts = matches!(self.cond, WaitFor::Exit | WaitFor::Change);
         match self.watch {
             Watch::One(id) => {
+                let open = sessions.iter().find(|(s, _)| *s == id);
+                if let Some(&(_, now)) = open
+                    && self.holds(id, now, screen)
+                {
+                    return Some(Outcome::Met(id));
+                }
                 if closed.contains(&id) {
                     return Some(if exit_counts {
                         Outcome::Met(id)
@@ -145,10 +152,7 @@ impl<C> Wait<C> {
                         Outcome::Closed(id)
                     });
                 }
-                let Some(&(_, now)) = sessions.iter().find(|(s, _)| *s == id) else {
-                    return Some(Outcome::Closed(id));
-                };
-                self.holds(id, now, screen).then_some(Outcome::Met(id))
+                open.is_none().then_some(Outcome::Closed(id))
             }
             Watch::Any => {
                 if exit_counts && let Some(&id) = closed.first() {
@@ -162,16 +166,14 @@ impl<C> Wait<C> {
         }
     }
 
-    /// Whether the condition holds for an open session. One first seen now starts from its
-    /// current status.
-    fn holds(&mut self, id: u64, now: Status, screen: &mut dyn FnMut(u64) -> String) -> bool {
-        let start = match self.start.iter().find(|(s, _)| *s == id) {
-            Some(&(_, start)) => start,
-            None => {
-                self.start.push((id, now));
-                now
-            }
-        };
+    /// Whether the condition holds for an open session. One opened after the wait began starts
+    /// from idle (every session opens idle, and ids are never reused).
+    fn holds(&self, id: u64, now: Status, screen: &mut dyn FnMut(u64) -> String) -> bool {
+        let start = self
+            .start
+            .iter()
+            .find(|(s, _)| *s == id)
+            .map_or(Status::Idle, |&(_, start)| start);
         let text = match self.cond {
             WaitFor::Text(_) => screen(id),
             _ => String::new(),
@@ -337,7 +339,7 @@ mod tests {
             },
             None,
         );
-        assert!(note.ends_with("  notification build"), "{note}");
+        assert!(note.ends_with("  notification build: done"), "{note}");
     }
 
     fn at(base: Instant, ms: u64) -> Instant {
@@ -355,7 +357,7 @@ mod tests {
     #[test]
     fn one_session_waits_for_its_status() {
         let now = Instant::now();
-        let mut w = wait(
+        let w = wait(
             Watch::One(4),
             WaitFor::Status(Status::Waiting),
             &[(4, Status::Working)],
@@ -385,7 +387,7 @@ mod tests {
     fn change_compares_with_the_status_at_the_start() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let mut w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
+        let w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
         assert_eq!(
             w.outcome(now, &[(4, Status::Working)], &[], &mut screen),
             None
@@ -395,7 +397,7 @@ mod tests {
             Some(Outcome::Met(4))
         );
         // Closing is a change too.
-        let mut w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
+        let w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
         assert_eq!(
             w.outcome(now, &[], &[4], &mut screen),
             Some(Outcome::Met(4))
@@ -407,7 +409,7 @@ mod tests {
         let now = Instant::now();
         let mut screen = no_screen();
         let open = [(4, Status::Idle), (5, Status::Idle)];
-        let mut exit = wait(Watch::One(4), WaitFor::Exit, &open);
+        let exit = wait(Watch::One(4), WaitFor::Exit, &open);
         assert_eq!(exit.outcome(now, &open, &[], &mut screen), None);
         assert_eq!(
             exit.outcome(now, &[(4, Status::Idle)], &[5], &mut screen),
@@ -417,13 +419,13 @@ mod tests {
             exit.outcome(now, &[(5, Status::Idle)], &[4], &mut screen),
             Some(Outcome::Met(4))
         );
-        let mut status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             status.outcome(now, &[(5, Status::Idle)], &[4], &mut screen),
             Some(Outcome::Closed(4))
         );
         // Gone without being reported closed (never, but not forever pending either).
-        let mut status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             status.outcome(now, &[(5, Status::Idle)], &[], &mut screen),
             Some(Outcome::Closed(4))
@@ -435,7 +437,7 @@ mod tests {
         let now = Instant::now();
         let mut screen = no_screen();
         let start = [(1, Status::Working), (4, Status::Working)];
-        let mut w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
+        let w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
         assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
         assert_eq!(
             w.outcome(
@@ -447,14 +449,14 @@ mod tests {
             Some(Outcome::Met(4))
         );
         // `exit`: any session closing, named in the reply.
-        let mut w = wait(Watch::Any, WaitFor::Exit, &start);
+        let w = wait(Watch::Any, WaitFor::Exit, &start);
         assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
         assert_eq!(
             w.outcome(now, &[(1, Status::Working)], &[4], &mut screen),
             Some(Outcome::Met(4))
         );
         // A status wait isn't met by a session closing.
-        let mut w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
+        let w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
         assert_eq!(
             w.outcome(now, &[(1, Status::Working)], &[4], &mut screen),
             None
@@ -462,11 +464,11 @@ mod tests {
     }
 
     #[test]
-    fn any_change_counts_from_when_a_session_is_first_seen() {
+    fn any_change_counts_new_sessions_from_idle() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let mut w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
-        // s7 opened after the wait began: its first status is its start, not a change.
+        let w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
+        // s7 opened after the wait began: every session opens idle, so idle is no change...
         let later = [(1, Status::Working), (7, Status::Idle)];
         assert_eq!(w.outcome(now, &later, &[], &mut screen), None);
         assert_eq!(
@@ -477,6 +479,53 @@ mod tests {
                 &mut screen
             ),
             Some(Outcome::Met(7))
+        );
+        // ...and one first seen already working has changed (from idle), even unseen at idle.
+        let w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
+        assert_eq!(
+            w.outcome(
+                now,
+                &[(1, Status::Working), (8, Status::Working)],
+                &[],
+                &mut screen
+            ),
+            Some(Outcome::Met(8))
+        );
+    }
+
+    #[test]
+    fn a_closing_session_gets_a_last_look() {
+        // Checked just before removal: the closing session is still in `sessions`, and in
+        // `closed`. PASS printed and the shell exited within one tick still meets the wait.
+        let now = Instant::now();
+        let mut screen = |id: u64| {
+            if id == 4 {
+                "tests PASS".to_string()
+            } else {
+                String::new()
+            }
+        };
+        let open = [(1, Status::Idle), (4, Status::Done)];
+        let text = wait(Watch::One(4), WaitFor::Text("PASS".into()), &open);
+        assert_eq!(
+            text.outcome(now, &open, &[4], &mut screen),
+            Some(Outcome::Met(4))
+        );
+        let done = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        assert_eq!(
+            done.outcome(now, &open, &[4], &mut screen),
+            Some(Outcome::Met(4))
+        );
+        let any = wait(Watch::Any, WaitFor::Text("PASS".into()), &open);
+        assert_eq!(
+            any.outcome(now, &open, &[4], &mut screen),
+            Some(Outcome::Met(4))
+        );
+        // Not on its last screen either: closed.
+        let fail = wait(Watch::One(4), WaitFor::Text("FAIL".into()), &open);
+        assert_eq!(
+            fail.outcome(now, &open, &[4], &mut screen),
+            Some(Outcome::Closed(4))
         );
     }
 
@@ -493,9 +542,9 @@ mod tests {
             }
         };
         let open = [(1, Status::Idle), (4, Status::Idle)];
-        let mut one = wait(Watch::One(1), WaitFor::Text("PASS".into()), &open);
+        let one = wait(Watch::One(1), WaitFor::Text("PASS".into()), &open);
         assert_eq!(one.outcome(now, &open, &[], &mut screen), None);
-        let mut any = wait(Watch::Any, WaitFor::Text("PASS".into()), &open);
+        let any = wait(Watch::Any, WaitFor::Text("PASS".into()), &open);
         assert_eq!(
             any.outcome(now, &open, &[], &mut screen),
             Some(Outcome::Met(4))
@@ -508,7 +557,7 @@ mod tests {
         let base = Instant::now();
         let mut screen = no_screen();
         let open = [(4, Status::Working)];
-        let mut w = Wait::new(
+        let w = Wait::new(
             (),
             None,
             Watch::One(4),
@@ -527,7 +576,7 @@ mod tests {
             Some(Outcome::TimedOut)
         );
         // No deadline: never times out.
-        let mut w = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let w = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             w.outcome(at(base, 86_400_000), &open, &[], &mut screen),
             None

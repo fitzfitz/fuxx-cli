@@ -548,6 +548,9 @@ impl Workspace {
         };
         // While its row number and name still stand.
         self.emit(&Event::Closed, Some(index));
+        // Waits get a last look at its screen and status (PASS printed just before the shell
+        // exited still counts), then exit / change waits are met.
+        let mut replied = self.check_waits(&[session_id], cx);
         let was_active = self.sessions.active_index() == Some(index);
         self.dragging = None; // the layout changes under a drag
         // The pane's neighbour takes its space, and the focus if it had it.
@@ -563,7 +566,6 @@ impl Workspace {
         }
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child.
         self.sessions.remove(index);
-        let mut replied = self.check_waits(&[session_id], cx);
         if self.sessions.is_empty() {
             self.save(); // an empty list, so the next launch starts fresh
             // Last session gone: close the window (and quit), once wait replies and the closed
