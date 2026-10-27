@@ -77,12 +77,6 @@ impl<T> SessionList<T> {
         true
     }
 
-    /// Mutable access to every item (for reordering metadata in place).
-    #[allow(dead_code)] // used from Task 4/5
-    pub fn items_mut(&mut self) -> &mut [T] {
-        &mut self.items
-    }
-
     /// Returns false (and changes nothing) when out of range.
     pub fn select(&mut self, index: usize) -> bool {
         if index < self.items.len() {
