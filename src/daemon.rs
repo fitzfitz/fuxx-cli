@@ -215,6 +215,16 @@ macro_rules! log {
     };
 }
 
+/// A new session's `FUXX_SESSION`: `s<id>` while the GUI serves scripting (`FUXX_SOCKET` is
+/// in its env), else none (M9: the two go together).
+fn session_env(env: &mut BTreeMap<String, String>, id: u64) {
+    if env.contains_key("FUXX_SOCKET") {
+        env.insert("FUXX_SESSION".into(), format!("s{id}"));
+    } else {
+        env.remove("FUXX_SESSION");
+    }
+}
+
 /// `~/Library/Application Support/fuxx/fuxxd.sock`: beside M9's `fuxx.sock`, not instead of it.
 pub fn socket_path(home: &Path) -> PathBuf {
     home.join("Library/Application Support/fuxx/fuxxd.sock")
@@ -929,8 +939,10 @@ impl Connection {
         }
         // Numbered before spawning, so a failed spawn still never reuses its number.
         let id = self.shared.next_id.fetch_add(1, Ordering::AcqRel);
-        // `program: None` is the login shell from the client's env; the env is used as sent.
-        let spec = CreateSpec::from(create);
+        // `program: None` is the login shell from the client's env; the env is used as sent,
+        // except `FUXX_SESSION`: only the daemon knows the id.
+        let mut spec = CreateSpec::from(create);
+        session_env(&mut spec.env, id);
         match DaemonSession::spawn(id, spec) {
             Ok(session) => match self.shared.insert(id, Arc::new(session)) {
                 Ok(()) => {
@@ -1866,6 +1878,42 @@ mod tests {
         // Other clients are unaffected.
         assert_eq!(ids(&list(&mut c)), vec![id]);
         drop(session);
+    }
+
+    #[test]
+    fn fuxx_session_is_the_new_sessions_own_id() {
+        let (_d, path) = daemon("sessenv");
+        let mut c = connect(&path, Role::Ui);
+        let create = |c: &mut Client, socket: bool, startup: &str| {
+            let mut env = sh_env();
+            // Whatever the GUI's own environment says.
+            env.insert("FUXX_SESSION".into(), "s99".into());
+            if socket {
+                env.insert("FUXX_SOCKET".into(), "/x/fuxx.sock".into());
+            } else {
+                env.remove("FUXX_SOCKET");
+            }
+            c.send(&Frame::Create(Create {
+                startup: Some(startup.into()),
+                env,
+                ..match create_frame("e") {
+                    Frame::Create(c) => c,
+                    _ => unreachable!(),
+                }
+            }))
+            .unwrap();
+            match recv_until(c, |f| matches!(f, Frame::Created { .. })).pop() {
+                Some(Frame::Created { id }) => id,
+                other => panic!("{other:?}"),
+            }
+        };
+        // With scripting (FUXX_SOCKET sent): s<id>.
+        let id = create(&mut c, true, "echo \"<$FUXX_SESSION>\"");
+        let want = format!("<s{id}>");
+        assert!(eventually(|| read_screen(&mut c, id).contains(&want)));
+        // Without: none, as in M9 (it goes with FUXX_SOCKET).
+        let id = create(&mut c, false, "echo \"<${FUXX_SESSION-none}>\"");
+        assert!(eventually(|| read_screen(&mut c, id).contains("<none>")));
     }
 
     /// Create a `sh` session that runs `startup`; its id.

@@ -98,6 +98,9 @@ pub enum TermEvent {
     Exited,
     /// Daemon backend: the daemon's status for this session changed.
     Status(Status),
+    /// Daemon backend: the connection to the daemon is gone. Not an exit: the session may
+    /// still run there.
+    DaemonLost,
 }
 
 /// Receives `Term` events. It runs *inside* `Processor::advance` while the Term lock is held,
@@ -177,6 +180,8 @@ enum Command {
     Input(Vec<u8>),
     Resize(TermDims, CellPx),
     SetTheme(Theme),
+    /// End the session (`close`).
+    Close,
     /// The last `TerminalCore` clone is gone: stop the stream; the pump ends.
     Detach,
 }
@@ -190,6 +195,7 @@ fn pump(commands: &std::sync::mpsc::Receiver<Command>, client: &DaemonClient, id
             Command::Input(bytes) => client.input(id, &bytes),
             Command::Resize(dims, cell) => client.resize(id, dims, cell),
             Command::SetTheme(theme) => client.set_theme(&theme),
+            Command::Close => client.close(id),
             Command::Detach => break,
         }
     }
@@ -355,6 +361,14 @@ impl TerminalCore {
         };
         let id = client.create(create)?;
         Self::replica(client, id, (dims, cell), events, theme)
+    }
+
+    /// Daemon backend: end the session in the daemon (its `Exited` follows), after the input
+    /// already queued. Local: nothing (dropping the last clone ends the child).
+    pub fn close(&self) {
+        if let Backend::Daemon(link) = &self.backend {
+            link.send(Command::Close);
+        }
     }
 
     /// The daemon session this mirrors; `None` for a Local terminal.
@@ -569,8 +583,8 @@ impl Replica {
             }
         }
         // The stream ended without `Exited`: detached (no one is listening any more) or the
-        // connection to the daemon is gone, and its sessions with it.
-        self.emit(TermEvent::Exited);
+        // connection to the daemon is gone. Not an exit: the session may still run there.
+        self.emit(TermEvent::DaemonLost);
     }
 
     fn apply(&mut self, frame: Frame, shared: &FairMutex<Shared>) -> Step {
@@ -1550,5 +1564,71 @@ mod daemon_tests {
         );
         drop(core);
         assert_eq!(fake.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn losing_the_daemon_is_not_an_exit() {
+        let path = temp_sock("t-lost");
+        let listener = UnixListener::bind(&path).unwrap();
+        // Answers Hello and the first Attach (a snapshot), then hangs up: the daemon is gone.
+        let fake = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut decoder = Decoder::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = s.read(&mut buf).unwrap();
+                decoder.push(&buf[..n]);
+                while let Some(frame) = decoder.next() {
+                    match frame.unwrap() {
+                        Frame::Hello(_) => {
+                            let ok = Frame::HelloOk(mux_proto::HelloOk {
+                                proto: 1,
+                                daemon_version: "test".into(),
+                                pid: 1,
+                            });
+                            s.write_all(&encode(&ok)).unwrap();
+                        }
+                        Frame::Attach { id: 7 } => {
+                            s.write_all(&encode(&snap(0, "still here", None))).unwrap();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        fake.join().unwrap();
+        let mut seen = Vec::new();
+        assert!(
+            wait_event(&mut rx, |e| {
+                seen.push(format!("{e:?}"));
+                matches!(e, TermEvent::DaemonLost)
+            }),
+            "{seen:?}"
+        );
+        assert!(!seen.iter().any(|e| e == "Exited"), "{seen:?}");
+        // The screen it had stays.
+        assert_eq!(screen_lines(&core)[0], "still here");
+    }
+
+    #[test]
+    fn closing_through_the_core_ends_the_daemon_session() {
+        let (_d, path) = daemon("t-close");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client.clone(), sh_create(40, 5), tx, Theme::default())
+                .unwrap();
+        let id = core.daemon_id().unwrap();
+        core.close();
+        assert!(wait_event(&mut rx, |e| matches!(e, TermEvent::Exited)));
+        assert!(eventually(|| !client
+            .list()
+            .unwrap()
+            .iter()
+            .any(|s| s.id == id)));
     }
 }

@@ -55,6 +55,9 @@ pub enum TerminalEvent {
     TitleChanged(Option<SharedString>),
     /// The shell exited; the session should close.
     Exited,
+    /// Daemon backend: the connection to the daemon is gone. Not an exit: the session may
+    /// still run there, so it stays.
+    DaemonLost,
 }
 
 /// Where the grid was last painted, for turning mouse positions into grid points.
@@ -125,9 +128,8 @@ impl TerminalView {
     }
 
     /// A view of daemon session `id` (Daemon backend). It never waits on the daemon. For a new
-    /// session (M10a Task 6), get the id with `DaemonClient::create_in_background` first (its
-    /// `startup` is typed in by the daemon); for adoption (Task 7), from `list`.
-    #[allow(dead_code)] // used by the workspace from M10a Task 6
+    /// session, get the id with `DaemonClient::create_in_background` first (its `startup` is
+    /// typed in by the daemon); for adoption (Task 7), from `list`.
     pub fn attach_daemon(
         window: &mut Window,
         cx: &mut App,
@@ -140,8 +142,13 @@ impl TerminalView {
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
 
+    /// End the session in the daemon (Daemon backend; its `Exited` follows). Local: nothing,
+    /// dropping the view ends the child.
+    pub fn close(&self) {
+        self.core.close();
+    }
+
     /// The daemon session this view shows; `None` on the Local backend.
-    #[allow(dead_code)] // used by the workspace from M10a Task 6
     pub fn daemon_id(&self) -> Option<u64> {
         self.core.daemon_id()
     }
@@ -260,6 +267,7 @@ impl TerminalView {
             TermEvent::Term(Event::ResetTitle) => cx.emit(TerminalEvent::TitleChanged(None)),
             TermEvent::Exited => cx.emit(TerminalEvent::Exited),
             TermEvent::Status(status) => self.status_changed(status, cx),
+            TermEvent::DaemonLost => cx.emit(TerminalEvent::DaemonLost),
             TermEvent::Term(_) => {}
         }
     }
