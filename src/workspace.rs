@@ -4,12 +4,13 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    ClickEvent, Context, Entity, Focusable, PathPromptOptions, SharedString, Subscription, Window,
-    actions, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, Entity, EntityId, Focusable, MouseButton, MouseDownEvent,
+    PathPromptOptions, SharedString, Subscription, Window, actions, div, prelude::*, px,
 };
 
 use crate::appearance::Appearance;
-use crate::groups;
+use crate::groups::{self, Row};
+use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
 use crate::presets::Preset;
 use crate::restore::{Launch, SavedSession};
@@ -44,6 +45,9 @@ actions!(
         LaunchPreset7,
         LaunchPreset8,
         LaunchPreset9,
+        RenameSession,
+        MoveSessionUp,
+        MoveSessionDown,
     ]
 );
 
@@ -73,8 +77,37 @@ impl Session {
     }
 }
 
+/// What a sidebar row carries while it's dragged: the session (by its view) and its name.
+struct DraggedSession {
+    view: EntityId,
+    label: SharedString,
+}
+
+/// The little label that follows the pointer during a drag.
+struct DragPreview {
+    label: SharedString,
+}
+
+impl Render for DragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = cx.global::<Appearance>().theme.ui();
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_sm()
+            .bg(hsla(ui.row_active))
+            .text_color(hsla(ui.text))
+            .child(self.label.clone())
+    }
+}
+
 pub struct Workspace {
     sessions: SessionList<Session>,
+    /// The projects whose groups are closed in the sidebar.
+    collapsed: Vec<PathBuf>,
+    /// The rename box, and the session (by its view) it renames.
+    renaming: Option<(EntityId, Entity<NameInput>)>,
     window_active: bool,
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
@@ -90,6 +123,8 @@ impl Workspace {
         let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
         let mut this = Self {
             sessions: SessionList::new(),
+            collapsed: Vec::new(),
+            renaming: None,
             window_active: window.is_window_active(),
             _activation: activation,
             _appearance: appearance,
@@ -125,13 +160,7 @@ impl Workspace {
             }
         };
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
-        let projects: Vec<Option<&Path>> = self
-            .sessions
-            .items()
-            .iter()
-            .map(|s| s.project.as_deref())
-            .collect();
-        let index = groups::insert_index(&projects, saved.project.as_deref());
+        let index = groups::insert_index(&self.projects(), saved.project.as_deref());
         self.sessions.insert(
             index,
             Session {
@@ -144,8 +173,16 @@ impl Workspace {
                 _subscription: subscription,
             },
         );
-        self.focus_active(window, cx);
-        cx.notify();
+        self.activate(window, cx);
+    }
+
+    /// Each session's project, in sidebar order.
+    fn projects(&self) -> Vec<Option<&Path>> {
+        self.sessions
+            .items()
+            .iter()
+            .map(|s| s.project.as_deref())
+            .collect()
     }
 
     /// The active session's folder, so a new session joins its group.
@@ -186,17 +223,22 @@ impl Workspace {
                 }
             };
             let Some(folder) = folder else { return };
-            let launch = Launch {
-                saved: SavedSession {
-                    project: Some(folder),
-                    ..Default::default()
-                },
-                run_preset: false,
-            };
-            this.update_in(cx, |this, window, cx| this.open_session(launch, window, cx))
+            this.update_in(cx, |this, window, cx| this.open_in(folder, window, cx))
                 .ok();
         })
         .detach();
+    }
+
+    /// A plain session in `project`'s group (the group header's +).
+    fn open_in(&mut self, project: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let launch = Launch {
+            saved: SavedSession {
+                project: Some(project),
+                ..Default::default()
+            },
+            run_preset: false,
+        };
+        self.open_session(launch, window, cx);
     }
 
     /// Preset `n` (0-based) of the settings, in the active session's group; absent is ignored.
@@ -267,13 +309,106 @@ impl Workspace {
             window.remove_window(); // last session gone: close the window (and quit)
             return;
         }
-        self.focus_active(window, cx);
-        cx.notify();
+        // A group whose last session closed is gone; forget that it was closed.
+        let sessions = self.sessions.items();
+        self.collapsed
+            .retain(|c| sessions.iter().any(|s| s.project.as_ref() == Some(c)));
+        self.activate(window, cx);
     }
 
     fn select(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.sessions.select(index) {
-            self.focus_active(window, cx);
+            self.activate(window, cx);
+        }
+    }
+
+    /// After the active session changed (by any route): open its group and focus it.
+    fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(project) = self.sessions.active().and_then(|s| s.project.clone()) {
+            self.collapsed.retain(|c| *c != project);
+        }
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn toggle_group(&mut self, project: &Path, cx: &mut Context<Self>) {
+        match self.collapsed.iter().position(|c| c == project) {
+            Some(i) => {
+                self.collapsed.remove(i);
+            }
+            None => self.collapsed.push(project.to_path_buf()),
+        }
+        cx.notify();
+    }
+
+    /// Open the rename box on session `index` (opening its group) and focus it.
+    fn start_rename(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.items().get(index) else {
+            return;
+        };
+        let view = session.view.entity_id();
+        let text = session.label().to_string();
+        if let Some(project) = session.project.clone() {
+            self.collapsed.retain(|c| *c != project);
+        }
+        let input = cx.new(|cx| NameInput::new(text, window, cx));
+        cx.subscribe_in(&input, window, Self::on_name_event)
+            .detach();
+        input.focus_handle(cx).focus(window, cx);
+        self.renaming = Some((view, input));
+        cx.notify();
+    }
+
+    fn on_name_event(
+        &mut self,
+        input: &Entity<NameInput>,
+        event: &NameInputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A box already closed (or replaced) can still report losing focus: ignore it.
+        let Some((view, _)) = self.renaming.as_ref().filter(|(_, i)| i == input) else {
+            return;
+        };
+        let view = *view;
+        self.renaming = None;
+        if let NameInputEvent::Confirm(text) = event
+            && let Some(i) = self.sessions.position(|s| s.view.entity_id() == view)
+            && let Some(session) = self.sessions.get_mut(i)
+        {
+            // Enter on an untouched automatic name keeps it automatic (it still follows the title).
+            if session.name.is_some() || *text != session.label().as_ref() {
+                session.name = (!text.is_empty()).then(|| text.clone());
+            }
+        }
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// Drop `dragged` on `target`'s row: it takes that place, inside the same group only.
+    fn drop_session(&mut self, dragged: EntityId, target: EntityId, cx: &mut Context<Self>) {
+        let find = |id: EntityId| self.sessions.position(|s| s.view.entity_id() == id);
+        let (Some(from), Some(to)) = (find(dragged), find(target)) else {
+            return;
+        };
+        if groups::same_group(&self.projects(), from, to) && self.sessions.move_item(from, to) {
+            cx.notify();
+        }
+    }
+
+    /// Swap the active session with its neighbour above (or below), inside its group only.
+    fn move_active(&mut self, up: bool, cx: &mut Context<Self>) {
+        let Some(from) = self.sessions.active_index() else {
+            return;
+        };
+        let Some(to) = (if up {
+            from.checked_sub(1)
+        } else {
+            Some(from + 1)
+        }) else {
+            return;
+        };
+        if groups::same_group(&self.projects(), from, to) && self.sessions.move_item(from, to) {
             cx.notify();
         }
     }
@@ -285,7 +420,26 @@ impl Workspace {
     }
 
     fn render_sidebar(&self, ui: UiColors, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.sessions.active_index();
+        let projects = self.projects();
+        let all: Vec<&Path> = projects.iter().flatten().copied().collect();
+        let rows: Vec<AnyElement> = groups::rows(&projects, &self.collapsed)
+            .into_iter()
+            .map(|row| match row {
+                Row::Header {
+                    project,
+                    first,
+                    len,
+                    collapsed,
+                } => {
+                    let label = groups::group_label(&project, &all);
+                    self.render_header(project, label, first..first + len, collapsed, ui, cx)
+                        .into_any_element()
+                }
+                Row::Session { index, grouped } => self
+                    .render_session_row(index, grouped, ui, cx)
+                    .into_any_element(),
+            })
+            .collect();
         div()
             .flex()
             .flex_col()
@@ -296,34 +450,120 @@ impl Workspace {
             .bg(hsla(ui.sidebar_background))
             .border_r_1()
             .border_color(hsla(ui.sidebar_border))
-            .children(
-                self.sessions
-                    .items()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, session)| {
-                        let is_active = active == Some(i);
-                        div()
-                            .id(("session", i))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(hsla(if is_active { ui.text } else { ui.text_dim }))
-                            .when(is_active, |row| row.bg(hsla(ui.row_active)))
-                            .hover(|style| style.bg(hsla(ui.row_hover)))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.select(i, window, cx)
-                            }))
-                            .child(ring(session.status, ui))
-                            .child(format!("{}  {}", i + 1, session.label()))
-                    }),
+            // A click in the sidebar gives focus back to the terminal, which cancels a rename
+            // (the rename box keeps its own clicks).
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_active(window, cx)),
             )
+            .children(rows)
+    }
+
+    /// A project's header: arrow, name, the group's most urgent ring, and a + for a new session.
+    fn render_header(
+        &self,
+        project: PathBuf,
+        label: String,
+        sessions: std::ops::Range<usize>,
+        collapsed: bool,
+        ui: UiColors,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let status = groups::rolled_up(
+            self.sessions.items()[sessions.clone()]
+                .iter()
+                .map(|s| s.status),
+        );
+        let add = project.clone();
+        div()
+            .id(("group", sessions.start))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_sm()
+            .text_color(hsla(ui.text_dim))
+            .hover(|style| style.bg(hsla(ui.row_hover)))
+            .cursor_pointer()
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&project, cx)),
+            )
+            .child(if collapsed { "\u{25b8}" } else { "\u{25be}" })
+            .child(div().flex_1().overflow_hidden().child(label))
+            .child(ring(status, ui))
+            .child(
+                div()
+                    .id(("group-add", sessions.start))
+                    .px_1()
+                    .rounded_sm()
+                    .hover(|style| style.bg(hsla(ui.row_active)).text_color(hsla(ui.text)))
+                    .child("+")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation(); // not also a click on the header
+                        this.open_in(add.clone(), window, cx)
+                    })),
+            )
+    }
+
+    /// A session: ring, number and name (or the rename box). Click selects, double-click
+    /// renames; it can be dragged onto another row of its group.
+    fn render_session_row(
+        &self,
+        index: usize,
+        grouped: bool,
+        ui: UiColors,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let session = &self.sessions.items()[index];
+        let is_active = self.sessions.active_index() == Some(index);
+        let view = session.view.entity_id();
+        let rename_box = self
+            .renaming
+            .as_ref()
+            .filter(|(v, _)| *v == view)
+            .map(|(_, input)| input.clone());
+        let dragged = DraggedSession {
+            view,
+            label: session.label(),
+        };
+        div()
+            .id(("session", index))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .when(grouped, |row| row.ml_4())
+            .rounded_md()
+            .text_sm()
+            .text_color(hsla(if is_active { ui.text } else { ui.text_dim }))
+            .when(is_active, |row| row.bg(hsla(ui.row_active)))
+            .hover(|style| style.bg(hsla(ui.row_hover)))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.select(index, window, cx);
+                if event.click_count() == 2 {
+                    this.start_rename(index, window, cx);
+                }
+            }))
+            .on_drag(dragged, |dragged, _, _, cx| {
+                cx.new(|_| DragPreview {
+                    label: dragged.label.clone(),
+                })
+            })
+            .drag_over::<DraggedSession>(move |style, _, _, _| style.bg(hsla(ui.row_active)))
+            .on_drop(cx.listener(move |this, dragged: &DraggedSession, _, cx| {
+                this.drop_session(dragged.view, view, cx)
+            }))
+            .child(ring(session.status, ui))
+            .map(|row| match rename_box {
+                Some(input) => row.child(format!("{}", index + 1)).child(input),
+                None => row.child(format!("{}  {}", index + 1, session.label())),
+            })
     }
 }
 
@@ -367,14 +607,19 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &NextSession, window, cx| {
                 this.sessions.select_next();
-                this.focus_active(window, cx);
-                cx.notify();
+                this.activate(window, cx);
             }))
             .on_action(cx.listener(|this, _: &PrevSession, window, cx| {
                 this.sessions.select_prev();
-                this.focus_active(window, cx);
-                cx.notify();
+                this.activate(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &RenameSession, window, cx| {
+                if let Some(i) = this.sessions.active_index() {
+                    this.start_rename(i, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &MoveSessionUp, _, cx| this.move_active(true, cx)))
+            .on_action(cx.listener(|this, _: &MoveSessionDown, _, cx| this.move_active(false, cx)))
             .on_action(cx.listener(|this, _: &SelectSession1, w, cx| this.select(0, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession2, w, cx| this.select(1, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession3, w, cx| this.select(2, w, cx)))

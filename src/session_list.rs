@@ -56,7 +56,6 @@ impl<T> SessionList<T> {
     }
 
     /// Move an item; the same item stays active. False (no change) when out of range.
-    #[allow(dead_code)] // used from Task 4/5
     pub fn move_item(&mut self, from: usize, to: usize) -> bool {
         let len = self.items.len();
         if from >= len || to >= len {

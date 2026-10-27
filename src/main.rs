@@ -6,11 +6,11 @@ mod colors;
 mod detector;
 mod fonts;
 mod grid;
-#[allow(dead_code)] // used from M7 Task 4/5
 mod groups;
 mod keys;
 mod links;
 mod mouse;
+mod name_input;
 mod notifier;
 mod preferences;
 mod prefs;
@@ -35,9 +35,10 @@ use gpui_platform::application;
 use terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
 use workspace::{
     CloseSession, LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5,
-    LaunchPreset6, LaunchPreset7, LaunchPreset8, LaunchPreset9, NewSession, NewSessionInFolder,
-    NextSession, PrevSession, SelectSession1, SelectSession2, SelectSession3, SelectSession4,
-    SelectSession5, SelectSession6, SelectSession7, SelectSession8, SelectSession9, Workspace,
+    LaunchPreset6, LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp,
+    NewSession, NewSessionInFolder, NextSession, PrevSession, RenameSession, SelectSession1,
+    SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7,
+    SelectSession8, SelectSession9, Workspace,
 };
 
 actions!(fuxx, [Quit, OpenPreferences]);
@@ -70,6 +71,7 @@ fn main() {
                 KeyBinding::new("cmd-t", NewSession, None),
                 KeyBinding::new("cmd-o", NewSessionInFolder, None),
                 KeyBinding::new("cmd-w", CloseSession, None),
+                KeyBinding::new("cmd-r", RenameSession, None),
                 // macOS reports cmd-shift-] as key "}" (shift folded into the character).
                 KeyBinding::new("cmd-}", NextSession, None),
                 KeyBinding::new("cmd-{", PrevSession, None),
@@ -98,6 +100,17 @@ fn main() {
                 KeyBinding::new("cmd-up", ScrollPageUp, Some("Terminal")),
                 KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
                 KeyBinding::new("cmd-down", ScrollPageDown, Some("Terminal")),
+                // The sidebar's rename box only; other keys type into it.
+                KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
+                KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
+                KeyBinding::new("enter", name_input::Confirm, Some("NameInput")),
+                KeyBinding::new("escape", name_input::Cancel, Some("NameInput")),
+                // There's no Edit menu to supply "Emoji & Symbols", so bind its shortcut here.
+                KeyBinding::new(
+                    "ctrl-cmd-space",
+                    name_input::ShowCharacterPalette,
+                    Some("NameInput"),
+                ),
             ]);
             cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
             cx.on_action(|_: &OpenPreferences, cx: &mut App| preferences::open_or_activate(cx));
@@ -118,6 +131,10 @@ fn main() {
                     MenuItem::action("New Session", NewSession),
                     MenuItem::action("New Session in Folder\u{2026}", NewSessionInFolder),
                     MenuItem::submenu(Menu::new("New Agent Session").items(preset_items)),
+                    MenuItem::action("Rename Session\u{2026}", RenameSession),
+                    MenuItem::action("Move Session Up", MoveSessionUp),
+                    MenuItem::action("Move Session Down", MoveSessionDown),
+                    MenuItem::separator(),
                     MenuItem::action("Close Session", CloseSession),
                     MenuItem::separator(),
                     MenuItem::action("Preferences\u{2026}", OpenPreferences),
