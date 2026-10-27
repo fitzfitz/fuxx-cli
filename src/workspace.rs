@@ -152,7 +152,8 @@ impl Workspace {
             match std::fs::read_to_string(&path) {
                 Ok(text) => match restore::decode(&text) {
                     Some(state) if !state.sessions.is_empty() => {
-                        for launch in restore::launches(&state, mode) {
+                        let presets = cx.global::<Appearance>().presets.clone();
+                        for launch in restore::launches(&state, mode, &presets) {
                             self.open_session(launch, window, cx);
                         }
                         if !self.sessions.is_empty() {
