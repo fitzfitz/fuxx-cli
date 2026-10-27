@@ -142,10 +142,34 @@ impl TerminalView {
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
 
+    /// `attach_daemon` without the session's screen yet: it comes on `attach` (reopening fuxx,
+    /// M10a; only the sessions shown attach at once).
+    pub fn adopt_daemon(
+        window: &mut Window,
+        cx: &mut App,
+        client: Arc<DaemonClient>,
+        id: u64,
+    ) -> Result<Entity<Self>, String> {
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let theme = cx.global::<Appearance>().theme;
+        let core = TerminalCore::adopt_daemon(client, id, tx, theme).map_err(|e| e.to_string())?;
+        Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
+    }
+
+    /// Fetch an adopted session's screen; true if this call asked for it (once per view).
+    pub fn attach(&self) -> bool {
+        self.core.attach()
+    }
+
     /// End the session in the daemon (Daemon backend; its `Exited` follows, and input it hasn't
     /// delivered yet is discarded). Local: nothing, dropping the view ends the child.
     pub fn close(&self) {
         self.core.close();
+    }
+
+    /// Tell the daemon the session's name, note and progress (Daemon backend; Local: nothing).
+    pub fn set_meta(&self, meta: crate::mux_proto::SetMeta) {
+        self.core.set_meta(meta);
     }
 
     /// Whether this view's session goes through `client` (that very connection).

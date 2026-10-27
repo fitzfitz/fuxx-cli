@@ -244,6 +244,7 @@ impl Workspace {
                     .get_mut(i)
                     .expect("target_index is in range")
                     .note = note;
+                self.push_meta(i, cx);
                 cx.notify();
                 Ok(json!({}))
             }
@@ -254,6 +255,7 @@ impl Workspace {
                     .get_mut(i)
                     .expect("target_index is in range")
                     .progress = progress;
+                self.push_meta(i, cx);
                 cx.notify();
                 Ok(json!({}))
             }
@@ -348,6 +350,7 @@ impl Workspace {
         }
         if renamed {
             self.emit_renamed(index);
+            self.push_meta(index, cx);
         }
         self.save();
         cx.notify();
@@ -574,6 +577,7 @@ impl Workspace {
                 name,
                 project,
                 preset,
+                daemon_id: None,
             },
             run_preset: true,
         };
