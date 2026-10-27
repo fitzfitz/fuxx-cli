@@ -47,12 +47,20 @@ You said "go", so these are the AI's calls unless marked as yours. Say if any sh
   - This changes the M6 rule "fuxx never writes settings files". Now only the Preferences window writes, and only `~/.config/fuxx/config`, never an included file.
 - **Your own lines still win.** For example, a `background = #000000` you added keeps applying after you switch themes, as in M6.
 
+## Also in M6b: the default session name (added on request 2026-10-27)
+
+- A new session's default name changes from "Shell N" to **🖕**. The sidebar row still starts with its
+  number (`2  🖕`), so sessions stay easy to tell apart. The window title and notifications use the same name.
+- A program that sets its own title (for example Claude Code) still shows that title instead.
+- Renaming sessions yourself is still M7.
+
 ## Rough scope / checklist
 
 - [ ] Menu bar: fuxx (Quit), File (New/Close Session, Preferences… cmd-,).
 - [ ] Preferences window: opens or comes to the front; closes with cmd-W.
 - [ ] Theme list, font list (fixed-width only), size −/+, ligatures switch; current values highlighted.
 - [ ] Each change applies live to all sessions and the sidebar, and is saved to the settings file (only that line changes).
+- [ ] Default session name is 🖕 instead of "Shell N".
 
 ## Not in M6b
 

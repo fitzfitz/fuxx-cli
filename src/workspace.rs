@@ -35,7 +35,6 @@ actions!(
 const SIDEBAR_WIDTH: f32 = 220.0;
 
 pub struct Session {
-    pub id: u64,
     pub view: Entity<TerminalView>,
     pub status: Status,
     pub title: Option<SharedString>,
@@ -43,16 +42,14 @@ pub struct Session {
 }
 
 impl Session {
+    /// The program's own title if it set one, else 🖕 (the user's choice of default name).
     pub fn label(&self) -> SharedString {
-        self.title
-            .clone()
-            .unwrap_or_else(|| format!("Shell {}", self.id).into())
+        self.title.clone().unwrap_or_else(|| "🖕".into())
     }
 }
 
 pub struct Workspace {
     sessions: SessionList<Session>,
-    next_id: u64,
     window_active: bool,
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
@@ -68,7 +65,6 @@ impl Workspace {
         let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
         let mut this = Self {
             sessions: SessionList::new(),
-            next_id: 1,
             window_active: window.is_window_active(),
             _activation: activation,
             _appearance: appearance,
@@ -86,10 +82,7 @@ impl Workspace {
             }
         };
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
-        let id = self.next_id;
-        self.next_id += 1;
         self.sessions.push(Session {
-            id,
             view,
             status: Status::Idle,
             title: None,

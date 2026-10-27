@@ -308,6 +308,7 @@ Run `cargo run` and report.
 - [ ] **Your override still wins:** with `background = #000000` in the file, switching themes keeps the black background.
 - [ ] **Quitting:** with Preferences open, close the terminal window. fuxx quits.
 - [ ] **Unchanged:** M5 and M6 behaviours (selection, links, Mac keys, rings).
+- [ ] **Session name (added on request 2026-10-27):** a new session shows `N  🖕` in the sidebar and `fuxx — 🖕` in the window title, and the emoji draws in color (not a `?` box). Implemented in `src/workspace.rs` `Session::label`; no unit test (needs a live GPUI session), checked on screen here.
 
 ### Task 6: Update the docs — ⬜
 
