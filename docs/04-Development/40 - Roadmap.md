@@ -35,11 +35,18 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 - [[45 - Milestone 5 - Terminal UX]] — ✅ — scrollback, selection + copy/paste, mouse, clickable URLs, robust resize. Plan: [[M5 Plan - Terminal UX]].
 - [[46 - Milestone 6 - Fonts and Config]] — ✅ — font family/size/ligatures and colors/themes from **fuxx's own settings file** (`~/.config/fuxx/config`; changed 2026-10-27 from reading Ghostty's config); **prompt icons** for everyone via a bundled Symbols Nerd Font. Plan: [[M6 Plan - Fonts and Config]].
 - [[46b - Milestone 6b - Settings Window]] — 🟨 — *added 2026-10-27 on request.* **File → Preferences…** and **cmd-,** open a settings window: pick the theme (built-in + your themes folder), font, size and ligatures, and override theme colors; changes are saved to `~/.config/fuxx/config` and applied without a restart. Plan: [[M6b Plan - Settings Window]]. **D9** decided 2026-10-27: colors are picked from the theme list only (no hex typing).
-- **M7 — Session ergonomics:** project groups (sessions grouped by project folder, rolled-up ring), rename/reorder sessions, agent presets (one-tap `claude`/`opencode`), session restore.
+- [[47 - Milestone 7 - Session Ergonomics]] — 🟨 — project groups (sessions grouped by project folder, rolled-up ring), rename/reorder sessions, agent presets (one-tap `claude`/`opencode`/`codex` + your own), session restore (configurable). Plan: [[M7 Plan - Session Ergonomics]].
+
+> [!note] Order changed 2026-10-27, on request
+> You asked to build **M7 and M8 straight away, while you check M6b on screen**, and to confirm all
+> three milestones' on-screen checks afterwards. So M6b, M7 and M8 are each built and reviewed in turn, but
+> their 👀 checks are done together at the end. If a check fails, the fix goes into the milestone it belongs to.
+
+- **M8 — Split panes** (multiple sessions visible at once). *Moved into scope and up to Phase 2 on
+  2026-10-27, on request:* nested splits like Ghostty/iTerm. Note: [[48 - Milestone 8 - Split Panes]].
 
 ## Phase 3 — Power features (cmux parity — big, deferred)
 
-- **M8 — Split panes** (multiple sessions visible at once).
 - **M9 — Socket/scripting API** per session (cmux-style programmability).
 - **M10 — cmux extras:** in-app browser · SSH workspaces · remote/tmux daemon. Each is its own project.
 

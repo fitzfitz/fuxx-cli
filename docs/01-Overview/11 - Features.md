@@ -32,7 +32,8 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
   in this project". Not included: per-project settings, nested groups, auto-detecting projects.
   Added 2026-10-12 (user request).
 - `P1` Agent presets — launch `claude` / `opencode` / `codex` with one action, per working dir.
-- `P2` Session restore across app restarts (layout + working dirs).
+- `P1` Session restore across app restarts (layout + working dirs; agent presets re-run), with a
+  setting to turn it down or off. *(M7; your choices 2026-10-27.)*
 
 ## C. Notification rings & agent state (the payoff)
 
@@ -46,7 +47,8 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 ## D. Layout
 
 - `P1` Tabs (or the sidebar list is the primary switcher).
-- `P2` **Split panes** (cmux uses a custom split package) — multiple sessions visible at once.
+- `P1` **Split panes** — multiple sessions visible at once, nested like Ghostty/iTerm. *(M8, moved into
+  scope 2026-10-27 on request.)*
 
 ## E. Programmability & integration (cmux-like)
 

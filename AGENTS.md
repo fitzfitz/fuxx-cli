@@ -63,8 +63,8 @@ is pre-1.0 and consumed as a **pinned git dep** — verify the rev. See [`docs/0
 
 - **Scope is a terminal for AI agents, not a general IDE.** In: a real terminal (via
   `alacritty_terminal`), multi-session panes, a sidebar, notification rings, agent-state detection.
-  Out (for now): embedded browser, SSH, remote/tmux daemon, split panes, config DSL, Windows — all
-  deferred. Guard with [`docs/01-Overview/12 - Scope.md`]. The threat now is "add every cmux feature
+  Out (for now): embedded browser, SSH, remote/tmux daemon, config DSL, Windows — all
+  deferred. (Split panes moved into scope as M8 on 2026-10-27, by the user.) Guard with [`docs/01-Overview/12 - Scope.md`]. The threat now is "add every cmux feature
   at once," not terminal emulation.
 - **The old v1 scope is reversed and archived.** Terminal emulation IS the product now. The notes
   under `docs/90-Archive-v1-CLI-Wrapper/` (incl. "Why Not libghostty" / "Scope Boundaries") describe
