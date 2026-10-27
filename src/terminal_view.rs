@@ -124,17 +124,18 @@ impl TerminalView {
         self.core.text(scope)
     }
 
-    /// Type bytes as if from the keyboard (snaps to the bottom).
+    /// Type bytes as if from the keyboard: snaps to the bottom and counts as typing.
     #[allow(dead_code)] // used from M9 Task 5
-    pub fn type_bytes(&self, bytes: &[u8]) {
-        self.core.input(bytes);
+    pub fn type_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.input_bytes(bytes, cx);
     }
 
     /// Paste text, bracketed when the program asked for it.
     #[allow(dead_code)] // used from M9 Task 5
-    pub fn paste(&self, text: &str) {
+    pub fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
         let bracketed = self.core.mode().contains(TermMode::BRACKETED_PASTE);
-        self.core.input(&keys::paste_bytes(text, bracketed));
+        self.input_bytes(&keys::paste_bytes(text, bracketed), cx);
+        cx.notify();
     }
 
     /// Whether the program wants application-cursor arrow keys.
@@ -277,11 +278,16 @@ impl TerminalView {
 
     /// What a keystroke does once it has bytes: write to the pty, tell the tracker, swallow the event.
     fn send_key_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.input_bytes(bytes, cx);
+        cx.stop_propagation();
+    }
+
+    /// Input from the user or a script: write to the pty and tell the tracker it was typing.
+    fn input_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.core.input(bytes);
         if let Some(status) = self.tracker.on_input(Instant::now()) {
             self.status_changed(status, cx);
         }
-        cx.stop_propagation();
     }
 
     /// Grid point, cell side and viewport col/row under a window position, or `None` before the
@@ -484,11 +490,7 @@ impl TerminalView {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        self.paste(&text);
-        if let Some(status) = self.tracker.on_input(Instant::now()) {
-            self.status_changed(status, cx);
-        }
-        cx.notify();
+        self.paste(&text, cx);
     }
 
     fn scroll_page_up(&mut self, _: &ScrollPageUp, _window: &mut Window, cx: &mut Context<Self>) {
