@@ -1855,6 +1855,8 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "portable-pty",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
