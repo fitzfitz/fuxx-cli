@@ -436,7 +436,7 @@ impl Workspace {
         if let Some(pos) = self.layouts.iter().position(|t| t.contains(id)) {
             let tree = self.layouts.remove(pos);
             if was_active {
-                next = tree.cycle(id, false);
+                next = tree.heir(id);
             }
             if let Some(rest) = tree.remove(id) {
                 self.layouts.insert(pos, rest);

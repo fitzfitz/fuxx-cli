@@ -174,6 +174,20 @@ impl<T: Copy + PartialEq> Node<T> {
         }
     }
 
+    /// The pane that takes `target`'s space when it closes: the first leaf of its sibling subtree.
+    /// `None` if `target` is absent or the tree is only that leaf.
+    pub fn heir(&self, target: T) -> Option<T> {
+        let Node::Split { first, second, .. } = self else {
+            return None;
+        };
+        match (&**first, &**second) {
+            (Node::Leaf(id), sibling) | (sibling, Node::Leaf(id)) if *id == target => {
+                sibling.leaves().first().copied()
+            }
+            _ => first.heir(target).or_else(|| second.heir(target)),
+        }
+    }
+
     /// Each leaf's area within `area`, in reading order.
     #[allow(dead_code)] // used from M8 Task 4
     pub fn rects(&self, area: Rect) -> Vec<(T, Rect)> {
@@ -283,6 +297,7 @@ impl<T: Copy + PartialEq> Node<T> {
     }
 
     /// The next (or previous) leaf in reading order, wrapping; `None` if `from` is absent or alone.
+    #[allow(dead_code)] // used from M8 Task 4
     pub fn cycle(&self, from: T, forward: bool) -> Option<T> {
         let leaves = self.leaves();
         if leaves.len() < 2 {
@@ -448,6 +463,16 @@ mod tests {
         );
         assert_eq!(Node::Leaf(1).remove(1), None);
         assert_eq!(three().remove(7), Some(three()));
+    }
+
+    #[test]
+    fn heir_is_the_pane_that_takes_the_space() {
+        let t = three();
+        assert_eq!(t.heir(2), Some(3));
+        assert_eq!(t.heir(3), Some(2));
+        assert_eq!(t.heir(1), Some(2)); // the (2 over 3) subtree takes the space; its first pane
+        assert_eq!(t.heir(9), None);
+        assert_eq!(Node::Leaf(1).heir(1), None);
     }
 
     #[test]
