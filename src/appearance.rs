@@ -17,6 +17,11 @@ pub struct Appearance {
     pub font: Font,
     /// In points, used as pixels as-is (as Ghostty does).
     pub font_size: f32,
+    /// The last `theme` entry's value, if any.
+    pub theme_name: Option<String>,
+    pub font_settings: fonts::FontSettings,
+    pub settings_path: Option<PathBuf>,
+    pub user_theme_dir: Option<PathBuf>,
 }
 
 impl Global for Appearance {}
@@ -35,21 +40,20 @@ pub fn load(cx: &App) -> Appearance {
     let xdg = env_path("XDG_CONFIG_HOME");
 
     let read_file = |p: &Path| std::fs::read_to_string(p).ok();
-    let (entries, config_note): (Vec<Entry>, String) = match &home {
-        Some(home) => {
-            let path = settings::settings_path(home, xdg.as_deref());
-            let text = read_file(&path);
+    let settings_path = home
+        .as_deref()
+        .map(|h| settings::settings_path(h, xdg.as_deref()));
+    let (entries, config_note): (Vec<Entry>, String) = match (&home, &settings_path) {
+        (Some(_), Some(path)) => {
+            let text = read_file(path);
             let note = format!(
                 "{} ({})",
                 path.display(),
                 if text.is_some() { "found" } else { "not found" }
             );
-            (
-                settings::load(std::slice::from_ref(&path), &read_file),
-                note,
-            )
+            (settings::load(std::slice::from_ref(path), &read_file), note)
         }
-        None => {
+        _ => {
             eprintln!("[fuxx] config: $HOME is unset; using the defaults");
             (vec![], "none ($HOME unset)".to_string())
         }
@@ -87,10 +91,10 @@ pub fn load(cx: &App) -> Appearance {
         .rev()
         .find(|e| e.key == "theme")
         .map(|e| e.value.as_str())
-        .filter(|v| !v.is_empty())
-        .unwrap_or("default");
+        .filter(|v| !v.is_empty());
+    let theme_label = theme_name.unwrap_or("default");
     eprintln!(
-        "[fuxx] config: {config_note}, font {} {}pt, theme {theme_name}",
+        "[fuxx] config: {config_note}, font {} {}pt, theme {theme_label}",
         font.family, settings.size
     );
 
@@ -98,5 +102,15 @@ pub fn load(cx: &App) -> Appearance {
         theme,
         font,
         font_size: settings.size,
+        theme_name: theme_name.map(str::to_string),
+        font_settings: settings,
+        settings_path,
+        user_theme_dir: user_dir,
     }
+}
+
+/// Re-read the settings and replace the global; observers (every view) then redraw.
+pub fn reload(cx: &mut App) {
+    let appearance = load(cx);
+    cx.set_global(appearance);
 }
