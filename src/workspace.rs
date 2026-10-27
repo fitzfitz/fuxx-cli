@@ -2,26 +2,27 @@
 //! panes holding the active session. Owns session lifecycle, switching, splits, and background
 //! notifications.
 
+use std::cell::Cell;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, EntityId, Focusable, Hsla, MouseButton,
-    MouseDownEvent, PathPromptOptions, SharedString, Subscription, Window, actions, div,
-    prelude::*, px,
+    AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
+    SharedString, Subscription, Window, actions, canvas, div, prelude::*, px,
 };
 
 use crate::appearance::Appearance;
 use crate::groups::{self, Row};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
-use crate::panes::{self, PaneColors, SelectPane};
+use crate::panes::{self, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
-use crate::split_tree::{Axis, Node};
+use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
@@ -57,6 +58,13 @@ actions!(
         MoveSessionDown,
         SplitRight,
         SplitDown,
+        FocusPaneLeft,
+        FocusPaneRight,
+        FocusPaneUp,
+        FocusPaneDown,
+        PrevPane,
+        NextPane,
+        EqualizePanes,
     ]
 );
 
@@ -118,6 +126,10 @@ pub struct Workspace {
     /// The split layouts, by each session's view. Every session is in exactly one; a session
     /// never split is a layout of its own.
     layouts: Vec<Node<EntityId>>,
+    /// Where the layout on screen is drawn, in window pixels; written each frame by a canvas.
+    pane_area: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The line being dragged: a pane of its layout (by view) and the path to its split.
+    dragging: Option<(EntityId, Vec<bool>)>,
     /// The projects whose groups are closed in the sidebar.
     collapsed: Vec<PathBuf>,
     /// The rename box, and the session (by its view) it renames.
@@ -140,6 +152,8 @@ impl Workspace {
         let mut this = Self {
             sessions: SessionList::new(),
             layouts: Vec::new(),
+            pane_area: Rc::new(Cell::new(None)),
+            dragging: None,
             collapsed: Vec::new(),
             renaming: None,
             restoring: true,
@@ -465,7 +479,7 @@ impl Workspace {
         }
     }
 
-    /// A click in a pane: make its session the active one (if it isn't already).
+    /// A click in a pane, or a move to it: make its session the active one (if it isn't already).
     fn select_view(&mut self, view: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.sessions.position(|s| s.view.entity_id() == view) else {
             return;
@@ -479,6 +493,74 @@ impl Workspace {
     fn shown_layout(&self) -> Option<&Node<EntityId>> {
         let active = self.sessions.active()?.view.entity_id();
         self.layouts.iter().find(|t| t.contains(active))
+    }
+
+    /// Move the focus to the pane `pick` finds from the focused one, in the layout on screen.
+    fn focus_pane(
+        &mut self,
+        pick: impl FnOnce(&Node<EntityId>, EntityId) -> Option<EntityId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) else {
+            return;
+        };
+        if let Some(next) = self.shown_layout().and_then(|t| pick(t, active)) {
+            self.select_view(next, window, cx);
+        }
+    }
+
+    /// Give every pane of the layout on screen an equal share.
+    fn equalize_panes(&mut self, cx: &mut Context<Self>) {
+        let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) else {
+            return;
+        };
+        if let Some(tree) = self.layouts.iter_mut().find(|t| t.contains(active)) {
+            tree.equalize();
+            // M8 Task 5: save the layouts here.
+            cx.notify();
+        }
+    }
+
+    /// A line of the layout on screen was pressed: follow the mouse until it's released.
+    fn start_drag(&mut self, path: Vec<bool>, cx: &mut Context<Self>) {
+        if let Some(active) = self.sessions.active() {
+            self.dragging = Some((active.view.entity_id(), path));
+            cx.notify(); // the next frame listens for the moves
+        }
+    }
+
+    /// The dragged line follows the mouse: its split's ratio is where `position` falls in it.
+    fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let (Some((pane, path)), Some(bounds)) = (&self.dragging, self.pane_area.get()) else {
+            return;
+        };
+        let Some(tree) = self.layouts.iter_mut().find(|t| t.contains(*pane)) else {
+            return;
+        };
+        let area = Rect {
+            x: f32::from(bounds.origin.x),
+            y: f32::from(bounds.origin.y),
+            w: f32::from(bounds.size.width),
+            h: f32::from(bounds.size.height),
+        };
+        let Some((axis, split)) = tree.split_rect(path, area) else {
+            return;
+        };
+        let ratio = match axis {
+            Axis::Row => (f32::from(position.x) - split.x) / split.w,
+            Axis::Column => (f32::from(position.y) - split.y) / split.h,
+        };
+        if tree.set_ratio(path, ratio) {
+            cx.notify();
+        }
+    }
+
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        if self.dragging.take().is_some() {
+            // M8 Task 5: save the layouts here (once per drag, not on every move).
+            cx.notify();
+        }
     }
 
     /// After the active session changed (by any route): open its group and focus it.
@@ -600,7 +682,59 @@ impl Workspace {
             this.update(cx, |this, cx| this.select_view(id, window, cx))
                 .ok();
         });
-        Some(panes::render_layout(tree, active, &view, &select, colors))
+        let this = cx.entity().downgrade();
+        let start_drag: StartDrag = Rc::new(move |path, _, cx| {
+            this.update(cx, |this, cx| this.start_drag(path, cx)).ok();
+        });
+        let panes = Panes {
+            active,
+            view: &view,
+            select,
+            start_drag,
+            colors,
+        };
+        Some(panes::render_layout(tree, &panes))
+    }
+
+    /// An invisible layer over the pane area: it records the area's bounds for divider drags
+    /// and, while a line is dragged, follows the mouse anywhere in the window until release.
+    fn render_pane_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let area = self.pane_area.clone();
+        let dragging = self.dragging.is_some();
+        let this = cx.entity().downgrade();
+        canvas(
+            move |bounds, _, _| area.set(Some(bounds)),
+            move |_, _, window, _| {
+                if !dragging {
+                    return;
+                }
+                // Window-wide, not tied to a hitbox, so a fast move off the line keeps dragging.
+                let moved = this.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture {
+                        return;
+                    }
+                    moved
+                        .update(cx, |this, cx| {
+                            // Released where no mouse-up reached us (e.g. outside the window).
+                            if event.dragging() {
+                                this.drag_to(event.position, cx)
+                            } else {
+                                this.end_drag(cx)
+                            }
+                        })
+                        .ok();
+                });
+                let released = this.clone();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                        released.update(cx, |this, cx| this.end_drag(cx)).ok();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
     }
 
     fn render_sidebar(&self, ui: UiColors, cx: &mut Context<Self>) -> impl IntoElement {
@@ -831,6 +965,25 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &MoveSessionDown, _, cx| this.move_active(false, cx)))
             .on_action(cx.listener(|this, _: &SplitRight, w, cx| this.split(Axis::Row, w, cx)))
             .on_action(cx.listener(|this, _: &SplitDown, w, cx| this.split(Axis::Column, w, cx)))
+            .on_action(cx.listener(|this, _: &FocusPaneLeft, w, cx| {
+                this.focus_pane(|t, a| t.neighbor(a, Dir::Left), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneRight, w, cx| {
+                this.focus_pane(|t, a| t.neighbor(a, Dir::Right), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneUp, w, cx| {
+                this.focus_pane(|t, a| t.neighbor(a, Dir::Up), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneDown, w, cx| {
+                this.focus_pane(|t, a| t.neighbor(a, Dir::Down), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PrevPane, w, cx| {
+                this.focus_pane(|t, a| t.cycle(a, false), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextPane, w, cx| {
+                this.focus_pane(|t, a| t.cycle(a, true), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &EqualizePanes, _, cx| this.equalize_panes(cx)))
             .on_action(cx.listener(|this, _: &SelectSession1, w, cx| this.select(0, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession2, w, cx| this.select(1, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession3, w, cx| this.select(2, w, cx)))
@@ -854,9 +1007,11 @@ impl Render for Workspace {
             // reader threads and tickers live in their views, which the list keeps alive).
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .h_full()
                     .overflow_hidden()
+                    .child(self.render_pane_area(cx))
                     .children(self.render_panes(colors, cx)),
             )
     }
