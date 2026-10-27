@@ -39,6 +39,7 @@ impl<T> SessionList<T> {
     }
 
     /// Append and make it active (a new session is where you want to type).
+    #[allow(dead_code)] // tests only; sessions are added with `insert`
     pub fn push(&mut self, item: T) -> usize {
         self.items.push(item);
         let index = self.items.len() - 1;
@@ -47,7 +48,6 @@ impl<T> SessionList<T> {
     }
 
     /// Insert at `index` (clamped to the end) and make it active.
-    #[allow(dead_code)] // used from Task 4/5
     pub fn insert(&mut self, index: usize, item: T) -> usize {
         let index = index.min(self.items.len());
         self.items.insert(index, item);

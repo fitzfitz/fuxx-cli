@@ -2,6 +2,7 @@
 //! tracks the agent status, and reports what happened to whoever owns it (the workspace).
 
 use std::cell::Cell;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -91,17 +92,27 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    /// Start a login shell and wrap it in a new view entity (focused).
-    pub fn spawn(window: &mut Window, cx: &mut App) -> Result<Entity<Self>, String> {
+    /// Start a login shell (in `cwd`, else home) and wrap it in a new view entity (focused).
+    /// `startup` is typed into the shell right after it starts, with Enter.
+    pub fn spawn(
+        window: &mut Window,
+        cx: &mut App,
+        cwd: Option<&Path>,
+        startup: Option<&str>,
+    ) -> Result<Entity<Self>, String> {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         // 80x24 until the first paint measures the real size and resizes.
         let theme = cx.global::<Appearance>().theme;
         let core = TerminalCore::spawn(
-            pty::shell_command(None),
+            pty::shell_command(cwd),
             TermDims { cols: 80, rows: 24 },
             tx,
             theme,
         )?;
+        if let Some(cmd) = startup {
+            // The shell reads this as typed-ahead input once it is up.
+            core.write(format!("{cmd}\r").as_bytes());
+        }
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
 
