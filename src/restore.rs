@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::presets::Preset;
 use crate::settings::Entry;
+use crate::split_tree::Node;
 
 /// How much of the last run comes back at startup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -81,6 +82,9 @@ pub struct SavedState {
     pub collapsed: Vec<PathBuf>,
     #[serde(default)]
     pub sessions: Vec<SavedSession>,
+    /// One split layout per session (leaves are pane indices); empty means all single panes.
+    #[serde(default)]
+    pub layouts: Vec<Node<usize>>,
 }
 
 /// Pretty JSON with a trailing newline.
@@ -127,6 +131,7 @@ pub fn launches(state: &SavedState, mode: RestoreMode) -> Vec<Launch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::split_tree::Axis;
 
     fn r(value: &str) -> Entry {
         Entry {
@@ -150,6 +155,15 @@ mod tests {
                     }),
                 },
             ],
+            layouts: vec![
+                Node::Leaf(0),
+                Node::Split {
+                    axis: Axis::Row,
+                    ratio: 0.5,
+                    first: Box::new(Node::Leaf(0)),
+                    second: Box::new(Node::Leaf(1)),
+                },
+            ],
         }
     }
 
@@ -166,6 +180,19 @@ mod tests {
         let (mode, warnings) = RestoreMode::from_entries(&[r("layout"), r("bogus")]);
         assert_eq!((mode, warnings.len()), (RestoreMode::Layout, 1));
         assert_eq!(RestoreMode::Off.as_str(), "off");
+    }
+
+    #[test]
+    fn layouts_round_trip_and_default_to_none() {
+        let mut s = sample();
+        s.layouts = vec![Node::Split {
+            axis: Axis::Column,
+            ratio: 0.3,
+            first: Box::new(Node::Leaf(0)),
+            second: Box::new(Node::Leaf(1)),
+        }];
+        assert_eq!(decode(&encode(&s)), Some(s));
+        assert_eq!(decode("{\"version\": 1}").unwrap().layouts, vec![]);
     }
 
     #[test]

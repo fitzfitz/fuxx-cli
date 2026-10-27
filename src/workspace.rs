@@ -194,6 +194,7 @@ impl Workspace {
             version: restore::VERSION,
             active: self.sessions.active_index(),
             collapsed: self.collapsed.clone(),
+            layouts: vec![], // filled in by M8 Task 5
             sessions: self
                 .sessions
                 .items()
