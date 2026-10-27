@@ -233,6 +233,77 @@ fn newcomer(info: &LiveInfo, presets: &[Preset]) -> Adopted {
 
 /// `tree` without the panes `keep` refuses (their neighbours take the space); `None` if none
 /// is left.
+/// What fuxx found of the background service when it starts without it (persistence off: a
+/// connect-only look; on, but the service couldn't be reached: `NoAnswer`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Probe {
+    /// No service there: nothing listening, or one exiting.
+    Absent,
+    /// A service (random id `instance`) still running the sessions `live` (their ids).
+    Found {
+        instance: Option<u64>,
+        live: Vec<u64>,
+    },
+    /// Something may hold the sessions but gave no usable answer.
+    NoAnswer,
+}
+
+/// The saved state to restore without the background service, and whether saving waits for
+/// the rest of the run: saved sessions the service still runs (`Found` under the file's
+/// instance), or may run (`NoAnswer`, a file written with the service), aren't started a
+/// second time, and the file keeps their mapping for when it is back.
+pub fn without_service(saved: SavedState, probe: &Probe) -> (SavedState, bool) {
+    let with_service = saved.daemon_instance.is_some();
+    let held: Vec<bool> = saved
+        .sessions
+        .iter()
+        .map(|s| match probe {
+            Probe::Absent => false,
+            Probe::Found { instance, live } => {
+                with_service
+                    && saved.daemon_instance == *instance
+                    && s.daemon_id.is_some_and(|id| live.contains(&id))
+            }
+            Probe::NoAnswer => with_service && s.daemon_id.is_some(),
+        })
+        .collect();
+    if !held.contains(&true) {
+        return (saved, false);
+    }
+    // Old index → index among the sessions kept.
+    let mut kept = 0;
+    let new_index: Vec<Option<usize>> = held
+        .iter()
+        .map(|&h| {
+            (!h).then(|| {
+                kept += 1;
+                kept - 1
+            })
+        })
+        .collect();
+    let index = |i: usize| new_index.get(i).copied().flatten();
+    let layouts = saved
+        .layouts
+        .iter()
+        .filter_map(|t| keep_panes(t, |i| index(i).is_some()))
+        .map(|t| t.map(&|i| index(i).unwrap_or(usize::MAX)))
+        .collect();
+    let sessions = saved
+        .sessions
+        .into_iter()
+        .zip(&held)
+        .filter(|(_, h)| !**h)
+        .map(|(s, _)| s)
+        .collect();
+    let state = SavedState {
+        active: saved.active.and_then(index),
+        layouts,
+        sessions,
+        ..saved
+    };
+    (state, true)
+}
+
 fn keep_panes(tree: &Node<usize>, keep: impl Fn(usize) -> bool) -> Option<Node<usize>> {
     tree.leaves()
         .into_iter()
@@ -653,5 +724,86 @@ mod tests {
             ..info
         };
         assert_eq!(LiveInfo::from_list(&ended), None);
+    }
+
+    fn names(state: &SavedState) -> Vec<&str> {
+        state
+            .sessions
+            .iter()
+            .map(|s| s.name.as_deref().unwrap_or("?"))
+            .collect()
+    }
+
+    /// `held` (s1) split with `gone` (s2, no longer running), then `plain` (from an off-mode
+    /// run) alone and active after `held`.
+    fn with_held() -> SavedState {
+        state(
+            vec![s("held", Some(1)), s("gone", Some(2)), s("plain", None)],
+            vec![
+                split(Axis::Row, Node::Leaf(0), Node::Leaf(1)),
+                Node::Leaf(2),
+            ],
+            2,
+        )
+    }
+
+    #[test]
+    fn sessions_the_service_still_runs_are_not_started_again_and_the_file_is_kept() {
+        let found = Probe::Found {
+            instance: Some(INSTANCE),
+            live: vec![1, 7],
+        };
+        let (state, hold) = without_service(with_held(), &found);
+        assert!(hold, "the file keeps the mapping until the user decides");
+        assert_eq!(names(&state), ["gone", "plain"]);
+        // The split loses its held pane; indices follow the shorter list.
+        assert_eq!(state.layouts, vec![Node::Leaf(0), Node::Leaf(1)]);
+        assert_eq!(state.active, Some(1), "still `plain`");
+        assert_eq!(state.collapsed, with_held().collapsed);
+        // The active one was held: no active index (the first is shown).
+        let mut held_active = with_held();
+        held_active.active = Some(0);
+        assert_eq!(without_service(held_active, &found).0.active, None);
+    }
+
+    #[test]
+    fn another_service_or_none_restores_everything_as_before() {
+        let other = Probe::Found {
+            instance: Some(INSTANCE + 1),
+            live: vec![1, 2],
+        };
+        assert_eq!(without_service(with_held(), &other), (with_held(), false));
+        // An older service has no instance: its ids mean nothing either.
+        let older = Probe::Found {
+            instance: None,
+            live: vec![1, 2],
+        };
+        assert_eq!(without_service(with_held(), &older), (with_held(), false));
+        assert_eq!(
+            without_service(with_held(), &Probe::Absent),
+            (with_held(), false)
+        );
+        // The right service, but none of the saved sessions runs any more.
+        let ended = Probe::Found {
+            instance: Some(INSTANCE),
+            live: vec![9],
+        };
+        assert_eq!(without_service(with_held(), &ended), (with_held(), false));
+    }
+
+    #[test]
+    fn a_service_that_did_not_answer_keeps_every_session_it_ran() {
+        let (state, hold) = without_service(with_held(), &Probe::NoAnswer);
+        assert!(hold);
+        assert_eq!(names(&state), ["plain"]);
+        assert_eq!(state.layouts, vec![Node::Leaf(0)]);
+        assert_eq!(state.active, Some(0));
+        // A file written without the service: nothing to keep, everything restores.
+        let mut local = with_held();
+        local.daemon_instance = None;
+        assert_eq!(
+            without_service(local.clone(), &Probe::NoAnswer),
+            (local, false)
+        );
     }
 }

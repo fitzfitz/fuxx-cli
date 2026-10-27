@@ -425,6 +425,12 @@ pub struct Running {
 }
 
 impl Running {
+    /// The last `SetTheme` (tests).
+    #[cfg(test)]
+    pub(crate) fn theme(&self) -> Option<Theme> {
+        *lock(&self.shared.theme)
+    }
+
     /// Block until the daemon exits (idle, or `Stop`).
     pub fn wait(mut self) {
         if let Some(tick) = self.tick.take() {

@@ -21,6 +21,7 @@ use gpui::{
     SharedString, Subscription, Task, Window, actions, canvas, div, prelude::*, px, relative,
 };
 
+use crate::adopt::{self, Probe};
 use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
@@ -39,7 +40,7 @@ use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
-use crate::workspace_daemon::{Service, open_refusal};
+use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 
 actions!(
     workspace,
@@ -262,38 +263,60 @@ impl Workspace {
         if persistent {
             this.connect_service(window, cx);
         } else {
-            this.probe_leftover_service(cx);
-            this.restore(window, cx);
+            let probe = this.probe_leftover_service();
+            if this.restore(&probe, window, cx) && probe == Probe::NoAnswer {
+                this.notice = Some(UNANSWERED_NOTICE.into());
+            }
         }
         this
     }
 
-    /// Reopen the saved sessions per the `session-restore` mode, or start one plain session.
-    /// With the background service, its live sessions come back first (`reopen`). Saving
-    /// starts once that is done.
-    pub(crate) fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(client) = self.service.client() {
-            self.reopen(client, window, cx);
-            return;
+    /// Without the background service (persistence off, or it couldn't be reached): reopen
+    /// the saved sessions per the `session-restore` mode, or start one plain session. Saved
+    /// sessions the service still runs, or may run (`probe`), aren't started a second time, and
+    /// the sessions file is kept for the rest of the run (`adopt::without_service`); true when
+    /// that held some back. Saving starts once done. (With the service: `reopen`.)
+    pub(crate) fn restore(
+        &mut self,
+        probe: &Probe,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (saved, held) = match read_saved() {
+            Some(saved) => {
+                let (saved, held) = adopt::without_service(saved, probe);
+                (Some(saved), held)
+            }
+            None => (None, false),
+        };
+        if held {
+            eprintln!(
+                "[fuxx] restore: saved sessions the background service may still run weren't started again; keeping the sessions file"
+            );
+            self.hold_saving = true;
         }
-        let Some((state, launches)) = self.saved_launches(cx) else {
+        let Some((state, launches)) = self.saved_launches(saved, cx) else {
             self.open_first(window, cx);
-            return;
+            return held;
         };
         for launch in launches {
             self.open_session(launch, None, window, cx);
         }
         self.restored(state, window, cx);
+        held
     }
 
-    /// The saved state and its launches per the `session-restore` mode; `None` means start one
-    /// plain session.
-    fn saved_launches(&self, cx: &Context<Self>) -> Option<(SavedState, Vec<Launch>)> {
+    /// `saved`'s launches per the `session-restore` mode; `None` means start one plain session.
+    fn saved_launches(
+        &self,
+        saved: Option<SavedState>,
+        cx: &Context<Self>,
+    ) -> Option<(SavedState, Vec<Launch>)> {
         let mode = cx.global::<Appearance>().restore;
         if mode == RestoreMode::Off {
             return None;
         }
-        let state = read_saved().filter(|s| !s.sessions.is_empty())?;
+        let state = saved.filter(|s| !s.sessions.is_empty())?;
         let launches = restore::launches(&state, mode, &cx.global::<Appearance>().presets);
         Some((state, launches))
     }
