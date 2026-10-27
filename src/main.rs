@@ -385,9 +385,6 @@ fn main() {
             if persistent {
                 cx.bind_keys([KeyBinding::new("alt-cmd-q", QuitAndEndSessions, None)]);
             }
-            // With persistence on, quitting (here, or by closing the window) only detaches: the
-            // background service keeps the sessions running.
-            cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
             cx.on_action(|_: &OpenPreferences, cx: &mut App| preferences::open_or_activate(cx));
             // Read once, before any view exists: every view takes its theme and font from it, and
             // the agent submenu is built from its presets.
@@ -411,6 +408,19 @@ fn main() {
                     },
                 )
                 .expect("failed to open the window");
+            // With persistence on, quitting (here, or by closing the window) only detaches: the
+            // background service keeps the sessions running. Not while a quit that ends
+            // sessions first is under way: that one finishes.
+            cx.on_action(move |_: &Quit, cx: &mut App| {
+                if main_window
+                    .read(cx)
+                    .is_ok_and(|workspace| workspace.quitting)
+                {
+                    eprintln!("[fuxx] already quitting: waiting for the sessions to end");
+                } else {
+                    cx.quit();
+                }
+            });
             // Ends every session (the background service's too), then quits.
             cx.on_action(move |_: &QuitAndEndSessions, cx: &mut App| {
                 let ended =

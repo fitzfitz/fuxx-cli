@@ -142,10 +142,15 @@ impl TerminalView {
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
 
-    /// End the session in the daemon (Daemon backend; its `Exited` follows). Local: nothing,
-    /// dropping the view ends the child.
+    /// End the session in the daemon (Daemon backend; its `Exited` follows, and input it hasn't
+    /// delivered yet is discarded). Local: nothing, dropping the view ends the child.
     pub fn close(&self) {
         self.core.close();
+    }
+
+    /// Whether this view's session goes through `client` (that very connection).
+    pub fn uses_client(&self, client: &Arc<DaemonClient>) -> bool {
+        self.core.uses_client(client)
     }
 
     /// The daemon session this view shows; `None` on the Local backend.

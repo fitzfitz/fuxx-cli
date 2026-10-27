@@ -30,6 +30,19 @@ pub(crate) enum Service {
     },
 }
 
+/// Why a new session can't open now, if it can't: while connecting, after the service was
+/// lost (a new one would reuse the lost sessions' numbers), and while the service's sessions
+/// are being reopened (their layouts are put back at the end).
+pub(crate) fn open_refusal(service: &Service, restoring: bool) -> Option<&'static str> {
+    match service {
+        Service::Off => None,
+        Service::Starting => Some("the background service is starting"),
+        Service::Lost { .. } => Some("the background service was lost (reopen fuxx)"),
+        Service::On(_) if restoring => Some("fuxx is reopening its sessions"),
+        Service::On(_) => None,
+    }
+}
+
 impl Service {
     pub(crate) fn client(&self) -> Option<Arc<DaemonClient>> {
         match self {
@@ -99,7 +112,8 @@ impl Workspace {
     /// The Quit item says how many sessions keep running (persistence on); the menu bar is
     /// rebuilt only when that number changes.
     pub(crate) fn sync_quit_title(&mut self, cx: &mut Context<Self>) {
-        if !self.persistent {
+        // While restoring, once at the end (`finish_restoring`).
+        if !self.persistent || self.restoring {
             return;
         }
         let n = match self.service {
@@ -125,7 +139,13 @@ impl Workspace {
             return;
         };
         session.lost = true;
-        if let Service::On(client) = &self.service {
+        // Only a view of the current connection speaks for it: a late one from a connection
+        // already replaced (after a reconnect) loses just its own session.
+        let current = match &self.service {
+            Service::On(client) => session.view.read(cx).uses_client(client),
+            _ => false,
+        };
+        if current && let Service::On(client) = &self.service {
             let pid = client.pid();
             eprintln!(
                 "[fuxx] background service: lost the connection (pid {pid}); keeping the sessions, trying again"
@@ -240,6 +260,17 @@ impl Workspace {
     /// "Quit fuxx and End All Sessions": end every session (in the background service, once
     /// it has them), save the empty list as closing the last session does, then quit.
     pub fn end_all_and_quit(&mut self, cx: &mut Context<Self>) {
+        if self.quitting {
+            eprintln!("[fuxx] already quitting: waiting for the sessions to end");
+            return;
+        }
+        self.quitting = true;
+        let lost = self.sessions.items().iter().filter(|s| s.lost).count();
+        if lost > 0 {
+            eprintln!(
+                "[fuxx] background service: {lost} lost session(s) not ended (no connection to them)"
+            );
+        }
         let ending: Vec<u64> = self
             .sessions
             .items()
@@ -303,7 +334,25 @@ pub(crate) fn wait_ended(client: &DaemonClient, id: u64, within: Duration) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::wait_ended;
+    use super::{Service, open_refusal, wait_ended};
+
+    #[test]
+    fn new_sessions_wait_for_the_service_and_its_restore() {
+        use crate::daemon_client::DaemonClient;
+        use crate::daemon_client::tests::daemon;
+        assert_eq!(open_refusal(&Service::Off, false), None);
+        // A Local restore opens its sessions itself, synchronously.
+        assert_eq!(open_refusal(&Service::Off, true), None);
+        let starting = open_refusal(&Service::Starting, true).unwrap();
+        assert!(starting.contains("starting"), "{starting}");
+        let lost = open_refusal(&Service::Lost { pid: 9 }, false).unwrap();
+        assert!(lost.contains("lost"), "{lost}");
+        let (_d, path) = daemon("ws-refusal");
+        let on = Service::On(DaemonClient::connect(&path).unwrap());
+        assert_eq!(open_refusal(&on, false), None);
+        let reopening = open_refusal(&on, true).unwrap();
+        assert!(reopening.contains("reopening"), "{reopening}");
+    }
 
     #[test]
     fn waiting_for_a_closed_session_to_be_gone() {

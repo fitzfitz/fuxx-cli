@@ -26,7 +26,7 @@ use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::status::Status;
 use crate::workspace::{Opened, Workspace};
-use crate::workspace_daemon::wait_ended;
+use crate::workspace_daemon::{open_refusal, wait_ended};
 
 /// How many non-blank lines `session.question` returns.
 const QUESTION_LINES: usize = 12;
@@ -154,7 +154,7 @@ impl Workspace {
             }
             "session.send" => {
                 let text = required_str(p, "text")?;
-                let i = self.target_index(p, "target")?;
+                let i = self.live_target(p, "target")?;
                 let mut bytes = text.as_bytes().to_vec();
                 if bool_param(p, "enter")? {
                     bytes.push(b'\r');
@@ -163,7 +163,7 @@ impl Workspace {
                 Ok(json!({}))
             }
             "session.key" => {
-                let i = self.target_index(p, "target")?;
+                let i = self.live_target(p, "target")?;
                 let app_cursor = self.sessions.items()[i].view.read(cx).app_cursor();
                 let bytes = key_sequence(p.get("keys"), app_cursor)?;
                 self.type_into(i, &bytes, cx);
@@ -171,7 +171,7 @@ impl Workspace {
             }
             "session.paste" => {
                 let text = required_str(p, "text")?;
-                let i = self.target_index(p, "target")?;
+                let i = self.live_target(p, "target")?;
                 let view = self.sessions.items()[i].view.clone();
                 view.update(cx, |view, cx| view.paste(text, cx));
                 Ok(json!({}))
@@ -183,11 +183,11 @@ impl Workspace {
                 Ok(json!({ "text": text }))
             }
             "session.status" => {
-                let i = self.target_index(p, "target")?;
+                let i = self.live_target(p, "target")?;
                 Ok(json!({ "status": self.sessions.items()[i].status.as_str() }))
             }
             "session.question" => {
-                let i = self.target_index(p, "target")?;
+                let i = self.live_target(p, "target")?;
                 let session = &self.sessions.items()[i];
                 if session.status != Status::Waiting {
                     return Err(not_waiting(session.id, session.status));
@@ -198,7 +198,7 @@ impl Workspace {
             "session.answer" => {
                 let text = required_str(p, "text")?;
                 let force = bool_param(p, "force")?;
-                let i = self.target_index(p, "target")?;
+                let i = self.live_target(p, "target")?;
                 let session = &self.sessions.items()[i];
                 if session.status != Status::Waiting && !force {
                     return Err(not_waiting(session.id, session.status));
@@ -286,10 +286,19 @@ impl Workspace {
                     on_screen: shown.is_some_and(|t| t.contains(s.view.entity_id())),
                     note: s.note.as_deref(),
                     progress: s.progress.as_ref(),
+                    live: !s.lost,
                 })
             })
             .collect();
         Value::Array(entries)
+    }
+
+    /// `target_index` for input, questions and waits: a lost session refuses them.
+    fn live_target(&self, p: &Value, key: &str) -> Result<usize, ApiError> {
+        let i = self.target_index(p, key)?;
+        let session = &self.sessions.items()[i];
+        refuse_lost(session.id, session.lost)?;
+        Ok(i)
     }
 
     /// The sidebar index of the session `p[key]` names; no target means the caller, else the
@@ -359,7 +368,7 @@ impl Workspace {
             }
             Watch::Any
         } else {
-            let i = self.target_index(p, "target")?;
+            let i = self.live_target(p, "target")?;
             Watch::One(self.sessions.items()[i].id)
         };
         let cond = api::parse_wait(opt_str(p, "for")?, opt_str(p, "text")?)?;
@@ -494,6 +503,7 @@ impl Workspace {
             window.remove_window();
             return;
         }
+        self.quitting = true;
         cx.spawn_in(window, async move |_, cx| {
             cx.background_spawn(async move {
                 let deadline = Instant::now() + REPLY_FLUSH;
@@ -550,6 +560,9 @@ impl Workspace {
         let project = folder
             .or_else(|| of.and_then(|i| self.sessions.items()[i].project.clone()))
             .or_else(|| self.active_project());
+        if let Some(why) = open_refusal(&self.service, self.restoring) {
+            return Err(ApiError::unavailable(format!("no new session: {why}")));
+        }
         // By id: the new session's row can push the previous one down.
         let previous = self.sessions.active().map(|s| s.id);
         // The split path splits the active session, so `of` becomes it first.
@@ -615,6 +628,8 @@ struct ListEntry<'a> {
     on_screen: bool,
     note: Option<&'a str>,
     progress: Option<&'a (u8, Option<String>)>,
+    /// False once the background service was lost: the session no longer updates.
+    live: bool,
 }
 
 fn list_entry(e: &ListEntry) -> Value {
@@ -630,6 +645,7 @@ fn list_entry(e: &ListEntry) -> Value {
         "on_screen": e.on_screen,
         "note": e.note,
         "progress": e.progress.map(|(percent, label)| json!({ "percent": percent, "label": label })),
+        "live": e.live,
     })
 }
 
@@ -804,6 +820,17 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Input, questions and waits need a live session: one whose background service was lost
+/// refuses them.
+fn refuse_lost(id: u64, lost: bool) -> Result<(), ApiError> {
+    if lost {
+        return Err(ApiError::unavailable(format!(
+            "s{id}: the background service was lost (reopen fuxx)"
+        )));
+    }
+    Ok(())
+}
+
 fn not_waiting(id: u64, status: Status) -> ApiError {
     ApiError::refused(format!("s{id} is not waiting (it is {})", status.as_str()))
 }
@@ -827,6 +854,7 @@ mod tests {
             on_screen: true,
             note: Some("tests"),
             progress: Some(&(40, Some("build".into()))),
+            live: true,
         };
         let v = list_entry(&e);
         assert_eq!(
@@ -835,6 +863,7 @@ mod tests {
                 "id": "s4", "number": 2, "name": "api", "title": "claude", "status": "waiting",
                 "project": "/x/api", "preset": "claude", "focused": true, "on_screen": true,
                 "note": "tests", "progress": {"percent": 40, "label": "build"},
+                "live": true,
             })
         );
         assert_eq!(
@@ -867,6 +896,31 @@ mod tests {
                 &Value::Null
             )
         );
+    }
+
+    #[test]
+    fn a_lost_session_is_listed_as_not_live_and_refuses_input() {
+        let e = ListEntry {
+            id: 4,
+            number: 2,
+            name: "api",
+            title: None,
+            status: Status::Waiting,
+            project: None,
+            preset: None,
+            focused: false,
+            on_screen: false,
+            note: None,
+            progress: None,
+            live: false,
+        };
+        let v = list_entry(&e);
+        assert_eq!(v["live"], json!(false));
+        assert_eq!(cli::render("ls", &json!([v]), false), "s4  #2  lost  api");
+        assert_eq!(refuse_lost(4, false), Ok(()));
+        let e = refuse_lost(4, true).unwrap_err();
+        assert_eq!(e.code, "unavailable");
+        assert!(e.message.contains("s4"), "{}", e.message);
     }
 
     #[test]
