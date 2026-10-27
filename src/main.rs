@@ -14,9 +14,10 @@ mod mouse;
 mod notifier;
 mod preferences;
 mod prefs;
-#[allow(dead_code)] // used from M7 Task 3/4; remove then
 mod presets;
 mod pty;
+#[allow(dead_code)] // the state file and launches are used from M7 Task 4/6
+mod restore;
 mod session_list;
 mod settings;
 mod status;
