@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: not-started
+status: built-awaiting-check
 ---
 
 # 46b - Milestone 6b - Settings Window
 
-**Status:: ⬜ Not started (plan written 2026-10-27).**  ·  **Phase 2: change how fuxx looks without editing a file.**
+**Status:: 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do.**  ·  **Phase 2: change how fuxx looks without editing a file.**
 **Plan:** [[M6b Plan - Settings Window]] (step-by-step, with status per task)
 
 ## Goal

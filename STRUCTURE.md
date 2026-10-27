@@ -66,18 +66,29 @@ src/
 ├── status.rs             M2 · Status (Idle/Working/Waiting/Done) + StatusTracker heuristics
 │
 │   many sessions
-├── session_list.rs       M3 · ordered sessions + active index; switching/closing rules
+├── session_list.rs       M3 · ordered sessions + active index; switching/closing rules   M7 · insert, move
 ├── workspace.rs          M3 · root view: sidebar, active pane, session lifecycle, actions
 │                         M4 · per-session status rings, window focus, notifications
+│                         M7 · groups, rename, drag/move, presets, save/restore   M8 · split layouts
+├── groups.rs             M7 · names (🖕 default), group labels/rows, rolled-up ring, ordering rules
+├── name_input.rs         M7 · the rename text box (emoji / IME input)
+├── presets.rs            M7 · agent presets (claude / opencode / codex + agent-preset lines)
+├── restore.rs            M7 · session-restore setting, sessions.json format   M8 · layouts
+├── split_tree.rs         M8 · nested split tree: split, close, neighbours, ratios, sanitize
+├── panes.rs              M8 · draws a layout: nested panes, dividers, dimming
+│
+│   settings window
+├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
+├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row
 │
 │   notifications
 └── notifier.rs           M4 · osascript notifications, escaping, focus-aware rule
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
-21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5 and 106 at the end of M6.
+21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6 and 150 after M6b + M7 + M8.
 
-`assets/fonts/` holds the bundled icon font and its licences; `assets/themes/` the six built-in themes and their credits.
+`assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits.
 
 Example `~/.config/fuxx/config` (all optional; fuxx never writes it):
 

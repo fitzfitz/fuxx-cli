@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M7
-status: in-progress
+status: built-awaiting-check
 updated: 2026-10-27
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[47 - Milestone 7 - Session Ergonomics]] (the spec) |
-| **Status** | 🟨 In progress |
-| **Tasks done** | 0 / 8 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do. |
+| **Tasks done** | 7 / 8 |
+| **▶ Pick up here** | Task 7 — your on-screen check (combined with M6b and M8) |
 | **Decisions used** | **Yours (2026-10-27):** build before the M6b check; presets = 3 built-ins + your own; restore = layout + re-run presets, as a setting. The rest are the AI's calls listed in the spec. |
 | **Needs your eyes** | 👀 Task 7, done together with the M6b and M8 checks |
 
@@ -82,7 +82,7 @@ updated: 2026-10-27
 
 ---
 
-### Task 1: Groups and ordering, without GPUI — ⬜
+### Task 1: Groups and ordering, without GPUI — ✅
 
 **Files:** Create `src/groups.rs` · Modify `src/session_list.rs`, `src/main.rs` (`mod groups;`).
 
@@ -193,7 +193,7 @@ fn move_item_keeps_the_same_item_active() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (126), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m7): pure group, name and ordering rules"`
 
-### Task 2: Agent presets from the settings file — ⬜
+### Task 2: Agent presets from the settings file — ✅
 
 **Files:** Modify `Cargo.toml` · Create `src/presets.rs` · Modify `src/main.rs` (`mod presets;`).
 
@@ -269,7 +269,7 @@ fn other_keys_are_ignored() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (131), 0 warnings.
 - [ ] **Step 5: Commit:** `git add Cargo.toml Cargo.lock src && git commit -m "feat(m7): agent presets (built-in three + agent-preset lines)"`
 
-### Task 3: The restore setting and the state file — ⬜
+### Task 3: The restore setting and the state file — ✅
 
 **Files:** Create `src/restore.rs` · Modify `src/appearance.rs`, `src/main.rs` (`mod restore;`).
 
@@ -366,7 +366,7 @@ fn state_path_is_in_application_support() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (137), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m7): session-restore setting and the saved-sessions file format"`
 
-### Task 4: Sessions in folders, agent presets in the menu — ⬜
+### Task 4: Sessions in folders, agent presets in the menu — ✅
 
 **Files:** Modify `src/terminal_view.rs`, `src/workspace.rs`, `src/main.rs`.
 
@@ -383,7 +383,7 @@ fn state_path_is_in_application_support() {
 - [ ] **Step 2: Run** `cargo build` and `cargo test`. Expected: 0 warnings, 137 passed.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m7): new session in a folder, agent presets in File menu"`
 
-### Task 5: The grouped sidebar, renaming and reordering — ⬜
+### Task 5: The grouped sidebar, renaming and reordering — ✅
 
 **Files:** Create `src/name_input.rs` · Modify `src/workspace.rs`, `src/main.rs` (`mod name_input;`, menus, bindings).
 
@@ -404,7 +404,7 @@ fn state_path_is_in_application_support() {
 - [ ] **Step 2: Run** `cargo build` and `cargo test`. Expected: 0 warnings, 137 passed.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m7): grouped sidebar, rename box, drag and menu reordering"`
 
-### Task 6: Save and restore the sessions; the Preferences row — ⬜
+### Task 6: Save and restore the sessions; the Preferences row — ✅
 
 **Files:** Modify `src/workspace.rs`, `src/preferences.rs`, `src/prefs.rs` (if a pure helper is needed).
 
@@ -429,7 +429,7 @@ Done together with the M6b and M8 checks (your choice, 2026-10-27). Run `cargo r
 - [ ] **Restore:** quit with ⌘Q and reopen: same sessions, names, order, groups, closed groups and current session; claude starts again. Set Preferences → Restore sessions → Layout, restart: the same sessions but claude doesn't start. Off: one new session. Close every session with `exit`: next launch starts one new session.
 - [ ] **Unchanged:** M5/M6/M6b behaviours (selection, links, Mac keys, rings, Preferences).
 
-### Task 8: Update the docs — ⬜
+### Task 8: Update the docs — ✅
 
 - [ ] Milestone note 47 ✅ with the checklist ticked; this plan's tasks ✅; roadmap M7 ✅; tracker.
 - [ ] `STRUCTURE.md`: `groups.rs`, `presets.rs`, `restore.rs`, `name_input.rs`.
@@ -441,6 +441,22 @@ Done together with the M6b and M8 checks (your choice, 2026-10-27). Run `cargo r
 _(filled in as tasks complete)_
 
 ## Known limitations
+
+**Calls made during the build (2026-10-27), say if any should change:**
+- Enter on an untouched automatic name keeps it automatic (it keeps following the program's title).
+- A left-click anywhere in the sidebar cancels a rename (focus goes back to the terminal).
+- With restore `off`, the sessions file is still kept up to date; `off` only changes what happens at launch.
+- A missing sessions file logs nothing (the spec said "logs a line"; it would only add noise on first launch).
+- Restore looks each preset up by name in today's settings (fixed after the final review).
+
+**Small issues left for later:**
+- Backspace in the rename box removes one character, so multi-part emoji need several presses.
+- A background session exiting cancels a rename in progress.
+- The preset command is typed ahead, so it shows before the first prompt; an rc file that reads input could swallow it.
+- Restored `collapsed` groups aren't filtered to existing ones; some actions save without a change.
+- A corrupt or unknown-version sessions file is replaced on the next save; the restored active session can be off by one if a session fails to start.
+- Preset menu labels are built at startup but the shortcuts read today's presets after a Preferences reload.
+
 
 - The rename box always types at the end (no caret movement or selection).
 - Restored sessions start in their group's folder, not wherever the shell had `cd`'d to.
