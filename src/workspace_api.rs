@@ -625,8 +625,14 @@ const NOTE_MAX_CHARS: usize = 120;
 
 /// Trimmed text cut to `NOTE_MAX_CHARS` at a character boundary; blank is `None`.
 fn clean_note(text: &str) -> Option<String> {
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.chars().take(NOTE_MAX_CHARS).collect())
+    // Control characters (newlines, tabs) become spaces so the note stays one line.
+    let one_line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let capped: String = one_line.trim().chars().take(NOTE_MAX_CHARS).collect();
+    let capped = capped.trim_end();
+    (!capped.is_empty()).then(|| capped.to_string())
 }
 
 /// `session.note`'s `text`: a string sets, null clears, absent or anything else is a bad request.
@@ -831,6 +837,9 @@ mod tests {
         let got = note_param(&json!({ "text": long })).unwrap().unwrap();
         assert_eq!(got.chars().count(), NOTE_MAX_CHARS);
         assert_eq!(clean_note(&"a".repeat(120)).unwrap().len(), 120);
+        // One line in the sidebar: control characters become spaces.
+        assert_eq!(clean_note("build\nok\tnow"), Some("build ok now".into()));
+        assert_eq!(clean_note("\n\r\t"), None);
     }
 
     #[test]
