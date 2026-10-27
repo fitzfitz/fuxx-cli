@@ -14,13 +14,20 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M6b, M7 and M8** — built, reviewed and merged to `master` 2026-10-27; 👀 your combined on-screen check is next (see [[00 - Plan Tracker (Start Here)]]).
+- **Current milestone:** **M9 — Scripting API** (not started; brainstorm first). M0–M8 and M4b, M6b ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-27 — Milestones 6b, 7 and 8 complete
+- **Did:** You ran the combined on-screen check (M6b Task 5, M7 Task 7, M8 Task 6): all good, including JetBrains
+  Mono ligatures, groups, rename, presets, restore and split panes. All three milestones flipped to ✅.
+- **Learned:** Nothing new.
+- **Blocked:** Nothing.
+- **Next task:** Brainstorm **M9 — Scripting API** with you, then its spec and plan.
 
 ### 2026-10-27 — Roadmap renumbered: M11 is the UI/UX uplift
 - **Did:** On request, a new **M11 — UI/UX uplift** before shipping; the signed `.app` (+ notification click) moved

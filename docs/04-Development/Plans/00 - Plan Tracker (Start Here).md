@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M6b + M7 + M8** (Phase 2): built, reviewed and merged to `master`; waiting for your on-screen check |
-| **Status** | 👀 You chose to build M7 and M8 before checking M6b, then to merge all three before the checks (2026-10-27). 150 tests, 0 warnings. |
-| **▶ Next action** | Your combined on-screen check: M6b Task 5, M7 Task 7, M8 Task 6. Fixes go into the milestone they belong to; then each flips to ✅. After that: a new tester DMG (bundle the font licences), then plan M9. |
+| **Current milestone** | **M9 — Scripting API** (Phase 3). M6b, M7 and M8 are complete |
+| **Status** | ⬜ Not started: no plan yet. M6b, M7, M8 ✅ done 2026-10-27 (on-screen checks confirmed by you). |
+| **▶ Next action** | Brainstorm M9 with you (what scripts should control), then write its spec and plan. |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-27 |
 
@@ -48,9 +48,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
 | M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | ✅ | 8/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
 | M6 | Fonts & config (own settings file, themes, prompt icons) | [[M6 Plan - Fonts and Config]] | ✅ | 9/9 | fuxx's own settings file + themes; prompt icons for everyone |
-| M6b | Settings window (File → Preferences… / cmd-,) + bundled JetBrains Mono — *added 2026-10-27* | [[M6b Plan - Settings Window]] | 👀 | 6/7 | Change theme/font/size in a window; saved and applied live |
-| M7 | Session ergonomics (groups, rename/reorder, presets, restore) | [[M7 Plan - Session Ergonomics]] | 👀 | 7/8 | Groups, names, order, presets come back after a restart |
-| M8 | Split panes (nested) — *moved into scope 2026-10-27* | [[M8 Plan - Split Panes]] | 👀 | 6/7 | ⌘D / ⌘⇧D, drag dividers, layouts restored |
+| M6b | Settings window (File → Preferences… / cmd-,) + bundled JetBrains Mono — *added 2026-10-27* | [[M6b Plan - Settings Window]] | ✅ | 7/7 | Change theme/font/size in a window; saved and applied live |
+| M7 | Session ergonomics (groups, rename/reorder, presets, restore) | [[M7 Plan - Session Ergonomics]] | ✅ | 8/8 | Groups, names, order, presets come back after a restart |
+| M8 | Split panes (nested) — *moved into scope 2026-10-27* | [[M8 Plan - Split Panes]] | ✅ | 7/7 | ⌘D / ⌘⇧D, drag dividers, layouts restored |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).

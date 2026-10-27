@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: built-awaiting-check
+status: done
 ---
 
 # 48 - Milestone 8 - Split Panes
 
-**Status:: 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do.**  ·  **Phase 2 (moved up from Phase 3 on request).**
+**Status:: ✅ Done (2026-10-27). All on-screen checks confirmed by you.**  ·  **Phase 2 (moved up from Phase 3 on request).**
 **Plan:** [[M8 Plan - Split Panes]] (step-by-step, with status per task)
 
 ## Goal
@@ -73,11 +73,11 @@ Everything else below is the AI's call. Say if any should change.
 
 ## Rough scope / checklist
 
-- [ ] Split Right (⌘D) / Split Down (⌘⇧D), nested, new session in the same group.
-- [ ] Focus by click, ⌥⌘arrows, ⌘[ / ⌘]; unfocused panes dimmed.
-- [ ] Drag dividers (10%–90%); Equalize Panes (⌃⌘=); programs get the new size.
-- [ ] Sidebar shows which sessions are on screen; selecting a session shows its layout.
-- [ ] Closing a pane gives its space to the neighbour; restore brings layouts back.
+- [x] Split Right (⌘D) / Split Down (⌘⇧D), nested, new session in the same group.
+- [x] Focus by click, ⌥⌘arrows, ⌘[ / ⌘]; unfocused panes dimmed.
+- [x] Drag dividers (10%–90%); Equalize Panes (⌃⌘=); programs get the new size.
+- [x] Sidebar shows which sessions are on screen; selecting a session shows its layout.
+- [x] Closing a pane gives its space to the neighbour; restore brings layouts back.
 
 ## Not in M8
 

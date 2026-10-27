@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: built-awaiting-check
+status: done
 ---
 
 # 46b - Milestone 6b - Settings Window
 
-**Status:: 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do.**  ·  **Phase 2: change how fuxx looks without editing a file.**
+**Status:: ✅ Done (2026-10-27). All on-screen checks confirmed by you.**  ·  **Phase 2: change how fuxx looks without editing a file.**
 **Plan:** [[M6b Plan - Settings Window]] (step-by-step, with status per task)
 
 ## Goal
@@ -68,12 +68,12 @@ You said "go", so these are the AI's calls unless marked as yours. Say if any sh
 
 ## Rough scope / checklist
 
-- [ ] Menu bar: fuxx (Quit), File (New/Close Session, Preferences… cmd-,).
-- [ ] Preferences window: opens or comes to the front; closes with cmd-W.
-- [ ] Theme list, font list (fixed-width only), size −/+, ligatures switch; current values highlighted.
-- [ ] Each change applies live to all sessions and the sidebar, and is saved to the settings file (only that line changes).
-- [ ] Default session name is 🖕 instead of "Shell N".
-- [ ] JetBrains Mono bundled and the default font; ligatures visible with it.
+- [x] Menu bar: fuxx (Quit), File (New/Close Session, Preferences… cmd-,).
+- [x] Preferences window: opens or comes to the front; closes with cmd-W.
+- [x] Theme list, font list (fixed-width only), size −/+, ligatures switch; current values highlighted.
+- [x] Each change applies live to all sessions and the sidebar, and is saved to the settings file (only that line changes).
+- [x] Default session name is 🖕 instead of "Shell N".
+- [x] JetBrains Mono bundled and the default font; ligatures visible with it.
 
 ## Not in M6b
 
