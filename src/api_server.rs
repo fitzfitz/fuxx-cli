@@ -47,6 +47,8 @@ pub struct Conn {
     /// Lines queued but not yet written.
     pending: Arc<AtomicUsize>,
     open: Arc<AtomicBool>,
+    /// The reader saw the client's end close (or stopped reading).
+    hung_up: Arc<AtomicBool>,
     stream: Arc<UnixStream>,
 }
 
@@ -69,6 +71,13 @@ impl Conn {
 
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Acquire)
+    }
+
+    /// The client is gone: it closed its end (or fuxx stopped reading it), or the connection is
+    /// closed. A client that only shuts its sending side still gets replies to what it sent, but
+    /// for a long wait or an event stream it counts as gone.
+    pub fn peer_gone(&self) -> bool {
+        self.hung_up.load(Ordering::Acquire) || !self.is_open()
     }
 
     /// Wait (blocking, up to `timeout`) until every queued line has been written. False if
@@ -123,6 +132,15 @@ impl Drop for ServerGuard {
             let _ = UnixStream::connect(&self.path);
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+/// Marks a connection's client as gone when its reader thread ends.
+struct HangUp(Arc<AtomicBool>);
+
+impl Drop for HangUp {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -262,6 +280,7 @@ fn serve(stream: UnixStream, tx: UnboundedSender<Incoming>, slot: Slot) {
         queue,
         pending: Arc::new(AtomicUsize::new(0)),
         open: Arc::new(AtomicBool::new(true)),
+        hung_up: Arc::new(AtomicBool::new(false)),
         stream: Arc::new(stream),
     };
 
@@ -290,6 +309,8 @@ fn serve(stream: UnixStream, tx: UnboundedSender<Incoming>, slot: Slot) {
         .spawn(move || {
             let mut reader = BufReader::new(read_half);
             let mut buf = Vec::new();
+            // However reading ends, nothing more comes from this client.
+            let _hung_up = HangUp(conn.hung_up.clone());
             loop {
                 buf.clear();
                 // Bounded: a line longer than MAX_LINE stops at MAX_LINE + 1 bytes.
@@ -489,6 +510,24 @@ mod tests {
             got.extend_from_slice(&buf[..n]);
         }
         assert_eq!(got.len(), 4 * 1001);
+    }
+
+    #[test]
+    fn peer_gone_flips_when_the_client_hangs_up() {
+        let path = temp_dir("gone").join("f.sock");
+        let (_g, rx) = start(&path).unwrap();
+        let mut rx = futures::executor::block_on_stream(rx);
+        let mut s = UnixStream::connect(&path).unwrap();
+        use std::io::Write;
+        s.write_all(b"{\"method\":\"session.wait\"}\n").unwrap();
+        let conn = rx.next().unwrap().conn;
+        assert!(!conn.peer_gone());
+        drop(s);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !conn.peer_gone() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(conn.peer_gone());
     }
 
     #[test]
