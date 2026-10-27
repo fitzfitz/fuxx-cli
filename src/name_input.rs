@@ -180,8 +180,9 @@ impl EntityInputHandler for NameInput {
         self.marked.as_ref().map(|r| self.range_to_utf16(r))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked = None;
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.caret_to_end();
+        cx.notify();
     }
 
     fn replace_text_in_range(

@@ -1,6 +1,7 @@
 //! The root view: a sidebar listing every session (with its status ring) and the active
 //! session's terminal. Owns session lifecycle, switching, and background notifications.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use gpui::{
@@ -77,9 +78,11 @@ impl Session {
     }
 }
 
-/// What a sidebar row carries while it's dragged: the session (by its view) and its name.
+/// What a sidebar row carries while it's dragged: the session (by its view), its group and its
+/// name.
 struct DraggedSession {
     view: EntityId,
+    project: Option<PathBuf>,
     label: SharedString,
 }
 
@@ -476,7 +479,7 @@ impl Workspace {
         );
         let add = project.clone();
         div()
-            .id(("group", sessions.start))
+            .id(("group", group_key(&project)))
             .flex()
             .flex_row()
             .items_center()
@@ -496,7 +499,7 @@ impl Workspace {
             .child(ring(status, ui))
             .child(
                 div()
-                    .id(("group-add", sessions.start))
+                    .id("group-add")
                     .px_1()
                     .rounded_sm()
                     .hover(|style| style.bg(hsla(ui.row_active)).text_color(hsla(ui.text)))
@@ -527,10 +530,12 @@ impl Workspace {
             .map(|(_, input)| input.clone());
         let dragged = DraggedSession {
             view,
+            project: session.project.clone(),
             label: session.label(),
         };
+        let project = session.project.clone();
         div()
-            .id(("session", index))
+            .id(("session", view))
             .flex()
             .flex_row()
             .items_center()
@@ -555,6 +560,12 @@ impl Workspace {
                     label: dragged.label.clone(),
                 })
             })
+            // Only rows of the dragged session's group accept it (and tint); the drop re-checks.
+            .can_drop(move |dragged, _, _| {
+                dragged
+                    .downcast_ref::<DraggedSession>()
+                    .is_some_and(|d| d.project == project)
+            })
             .drag_over::<DraggedSession>(move |style, _, _, _| style.bg(hsla(ui.row_active)))
             .on_drop(cx.listener(move |this, dragged: &DraggedSession, _, cx| {
                 this.drop_session(dragged.view, view, cx)
@@ -565,6 +576,13 @@ impl Workspace {
                 None => row.child(format!("{}  {}", index + 1, session.label())),
             })
     }
+}
+
+/// A header's element id: stable while its sessions are reordered or closed.
+fn group_key(project: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    project.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The status ring: hollow = idle, yellow = working, red = needs you, green = done (the
