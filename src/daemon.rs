@@ -57,6 +57,13 @@ const MAX_CONNECTIONS: usize = 64;
 /// Encoded frames a connection may have waiting for its writer; senders then wait.
 const OUT_QUEUE: usize = 256;
 
+/// Bytes of a session's input still unwritten to its child above which the daemon stops
+/// reading the sending client's frames until the child catches up.
+const INPUT_BACKLOG_MAX: usize = 1 << 20;
+
+/// A connection must say `Hello` within this.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long a reply may take to reach the socket before the connection is closed anyway.
 const FLUSH: Duration = Duration::from_secs(1);
 
@@ -175,9 +182,14 @@ struct Shared {
     live: Arc<AtomicUsize>,
     /// Every open connection's socket, to close them when the daemon exits.
     conns: Mutex<HashMap<u64, Arc<UnixStream>>>,
-    /// Asked to exit (`Stop`, or the owner of `Running` let go).
+    /// The exit is decided: no new connections or sessions. Set under the table lock.
+    closing: AtomicBool,
+    /// The tick thread should end the daemon now (`Stop` once it has replied, or the owner of
+    /// `Running` let go).
     quit: AtomicBool,
     started: Instant,
+    /// A connection that hasn't said `Hello` within this is closed.
+    hello_timeout: Duration,
 }
 
 impl Shared {
@@ -187,6 +199,52 @@ impl Shared {
 
     fn all(&self) -> Vec<Arc<DaemonSession>> {
         lock(&self.sessions).values().cloned().collect()
+    }
+
+    fn closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
+    /// Add a new session, with the last theme. Refused (handing the session back) once the
+    /// daemon has decided to exit: every exit decision is taken under the table lock, so a
+    /// session is either in the table before it (and counted) or refused after it.
+    fn insert(&self, id: u64, session: Arc<DaemonSession>) -> Result<(), Arc<DaemonSession>> {
+        let mut table = lock(&self.sessions);
+        if self.closing() {
+            return Err(session);
+        }
+        table.insert(id, session.clone());
+        // The theme is read after inserting, under the table lock (`SetTheme` takes table,
+        // then theme): a racing `SetTheme` either sees the new session or stored its theme
+        // before we read it.
+        if let Some(theme) = *lock(&self.theme) {
+            session.set_theme(theme);
+        }
+        Ok(())
+    }
+
+    /// Decide to exit if there are no sessions and no connections, atomically with `insert`.
+    fn quit_if_idle(&self) -> bool {
+        let table = lock(&self.sessions);
+        let idle = table.is_empty() && self.live.load(Ordering::Acquire) == 0;
+        if idle {
+            self.closing.store(true, Ordering::Release);
+        }
+        idle
+    }
+
+    /// `Stop`: decide to exit unless sessions live and it isn't `force`, atomically with
+    /// `insert` (the caller sets `quit` once it has replied). Returns whether it is exiting, the sessions (to hang up when exiting), and
+    /// their entries.
+    fn quit_for_stop(&self, force: bool) -> (bool, Vec<Arc<DaemonSession>>, Vec<SessionInfo>) {
+        let table = lock(&self.sessions);
+        let sessions: Vec<_> = table.values().cloned().collect();
+        let infos = sessions.iter().map(|s| s.info()).collect();
+        let exiting = sessions.is_empty() || force;
+        if exiting {
+            self.closing.store(true, Ordering::Release);
+        }
+        (exiting, sessions, infos)
     }
 }
 
@@ -212,6 +270,7 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
+        self.shared.closing.store(true, Ordering::Release);
         self.shared.quit.store(true, Ordering::Release);
         if let Some(tick) = self.tick.take() {
             let _ = tick.join();
@@ -222,11 +281,34 @@ impl Drop for Running {
 /// Bind `path` and serve until stopped or idle for `idle_exit`. `AddrInUse` when a daemon
 /// already listens there.
 pub fn start(path: &Path, idle_exit: Duration) -> io::Result<Running> {
-    start_with(path, idle_exit, true)
+    start_with(
+        path,
+        Tuning {
+            idle_exit,
+            ..Tuning::default()
+        },
+    )
 }
 
-/// `start`; with `reap` false, ended sessions stay listed (tests only).
-fn start_with(path: &Path, idle_exit: Duration, reap: bool) -> io::Result<Running> {
+/// The daemon's timings; tests shorten them.
+struct Tuning {
+    idle_exit: Duration,
+    hello_timeout: Duration,
+    /// False keeps ended sessions listed (tests only).
+    reap: bool,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Tuning {
+            idle_exit: IDLE_EXIT,
+            hello_timeout: HELLO_TIMEOUT,
+            reap: true,
+        }
+    }
+}
+
+fn start_with(path: &Path, tuning: Tuning) -> io::Result<Running> {
     let listener = private_socket::bind(path)?;
     let stop = Arc::new(AtomicBool::new(false));
     let guard = SocketGuard::new(path, stop.clone());
@@ -238,28 +320,31 @@ fn start_with(path: &Path, idle_exit: Duration, reap: bool) -> io::Result<Runnin
         theme: Mutex::default(),
         live: Arc::new(AtomicUsize::new(0)),
         conns: Mutex::default(),
+        closing: AtomicBool::new(false),
         quit: AtomicBool::new(false),
         started: Instant::now(),
+        hello_timeout: tuning.hello_timeout,
     });
     let accepting = shared.clone();
     std::thread::Builder::new()
         .name("fuxx-daemon-accept".into())
         .spawn(move || {
             let live = accepting.live.clone();
+            let accepting = &accepting;
             private_socket::accept_loop(
                 listener,
                 stop,
                 live,
                 MAX_CONNECTIONS,
                 "daemon",
-                || true,
+                || !accepting.closing(),
                 |stream, slot| serve(stream, slot, accepting.clone()),
             );
         })?;
     let ticking = shared.clone();
     let tick = std::thread::Builder::new()
         .name("fuxx-daemon-tick".into())
-        .spawn(move || tick_loop(&ticking, guard, idle_exit, reap))?;
+        .spawn(move || tick_loop(&ticking, guard, tuning.idle_exit, tuning.reap))?;
     Ok(Running {
         tick: Some(tick),
         shared,
@@ -301,21 +386,30 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
             (false, _) => idle_since = None,
             (true, None) => idle_since = Some(now),
             (true, Some(since)) if now.duration_since(since) >= idle_exit => {
-                log!("idle for {idle_exit:?} with no sessions and no clients; exiting");
-                break;
+                if shared.quit_if_idle() {
+                    log!("idle for {idle_exit:?} with no sessions and no clients; exiting");
+                    shared.quit.store(true, Ordering::Release);
+                    break;
+                }
+                idle_since = None;
             }
             (true, Some(_)) => {}
         }
         std::thread::sleep(TICK);
     }
-    // Dropping a session ends its child.
-    let sessions = std::mem::take(&mut *lock(&shared.sessions));
+    // Stop accepting first (the socket goes), then end the sessions; dropping one ends its
+    // child. `closing`, set with the table locked, keeps any new one out.
+    drop(guard);
+    let sessions = {
+        let mut table = lock(&shared.sessions);
+        shared.closing.store(true, Ordering::Release);
+        std::mem::take(&mut *table)
+    };
     std::thread::scope(|scope| {
         for (_, session) in sessions {
             scope.spawn(move || drop(session));
         }
     });
-    drop(guard);
     for (_, stream) in lock(&shared.conns).drain() {
         let _ = stream.shutdown(std::net::Shutdown::Both);
     }
@@ -373,10 +467,11 @@ fn serve(stream: UnixStream, slot: Slot, shared: Arc<Shared>) {
     if writer.is_err() {
         return;
     }
-    lock(&shared.conns).insert(id, stream.clone());
     let spawned = std::thread::Builder::new()
         .name("fuxx-daemon-read".into())
         .spawn(move || {
+            // Registered here, so a failed spawn leaves no entry; `Connection::drop` removes it.
+            lock(&shared.conns).insert(id, stream.clone());
             let mut conn = Connection {
                 id,
                 shared,
@@ -385,7 +480,8 @@ fn serve(stream: UnixStream, slot: Slot, shared: Arc<Shared>) {
                 role: None,
                 attached: HashMap::new(),
             };
-            if catch_unwind(AssertUnwindSafe(|| conn.run())).is_err() {
+            // An exit decided before we registered won't shut this socket: leave at once.
+            if !conn.shared.closing() && catch_unwind(AssertUnwindSafe(|| conn.run())).is_err() {
                 log!("connection {id}: handler panicked; closing it");
             }
             // `conn` drops here, panic or not: detach, give up authority, close.
@@ -444,11 +540,27 @@ impl Connection {
     fn run(&mut self) {
         let mut decoder = Decoder::new();
         let mut buf = vec![0u8; 64 * 1024];
+        // Until `Hello`, reads time out at this deadline: a silent client can't hold a slot (and
+        // keep the daemon from its idle exit). `hello` clears the timeout.
+        let hello_by = Instant::now() + self.shared.hello_timeout;
         loop {
+            if self.role.is_none() {
+                let left = hello_by.saturating_duration_since(Instant::now());
+                if left.is_zero() || self.stream.set_read_timeout(Some(left)).is_err() {
+                    log!("connection {}: no Hello in time; closing it", self.id);
+                    return;
+                }
+            }
             let n = match (&*self.stream).read(&mut buf) {
                 Ok(0) => return,
                 Ok(n) => n,
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e)
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                        && self.role.is_none() =>
+                {
+                    continue; // the deadline check above closes it
+                }
                 Err(_) => return,
             };
             decoder.push(&buf[..n]);
@@ -504,6 +616,7 @@ impl Connection {
             }
             Frame::Input { id, bytes } => {
                 if let Some(session) = self.shared.session(id) {
+                    self.wait_for_child(&session);
                     session.input(&bytes);
                 }
                 true
@@ -528,8 +641,10 @@ impl Connection {
             }
             Frame::SetTheme { palette } => match theme_from_wire(&palette) {
                 Some(theme) => {
+                    // Table, then theme: the same order as `Shared::insert`.
+                    let table = lock(&self.shared.sessions);
                     *lock(&self.shared.theme) = Some(theme);
-                    for session in self.shared.all() {
+                    for session in table.values() {
                         session.set_theme(theme);
                     }
                     true
@@ -550,7 +665,8 @@ impl Connection {
             }
             Frame::ReadText(r) => {
                 let Some(scope) = text_scope(&r.scope) else {
-                    return self.error(Some(r.id), format!("unknown scope {:?}", r.scope));
+                    let shown: String = r.scope.chars().take(64).collect();
+                    return self.error(Some(r.id), format!("unknown scope {shown:?}"));
                 };
                 match self.shared.session(r.id) {
                     Some(session) => self.send(&Frame::Text(mux_proto::Text {
@@ -560,22 +676,43 @@ impl Connection {
                     None => self.error(Some(r.id), format!("no session s{}", r.id)),
                 }
             }
-            Frame::Info => self.send(&Frame::DaemonInfo(DaemonInfo {
-                pid: std::process::id(),
-                version: VERSION.into(),
-                proto: PROTO_MAX,
-                uptime_secs: self.shared.started.elapsed().as_secs(),
-                sessions: lock(&self.shared.sessions).len() as u64,
-            })),
+            Frame::Info => {
+                // Counted first: no lock may be held across a send, which can wait on a client
+                // that doesn't read.
+                let sessions = lock(&self.shared.sessions).len() as u64;
+                self.send(&Frame::DaemonInfo(DaemonInfo {
+                    pid: std::process::id(),
+                    version: VERSION.into(),
+                    proto: PROTO_MAX,
+                    uptime_secs: self.shared.started.elapsed().as_secs(),
+                    sessions,
+                }))
+            }
             Frame::Stop { force } => self.stop(force),
             // Daemon-to-client kinds, and kinds from a newer client: ignored.
             _ => true,
         }
     }
 
+    /// Backpressure: while the session holds more than `INPUT_BACKLOG_MAX` unwritten input
+    /// bytes, stop reading this client's frames (its socket then fills, and it waits). Nothing
+    /// is dropped, and other clients are unaffected. Ends early if the session ends or the
+    /// daemon exits.
+    fn wait_for_child(&self, session: &DaemonSession) {
+        while session.input_backlog() > INPUT_BACKLOG_MAX
+            && !self.shared.closing()
+            && session.info().alive
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn hello(&mut self, hello: &Hello) -> bool {
         match mux_proto::negotiate(hello.proto_min, hello.proto_max) {
             Ok(proto) => {
+                if self.stream.set_read_timeout(None).is_err() {
+                    return false;
+                }
                 self.role = Some(hello.role);
                 if hello.role == Role::Ui {
                     self.shared.resize_owner.store(self.id, Ordering::Release);
@@ -598,25 +735,21 @@ impl Connection {
     }
 
     fn create(&mut self, create: mux_proto::Create) -> bool {
+        if self.shared.closing() {
+            return self.error(None, "the daemon is exiting");
+        }
         // Numbered before spawning, so a failed spawn still never reuses its number.
         let id = self.shared.next_id.fetch_add(1, Ordering::AcqRel);
         // `program: None` is the login shell from the client's env; the env is used as sent.
         let spec = CreateSpec::from(create);
         match DaemonSession::spawn(id, spec) {
-            Ok(session) => {
-                let session = Arc::new(session);
-                {
-                    // Read the theme after inserting, under the table lock: a `SetTheme` racing
-                    // this either sees the new session or stored its theme before we read it.
-                    let mut table = lock(&self.shared.sessions);
-                    table.insert(id, session.clone());
-                    if let Some(theme) = *lock(&self.shared.theme) {
-                        session.set_theme(theme);
-                    }
+            Ok(session) => match self.shared.insert(id, Arc::new(session)) {
+                Ok(()) => {
+                    log!("s{id} created");
+                    self.send(&Frame::Created { id })
                 }
-                log!("s{id} created");
-                self.send(&Frame::Created { id })
-            }
+                Err(_) => self.error(None, "the daemon is exiting"),
+            },
             Err(e) => self.error(None, format!("couldn't start a session: {e}")),
         }
     }
@@ -676,9 +809,8 @@ impl Connection {
 
     /// Refuse while sessions live, unless `force`: then hang each one up. Then exit.
     fn stop(&mut self, force: bool) -> bool {
-        let sessions = self.shared.all();
-        let infos: Vec<SessionInfo> = sessions.iter().map(|s| s.info()).collect();
-        if !infos.is_empty() && !force {
+        let (exiting, sessions, infos) = self.shared.quit_for_stop(force);
+        if !exiting {
             return self.send(&Frame::StopReply(StopReply {
                 stopping: false,
                 sessions: infos,
@@ -700,6 +832,7 @@ impl Connection {
             stopping: true,
             sessions: infos,
         }));
+        // Only now let the tick thread end the daemon, which closes every connection.
         self.out.flushed(FLUSH);
         self.shared.quit.store(true, Ordering::Release);
         true
@@ -1189,7 +1322,14 @@ mod tests {
     #[test]
     fn attaching_to_an_ended_session_still_listed_says_exited() {
         let path = temp_sock("deadattach");
-        let _d = start_with(&path, IDLE_EXIT, false).unwrap();
+        let _d = start_with(
+            &path,
+            Tuning {
+                reap: false,
+                ..Tuning::default()
+            },
+        )
+        .unwrap();
         let mut c = connect(&path, Role::Ui);
         let id = create(&mut c, "a");
         c.send(&Frame::Input {
@@ -1371,6 +1511,233 @@ mod tests {
             theme_from_wire(&serde_json::json!({})),
             Some(Theme::default())
         );
+    }
+
+    fn tuned(name: &str, tuning: Tuning) -> (Running, PathBuf) {
+        let path = temp_sock(name);
+        (start_with(&path, tuning).unwrap(), path)
+    }
+
+    /// A raw connection that has said `Hello` and read `HelloOk`.
+    fn raw_hello(path: &Path, role: Role) -> UnixStream {
+        let mut s = UnixStream::connect(path).unwrap();
+        let hello = Frame::Hello(Hello {
+            proto_min: PROTO_MIN,
+            proto_max: PROTO_MAX,
+            app_version: "t".into(),
+            role,
+        });
+        s.write_all(&encode(&hello)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut d = Decoder::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            if let Some(f) = d.next() {
+                assert!(matches!(f, Ok(Frame::HelloOk(_))), "{f:?}");
+                return s;
+            }
+            let n = s.read(&mut buf).unwrap();
+            assert!(n > 0, "closed during the handshake");
+            d.push(&buf[..n]);
+        }
+    }
+
+    /// Whether the peer closes `s` within `within` (reading and discarding what comes).
+    fn closes_within(s: &mut UnixStream, within: Duration) -> bool {
+        s.set_read_timeout(Some(within)).unwrap();
+        let mut sink = Vec::new();
+        s.read_to_end(&mut sink).is_ok()
+    }
+
+    #[test]
+    fn a_client_that_never_reads_does_not_block_the_others() {
+        let (_d, path) = daemon("noread");
+        let a = raw_hello(&path, Role::Script);
+        let mut flood = a.try_clone().unwrap();
+        // Replies pile up unread until A's queue and socket are full and its handler waits.
+        std::thread::spawn(move || {
+            let info = encode(&Frame::Info);
+            for _ in 0..20_000 {
+                if flood.write_all(&info).is_err() {
+                    return;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        let mut b = connect(&path, Role::Script);
+        let answered = b
+            .send(&Frame::List)
+            .and_then(|()| b.recv(Duration::from_secs(3)));
+        // Let A go before asserting, so a failure can't hang the daemon's shutdown.
+        let _ = a.shutdown(std::net::Shutdown::Both);
+        assert!(
+            matches!(answered, Ok(Frame::Sessions(_))),
+            "B got {answered:?}"
+        );
+    }
+
+    #[test]
+    fn create_while_exiting_is_refused() {
+        let (d, path) = daemon("exitrace");
+        let mut c = connect(&path, Role::Ui);
+        assert!(stop(&path, false).unwrap().stopping);
+        // The exit is decided: no session may start now only to be killed by it.
+        let reply = c
+            .send(&create_frame("late"))
+            .and_then(|()| c.recv(Duration::from_secs(5)));
+        assert!(
+            !matches!(reply, Ok(Frame::Created { .. })),
+            "created during exit: {reply:?}"
+        );
+        assert!(eventually(|| d.is_finished()));
+    }
+
+    #[test]
+    fn a_quitting_daemon_refuses_to_insert_sessions() {
+        let (d, path) = daemon("insertquit");
+        let mut c = connect(&path, Role::Ui);
+        let id = create(&mut c, "a");
+        let session = d.shared.session(id).unwrap();
+        let other = DaemonSession::spawn(
+            99,
+            CreateSpec::from(match create_frame("b") {
+                Frame::Create(c) => c,
+                _ => unreachable!(),
+            }),
+        )
+        .unwrap();
+        d.shared.closing.store(true, Ordering::Release);
+        assert!(d.shared.insert(99, Arc::new(other)).is_err());
+        assert!(d.shared.session(99).is_none());
+        drop(session);
+    }
+
+    #[test]
+    fn input_floods_pause_that_client_only_and_drop_nothing() {
+        let (d, path) = daemon("backpressure");
+        let mut c = connect(&path, Role::Ui);
+        // Raw mode and never reading: the terminal's input queue fills, writes stall.
+        c.send(&Frame::Create(Create {
+            startup: Some("stty raw -echo; echo RE\"\"ADY; sleep 30".into()),
+            ..match create_frame("stuck") {
+                Frame::Create(c) => c,
+                _ => unreachable!(),
+            }
+        }))
+        .unwrap();
+        let id = match recv_until(&mut c, |f| matches!(f, Frame::Created { .. })).pop() {
+            Some(Frame::Created { id }) => id,
+            other => panic!("{other:?}"),
+        };
+        let read = |c: &mut Client| {
+            c.send(&Frame::ReadText(ReadText {
+                id,
+                scope: "screen".into(),
+            }))
+            .unwrap();
+            match recv_until(c, |f| matches!(f, Frame::Text(_))).pop() {
+                Some(Frame::Text(t)) => t.text,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert!(eventually(|| read(&mut c).contains("READY")));
+        let session = d.shared.session(id).unwrap();
+
+        let mut f = connect(&path, Role::Script);
+        const CHUNK: usize = 64 * 1024;
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counter = sent.clone();
+        std::thread::spawn(move || {
+            for _ in 0..64 {
+                let frame = Frame::Input {
+                    id,
+                    bytes: vec![b'x'; CHUNK],
+                };
+                if f.send(&frame).is_err() {
+                    return;
+                }
+                counter.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        std::thread::sleep(Duration::from_millis(1500));
+        let backlog = session.input_backlog();
+        assert!(backlog > INPUT_BACKLOG_MAX / 2, "flooded: {backlog}");
+        assert!(
+            backlog <= INPUT_BACKLOG_MAX + CHUNK,
+            "backlog {backlog} over the bound"
+        );
+        // The flooder is held back (its frames wait unread), not cut off or dropped.
+        assert!(sent.load(Ordering::Acquire) < 64);
+        // Other clients are unaffected.
+        assert_eq!(ids(&list(&mut c)), vec![id]);
+        drop(session);
+    }
+
+    #[test]
+    fn no_hello_in_time_closes_the_connection_and_frees_idle_exit() {
+        let (d, path) = tuned(
+            "hellotimeout",
+            Tuning {
+                idle_exit: Duration::from_millis(200),
+                hello_timeout: Duration::from_millis(300),
+                reap: true,
+            },
+        );
+        let mut silent = UnixStream::connect(&path).unwrap();
+        assert!(closes_within(&mut silent, Duration::from_secs(3)));
+        assert!(eventually(|| d.is_finished()));
+    }
+
+    #[test]
+    fn a_bad_length_closes_only_that_connection() {
+        let (d, path) = daemon("badlen");
+        let mut bad = raw_hello(&path, Role::Script);
+        bad.write_all(&[0xff, 0xff, 0xff, 0xff, 0x01]).unwrap();
+        assert!(closes_within(&mut bad, Duration::from_secs(3)));
+        let mut c = connect(&path, Role::Script);
+        assert_eq!(list(&mut c), vec![]);
+        assert!(!d.is_finished());
+    }
+
+    #[test]
+    fn resize_authority_is_released_on_disconnect() {
+        let (d, path) = daemon("release");
+        let ui = connect(&path, Role::Ui);
+        assert_ne!(d.shared.resize_owner.load(Ordering::Acquire), 0);
+        drop(ui);
+        assert!(eventually(
+            || d.shared.resize_owner.load(Ordering::Acquire) == 0
+        ));
+    }
+
+    #[test]
+    fn a_ui_attach_takes_resize_authority() {
+        let (_d, path) = daemon("attachauth");
+        let mut a = connect(&path, Role::Ui);
+        let id = create(&mut a, "a");
+        let mut b = connect(&path, Role::Ui); // B holds it now
+        a.send(&Frame::Attach { id }).unwrap(); // and A takes it back
+        a.send(&resize(id, 90)).unwrap();
+        assert_eq!(cols(&mut a), 90);
+        b.send(&resize(id, 70)).unwrap();
+        assert_eq!(cols(&mut b), 90);
+    }
+
+    #[test]
+    fn a_long_read_text_scope_is_not_echoed_whole() {
+        let (_d, path) = daemon("longscope");
+        let mut c = connect(&path, Role::Script);
+        c.send(&Frame::ReadText(ReadText {
+            id: 1,
+            scope: "x".repeat(10_000),
+        }))
+        .unwrap();
+        match recv_until(&mut c, |f| matches!(f, Frame::Error { .. })).pop() {
+            Some(Frame::Error { message, .. }) => {
+                assert!(message.len() < 120, "{} bytes", message.len())
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
