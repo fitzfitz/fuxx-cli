@@ -25,7 +25,7 @@ its question and answer it**. A live event stream reports what happens across al
 
 - **cmux** has a JSON socket and CLI. You can list, create, select and close workspaces, split panes, send text and
   keys, read the screen, post notifications, and set sidebar status, progress and log lines
-  ([cmux API](https://cmux.com/docs/api)). It has no event stream, no waiting, and doesn't know what an agent is doing.
+  ([cmux API](https://cmux.com/docs/api)). Since 2026 it also has Claude Code hook integration (`cmux hooks setup`), but its API still has no event stream, no waiting and no agent status to query.
 - **iTerm2** has a full Python API: sessions, splits, send text, read the screen. To react to changes you write and
   run your own Python scripts.
 - **kitty** has strong remote control (launch, send-text, get-text, match windows by title or folder).
