@@ -20,8 +20,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M6b — Settings window** (Phase 2). M6 Fonts & config is complete |
-| **Status** | ⬜ Not started. M6 ✅ done 2026-10-27: fuxx's own settings file, six built-in themes, theme-driven colors, prompt icons for everyone, Mac line/word keys; all on-screen checks confirmed by you. |
-| **▶ Next action** | Write the M6b plan (settings window: File → Preferences… / cmd-,; D9 = theme list, pick only). |
+| **Status** | 🟨 In progress: [[M6b Plan - Settings Window]] written and approved 2026-10-27. M6 ✅ done 2026-10-27. |
+| **▶ Next action** | [[M6b Plan - Settings Window]] → Task 1 (save one setting safely). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-26 |
 
@@ -48,7 +48,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
 | M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | ✅ | 8/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
 | M6 | Fonts & config (own settings file, themes, prompt icons) | [[M6 Plan - Fonts and Config]] | ✅ | 9/9 | fuxx's own settings file + themes; prompt icons for everyone |
-| M6b | Settings window (File → Preferences… / cmd-,) — *added 2026-10-27* | plan to be written | ⬜ | — | Change theme/font/size in a window; saved and applied live |
+| M6b | Settings window (File → Preferences… / cmd-,) — *added 2026-10-27* | [[M6b Plan - Settings Window]] | 🟨 | 0/6 | Change theme/font/size in a window; saved and applied live |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).

@@ -22,6 +22,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-27 — M6b plan written and approved
+- **Did:** D9 decided (theme list, pick only). You skipped the design questions ("go"); researched GPUI menus, second
+  windows, lists and live global updates at the pinned rev; wrote [[46b - Milestone 6b - Settings Window]] and
+  [[M6b Plan - Settings Window]] (6 tasks, 106 → 116 tests). You approved it and per-task agents ("right on").
+- **Learned:** GPUI takes menu shortcuts from context-free key bindings at `set_menus` time, so bindings must come
+  first; with `QuitMode::LastWindowClosed`, fuxx only quits when every window is closed.
+- **Blocked:** Nothing.
+- **Next task:** [[M6b Plan - Settings Window]] → Task 1.
+
 ### 2026-10-27 — Milestone 6 complete: fonts and config
 - **Did:** Built [[M6 Plan - Fonts and Config]] on branch `m6-fonts-config`, one agent per task, each reviewed:
   settings reader with includes (`ead1c28`, loop fix `3c66150`), themes (`354190e`), theme-driven colors
