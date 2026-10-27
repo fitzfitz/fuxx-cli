@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use gpui::{App, Font, Global, WindowAppearance};
 
 use crate::fonts;
+use crate::presets::{self, Preset};
+use crate::restore::RestoreMode;
 use crate::settings::{self, Entry};
 use crate::theme::{self, Theme};
 
@@ -22,6 +24,11 @@ pub struct Appearance {
     pub font_settings: fonts::FontSettings,
     pub settings_path: Option<PathBuf>,
     pub user_theme_dir: Option<PathBuf>,
+    /// The agent presets: built-ins plus `agent-preset` lines.
+    #[allow(dead_code)] // read from M7 Task 4/6
+    pub presets: Vec<Preset>,
+    #[allow(dead_code)] // read from M7 Task 4/6
+    pub restore: RestoreMode,
 }
 
 impl Global for Appearance {}
@@ -98,6 +105,12 @@ pub fn load(cx: &App) -> Appearance {
         font.family, settings.size
     );
 
+    let (presets, preset_warnings) = presets::from_entries(&entries);
+    let (restore, restore_warnings) = RestoreMode::from_entries(&entries);
+    for warning in preset_warnings.iter().chain(&restore_warnings) {
+        eprintln!("[fuxx] config: {warning}");
+    }
+
     Appearance {
         theme,
         font,
@@ -106,6 +119,8 @@ pub fn load(cx: &App) -> Appearance {
         font_settings: settings,
         settings_path,
         user_theme_dir: user_dir,
+        presets,
+        restore,
     }
 }
 
