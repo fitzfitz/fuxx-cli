@@ -23,6 +23,8 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - **fuxx's own settings file** (added 2026-10-27 on request): `~/.config/fuxx/config`, plain `key = value`
   lines using Ghostty's key names, plus theme files in `~/.config/fuxx/themes` and six built-in themes.
   fuxx does **not** read Ghostty's config.
+- **JetBrains Mono bundled as the default font** (M6b, added 2026-10-27 on request), so ligatures work without
+  installing anything.
 - A **settings window** (M6b, added 2026-10-27 on request): File → Preferences… / cmd-, to pick the theme,
   font, size and ligatures and override colors, saved to fuxx's own settings file and applied live.
 - **Session ergonomics** (M7): project groups, rename/reorder, agent presets, session restore.
