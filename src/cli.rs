@@ -117,6 +117,10 @@ impl Args {
         };
         let mut it = args.iter();
         while let Some(a) = it.next() {
+            if a == "--" {
+                out.pos.extend(it.by_ref().cloned());
+                break;
+            }
             let Some(flag) = a.strip_prefix("--") else {
                 out.pos.push(a.clone());
                 continue;
@@ -345,13 +349,13 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
-/// `/Users/me/w/api` → `~/w/api`.
-fn tildify(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() => match path.strip_prefix(&home) {
-            Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
-            _ => path.to_string(),
-        },
+/// `/Users/me/w/api` → `~/w/api`, given the home folder.
+fn tildify(path: &str, home: &str) -> String {
+    if home.is_empty() {
+        return path.to_string();
+    }
+    match path.strip_prefix(home) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
     }
 }
@@ -366,8 +370,9 @@ fn session_line(s: &Value) -> String {
             line.push_str(&format!("  {v}"));
         }
     }
-    if let Some(f) = str_of(s, "folder") {
-        line.push_str(&format!("  [{}]", tildify(f)));
+    if let Some(f) = str_of(s, "project") {
+        let home = std::env::var("HOME").unwrap_or_default();
+        line.push_str(&format!("  [{}]", tildify(f, &home)));
     }
     if let Some(p) = str_of(s, "preset") {
         line.push_str(&format!("  ({p})"));
@@ -375,10 +380,49 @@ fn session_line(s: &Value) -> String {
     line
 }
 
-/// `HH:MM:SS` (UTC) from unix milliseconds.
-fn clock(ms: u64) -> String {
-    let secs = ms / 1000 % 86_400;
+/// `HH:MM:SS` from unix milliseconds, shifted by a UTC offset in seconds.
+fn clock_hms(ms: u64, utc_offset_secs: i64) -> String {
+    let secs = (ms as i64 / 1000 + utc_offset_secs).rem_euclid(86_400);
     format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+/// macOS `struct tm` (<time.h>).
+#[repr(C)]
+struct Tm {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+    tm_gmtoff: std::ffi::c_long,
+    tm_zone: *const std::ffi::c_char,
+}
+
+unsafe extern "C" {
+    fn localtime_r(time: *const i64, out: *mut Tm) -> *mut Tm;
+}
+
+/// The machine's UTC offset at that moment (seconds east), 0 if it can't be read.
+fn local_utc_offset(ms: u64) -> i64 {
+    let t = (ms / 1000) as i64;
+    let mut tm = std::mem::MaybeUninit::<Tm>::zeroed();
+    // SAFETY: `t` and `tm` are valid for the call; localtime_r fills `tm` and returns it
+    // (or null on failure, in which case we don't read it).
+    unsafe {
+        if localtime_r(&t, tm.as_mut_ptr()).is_null() {
+            return 0;
+        }
+        tm.assume_init().tm_gmtoff as i64
+    }
+}
+
+/// `HH:MM:SS` in local time.
+fn clock(ms: u64) -> String {
+    clock_hms(ms, local_utc_offset(ms))
 }
 
 fn event_line(e: &Value) -> String {
@@ -588,7 +632,7 @@ mod tests {
 
     #[test]
     fn render_text_output() {
-        let ls = json!([{"id": 4, "number": 2, "status": "waiting", "name": "api", "folder": "/x/api", "preset": "claude"}]);
+        let ls = json!([{"id": 4, "number": 2, "status": "waiting", "name": "api", "project": "/x/api", "preset": "claude"}]);
         assert_eq!(
             render("ls", &ls, false),
             "s4  #2  waiting  api  [/x/api]  (claude)"
@@ -598,9 +642,181 @@ mod tests {
         assert_eq!(render("send", &json!({}), false), "");
         assert_eq!(render("ls", &ls, true), ls.to_string());
         let ev = json!({"event": "status", "session": {"id": 4, "number": 2, "name": "api"}, "from": "working", "to": "waiting", "ts": 43_263_000u64});
+        let line = render("events", &ev, false);
+        assert!(line.ends_with("  s4 #2 api  working → waiting"), "{line}");
+    }
+
+    #[test]
+    fn home_is_shortened_to_tilde() {
+        assert_eq!(tildify("/Users/me/w/api", "/Users/me"), "~/w/api");
+        assert_eq!(tildify("/Users/me", "/Users/me"), "~");
+        assert_eq!(tildify("/Users/mex/w", "/Users/me"), "/Users/mex/w");
+        assert_eq!(tildify("/x/api", ""), "/x/api");
+    }
+
+    #[test]
+    fn clock_uses_the_utc_offset_and_wraps() {
+        let ms = 43_263_000u64; // 12:01:03 UTC
+        assert_eq!(clock_hms(ms, 0), "12:01:03");
+        assert_eq!(clock_hms(ms, 7 * 3600), "19:01:03");
+        assert_eq!(clock_hms(ms + 8 * 3600 * 1000, 7 * 3600), "03:01:03");
+        assert_eq!(clock_hms(ms, -13 * 3600), "23:01:03");
+    }
+
+    #[test]
+    fn double_dash_ends_options() {
+        let (r, _, _) = call(p(&["send", "--", "--resume"]));
+        assert_eq!(r.params["text"], "--resume");
+        let (r, _, _) = call(p(&["answer", "s4", "--", "-1"]));
         assert_eq!(
-            render("events", &ev, false),
-            "12:01:03  s4 #2 api  working → waiting"
+            (&r.params["target"], &r.params["text"]),
+            (&"s4".into(), &"-1".into())
         );
+        assert!(p(&["send", "--resume"]).is_err());
+    }
+
+    #[test]
+    fn command_table() {
+        use serde_json::json;
+        // (args, method, expected params; keys listed as null must be absent or null)
+        let cases: Vec<(Vec<&str>, &str, Value)> = vec![
+            (
+                vec![
+                    "new", "--folder", "D", "--run", "CMD", "--name", "N", "--split", "down",
+                    "--of", "s2",
+                ],
+                "session.new",
+                json!({"folder": "D", "preset": null, "run": "CMD", "name": "N", "split": "down", "of": "s2", "background": false, "caller": 3}),
+            ),
+            (
+                vec!["read", "--lines", "5"],
+                "session.read",
+                json!({"lines": 5, "all": false, "caller": 3}),
+            ),
+            (
+                vec!["read", "--all"],
+                "session.read",
+                json!({"lines": null, "all": true, "caller": 3}),
+            ),
+            (
+                vec!["read", "--lines=7"],
+                "session.read",
+                json!({"lines": 7, "all": false, "caller": 3}),
+            ),
+            (
+                vec!["answer", "s4", "y", "--force"],
+                "session.answer",
+                json!({"target": "s4", "text": "y", "force": true, "caller": 3}),
+            ),
+            (
+                vec!["rename", ""],
+                "session.rename",
+                json!({"target": null, "name": "", "caller": 3}),
+            ),
+            (
+                vec!["rename", "s4", "api"],
+                "session.rename",
+                json!({"target": "s4", "name": "api", "caller": 3}),
+            ),
+            (
+                vec!["notify", "--title", "T", "body"],
+                "notify",
+                json!({"title": "T", "body": "body", "caller": 3}),
+            ),
+            (
+                vec!["paste"],
+                "session.paste",
+                json!({"text": null, "caller": 3}),
+            ),
+            (
+                vec!["close"],
+                "session.close",
+                json!({"target": null, "caller": 3}),
+            ),
+            (
+                vec!["close", "s1"],
+                "session.close",
+                json!({"target": "s1", "caller": 3}),
+            ),
+            (
+                vec!["focus"],
+                "session.focus",
+                json!({"target": null, "caller": 3}),
+            ),
+            (
+                vec!["focus", "#2"],
+                "session.focus",
+                json!({"target": "#2", "caller": 3}),
+            ),
+            (
+                vec!["equalize"],
+                "pane.equalize",
+                json!({"target": null, "caller": 3}),
+            ),
+            (
+                vec!["equalize", "api"],
+                "pane.equalize",
+                json!({"target": "api", "caller": 3}),
+            ),
+            (
+                vec!["wait", "s4", "--text", "PASS"],
+                "session.wait",
+                json!({"target": "s4", "any": false, "text": "PASS", "caller": 3}),
+            ),
+            (
+                vec!["key", "s4", "up"],
+                "session.key",
+                json!({"target": "s4", "keys": ["up"], "caller": 3}),
+            ),
+            (
+                vec!["key", "enter"],
+                "session.key",
+                json!({"target": null, "keys": ["enter"], "caller": 3}),
+            ),
+            (
+                vec!["note", "hi"],
+                "session.note",
+                json!({"target": null, "text": "hi", "caller": 3}),
+            ),
+            (
+                vec!["note", "s4", "hi"],
+                "session.note",
+                json!({"target": "s4", "text": "hi", "caller": 3}),
+            ),
+            (
+                vec!["note", "--clear"],
+                "session.note",
+                json!({"text": null, "caller": 3}),
+            ),
+            (
+                vec!["progress", "40"],
+                "session.progress",
+                json!({"target": null, "percent": 40, "caller": 3}),
+            ),
+            (
+                vec!["progress", "s4", "40", "--label", "x"],
+                "session.progress",
+                json!({"target": "s4", "percent": 40, "label": "x", "caller": 3}),
+            ),
+            (
+                vec!["progress", "--clear"],
+                "session.progress",
+                json!({"percent": null, "caller": 3}),
+            ),
+        ];
+        for (args, method, want) in cases {
+            let (r, _, _) = call(p(&args));
+            assert_eq!(r.method, method, "{args:?}");
+            let got = r.params.as_object().unwrap();
+            for (k, v) in want.as_object().unwrap() {
+                assert_eq!(&r.params[k.as_str()], v, "{args:?} key {k}");
+            }
+            // No stray keys beyond the expected ones (null-valued ones may be absent).
+            for k in got.keys() {
+                assert!(want.get(k).is_some(), "{args:?} has unexpected key {k}");
+            }
+        }
+        let (_, json, _) = call(p(&["send", "x", "--json", "--enter"]));
+        assert!(json);
     }
 }
