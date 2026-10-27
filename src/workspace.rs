@@ -626,7 +626,7 @@ impl Workspace {
     }
 
     /// After the active session changed (by any route): open its group and focus it.
-    fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(project) = self.sessions.active().and_then(|s| s.project.clone()) {
             self.collapsed.retain(|c| *c != project);
         }
