@@ -77,6 +77,11 @@ pub fn feature_lines(features: &[(String, u32)], ligatures: bool) -> Vec<String>
     lines
 }
 
+/// `persistent-sessions` values to write: `on`, or nothing (off is the default, so no line).
+pub fn persistence_values(on: bool) -> Vec<String> {
+    if on { vec!["on".to_string()] } else { vec![] }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +156,11 @@ mod tests {
         assert!(!ligatures_on(&f) && ligatures_on(&[]));
         assert_eq!(feature_lines(&f, true), vec!["ss01=1"]);
         assert_eq!(feature_lines(&f, false), vec!["ss01=1", "-calt"]);
+    }
+
+    #[test]
+    fn persistence_line_is_written_only_when_on() {
+        assert_eq!(persistence_values(true), vec!["on".to_string()]);
+        assert!(persistence_values(false).is_empty());
     }
 }
