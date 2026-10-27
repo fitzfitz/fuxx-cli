@@ -331,7 +331,6 @@ impl<T: Copy + PartialEq> Node<T> {
         }
     }
 
-    #[allow(dead_code)] // used from M8 Task 5
     pub fn map<U>(&self, f: &impl Fn(T) -> U) -> Node<U> {
         match self {
             Node::Leaf(id) => Node::Leaf(f(*id)),
@@ -356,7 +355,6 @@ fn span_overlap(a: f32, a_len: f32, b: f32, b_len: f32) -> f32 {
 }
 
 /// Clamp every ratio in place; true if any changed.
-#[allow(dead_code)] // used from M8 Task 5
 fn fix_ratios(node: &mut Node<usize>) -> bool {
     match node {
         Node::Leaf(_) => false,
@@ -379,7 +377,6 @@ fn fix_ratios(node: &mut Node<usize>) -> bool {
 /// Make loaded trees match `count` sessions: drop trees with an out-of-range or repeated index,
 /// clamp ratios, then add a leaf for every session no kept tree shows. The bool is true when a
 /// tree was dropped or a ratio fixed.
-#[allow(dead_code)] // used from M8 Task 5
 pub fn sanitize(trees: Vec<Node<usize>>, count: usize) -> (Vec<Node<usize>>, bool) {
     let mut used = vec![false; count];
     let mut kept = Vec::new();
