@@ -222,9 +222,9 @@ pub enum WaitFor {
     Text(String),
 }
 
-/// `text` wins; otherwise `for_` (default `waiting`): `change`, `exit`, or a status name.
+/// A non-empty `text` wins (empty counts as absent); otherwise `for_` (default `waiting`): `change`, `exit`, or a status name.
 pub fn parse_wait(for_: Option<&str>, text: Option<&str>) -> Result<WaitFor, ApiError> {
-    if let Some(t) = text {
+    if let Some(t) = text.filter(|t| !t.is_empty()) {
         return Ok(WaitFor::Text(t.to_string()));
     }
     match for_.unwrap_or("waiting") {
@@ -366,14 +366,117 @@ mod tests {
     }
 
     #[test]
-    fn reply_shapes() {
+    fn key_table() {
+        let cases: &[(&str, bool, Option<&[u8]>)] = &[
+            ("alt-x", false, Some(b"\x1bx")),
+            ("shift-tab", false, Some(b"\x1b[Z")),
+            ("f1", false, Some(b"\x1bOP")),
+            ("f12", false, Some(b"\x1b[24~")),
+            ("space", false, Some(b" ")),
+            ("tab", false, Some(b"\t")),
+            ("backspace", false, Some(b"\x7f")),
+            ("delete", false, Some(b"\x1b[3~")),
+            ("pageup", false, Some(b"\x1b[5~")),
+            ("home", true, Some(b"\x1bOH")),
+            ("escape", false, Some(b"\x1b")),
+            ("CTRL-C", false, None),
+            ("ctrl-alt-x", false, None),
+        ];
+        for (name, app, want) in cases {
+            assert_eq!(key_bytes(name, *app).as_deref(), *want, "{name}");
+        }
+    }
+
+    #[test]
+    fn wait_met_negatives_and_parse_names() {
+        assert!(!wait_met(
+            &WaitFor::Status(Status::Done),
+            Status::Idle,
+            Status::Working,
+            "",
+            false
+        ));
+        assert!(!wait_met(
+            &WaitFor::Text("PASS".into()),
+            Status::Idle,
+            Status::Idle,
+            "tests fail",
+            false
+        ));
+        assert!(wait_met(
+            &WaitFor::Exit,
+            Status::Idle,
+            Status::Idle,
+            "",
+            true
+        ));
+        assert!(!wait_met(
+            &WaitFor::Exit,
+            Status::Idle,
+            Status::Idle,
+            "",
+            false
+        ));
+        assert_eq!(parse_wait(Some("change"), None), Ok(WaitFor::Change));
+        assert_eq!(parse_wait(Some("exit"), None), Ok(WaitFor::Exit));
         assert_eq!(
-            reply(Some(1), Ok(serde_json::json!({"pong": true}))),
-            r#"{"id":1,"result":{"pong":true}}"#
+            parse_wait(Some("done"), None),
+            Ok(WaitFor::Status(Status::Done))
         );
+    }
+
+    #[test]
+    fn empty_wait_text_counts_as_absent() {
         assert_eq!(
-            reply(None, Err(ApiError::not_found("no session s9"))),
-            r#"{"id":null,"error":{"code":"not_found","message":"no session s9"}}"#
+            parse_wait(None, Some("")),
+            Ok(WaitFor::Status(Status::Waiting))
+        );
+        assert_eq!(parse_wait(Some("exit"), Some("")), Ok(WaitFor::Exit));
+    }
+
+    #[test]
+    fn methods_match_the_spec() {
+        let mut want = vec![
+            "system.ping",
+            "system.version",
+            "session.list",
+            "session.new",
+            "session.close",
+            "session.focus",
+            "session.rename",
+            "session.send",
+            "session.key",
+            "session.paste",
+            "session.read",
+            "session.status",
+            "session.question",
+            "session.answer",
+            "session.wait",
+            "session.note",
+            "session.progress",
+            "pane.equalize",
+            "preset.list",
+            "notify",
+            "events.subscribe",
+        ];
+        want.sort();
+        let mut got = METHODS.to_vec();
+        got.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn reply_shapes() {
+        let v = |s: String| serde_json::from_str::<serde_json::Value>(&s).unwrap();
+        assert_eq!(
+            v(reply(Some(1), Ok(serde_json::json!({"pong": true})))),
+            serde_json::json!({"id": 1, "result": {"pong": true}})
+        );
+        let line = reply(None, Err(ApiError::not_found("no session s9")));
+        assert!(!line.contains('\n'));
+        assert_eq!(
+            v(line),
+            serde_json::json!({"id": null, "error": {"code": "not_found", "message": "no session s9"}})
         );
     }
 }
