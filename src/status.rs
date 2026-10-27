@@ -19,6 +19,30 @@ pub enum Status {
     Done,
 }
 
+impl Status {
+    /// The lowercase name used on the scripting API.
+    #[allow(dead_code)] // used by the socket server (M9 Task 5)
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Idle => "idle",
+            Status::Working => "working",
+            Status::Waiting => "waiting",
+            Status::Done => "done",
+        }
+    }
+
+    #[allow(dead_code)] // used by the socket server (M9 Task 5)
+    pub fn parse(s: &str) -> Option<Status> {
+        match s {
+            "idle" => Some(Status::Idle),
+            "working" => Some(Status::Working),
+            "waiting" => Some(Status::Waiting),
+            "done" => Some(Status::Done),
+            _ => None,
+        }
+    }
+}
+
 /// Output this soon after a keystroke is the echo of typing, not work.
 pub const ECHO_WINDOW: Duration = Duration::from_millis(150);
 /// A working session that has been silent this long has settled.

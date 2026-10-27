@@ -1,6 +1,8 @@
 // fuxx — a native GPU terminal for running AI coding agents.
 // Many sessions in one window, each with a live status ring and background notifications.
 
+#[allow(dead_code)] // wired up by the socket server (M9 Task 5)
+mod api;
 mod appearance;
 mod colors;
 mod detector;
