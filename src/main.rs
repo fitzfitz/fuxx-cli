@@ -3,6 +3,7 @@
 
 mod api;
 mod api_client;
+mod api_events;
 mod api_server;
 mod appearance;
 mod cli;

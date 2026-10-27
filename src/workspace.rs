@@ -14,7 +14,8 @@ use gpui::{
     SharedString, Subscription, Task, Window, actions, canvas, div, prelude::*, px,
 };
 
-use crate::api_server;
+use crate::api_events::{Event, WaitTable};
+use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::groups::{self, Row};
 use crate::name_input::{NameInput, NameInputEvent};
@@ -138,13 +139,22 @@ pub struct Workspace {
     collapsed: Vec<PathBuf>,
     /// The rename box, and the session (by its view) it renames.
     pub(crate) renaming: Option<(EntityId, Entity<NameInput>)>,
-    /// True while the saved sessions are being reopened, so nothing is saved halfway.
-    restoring: bool,
+    /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
+    /// events are sent).
+    pub(crate) restoring: bool,
     /// The id the next session gets (`s1`, `s2`, ...); never reused.
     pub(crate) next_id: u64,
     window_active: bool,
     /// Answers scripting requests (see `workspace_api`); none when scripting is off.
     _requests: Option<Task<()>>,
+    /// Connections that asked for events (`events.subscribe`).
+    pub(crate) subscribers: Vec<Conn>,
+    /// Pending `session.wait`s.
+    pub(crate) waits: WaitTable<Conn>,
+    /// Whether the 200 ms wait check is running (only while waits are pending).
+    pub(crate) waits_ticking: bool,
+    /// The active session as of the last `focus.changed`.
+    pub(crate) focused: Option<u64>,
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
     _appearance: Subscription,
@@ -173,6 +183,10 @@ impl Workspace {
             next_id: 1,
             window_active: window.is_window_active(),
             _requests: requests.map(|rx| Self::serve_requests(rx, window, cx)),
+            subscribers: Vec::new(),
+            waits: WaitTable::new(),
+            waits_ticking: false,
+            focused: None,
             _activation: activation,
             _appearance: appearance,
         };
@@ -340,7 +354,7 @@ impl Workspace {
             self.layouts.push(Node::Leaf(id));
         }
         let index = groups::insert_index(&self.projects(), saved.project.as_deref());
-        self.sessions.insert(
+        let index = self.sessions.insert(
             index,
             Session {
                 id: session_id,
@@ -353,6 +367,7 @@ impl Workspace {
                 _subscription: subscription,
             },
         );
+        self.emit(&Event::Opened, Some(index));
         self.activate(window, cx);
     }
 
@@ -478,18 +493,43 @@ impl Workspace {
                 };
                 let old = session.status;
                 session.status = *new;
+                let label = session.label();
+                if old != *new {
+                    let change = Event::StatusChanged {
+                        from: old,
+                        to: *new,
+                    };
+                    self.emit(&change, Some(index));
+                }
                 if notifier::should_notify(old, *new, is_active, window_active) {
                     if let Some(body) = notifier::message(*new) {
-                        let summary = format!("fuxx — {}", session.label());
+                        let summary = format!("fuxx — {label}");
+                        let posted = Event::Notification {
+                            title: &summary,
+                            body,
+                        };
+                        self.emit(&posted, Some(index));
                         cx.background_spawn(async move { notifier::fire(&summary, body) })
                             .detach();
                     }
                 }
+                self.check_waits(&[], cx);
                 cx.notify();
             }
             TerminalEvent::TitleChanged(title) => {
-                if let Some(session) = self.sessions.get_mut(index) {
-                    session.title = title.clone();
+                let changed = self
+                    .sessions
+                    .get_mut(index)
+                    .filter(|s| s.title != *title)
+                    .map(|s| s.title = title.clone())
+                    .is_some();
+                if changed {
+                    self.emit(
+                        &Event::TitleChanged {
+                            title: title.as_deref(),
+                        },
+                        Some(index),
+                    );
                 }
                 cx.notify();
             }
@@ -498,9 +538,16 @@ impl Workspace {
     }
 
     pub(crate) fn close_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.sessions.items().get(index).map(|s| s.view.entity_id()) else {
+        let Some((id, session_id)) = self
+            .sessions
+            .items()
+            .get(index)
+            .map(|s| (s.view.entity_id(), s.id))
+        else {
             return;
         };
+        // While its row number and name still stand.
+        self.emit(&Event::Closed, Some(index));
         let was_active = self.sessions.active_index() == Some(index);
         self.dragging = None; // the layout changes under a drag
         // The pane's neighbour takes its space, and the focus if it had it.
@@ -516,9 +563,13 @@ impl Workspace {
         }
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child.
         self.sessions.remove(index);
+        let mut replied = self.check_waits(&[session_id], cx);
         if self.sessions.is_empty() {
             self.save(); // an empty list, so the next launch starts fresh
-            window.remove_window(); // last session gone: close the window (and quit)
+            // Last session gone: close the window (and quit), once wait replies and the closed
+            // event have reached their clients.
+            replied.extend(self.subscribers.iter().cloned());
+            self.quit_after_flush(replied, window, cx);
             return;
         }
         // A group whose last session closed is gone; forget that it was closed.
@@ -627,6 +678,7 @@ impl Workspace {
 
     /// After the active session changed (by any route): open its group and focus it.
     pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_focus();
         if let Some(project) = self.sessions.active().and_then(|s| s.project.clone()) {
             self.collapsed.retain(|c| *c != project);
         }
@@ -690,7 +742,11 @@ impl Workspace {
         {
             // Enter on an untouched automatic name keeps it automatic (it still follows the title).
             if session.name.is_some() || *text != session.label().as_ref() {
-                session.name = (!text.is_empty()).then(|| text.clone());
+                let name = (!text.is_empty()).then(|| text.clone());
+                if session.name != name {
+                    session.name = name;
+                    self.emit_renamed(i);
+                }
             }
             self.save();
         }

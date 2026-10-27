@@ -1,17 +1,21 @@
 //! Scripting requests, answered by the workspace on the UI thread. Each method goes through the
 //! same functions as the keyboard and mouse (open, split, close, select, rename, equalize), so
 //! saving, the sidebar and the layout rules apply unchanged.
+//!
+//! Also the live side: events sent to every subscriber, and pending waits, checked on each
+//! status change, each close, and every 200 ms while any is pending.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui::{Context, EntityId, Task, Window, prelude::*};
+use gpui::{App, Context, EntityId, Task, Window, prelude::*};
 use serde_json::{Value, json};
 
 use crate::api::{self, ApiError, Request, SessionRef};
-use crate::api_server::Incoming;
+use crate::api_events::{Event, EventSession, Wait, Watch, event_json, wait_reply};
+use crate::api_server::{Conn, Incoming};
 use crate::appearance::Appearance;
 use crate::grid::TextScope;
 use crate::notifier;
@@ -25,6 +29,18 @@ use crate::workspace::Workspace;
 const QUESTION_LINES: usize = 12;
 /// How long closing the last session (which quits fuxx) waits for its reply to be written.
 const REPLY_FLUSH: Duration = Duration::from_millis(500);
+/// How often pending waits are checked (text waits and deadlines have no event of their own).
+const WAIT_TICK: Duration = Duration::from_millis(200);
+/// How many lines a text wait searches.
+const WAIT_TEXT_LINES: usize = 200;
+
+/// What the request loop sends for a request.
+enum Reply {
+    /// This reply line, now.
+    Now(Result<Value, ApiError>),
+    /// Nothing yet: a pending wait sends its own reply when it ends.
+    Later,
+}
 
 impl Workspace {
     /// Answer the socket's requests one by one, on the UI thread, for as long as the workspace
@@ -37,12 +53,14 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             while let Some(Incoming { request, conn }) = requests.next().await {
                 let mut close_later = None;
-                let result = this
+                let reply = this
                     .update_in(cx, |this, window, cx| {
-                        this.answer(&request, &mut close_later, window, cx)
+                        this.reply_to(&request, &conn, &mut close_later, window, cx)
                     })
-                    .unwrap_or_else(|_| Err(ApiError::unavailable("fuxx is closing")));
-                conn.send_line(&api::reply(request.id, result));
+                    .unwrap_or_else(|_| Reply::Now(Err(ApiError::unavailable("fuxx is closing"))));
+                if let Reply::Now(result) = reply {
+                    conn.send_line(&api::reply(request.id, result));
+                }
                 // Closing the last session quits fuxx, so it waits (briefly) for the reply to
                 // reach the client first.
                 if let Some(view) = close_later {
@@ -54,6 +72,32 @@ impl Workspace {
                 }
             }
         })
+    }
+
+    /// What to send for one request: waits may reply later; everything else replies now.
+    fn reply_to(
+        &mut self,
+        request: &Request,
+        conn: &Conn,
+        close_later: &mut Option<EntityId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        match request.method.as_str() {
+            "session.wait" => match self.start_wait(request, conn, cx) {
+                Ok(Some(result)) => Reply::Now(Ok(result)),
+                Ok(None) => Reply::Later,
+                Err(e) => Reply::Now(Err(e)),
+            },
+            "events.subscribe" => {
+                // Added now and acknowledged right after, on this same UI-thread turn, so no
+                // event can come before the acknowledgement.
+                self.subscribers.retain(|c| !c.peer_gone());
+                self.subscribers.push(conn.clone());
+                Reply::Now(Ok(json!({ "subscribed": true })))
+            }
+            _ => Reply::Now(self.answer(request, close_later, window, cx)),
+        }
     }
 
     /// The reply to one request. `close_later` is set instead of closing the last session,
@@ -171,13 +215,22 @@ impl Workspace {
             "notify" => {
                 let body = required_str(p, "body")?.to_string();
                 let title = opt_str(p, "title")?.unwrap_or("fuxx").to_string();
+                self.emit(
+                    &Event::Notification {
+                        title: &title,
+                        body: &body,
+                    },
+                    None,
+                );
                 cx.background_spawn(async move { notifier::fire(&title, &body) })
                     .detach();
                 Ok(json!({}))
             }
-            "session.wait" | "session.note" | "session.progress" | "events.subscribe" => Err(
-                ApiError::unavailable(format!("{} is coming in a later update", request.method)),
-            ),
+            // session.wait and events.subscribe are answered in `reply_to`.
+            "session.note" | "session.progress" => Err(ApiError::unavailable(format!(
+                "{} is coming in a later update",
+                request.method
+            ))),
             other => Err(ApiError::unknown_method(format!(
                 "unknown method \"{other}\" (see system.version)"
             ))),
@@ -248,14 +301,172 @@ impl Workspace {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
         };
+        let old = session.name.clone();
         session.name = (!name.is_empty()).then(|| name.to_string());
+        let renamed = session.name != old;
         let view = session.view.entity_id();
         if self.renaming.as_ref().is_some_and(|(v, _)| *v == view) {
             self.renaming = None;
             self.focus_active(window, cx);
         }
+        if renamed {
+            self.emit_renamed(index);
+        }
         self.save();
         cx.notify();
+    }
+
+    /// `session.wait`: the reply if the wait is already over (met, timed out, or bad), else
+    /// `None` with the wait stored to reply later.
+    fn start_wait(
+        &mut self,
+        request: &Request,
+        conn: &Conn,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<Value>, ApiError> {
+        let p = &request.params;
+        let watch = if bool_param(p, "any")? {
+            if opt_str(p, "target")?.is_some() {
+                return Err(ApiError::bad_request("any takes no target"));
+            }
+            Watch::Any
+        } else {
+            let i = self.target_index(p, "target")?;
+            Watch::One(self.sessions.items()[i].id)
+        };
+        let cond = api::parse_wait(opt_str(p, "for")?, opt_str(p, "text")?)?;
+        let now = Instant::now();
+        // Too far ahead to represent counts as no limit.
+        let deadline = timeout_param(p)?.and_then(|t| now.checked_add(t));
+        let sessions = self.statuses();
+        let mut wait = Wait::new(conn.clone(), request.id, watch, cond, &sessions, deadline);
+        let items = self.sessions.items();
+        let mut screen = |id: u64| screen_text(items, id, cx);
+        if let Some(outcome) = wait.outcome(now, &sessions, &[], &mut screen) {
+            return wait_reply(outcome).map(Some);
+        }
+        self.waits.push(wait);
+        self.tick_waits(cx);
+        Ok(None)
+    }
+
+    /// Check every pending wait; `closed`: sessions that just closed. Finished waits are
+    /// answered; their connections are returned (so a quit can let the replies out first).
+    pub(crate) fn check_waits(&mut self, closed: &[u64], cx: &App) -> Vec<Conn> {
+        if self.waits.is_empty() {
+            return Vec::new();
+        }
+        let sessions = self.statuses();
+        let items = self.sessions.items();
+        let screen = |id: u64| screen_text(items, id, cx);
+        let finished = self
+            .waits
+            .check(Instant::now(), &sessions, closed, screen, Conn::peer_gone);
+        finished
+            .into_iter()
+            .map(|(wait, outcome)| {
+                wait.conn
+                    .send_line(&api::reply(wait.request, wait_reply(outcome)));
+                wait.conn
+            })
+            .collect()
+    }
+
+    /// Start the 200 ms check unless it's running; it stops once no wait is pending.
+    fn tick_waits(&mut self, cx: &mut Context<Self>) {
+        if self.waits_ticking || self.waits.is_empty() {
+            return;
+        }
+        self.waits_ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(WAIT_TICK).await;
+                let pending = this
+                    .update(cx, |this, cx| {
+                        this.check_waits(&[], cx);
+                        this.waits_ticking = !this.waits.is_empty();
+                        this.waits_ticking
+                    })
+                    .unwrap_or(false);
+                if !pending {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Every session's (id, status), in sidebar order.
+    fn statuses(&self) -> Vec<(u64, Status)> {
+        self.sessions
+            .items()
+            .iter()
+            .map(|s| (s.id, s.status))
+            .collect()
+    }
+
+    /// Send an event about session `index` (or none) to every subscriber; those that are gone
+    /// or can't take it are dropped. Nothing while restoring.
+    pub(crate) fn emit(&mut self, event: &Event, index: Option<usize>) {
+        if self.subscribers.is_empty() || self.restoring {
+            return;
+        }
+        let session = index.and_then(|i| self.sessions.items().get(i).map(|s| (i, s)));
+        let label = session.map(|(_, s)| s.label());
+        let about = session
+            .zip(label.as_deref())
+            .map(|((i, s), name)| EventSession {
+                id: s.id,
+                number: i + 1,
+                name,
+            });
+        let line = event_json(event, about.as_ref(), now_ms()).to_string();
+        self.subscribers
+            .retain(|c| !c.peer_gone() && c.send_line(&line));
+    }
+
+    /// `session.renamed` for session `index`, with its new label.
+    pub(crate) fn emit_renamed(&mut self, index: usize) {
+        if let Some(name) = self.sessions.items().get(index).map(|s| s.label()) {
+            self.emit(&Event::Renamed { name: &name }, Some(index));
+        }
+    }
+
+    /// `focus.changed` when the active session is another one than last time.
+    pub(crate) fn note_focus(&mut self) {
+        let focused = self.sessions.active().map(|s| s.id);
+        if focused != self.focused {
+            self.focused = focused;
+            if focused.is_some() {
+                self.emit(&Event::FocusChanged, self.sessions.active_index());
+            }
+        }
+    }
+
+    /// Close the window (quitting fuxx) once `conns` have written what's queued for them, for
+    /// at most `REPLY_FLUSH`; at once when there's nothing to wait for.
+    pub(crate) fn quit_after_flush(
+        &mut self,
+        conns: Vec<Conn>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let conns: Vec<Conn> = conns.into_iter().filter(|c| !c.peer_gone()).collect();
+        if conns.is_empty() {
+            window.remove_window();
+            return;
+        }
+        cx.spawn_in(window, async move |_, cx| {
+            cx.background_spawn(async move {
+                let deadline = Instant::now() + REPLY_FLUSH;
+                for conn in conns {
+                    conn.flushed(deadline.saturating_duration_since(Instant::now()));
+                }
+            })
+            .await;
+            cx.update(|window, _| window.remove_window()).ok();
+        })
+        .detach();
     }
 
     /// `session.new`: a session like ⌘T / a preset, or with `split` a pane like ⌘D beside `of`.
@@ -390,6 +601,19 @@ fn bool_param(p: &Value, key: &str) -> Result<bool, ApiError> {
     }
 }
 
+/// `timeout_ms`: how long a wait may take; absent or null is no limit.
+fn timeout_param(p: &Value) -> Result<Option<Duration>, ApiError> {
+    match p.get("timeout_ms") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(|ms| Some(Duration::from_millis(ms)))
+            .ok_or_else(|| {
+                ApiError::bad_request("timeout_ms must be a whole number of milliseconds")
+            }),
+    }
+}
+
 /// `lines` → the last n lines, else `all` → everything, else the screen.
 fn text_scope(p: &Value) -> Result<TextScope, ApiError> {
     match p.get("lines") {
@@ -457,6 +681,23 @@ fn check_folder(dir: &Path) -> Result<(), ApiError> {
         return Err(ApiError::not_found(format!("no folder {}", dir.display())));
     }
     Ok(())
+}
+
+/// The last lines of session `id`'s screen (empty if it's gone), for text waits.
+fn screen_text(sessions: &[crate::workspace::Session], id: u64, cx: &App) -> String {
+    sessions
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| s.view.read(cx).text(TextScope::Last(WAIT_TEXT_LINES)))
+        .unwrap_or_default()
+}
+
+/// Now, in unix milliseconds (the events' `ts`).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn not_waiting(id: u64, status: Status) -> ApiError {
@@ -538,6 +779,29 @@ mod tests {
         assert_eq!(bool_param(&p, "off"), Ok(false));
         assert_eq!(bool_param(&p, "text").unwrap_err().code, "bad_request");
         assert_eq!(bool_param(&p, "n").unwrap_err().code, "bad_request");
+    }
+
+    #[test]
+    fn wait_timeouts() {
+        assert_eq!(timeout_param(&json!({})), Ok(None));
+        assert_eq!(timeout_param(&json!({"timeout_ms": null})), Ok(None));
+        assert_eq!(
+            timeout_param(&json!({"timeout_ms": 1500})),
+            Ok(Some(Duration::from_millis(1500)))
+        );
+        assert_eq!(
+            timeout_param(&json!({"timeout_ms": 0})),
+            Ok(Some(Duration::ZERO))
+        );
+        for bad in [json!(-1), json!(1.5), json!("30"), json!(true)] {
+            assert_eq!(
+                timeout_param(&json!({ "timeout_ms": bad }))
+                    .unwrap_err()
+                    .code,
+                "bad_request",
+                "{bad}"
+            );
+        }
     }
 
     #[test]
