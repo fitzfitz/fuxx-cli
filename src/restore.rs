@@ -102,7 +102,7 @@ pub fn state_path(home: &Path) -> PathBuf {
 }
 
 /// A session to open: the saved description and whether to run its preset command.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Launch {
     pub saved: SavedSession,
     pub run_preset: bool,
