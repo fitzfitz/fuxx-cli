@@ -8,6 +8,7 @@ mod api_server;
 mod appearance;
 mod cli;
 mod colors;
+mod daemon_session;
 mod detach_probe;
 mod detector;
 mod fonts;

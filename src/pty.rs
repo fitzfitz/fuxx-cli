@@ -1,7 +1,8 @@
 //! A child process on a pseudo-terminal (portable-pty, as in v1).
 
-use std::io::{Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
+use std::sync::mpsc::Sender;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
@@ -92,6 +93,52 @@ impl Pty {
             .resize(pty_size(dims, cell))
             .map_err(|e| e.to_string())
     }
+}
+
+/// Reads the child's output on a dedicated thread: `on_output` gets each chunk as read, then
+/// `on_eof` runs once the child has closed the PTY (or reading fails).
+pub fn spawn_reader(
+    mut reader: Box<dyn Read + Send>,
+    mut on_output: impl FnMut(&[u8]) + Send + 'static,
+    on_eof: impl FnOnce() + Send + 'static,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("fuxx-pty-reader".into())
+        .spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    // EOF. portable-pty already maps macOS's EIO-at-exit to Ok(0).
+                    Ok(0) => break,
+                    Ok(n) => on_output(&buf[..n]),
+                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            on_eof();
+        })
+        .map(drop)
+}
+
+/// Starts the thread that owns the PTY writer for the whole session and returns its queue, so
+/// a child that stops reading can't block whoever sends. The thread ends when every sender is
+/// dropped or the child goes away.
+pub fn spawn_writer(mut writer: Box<dyn Write + Send>) -> io::Result<Sender<Vec<u8>>> {
+    let (input, queued) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::Builder::new()
+        .name("fuxx-pty-writer".into())
+        .spawn(move || {
+            for bytes in queued {
+                if writer
+                    .write_all(&bytes)
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })?;
+    Ok(input)
 }
 
 impl Drop for Pty {
