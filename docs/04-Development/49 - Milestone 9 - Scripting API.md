@@ -75,7 +75,7 @@ one session, is an error that names the candidates.
 
 | Command | What it does |
 |---|---|
-| `fuxx ls` | List sessions: id, number, name, status, group folder, preset, focused / on screen, note, progress. A leading `*` marks the focused session, `+` another one on screen; progress and note follow as `40% tests · building` |
+| `fuxx ls` | List sessions: id, number, name, status, group folder, preset, focused / on screen, note, progress. The id comes first (easy to pick out in scripts); `#2*` marks the focused session and `#2+` another one on screen; progress and note follow as `40% tests · building` |
 | `fuxx new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME] [--split right\|down [--of TARGET]] [--background]` | Open a session (or a split next to a session). `--run` types a command into the new shell like a preset does. `--background` keeps focus where it is. Prints the new id. |
 | `fuxx close [TARGET]` | Close a session (its program is stopped) |
 | `fuxx focus [TARGET]` | Show and focus a session (opens its group / layout) |
