@@ -6,6 +6,8 @@ mod colors;
 mod detector;
 mod fonts;
 mod grid;
+#[allow(dead_code)] // used from M7 Task 4/5
+mod groups;
 mod keys;
 mod links;
 mod mouse;
