@@ -23,6 +23,8 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - **fuxx's own settings file** (added 2026-10-27 on request): `~/.config/fuxx/config`, plain `key = value`
   lines using Ghostty's key names, plus theme files in `~/.config/fuxx/themes` and six built-in themes.
   fuxx does **not** read Ghostty's config.
+- A **settings window** (M6b, added 2026-10-27 on request): File → Preferences… / cmd-, to pick the theme,
+  font, size and ligatures and override colors, saved to fuxx's own settings file and applied live.
 - macOS first (Linux capable via the Rust stack).
 - A **tester build** after the MVP (M4b, added 2026-10-26): an unsigned `.app` in a DMG. Signing,
   notarization and Homebrew stay later (M11, M12).

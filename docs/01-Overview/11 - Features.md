@@ -18,6 +18,8 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 - `P1` Font config (family/size/ligatures) via `cosmic-text`, including prompt icons (Nerd Font symbols such as powerlevel10k's, `?` boxes today). *(M6; noted 2026-10-26.)*
 - `P2` Search in scrollback; theming via **fuxx's own settings file** and built-in themes. *(M6. Changed 2026-10-27:
   originally "read Ghostty's config" like cmux; you chose fuxx's own file so it doesn't depend on Ghostty.)*
+- `P1` **Settings window** (File → Preferences… / cmd-,): theme, font, size, ligatures, color overrides; saved to the
+  settings file, applied live. *(M6b, added 2026-10-27.)*
 
 ## B. Multi-agent orchestration (the differentiator)
 
