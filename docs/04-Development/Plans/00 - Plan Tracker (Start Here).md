@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M10 — cmux extras** (Phase 3), not planned yet. M9 Scripting API is complete |
-| **Status** | ⬜ M10 not started. M9 ✅ done 2026-10-27 (on-screen checks confirmed by you). Agent-sessions research saved as input, not on the roadmap (your call: "not yet"). |
-| **▶ Next action** | Decide what comes next: M10 (browser / SSH / tmux-style daemon; each its own project), or revisit [[Input - Agent Sessions Research]]. |
+| **Current milestone** | **M10a — Persistent Sessions** (Phase 3). M10 split into M10a/b/c on 2026-10-27 |
+| **Status** | 🟨 In progress: [[M10a Plan - Persistent Sessions]] written 2026-10-27 (opt-in; notifications while closed; scripting-while-closed later). |
+| **▶ Next action** | [[M10a Plan - Persistent Sessions]] → Task 0 (privacy-folder spike, 👀 you) and Task 1 (screen snapshot). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-27 |
 
@@ -52,6 +52,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M7 | Session ergonomics (groups, rename/reorder, presets, restore) | [[M7 Plan - Session Ergonomics]] | ✅ | 8/8 | Groups, names, order, presets come back after a restart |
 | M8 | Split panes (nested) — *moved into scope 2026-10-27* | [[M8 Plan - Split Panes]] | ✅ | 7/7 | ⌘D / ⌘⇧D, drag dividers, layouts restored |
 | M9 | Scripting API (socket, `fuxx` command, events, wait, MCP) | [[M9 Plan - Scripting API]] | ✅ | 10/10 | Script and agents drive fuxx; wait/question/answer an agent |
+| M10a | Persistent sessions (background service, reattach) | [[M10a Plan - Persistent Sessions]] | 🟨 | 0/12 | Quit → agents keep running → reopen with everything live |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
