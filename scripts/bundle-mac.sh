@@ -9,7 +9,9 @@ version=$(cargo pkgid | sed 's/.*[#@]//')
 dmg="target/dist/fuxx-$version.dmg"
 # One DMG per version, so a tester's copy always says which build it is. This only sees DMGs still in
 # target/dist: after `cargo clean` (or in another checkout) the same version can be built again.
-[[ -e "$dmg" ]] && { echo "$dmg already exists: bump version in Cargo.toml" >&2; exit 1; }
+app_only=0
+[[ "${1:-}" == "--app-only" ]] && app_only=1
+[[ $app_only == 0 && -e "$dmg" ]] && { echo "$dmg already exists: bump version in Cargo.toml" >&2; exit 1; }
 
 # Both slices target the same macOS floor as Info.plist's LSMinimumSystemVersion.
 export MACOSX_DEPLOYMENT_TARGET=11.0
@@ -37,6 +39,14 @@ cp assets/themes/LICENSE-* "$licenses/"
 cp assets/themes/NOTICE.md "$licenses/NOTICE-Themes.md"
 # Ad-hoc seal over the whole bundle (binary + Info.plist). Not a Developer ID signature: M12.
 codesign --force --sign - "$app"
+if [[ $app_only == 1 ]]; then
+    # M10a spike: just the app, no DMG.
+    mkdir -p target/dist
+    rm -rf target/dist/fuxx.app
+    cp -R "$app" target/dist/fuxx.app
+    echo target/dist/fuxx.app
+    exit 0
+fi
 ln -s /Applications "$stage/Applications"
 
 mkdir -p target/dist
