@@ -148,6 +148,25 @@ pub fn key_to_bytes(
 
 /// Bytes to send for pasted text. Bracketed: wrapped in `ESC[200~ ... ESC[201~` with every ESC
 /// removed, so the text can't end the paste early. Plain: line breaks become Enter (`\r`).
+/// The typed text with Caps Lock applied. GPUI's macOS key_char only accounts for shift and
+/// option, so a letter typed with Caps Lock on arrives lowercase. As on macOS, Caps Lock
+/// capitalises letters only (shift + caps lock is still a capital); a letter whose capital isn't
+/// a single character (ß) is left as typed.
+pub fn with_capslock(text: &str, on: bool) -> String {
+    if !on {
+        return text.to_string();
+    }
+    text.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(u), None) => u,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     if bracketed {
         let mut out = b"\x1b[200~".to_vec();
@@ -187,6 +206,17 @@ mod tests {
 
     fn k(key: &str, key_char: Option<&str>) -> Option<Vec<u8>> {
         key_to_bytes(key, key_char, false, false, false, false)
+    }
+
+    #[test]
+    fn capslock_capitalises_letters_only() {
+        assert_eq!(with_capslock("a", true), "A");
+        assert_eq!(with_capslock("A", true), "A"); // shift + caps lock is still a capital on macOS
+        assert_eq!(with_capslock("é", true), "É");
+        assert_eq!(with_capslock("1", true), "1");
+        assert_eq!(with_capslock(";", true), ";");
+        assert_eq!(with_capslock("ß", true), "ß"); // no single-letter capital: left as typed
+        assert_eq!(with_capslock("a", false), "a");
     }
 
     #[test]

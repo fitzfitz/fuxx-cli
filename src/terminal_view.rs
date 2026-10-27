@@ -244,7 +244,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let m = &keystroke.modifiers;
         if let Some(bytes) =
@@ -260,9 +260,13 @@ impl TerminalView {
         // only named keys (arrows, backspace, enter, ...) get Alt-as-Meta treatment.
         let named_key = keystroke.key.chars().count() > 1;
         let app_cursor = self.core.mode().contains(TermMode::APP_CURSOR);
+        let key_char = keystroke
+            .key_char
+            .as_deref()
+            .map(|t| keys::with_capslock(t, window.capslock().on));
         if let Some(bytes) = keys::key_to_bytes(
             &keystroke.key,
-            keystroke.key_char.as_deref(),
+            key_char.as_deref(),
             m.control,
             m.alt && named_key,
             m.shift,
