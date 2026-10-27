@@ -187,7 +187,7 @@ pub struct Workspace {
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
     _appearance: Subscription,
-    /// Persistence asked for at startup (`FUXX_PERSISTENT=1` until M10a Task 8's setting).
+    /// Persistence asked for at startup (`persistent-sessions = on`).
     pub(crate) persistent: bool,
     pub(crate) service: Service,
     /// A line at the foot of the sidebar about the background service.
@@ -262,6 +262,7 @@ impl Workspace {
         if persistent {
             this.connect_service(window, cx);
         } else {
+            this.probe_leftover_service(cx);
             this.restore(window, cx);
         }
         this

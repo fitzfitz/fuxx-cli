@@ -24,8 +24,9 @@ use crate::workspace::CloseSession;
 const WIDTH: f32 = 560.0;
 /// The 660 px that fit the first four sections, plus the Restore sessions section: its gap (8),
 /// top margin (8), heading line (20), gap (8) and switch (30: 2 px padding and 1 px border on each
-/// side around a 24 px row, the same as the Ligatures switch) = 74.
-const HEIGHT: f32 = 734.0;
+/// side around a 24 px row, the same as the Ligatures switch) = 74. Then the Sessions section:
+/// the same 74, plus its note (gap 8 and one `text_xs` line of 16) = 98.
+const HEIGHT: f32 = 832.0;
 const LIST_HEIGHT: f32 = 180.0;
 const ROW_HEIGHT: f32 = 24.0;
 /// The size the monospace test measures glyphs at; any size gives the same answer.
@@ -297,6 +298,29 @@ impl Render for PreferencesView {
                 RestoreMode::Agents,
             ));
 
+        let persistent = appearance.persistent;
+        let keep_option = |id: &'static str, label: &'static str, on: bool| {
+            row(id, on == persistent, ui)
+                .px_3()
+                .child(label)
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    if cx.global::<Appearance>().persistent != on {
+                        // Off is the default: the absence of the line.
+                        apply(cx, "persistent-sessions", &prefs::persistence_values(on));
+                    }
+                }))
+        };
+        let keep_switch = div()
+            .flex()
+            .flex_row()
+            .p_0p5()
+            .gap_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(hsla(ui.sidebar_border))
+            .child(keep_option("keep-on", "On", true))
+            .child(keep_option("keep-off", "Off", false));
+
         div()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|_, _: &CloseSession, window, _| window.remove_window()))
@@ -318,6 +342,14 @@ impl Render for PreferencesView {
             .child(div().flex().child(ligature_switch))
             .child(heading("Restore sessions", ui).mt_2())
             .child(div().flex().child(restore_switch))
+            .child(heading("Sessions: keep running after quit", ui).mt_2())
+            .child(div().flex().child(keep_switch))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(hsla(ui.text_dim))
+                    .child("Takes effect the next time fuxx starts."),
+            )
     }
 }
 

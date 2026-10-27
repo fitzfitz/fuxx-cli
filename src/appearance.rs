@@ -29,6 +29,9 @@ pub struct Appearance {
     pub restore: RestoreMode,
     /// `scripting = on|off`: whether the scripting socket starts (default on).
     pub scripting: bool,
+    /// `persistent-sessions = on|off`: sessions run in the background service and survive
+    /// quitting (default off). Read at startup; changing it takes effect the next launch.
+    pub persistent: bool,
 }
 
 impl Global for Appearance {}
@@ -50,6 +53,24 @@ fn scripting_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
             "" | "on" => on = true,
             "off" => on = false,
             _ => warnings.push(format!("scripting \"{}\": expected on or off", entry.value)),
+        }
+    }
+    (on, warnings)
+}
+
+/// The last valid `persistent-sessions` entry wins (`on` / `off`, any case); an empty value
+/// resets to off. Returns the setting and a warning per invalid value (the previous value stays).
+fn persistent_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    let mut on = false;
+    let mut warnings = Vec::new();
+    for entry in entries.iter().filter(|e| e.key == "persistent-sessions") {
+        match entry.value.trim().to_lowercase().as_str() {
+            "" | "off" => on = false,
+            "on" => on = true,
+            _ => warnings.push(format!(
+                "persistent-sessions \"{}\": expected on or off",
+                entry.value
+            )),
         }
     }
     (on, warnings)
@@ -125,10 +146,12 @@ pub fn load(cx: &App) -> Appearance {
     let (presets, preset_warnings) = presets::from_entries(&entries);
     let (restore, restore_warnings) = RestoreMode::from_entries(&entries);
     let (scripting, scripting_warnings) = scripting_from_entries(&entries);
+    let (persistent, persistent_warnings) = persistent_from_entries(&entries);
     for warning in preset_warnings
         .iter()
         .chain(&restore_warnings)
         .chain(&scripting_warnings)
+        .chain(&persistent_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
     }
@@ -144,6 +167,7 @@ pub fn load(cx: &App) -> Appearance {
         presets,
         restore,
         scripting,
+        persistent,
     }
 }
 
@@ -173,5 +197,29 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("maybe"));
         assert_eq!(scripting_from_entries(&[s("off"), s("")]), (true, vec![]));
+    }
+
+    fn p(value: &str) -> Entry {
+        Entry {
+            key: "persistent-sessions".into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn persistent_setting_defaults_off_and_warns_on_junk() {
+        assert_eq!(persistent_from_entries(&[]), (false, vec![]));
+        assert_eq!(persistent_from_entries(&[p(" ON ")]), (true, vec![]));
+        assert_eq!(
+            persistent_from_entries(&[p("on"), p("off")]),
+            (false, vec![])
+        );
+        let (on, warnings) = persistent_from_entries(&[p("on"), p("yes")]);
+        assert!(on); // the bad value leaves the previous one in place
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("yes") && warnings[0].contains("persistent-sessions"));
+        assert_eq!(persistent_from_entries(&[p("on"), p("")]), (false, vec![]));
+        // Other keys are ignored.
+        assert_eq!(persistent_from_entries(&[s("on")]), (false, vec![]));
     }
 }

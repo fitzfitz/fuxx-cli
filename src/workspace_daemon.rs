@@ -22,6 +22,19 @@ use crate::terminal::PumpQueue;
 use crate::terminal_view::TerminalView;
 use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
 
+/// The sidebar notice when persistence is off but `live` sessions still run in a background
+/// service.
+pub(crate) fn leftover_notice(live: usize) -> String {
+    let sessions = if live == 1 {
+        "1 session still runs".to_string()
+    } else {
+        format!("{live} sessions still run")
+    };
+    format!(
+        "{sessions} in the background service \u{2014} turn Preferences \u{2192} Sessions \u{2192} Keep running after quit back on, or run `fuxx daemon stop --force`."
+    )
+}
+
 /// Who runs the sessions (M10a).
 pub(crate) enum Service {
     /// This process (persistence off, or the background service couldn't start).
@@ -100,6 +113,32 @@ impl Workspace {
             let connected = connecting.await;
             this.update_in(cx, |this, window, cx| {
                 this.service_started(connected, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Persistence is off: look (never start one) for a background service still holding
+    /// sessions from an earlier run, off the UI thread, and say so in the sidebar. Nothing is
+    /// adopted.
+    pub(crate) fn probe_leftover_service(&mut self, cx: &mut Context<Self>) {
+        let socket = daemon_socket();
+        let probing = cx.background_spawn(async move {
+            let client = DaemonClient::connect(&socket?).ok()?;
+            let live = client.list().ok()?.iter().filter(|s| s.alive).count();
+            Some(live)
+        });
+        cx.spawn(async move |this, cx| {
+            let Some(live) = probing.await.filter(|n| *n > 0) else {
+                return;
+            };
+            let notice = leftover_notice(live);
+            eprintln!("[fuxx] background service: {notice}");
+            this.update(cx, |this, cx| {
+                // A service-lost notice or the like is already on screen: don't replace it.
+                this.notice.get_or_insert_with(|| notice.into());
+                cx.notify();
             })
             .ok();
         })
@@ -646,7 +685,9 @@ pub(crate) fn wait_ended(client: &DaemonClient, id: u64, within: Duration) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{Service, listed_sessions, open_refusal, same_service, wait_ended};
+    use super::{
+        Service, leftover_notice, listed_sessions, open_refusal, same_service, wait_ended,
+    };
     use crate::restore::RestoreMode;
 
     #[test]
@@ -758,5 +799,17 @@ mod tests {
         client.close(closed);
         assert!(wait_ended(&client, closed, Duration::from_secs(5)));
         assert!(client.list().unwrap().iter().any(|s| s.id == kept));
+    }
+
+    #[test]
+    fn the_leftover_notice_counts_sessions_and_names_both_ways_out() {
+        let one = leftover_notice(1);
+        assert!(one.starts_with("1 session still runs in the background service"));
+        let many = leftover_notice(3);
+        assert!(many.starts_with("3 sessions still run in the background service"));
+        for n in [&one, &many] {
+            assert!(n.contains("Preferences \u{2192} Sessions \u{2192} Keep running after quit"));
+            assert!(n.contains("fuxx daemon stop --force"));
+        }
     }
 }

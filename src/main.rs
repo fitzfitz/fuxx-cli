@@ -321,8 +321,6 @@ fn main() {
         }
     }
 
-    let persistent = persistence_requested(std::env::var("FUXX_PERSISTENT").ok().as_deref());
-
     // macOS apps normally keep running with no windows; a terminal should quit instead.
     application()
         .with_quit_mode(QuitMode::LastWindowClosed)
@@ -383,13 +381,15 @@ fn main() {
                     Some("NameInput"),
                 ),
             ]);
+            // Read once, before any view exists: every view takes its theme and font from it, the
+            // agent submenu is built from its presets, and `persistent-sessions` decides who
+            // runs the sessions.
+            cx.set_global(appearance::load(cx));
+            let persistent = cx.global::<appearance::Appearance>().persistent;
             if persistent {
                 cx.bind_keys([KeyBinding::new("alt-cmd-q", QuitAndEndSessions, None)]);
             }
             cx.on_action(|_: &OpenPreferences, cx: &mut App| preferences::open_or_activate(cx));
-            // Read once, before any view exists: every view takes its theme and font from it, and
-            // the agent submenu is built from its presets.
-            cx.set_global(appearance::load(cx));
             let scripting = start_scripting(cx);
             set_menus(cx, persistent.then_some(0));
 
@@ -452,27 +452,14 @@ fn quit_title(keep_running: usize) -> String {
     }
 }
 
-/// Provisional switch until M10a Task 8's `persistent-sessions` setting: `FUXX_PERSISTENT=1`.
-fn persistence_requested(var: Option<&str>) -> bool {
-    var == Some("1")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{persistence_requested, quit_title};
+    use super::quit_title;
 
     #[test]
     fn the_quit_item_says_how_many_sessions_keep_running() {
         assert_eq!(quit_title(0), "Quit fuxx");
         assert_eq!(quit_title(1), "Quit fuxx (1 session keeps running)");
         assert_eq!(quit_title(4), "Quit fuxx (4 sessions keep running)");
-    }
-
-    #[test]
-    fn persistence_is_on_only_when_asked_for() {
-        assert!(persistence_requested(Some("1")));
-        for off in [None, Some(""), Some("0"), Some("yes"), Some("on")] {
-            assert!(!persistence_requested(off), "{off:?}");
-        }
     }
 }
