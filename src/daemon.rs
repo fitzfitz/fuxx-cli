@@ -66,6 +66,21 @@ const INPUT_BACKLOG_MAX: usize = 1 << 20;
 /// Input bytes one connection may have queued for one session before its reader waits.
 const SESSION_INPUT_QUEUE: usize = 16 << 20;
 
+/// How often an idle input thread checks that its session still lives.
+const INPUT_IDLE_CHECK: Duration = Duration::from_millis(200);
+
+/// A connection's input threads, by session id.
+type Inputs = Mutex<HashMap<u64, Arc<InputQueue>>>;
+
+/// What `InputQueue::pop` found.
+enum Popped {
+    Input(bool, Vec<u8>),
+    /// Nothing within the timeout.
+    Idle,
+    /// Closed and empty.
+    Closed,
+}
+
 /// One connection's input for one session (`Input` and `Write`, in order), byte-bounded.
 #[derive(Default)]
 struct InputQueue {
@@ -95,20 +110,33 @@ impl InputQueue {
         self.ready.notify_all();
     }
 
-    /// The next input; `None` once closed and empty.
-    fn pop(&self) -> Option<(bool, Vec<u8>)> {
+    /// The next input, waiting up to `timeout` for one.
+    fn pop(&self, timeout: Duration) -> Popped {
+        let deadline = Instant::now() + timeout;
         let mut q = lock(&self.inner);
         loop {
             if let Some((typing, bytes)) = q.items.pop_front() {
                 q.bytes -= bytes.len();
                 self.ready.notify_all();
-                return Some((typing, bytes));
+                return Popped::Input(typing, bytes);
             }
             if q.closed {
-                return None;
+                return Popped::Closed;
             }
-            q = self.ready.wait(q).unwrap_or_else(PoisonError::into_inner);
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Popped::Idle;
+            }
+            q = self
+                .ready
+                .wait_timeout(q, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        lock(&self.inner).items.is_empty()
     }
 
     fn close(&self) {
@@ -121,14 +149,31 @@ impl InputQueue {
     }
 }
 
-/// Hand a connection's input to one session in order. Backpressure is per session: while the
-/// session holds more than `INPUT_BACKLOG_MAX` unwritten bytes, wait (this queue then fills,
-/// and only then the connection's reader). The wait ends early if the session ends, the daemon
-/// exits or the connection closes. Nothing is dropped while the session lives.
-fn deliver_input(queue: &InputQueue, session: &Weak<DaemonSession>, shared: &Shared) {
-    while let Some((typing, bytes)) = queue.pop() {
-        let Some(session) = session.upgrade() else {
-            continue; // the session is gone: nothing can take it
+/// Hand a connection's input to one session (`id`) in order. Backpressure is per session:
+/// while the session holds more than `INPUT_BACKLOG_MAX` unwritten bytes, wait (this queue then
+/// fills, and only then the connection's reader). The wait ends early if the session ends, the
+/// daemon exits or the connection closes. Nothing is dropped while the session lives.
+///
+/// Returns once the session has ended (checked every `INPUT_IDLE_CHECK` while idle) or the
+/// queue is closed and empty, taking its entry out of `inputs`: threads never pile up on a
+/// long-lived connection.
+fn deliver_input(
+    queue: &Arc<InputQueue>,
+    session: &Weak<DaemonSession>,
+    shared: &Shared,
+    inputs: &Inputs,
+    id: u64,
+) {
+    let live = || session.upgrade().filter(|s| s.info().alive);
+    loop {
+        let (typing, bytes) = match queue.pop(INPUT_IDLE_CHECK) {
+            Popped::Input(typing, bytes) => (typing, bytes),
+            Popped::Closed => break,
+            Popped::Idle if live().is_some() => continue,
+            Popped::Idle => break,
+        };
+        let Some(session) = live() else {
+            break; // ended: nothing can take it
         };
         while session.input_backlog() > INPUT_BACKLOG_MAX
             && !shared.closing()
@@ -138,6 +183,12 @@ fn deliver_input(queue: &InputQueue, session: &Weak<DaemonSession>, shared: &Sha
             std::thread::sleep(Duration::from_millis(10));
         }
         deliver_now(&session, typing, &bytes);
+    }
+    // A push racing this sees the queue closed and starts over (`queue_input`).
+    queue.close();
+    let mut inputs = lock(inputs);
+    if inputs.get(&id).is_some_and(|q| Arc::ptr_eq(q, queue)) {
+        inputs.remove(&id);
     }
 }
 
@@ -279,6 +330,8 @@ struct Shared {
     started: Instant,
     /// A connection that hasn't said `Hello` within this is closed.
     hello_timeout: Duration,
+    /// Input threads running, across connections (for tests: they end with their session).
+    input_threads: AtomicUsize,
 }
 
 impl Shared {
@@ -413,6 +466,7 @@ fn start_with(path: &Path, tuning: Tuning) -> io::Result<Running> {
         quit: AtomicBool::new(false),
         started: Instant::now(),
         hello_timeout: tuning.hello_timeout,
+        input_threads: AtomicUsize::new(0),
     });
     let accepting = shared.clone();
     std::thread::Builder::new()
@@ -568,7 +622,7 @@ fn serve(stream: UnixStream, slot: Slot, shared: Arc<Shared>) {
                 out,
                 role: None,
                 attached: HashMap::new(),
-                inputs: HashMap::new(),
+                inputs: Arc::default(),
             };
             // An exit decided before we registered won't shut this socket: leave at once.
             if !conn.shared.closing() && catch_unwind(AssertUnwindSafe(|| conn.run())).is_err() {
@@ -624,8 +678,9 @@ struct Connection {
     role: Option<Role>,
     /// The forwarding thread per attached session.
     attached: HashMap<u64, (Weak<DaemonSession>, JoinHandle<bool>)>,
-    /// The input queue per session this client sent input to (`deliver_input` drains it).
-    inputs: HashMap<u64, Arc<InputQueue>>,
+    /// The input queue per session this client sent input to (`deliver_input` drains it, and
+    /// takes its entry out when it ends).
+    inputs: Arc<Inputs>,
 }
 
 impl Connection {
@@ -704,6 +759,11 @@ impl Connection {
             Frame::Attach { id } => self.attach(role, id),
             Frame::Detach { id } => {
                 self.detach(id);
+                // An idle input thread isn't needed until the next input.
+                let idle = lock(&self.inputs).get(&id).is_some_and(|q| q.is_empty());
+                if idle {
+                    self.drop_input(id);
+                }
                 true
             }
             Frame::Input { id, bytes } => {
@@ -751,6 +811,7 @@ impl Connection {
                 true
             }
             Frame::Close { id } => {
+                self.drop_input(id);
                 if let Some(session) = self.shared.session(id) {
                     session.close();
                 }
@@ -791,27 +852,48 @@ impl Connection {
     /// first use), so a session whose child is behind holds up only its own input. This waits
     /// only when that session's queue is full (`SESSION_INPUT_QUEUE`).
     fn queue_input(&mut self, id: u64, typing: bool, bytes: Vec<u8>) {
-        let queue = match self.inputs.get(&id) {
-            Some(queue) => queue.clone(),
+        // A closed queue's thread has ended (or is ending): start over.
+        let current = lock(&self.inputs).get(&id).filter(|q| !q.closed()).cloned();
+        let queue = match current {
+            Some(queue) => queue,
             None => {
-                let Some(session) = self.shared.session(id) else {
-                    return;
+                let Some(session) = self.shared.session(id).filter(|s| s.info().alive) else {
+                    // Gone or ended: nothing can take it, and no thread is kept for it.
+                    return self.drop_input(id);
                 };
                 let queue = Arc::new(InputQueue::default());
-                let (draining, shared, weak) =
-                    (queue.clone(), self.shared.clone(), Arc::downgrade(&session));
+                let (draining, shared, weak, inputs) = (
+                    queue.clone(),
+                    self.shared.clone(),
+                    Arc::downgrade(&session),
+                    self.inputs.clone(),
+                );
+                self.shared.input_threads.fetch_add(1, Ordering::AcqRel);
                 let spawned = std::thread::Builder::new()
                     .name("fuxx-daemon-input".into())
-                    .spawn(move || deliver_input(&draining, &weak, &shared));
+                    .spawn(move || {
+                        deliver_input(&draining, &weak, &shared, &inputs, id);
+                        shared.input_threads.fetch_sub(1, Ordering::AcqRel);
+                    });
                 if spawned.is_err() {
+                    self.shared.input_threads.fetch_sub(1, Ordering::AcqRel);
                     log!("connection {}: no input thread for s{id}", self.id);
                     return deliver_now(&session, typing, &bytes);
                 }
-                self.inputs.insert(id, queue.clone());
+                lock(&self.inputs).insert(id, queue.clone());
                 queue
             }
         };
         queue.push(typing, bytes);
+    }
+
+    /// Stop this connection's input thread for session `id`; it hands over what is queued
+    /// without waiting, then ends.
+    fn drop_input(&mut self, id: u64) {
+        let queue = lock(&self.inputs).remove(&id);
+        if let Some(queue) = queue {
+            queue.close();
+        }
     }
 
     fn hello(&mut self, hello: &Hello) -> bool {
@@ -949,7 +1031,7 @@ impl Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         // Input threads hand over what is queued without waiting, then end.
-        for (_, queue) in self.inputs.drain() {
+        for (_, queue) in lock(&self.inputs).drain() {
             queue.close();
         }
         for (_, (session, _thread)) in self.attached.drain() {
@@ -1851,6 +1933,45 @@ mod tests {
             assert!(Instant::now() < deadline, "{}", read_screen(&mut c, stuck));
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    #[test]
+    fn input_threads_end_with_their_sessions_on_a_long_lived_connection() {
+        let (d, path) = daemon("inputthreads");
+        let mut c = connect(&path, Role::Ui);
+        let threads = || d.shared.input_threads.load(Ordering::Acquire);
+        for i in 0..50 {
+            let id = create(&mut c, "t");
+            c.send(&Frame::Input {
+                id,
+                bytes: b"echo hi\r".to_vec(),
+            })
+            .unwrap();
+            if i % 2 == 0 {
+                c.send(&Frame::Close { id }).unwrap(); // closed by the client
+            } else {
+                c.send(&Frame::Input {
+                    id,
+                    bytes: b"exit\r".to_vec(),
+                })
+                .unwrap(); // its program ends by itself
+            }
+        }
+        assert!(threads() > 0, "typing started input threads");
+        assert!(
+            eventually(|| threads() == 0 && list(&mut c).is_empty()),
+            "{} input threads left",
+            threads()
+        );
+        // And typing into a new session on the same connection still works.
+        let id = create(&mut c, "after");
+        c.send(&Frame::Input {
+            id,
+            bytes: b"echo $((6*7))N\r".to_vec(),
+        })
+        .unwrap();
+        assert!(eventually(|| read_screen(&mut c, id).contains("42N")));
+        assert_eq!(threads(), 1);
     }
 
     #[test]

@@ -541,7 +541,10 @@ fn decode_frame(k: u8, p: &[u8]) -> Result<Frame, ProtoError> {
         },
         kind::INPUT | kind::WRITE => {
             if p.len() < 8 {
-                return Err(ProtoError::Malformed("Input header"));
+                return Err(ProtoError::Malformed(match k {
+                    kind::INPUT => "Input header",
+                    _ => "Write header",
+                }));
             }
             let (id, bytes) = (be_u64(p), p[8..].to_vec());
             match k {
@@ -1092,6 +1095,14 @@ mod tests {
             one(&raw(kind::OUTPUT, &[0; 19])),
             Err(ProtoError::Malformed(_))
         ));
+        assert_eq!(
+            one(&raw(kind::WRITE, &[0; 7])),
+            Err(ProtoError::Malformed("Write header"))
+        );
+        assert_eq!(
+            one(&raw(kind::INPUT, &[0; 7])),
+            Err(ProtoError::Malformed("Input header"))
+        );
         // meta_len claims more than the frame holds
         let mut p = vec![0; 16];
         p.extend(100u32.to_be_bytes());
