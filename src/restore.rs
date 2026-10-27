@@ -109,17 +109,28 @@ pub struct Launch {
 }
 
 /// What to open at startup: nothing, every session as a plain shell, or every session with its
-/// agent started again.
-pub fn launches(state: &SavedState, mode: RestoreMode) -> Vec<Launch> {
+/// agent started again. A session's preset is looked up by name in `presets` (today's settings),
+/// so an edited preset runs its new command and a removed one leaves a plain shell.
+pub fn launches(state: &SavedState, mode: RestoreMode, presets: &[Preset]) -> Vec<Launch> {
     if mode == RestoreMode::Off {
         return Vec::new();
     }
     state
         .sessions
         .iter()
-        .map(|s| Launch {
-            saved: s.clone(),
-            run_preset: mode == RestoreMode::Agents && s.preset.is_some(),
+        .map(|s| {
+            let preset = s
+                .preset
+                .as_ref()
+                .and_then(|saved| presets.iter().find(|p| p.name == saved.name))
+                .cloned();
+            Launch {
+                run_preset: mode == RestoreMode::Agents && preset.is_some(),
+                saved: SavedSession {
+                    preset,
+                    ..s.clone()
+                },
+            }
         })
         .collect()
 }
@@ -127,6 +138,7 @@ pub fn launches(state: &SavedState, mode: RestoreMode) -> Vec<Launch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presets::builtins;
 
     fn r(value: &str) -> Entry {
         Entry {
@@ -190,16 +202,35 @@ mod tests {
     #[test]
     fn launches_follow_the_mode() {
         let s = sample();
-        assert!(launches(&s, RestoreMode::Off).is_empty());
-        let layout = launches(&s, RestoreMode::Layout);
+        assert!(launches(&s, RestoreMode::Off, &builtins()).is_empty());
+        let layout = launches(&s, RestoreMode::Layout, &builtins());
         assert_eq!(layout.len(), 2);
         assert!(layout.iter().all(|l| !l.run_preset));
-        let agents = launches(&s, RestoreMode::Agents);
+        let agents = launches(&s, RestoreMode::Agents, &builtins());
         assert_eq!(
             agents.iter().map(|l| l.run_preset).collect::<Vec<_>>(),
             [false, true]
         );
         assert_eq!(agents[1].saved, s.sessions[1]);
+    }
+
+    #[test]
+    fn launches_use_the_current_preset_by_name() {
+        let edited = Preset {
+            name: "claude".into(),
+            command: "claude --continue".into(),
+        };
+        let agents = launches(
+            &sample(),
+            RestoreMode::Agents,
+            std::slice::from_ref(&edited),
+        );
+        assert_eq!(agents[1].saved.preset, Some(edited));
+        assert!(agents[1].run_preset);
+        // A preset that's no longer in the settings comes back as a plain shell.
+        let gone = launches(&sample(), RestoreMode::Agents, &[]);
+        assert_eq!(gone[1].saved.preset, None);
+        assert!(!gone[1].run_preset);
     }
 
     #[test]

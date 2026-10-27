@@ -82,7 +82,8 @@ Everything else below is the AI's call. Say if any should change.
 
 - **The setting:** `session-restore = agents | layout | off` in the settings file. The default is
   `agents`.
-  - `agents`: reopen every session, and re-run each agent preset.
+  - `agents`: reopen every session, and re-run each agent preset. The preset is looked up by name in
+    today's settings, so an edited preset runs its new command and a removed one gives a plain shell.
   - `layout`: reopen every session as a plain shell.
   - `off`: always start with one new session, as today.
 - The **Preferences window** gets a **Restore sessions** row with three buttons: **Off**, **Layout**
