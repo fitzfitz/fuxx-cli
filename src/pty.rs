@@ -1,5 +1,6 @@
 //! A child process on a pseudo-terminal (portable-pty, as in v1).
 
+use std::ffi::c_int;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
 use std::sync::mpsc::Sender;
@@ -47,6 +48,12 @@ pub(crate) fn apply_env(cmd: &mut CommandBuilder, env: &ShellEnv) {
     }
 }
 
+// libSystem.
+unsafe extern "C" {
+    fn killpg(pgrp: c_int, sig: c_int) -> c_int;
+}
+const SIGHUP: c_int = 1;
+
 pub fn pty_size(dims: TermDims, cell: CellPx) -> PtySize {
     PtySize {
         rows: dims.rows as u16,
@@ -85,6 +92,20 @@ impl Pty {
             reader,
             writer,
         ))
+    }
+
+    /// SIGHUP the child's whole process group, as closing a terminal window does, so its
+    /// background jobs go too. The child leads its own group (portable-pty runs it with setsid).
+    pub fn hang_up(&self) {
+        if let Some(pid) = self
+            .child
+            .process_id()
+            .and_then(|p| c_int::try_from(p).ok())
+        {
+            // SAFETY: plain syscall on a pid we spawned and have not reaped (a zombie keeps
+            // its pid), so it cannot name someone else's group.
+            unsafe { killpg(pid, SIGHUP) };
+        }
     }
 
     /// Tell the child its new size (it receives SIGWINCH).
