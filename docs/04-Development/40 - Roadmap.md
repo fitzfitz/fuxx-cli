@@ -47,7 +47,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 ## Phase 3 — Power features (cmux parity — big, deferred)
 
-- **M9 — Socket/scripting API** per session (cmux-style programmability).
+- [[49 - Milestone 9 - Scripting API]] — 🟨 — socket + `fuxx` command, agent-aware status/question/answer/wait, event stream, sidebar note/progress, and `fuxx mcp` (goes beyond cmux / iTerm2 / Warp, on request 2026-10-27). Plan: [[M9 Plan - Scripting API]].
 - **M10 — cmux extras:** in-app browser · SSH workspaces · remote/tmux daemon. Each is its own project.
 
 ## Phase 4 — Polish and distribution
