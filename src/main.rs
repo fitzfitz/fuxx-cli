@@ -14,6 +14,8 @@ mod mouse;
 mod notifier;
 mod preferences;
 mod prefs;
+#[allow(dead_code)] // used from M7 Task 3/4; remove then
+mod presets;
 mod pty;
 mod session_list;
 mod settings;
