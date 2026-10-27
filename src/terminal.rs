@@ -5,8 +5,9 @@
 //! - Daemon (M10a, study §2.3.2): a replica of a session the background daemon owns. It starts
 //!   from the daemon's `Snapshot` and is fed its numbered `Output` and `Resized` frames, so it
 //!   ends up in the daemon's state. A gap in the numbers, or a `Resync`, re-attaches for a fresh
-//!   snapshot. Input and resizes go to the daemon. The daemon answers terminal queries and works
-//!   out status, title and exit; the replica's own query, title and bell events are dropped.
+//!   snapshot. Input and resizes go to the daemon through a per-terminal pump thread, so the UI
+//!   never waits on the socket. The daemon answers terminal queries and works out status, title
+//!   and exit; the replica's own query, title and bell events are dropped.
 
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -27,7 +28,7 @@ use crate::daemon_client::{DaemonClient, SessionStream};
 use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
-use crate::mux_proto::{self, Frame};
+use crate::mux_proto::Frame;
 use crate::pty::{self, Pty};
 use crate::status::Status;
 use crate::theme::Theme;
@@ -151,13 +152,48 @@ enum Backend {
 /// detaches: the session keeps running in the daemon (closing it is `DaemonClient::close`).
 struct DaemonLink {
     id: u64,
-    client: Arc<DaemonClient>,
+    /// To the pump thread.
+    commands: Sender<Command>,
+}
+
+impl DaemonLink {
+    fn send(&self, command: Command) {
+        let _ = self.commands.send(command);
+    }
 }
 
 impl Drop for DaemonLink {
     fn drop(&mut self) {
-        self.client.detach(self.id);
+        self.send(Command::Detach);
     }
+}
+
+/// What a replica's side asks of its daemon session, in order. The pump thread does it, so a
+/// daemon that is slow to read never holds up the UI (as Local's unbounded input channel).
+enum Command {
+    /// Ask for a (fresh) snapshot.
+    Attach,
+    Write(Vec<u8>),
+    Input(Vec<u8>),
+    Resize(TermDims, CellPx),
+    SetTheme(Theme),
+    /// The last `TerminalCore` clone is gone: stop the stream; the pump ends.
+    Detach,
+}
+
+/// Send `commands` to daemon session `id` (stream `token`) until `Detach`.
+fn pump(commands: &std::sync::mpsc::Receiver<Command>, client: &DaemonClient, id: u64, token: u64) {
+    for command in commands {
+        match command {
+            Command::Attach => client.reattach(id),
+            Command::Write(bytes) => client.write(id, &bytes),
+            Command::Input(bytes) => client.input(id, &bytes),
+            Command::Resize(dims, cell) => client.resize(id, dims, cell),
+            Command::SetTheme(theme) => client.set_theme(&theme),
+            Command::Detach => break,
+        }
+    }
+    client.detach(id, token);
 }
 
 #[derive(Clone)]
@@ -236,15 +272,18 @@ impl TerminalCore {
         events: UnboundedSender<TermEvent>,
         theme: Theme,
     ) -> std::io::Result<Self> {
-        // 80x24 until the snapshot brings the session's size.
-        let dims = (TermDims { cols: 80, rows: 24 }, CellPx::default());
-        Self::replica(client, id, dims, events, theme)
+        // No size asked for yet, so the pane's first `resize` always goes to the daemon. The
+        // replica starts at 80x24 until the snapshot brings the session's size.
+        let asked = (TermDims { cols: 0, rows: 0 }, CellPx::default());
+        Self::replica(client, id, asked, events, theme)
     }
 
+    /// The Daemon backend: a replica Term, its feeding thread and its pump thread. No socket
+    /// I/O here, so it is fine on the UI thread.
     fn replica(
         client: Arc<DaemonClient>,
         id: u64,
-        dims: (TermDims, CellPx),
+        asked: (TermDims, CellPx),
         events: UnboundedSender<TermEvent>,
         theme: Theme,
     ) -> std::io::Result<Self> {
@@ -253,22 +292,33 @@ impl TerminalCore {
             replica: true,
         };
         // The daemon's Term has the same `Config::default()` (and so the same history).
-        let term = Term::new(Config::default(), &dims.0, listener.clone());
+        let start = match asked.0 {
+            TermDims { cols: 0, .. } | TermDims { rows: 0, .. } => TermDims { cols: 80, rows: 24 },
+            dims => dims,
+        };
+        let term = Term::new(Config::default(), &start, listener.clone());
         let shared = Arc::new(FairMutex::new(Shared {
             term,
             processor: Processor::new(),
         }));
-        // So OSC 4/10/11/12 replies match what this window shows.
-        client.set_theme(&theme);
-        let stream = client.attach(id);
+        let (token, stream) = client.route(id);
+        let (commands, queued) = std::sync::mpsc::channel();
         let link = Arc::new(DaemonLink {
             id,
-            client: client.clone(),
+            commands: commands.clone(),
         });
+        // So OSC 4/10/11/12 replies match what this window shows; then the first snapshot.
+        link.send(Command::SetTheme(theme));
+        link.send(Command::Attach);
+        let pumping = client.clone();
+        std::thread::Builder::new()
+            .name(format!("fuxx-pump-s{id}"))
+            .spawn(move || pump(&queued, &pumping, id, token))?;
         let replica = Replica {
             id,
             listener,
             events,
+            commands,
             next: None,
             title: None,
             status: None,
@@ -280,16 +330,18 @@ impl TerminalCore {
         Ok(Self {
             shared,
             backend: Backend::Daemon(link),
-            dims: Arc::new(Mutex::new(dims)),
+            dims: Arc::new(Mutex::new(asked)),
             links: Arc::new(Mutex::new(LinkFinder::new())),
             theme: Arc::new(Mutex::new(theme)),
         })
     }
 
-    /// Ask the daemon for a new session (`create`), then attach to it.
+    /// Ask the daemon for a new session (`create`), then attach to it. Waits for the daemon,
+    /// so tests only: the UI uses `DaemonClient::create_in_background`, then `attach_daemon`.
+    #[cfg(test)]
     pub fn create_daemon(
         client: Arc<DaemonClient>,
-        create: mux_proto::Create,
+        create: crate::mux_proto::Create,
         events: UnboundedSender<TermEvent>,
         theme: Theme,
     ) -> std::io::Result<Self> {
@@ -321,15 +373,14 @@ impl TerminalCore {
         self.links.lock().unwrap().find(term, point)
     }
 
-    /// Queue bytes for the child (keystrokes, query replies, mouse reports). Local never
-    /// blocks; Daemon waits only while the client's send queue is full (the daemon pushes back
-    /// on input its child doesn't read).
+    /// Queue bytes for the child (query replies, mouse reports). Never blocks. On Daemon these
+    /// don't count as typing; `input` does.
     pub fn write(&self, bytes: &[u8]) {
         match &self.backend {
             Backend::Local { input, .. } => {
                 let _ = input.send(bytes.to_vec());
             }
-            Backend::Daemon(link) => link.client.input(link.id, bytes),
+            Backend::Daemon(link) => link.send(Command::Write(bytes.to_vec())),
         }
     }
 
@@ -341,7 +392,11 @@ impl TerminalCore {
             guard.term.scroll_display(Scroll::Bottom);
             guard.term.selection = None;
         }
-        self.write(bytes);
+        match &self.backend {
+            Backend::Local { .. } => self.write(bytes),
+            // Typing: the daemon's status tracker counts it (mouse reports go by `write`).
+            Backend::Daemon(link) => link.send(Command::Input(bytes.to_vec())),
+        }
     }
 
     /// Begin a selection of kind `ty` anchored at `point` (replaces any existing one).
@@ -408,7 +463,7 @@ impl TerminalCore {
                     let _ = pty.resize(dims, cell);
                 }
             }
-            Backend::Daemon(link) => link.client.resize(link.id, dims, cell),
+            Backend::Daemon(link) => link.send(Command::Resize(dims, cell)),
         }
     }
 
@@ -439,7 +494,7 @@ impl TerminalCore {
     pub fn set_theme(&self, theme: Theme) {
         *self.theme.lock().unwrap() = theme;
         if let Backend::Daemon(link) = &self.backend {
-            link.client.set_theme(&theme);
+            link.send(Command::SetTheme(theme));
         }
     }
 
@@ -478,6 +533,8 @@ enum Step {
     Continue,
     /// Out of step with the daemon: ask for a fresh snapshot.
     Reattach,
+    /// A snapshot was applied: ask for the status.
+    Snapshotted,
     /// The session ended.
     End,
 }
@@ -487,6 +544,8 @@ struct Replica {
     id: u64,
     listener: Listener,
     events: UnboundedSender<TermEvent>,
+    /// To the pump, for re-attaching.
+    commands: Sender<Command>,
     /// The seq the next `Output` or `Resized` must carry; `None` while waiting for a snapshot.
     next: Option<u64>,
     title: Option<String>,
@@ -495,16 +554,17 @@ struct Replica {
 
 impl Replica {
     fn run(mut self, stream: &SessionStream, shared: &FairMutex<Shared>, client: &DaemonClient) {
-        self.refresh_status(client);
         while let Ok(frame) = stream.recv() {
             match self.apply(frame, shared) {
                 Step::Continue => {}
+                // Through the pump, so it stays in order with a `Detach`.
                 Step::Reattach => {
-                    client.reattach(self.id);
-                    // Status frames dropped with the old stream are lost: ask. Asked after the
-                    // Attach, so the answer is at least as new as the snapshot.
-                    self.refresh_status(client);
+                    let _ = self.commands.send(Command::Attach);
                 }
+                // Status frames from before the snapshot (or dropped with an overflowed
+                // stream) never arrive: ask. Asked after the snapshot came, so the answer is at
+                // least as new as it, and the frames after it apply on top.
+                Step::Snapshotted => self.refresh_status(client),
                 Step::End => return,
             }
         }
@@ -529,6 +589,7 @@ impl Replica {
                 self.next = Some(snap.seq + 1);
                 self.set_title(snap.title);
                 self.emit(TermEvent::Output { notifications: 0 });
+                return Step::Snapshotted;
             }
             Frame::Output {
                 seq,
@@ -1025,7 +1086,7 @@ mod tests {
 mod daemon_tests {
     use super::*;
     use crate::daemon_client::tests::{daemon, sh_create, temp_sock};
-    use crate::mux_proto::{Decoder, Dims, Frame, encode};
+    use crate::mux_proto::{self, Decoder, Dims, Frame, encode};
     use futures::channel::mpsc::{UnboundedReceiver, unbounded};
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
@@ -1197,6 +1258,96 @@ mod daemon_tests {
     }
 
     #[test]
+    fn a_mouse_report_is_not_typing() {
+        let (_d, path) = daemon("t-mouse");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client, sh_create(40, 5), tx, Theme::default()).unwrap();
+        // `write` is how the view sends mouse reports and alternate-scroll arrows.
+        core.write(b"sleep 0.3; echo MOUSE\r");
+        assert!(eventually(|| screen_lines(&core)
+            .iter()
+            .any(|l| l == "MOUSE")));
+        let seen: Vec<String> = drain(&mut rx, Duration::from_millis(800))
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect();
+        assert!(!seen.iter().any(|e| e == "Status(Working)"), "{seen:?}");
+        core.input(b"sleep 0.3; echo KEY\r");
+        assert!(wait_event(&mut rx, |e| matches!(
+            e,
+            TermEvent::Status(Status::Working)
+        )));
+    }
+
+    #[test]
+    fn the_ui_never_waits_on_a_daemon_that_stops_reading() {
+        let path = temp_sock("t-noread");
+        let listener = UnixListener::bind(&path).unwrap();
+        // Answers Hello, then never reads again (and lets go after a while).
+        let fake = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut decoder = Decoder::new();
+            let mut buf = [0u8; 4096];
+            while decoder.next().is_none() {
+                let n = s.read(&mut buf).unwrap();
+                decoder.push(&buf[..n]);
+            }
+            let ok = Frame::HelloOk(mux_proto::HelloOk {
+                proto: 1,
+                daemon_version: "test".into(),
+                pid: 1,
+            });
+            s.write_all(&encode(&ok)).unwrap();
+            std::thread::sleep(Duration::from_secs(4));
+        });
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for i in 0..64 {
+                core.write(&[b'x'; 1 << 20]);
+                core.input(b"y");
+                core.resize(
+                    TermDims {
+                        cols: 50 + i,
+                        rows: 20,
+                    },
+                    CellPx::default(),
+                );
+                core.set_theme(Theme::default());
+            }
+            drop(core);
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "the UI side blocked"
+        );
+        fake.join().unwrap();
+    }
+
+    #[test]
+    fn the_first_resize_after_attaching_is_always_sent() {
+        let (_d, path) = daemon("t-firstresize");
+        let client = DaemonClient::connect(&path).unwrap();
+        let id = client.create(sh_create(100, 30)).unwrap();
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client.clone(), id, tx, Theme::default()).unwrap();
+        // Whatever the replica started as, the pane's size goes to the daemon.
+        core.resize(TermDims { cols: 80, rows: 24 }, CellPx::default());
+        assert!(eventually(
+            || client.list().unwrap()[0].dims == Dims { cols: 80, rows: 24 }
+        ));
+        assert!(eventually(|| {
+            let snap = core.snapshot();
+            (snap.cols, snap.rows) == (80, 24)
+        }));
+    }
+
+    #[test]
     fn dropping_the_view_side_detaches_without_ending_the_session() {
         let (_d, path) = daemon("t-detach");
         let client = DaemonClient::connect(&path).unwrap();
@@ -1340,8 +1491,8 @@ mod daemon_tests {
         let snap = core.snapshot();
         assert_eq!((snap.cols, snap.rows), (30, 4));
         let wanted = [
-            "Status(Waiting)",
             "Term(Title(T1))",
+            "Status(Waiting)",
             "Term(ResetTitle)",
             "Term(Title(T2))",
             "Status(Done)",
