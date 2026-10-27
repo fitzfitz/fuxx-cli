@@ -22,6 +22,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-27 — Plan changes during M6: own settings file, built-in themes, settings window
+- **Did:** On request, three plan changes, each written into the vault before building:
+  1. fuxx reads **its own settings file** (`~/.config/fuxx/config`, Ghostty-style `key = value`), not Ghostty's config (option 1). [[12 - Scope]], [[11 - Features]], [[40 - Roadmap]] and [[46 - Milestone 6 - Fonts and Config]] updated; new Task 6 in [[M6 Plan - Fonts and Config]] (built, 105 tests).
+  2. Themes come from your `~/.config/fuxx/themes` folder **and** six built-in ones (Catppuccin Mocha/Latte, Dracula, Nord, Gruvbox Dark, TokyoNight), kept with their credits and licence texts (you chose to keep all six).
+  3. A **settings window** — File → Preferences… and cmd-, — added as milestone **M6b** after M6; its plan is written when M6 is done. Open decision **D9**: pick-only vs typing hex colors.
+- **Learned:** The bundled Nerd Font and themes carry more than one licence (CC BY 4.0, Apache-2.0, OFL besides MIT); notices now ship next to them in `assets/`.
+- **Blocked:** Your M6 on-screen check (Task 7).
+- **Next task:** [[M6 Plan - Fonts and Config]] → Task 7.
+
 ### 2026-10-27 — M6 plan written and approved
 - **Did:** Pushed M5. You skipped the design questions and asked to follow the mockup (Screen 2, #5 font and
   #6 theme from Ghostty), so the AI made the calls in [[46 - Milestone 6 - Fonts and Config]]. Research: Ghostty

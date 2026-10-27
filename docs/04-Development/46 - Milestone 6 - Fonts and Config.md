@@ -77,7 +77,7 @@ Calls by the AI unless marked as yours. Each was checked on this Mac. Say if any
 ## Not in M6
 
 - **No reading Ghostty's config.** You can copy settings over by hand.
-- **No settings screen.**
+- **No settings screen.** (Added as its own milestone, **M6b — Settings window**, on 2026-10-27.)
 - **No starter file written by fuxx.**
 - **No live reload.**
 - **No font zoom** (cmd-+ / cmd--).
