@@ -1,11 +1,13 @@
-//! Font settings from fuxx's settings file, and the bundled Symbols Nerd Font.
+//! Font settings from fuxx's settings file, and the bundled fonts (JetBrains Mono, Symbols Nerd Font).
 //!
 //! `from_entries` and `parse_feature` are pure. `gpui_font` turns the settings into a GPUI font
-//! (skipping families that aren't installed). `register_symbols_font` makes the bundled icon font
-//! visible to CoreText so it is used as the fallback for private-use glyphs (Nerd Font icons).
+//! (skipping families that aren't installed). `register_bundled_fonts` makes the bundled fonts
+//! visible to CoreText: JetBrains Mono becomes the default family (ligatures work with nothing
+//! installed) and the icon font is the fallback for private-use glyphs (Nerd Font icons).
 //!
-//! The bundled font is licensed under `assets/fonts/LICENSE-NerdFonts.txt`; the icon sets inside
-//! it carry their own licences, listed in `assets/fonts/NOTICE-NerdFonts-IconSets.md`.
+//! The icon font is licensed under `assets/fonts/LICENSE-NerdFonts.txt`; the icon sets inside it
+//! carry their own licences, listed in `assets/fonts/NOTICE-NerdFonts-IconSets.md`. JetBrains Mono
+//! (v2.304) is under the SIL OFL, in `assets/fonts/LICENSE-JetBrainsMono-OFL.txt`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -16,8 +18,31 @@ use crate::settings::Entry;
 pub const DEFAULT_SIZE: f32 = 13.0;
 pub const SYMBOLS_FAMILY: &str = "Symbols Nerd Font Mono";
 
-const SYMBOLS_FILE: &str = "SymbolsNerdFontMono-Regular.ttf";
-const SYMBOLS_BYTES: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+const JETBRAINS_FAMILY: &str = "JetBrains Mono";
+
+/// The fonts shipped inside the binary: (file name in the cache folder, contents).
+const BUNDLED: [(&str, &[u8]); 5] = [
+    (
+        "SymbolsNerdFontMono-Regular.ttf",
+        include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf"),
+    ),
+    (
+        "JetBrainsMono-Regular.ttf",
+        include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
+    ),
+    (
+        "JetBrainsMono-Bold.ttf",
+        include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
+    ),
+    (
+        "JetBrainsMono-Italic.ttf",
+        include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
+    ),
+    (
+        "JetBrainsMono-BoldItalic.ttf",
+        include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf"),
+    ),
+];
 
 /// The font choices from the config: families in priority order, size in points, OpenType features.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,13 +152,16 @@ pub fn gpui_font(s: &FontSettings, installed: &[String]) -> Font {
     }
 }
 
-/// Write the bundled symbols font to `~/Library/Caches/fuxx/` and register it with CoreText for
-/// this process. CoreText ignores fonts that only live in GPUI's memory when it picks a fallback
-/// for missing glyphs, so it has to be a registered file. Returns whether it is registered.
-pub fn register_symbols_font() -> bool {
+/// Write the bundled fonts to `~/Library/Caches/fuxx/` and register them with CoreText for this
+/// process. CoreText ignores fonts that only live in GPUI's memory when it picks a fallback for
+/// missing glyphs, so they have to be registered files. `installed` is the font list from before
+/// registering: when it already has "JetBrains Mono" the user's own copy wins and the bundled
+/// JetBrains Mono files are skipped (CoreText would report a duplicate). Returns whether every
+/// file it tried is registered.
+pub fn register_bundled_fonts(installed: &[String]) -> bool {
     // CoreText reports a second registration of the same file as a failure (error 105, "already
-    // registered"). Caching the first result makes later calls return `true` without
-    // re-registering, and without having to decode the CFError.
+    // registered"). Caching the first result makes later calls return it without re-registering,
+    // and without having to decode the CFError. The first call's `installed` decides.
     static RESULT: OnceLock<bool> = OnceLock::new();
     *RESULT.get_or_init(|| {
         // An empty or relative $HOME would write the cache into the current folder.
@@ -142,33 +170,47 @@ pub fn register_symbols_font() -> bool {
             .filter(|h| h.is_absolute());
         let Some(home) = home else {
             eprintln!(
-                "[fuxx] font: $HOME is unset or not absolute; the bundled symbols font is not registered"
+                "[fuxx] font: $HOME is unset or not absolute; the bundled fonts are not registered"
             );
             return false;
         };
-        let dir = std::path::Path::new(&home).join("Library/Caches/fuxx");
-        let path = dir.join(SYMBOLS_FILE);
-        let current = std::fs::metadata(&path).map(|m| m.len()).ok();
-        if current != Some(SYMBOLS_BYTES.len() as u64) {
-            // Write a temp file and rename it over the target. Rename gives the path a new inode,
-            // so another fuxx that has the old file registered or mapped keeps its copy intact,
-            // and two instances starting together never see a half-written font.
-            let tmp = dir.join(format!("{SYMBOLS_FILE}.{}.tmp", std::process::id()));
-            let written = std::fs::create_dir_all(&dir)
-                .and_then(|_| std::fs::write(&tmp, SYMBOLS_BYTES))
-                .and_then(|_| std::fs::rename(&tmp, &path));
-            if let Err(err) = written {
-                let _ = std::fs::remove_file(&tmp);
-                eprintln!("[fuxx] font: could not write {}: {err}", path.display());
-                return false;
+        let dir = home.join("Library/Caches/fuxx");
+        let have_jetbrains = installed.iter().any(|f| f == JETBRAINS_FAMILY);
+        let mut all_ok = true;
+        for (file, bytes) in BUNDLED {
+            if have_jetbrains && file.starts_with("JetBrainsMono-") {
+                continue;
             }
+            all_ok &= install_and_register(&dir, file, bytes);
         }
-        let ok = register_file(path.as_os_str().as_encoded_bytes());
-        if !ok {
-            eprintln!("[fuxx] font: CoreText refused {}", path.display());
-        }
-        ok
+        all_ok
     })
+}
+
+/// Write `bytes` to `dir/file` (unless a file of the same size is already there) and register it
+/// for this process. Logs one `[fuxx] font: …` line on failure.
+fn install_and_register(dir: &std::path::Path, file: &str, bytes: &[u8]) -> bool {
+    let path = dir.join(file);
+    let current = std::fs::metadata(&path).map(|m| m.len()).ok();
+    if current != Some(bytes.len() as u64) {
+        // Write a temp file and rename it over the target. Rename gives the path a new inode,
+        // so another fuxx that has the old file registered or mapped keeps its copy intact,
+        // and two instances starting together never see a half-written font.
+        let tmp = dir.join(format!("{file}.{}.tmp", std::process::id()));
+        let written = std::fs::create_dir_all(dir)
+            .and_then(|_| std::fs::write(&tmp, bytes))
+            .and_then(|_| std::fs::rename(&tmp, &path));
+        if let Err(err) = written {
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!("[fuxx] font: could not write {}: {err}", path.display());
+            return false;
+        }
+    }
+    let ok = register_file(path.as_os_str().as_encoded_bytes());
+    if !ok {
+        eprintln!("[fuxx] font: CoreText refused {}", path.display());
+    }
+    ok
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -213,6 +255,14 @@ fn register_file(path: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::settings::Entry;
+
+    /// One headless text system for every test: creating several macOS platforms at once (tests run
+    /// in parallel) aborts the process.
+    fn text_system() -> Arc<dyn gpui::PlatformTextSystem> {
+        static TS: OnceLock<Arc<dyn gpui::PlatformTextSystem>> = OnceLock::new();
+        TS.get_or_init(|| gpui_platform::current_platform(true).text_system())
+            .clone()
+    }
 
     fn e(k: &str, v: &str) -> Entry {
         Entry {
@@ -310,8 +360,8 @@ mod tests {
         // Headless macOS text system (no window). Proves the icon comes from a real font, not
         // CoreText's last-resort "?" box, once the bundled font is registered.
         use gpui::{FontRun, px};
-        assert!(register_symbols_font());
-        let ts = gpui_platform::current_platform(true).text_system();
+        let ts = text_system();
+        assert!(register_bundled_fonts(&ts.all_font_names()));
         let font = gpui_font(
             &FontSettings {
                 families: vec!["Menlo".into()],
@@ -354,5 +404,55 @@ mod tests {
             lr,
             "icon must not come from the last-resort font"
         );
+    }
+
+    #[test]
+    fn bundled_jetbrains_mono_is_listed_and_the_default() {
+        let ts = text_system();
+        assert!(register_bundled_fonts(&ts.all_font_names()));
+        let installed = ts.all_font_names();
+        assert!(installed.iter().any(|f| f == "JetBrains Mono"));
+        let d = gpui_font(
+            &FontSettings {
+                families: vec![],
+                size: 13.0,
+                features: vec![],
+            },
+            &installed,
+        );
+        assert_eq!(d.family.as_ref(), "JetBrains Mono");
+    }
+
+    #[test]
+    fn jetbrains_mono_ligatures_follow_calt() {
+        // "->" is drawn with different glyphs when contextual alternates are on.
+        use gpui::{FontRun, px};
+        let ts = text_system();
+        assert!(register_bundled_fonts(&ts.all_font_names()));
+        let glyphs = |features: Vec<(String, u32)>| {
+            let font = gpui_font(
+                &FontSettings {
+                    families: vec!["JetBrains Mono".into()],
+                    size: 13.0,
+                    features,
+                },
+                &ts.all_font_names(),
+            );
+            let id = ts.font_id(&font).unwrap();
+            let layout = ts.layout_line(
+                "->",
+                px(13.0),
+                &[FontRun {
+                    len: 2,
+                    font_id: id,
+                }],
+            );
+            layout
+                .runs
+                .iter()
+                .flat_map(|r| r.glyphs.iter().map(|g| g.id))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(glyphs(vec![]), glyphs(vec![("calt".into(), 0)]));
     }
 }

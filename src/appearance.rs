@@ -85,10 +85,12 @@ pub fn load(cx: &App) -> Appearance {
     );
     let theme = theme::resolve(&entries, dark, &read_theme);
 
-    // Register first, so the symbols font is known to CoreText before any text is shaped. It logs
-    // its own failure; the font still names it as the last fallback either way.
-    fonts::register_symbols_font();
+    // Register first, so the bundled fonts are known to CoreText before any text is shaped. The
+    // list from before registering lets it skip JetBrains Mono when the user has their own. It
+    // logs its own failure; the font still names the symbols font as last fallback either way.
+    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
     let settings = fonts::from_entries(&entries);
+    // Listed again: the bundled JetBrains Mono only shows up after registering.
     let font = fonts::gpui_font(&settings, &cx.text_system().all_font_names());
 
     let theme_name = entries
