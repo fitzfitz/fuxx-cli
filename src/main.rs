@@ -8,6 +8,7 @@ mod api_server;
 mod appearance;
 mod cli;
 mod colors;
+mod daemon;
 mod daemon_session;
 mod detach_probe;
 mod detector;
@@ -26,6 +27,7 @@ mod panes;
 mod preferences;
 mod prefs;
 mod presets;
+mod private_socket;
 mod pty;
 mod restore;
 mod session_list;
@@ -106,6 +108,23 @@ fn client_failure(err: ClientError) -> i32 {
 fn client_socket() -> Option<PathBuf> {
     let env_socket = std::env::var("FUXX_SOCKET").ok();
     api_client::client_socket_path(env_socket.as_deref(), home_dir().as_deref())
+}
+
+/// `fuxx daemon ...` on the daemon socket (`FUXX_DAEMON_SOCKET`, else under `$HOME`).
+fn run_daemon(command: cli::DaemonCommand) -> i32 {
+    let env_socket = std::env::var("FUXX_DAEMON_SOCKET").ok();
+    let Some(path) = daemon::client_socket_path(env_socket.as_deref(), home_dir().as_deref())
+    else {
+        return fail(
+            "$HOME and FUXX_DAEMON_SOCKET are unset, so the daemon socket can't be found",
+            3,
+        );
+    };
+    match command {
+        cli::DaemonCommand::Run => daemon::run_command(&path),
+        cli::DaemonCommand::Status => daemon::status_command(&path),
+        cli::DaemonCommand::Stop { force } => daemon::stop_command(&path, force),
+    }
 }
 
 /// Run one `fuxx <command>` against the running app; returns the exit code.
@@ -233,6 +252,7 @@ fn main() {
             detach_probe::run_parent(disclaim)
         }),
         Ok(Cli::Mcp) => std::process::exit(mcp::run(client_socket(), caller)),
+        Ok(Cli::Daemon(command)) => std::process::exit(run_daemon(command)),
         Ok(Cli::Call {
             command,
             request,

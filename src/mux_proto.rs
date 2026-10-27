@@ -213,6 +213,24 @@ pub struct Snapshot {
     pub vt_bytes: Vec<u8>,
 }
 
+/// Reply to `Info` (`fuxx daemon status`; not in the study's table).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonInfo {
+    pub pid: u32,
+    pub version: String,
+    pub proto: u32,
+    pub uptime_secs: u64,
+    pub sessions: u64,
+}
+
+/// Reply to `Stop` (`fuxx daemon stop`): `stopping` false means refused because of `sessions`;
+/// true means the daemon hung them up (if any) and is exiting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StopReply {
+    pub stopping: bool,
+    pub sessions: Vec<SessionInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     // Client to daemon.
@@ -238,6 +256,12 @@ pub enum Frame {
         id: u64,
     },
     ReadText(ReadText),
+    /// Ask for `DaemonInfo`.
+    Info,
+    /// End the daemon; without `force` it refuses while sessions are alive.
+    Stop {
+        force: bool,
+    },
     // Daemon to client.
     HelloOk(HelloOk),
     Incompatible(IncompatibleInfo),
@@ -271,6 +295,13 @@ pub enum Frame {
         id: u64,
     },
     Text(Text),
+    DaemonInfo(DaemonInfo),
+    StopReply(StopReply),
+    /// A request failed (`id`: the session it was about, if any).
+    Error {
+        id: Option<u64>,
+        message: String,
+    },
     /// A kind this build doesn't know; skip it.
     Unknown {
         kind: u8,
@@ -302,6 +333,11 @@ mod kind {
     pub const RESYNC: u8 = 0x16;
     pub const RESIZED: u8 = 0x17;
     pub const TEXT: u8 = 0x18;
+    pub const INFO: u8 = 0x19;
+    pub const DAEMON_INFO: u8 = 0x1A;
+    pub const STOP: u8 = 0x1B;
+    pub const STOP_REPLY: u8 = 0x1C;
+    pub const ERROR: u8 = 0x1D;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -326,6 +362,15 @@ struct ThemeBody {
 struct SnapshotMeta {
     dims: Dims,
     title: Option<String>,
+}
+#[derive(Serialize, Deserialize)]
+struct StopBody {
+    force: bool,
+}
+#[derive(Serialize, Deserialize)]
+struct ErrorBody {
+    id: Option<u64>,
+    message: String,
 }
 #[derive(Serialize, Deserialize)]
 struct Empty {}
@@ -428,6 +473,17 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         Frame::Exited { id } => id_only(kind::EXITED, *id),
         Frame::Resync { id } => id_only(kind::RESYNC, *id),
         Frame::Text(b) => json(kind::TEXT, b),
+        Frame::Info => json(kind::INFO, &Empty {}),
+        Frame::DaemonInfo(b) => json(kind::DAEMON_INFO, b),
+        Frame::Stop { force } => json(kind::STOP, &StopBody { force: *force }),
+        Frame::StopReply(b) => json(kind::STOP_REPLY, b),
+        Frame::Error { id, message } => json(
+            kind::ERROR,
+            &ErrorBody {
+                id: *id,
+                message: message.clone(),
+            },
+        ),
         Frame::Unknown { kind } => (*kind, Vec::new()),
     };
     debug_assert!(payload.len() < MAX_FRAME, "frame over MAX_FRAME");
@@ -543,6 +599,22 @@ fn decode_frame(k: u8, p: &[u8]) -> Result<Frame, ProtoError> {
             id: parse::<IdOnly>(p)?.id,
         },
         kind::TEXT => Frame::Text(parse(p)?),
+        kind::INFO => {
+            parse::<Empty>(p)?;
+            Frame::Info
+        }
+        kind::DAEMON_INFO => Frame::DaemonInfo(parse(p)?),
+        kind::STOP => Frame::Stop {
+            force: parse::<StopBody>(p)?.force,
+        },
+        kind::STOP_REPLY => Frame::StopReply(parse(p)?),
+        kind::ERROR => {
+            let b: ErrorBody = parse(p)?;
+            Frame::Error {
+                id: b.id,
+                message: b.message,
+            }
+        }
         other => Frame::Unknown { kind: other },
     })
 }
@@ -732,6 +804,28 @@ mod tests {
                 id: 7,
                 text: "hello\n".into(),
             }),
+            Frame::Info,
+            Frame::DaemonInfo(DaemonInfo {
+                pid: 42,
+                version: "0.2.0".into(),
+                proto: 1,
+                uptime_secs: 75,
+                sessions: 3,
+            }),
+            Frame::Stop { force: true },
+            Frame::Stop { force: false },
+            Frame::StopReply(StopReply {
+                stopping: false,
+                sessions: vec![info()],
+            }),
+            Frame::Error {
+                id: Some(7),
+                message: "no such session".into(),
+            },
+            Frame::Error {
+                id: None,
+                message: "expected Hello".into(),
+            },
         ]
     }
 
