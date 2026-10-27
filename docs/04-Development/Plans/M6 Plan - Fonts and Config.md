@@ -546,7 +546,7 @@ fn mac_line_and_word_shortcuts() {
   - `cargo fmt --check`: clean.
 - [x] **Step 5: Commit:** `git add src && git commit -m "feat(m6): Mac line and word keys (cmd/option + arrows, cmd-backspace)"`
 
-### Task 7: On screen — 👀 ⬜
+### Task 7: On screen — 👀 ✅
 
 Run `cargo run` and report.
 
