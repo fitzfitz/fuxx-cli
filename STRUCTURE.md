@@ -36,7 +36,15 @@ src/
 │
 │   terminal core (one pane)
 ├── keys.rs               M1 · keystroke → bytes for the PTY (xterm conventions)
-├── colors.rs             M1 · cell color → RGB (Alacritty palette, 256-color table)
+│                         M5 · paste_bytes   M6 · mac_shortcut (cmd/option + arrows)
+├── colors.rs             M1 · cell color → RGB (256-color table)   M6 · palette from the Theme
+│
+│   settings and looks (M6)
+├── settings.rs           M6 · read ~/.config/fuxx/config (key = value, includes)
+├── theme.rs              M6 · Theme (defaults → theme file → your values), built-in themes, UiColors
+├── fonts.rs              M6 · font family/size/features; bundled icon font registered with macOS
+├── appearance.rs         M6 · loads all of the above once at startup (GPUI Global)
+│
 ├── grid.rs               M1 · GridSnapshot: a copy of the screen + paint batching
 │                         M2 · tail_text(n), the last lines for "waiting" detection
 │                         M5 · screen_tail_text (live screen), selection colour, underline_cells
@@ -67,7 +75,19 @@ src/
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
-21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5.
+21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5 and 106 at the end of M6.
+
+`assets/fonts/` holds the bundled icon font and its licences; `assets/themes/` the six built-in themes and their credits.
+
+Example `~/.config/fuxx/config` (all optional; fuxx never writes it):
+
+```
+font-family = MesloLGS NF
+font-size = 13
+theme = Catppuccin Mocha        # or light:Catppuccin Latte,dark:Catppuccin Mocha
+background = #1e1e2e            # overrides the theme
+font-feature = -calt            # ligatures off
+```
 
 How the pieces connect:
 

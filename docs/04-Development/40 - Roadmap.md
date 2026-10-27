@@ -33,7 +33,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 ## Phase 2 — Daily driver (polish enough to live in it)
 
 - [[45 - Milestone 5 - Terminal UX]] — ✅ — scrollback, selection + copy/paste, mouse, clickable URLs, robust resize. Plan: [[M5 Plan - Terminal UX]].
-- [[46 - Milestone 6 - Fonts and Config]] — 🟨 — font family/size/ligatures and colors/themes from **fuxx's own settings file** (`~/.config/fuxx/config`; changed 2026-10-27 from reading Ghostty's config); **prompt icons** for everyone via a bundled Symbols Nerd Font. Plan: [[M6 Plan - Fonts and Config]].
+- [[46 - Milestone 6 - Fonts and Config]] — ✅ — font family/size/ligatures and colors/themes from **fuxx's own settings file** (`~/.config/fuxx/config`; changed 2026-10-27 from reading Ghostty's config); **prompt icons** for everyone via a bundled Symbols Nerd Font. Plan: [[M6 Plan - Fonts and Config]].
 - **M6b — Settings window** — ⬜ — *added 2026-10-27 on request.* **File → Preferences…** and **cmd-,** open a settings window: pick the theme (built-in + your themes folder), font, size and ligatures, and override theme colors; changes are saved to `~/.config/fuxx/config` and applied without a restart. Its detailed plan is written when M6 is done. Open decision **D9** (how colors are entered) — see [[00 - Plan Tracker (Start Here)]].
 - **M7 — Session ergonomics:** project groups (sessions grouped by project folder, rolled-up ring), rename/reorder sessions, agent presets (one-tap `claude`/`opencode`), session restore.
 

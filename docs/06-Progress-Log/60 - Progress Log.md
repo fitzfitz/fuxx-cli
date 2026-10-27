@@ -14,13 +14,26 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M6 — Fonts & config** (see [[40 - Roadmap]]; the **new terminal app**). 🟨 plan approved. M0–M5 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M6b — Settings window** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M6 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-27 — Milestone 6 complete: fonts and config
+- **Did:** Built [[M6 Plan - Fonts and Config]] on branch `m6-fonts-config`, one agent per task, each reviewed:
+  settings reader with includes (`ead1c28`, loop fix `3c66150`), themes (`354190e`), theme-driven colors
+  (`31ca371`), fonts + bundled icon font (`5719329`, fixes `b331aa5` `e5fdb29`), startup wiring (`476574f`).
+  Mid-milestone you changed the plan to **fuxx's own settings file** with six built-in themes (`529c0a5`, fixes
+  `1b9887e` `40efd80`), and added **Mac line/word keys** after the on-screen check (`924f45a`). All checks passed.
+  0 warnings, 106 tests.
+- **Learned:** macOS ignores fonts only loaded in an app's memory for missing glyphs; registering the font file
+  with CoreText fixes prompt icons. ctrl-arrows belong to macOS (Spaces) and plain zsh doesn't bind Home/End, in
+  any terminal. Bundled fonts/themes carry several licences: notices ship in `assets/`.
+- **Blocked:** **D9** before the M6b plan.
+- **Next task:** Decide D9 → write the M6b plan (settings window).
 
 ### 2026-10-27 — Plan changes during M6: own settings file, built-in themes, settings window
 - **Did:** On request, three plan changes, each written into the vault before building:

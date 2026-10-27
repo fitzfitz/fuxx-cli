@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: in-progress
+status: done
 ---
 
 # 46 - Milestone 6 - Fonts and Config
 
-**Status:: 🟨 In progress (plan written 2026-10-27; changed the same day to fuxx's own settings file).**  ·  **Phase 2: fuxx looks the way you want.**
+**Status:: ✅ Done (2026-10-27). All on-screen checks confirmed by you, incl. the Mac line/word keys.**  ·  **Phase 2: fuxx looks the way you want.**
 **Plan:** [[M6 Plan - Fonts and Config]] (step-by-step, with status per task)
 
 ## Goal
@@ -77,12 +77,14 @@ Calls by the AI unless marked as yours. Each was checked on this Mac. Say if any
 
 ## Rough scope / checklist
 
-- [ ] fuxx's own settings file read at startup, with includes followed.
-- [ ] Theme: defaults → theme (your folder, then built-in) → your values; light/dark pick.
-- [ ] Terminal colors, cursor and selection come from the theme.
-- [ ] Font family (with fallbacks), size and features from the settings file.
-- [ ] Prompt icons via the bundled Symbols Nerd Font.
-- [ ] Sidebar shades and rings derived from the theme.
+- [x] fuxx's own settings file read at startup, with includes followed.
+- [x] Theme: defaults → theme (your folder, then built-in) → your values; light/dark pick.
+- [x] Terminal colors, cursor and selection come from the theme.
+- [x] Font family (with fallbacks), size and features from the settings file.
+- [x] Prompt icons via the bundled Symbols Nerd Font.
+- [x] Sidebar shades and rings derived from the theme.
+
+- [x] Mac line and word keys (cmd/option + arrows, cmd-Backspace).
 
 ## Not in M6
 

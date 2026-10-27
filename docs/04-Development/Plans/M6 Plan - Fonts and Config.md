@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M6
-status: in-progress
+status: done
 updated: 2026-10-27
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[46 - Milestone 6 - Fonts and Config]] (the spec: every behaviour below is listed there) |
-| **Status** | 🟨 In progress (Tasks 1–5 built and reviewed; plan changed 2026-10-27 → Task 6 added) |
-| **Tasks done** | 5 / 8 |
-| **▶ Pick up here** | Task 6 (switch to fuxx's own settings file + built-in themes) |
+| **Status** | ✅ Done 2026-10-27 (branch `m6-fonts-config`, commits `ead1c28`…`924f45a`) |
+| **Tasks done** | 9 / 9 (incl. 6b) |
+| **▶ Pick up here** | M6 complete → M6b (settings window), plan to be written after D9 |
 | **Decisions used** | The calls in [[46 - Milestone 6 - Fonts and Config]]; **yours (2026-10-27):** fuxx's own settings file, not Ghostty's (option 1); themes from your folder **and** six built-in ones |
-| **Needs your eyes** | 👀 Task 7: prompt icons, default colors, your settings file, built-in and folder themes |
+| **Needs your eyes** | ✅ Task 7 confirmed by you on 2026-10-27 (all checks + the Mac keys) |
 
 **Goal:** fuxx starts with the font, size, ligature setting and colors from **its own settings file**
 (`~/.config/fuxx/config`; good defaults when there is none), prompt icons always draw, and the sidebar
@@ -416,7 +416,7 @@ fn bundled_symbols_draw_the_apple_icon() {
 - [x] **Step 2: Build with zero warnings:** `cargo build 2>&1 | grep -E "^(warning|error)" | grep -v "future version"`. Expected: **no output**. `cargo test` gives `101 passed`. `cargo fmt --check` is clean.
 - [x] **Step 3: Commit:** `git add src && git commit -m "feat(m6): load Ghostty config at startup; font, size and theme in the view and sidebar"`
 
-### Task 6: fuxx's own settings file and built-in themes — ⬜
+### Task 6: fuxx's own settings file and built-in themes — ✅
 
 *(Added 2026-10-27 by your plan change. Reuses Tasks 1–5 unchanged except where they find files.)*
 
@@ -442,7 +442,7 @@ fn bundled_symbols_draw_the_apple_icon() {
   - Remove `$GHOSTTY_RESOURCES_DIR` and all Ghostty paths.
   - The summary line becomes `[fuxx] config: <path> (found|not found), font <family> <size>pt, theme <name or default>`.
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - In `settings.rs`, replace `config_paths_follow_ghostty_order` with:
 
 ```rust
@@ -470,7 +470,7 @@ fn builtin_themes_load_and_change_colors() {
 }
 ```
 
-- [ ] **Step 1b: Three fixes from the whole-branch review (2026-10-27).** Write a failing test for each first.
+- [x] **Step 1b: Three fixes from the whole-branch review (2026-10-27).** Write a failing test for each first.
   1. **An extreme `font-size` crashes fuxx at startup.**
      - The cause: below about 0.385 the line height rounds to 0 and the row count becomes `usize::MAX`; around 100000 rasterisation runs out of memory.
      - Fix: in `fonts::from_entries`, skip any size outside **4.0–200.0** points, with the usual log line.
@@ -484,15 +484,15 @@ fn builtin_themes_load_and_change_colors() {
   3. **An empty `$HOME` writes the font cache into the current folder.**
      - Fix: `register_symbols_font` treats an empty or relative `$HOME` as unset. It logs and returns false, like `appearance.rs`.
      - No test is needed (environment-dependent); say so in the report.
-- [ ] **Step 2: Run** `cargo test`. Expected: compile errors (the new functions are missing) and failures for the Step 1b tests.
-- [ ] **Step 3: Implement as specified.** Rename the module with `git mv` so its history is kept. `grep -rn "ghostty" src/` may then match only comments that explain the format's origin.
-- [ ] **Step 4: Gates.**
+- [x] **Step 2: Run** `cargo test`. Expected: compile errors (the new functions are missing) and failures for the Step 1b tests.
+- [x] **Step 3: Implement as specified.** Rename the module with `git mv` so its history is kept. `grep -rn "ghostty" src/` may then match only comments that explain the format's origin.
+- [x] **Step 4: Gates.**
   - `cargo test`: `test result: ok. 104 passed`.
   - `cargo build`: 0 warnings of ours.
   - `cargo fmt --check`: clean.
-- [ ] **Step 5: Commit:** `git add -A src assets && git commit -m "feat(m6): fuxx's own settings file and six built-in themes (no Ghostty paths); review fixes"`
+- [x] **Step 5: Commit:** `git add -A src assets && git commit -m "feat(m6): fuxx's own settings file and six built-in themes (no Ghostty paths); review fixes"`
 
-### Task 6b: Mac line and word keys — ⬜
+### Task 6b: Mac line and word keys — ✅
 
 *(Added 2026-10-27 on request, after the on-screen check found that cmd-← / option-← didn't move the cursor.)*
 
@@ -522,7 +522,7 @@ Plain zsh binds `^A`, `^E`, `^[b` and `^[f`, but not `\x1b[1;3D`. Zed's terminal
 - **Change `TerminalView::on_key_down`:** call `mac_shortcut` **before** the existing `if m.platform { return }`. On `Some(bytes)`, do exactly what a keystroke does: `core.input`, the tracker's `on_input`, then `stop_propagation`.
 - **Leave alone:** the key bindings for other cmd keys (cmd-c / cmd-v / cmd-up / cmd-down…). GPUI dispatches them first.
 
-- [ ] **Step 1: Failing test** in `keys.rs`:
+- [x] **Step 1: Failing test** in `keys.rs`:
 
 ```rust
 #[test]
@@ -538,48 +538,48 @@ fn mac_line_and_word_shortcuts() {
 }
 ```
 
-- [ ] **Step 2: Run** `cargo test mac_line`. Expected: compile error.
-- [ ] **Step 3: Implement** as specified.
-- [ ] **Step 4: Gates:**
+- [x] **Step 2: Run** `cargo test mac_line`. Expected: compile error.
+- [x] **Step 3: Implement** as specified.
+- [x] **Step 4: Gates:**
   - `cargo test`: 106 passed.
   - `cargo build`: 0 warnings of ours.
   - `cargo fmt --check`: clean.
-- [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m6): Mac line and word keys (cmd/option + arrows, cmd-backspace)"`
+- [x] **Step 5: Commit:** `git add src && git commit -m "feat(m6): Mac line and word keys (cmd/option + arrows, cmd-backspace)"`
 
 ### Task 7: On screen — 👀 ⬜
 
 Run `cargo run` and report.
 
-- [ ] **Startup, no settings file:**
+- [x] **Startup, no settings file:**
   - The log shows `[fuxx] config: …/.config/fuxx/config (not found), font <JetBrains Mono or Menlo> 13pt, theme default`.
   - The colors are the defaults (background `#282c34`).
   - Your powerlevel10k prompt shows its **icons** (bundled font), not `?` boxes.
   - Ghostty's config no longer changes fuxx.
-- [ ] **Your settings file:**
+- [x] **Your settings file:**
   - Create `~/.config/fuxx/config` with `font-family = MesloLGS NF` and `theme = Catppuccin Mocha`, then restart fuxx.
   - It shows that font and Catppuccin colors, including the sidebar and rings.
-- [ ] **Light theme:** set `theme = Catppuccin Latte`. Is the text readable? Is the selection visible?
-- [ ] **Selecting gray text:** select a zsh grey suggestion or `ls` output in the default theme. The selected text stays readable (it shows inverted).
-- [ ] **Your own theme folder:**
+- [x] **Light theme:** set `theme = Catppuccin Latte`. Is the text readable? Is the selection visible?
+- [x] **Selecting gray text:** select a zsh grey suggestion or `ls` output in the default theme. The selected text stays readable (it shows inverted).
+- [x] **Your own theme folder:**
   - Copy any Ghostty theme into `~/.config/fuxx/themes/` (e.g. `cp ~/Applications/Ghostty.app/Contents/Resources/ghostty/themes/"Rose Pine" ~/.config/fuxx/themes/`).
   - Set `theme = Rose Pine` and restart: it loads.
-- [ ] **Override:** add `background = #000000` under the theme. The background is black and the rest of the theme stays.
-- [ ] **Broken settings:** temporarily add `background = notacolor`, `font-size = 0.3` and `config-file = /nope`. fuxx still starts at size 13, and logs one line each.
-- [ ] **Ligatures:** only if you have a ligature font such as JetBrains Mono or Fira Code. `=> != >=` join, and the text after them stays aligned. `font-feature = -calt` turns them off. Otherwise, "skipped".
-- [ ] **Mac keys (Task 6b):** at the zsh prompt, type a few words. cmd-←/→ jumps to the start/end of the line, option-←/→ moves by words, and cmd-Backspace deletes to the start of the line.
-- [ ] **M5 behaviours unchanged:** selection is visible, cmd-click links work, and the rings change.
-- [ ] Keep or delete `~/.config/fuxx/config` afterwards: it's yours now.
+- [x] **Override:** add `background = #000000` under the theme. The background is black and the rest of the theme stays.
+- [x] **Broken settings:** temporarily add `background = notacolor`, `font-size = 0.3` and `config-file = /nope`. fuxx still starts at size 13, and logs one line each.
+- [x] **Ligatures:** only if you have a ligature font such as JetBrains Mono or Fira Code. `=> != >=` join, and the text after them stays aligned. `font-feature = -calt` turns them off. Otherwise, "skipped".
+- [x] **Mac keys (Task 6b):** at the zsh prompt, type a few words. cmd-←/→ jumps to the start/end of the line, option-←/→ moves by words, and cmd-Backspace deletes to the start of the line.
+- [x] **M5 behaviours unchanged:** selection is visible, cmd-click links work, and the rings change.
+- [x] Keep or delete `~/.config/fuxx/config` afterwards: it's yours now.
 
-### Task 8: Update the docs — ⬜
+### Task 8: Update the docs — ✅
 
-- [ ] [[46 - Milestone 6 - Fonts and Config]]: tick the checklist; **Status:: ✅ Done**.
-- [ ] [[40 - Roadmap]]: M6 → ✅ (link the note).
-- [ ] [[00 - Plan Tracker (Start Here)]]: M6 row → ✅ 8/8; **Where we are** → M7, plan to be written. Add an M6 row to the "How these plans were made" table.
-- [ ] [[31 - API Fact Sheet (pinned rev)]]: the `Font` / `FontFallbacks` / `FontFeatures` facts, "in-memory fonts are ignored by CoreText's fallback → register the file".
-- [ ] [[30 - Tech Stack]]: the bundled Symbols Nerd Font (MIT + icon-set licences, see `assets/fonts/NOTICE-NerdFonts-IconSets.md`), the six bundled themes (iTerm2-Color-Schemes, MIT) and the CoreText registration. Correct any remaining "MIT only" wording.
-- [ ] `STRUCTURE.md`: `settings.rs`, `theme.rs`, `fonts.rs`, `appearance.rs`, `assets/fonts/`, `assets/themes/`; an example `~/.config/fuxx/config`.
-- [ ] [[60 - Progress Log]]: entry "M6 complete: fonts and config".
-- [ ] Commit docs.
+- [x] [[46 - Milestone 6 - Fonts and Config]]: tick the checklist; **Status:: ✅ Done**.
+- [x] [[40 - Roadmap]]: M6 → ✅ (link the note).
+- [x] [[00 - Plan Tracker (Start Here)]]: M6 row → ✅ 8/8; **Where we are** → M7, plan to be written. Add an M6 row to the "How these plans were made" table.
+- [x] [[31 - API Fact Sheet (pinned rev)]]: the `Font` / `FontFallbacks` / `FontFeatures` facts, "in-memory fonts are ignored by CoreText's fallback → register the file".
+- [x] [[30 - Tech Stack]]: the bundled Symbols Nerd Font (MIT + icon-set licences, see `assets/fonts/NOTICE-NerdFonts-IconSets.md`), the six bundled themes (iTerm2-Color-Schemes, MIT) and the CoreText registration. Correct any remaining "MIT only" wording.
+- [x] `STRUCTURE.md`: `settings.rs`, `theme.rs`, `fonts.rs`, `appearance.rs`, `assets/fonts/`, `assets/themes/`; an example `~/.config/fuxx/config`.
+- [x] [[60 - Progress Log]]: entry "M6 complete: fonts and config".
+- [x] Commit docs.
 
 ## Verification log
 
@@ -590,6 +590,11 @@ Run `cargo run` and report.
 | 2026-10-27 | GPUI fonts at the pinned rev: `Font { fallbacks, features }`, CoreText cascade = user fallbacks then system; `resolve_font` silently falls back to Helvetica for a missing family | ✅ | Research agent, file:line refs |
 | 2026-10-27 | Spike: icon U+F179 with Menlo → last-resort `?` font; with installed MesloLGS NF fallback → real glyph; with the font only in memory (`add_fonts`) → still `?`; after `CTFontManagerRegisterFontsForURL` (process scope) → real glyph from the bundled font | ✅ | AI headless spike (`gpui_platform::current_platform(true)`) |
 | — | Task code itself | ⚠️ not pre-compiled (signatures and tests) | Verified per task during execution |
+| 2026-10-27 | Tasks 1–5, one agent per task, each reviewed (Task 1 fix: self-include stack overflow; Task 4 fixes: icon-set licence notice, logged skips, atomic font cache write) | ✅ 102 passed | Task reviews (Tasks 4–5 by opus; Task 4's FFI checked against Apple's headers, headless icon test proven non-vacuous) |
+| 2026-10-27 | Whole-branch review (opus, before the plan change) | ⚠️ 3 Important → folded into Task 6 | Extreme font-size crash, unreadable default selection, empty-HOME cache path; include order kept + documented |
+| 2026-10-27 | Plan change → Task 6 (own settings file, six built-in themes, review fixes) | ✅ 105 passed | Review (opus) + fixes: selection-foreground, theme attribution NOTICE, TokyoNight Apache text |
+| 2026-10-27 | Task 6b Mac line/word keys (after the on-screen check found them missing) | ✅ 106 passed | Key logger evidence (Ghostty vs fuxx), review |
+| 2026-10-27 | Task 7 checklist (defaults + icons, own file, light theme, grey selection, themes folder, override, broken settings, M5 behaviours, Mac keys) | ✅ | 👀 confirmed by you |
 
 ## Known limitations
 
@@ -602,6 +607,9 @@ Run `cargo run` and report.
 | Default font is JetBrains Mono only if installed (fuxx doesn't bundle it) | Later, if wanted |
 | Tab doesn't accept Claude Code's grey suggestion | Tech debt in [[00 - Plan Tracker (Start Here)]] |
 | Ghostty's config isn't read (by your choice); copy settings over by hand | — |
+| option-←/→ send esc-b / esc-f everywhere, also inside vim/tmux (Ghostty/Zed behave the same) | Revisit if a full-screen app needs the old code |
+| ctrl-←/→ are kept by macOS (Spaces); fn-←/→ (Home/End) do nothing in plain zsh until bound in `.zshrc` | Not fuxx's |
+| `config-file` includes load right after their file (Ghostty loads them after all files) | By design now that fuxx has its own file |
 
 ## Related
 
