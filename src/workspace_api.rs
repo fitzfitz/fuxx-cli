@@ -227,10 +227,26 @@ impl Workspace {
                 Ok(json!({}))
             }
             // session.wait and events.subscribe are answered in `reply_to`.
-            "session.note" | "session.progress" => Err(ApiError::unavailable(format!(
-                "{} is coming in a later update",
-                request.method
-            ))),
+            "session.note" => {
+                let note = note_param(p)?;
+                let i = self.target_index(p, "target")?;
+                self.sessions
+                    .get_mut(i)
+                    .expect("target_index is in range")
+                    .note = note;
+                cx.notify();
+                Ok(json!({}))
+            }
+            "session.progress" => {
+                let progress = progress_param(p)?;
+                let i = self.target_index(p, "target")?;
+                self.sessions
+                    .get_mut(i)
+                    .expect("target_index is in range")
+                    .progress = progress;
+                cx.notify();
+                Ok(json!({}))
+            }
             other => Err(ApiError::unknown_method(format!(
                 "unknown method \"{other}\" (see system.version)"
             ))),
@@ -258,6 +274,8 @@ impl Workspace {
                     preset: s.preset.as_ref().map(|p| p.name.as_str()),
                     focused: active == Some(i),
                     on_screen: shown.is_some_and(|t| t.contains(s.view.entity_id())),
+                    note: s.note.as_deref(),
+                    progress: s.progress.as_ref(),
                 })
             })
             .collect();
@@ -547,6 +565,8 @@ struct ListEntry<'a> {
     preset: Option<&'a str>,
     focused: bool,
     on_screen: bool,
+    note: Option<&'a str>,
+    progress: Option<&'a (u8, Option<String>)>,
 }
 
 fn list_entry(e: &ListEntry) -> Value {
@@ -560,9 +580,8 @@ fn list_entry(e: &ListEntry) -> Value {
         "preset": e.preset,
         "focused": e.focused,
         "on_screen": e.on_screen,
-        // Set by session.note / session.progress (a later update).
-        "note": null,
-        "progress": null,
+        "note": e.note,
+        "progress": e.progress.map(|(percent, label)| json!({ "percent": percent, "label": label })),
     })
 }
 
@@ -599,6 +618,37 @@ fn bool_param(p: &Value, key: &str) -> Result<bool, ApiError> {
             "{key} must be true or false"
         ))),
     }
+}
+
+/// The longest note or progress label kept, in characters.
+const NOTE_MAX_CHARS: usize = 120;
+
+/// Trimmed text cut to `NOTE_MAX_CHARS` at a character boundary; blank is `None`.
+fn clean_note(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.chars().take(NOTE_MAX_CHARS).collect())
+}
+
+/// `session.note`'s `text`: a string sets, null clears, absent or anything else is a bad request.
+fn note_param(p: &Value) -> Result<Option<String>, ApiError> {
+    match p.get("text") {
+        None => Err(ApiError::bad_request("text is missing")),
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(clean_note(s)),
+        Some(_) => Err(ApiError::bad_request("text must be text")),
+    }
+}
+
+/// `session.progress`'s `percent` (0 to 100, clamped, rounded) and `label`; null percent clears.
+fn progress_param(p: &Value) -> Result<Option<(u8, Option<String>)>, ApiError> {
+    let percent = match p.get("percent") {
+        None => return Err(ApiError::bad_request("percent is missing")),
+        Some(Value::Null) => return Ok(None),
+        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+        Some(_) => return Err(ApiError::bad_request("percent must be a number")),
+    };
+    let label = opt_str(p, "label")?.and_then(clean_note);
+    Ok(Some((percent.round().clamp(0.0, 100.0) as u8, label)))
 }
 
 /// `timeout_ms`: how long a wait may take; absent or null is no limit.
@@ -721,6 +771,8 @@ mod tests {
             preset: Some("claude"),
             focused: true,
             on_screen: true,
+            note: Some("tests"),
+            progress: Some(&(40, Some("build".into()))),
         };
         let v = list_entry(&e);
         assert_eq!(
@@ -728,7 +780,7 @@ mod tests {
             json!({
                 "id": "s4", "number": 2, "name": "api", "title": "claude", "status": "waiting",
                 "project": "/x/api", "preset": "claude", "focused": true, "on_screen": true,
-                "note": null, "progress": null,
+                "note": "tests", "progress": {"percent": 40, "label": "build"},
             })
         );
         assert_eq!(
@@ -741,11 +793,76 @@ mod tests {
             preset: None,
             focused: false,
             on_screen: false,
+            note: None,
+            progress: None,
             ..e
         });
         assert_eq!(
-            (&bare["title"], &bare["project"], &bare["preset"]),
-            (&Value::Null, &Value::Null, &Value::Null)
+            (
+                &bare["title"],
+                &bare["project"],
+                &bare["preset"],
+                &bare["note"],
+                &bare["progress"]
+            ),
+            (
+                &Value::Null,
+                &Value::Null,
+                &Value::Null,
+                &Value::Null,
+                &Value::Null
+            )
+        );
+    }
+
+    #[test]
+    fn note_text_is_trimmed_capped_or_cleared() {
+        assert_eq!(
+            note_param(&json!({"text": "  hi  "})),
+            Ok(Some("hi".into()))
+        );
+        assert_eq!(note_param(&json!({"text": "   "})), Ok(None));
+        assert_eq!(note_param(&json!({"text": ""})), Ok(None));
+        assert_eq!(note_param(&json!({"text": null})), Ok(None));
+        for bad in [json!({}), json!({"text": 5}), json!({"text": true})] {
+            assert_eq!(note_param(&bad).unwrap_err().code, "bad_request", "{bad}");
+        }
+        let long = "é".repeat(300);
+        let got = note_param(&json!({ "text": long })).unwrap().unwrap();
+        assert_eq!(got.chars().count(), NOTE_MAX_CHARS);
+        assert_eq!(clean_note(&"a".repeat(120)).unwrap().len(), 120);
+    }
+
+    #[test]
+    fn progress_percent_is_clamped_rounded_or_cleared() {
+        let pr = |v: Value| progress_param(&json!({ "percent": v }));
+        assert_eq!(pr(json!(40)), Ok(Some((40, None))));
+        assert_eq!(pr(json!(0)), Ok(Some((0, None))));
+        assert_eq!(pr(json!(250)), Ok(Some((100, None))));
+        assert_eq!(pr(json!(-5)), Ok(Some((0, None))));
+        assert_eq!(pr(json!(40.6)), Ok(Some((41, None))));
+        assert_eq!(pr(Value::Null), Ok(None));
+        for bad in [json!("40"), json!(true), json!([1])] {
+            assert_eq!(pr(bad.clone()).unwrap_err().code, "bad_request", "{bad}");
+        }
+        assert_eq!(progress_param(&json!({})).unwrap_err().code, "bad_request");
+        assert_eq!(
+            progress_param(&json!({"percent": 5, "label": " build "})),
+            Ok(Some((5, Some("build".into()))))
+        );
+        assert_eq!(
+            progress_param(&json!({"percent": 5, "label": " "})),
+            Ok(Some((5, None)))
+        );
+        assert_eq!(
+            progress_param(&json!({"percent": 5, "label": 3}))
+                .unwrap_err()
+                .code,
+            "bad_request"
+        );
+        assert_eq!(
+            progress_param(&json!({"percent": null, "label": "x"})),
+            Ok(None)
         );
     }
 

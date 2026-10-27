@@ -11,7 +11,7 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
-    SharedString, Subscription, Task, Window, actions, canvas, div, prelude::*, px,
+    SharedString, Subscription, Task, Window, actions, canvas, div, prelude::*, px, relative,
 };
 
 use crate::api_events::{Event, WaitTable};
@@ -84,6 +84,10 @@ pub struct Session {
     /// The folder this session's group is for (none: no group).
     pub project: Option<PathBuf>,
     pub preset: Option<Preset>,
+    /// A line under the name, set by a script (not restored).
+    pub note: Option<String>,
+    /// A bar under the row: percent and an optional label, set by a script (not restored).
+    pub progress: Option<(u8, Option<String>)>,
     _subscription: Subscription,
 }
 
@@ -364,6 +368,8 @@ impl Workspace {
                 name: saved.name,
                 project: saved.project,
                 preset: saved.preset,
+                note: None,
+                progress: None,
                 _subscription: subscription,
             },
         );
@@ -977,8 +983,12 @@ impl Workspace {
             label: session.label(),
         };
         let project = session.project.clone();
+        let name = format!("{}  {}", index + 1, session.label());
+        let sub = sub_line(session.progress.as_ref(), session.note.as_deref());
+        let percent = session.progress.as_ref().map(|(p, _)| *p);
         div()
             .id(("session", view))
+            .relative()
             .flex()
             .flex_row()
             .items_center()
@@ -1017,8 +1027,56 @@ impl Workspace {
             .child(ring(session.status, ui))
             .map(|row| match rename_box {
                 Some(input) => row.child(format!("{}", index + 1)).child(input),
-                None => row.child(format!("{}  {}", index + 1, session.label())),
+                None => match sub {
+                    None => row.child(name),
+                    // The note or label sits under the name; both are cut with "…".
+                    Some(sub) => row.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_xs()
+                                    .text_color(hsla(ui.text_dim))
+                                    .child(sub),
+                            ),
+                    ),
+                },
             })
+            // The progress bar: along the bottom edge, as wide as the percent.
+            .when_some(percent, |row, percent| {
+                row.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .h(px(2.0))
+                        .w(relative(f32::from(percent) / 100.0))
+                        .bg(hsla(ui.ring_working)),
+                )
+            })
+    }
+}
+
+/// The line under a session's name: `label · note`, or whichever of them there is.
+fn sub_line(progress: Option<&(u8, Option<String>)>, note: Option<&str>) -> Option<String> {
+    let label = progress.and_then(|(_, label)| label.as_deref());
+    match (label, note) {
+        (Some(l), Some(n)) => Some(format!("{l} · {n}")),
+        (Some(t), None) | (None, Some(t)) => Some(t.to_string()),
+        (None, None) => None,
     }
 }
 
@@ -1173,4 +1231,22 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sub_line;
+
+    #[test]
+    fn the_line_under_the_name_joins_label_and_note() {
+        let bar = |l: Option<&str>| (40, l.map(String::from));
+        assert_eq!(sub_line(None, None), None);
+        assert_eq!(sub_line(Some(&bar(None)), None), None);
+        assert_eq!(sub_line(None, Some("n")), Some("n".into()));
+        assert_eq!(sub_line(Some(&bar(Some("l"))), None), Some("l".into()));
+        assert_eq!(
+            sub_line(Some(&bar(Some("l"))), Some("n")),
+            Some("l · n".into())
+        );
+    }
 }
