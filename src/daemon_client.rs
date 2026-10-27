@@ -85,6 +85,7 @@ impl std::fmt::Display for Incompatible {
 impl std::error::Error for Incompatible {}
 
 /// The `Incompatible` inside `e`, if that is why connecting failed.
+#[allow(dead_code)] // tests; the GUI shows the error's own text
 pub fn incompatible(e: &io::Error) -> Option<&Incompatible> {
     e.get_ref()?.downcast_ref()
 }
@@ -262,6 +263,7 @@ impl DaemonClient {
     /// Start receiving session `id`'s frames: a `Snapshot`, then everything after it. Asking
     /// again (after a `Resync` or a gap) brings a new `Snapshot` on the same stream. One stream
     /// per session: attaching again replaces it.
+    #[allow(dead_code)] // tests; views use `route` + `reattach`
     pub fn attach(&self, id: u64) -> (u64, SessionStream) {
         let route = self.route(id);
         self.reattach(id);
@@ -340,6 +342,7 @@ impl DaemonClient {
         });
     }
 
+    #[allow(dead_code)] // for scripting while the window is closed (a later step)
     pub fn set_meta(&self, meta: SetMeta) {
         self.send(&Frame::SetMeta(meta));
     }
@@ -350,6 +353,7 @@ impl DaemonClient {
     }
 
     /// The daemon's text of session `id`: `screen`, `all` or `last:N`.
+    #[allow(dead_code)] // for scripting while the window is closed (a later step)
     pub fn read_text(&self, id: u64, scope: &str) -> io::Result<String> {
         let read = mux_proto::ReadText {
             id,

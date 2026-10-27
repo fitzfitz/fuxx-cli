@@ -1,12 +1,19 @@
 //! The root view: a sidebar listing every session (with its status ring) and the layout of
 //! panes holding the active session. Owns session lifecycle, switching, splits, and background
 //! notifications.
+//!
+//! With persistence on (M10a), the background service runs the sessions: ids come from it,
+//! opening creates there, closing ends there, and quitting only detaches. A lost connection is
+//! not an exit: the sessions stay, marked, and a line says so.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
@@ -18,7 +25,10 @@ use gpui::{
 use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
+use crate::daemon;
+use crate::daemon_client::{self, DaemonClient};
 use crate::groups::{self, Row};
+use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
 use crate::panes::{self, PaneColors, Panes, SelectPane, StartDrag};
@@ -90,8 +100,44 @@ pub struct Session {
     pub note: Option<String>,
     /// A bar under the row: percent and an optional label, set by a script (not restored).
     pub progress: Option<(u8, Option<String>)>,
+    /// The background service's connection was lost: the view shows the last screen it had
+    /// and nothing reaches the session.
+    pub lost: bool,
     _subscription: Subscription,
 }
+
+/// Who runs the sessions (M10a).
+enum Service {
+    /// This process (persistence off, or the background service couldn't start).
+    Off,
+    /// Connecting to the background service at startup; no session opens yet.
+    Starting,
+    On(Arc<DaemonClient>),
+    /// The connection to the background service (process `pid`) was lost. The sessions stay,
+    /// marked; no new one starts (the ids are the service's).
+    Lost {
+        pid: u32,
+    },
+}
+
+impl Service {
+    fn client(&self) -> Option<Arc<DaemonClient>> {
+        match self {
+            Service::On(client) => Some(client.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Runs once a session has opened (with its id) or failed to (`None`).
+pub(crate) type Opened =
+    Box<dyn FnOnce(&mut Workspace, Option<u64>, &mut Window, &mut Context<Workspace>)>;
+
+/// How long after losing the background service fuxx tries to reach it again.
+const RECONNECT_AFTER: Duration = Duration::from_millis(500);
+
+const LOST_NOTICE: &str = "Lost the background service: these sessions no longer update and new \
+                           ones can't start. Reopen fuxx to restore them.";
 
 impl Session {
     /// Your name, else the program's own title, else the preset's name, else 🖕.
@@ -167,13 +213,23 @@ pub struct Workspace {
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
     _appearance: Subscription,
+    /// Persistence asked for at startup (`FUXX_PERSISTENT=1` until M10a Task 8's setting).
+    persistent: bool,
+    service: Service,
+    /// A line at the foot of the sidebar about the background service.
+    notice: Option<SharedString>,
+    /// How many sessions the Quit item last said keep running.
+    quit_count: usize,
 }
 
 impl Workspace {
     /// `scripting`: the socket this fuxx serves and its requests, answered for as long as the
     /// workspace lives.
+    /// `persistent`: sessions run in the background service (connected off the UI thread before
+    /// the first one opens).
     pub fn new(
         scripting: Option<(PathBuf, UnboundedReceiver<api_server::Incoming>)>,
+        persistent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -201,55 +257,182 @@ impl Workspace {
             focused: None,
             _activation: activation,
             _appearance: appearance,
+            persistent,
+            service: if persistent {
+                Service::Starting
+            } else {
+                Service::Off
+            },
+            notice: None,
+            quit_count: 0,
         };
-        this.restore(window, cx);
-        this.restoring = false;
-        this.save();
+        if persistent {
+            this.connect_service(window, cx);
+        } else {
+            this.restore(window, cx);
+        }
         this
     }
 
-    /// Reopen the saved sessions per the `session-restore` mode, or start one plain session.
-    fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mode = cx.global::<Appearance>().restore;
-        if mode != RestoreMode::Off
-            && let Some(home) = home_dir()
-        {
-            let path = restore::state_path(&home);
-            match std::fs::read_to_string(&path) {
-                Ok(text) => match restore::decode(&text) {
-                    Some(state) if !state.sessions.is_empty() => {
-                        let presets = cx.global::<Appearance>().presets.clone();
-                        for launch in restore::launches(&state, mode, &presets) {
-                            self.open_session(launch, None, window, cx);
-                        }
-                        if !self.sessions.is_empty() {
-                            self.restore_layouts(state.layouts, state.sessions.len());
-                            self.collapsed = state.collapsed;
-                            let last = self.sessions.items().len() - 1;
-                            let active = state.active.unwrap_or(0).min(last);
-                            // The normal route, so the active session's group opens.
-                            self.sessions.select(active);
-                            self.activate(window, cx);
-                            return;
-                        }
-                        eprintln!(
-                            "[fuxx] restore: no saved session could start, opening a new one"
-                        );
-                    }
-                    Some(_) => {}
-                    None => eprintln!(
-                        "[fuxx] restore: {} is not a valid sessions file, starting fresh",
-                        path.display()
-                    ),
-                },
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => eprintln!(
-                    "[fuxx] restore: could not read {}: {err}, starting fresh",
-                    path.display()
-                ),
+    /// Connect to the background service (starting it if needed) off the UI thread, then
+    /// reopen the sessions. If it can't be reached, this launch runs them itself.
+    fn connect_service(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let socket = daemon_socket();
+        let connecting = cx.background_spawn(async move {
+            let socket = socket.ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "$HOME is unset")
+            })?;
+            DaemonClient::connect_or_spawn(&socket, &std::env::current_exe()?)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let connected = connecting.await;
+            this.update_in(cx, |this, window, cx| {
+                this.service_started(connected, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn service_started(
+        &mut self,
+        connected: std::io::Result<Arc<DaemonClient>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match connected {
+            Ok(client) => {
+                eprintln!(
+                    "[fuxx] background service: connected (pid {})",
+                    client.pid()
+                );
+                self.service = Service::On(client);
+            }
+            Err(err) => {
+                eprintln!(
+                    "[fuxx] background service: unavailable ({err}); sessions end when fuxx quits this time"
+                );
+                self.notice = Some(
+                    format!(
+                        "Background service unavailable, so sessions end when fuxx quits this time ({err})."
+                    )
+                    .into(),
+                );
+                self.service = Service::Off;
             }
         }
-        self.open_session(Launch::default(), None, window, cx);
+        self.restore(window, cx);
+    }
+
+    /// Reopen the saved sessions per the `session-restore` mode, or start one plain session.
+    /// Saving starts once that is done.
+    fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((state, launches)) = self.saved_launches(cx) else {
+            self.open_first(window, cx);
+            return;
+        };
+        match self.service.client() {
+            Some(client) => self.restore_in_daemon(client, state, launches, window, cx),
+            None => {
+                for launch in launches {
+                    self.open_session(launch, None, window, cx);
+                }
+                self.restored(state, window, cx);
+            }
+        }
+    }
+
+    /// The saved state and its launches per the `session-restore` mode; `None` (logged when
+    /// unexpected) means start one plain session.
+    fn saved_launches(&self, cx: &Context<Self>) -> Option<(SavedState, Vec<Launch>)> {
+        let mode = cx.global::<Appearance>().restore;
+        if mode == RestoreMode::Off {
+            return None;
+        }
+        let path = restore::state_path(&home_dir()?);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match restore::decode(&text) {
+                Some(state) if !state.sessions.is_empty() => {
+                    let presets = &cx.global::<Appearance>().presets;
+                    let launches = restore::launches(&state, mode, presets);
+                    Some((state, launches))
+                }
+                Some(_) => None,
+                None => {
+                    eprintln!(
+                        "[fuxx] restore: {} is not a valid sessions file, starting fresh",
+                        path.display()
+                    );
+                    None
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                eprintln!(
+                    "[fuxx] restore: could not read {}: {err}, starting fresh",
+                    path.display()
+                );
+                None
+            }
+        }
+    }
+
+    /// `restore` with the background service: create every session there in order (off the UI
+    /// thread), then show those that started, as the Local path does.
+    fn restore_in_daemon(
+        &mut self,
+        client: Arc<DaemonClient>,
+        state: SavedState,
+        launches: Vec<Launch>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let creates: Vec<Create> = launches.iter().map(|l| self.create_for(l)).collect();
+        cx.spawn_in(window, async move |this, cx| {
+            let mut ids = Vec::with_capacity(creates.len());
+            for create in creates {
+                ids.push(created(client.create_in_background(create).await));
+            }
+            this.update_in(cx, |this, window, cx| {
+                for (launch, id) in launches.into_iter().zip(ids) {
+                    if let Some(id) = id {
+                        this.attach_session(&client, id, launch.saved, None, window, cx);
+                    }
+                }
+                this.restored(state, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// After the saved sessions were opened: their layouts, groups and active session; or one
+    /// plain session when none could start.
+    fn restored(&mut self, state: SavedState, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sessions.is_empty() {
+            eprintln!("[fuxx] restore: no saved session could start, opening a new one");
+            self.open_first(window, cx);
+            return;
+        }
+        self.restore_layouts(state.layouts, state.sessions.len());
+        self.collapsed = state.collapsed;
+        let last = self.sessions.items().len() - 1;
+        let active = state.active.unwrap_or(0).min(last);
+        // The normal route, so the active session's group opens.
+        self.sessions.select(active);
+        self.activate(window, cx);
+        self.finish_restoring();
+    }
+
+    /// One plain session, then saving starts.
+    fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let done: Opened = Box::new(|this, _, _, _| this.finish_restoring());
+        self.open_session_then(Launch::default(), None, Some(done), window, cx);
+    }
+
+    fn finish_restoring(&mut self) {
+        self.restoring = false;
+        self.save();
     }
 
     /// The layouts as session indices, for the file. A tree with a pane that isn't a session
@@ -322,45 +505,157 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Launch { saved, run_preset } = launch;
-        let cwd: Option<&Path> = match saved.project.as_deref() {
-            Some(dir) if dir.is_dir() => Some(dir),
-            Some(dir) => {
-                eprintln!(
-                    "[fuxx] session: folder {} is gone, starting in home",
-                    dir.display()
-                );
+        self.open_session_then(launch, split, None, window, cx);
+    }
+
+    /// `open_session`, then `then` with the new session's id (`None`: it didn't start). With the
+    /// background service that is once the service has created it; otherwise right away.
+    pub(crate) fn open_session_then(
+        &mut self,
+        launch: Launch,
+        split: Option<Axis>,
+        then: Option<Opened>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let opened = match &self.service {
+            Service::Off => self.open_local(launch, split, window, cx),
+            Service::On(client) => {
+                let client = client.clone();
+                self.open_in_daemon(client, launch, split, then, window, cx);
+                return;
+            }
+            Service::Starting => {
+                eprintln!("[fuxx] session: not started, the background service is starting");
                 None
             }
-            None => None,
+            Service::Lost { .. } => {
+                eprintln!("[fuxx] session: not started, the background service was lost");
+                None
+            }
         };
-        let startup = saved
-            .preset
-            .as_ref()
-            .filter(|_| run_preset)
-            .map(|p| p.command.as_str());
+        if let Some(then) = then {
+            then(self, opened, window, cx);
+        }
+    }
+
+    /// A session this process runs (a PTY child); its id.
+    fn open_local(
+        &mut self,
+        launch: Launch,
+        split: Option<Axis>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        let Launch { saved, run_preset } = launch;
+        let (cwd, startup) = start_in(&saved, run_preset);
         let session_id = self.next_id;
         self.next_id += 1;
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf));
         let env = scripting_env(
             self.socket.as_deref(),
-            session_id,
-            exe_dir.as_deref(),
+            Some(session_id),
+            exe_dir().as_deref(),
             std::env::var_os("PATH").as_deref(),
         );
-        let view = match TerminalView::spawn(window, cx, cwd, startup, &env) {
+        let view = match TerminalView::spawn(window, cx, cwd.as_deref(), startup.as_deref(), &env) {
             Ok(view) => view,
             Err(err) => {
                 eprintln!("fuxx: could not start a shell: {err}");
-                return;
+                return None;
             }
         };
+        let split_at = split.zip(self.sessions.active().map(|s| s.view.entity_id()));
+        self.insert_session(session_id, view, saved, split_at, window, cx);
+        Some(session_id)
+    }
+
+    /// A session the background service runs: created there off the UI thread, then shown.
+    fn open_in_daemon(
+        &mut self,
+        client: Arc<DaemonClient>,
+        launch: Launch,
+        split: Option<Axis>,
+        then: Option<Opened>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let create = self.create_for(&launch);
+        // The pane it splits is the one active now, not when the service answers.
+        let split_at = split.zip(self.sessions.active().map(|s| s.view.entity_id()));
+        let pending = client.create_in_background(create);
+        cx.spawn_in(window, async move |this, cx| {
+            let id = created(pending.await);
+            this.update_in(cx, |this, window, cx| {
+                let id = id.and_then(|id| {
+                    this.attach_session(&client, id, launch.saved, split_at, window, cx)
+                });
+                if let Some(then) = then {
+                    then(this, id, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The `Create` for `launch`: the scripting variables as `open_local` gives them, except
+    /// `FUXX_SESSION`, which the service sets (it knows the id).
+    fn create_for(&self, launch: &Launch) -> Create {
+        let (cwd, startup) = start_in(&launch.saved, launch.run_preset);
+        let env = scripting_env(
+            self.socket.as_deref(),
+            None,
+            exe_dir().as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        );
+        daemon_create(
+            cwd.as_deref(),
+            startup.as_deref(),
+            daemon_client::create_env(&env),
+            &launch.saved,
+        )
+    }
+
+    /// Show background-service session `id` (as `open_session` places one); its id. If it
+    /// can't be shown it is ended, so it doesn't run unseen.
+    fn attach_session(
+        &mut self,
+        client: &Arc<DaemonClient>,
+        id: u64,
+        saved: SavedSession,
+        split_at: Option<(Axis, EntityId)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        match TerminalView::attach_daemon(window, cx, client.clone(), id) {
+            Ok(view) => {
+                self.insert_session(id, view, saved, split_at, window, cx);
+                Some(id)
+            }
+            Err(err) => {
+                eprintln!("[fuxx] session: could not show s{id}: {err}");
+                let client = client.clone();
+                cx.background_spawn(async move { client.close(id) })
+                    .detach();
+                None
+            }
+        }
+    }
+
+    /// Put a new session's view in the sidebar (next to its group) and the layouts (its own, or
+    /// split from `split_at`'s pane), and make it active.
+    fn insert_session(
+        &mut self,
+        session_id: u64,
+        view: Entity<TerminalView>,
+        saved: SavedSession,
+        split_at: Option<(Axis, EntityId)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
         let id = view.entity_id();
-        let active = self.sessions.active().map(|s| s.view.entity_id());
-        let split_done = split.zip(active).is_some_and(|(axis, active)| {
+        let split_done = split_at.is_some_and(|(axis, active)| {
             self.layouts
                 .iter_mut()
                 .find(|t| t.contains(active))
@@ -382,6 +677,7 @@ impl Workspace {
                 preset: saved.preset,
                 note: None,
                 progress: None,
+                lost: false,
                 _subscription: subscription,
             },
         );
@@ -551,11 +847,38 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            TerminalEvent::Exited => self.close_at(index, window, cx),
+            // Ended by itself (or by a close already under way): nothing more to end.
+            TerminalEvent::Exited => self.remove_at(index, None, window, cx),
+            TerminalEvent::DaemonLost => self.daemon_lost(index, window, cx),
         }
     }
 
+    /// Close session `index` (cmd-w, the API): end it, then take it away. A background-service
+    /// session is ended there; a Local one by dropping its view.
     pub(crate) fn close_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // A lost one: no live service has it, and a new one may reuse its number.
+        let ending = self
+            .sessions
+            .items()
+            .get(index)
+            .filter(|s| !s.lost)
+            .and_then(|s| {
+                let view = s.view.read(cx);
+                view.close();
+                view.daemon_id()
+            });
+        self.remove_at(index, ending, window, cx);
+    }
+
+    /// Take session `index` away: from the sidebar and its layout, then the window if it was the
+    /// last one. `ending`: the service session `close_at` just ended, which quitting waits for.
+    fn remove_at(
+        &mut self,
+        index: usize,
+        ending: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some((id, session_id)) = self
             .sessions
             .items()
@@ -582,14 +905,16 @@ impl Workspace {
                 self.layouts.insert(pos, rest);
             }
         }
-        // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child.
+        // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child
+        // (Local), or detaches (background service; `close_at` already ended it there).
         self.sessions.remove(index);
         if self.sessions.is_empty() {
             self.save(); // an empty list, so the next launch starts fresh
             // Last session gone: close the window (and quit), once wait replies and the closed
             // event have reached their clients.
             replied.extend(self.subscribers.iter().cloned());
-            self.quit_after_flush(replied, window, cx);
+            let ending = self.service.client().zip(ending);
+            self.quit_after_flush(replied, ending, window, cx);
             return;
         }
         // A group whose last session closed is gone; forget that it was closed.
@@ -710,7 +1035,184 @@ impl Workspace {
         }
         self.focus_active(window, cx);
         self.save();
+        self.sync_quit_title(cx);
         cx.notify();
+    }
+
+    /// The Quit item says how many sessions keep running (persistence on); the menu bar is
+    /// rebuilt only when that number changes.
+    fn sync_quit_title(&mut self, cx: &mut Context<Self>) {
+        if !self.persistent {
+            return;
+        }
+        let n = match self.service {
+            Service::On(_) => self.sessions.items().iter().filter(|s| !s.lost).count(),
+            _ => 0,
+        };
+        if n != self.quit_count {
+            self.quit_count = n;
+            crate::set_menus(cx, Some(n));
+        }
+    }
+
+    /// Session `index`'s view lost the background service. Not an exit: the session stays (and
+    /// stays in the sessions file, so a reopen can restore it). The first view to notice speaks
+    /// for the connection: the service is marked lost and fuxx tries once to reach it again.
+    fn daemon_lost(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(index).filter(|s| !s.lost) else {
+            return;
+        };
+        session.lost = true;
+        if let Service::On(client) = &self.service {
+            let pid = client.pid();
+            eprintln!(
+                "[fuxx] background service: lost the connection (pid {pid}); keeping the sessions, trying again"
+            );
+            self.service = Service::Lost { pid };
+            self.notice = Some(LOST_NOTICE.into());
+            self.reconnect(pid, window, cx);
+        }
+        self.sync_quit_title(cx);
+        cx.notify();
+    }
+
+    /// Try once to reach the background service again (connect only: a new one wouldn't have
+    /// these sessions).
+    fn reconnect(&mut self, pid: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(socket) = daemon_socket() else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(RECONNECT_AFTER).await;
+            let found = cx
+                .background_spawn(async move {
+                    let client = DaemonClient::connect(&socket)?;
+                    let live = client.list()?;
+                    Ok::<_, std::io::Error>((client, live))
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.reconnected(pid, found, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The same service (process `pid`) answers: show its live sessions again and go on with
+    /// it. Another one, or none: the sessions stay lost.
+    fn reconnected(
+        &mut self,
+        pid: u32,
+        found: std::io::Result<(Arc<DaemonClient>, Vec<mux_proto::SessionInfo>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.service, Service::Lost { pid: lost } if lost == pid) {
+            return;
+        }
+        match found {
+            Ok((client, live)) if client.pid() == pid => {
+                let live: Vec<u64> = live.iter().filter(|s| s.alive).map(|s| s.id).collect();
+                eprintln!("[fuxx] background service: reconnected (pid {pid})");
+                self.reattach_lost(&client, &live, window, cx);
+                self.service = Service::On(client);
+                let ended = self.sessions.items().iter().filter(|s| s.lost).count();
+                self.notice = (ended > 0).then(|| {
+                    format!(
+                        "Reconnected to the background service; {ended} session(s) ended meanwhile."
+                    )
+                    .into()
+                });
+            }
+            Ok((client, _)) => eprintln!(
+                "[fuxx] background service: another one runs now (pid {}); the sessions stay lost",
+                client.pid()
+            ),
+            Err(err) => eprintln!("[fuxx] background service: still unreachable: {err}"),
+        }
+        self.sync_quit_title(cx);
+        cx.notify();
+    }
+
+    /// Give every lost session the service still runs (`live`) a new view of it, in place.
+    fn reattach_lost(
+        &mut self,
+        client: &Arc<DaemonClient>,
+        live: &[u64],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for index in 0..self.sessions.items().len() {
+            let session = &self.sessions.items()[index];
+            if !session.lost || !live.contains(&session.id) {
+                continue;
+            }
+            let (id, old) = (session.id, session.view.entity_id());
+            let view = match TerminalView::attach_daemon(window, cx, client.clone(), id) {
+                Ok(view) => view,
+                Err(err) => {
+                    eprintln!("[fuxx] session: could not show s{id} again: {err}");
+                    continue;
+                }
+            };
+            let new = view.entity_id();
+            let swap = |v: EntityId| if v == old { new } else { v };
+            self.layouts = self.layouts.iter().map(|t| t.map(&swap)).collect();
+            if self.renaming.as_ref().is_some_and(|(v, _)| *v == old) {
+                self.renaming = None;
+            }
+            if self.dragging.as_ref().is_some_and(|(v, _)| *v == old) {
+                self.dragging = None;
+            }
+            let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
+            if let Some(session) = self.sessions.get_mut(index) {
+                session.view = view;
+                session._subscription = subscription;
+                session.lost = false;
+            }
+        }
+        self.focus_active(window, cx);
+    }
+
+    /// "Quit fuxx and End All Sessions": end every session (in the background service, once
+    /// it has them), save the empty list as closing the last session does, then quit.
+    pub fn end_all_and_quit(&mut self, cx: &mut Context<Self>) {
+        let ending: Vec<u64> = self
+            .sessions
+            .items()
+            .iter()
+            .filter(|s| !s.lost)
+            .map(|s| s.id)
+            .collect();
+        // Dropping the views ends Local sessions and detaches the service's.
+        self.sessions = SessionList::new();
+        self.layouts.clear();
+        self.collapsed.clear();
+        self.renaming = None;
+        self.dragging = None;
+        self.restoring = false; // even mid-startup, the list saved is the empty one
+        self.save();
+        cx.notify();
+        match self.service.client() {
+            Some(client) if !ending.is_empty() => {
+                cx.spawn(async move |_, cx| {
+                    cx.background_spawn(async move {
+                        for id in ending {
+                            client.close(id);
+                        }
+                        // Answered after the Closes (one connection, in order): they arrived.
+                        if let Err(err) = client.list() {
+                            eprintln!("[fuxx] background service: ending sessions: {err}");
+                        }
+                    })
+                    .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
+            _ => cx.quit(),
+        }
     }
 
     fn toggle_group(&mut self, project: &Path, cx: &mut Context<Self>) {
@@ -919,6 +1421,19 @@ impl Workspace {
                 cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_active(window, cx)),
             )
             .children(rows)
+            .when_some(self.notice.clone(), |sidebar, notice| {
+                sidebar.child(
+                    div()
+                        .mt_auto()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .text_xs()
+                        .bg(hsla(ui.row_active))
+                        .text_color(hsla(ui.text))
+                        .child(notice),
+                )
+            })
     }
 
     /// A project's header: arrow, name, the group's most urgent ring, and a + for a new session.
@@ -996,7 +1511,11 @@ impl Workspace {
         };
         let project = session.project.clone();
         let name = format!("{}  {}", index + 1, session.label());
-        let sub = sub_line(session.progress.as_ref(), session.note.as_deref());
+        let sub = if session.lost {
+            Some("not live".to_string())
+        } else {
+            sub_line(session.progress.as_ref(), session.note.as_deref())
+        };
         let percent = session.progress.as_ref().map(|(p, _)| *p);
         div()
             .id(("session", view))
@@ -1216,10 +1735,11 @@ impl Render for Workspace {
 /// The scripting variables for a shell. While this fuxx serves `socket`: the socket, the
 /// session id, and the `fuxx` program's folder (`exe_dir`) at the end of `path`. Otherwise both
 /// variables are removed, so one inherited from another fuxx can't make `fuxx` in this shell
-/// drive that fuxx's sessions.
+/// drive that fuxx's sessions. `id: None` (a daemon session): the daemon sets `FUXX_SESSION`,
+/// since only it knows the id.
 fn scripting_env(
     socket: Option<&Path>,
-    id: u64,
+    id: Option<u64>,
     exe_dir: Option<&Path>,
     path: Option<&OsStr>,
 ) -> ShellEnv {
@@ -1229,10 +1749,10 @@ fn scripting_env(
             remove: vec!["FUXX_SOCKET", "FUXX_SESSION"],
         };
     };
-    let mut set = vec![
-        ("FUXX_SOCKET".to_string(), socket.display().to_string()),
-        ("FUXX_SESSION".to_string(), format!("s{id}")),
-    ];
+    let mut set = vec![("FUXX_SOCKET".to_string(), socket.display().to_string())];
+    if let Some(id) = id {
+        set.push(("FUXX_SESSION".to_string(), format!("s{id}")));
+    }
     if let Some(dir) = exe_dir {
         let mut path = path.map(OsStr::to_os_string).unwrap_or_default();
         if !path.is_empty() {
@@ -1247,6 +1767,95 @@ fn scripting_env(
     }
 }
 
+/// The background service's `Create` for a session: as `TerminalView::spawn` would start it
+/// (80x24 until the first paint measures the pane), with its sidebar facts.
+fn daemon_create(
+    cwd: Option<&Path>,
+    startup: Option<&str>,
+    env: BTreeMap<String, String>,
+    saved: &SavedSession,
+) -> Create {
+    Create {
+        cwd: cwd.map(|dir| dir.display().to_string()),
+        startup: startup.map(str::to_string),
+        env,
+        dims: mux_proto::Dims { cols: 80, rows: 24 },
+        cell_px: mux_proto::CellPx { w: 0, h: 0 },
+        name: saved.name.clone(),
+        project: saved.project.as_ref().map(|p| p.display().to_string()),
+        preset: saved.preset.as_ref().map(|p| p.name.clone()),
+    }
+}
+
+/// Where a session for `saved` starts (its project's folder, if it's still there) and what is
+/// typed into it first (its preset's command, when `run_preset`).
+fn start_in(saved: &SavedSession, run_preset: bool) -> (Option<PathBuf>, Option<String>) {
+    let cwd = match saved.project.as_deref() {
+        Some(dir) if dir.is_dir() => Some(dir.to_path_buf()),
+        Some(dir) => {
+            eprintln!(
+                "[fuxx] session: folder {} is gone, starting in home",
+                dir.display()
+            );
+            None
+        }
+        None => None,
+    };
+    let startup = saved
+        .preset
+        .as_ref()
+        .filter(|_| run_preset)
+        .map(|p| p.command.clone());
+    (cwd, startup)
+}
+
+/// The folder of the running `fuxx` program (put on the shells' `PATH`).
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+}
+
+/// The background service's socket (`FUXX_DAEMON_SOCKET`, else under `$HOME`).
+fn daemon_socket() -> Option<PathBuf> {
+    let env_socket = std::env::var("FUXX_DAEMON_SOCKET").ok();
+    daemon::client_socket_path(env_socket.as_deref(), home_dir().as_deref())
+}
+
+/// Wait (at most `within`, polling) until the background service no longer lists session
+/// `id`: its `Close`, sent through the view's queue, has arrived. False on timeout or error.
+pub(crate) fn wait_ended(client: &DaemonClient, id: u64, within: Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        match client.list() {
+            Ok(sessions) if !sessions.iter().any(|s| s.id == id) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A `create_in_background` answer as the new id; failures are logged.
+fn created(
+    answer: Result<std::io::Result<u64>, futures::channel::oneshot::Canceled>,
+) -> Option<u64> {
+    match answer {
+        Ok(Ok(id)) => Some(id),
+        Ok(Err(err)) => {
+            eprintln!("[fuxx] session: the background service didn't start it: {err}");
+            None
+        }
+        Err(_) => {
+            eprintln!("[fuxx] session: the background service didn't answer");
+            None
+        }
+    }
+}
+
 /// `$HOME`; unset or empty counts as absent.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
@@ -1256,9 +1865,12 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{scripting_env, sub_line};
+    use super::{daemon_create, scripting_env, sub_line};
+    use crate::presets::Preset;
     use crate::pty::apply_env;
+    use crate::restore::SavedSession;
     use portable_pty::CommandBuilder;
+    use std::collections::BTreeMap;
     use std::ffi::OsStr;
     use std::path::Path;
 
@@ -1278,7 +1890,7 @@ mod tests {
                 }
                 let env = scripting_env(
                     serving.then_some(ours),
-                    7,
+                    Some(7),
                     Some(exe),
                     Some(OsStr::new("/usr/bin")),
                 );
@@ -1300,6 +1912,80 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_daemon_session_gets_its_id_from_the_daemon_not_the_window() {
+        let ours = Path::new("/me/fuxx.sock");
+        let exe = Path::new("/apps/fuxx.app/Contents/MacOS");
+        let env = scripting_env(Some(ours), None, Some(exe), Some(OsStr::new("/usr/bin")));
+        let keys: Vec<&str> = env.set.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["FUXX_SOCKET", "PATH"]);
+        assert!(env.remove.is_empty());
+        // Not serving: both still removed (the daemon then drops FUXX_SESSION too).
+        let off = scripting_env(None, None, Some(exe), None);
+        assert!(off.set.is_empty());
+        assert_eq!(off.remove, ["FUXX_SOCKET", "FUXX_SESSION"]);
+    }
+
+    #[test]
+    fn a_daemon_create_carries_the_session_as_spawn_would_start_it() {
+        let saved = SavedSession {
+            name: Some("api".into()),
+            project: Some("/x/api".into()),
+            preset: Some(Preset {
+                name: "claude".into(),
+                command: "claude --resume".into(),
+            }),
+        };
+        let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
+        let c = daemon_create(
+            Some(Path::new("/x/api")),
+            Some("claude --resume"),
+            env.clone(),
+            &saved,
+        );
+        assert_eq!(c.cwd.as_deref(), Some("/x/api"));
+        assert_eq!(c.startup.as_deref(), Some("claude --resume"));
+        assert_eq!(c.env, env);
+        assert_eq!((c.dims.cols, c.dims.rows), (80, 24));
+        assert_eq!(c.name.as_deref(), Some("api"));
+        assert_eq!(c.project.as_deref(), Some("/x/api"));
+        assert_eq!(c.preset.as_deref(), Some("claude"));
+        // A plain session in home: nothing but the env.
+        let plain = daemon_create(None, None, BTreeMap::new(), &SavedSession::default());
+        assert_eq!(
+            (
+                plain.cwd,
+                plain.startup,
+                plain.name,
+                plain.project,
+                plain.preset
+            ),
+            (None, None, None, None, None)
+        );
+    }
+
+    #[test]
+    fn waiting_for_a_closed_session_to_be_gone() {
+        use crate::daemon_client::DaemonClient;
+        use crate::daemon_client::tests::{daemon, sh_create};
+        use std::time::{Duration, Instant};
+        let (_d, path) = daemon("ws-ended");
+        let client = DaemonClient::connect(&path).unwrap();
+        let kept = client.create(sh_create(40, 5)).unwrap();
+        let closed = client.create(sh_create(40, 5)).unwrap();
+        // Still running: false once the time is up.
+        let start = Instant::now();
+        assert!(!super::wait_ended(
+            &client,
+            kept,
+            Duration::from_millis(300)
+        ));
+        assert!(start.elapsed() >= Duration::from_millis(300));
+        client.close(closed);
+        assert!(super::wait_ended(&client, closed, Duration::from_secs(5)));
+        assert!(client.list().unwrap().iter().any(|s| s.id == kept));
     }
 
     #[test]

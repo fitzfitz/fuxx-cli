@@ -6,6 +6,7 @@
 //! status change, each close, and every 200 ms while any is pending.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
@@ -17,18 +18,21 @@ use crate::api::{self, ApiError, Request, SessionRef};
 use crate::api_events::{Event, EventSession, Wait, Watch, event_json, wait_reply};
 use crate::api_server::{Conn, Incoming};
 use crate::appearance::Appearance;
+use crate::daemon_client::DaemonClient;
 use crate::grid::TextScope;
 use crate::notifier;
 use crate::presets::Preset;
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::status::Status;
-use crate::workspace::Workspace;
+use crate::workspace::{Opened, Workspace, wait_ended};
 
 /// How many non-blank lines `session.question` returns.
 const QUESTION_LINES: usize = 12;
 /// How long closing the last session (which quits fuxx) waits for its reply to be written.
 const REPLY_FLUSH: Duration = Duration::from_millis(500);
+/// How long closing the last session waits for the background service to have ended it.
+const ENDING_WAIT: Duration = Duration::from_secs(2);
 /// How often pending waits are checked (text waits and deadlines have no event of their own).
 const WAIT_TICK: Duration = Duration::from_millis(200);
 /// How many lines a text wait searches.
@@ -89,6 +93,11 @@ impl Workspace {
                 Ok(None) => Reply::Later,
                 Err(e) => Reply::Now(Err(e)),
             },
+            // Replied once the session is open: with the background service, its id comes later.
+            "session.new" => match self.api_new(request, conn, window, cx) {
+                Ok(()) => Reply::Later,
+                Err(e) => Reply::Now(Err(e)),
+            },
             "events.subscribe" => {
                 // Added now and acknowledged right after, on this same UI-thread turn, so no
                 // event can come before the acknowledgement.
@@ -117,7 +126,7 @@ impl Workspace {
                 "methods": api::METHODS,
             })),
             "session.list" => Ok(self.list()),
-            "session.new" => self.api_new(p, window, cx),
+            // session.new is answered in `reply_to`.
             "session.close" => {
                 let i = self.target_index(p, "target")?;
                 if self.sessions.items().len() == 1 {
@@ -470,15 +479,17 @@ impl Workspace {
     }
 
     /// Close the window (quitting fuxx) once `conns` have written what's queued for them, for
-    /// at most `REPLY_FLUSH`; at once when there's nothing to wait for.
+    /// at most `REPLY_FLUSH`, and the background service no longer has the session `ending`
+    /// (at most `ENDING_WAIT`); at once when there's nothing to wait for.
     pub(crate) fn quit_after_flush(
         &mut self,
         conns: Vec<Conn>,
+        ending: Option<(Arc<DaemonClient>, u64)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let conns: Vec<Conn> = conns.into_iter().filter(|c| !c.peer_gone()).collect();
-        if conns.is_empty() {
+        if conns.is_empty() && ending.is_none() {
             window.remove_window();
             return;
         }
@@ -488,6 +499,12 @@ impl Workspace {
                 for conn in conns {
                     conn.flushed(deadline.saturating_duration_since(Instant::now()));
                 }
+                // Its `Close` goes through the view's queue: quitting first could lose it.
+                if let Some((client, id)) = ending
+                    && !wait_ended(&client, id, ENDING_WAIT)
+                {
+                    eprintln!("[fuxx] background service: s{id} wasn't seen to end");
+                }
             })
             .await;
             cx.update(|window, _| window.remove_window()).ok();
@@ -496,12 +513,16 @@ impl Workspace {
     }
 
     /// `session.new`: a session like ⌘T / a preset, or with `split` a pane like ⌘D beside `of`.
+    /// A bad request is an error now; otherwise the reply goes to `conn` once the session is
+    /// open (at once without the background service).
     fn api_new(
         &mut self,
-        p: &Value,
+        request: &Request,
+        conn: &Conn,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<Value, ApiError> {
+    ) -> Result<(), ApiError> {
+        let p = &request.params;
         let preset = match opt_str(p, "preset")? {
             Some(name) => Some(find_preset(&cx.global::<Appearance>().presets, name)?),
             None => None,
@@ -534,7 +555,6 @@ impl Workspace {
         if let Some(i) = of {
             self.sessions.select(i);
         }
-        let id = self.next_id;
         let launch = Launch {
             saved: SavedSession {
                 name,
@@ -543,9 +563,28 @@ impl Workspace {
             },
             run_preset: true,
         };
-        self.open_session(launch, split, window, cx);
+        let (conn, request_id) = (conn.clone(), request.id);
+        let opened: Opened = Box::new(move |this, id, window, cx| {
+            let result = this.api_opened(id, previous, run, background, window, cx);
+            conn.send_line(&api::reply(request_id, result));
+        });
+        self.open_session_then(launch, split, Some(opened), window, cx);
+        Ok(())
+    }
+
+    /// The rest of `session.new` once session `id` opened (`None`: it didn't): type `run`,
+    /// and with `background` give the focus back to `previous`.
+    fn api_opened(
+        &mut self,
+        id: Option<u64>,
+        previous: Option<u64>,
+        run: Option<String>,
+        background: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Value, ApiError> {
         let index_of = |this: &Self, id: u64| this.sessions.position(|s| s.id == id);
-        let Some(index) = index_of(self, id) else {
+        let Some((id, index)) = id.and_then(|id| Some((id, index_of(self, id)?))) else {
             // Nothing opened (logged); undo the selection of `of`.
             if let Some(i) = previous.and_then(|p| index_of(self, p)) {
                 self.sessions.select(i);

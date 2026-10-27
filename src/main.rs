@@ -9,7 +9,6 @@ mod appearance;
 mod cli;
 mod colors;
 mod daemon;
-#[allow(dead_code)] // the workspace connects from M10a Task 6 (persistence on)
 mod daemon_client;
 mod daemon_session;
 mod detach_probe;
@@ -67,7 +66,7 @@ use workspace::{
     SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, Workspace,
 };
 
-actions!(fuxx, [Quit, OpenPreferences]);
+actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions]);
 
 /// The File-menu item for preset `n` (0-based), bound to its `LaunchPresetN`.
 fn preset_item(n: usize, name: &str) -> Option<MenuItem> {
@@ -84,6 +83,58 @@ fn preset_item(n: usize, name: &str) -> Option<MenuItem> {
         8 => MenuItem::action(name, LaunchPreset9),
         _ => return None,
     })
+}
+
+/// Set the menu bar. `keep_running`: `None` with persistence off; else how many sessions keep
+/// running after Quit, which the Quit item says, and "Quit fuxx and End All Sessions" is there.
+/// Called again when that number changes (GPUI rebuilds the whole bar). After the key bindings:
+/// a menu shows the shortcut bound when the menus are set.
+pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
+    let preset_items: Vec<MenuItem> = cx
+        .global::<appearance::Appearance>()
+        .presets
+        .iter()
+        .enumerate()
+        .filter_map(|(n, preset)| preset_item(n, &preset.name))
+        .collect();
+    let mut app_items = vec![MenuItem::action(
+        quit_title(keep_running.unwrap_or(0)),
+        Quit,
+    )];
+    if keep_running.is_some() {
+        app_items.push(MenuItem::action(
+            "Quit fuxx and End All Sessions",
+            QuitAndEndSessions,
+        ));
+    }
+    cx.set_menus([
+        Menu::new("fuxx").items(app_items),
+        Menu::new("File").items([
+            MenuItem::action("New Session", NewSession),
+            MenuItem::action("New Session in Folder\u{2026}", NewSessionInFolder),
+            MenuItem::submenu(Menu::new("New Agent Session").items(preset_items)),
+            MenuItem::action("Rename Session\u{2026}", RenameSession),
+            MenuItem::action("Move Session Up", MoveSessionUp),
+            MenuItem::action("Move Session Down", MoveSessionDown),
+            MenuItem::separator(),
+            MenuItem::action("Close Session", CloseSession),
+            MenuItem::separator(),
+            MenuItem::action("Preferences\u{2026}", OpenPreferences),
+        ]),
+        Menu::new("Pane").items([
+            MenuItem::action("Split Right", SplitRight),
+            MenuItem::action("Split Down", SplitDown),
+            MenuItem::separator(),
+            MenuItem::action("Previous Pane", PrevPane),
+            MenuItem::action("Next Pane", NextPane),
+            MenuItem::action("Focus Pane Left", FocusPaneLeft),
+            MenuItem::action("Focus Pane Right", FocusPaneRight),
+            MenuItem::action("Focus Pane Up", FocusPaneUp),
+            MenuItem::action("Focus Pane Down", FocusPaneDown),
+            MenuItem::separator(),
+            MenuItem::action("Equalize Panes", EqualizePanes),
+        ]),
+    ]);
 }
 
 /// `$HOME`, unless unset or empty.
@@ -268,10 +319,12 @@ fn main() {
         }
     }
 
+    let persistent = persistence_requested(std::env::var("FUXX_PERSISTENT").ok().as_deref());
+
     // macOS apps normally keep running with no windows; a terminal should quit instead.
     application()
         .with_quit_mode(QuitMode::LastWindowClosed)
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-,", OpenPreferences, None),
@@ -328,48 +381,18 @@ fn main() {
                     Some("NameInput"),
                 ),
             ]);
+            if persistent {
+                cx.bind_keys([KeyBinding::new("alt-cmd-q", QuitAndEndSessions, None)]);
+            }
+            // With persistence on, quitting (here, or by closing the window) only detaches: the
+            // background service keeps the sessions running.
             cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
             cx.on_action(|_: &OpenPreferences, cx: &mut App| preferences::open_or_activate(cx));
             // Read once, before any view exists: every view takes its theme and font from it, and
             // the agent submenu is built from its presets.
-            let appearance = appearance::load(cx);
-            let preset_items: Vec<MenuItem> = appearance
-                .presets
-                .iter()
-                .enumerate()
-                .filter_map(|(n, preset)| preset_item(n, &preset.name))
-                .collect();
-            cx.set_global(appearance);
+            cx.set_global(appearance::load(cx));
             let scripting = start_scripting(cx);
-            // After the key bindings: a menu shows the shortcut bound when the menus are set.
-            cx.set_menus([
-                Menu::new("fuxx").items([MenuItem::action("Quit fuxx", Quit)]),
-                Menu::new("File").items([
-                    MenuItem::action("New Session", NewSession),
-                    MenuItem::action("New Session in Folder\u{2026}", NewSessionInFolder),
-                    MenuItem::submenu(Menu::new("New Agent Session").items(preset_items)),
-                    MenuItem::action("Rename Session\u{2026}", RenameSession),
-                    MenuItem::action("Move Session Up", MoveSessionUp),
-                    MenuItem::action("Move Session Down", MoveSessionDown),
-                    MenuItem::separator(),
-                    MenuItem::action("Close Session", CloseSession),
-                    MenuItem::separator(),
-                    MenuItem::action("Preferences\u{2026}", OpenPreferences),
-                ]),
-                Menu::new("Pane").items([
-                    MenuItem::action("Split Right", SplitRight),
-                    MenuItem::action("Split Down", SplitDown),
-                    MenuItem::separator(),
-                    MenuItem::action("Previous Pane", PrevPane),
-                    MenuItem::action("Next Pane", NextPane),
-                    MenuItem::action("Focus Pane Left", FocusPaneLeft),
-                    MenuItem::action("Focus Pane Right", FocusPaneRight),
-                    MenuItem::action("Focus Pane Up", FocusPaneUp),
-                    MenuItem::action("Focus Pane Down", FocusPaneDown),
-                    MenuItem::separator(),
-                    MenuItem::action("Equalize Panes", EqualizePanes),
-                ]),
-            ]);
+            set_menus(cx, persistent.then_some(0));
 
             let bounds = Bounds::centered(None, size(px(1100.0), px(640.0)), cx);
             let main_window = cx
@@ -382,9 +405,19 @@ fn main() {
                         }),
                         ..Default::default()
                     },
-                    move |window, cx| cx.new(|cx| Workspace::new(scripting, window, cx)),
+                    move |window, cx| {
+                        cx.new(|cx| Workspace::new(scripting, persistent, window, cx))
+                    },
                 )
                 .expect("failed to open the window");
+            // Ends every session (the background service's too), then quits.
+            cx.on_action(move |_: &QuitAndEndSessions, cx: &mut App| {
+                let ended =
+                    main_window.update(cx, |workspace, _, cx| workspace.end_all_and_quit(cx));
+                if ended.is_err() {
+                    cx.quit();
+                }
+            });
             // The terminal window is the app: closing it quits, even with Preferences still open
             // (quitting on the last window closed alone would keep fuxx running then).
             let main_id = main_window.window_id();
@@ -396,4 +429,38 @@ fn main() {
             .detach();
             cx.activate(true);
         });
+}
+
+/// The fuxx menu's Quit item: with persistence on, how many sessions keep running after it.
+fn quit_title(keep_running: usize) -> String {
+    match keep_running {
+        0 => "Quit fuxx".into(),
+        1 => "Quit fuxx (1 session keeps running)".into(),
+        n => format!("Quit fuxx ({n} sessions keep running)"),
+    }
+}
+
+/// Provisional switch until M10a Task 8's `persistent-sessions` setting: `FUXX_PERSISTENT=1`.
+fn persistence_requested(var: Option<&str>) -> bool {
+    var == Some("1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{persistence_requested, quit_title};
+
+    #[test]
+    fn the_quit_item_says_how_many_sessions_keep_running() {
+        assert_eq!(quit_title(0), "Quit fuxx");
+        assert_eq!(quit_title(1), "Quit fuxx (1 session keeps running)");
+        assert_eq!(quit_title(4), "Quit fuxx (4 sessions keep running)");
+    }
+
+    #[test]
+    fn persistence_is_on_only_when_asked_for() {
+        assert!(persistence_requested(Some("1")));
+        for off in [None, Some(""), Some("0"), Some("yes"), Some("on")] {
+            assert!(!persistence_requested(off), "{off:?}");
+        }
+    }
 }
