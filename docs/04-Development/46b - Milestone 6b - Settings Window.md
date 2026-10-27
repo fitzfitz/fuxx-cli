@@ -54,6 +54,18 @@ You said "go", so these are the AI's calls unless marked as yours. Say if any sh
 - A program that sets its own title (for example Claude Code) still shows that title instead.
 - Renaming sessions yourself is still M7.
 
+## Also in M6b: JetBrains Mono comes with fuxx (added on request 2026-10-27)
+
+- During the on-screen check, the ligatures switch showed no change, because none of your installed fonts
+  (Menlo, MesloLGS NF, Monaco, PT Mono) have ligatures. You chose to **bundle JetBrains Mono and make it
+  the default**, so nobody has to install a font.
+- fuxx carries **JetBrains Mono 2.304** (Regular, Bold, Italic, Bold Italic; SIL Open Font License 1.1, licence
+  text in `assets/fonts/`). Like the icon font, it is registered with macOS for fuxx only at startup.
+- With no `font-family` line, or "Default" picked in Preferences, the font is JetBrains Mono, so ligatures work out
+  of the box. If it can't be registered, fuxx falls back to Menlo, as before. If you already have JetBrains Mono
+  installed, your copy is used.
+- It shows in the Preferences font list like any installed font. Picking Menlo etc. still works.
+
 ## Rough scope / checklist
 
 - [ ] Menu bar: fuxx (Quit), File (New/Close Session, Preferences… cmd-,).
@@ -61,6 +73,7 @@ You said "go", so these are the AI's calls unless marked as yours. Say if any sh
 - [ ] Theme list, font list (fixed-width only), size −/+, ligatures switch; current values highlighted.
 - [ ] Each change applies live to all sessions and the sidebar, and is saved to the settings file (only that line changes).
 - [ ] Default session name is 🖕 instead of "Shell N".
+- [ ] JetBrains Mono bundled and the default font; ligatures visible with it.
 
 ## Not in M6b
 
