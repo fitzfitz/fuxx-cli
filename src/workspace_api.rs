@@ -25,7 +25,8 @@ use crate::presets::Preset;
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::status::Status;
-use crate::workspace::{Opened, Workspace, wait_ended};
+use crate::workspace::{Opened, Workspace};
+use crate::workspace_daemon::wait_ended;
 
 /// How many non-blank lines `session.question` returns.
 const QUESTION_LINES: usize = 12;

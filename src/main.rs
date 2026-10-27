@@ -41,6 +41,7 @@ mod theme;
 mod vt_snapshot;
 mod workspace;
 mod workspace_api;
+mod workspace_daemon;
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
