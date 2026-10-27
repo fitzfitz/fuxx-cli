@@ -44,6 +44,8 @@ pub fn socket_path(home: &Path) -> PathBuf {
 #[derive(Clone)]
 pub struct Conn {
     queue: SyncSender<String>,
+    /// Lines queued but not yet written.
+    pending: Arc<AtomicUsize>,
     open: Arc<AtomicBool>,
     stream: Arc<UnixStream>,
 }
@@ -55,16 +57,33 @@ impl Conn {
         if !self.is_open() {
             return false;
         }
+        // Counted before queueing, so the writer never takes it below zero.
+        self.pending.fetch_add(1, Ordering::AcqRel);
         if self.queue.try_send(line.to_string()).is_ok() {
             return true;
         }
+        self.pending.fetch_sub(1, Ordering::AcqRel);
         self.close();
         false
     }
 
-    #[allow(dead_code)] // used by waits and subscribers (M9 Task 6)
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Acquire)
+    }
+
+    /// Wait (blocking, up to `timeout`) until every queued line has been written. False if
+    /// lines are still unwritten: the time ran out or the connection is gone.
+    pub fn flushed(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.pending.load(Ordering::Acquire) == 0 {
+                return true;
+            }
+            if !self.is_open() || std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Mark closed and shut the socket, which also wakes a reader or writer blocked on it.
@@ -241,12 +260,13 @@ fn serve(stream: UnixStream, tx: UnboundedSender<Incoming>, slot: Slot) {
     let (queue, lines) = sync_channel::<String>(QUEUE);
     let conn = Conn {
         queue,
+        pending: Arc::new(AtomicUsize::new(0)),
         open: Arc::new(AtomicBool::new(true)),
         stream: Arc::new(stream),
     };
 
     // Ends once every `Conn` is gone and the queue is drained, or on a failed write.
-    let (open, socket) = (conn.open.clone(), conn.stream.clone());
+    let (open, socket, pending) = (conn.open.clone(), conn.stream.clone(), conn.pending.clone());
     let writer = std::thread::Builder::new()
         .name("fuxx-api-write".into())
         .spawn(move || {
@@ -258,6 +278,7 @@ fn serve(stream: UnixStream, tx: UnboundedSender<Incoming>, slot: Slot) {
                     let _ = socket.shutdown(std::net::Shutdown::Both);
                     return;
                 }
+                pending.fetch_sub(1, Ordering::AcqRel);
             }
         });
     if writer.is_err() {
@@ -439,6 +460,35 @@ mod tests {
         std::fs::write(&path, b"someone else's").unwrap();
         drop(guard);
         assert_eq!(std::fs::read(&path).unwrap(), b"someone else's");
+    }
+
+    #[test]
+    fn flushed_returns_once_queued_lines_are_written() {
+        let path = temp_dir("flush").join("f.sock");
+        let (_g, rx) = start(&path).unwrap();
+        let mut rx = futures::executor::block_on_stream(rx);
+        let mut s = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        use std::io::{Read, Write};
+        s.write_all(b"{\"method\":\"system.ping\"}\n").unwrap();
+        let conn = rx.next().unwrap().conn;
+        assert!(conn.flushed(Duration::from_millis(500))); // nothing queued
+        // Small enough for the socket's buffer (about 8 KiB on macOS), so nothing waits on us.
+        let line = "x".repeat(1000);
+        for _ in 0..4 {
+            assert!(conn.send_line(&line));
+        }
+        assert!(conn.flushed(Duration::from_secs(2)));
+        // Written means already in the socket: readable without waiting.
+        s.set_nonblocking(true).unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = s.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(got.len(), 4 * 1001);
     }
 
     #[test]

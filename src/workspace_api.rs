@@ -3,10 +3,11 @@
 //! saving, the sidebar and the layout rules apply unchanged.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui::{Context, Task, Window, prelude::*};
+use gpui::{Context, EntityId, Task, Window, prelude::*};
 use serde_json::{Value, json};
 
 use crate::api::{self, ApiError, Request, SessionRef};
@@ -22,6 +23,8 @@ use crate::workspace::Workspace;
 
 /// How many non-blank lines `session.question` returns.
 const QUESTION_LINES: usize = 12;
+/// How long closing the last session (which quits fuxx) waits for its reply to be written.
+const REPLY_FLUSH: Duration = Duration::from_millis(500);
 
 impl Workspace {
     /// Answer the socket's requests one by one, on the UI thread, for as long as the workspace
@@ -33,17 +36,32 @@ impl Workspace {
     ) -> Task<()> {
         cx.spawn_in(window, async move |this, cx| {
             while let Some(Incoming { request, conn }) = requests.next().await {
+                let mut close_later = None;
                 let result = this
-                    .update_in(cx, |this, window, cx| this.answer(&request, window, cx))
+                    .update_in(cx, |this, window, cx| {
+                        this.answer(&request, &mut close_later, window, cx)
+                    })
                     .unwrap_or_else(|_| Err(ApiError::unavailable("fuxx is closing")));
                 conn.send_line(&api::reply(request.id, result));
+                // Closing the last session quits fuxx, so it waits (briefly) for the reply to
+                // reach the client first.
+                if let Some(view) = close_later {
+                    let flushing = conn.clone();
+                    cx.background_spawn(async move { flushing.flushed(REPLY_FLUSH) })
+                        .await;
+                    this.update_in(cx, |this, window, cx| this.close_view(view, window, cx))
+                        .ok();
+                }
             }
         })
     }
 
+    /// The reply to one request. `close_later` is set instead of closing the last session,
+    /// which the caller does once the reply is written.
     fn answer(
         &mut self,
         request: &Request,
+        close_later: &mut Option<EntityId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Value, ApiError> {
@@ -58,12 +76,20 @@ impl Workspace {
             "session.new" => self.api_new(p, window, cx),
             "session.close" => {
                 let i = self.target_index(p, "target")?;
-                self.close_at(i, window, cx);
+                if self.sessions.items().len() == 1 {
+                    *close_later = Some(self.sessions.items()[i].view.entity_id());
+                } else {
+                    self.close_at(i, window, cx);
+                }
                 Ok(json!({}))
             }
             "session.focus" => {
                 let i = self.target_index(p, "target")?;
-                self.select(i, window, cx);
+                // Even when it's already active: the point is to show it, so fuxx comes forward.
+                self.sessions.select(i);
+                self.activate(window, cx);
+                window.activate_window();
+                cx.activate(true);
                 Ok(json!({}))
             }
             "session.rename" => {
@@ -76,7 +102,7 @@ impl Workspace {
                 let text = required_str(p, "text")?;
                 let i = self.target_index(p, "target")?;
                 let mut bytes = text.as_bytes().to_vec();
-                if bool_param(p, "enter") {
+                if bool_param(p, "enter")? {
                     bytes.push(b'\r');
                 }
                 self.type_into(i, &bytes, cx);
@@ -117,9 +143,10 @@ impl Workspace {
             }
             "session.answer" => {
                 let text = required_str(p, "text")?;
+                let force = bool_param(p, "force")?;
                 let i = self.target_index(p, "target")?;
                 let session = &self.sessions.items()[i];
-                if session.status != Status::Waiting && !bool_param(p, "force") {
+                if session.status != Status::Waiting && !force {
                     return Err(not_waiting(session.id, session.status));
                 }
                 let bytes = format!("{text}\r").into_bytes();
@@ -198,10 +225,16 @@ impl Workspace {
             })
             .collect();
         let focused = self.sessions.active().map(|s| s.id);
-        let id = api::resolve(target.as_ref(), &refs, caller_param(p), focused)?;
+        let id = api::resolve(target.as_ref(), &refs, caller_param(p)?, focused)?;
         self.sessions
             .position(|s| s.id == id)
             .ok_or_else(|| ApiError::not_found(format!("no session s{id}")))
+    }
+
+    fn close_view(&mut self, view: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(i) = self.sessions.position(|s| s.view.entity_id() == view) {
+            self.close_at(i, window, cx);
+        }
     }
 
     fn type_into(&self, index: usize, bytes: &[u8], cx: &mut Context<Self>) {
@@ -244,6 +277,7 @@ impl Workspace {
         let run = opt_str(p, "run")?
             .filter(|r| !r.is_empty())
             .map(str::to_string);
+        let background = bool_param(p, "background")?;
         let name = opt_str(p, "name")?
             .filter(|n| !n.is_empty())
             .map(str::to_string);
@@ -284,9 +318,7 @@ impl Workspace {
         if let Some(run) = run {
             self.type_into(index, format!("{run}\r").as_bytes(), cx);
         }
-        if bool_param(p, "background")
-            && let Some(i) = previous.and_then(|p| index_of(self, p))
-        {
+        if background && let Some(i) = previous.and_then(|p| index_of(self, p)) {
             self.select(i, window, cx);
         }
         Ok(json!({ "id": format!("s{id}") }))
@@ -323,15 +355,14 @@ fn list_entry(e: &ListEntry) -> Value {
     })
 }
 
-/// The calling session from `caller`: a number (`FUXX_SESSION` parsed) or `s<N>`.
-fn caller_param(p: &Value) -> Option<u64> {
-    match p.get("caller")? {
-        Value::Number(n) => n.as_u64(),
-        Value::String(s) => match api::parse_target(s) {
-            api::Target::Id(id) => Some(id),
-            _ => None,
-        },
-        _ => None,
+/// The calling session from `caller`: the number of `FUXX_SESSION`'s `s<N>`, or absent.
+fn caller_param(p: &Value) -> Result<Option<u64>, ApiError> {
+    match p.get("caller") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| ApiError::bad_request("caller must be a session number")),
     }
 }
 
@@ -348,8 +379,15 @@ fn required_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, ApiError> {
     opt_str(p, key)?.ok_or_else(|| ApiError::bad_request(format!("{key} is missing")))
 }
 
-fn bool_param(p: &Value, key: &str) -> bool {
-    p.get(key).and_then(Value::as_bool).unwrap_or(false)
+/// A switch: absent or null is off; anything but true/false is a bad request.
+fn bool_param(p: &Value, key: &str) -> Result<bool, ApiError> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(ApiError::bad_request(format!(
+            "{key} must be true or false"
+        ))),
+    }
 }
 
 /// `lines` → the last n lines, else `all` → everything, else the screen.
@@ -363,7 +401,7 @@ fn text_scope(p: &Value) -> Result<TextScope, ApiError> {
             return Ok(TextScope::Last(n as usize));
         }
     }
-    Ok(if bool_param(p, "all") {
+    Ok(if bool_param(p, "all")? {
         TextScope::All
     } else {
         TextScope::Screen
@@ -471,27 +509,35 @@ mod tests {
     }
 
     #[test]
-    fn caller_as_number_or_id() {
-        assert_eq!(caller_param(&json!({"caller": 3})), Some(3));
-        assert_eq!(caller_param(&json!({"caller": "s7"})), Some(7));
-        assert_eq!(caller_param(&json!({"caller": "7"})), None);
-        assert_eq!(caller_param(&json!({"caller": null})), None);
-        assert_eq!(caller_param(&json!({})), None);
-        assert_eq!(caller_param(&Value::Null), None);
+    fn caller_is_a_number_or_absent() {
+        assert_eq!(caller_param(&json!({"caller": 3})), Ok(Some(3)));
+        assert_eq!(caller_param(&json!({"caller": null})), Ok(None));
+        assert_eq!(caller_param(&json!({})), Ok(None));
+        assert_eq!(caller_param(&Value::Null), Ok(None));
+        for bad in [json!("s7"), json!("7"), json!(-1), json!(1.5), json!(true)] {
+            assert_eq!(
+                caller_param(&json!({ "caller": bad })).unwrap_err().code,
+                "bad_request",
+                "{bad}"
+            );
+        }
     }
 
     #[test]
     fn params_text_and_switches() {
-        let p = json!({"text": "hi", "n": 3, "enter": true, "off": null});
+        let p = json!({"text": "hi", "n": 3, "enter": true, "no": false, "off": null});
         assert_eq!(opt_str(&p, "text"), Ok(Some("hi")));
         assert_eq!(opt_str(&p, "off"), Ok(None));
         assert_eq!(opt_str(&p, "missing"), Ok(None));
         assert_eq!(opt_str(&p, "n").unwrap_err().code, "bad_request");
         assert_eq!(required_str(&p, "text"), Ok("hi"));
         assert_eq!(required_str(&p, "off").unwrap_err().code, "bad_request");
-        assert!(bool_param(&p, "enter"));
-        assert!(!bool_param(&p, "missing"));
-        assert!(!bool_param(&p, "text"));
+        assert_eq!(bool_param(&p, "enter"), Ok(true));
+        assert_eq!(bool_param(&p, "no"), Ok(false));
+        assert_eq!(bool_param(&p, "missing"), Ok(false));
+        assert_eq!(bool_param(&p, "off"), Ok(false));
+        assert_eq!(bool_param(&p, "text").unwrap_err().code, "bad_request");
+        assert_eq!(bool_param(&p, "n").unwrap_err().code, "bad_request");
     }
 
     #[test]
@@ -506,6 +552,10 @@ mod tests {
         assert_eq!(
             text_scope(&json!({"lines": 5, "all": true})),
             Ok(TextScope::Last(5))
+        );
+        assert_eq!(
+            text_scope(&json!({"all": "yes"})).unwrap_err().code,
+            "bad_request"
         );
         assert_eq!(
             text_scope(&json!({"lines": "5"})).unwrap_err().code,
