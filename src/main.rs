@@ -1,7 +1,6 @@
 // fuxx — a native GPU terminal for running AI coding agents.
 // Many sessions in one window, each with a live status ring and background notifications.
 
-#[allow(dead_code)] // wired up by the socket server (M9 Task 5)
 mod api;
 mod api_client;
 mod api_server;
@@ -31,10 +30,12 @@ mod terminal;
 mod terminal_view;
 mod theme;
 mod workspace;
+mod workspace_api;
 
 use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     App, Bounds, Global, KeyBinding, Menu, MenuItem, QuitMode, TitlebarOptions, WindowBounds,
     WindowOptions, actions, prelude::*, px, size,
@@ -42,7 +43,6 @@ use gpui::{
 use gpui_platform::application;
 use serde_json::{Value, json};
 
-use api::ApiError;
 use api_client::ClientError;
 use cli::Cli;
 
@@ -108,6 +108,14 @@ fn run_command(command: &str, mut request: api::Request, json: bool, stream: boo
         }
         request.params["text"] = json!(text);
     }
+    // The app doesn't know this shell's folder, so a relative `--folder` is resolved here.
+    if command == "new"
+        && let Some(folder) = request.params["folder"].as_str()
+        && Path::new(folder).is_relative()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        request.params["folder"] = json!(cwd.join(folder).display().to_string());
+    }
     let env_socket = std::env::var("FUXX_SOCKET").ok();
     let Some(path) = api_client::client_socket_path(env_socket.as_deref(), home_dir().as_deref())
     else {
@@ -167,22 +175,22 @@ struct Scripting(#[allow(dead_code)] api_server::ServerGuard);
 
 impl Global for Scripting {}
 
-/// Start the scripting socket if the settings allow it. Any failure is one log line, and the
-/// app runs without scripting.
-fn start_scripting(cx: &mut App) {
+/// Start the scripting socket if the settings allow it; its requests are for the workspace.
+/// Any failure is one log line, and the app runs without scripting.
+fn start_scripting(cx: &mut App) -> Option<UnboundedReceiver<api_server::Incoming>> {
     if !cx.global::<appearance::Appearance>().scripting {
         eprintln!("[fuxx] scripting: off (scripting = off in the settings)");
-        return;
+        return None;
     }
     let Some(path) = home_dir().map(|home| api_server::socket_path(&home)) else {
         eprintln!("[fuxx] scripting: $HOME is unset; running without it");
-        return;
+        return None;
     };
     let (guard, requests) = match api_server::start(&path) {
         Ok(started) => started,
         Err(e) => {
             eprintln!("[fuxx] scripting: {e}; running without it");
-            return;
+            return None;
         }
     };
     eprintln!("[fuxx] scripting: listening on {}", path.display());
@@ -193,23 +201,7 @@ fn start_scripting(cx: &mut App) {
         async {}
     })
     .detach();
-
-    // TEMPORARY (M9 Task 5 replaces this with the workspace handling requests): answer pings
-    // so `fuxx ping` works, and everything else with `unavailable`.
-    std::thread::spawn(move || {
-        for incoming in futures::executor::block_on_stream(requests) {
-            let result = if incoming.request.method == "system.ping" {
-                Ok(json!({ "pong": true }))
-            } else {
-                Err(ApiError::unavailable(
-                    "this build of fuxx doesn't handle that request yet",
-                ))
-            };
-            incoming
-                .conn
-                .send_line(&api::reply(incoming.request.id, result));
-        }
-    });
+    Some(requests)
 }
 
 fn main() {
@@ -313,7 +305,7 @@ fn main() {
                 .filter_map(|(n, preset)| preset_item(n, &preset.name))
                 .collect();
             cx.set_global(appearance);
-            start_scripting(cx);
+            let requests = start_scripting(cx);
             // After the key bindings: a menu shows the shortcut bound when the menus are set.
             cx.set_menus([
                 Menu::new("fuxx").items([MenuItem::action("Quit fuxx", Quit)]),
@@ -355,7 +347,7 @@ fn main() {
                         }),
                         ..Default::default()
                     },
-                    |window, cx| cx.new(|cx| Workspace::new(window, cx)),
+                    move |window, cx| cx.new(|cx| Workspace::new(requests, window, cx)),
                 )
                 .expect("failed to open the window");
             // The terminal window is the app: closing it quits, even with Preferences still open

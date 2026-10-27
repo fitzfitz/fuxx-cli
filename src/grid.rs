@@ -80,7 +80,6 @@ pub fn screen_tail_text<L: EventListener>(term: &Term<L>, n: usize) -> String {
 
 /// How much of a terminal's text to read out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Last and All are used from M9 Task 5
 pub enum TextScope {
     /// The live screen.
     Screen,

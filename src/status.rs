@@ -21,7 +21,6 @@ pub enum Status {
 
 impl Status {
     /// The lowercase name used on the scripting API.
-    #[allow(dead_code)] // used by the socket server (M9 Task 5)
     pub fn as_str(self) -> &'static str {
         match self {
             Status::Idle => "idle",
@@ -31,7 +30,6 @@ impl Status {
         }
     }
 
-    #[allow(dead_code)] // used by the socket server (M9 Task 5)
     pub fn parse(s: &str) -> Option<Status> {
         match s {
             "idle" => Some(Status::Idle),

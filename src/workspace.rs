@@ -7,10 +7,11 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
-    SharedString, Subscription, Window, actions, canvas, div, prelude::*, px,
+    SharedString, Subscription, Task, Window, actions, canvas, div, prelude::*, px,
 };
 
 use crate::api_server;
@@ -73,7 +74,6 @@ const SIDEBAR_WIDTH: f32 = 220.0;
 
 pub struct Session {
     /// Scripting id: shown to scripts as `s<id>`.
-    #[allow(dead_code)] // used from M9 Task 5
     pub id: u64,
     pub view: Entity<TerminalView>,
     pub status: Status,
@@ -126,7 +126,7 @@ impl Render for DragPreview {
 }
 
 pub struct Workspace {
-    sessions: SessionList<Session>,
+    pub(crate) sessions: SessionList<Session>,
     /// The split layouts, by each session's view. Every session is in exactly one; a session
     /// never split is a layout of its own.
     layouts: Vec<Node<EntityId>>,
@@ -137,19 +137,26 @@ pub struct Workspace {
     /// The projects whose groups are closed in the sidebar.
     collapsed: Vec<PathBuf>,
     /// The rename box, and the session (by its view) it renames.
-    renaming: Option<(EntityId, Entity<NameInput>)>,
+    pub(crate) renaming: Option<(EntityId, Entity<NameInput>)>,
     /// True while the saved sessions are being reopened, so nothing is saved halfway.
     restoring: bool,
     /// The id the next session gets (`s1`, `s2`, ...); never reused.
-    next_id: u64,
+    pub(crate) next_id: u64,
     window_active: bool,
+    /// Answers scripting requests (see `workspace_api`); none when scripting is off.
+    _requests: Option<Task<()>>,
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
     _appearance: Subscription,
 }
 
 impl Workspace {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `requests`: the scripting socket's requests, answered for as long as the workspace lives.
+    pub fn new(
+        requests: Option<UnboundedReceiver<api_server::Incoming>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
             cx.notify();
@@ -165,6 +172,7 @@ impl Workspace {
             restoring: true,
             next_id: 1,
             window_active: window.is_window_active(),
+            _requests: requests.map(|rx| Self::serve_requests(rx, window, cx)),
             _activation: activation,
             _appearance: appearance,
         };
@@ -252,7 +260,7 @@ impl Workspace {
     }
 
     /// Write the session list to the sessions file (not while restoring). One log line on failure.
-    fn save(&self) {
+    pub(crate) fn save(&self) {
         if self.restoring {
             return;
         }
@@ -281,7 +289,7 @@ impl Workspace {
 
     /// Open a session for `launch` next to its group and make it active: a layout of its own, or
     /// with `split`, a new pane beside (Row) or under (Column) the active one.
-    fn open_session(
+    pub(crate) fn open_session(
         &mut self,
         launch: Launch,
         split: Option<Axis>,
@@ -358,7 +366,7 @@ impl Workspace {
     }
 
     /// The active session's folder, so a new session joins its group.
-    fn active_project(&self) -> Option<PathBuf> {
+    pub(crate) fn active_project(&self) -> Option<PathBuf> {
         self.sessions.active().and_then(|s| s.project.clone())
     }
 
@@ -489,7 +497,7 @@ impl Workspace {
         }
     }
 
-    fn close_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.sessions.items().get(index).map(|s| s.view.entity_id()) else {
             return;
         };
@@ -523,7 +531,7 @@ impl Workspace {
         self.activate(window, cx);
     }
 
-    fn select(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn select(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.sessions.select(index) {
             self.activate(window, cx);
         }
@@ -540,7 +548,7 @@ impl Workspace {
     }
 
     /// The layout holding the active session (the one on screen).
-    fn shown_layout(&self) -> Option<&Node<EntityId>> {
+    pub(crate) fn shown_layout(&self) -> Option<&Node<EntityId>> {
         let active = self.sessions.active()?.view.entity_id();
         self.layouts.iter().find(|t| t.contains(active))
     }
@@ -562,10 +570,14 @@ impl Workspace {
 
     /// Give every pane of the layout on screen an equal share.
     fn equalize_panes(&mut self, cx: &mut Context<Self>) {
-        let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) else {
-            return;
-        };
-        if let Some(tree) = self.layouts.iter_mut().find(|t| t.contains(active)) {
+        if let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) {
+            self.equalize_layout(active, cx);
+        }
+    }
+
+    /// Give every pane of the layout holding `pane` an equal share.
+    pub(crate) fn equalize_layout(&mut self, pane: EntityId, cx: &mut Context<Self>) {
+        if let Some(tree) = self.layouts.iter_mut().find(|t| t.contains(pane)) {
             tree.equalize();
             self.save();
             cx.notify();
@@ -716,7 +728,7 @@ impl Workspace {
         }
     }
 
-    fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(session) = self.sessions.active() {
             session.view.focus_handle(cx).focus(window, cx);
         }
