@@ -25,6 +25,8 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   fuxx does **not** read Ghostty's config.
 - A **settings window** (M6b, added 2026-10-27 on request): File → Preferences… / cmd-, to pick the theme,
   font, size and ligatures and override colors, saved to fuxx's own settings file and applied live.
+- **Session ergonomics** (M7): project groups, rename/reorder, agent presets, session restore.
+- **Split panes** (M8, moved into scope 2026-10-27 on request): nested splits, each pane its own session.
 - macOS first (Linux capable via the Rust stack).
 - A **tester build** after the MVP (M4b, added 2026-10-26): an unsigned `.app` in a DMG. Signing,
   notarization and Homebrew stay later (M11, M12).
@@ -35,8 +37,9 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - A plugin ecosystem, themes marketplace, or a config *language* (scripting, conditionals) beyond the
   plain `key = value` settings file above.
 - Windows support (later).
-- cmux's extras until the core is solid: **embedded browser, SSH workspaces, remote/tmux daemon,
-  split panes** — all deferred (see [[40 - Roadmap]] "Later").
+- cmux's extras until the core is solid: **embedded browser, SSH workspaces, remote/tmux daemon** —
+  all deferred (see [[40 - Roadmap]] "Later"). *(Split panes were on this list until 2026-10-27, when
+  you moved them into scope as M8.)*
 
 ## The rule
 
