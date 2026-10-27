@@ -799,7 +799,7 @@ mod tests {
         );
         assert_eq!(
             cli::render("ls", &json!([v]), false),
-            "* s4  #2  waiting  api  [/x/api]  (claude)  40% build · tests"
+            "s4  #2*  waiting  api  [/x/api]  (claude)  40% build · tests"
         );
         let bare = list_entry(&ListEntry {
             title: None,
