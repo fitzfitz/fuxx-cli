@@ -70,6 +70,9 @@ pub struct SavedSession {
     pub project: Option<PathBuf>,
     #[serde(default)]
     pub preset: Option<Preset>,
+    /// The background service's id for it (persistence on), so a reopen finds it running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_id: Option<u64>,
 }
 
 /// Everything saved about the workspace.
@@ -116,27 +119,30 @@ pub struct Launch {
 /// agent started again. A session's preset is looked up by name in `presets` (today's settings),
 /// so an edited preset runs its new command and a removed one leaves a plain shell.
 pub fn launches(state: &SavedState, mode: RestoreMode, presets: &[Preset]) -> Vec<Launch> {
-    if mode == RestoreMode::Off {
-        return Vec::new();
-    }
     state
         .sessions
         .iter()
-        .map(|s| {
-            let preset = s
-                .preset
-                .as_ref()
-                .and_then(|saved| presets.iter().find(|p| p.name == saved.name))
-                .cloned();
-            Launch {
-                run_preset: mode == RestoreMode::Agents && preset.is_some(),
-                saved: SavedSession {
-                    preset,
-                    ..s.clone()
-                },
-            }
-        })
+        .filter_map(|s| launch(s, mode, presets))
         .collect()
+}
+
+/// One saved session's `launches` entry (`None` when the mode is off).
+pub fn launch(saved: &SavedSession, mode: RestoreMode, presets: &[Preset]) -> Option<Launch> {
+    if mode == RestoreMode::Off {
+        return None;
+    }
+    let preset = saved
+        .preset
+        .as_ref()
+        .and_then(|p| presets.iter().find(|today| today.name == p.name))
+        .cloned();
+    Some(Launch {
+        run_preset: mode == RestoreMode::Agents && preset.is_some(),
+        saved: SavedSession {
+            preset,
+            ..saved.clone()
+        },
+    })
 }
 
 #[cfg(test)]
@@ -165,6 +171,7 @@ mod tests {
                         name: "claude".into(),
                         command: "claude".into(),
                     }),
+                    daemon_id: Some(4),
                 },
             ],
             layouts: vec![
@@ -217,6 +224,18 @@ mod tests {
         assert_eq!(decode(""), None);
         assert_eq!(decode("{\"version\": 1, \"sessions\": [tru"), None);
         assert_eq!(decode("{\"version\": 2}"), None);
+    }
+
+    #[test]
+    fn a_daemon_id_round_trips_and_is_absent_from_older_files() {
+        let state = decode(&encode(&sample())).unwrap();
+        assert_eq!(state.sessions[1].daemon_id, Some(4));
+        assert_eq!(state.sessions[0].daemon_id, None);
+        // A file from before persistence: no field, so none.
+        let old = decode("{\"version\": 1, \"sessions\": [{\"name\": \"a\"}]}").unwrap();
+        assert_eq!(old.sessions[0].daemon_id, None);
+        // Not written for a session the service doesn't run.
+        assert!(!encode(&sample()).contains("\"daemon_id\": null"));
     }
 
     #[test]

@@ -9,6 +9,7 @@
 //!   never waits on the socket. The daemon answers terminal queries and works out status, title
 //!   and exit; the replica's own query, title and bell events are dropped.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -28,7 +29,7 @@ use crate::daemon_client::{DaemonClient, SessionStream};
 use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
-use crate::mux_proto::Frame;
+use crate::mux_proto::{Frame, SetMeta};
 use crate::pty::{self, Pty};
 use crate::status::Status;
 use crate::theme::Theme;
@@ -159,6 +160,8 @@ struct DaemonLink {
     client: Arc<DaemonClient>,
     /// To the pump thread.
     commands: Sender<Command>,
+    /// The first snapshot was asked for (an adopted session waits until it is shown).
+    attached: AtomicBool,
 }
 
 impl DaemonLink {
@@ -182,6 +185,7 @@ enum Command {
     Input(Vec<u8>),
     Resize(TermDims, CellPx),
     SetTheme(Theme),
+    SetMeta(SetMeta),
     /// End the session (`close`).
     Close,
     /// The last `TerminalCore` clone is gone: stop the stream; the pump ends.
@@ -197,6 +201,7 @@ fn pump(commands: &std::sync::mpsc::Receiver<Command>, client: &DaemonClient, id
             Command::Input(bytes) => client.input(id, &bytes),
             Command::Resize(dims, cell) => client.resize(id, dims, cell),
             Command::SetTheme(theme) => client.set_theme(&theme),
+            Command::SetMeta(meta) => client.set_meta(meta),
             Command::Close => client.close(id),
             Command::Detach => break,
         }
@@ -283,17 +288,42 @@ impl TerminalCore {
         // No size asked for yet, so the pane's first `resize` always goes to the daemon. The
         // replica starts at 80x24 until the snapshot brings the session's size.
         let asked = (TermDims { cols: 0, rows: 0 }, CellPx::default());
-        Self::replica(client, id, asked, events, theme)
+        Self::replica(client, id, asked, events, theme, true)
+    }
+
+    /// `attach_daemon` that doesn't ask for the snapshot yet (`attach` does): reopening fuxx
+    /// with many sessions only fetches the screens shown. Input already reaches the session.
+    pub fn adopt_daemon(
+        client: Arc<DaemonClient>,
+        id: u64,
+        events: UnboundedSender<TermEvent>,
+        theme: Theme,
+    ) -> std::io::Result<Self> {
+        let asked = (TermDims { cols: 0, rows: 0 }, CellPx::default());
+        Self::replica(client, id, asked, events, theme, false)
+    }
+
+    /// Ask for an adopted session's first snapshot; true if this call asked (once per core).
+    /// Local, or already attached: nothing.
+    pub fn attach(&self) -> bool {
+        match &self.backend {
+            Backend::Daemon(link) if !link.attached.swap(true, Ordering::AcqRel) => {
+                link.send(Command::Attach);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The Daemon backend: a replica Term, its feeding thread and its pump thread. No socket
-    /// I/O here, so it is fine on the UI thread.
+    /// I/O here, so it is fine on the UI thread. `attach`: ask for the snapshot now.
     fn replica(
         client: Arc<DaemonClient>,
         id: u64,
         asked: (TermDims, CellPx),
         events: UnboundedSender<TermEvent>,
         theme: Theme,
+        attach: bool,
     ) -> std::io::Result<Self> {
         let listener = Listener {
             events: events.clone(),
@@ -315,10 +345,13 @@ impl TerminalCore {
             id,
             client: client.clone(),
             commands: commands.clone(),
+            attached: AtomicBool::new(attach),
         });
         // So OSC 4/10/11/12 replies match what this window shows; then the first snapshot.
         link.send(Command::SetTheme(theme));
-        link.send(Command::Attach);
+        if attach {
+            link.send(Command::Attach);
+        }
         let pumping = client.clone();
         std::thread::Builder::new()
             .name(format!("fuxx-pump-s{id}"))
@@ -363,7 +396,7 @@ impl TerminalCore {
             height: create.cell_px.h,
         };
         let id = client.create(create)?;
-        Self::replica(client, id, (dims, cell), events, theme)
+        Self::replica(client, id, (dims, cell), events, theme, true)
     }
 
     /// Daemon backend: end the session in the daemon (its `Exited` follows). It is sent after
@@ -372,6 +405,13 @@ impl TerminalCore {
     pub fn close(&self) {
         if let Backend::Daemon(link) = &self.backend {
             link.send(Command::Close);
+        }
+    }
+
+    /// Tell the daemon the session's sidebar facts (Daemon backend; in order with the rest).
+    pub fn set_meta(&self, meta: SetMeta) {
+        if let Backend::Daemon(link) = &self.backend {
+            link.send(Command::SetMeta(meta));
         }
     }
 
@@ -1213,6 +1253,67 @@ mod daemon_tests {
             core.text(grid::TextScope::Screen),
             client.read_text(id, "screen").unwrap()
         );
+    }
+
+    #[test]
+    fn an_adopted_session_is_drawn_only_once_attached() {
+        let (_d, path) = daemon("t-adopt");
+        let client = DaemonClient::connect(&path).unwrap();
+        let id = client.create(sh_create(40, 5)).unwrap();
+        // MA''RK: the echoed command line doesn't match a line that is just MARK.
+        client.input(id, b"echo MA''RK\r");
+        assert!(eventually(|| client
+            .read_text(id, "screen")
+            .unwrap()
+            .lines()
+            .any(|l| l.trim_end() == "MARK")));
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::adopt_daemon(client.clone(), id, tx, Theme::default()).unwrap();
+        assert_eq!(core.daemon_id(), Some(id));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !screen_lines(&core).iter().any(|l| l == "MARK"),
+            "no snapshot before attach"
+        );
+        assert!(core.attach(), "the first attach asks");
+        assert!(!core.attach(), "later ones don't");
+        assert!(eventually(|| screen_lines(&core)
+            .iter()
+            .any(|l| l == "MARK")));
+        // One attached from the start never asks again.
+        let (tx, _rx) = unbounded();
+        let attached = TerminalCore::attach_daemon(client, id, tx, Theme::default()).unwrap();
+        assert!(!attached.attach());
+    }
+
+    #[test]
+    fn metadata_set_through_the_core_reaches_the_daemon_in_order() {
+        use crate::mux_proto::{Progress, SetMeta};
+        let (_d, path) = daemon("t-meta");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client.clone(), sh_create(40, 5), tx, Theme::default())
+                .unwrap();
+        let id = core.daemon_id().unwrap();
+        let meta = |n: u8| SetMeta {
+            id,
+            name: Some(Some(format!("n{n}"))),
+            project: None,
+            preset: None,
+            note: Some(None),
+            progress: Some(Some(Progress {
+                percent: n,
+                label: None,
+            })),
+        };
+        for n in 1..=50 {
+            core.set_meta(meta(n));
+        }
+        assert!(eventually(|| {
+            let info = client.list().unwrap().remove(0);
+            info.name == "n50" && info.progress.map(|p| p.percent) == Some(50)
+        }));
     }
 
     #[test]

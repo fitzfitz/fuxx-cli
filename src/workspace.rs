@@ -95,9 +95,10 @@ pub struct Session {
     /// The folder this session's group is for (none: no group).
     pub project: Option<PathBuf>,
     pub preset: Option<Preset>,
-    /// A line under the name, set by a script (not restored).
+    /// A line under the name, set by a script (not restored; the background service keeps it
+    /// across reopens).
     pub note: Option<String>,
-    /// A bar under the row: percent and an optional label, set by a script (not restored).
+    /// A bar under the row: percent and an optional label, set by a script (as `note`).
     pub progress: Option<(u8, Option<String>)>,
     /// The background service's connection was lost: the view shows the last screen it had
     /// and nothing reaches the session.
@@ -254,85 +255,33 @@ impl Workspace {
     }
 
     /// Reopen the saved sessions per the `session-restore` mode, or start one plain session.
-    /// Saving starts once that is done.
+    /// With the background service, its live sessions come back first (`reopen`). Saving
+    /// starts once that is done.
     pub(crate) fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(client) = self.service.client() {
+            self.reopen(client, window, cx);
+            return;
+        }
         let Some((state, launches)) = self.saved_launches(cx) else {
             self.open_first(window, cx);
             return;
         };
-        match self.service.client() {
-            Some(client) => self.restore_in_daemon(client, state, launches, window, cx),
-            None => {
-                for launch in launches {
-                    self.open_session(launch, None, window, cx);
-                }
-                self.restored(state, window, cx);
-            }
+        for launch in launches {
+            self.open_session(launch, None, window, cx);
         }
+        self.restored(state, window, cx);
     }
 
-    /// The saved state and its launches per the `session-restore` mode; `None` (logged when
-    /// unexpected) means start one plain session.
+    /// The saved state and its launches per the `session-restore` mode; `None` means start one
+    /// plain session.
     fn saved_launches(&self, cx: &Context<Self>) -> Option<(SavedState, Vec<Launch>)> {
         let mode = cx.global::<Appearance>().restore;
         if mode == RestoreMode::Off {
             return None;
         }
-        let path = restore::state_path(&home_dir()?);
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match restore::decode(&text) {
-                Some(state) if !state.sessions.is_empty() => {
-                    let presets = &cx.global::<Appearance>().presets;
-                    let launches = restore::launches(&state, mode, presets);
-                    Some((state, launches))
-                }
-                Some(_) => None,
-                None => {
-                    eprintln!(
-                        "[fuxx] restore: {} is not a valid sessions file, starting fresh",
-                        path.display()
-                    );
-                    None
-                }
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                eprintln!(
-                    "[fuxx] restore: could not read {}: {err}, starting fresh",
-                    path.display()
-                );
-                None
-            }
-        }
-    }
-
-    /// `restore` with the background service: create every session there in order (off the UI
-    /// thread), then show those that started, as the Local path does.
-    fn restore_in_daemon(
-        &mut self,
-        client: Arc<DaemonClient>,
-        state: SavedState,
-        launches: Vec<Launch>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let creates: Vec<Create> = launches.iter().map(|l| self.create_for(l)).collect();
-        cx.spawn_in(window, async move |this, cx| {
-            let mut ids = Vec::with_capacity(creates.len());
-            for create in creates {
-                ids.push(created(client.create_in_background(create).await));
-            }
-            this.update_in(cx, |this, window, cx| {
-                for (launch, id) in launches.into_iter().zip(ids) {
-                    if let Some(id) = id {
-                        this.attach_session(&client, id, launch.saved, None, window, cx);
-                    }
-                }
-                this.restored(state, window, cx);
-            })
-            .ok();
-        })
-        .detach();
+        let state = read_saved().filter(|s| !s.sessions.is_empty())?;
+        let launches = restore::launches(&state, mode, &cx.global::<Appearance>().presets);
+        Some((state, launches))
     }
 
     /// After the saved sessions were opened: their layouts, groups and active session; or one
@@ -354,14 +303,14 @@ impl Workspace {
     }
 
     /// One plain session, then saving starts.
-    fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let done: Opened = Box::new(|this, _, _, cx| this.finish_restoring(cx));
         // Part of the restore, so not refused as other opens are meanwhile.
         self.open_now(Launch::default(), None, Some(done), window, cx);
     }
 
     /// Saving starts, and the Quit item says how many sessions keep running.
-    fn finish_restoring(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn finish_restoring(&mut self, cx: &mut Context<Self>) {
         self.restoring = false;
         self.save();
         self.sync_quit_title(cx);
@@ -400,6 +349,11 @@ impl Workspace {
         self.layouts = trees.iter().map(|t| t.map(&|i| views[i])).collect();
     }
 
+    /// Whether the background service runs the sessions (their ids are its).
+    fn daemon_backed(&self) -> bool {
+        !matches!(self.service, Service::Off)
+    }
+
     /// Write the session list to the sessions file (not while restoring). One log line on failure.
     pub(crate) fn save(&self) {
         if self.restoring {
@@ -419,6 +373,7 @@ impl Workspace {
                     name: s.name.clone(),
                     project: s.project.clone(),
                     preset: s.preset.clone(),
+                    daemon_id: self.daemon_backed().then_some(s.id),
                 })
                 .collect(),
         };
@@ -552,7 +507,7 @@ impl Workspace {
 
     /// The `Create` for `launch`: the scripting variables as `open_local` gives them, except
     /// `FUXX_SESSION`, which the service sets (it knows the id).
-    fn create_for(&self, launch: &Launch) -> Create {
+    pub(crate) fn create_for(&self, launch: &Launch) -> Create {
         let (cwd, startup) = start_in(&launch.saved, launch.run_preset);
         let env = scripting_env(
             self.socket.as_deref(),
@@ -1044,6 +999,7 @@ impl Workspace {
                 if session.name != name {
                     session.name = name;
                     self.emit_renamed(i);
+                    self.push_meta(i, cx);
                 }
             }
             self.save();
@@ -1099,6 +1055,12 @@ impl Workspace {
                 .find(|s| s.view.entity_id() == id)
                 .map(|s| s.view.clone())
         };
+        // Shown, so an adopted session fetches its screen now (once; reopening, M10a).
+        for id in tree.leaves() {
+            if let Some(view) = view(id) {
+                view.read(cx).attach();
+            }
+        }
         let this = cx.entity().downgrade();
         let select: SelectPane = Rc::new(move |id, window, cx| {
             this.update(cx, |this, cx| this.select_view(id, window, cx))
@@ -1593,7 +1555,7 @@ fn exe_dir() -> Option<PathBuf> {
 }
 
 /// A `create_in_background` answer as the new id; failures are logged.
-fn created(
+pub(crate) fn created(
     answer: Result<std::io::Result<u64>, futures::channel::oneshot::Canceled>,
 ) -> Option<u64> {
     match answer {
@@ -1604,6 +1566,31 @@ fn created(
         }
         Err(_) => {
             eprintln!("[fuxx] session: the background service didn't answer");
+            None
+        }
+    }
+}
+
+/// The sessions file, if there is a valid one (logged when it can't be read or isn't valid).
+pub(crate) fn read_saved() -> Option<SavedState> {
+    let path = restore::state_path(&home_dir()?);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let state = restore::decode(&text);
+            if state.is_none() {
+                eprintln!(
+                    "[fuxx] restore: {} is not a valid sessions file, starting fresh",
+                    path.display()
+                );
+            }
+            state
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            eprintln!(
+                "[fuxx] restore: could not read {}: {err}, starting fresh",
+                path.display()
+            );
             None
         }
     }
@@ -1690,6 +1677,7 @@ mod tests {
                 name: "claude".into(),
                 command: "claude --resume".into(),
             }),
+            daemon_id: None,
         };
         let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
         let c = daemon_create(

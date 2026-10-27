@@ -1,7 +1,8 @@
 //! M10a: the workspace's side of the background service. Who runs the sessions (`Service`):
-//! connecting at startup, a lost connection (the sessions stay; one reconnect, which shows
-//! the same service's live sessions again), the Quit item's count, and "Quit fuxx and End All
-//! Sessions". Opening, restoring and closing sessions live in `workspace`.
+//! connecting at startup, reopening (the service's live sessions in their saved places, the
+//! rest restored; screens fetched as they're shown), a lost connection (the sessions stay; one
+//! reconnect, which shows the same service's live sessions again), the Quit item's count, and
+//! "Quit fuxx and End All Sessions". Opening and closing sessions live in `workspace`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,12 +10,16 @@ use std::time::Duration;
 
 use gpui::{Context, EntityId, Window, prelude::*};
 
+use crate::adopt::{self, LiveInfo, Placement, Slot};
+use crate::appearance::Appearance;
 use crate::daemon;
 use crate::daemon_client::DaemonClient;
-use crate::mux_proto;
+use crate::mux_proto::{self, Create, Progress, SetMeta};
+use crate::restore::{RestoreMode, SavedState, VERSION};
 use crate::session_list::SessionList;
+use crate::status::Status;
 use crate::terminal_view::TerminalView;
-use crate::workspace::{Workspace, home_dir};
+use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
 
 /// Who runs the sessions (M10a).
 pub(crate) enum Service {
@@ -51,6 +56,11 @@ impl Service {
         }
     }
 }
+
+/// After reopening, the sessions not on screen fetch their screens from this long on, one at
+/// a time this far apart, so the window is up first.
+const ATTACH_REST_AFTER: Duration = Duration::from_secs(1);
+const ATTACH_STAGGER: Duration = Duration::from_millis(100);
 
 /// How long after losing the background service fuxx tries to reach it again.
 const RECONNECT_AFTER: Duration = Duration::from_millis(500);
@@ -107,6 +117,210 @@ impl Workspace {
             }
         }
         self.restore(window, cx);
+    }
+
+    /// Reopen with the background service: list its live sessions, place them by the sessions
+    /// file (`adopt::place`), start again the saved ones no longer running (per
+    /// `session-restore`), then show them all. Live sessions are shown even with restore off.
+    pub(crate) fn reopen(
+        &mut self,
+        client: Arc<DaemonClient>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
+            let listing = client.clone();
+            let listed = cx.background_spawn(async move { listing.list() }).await;
+            let Ok((placement, creates)) = this.update(cx, |this, cx| this.placement(listed, cx))
+            else {
+                return;
+            };
+            // In order, one at a time, as the sessions were saved.
+            let mut ids = Vec::with_capacity(creates.len());
+            for create in creates {
+                ids.push(match create {
+                    Some(create) => created(client.create_in_background(create).await),
+                    None => None,
+                });
+            }
+            this.update_in(cx, |this, window, cx| {
+                this.adopt(&client, placement, &ids, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Where every session goes, and per slot the `Create` of one to start again.
+    fn placement(
+        &self,
+        listed: std::io::Result<Vec<mux_proto::SessionInfo>>,
+        cx: &Context<Self>,
+    ) -> (Placement, Vec<Option<Create>>) {
+        let appearance = cx.global::<Appearance>();
+        let (live, mode) = match listed {
+            Ok(list) => (
+                list.iter().filter_map(LiveInfo::from_list).collect(),
+                appearance.restore,
+            ),
+            // Starting saved sessions again could double ones that still run: none.
+            Err(err) => {
+                eprintln!(
+                    "[fuxx] background service: could not list its sessions ({err}); not reopening them"
+                );
+                (Vec::new(), RestoreMode::Off)
+            }
+        };
+        let saved = read_saved().unwrap_or(SavedState {
+            version: VERSION,
+            active: None,
+            collapsed: Vec::new(),
+            sessions: Vec::new(),
+            layouts: Vec::new(),
+        });
+        let placement = adopt::place(&saved, &live, mode, &appearance.presets);
+        let creates = placement
+            .slots
+            .iter()
+            .map(|slot| match slot {
+                Slot::Restore(launch) => Some(self.create_for(launch)),
+                Slot::Live(_) => None,
+            })
+            .collect();
+        (placement, creates)
+    }
+
+    /// Show the placed sessions: live ones without their screens yet (fetched when shown, or
+    /// in the background soon after), restarted ones (`ids`, per slot) at once. Slots that
+    /// can't be shown are left out; with none at all, one plain session opens.
+    fn adopt(
+        &mut self,
+        client: &Arc<DaemonClient>,
+        placement: Placement,
+        ids: &[Option<u64>],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut views = Vec::new();
+        let mut gone = Vec::new();
+        for (i, slot) in placement.slots.iter().enumerate() {
+            let view = match (slot, ids.get(i).copied().flatten()) {
+                (Slot::Live(a), _) => {
+                    TerminalView::adopt_daemon(window, cx, client.clone(), a.id).map(|v| (a.id, v))
+                }
+                (Slot::Restore(_), Some(id)) => {
+                    TerminalView::attach_daemon(window, cx, client.clone(), id)
+                        .map(|v| (id, v))
+                        .inspect_err(|_| {
+                            // Not shown, so not left running unseen.
+                            let client = client.clone();
+                            cx.background_spawn(async move { client.close(id) })
+                                .detach();
+                        })
+                }
+                (Slot::Restore(_), None) => Err("it didn't start".to_string()),
+            };
+            match view {
+                Ok(view) => views.push(view),
+                Err(err) => {
+                    eprintln!("[fuxx] restore: a session couldn't be shown: {err}");
+                    gone.push(i);
+                }
+            }
+        }
+        let placement = placement.without(&gone);
+        let entities: Vec<EntityId> = views.iter().map(|(_, v)| v.entity_id()).collect();
+        for (slot, (id, view)) in placement.slots.into_iter().zip(views) {
+            let session = self.session_for(slot, id, view, window, cx);
+            let at = self.sessions.items().len();
+            self.sessions.insert(at, session);
+        }
+        if self.sessions.is_empty() {
+            eprintln!("[fuxx] restore: no session to show, opening a new one");
+            self.open_first(window, cx);
+            return;
+        }
+        self.layouts = placement
+            .layouts
+            .iter()
+            .map(|t| t.map(&|i| entities[i]))
+            .collect();
+        self.collapsed = placement.collapsed;
+        // The normal route, so the active session's group opens (and its layout attaches as it
+        // is drawn).
+        self.sessions.select(placement.active);
+        self.activate(window, cx);
+        self.finish_restoring(cx);
+        self.attach_rest_later(cx);
+    }
+
+    /// The sidebar entry for a placed slot: a live one with the service's facts (its ring
+    /// shows before its screen arrives), a restarted one fresh.
+    fn session_for(
+        &mut self,
+        slot: Slot,
+        id: u64,
+        view: gpui::Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Session {
+        let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
+        let (saved, title, status, note, progress) = match slot {
+            Slot::Live(a) => (a.saved, a.title, a.status, a.note, a.progress),
+            Slot::Restore(launch) => (launch.saved, None, Status::Idle, None, None),
+        };
+        Session {
+            id,
+            view,
+            status,
+            title: title.map(Into::into),
+            name: saved.name,
+            project: saved.project,
+            preset: saved.preset,
+            note,
+            progress,
+            lost: false,
+            _subscription: subscription,
+        }
+    }
+
+    /// After a second, the sessions not shown yet fetch their screens, one at a time.
+    fn attach_rest_later(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ATTACH_REST_AFTER).await;
+            while let Ok(true) = this.update(cx, |this, cx| this.attach_next(cx)) {
+                cx.background_executor().timer(ATTACH_STAGGER).await;
+            }
+        })
+        .detach();
+    }
+
+    /// Fetch the first session's screen not fetched yet; false when every one has it.
+    fn attach_next(&self, cx: &Context<Self>) -> bool {
+        self.sessions
+            .items()
+            .iter()
+            .any(|s| s.view.read(cx).attach())
+    }
+
+    /// Tell the background service session `index`'s name, note and progress, so a reopen
+    /// shows them (the service's facts win over the sessions file). Local: nothing.
+    pub(crate) fn push_meta(&self, index: usize, cx: &Context<Self>) {
+        let Some(s) = self.sessions.items().get(index).filter(|s| !s.lost) else {
+            return;
+        };
+        s.view.read(cx).set_meta(SetMeta {
+            id: s.id,
+            name: Some(s.name.clone()),
+            project: None,
+            preset: None,
+            note: Some(s.note.clone()),
+            progress: Some(
+                s.progress
+                    .clone()
+                    .map(|(percent, label)| Progress { percent, label }),
+            ),
+        });
     }
 
     /// The Quit item says how many sessions keep running (persistence on); the menu bar is
