@@ -181,9 +181,9 @@ struct Scripting(#[allow(dead_code)] api_server::ServerGuard);
 
 impl Global for Scripting {}
 
-/// Start the scripting socket if the settings allow it; its requests are for the workspace.
-/// Any failure is one log line, and the app runs without scripting.
-fn start_scripting(cx: &mut App) -> Option<UnboundedReceiver<api_server::Incoming>> {
+/// Start the scripting socket if the settings allow it; its path and requests are for the
+/// workspace. Any failure is one log line, and the app runs without scripting.
+fn start_scripting(cx: &mut App) -> Option<(PathBuf, UnboundedReceiver<api_server::Incoming>)> {
     if !cx.global::<appearance::Appearance>().scripting {
         eprintln!("[fuxx] scripting: off (scripting = off in the settings)");
         return None;
@@ -207,7 +207,7 @@ fn start_scripting(cx: &mut App) -> Option<UnboundedReceiver<api_server::Incomin
         async {}
     })
     .detach();
-    Some(requests)
+    Some((path, requests))
 }
 
 fn main() {
@@ -308,7 +308,7 @@ fn main() {
                 .filter_map(|(n, preset)| preset_item(n, &preset.name))
                 .collect();
             cx.set_global(appearance);
-            let requests = start_scripting(cx);
+            let scripting = start_scripting(cx);
             // After the key bindings: a menu shows the shortcut bound when the menus are set.
             cx.set_menus([
                 Menu::new("fuxx").items([MenuItem::action("Quit fuxx", Quit)]),
@@ -350,7 +350,7 @@ fn main() {
                         }),
                         ..Default::default()
                     },
-                    move |window, cx| cx.new(|cx| Workspace::new(requests, window, cx)),
+                    move |window, cx| cx.new(|cx| Workspace::new(scripting, window, cx)),
                 )
                 .expect("failed to open the window");
             // The terminal window is the app: closing it quits, even with Preferences still open

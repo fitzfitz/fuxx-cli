@@ -54,6 +54,9 @@ its question and answer it**. A live event stream reports what happens across al
   - `FUXX_SOCKET` (the socket path);
   - `FUXX_SESSION` (that session's id);
   - the folder of the `fuxx` program added to the **end** of `PATH`, so typing `fuxx …` works in any fuxx session.
+- Only a fuxx that is actually listening sets these. One that isn't (scripting off, or another fuxx has the socket)
+  **removes** `FUXX_SOCKET` and `FUXX_SESSION` from its shells, so a fuxx started from inside another one can't
+  drive the other one's sessions by accident.
 
 ### The `fuxx` command
 
@@ -66,11 +69,13 @@ Each command takes `--json` for machine-readable output.
 - a name or title, matched exactly and ignoring case.
 
 With no target, the command acts on **the session it's typed in** (`FUXX_SESSION`); outside fuxx, it acts on the
-focused session. A target that matches nothing, or more than one session, is an error that names the candidates.
+focused session. If the session it's typed in has closed (e.g. a background job outliving it), that's an error
+(`not_found`, "your session s3 is gone"), never the focused session. A target that matches nothing, or more than
+one session, is an error that names the candidates.
 
 | Command | What it does |
 |---|---|
-| `fuxx ls` | List sessions: id, number, name, status, group folder, preset, focused / on screen, note, progress |
+| `fuxx ls` | List sessions: id, number, name, status, group folder, preset, focused / on screen, note, progress. A leading `*` marks the focused session, `+` another one on screen; progress and note follow as `40% tests · building` |
 | `fuxx new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME] [--split right\|down [--of TARGET]] [--background]` | Open a session (or a split next to a session). `--run` types a command into the new shell like a preset does. `--background` keeps focus where it is. Prints the new id. |
 | `fuxx close [TARGET]` | Close a session (its program is stopped) |
 | `fuxx focus [TARGET]` | Show and focus a session (opens its group / layout) |
@@ -82,7 +87,7 @@ focused session. A target that matches nothing, or more than one session, is an 
 | `fuxx status [TARGET]` | Print `idle`, `working`, `waiting` or `done` |
 | `fuxx question [TARGET]` | When the session is waiting: print what it's asking (the last lines of its screen). Otherwise print nothing and exit 1 |
 | `fuxx answer [TARGET] TEXT` | Only if the session is waiting: type the text and press Enter. Otherwise refuse (exit 1) unless `--force` |
-| `fuxx wait [TARGET \| --any] [--for waiting\|done\|idle\|working\|change\|exit] [--text TEXT] [--timeout SECS]` | Block until the condition holds, then print the session id and exit 0. On timeout exit 124. `--text` waits for the text to appear on screen. `--any` watches every session. The default is `--for waiting`. |
+| `fuxx wait [TARGET \| --any] [--for waiting\|done\|idle\|working\|change\|exit] [--text TEXT] [--timeout SECS]` | Block until the condition holds, then print the session id and exit 0 (at once if it already holds). On timeout exit 124. `--text` waits for the text to appear on screen: only text that appears **after the wait starts** counts. The command you typed is echoed on screen too, so use a marker the command prints but doesn't contain, e.g. `echo ALL''DONE` or `echo $((1+1))DONE`. `--for exit` means the session closed (its shell ended). `--any` watches every session. The default is `--for waiting`. |
 | `fuxx events [--json]` | Print one line per event until stopped (see below) |
 | `fuxx note [TARGET] TEXT` / `--clear` | A short line shown under the session's name in the sidebar |
 | `fuxx progress [TARGET] 0–100 [--label TEXT]` / `--clear` | A thin progress bar under the session's row |

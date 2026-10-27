@@ -7,8 +7,17 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 
 use crate::terminal::{CellPx, TermDims};
 
-/// The user's login shell (`$SHELL`, run as `-zsh` etc.), started in `cwd` or `$HOME`, with `env` added.
-pub fn shell_command(cwd: Option<&Path>, env: &[(String, String)]) -> CommandBuilder {
+/// What a shell's environment gets on top of the one fuxx inherited: variables to drop, then
+/// variables to set.
+#[derive(Debug)]
+pub struct ShellEnv {
+    pub set: Vec<(String, String)>,
+    pub remove: Vec<&'static str>,
+}
+
+/// The user's login shell (`$SHELL`, run as `-zsh` etc.), started in `cwd` or `$HOME`, with `env`
+/// applied.
+pub fn shell_command(cwd: Option<&Path>, env: &ShellEnv) -> CommandBuilder {
     let mut cmd = CommandBuilder::new_default_prog();
     match cwd {
         Some(dir) => cmd.cwd(dir),
@@ -22,10 +31,19 @@ pub fn shell_command(cwd: Option<&Path>, env: &[(String, String)]) -> CommandBui
     // terminal inherits *that* terminal's TERM. `alacritty` terminfo isn't on stock macOS.
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    for (key, value) in env {
+    apply_env(&mut cmd, env);
+    cmd
+}
+
+/// portable-pty starts from a copy of fuxx's own environment, so dropping a variable takes an
+/// explicit remove.
+pub(crate) fn apply_env(cmd: &mut CommandBuilder, env: &ShellEnv) {
+    for key in &env.remove {
+        cmd.env_remove(key);
+    }
+    for (key, value) in &env.set {
         cmd.env(key, value);
     }
-    cmd
 }
 
 pub fn pty_size(dims: TermDims, cell: CellPx) -> PtySize {
@@ -86,6 +104,41 @@ impl Drop for Pty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_env_removes_then_sets() {
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.env_clear();
+        cmd.env("GONE", "inherited");
+        cmd.env("KEPT", "inherited");
+        cmd.env("SET", "inherited");
+        apply_env(
+            &mut cmd,
+            &ShellEnv {
+                set: vec![("SET".into(), "ours".into())],
+                remove: vec!["GONE", "SET"],
+            },
+        );
+        assert_eq!(cmd.get_env("GONE"), None);
+        assert_eq!(
+            cmd.get_env("KEPT").and_then(|v| v.to_str()),
+            Some("inherited")
+        );
+        assert_eq!(cmd.get_env("SET").and_then(|v| v.to_str()), Some("ours"));
+        // The real command applies it too.
+        let cmd = shell_command(
+            None,
+            &ShellEnv {
+                set: Vec::new(),
+                remove: vec!["FUXX_SESSION"],
+            },
+        );
+        assert_eq!(cmd.get_env("FUXX_SESSION"), None);
+        assert_eq!(
+            cmd.get_env("TERM").and_then(|v| v.to_str()),
+            Some("xterm-256color")
+        );
+    }
 
     #[test]
     fn pty_size_carries_pixels() {

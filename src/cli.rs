@@ -29,7 +29,7 @@ pub enum Cli {
 const USAGE: &str = "\
 usage: fuxx [command]   (no command opens the app)
 
-  ls                                   list sessions
+  ls                                   list sessions (* focused, + on screen)
   new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME]
       [--split right|down [--of TARGET]] [--background]   open a session; prints its id
   close [TARGET]                       close a session
@@ -44,6 +44,10 @@ usage: fuxx [command]   (no command opens the app)
   answer [TARGET] TEXT [--force]       answer a waiting session
   wait [TARGET | --any] [--for waiting|done|idle|working|change|exit]
        [--text TEXT] [--timeout SECS]  block until the condition holds
+       (at once if it already does; exit: the session closed). --text counts only
+       text that appears after the wait starts, but a typed command is echoed too:
+       use a marker it prints but doesn't contain, e.g. echo ALL''DONE or
+       echo $((1+1))DONE (then wait for ALLDONE or 2DONE)
   events                               print one line per event until stopped
   note [TARGET] TEXT | --clear         a short line under the session's name
   progress [TARGET] 0-100 [--label TEXT] | --clear   a progress bar under the row
@@ -380,8 +384,17 @@ fn tildify(path: &str, home: &str) -> String {
     }
 }
 
+/// One `ls` row: `*` marks the focused session and `+` another one on screen (like `git branch`),
+/// then id, number, status, name, folder, preset, and progress and note when set.
 fn session_line(s: &Value) -> String {
-    let mut line = id_text(&s["id"]).unwrap_or_else(|| "?".into());
+    let flag = |key: &str| s.get(key).and_then(Value::as_bool).unwrap_or(false);
+    let mut line = match (flag("focused"), flag("on_screen")) {
+        (true, _) => "* ",
+        (false, true) => "+ ",
+        _ => "  ",
+    }
+    .to_string();
+    line.push_str(&id_text(&s["id"]).unwrap_or_else(|| "?".into()));
     if let Some(n) = s.get("number").and_then(Value::as_u64) {
         line.push_str(&format!("  #{n}"));
     }
@@ -396,6 +409,21 @@ fn session_line(s: &Value) -> String {
     }
     if let Some(p) = str_of(s, "preset") {
         line.push_str(&format!("  ({p})"));
+    }
+    // As the sidebar shows them: `40% tests · building`.
+    let progress =
+        s["progress"]["percent"]
+            .as_u64()
+            .map(|percent| match str_of(&s["progress"], "label") {
+                Some(label) => format!("{percent}% {label}"),
+                None => format!("{percent}%"),
+            });
+    let extra: Vec<String> = progress
+        .into_iter()
+        .chain(str_of(s, "note").map(str::to_string))
+        .collect();
+    if !extra.is_empty() {
+        line.push_str(&format!("  {}", extra.join(" · ")));
     }
     line
 }
@@ -684,6 +712,45 @@ mod tests {
         assert!(p(&["ls", "extra"]).is_err());
         assert!(p(&["send", "hi", "--bogus"]).is_err());
         assert!(matches!(p(&["help"]), Ok(Cli::Help(u)) if u.contains("equalize")));
+        // The `wait --text` echo caveat and the `ls` markers are explained.
+        assert!(matches!(p(&["help"]), Ok(Cli::Help(u))
+            if u.contains("echo ALL''DONE") && u.contains("$((1+1))DONE")
+                && u.contains("* focused, + on screen")));
+    }
+
+    #[test]
+    fn ls_marks_focus_and_shows_note_and_progress() {
+        let row = |extra: Value| {
+            let mut s = json!({"id": "s4", "number": 2, "status": "working", "name": "api"});
+            for (k, v) in extra.as_object().unwrap() {
+                s[k] = v.clone();
+            }
+            render("ls", &json!([s]), false)
+        };
+        assert_eq!(
+            row(json!({"focused": true, "on_screen": true})),
+            "* s4  #2  working  api"
+        );
+        assert_eq!(
+            row(json!({"focused": false, "on_screen": true})),
+            "+ s4  #2  working  api"
+        );
+        assert_eq!(
+            row(json!({"focused": false, "on_screen": false, "note": null, "progress": null})),
+            "  s4  #2  working  api"
+        );
+        assert_eq!(
+            row(json!({"progress": {"percent": 40, "label": "tests"}, "note": "building"})),
+            "  s4  #2  working  api  40% tests · building"
+        );
+        assert_eq!(
+            row(json!({"progress": {"percent": 40, "label": null}})),
+            "  s4  #2  working  api  40%"
+        );
+        assert_eq!(
+            row(json!({"note": "building"})),
+            "  s4  #2  working  api  building"
+        );
     }
 
     #[test]
@@ -691,7 +758,7 @@ mod tests {
         let ls = json!([{"id": 4, "number": 2, "status": "waiting", "name": "api", "project": "/x/api", "preset": "claude"}]);
         assert_eq!(
             render("ls", &ls, false),
-            "s4  #2  waiting  api  [/x/api]  (claude)"
+            "  s4  #2  waiting  api  [/x/api]  (claude)"
         );
         assert_eq!(render("new", &json!({"id": 5}), false), "s5");
         assert_eq!(render("status", &json!("done"), false), "done");
