@@ -73,6 +73,9 @@ pub fn set_key(text: &str, key: &str, values: &[String]) -> String {
 /// Write `text` to `path` through a temp file in the same directory and a rename, so a crash
 /// never leaves a half-written settings file. The temp file is removed if anything fails.
 pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    // Write through a symlink (dotfile managers link the config) rather than replacing it.
+    let path = resolve_link(path);
+    let path = path.as_path();
     let dir = path.parent().unwrap_or(Path::new(""));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
@@ -83,6 +86,18 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     written
+}
+
+/// Where a write to `path` should really land: the canonical path if it exists, the link's
+/// target if it is a dangling symlink, else `path` itself.
+fn resolve_link(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    match std::fs::read_link(path) {
+        Ok(target) => path.parent().unwrap_or(Path::new("")).join(target),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 /// fuxx's own settings file: `{XDG_CONFIG_HOME or ~/.config}/fuxx/config`.
@@ -299,6 +314,31 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
         ); // no tmp left behind
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_follows_a_symlink() {
+        let dir = std::env::temp_dir().join(format!("fuxx-write-symlink-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::create_dir_all(dir.join("link")).unwrap();
+        std::fs::write(dir.join("real/config"), "a = 1\n").unwrap();
+        std::os::unix::fs::symlink("../real/config", dir.join("link/config")).unwrap();
+        write_atomic(&dir.join("link/config"), "a = 2\n").unwrap();
+        let meta = std::fs::symlink_metadata(dir.join("link/config")).unwrap();
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("real/config")).unwrap(),
+            "a = 2\n"
+        );
+        for sub in ["real", "link"] {
+            let names: Vec<_> = std::fs::read_dir(dir.join(sub))
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(names.len(), 1, "{sub}: {names:?}"); // no tmp left behind
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
