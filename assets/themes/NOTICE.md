@@ -13,7 +13,8 @@ cross-checked against the original project's own licence page:
 | Dracula | https://github.com/dracula/dracula-theme (draculatheme.com, zenorocha) | MIT (Dracula project); unverified for this exact file, since upstream `licenses.yml` lists Dracula as "unknown" | https://github.com/dracula/dracula-theme/blob/master/LICENSE |
 | Nord | https://github.com/nordtheme/iterm2 (nordtheme, Arctic Ice Studio, Sven Greb) | MIT | https://github.com/nordtheme/nord (and `licenses.yml`) |
 | Gruvbox Dark | https://github.com/morhetz/gruvbox | MIT/X11 | https://github.com/morhetz/gruvbox (and `licenses.yml`) |
-| TokyoNight | https://github.com/folke/tokyonight.nvim (folke) | Apache-2.0 | https://github.com/folke/tokyonight.nvim/blob/main/LICENSE |
+| TokyoNight | https://github.com/folke/tokyonight.nvim (folke) | Apache-2.0 (full text in `LICENSE-TokyoNight-Apache-2.0.txt`) | https://github.com/folke/tokyonight.nvim/blob/main/LICENSE |
 
-TokyoNight is Apache-2.0, not MIT: the scheme is credited to folke/tokyonight.nvim, not to
+TokyoNight is Apache-2.0, not MIT; its licence text ships as `LICENSE-TokyoNight-Apache-2.0.txt` (the
+upstream repo has no NOTICE file): the scheme is credited to folke/tokyonight.nvim, not to
 enkia/tokyo-night-vscode-theme (MIT).
