@@ -167,6 +167,16 @@ impl TerminalView {
         self.core.close();
     }
 
+    /// Whether the screen can be read (a daemon session's first snapshot has landed).
+    pub fn is_drawn(&self) -> bool {
+        self.core.is_drawn()
+    }
+
+    /// The Daemon backend's queue to the daemon (to let it go out before quitting).
+    pub fn pump_queue(&self) -> Option<crate::terminal::PumpQueue> {
+        self.core.pump_queue()
+    }
+
     /// Tell the daemon the session's name, note and progress (Daemon backend; Local: nothing).
     pub fn set_meta(&self, meta: crate::mux_proto::SetMeta) {
         self.core.set_meta(meta);

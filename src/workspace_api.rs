@@ -14,7 +14,7 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{App, Context, EntityId, Task, Window, prelude::*};
 use serde_json::{Value, json};
 
-use crate::api::{self, ApiError, Request, SessionRef};
+use crate::api::{self, ApiError, Request, SessionRef, WaitFor};
 use crate::api_events::{Event, EventSession, Wait, Watch, event_json, wait_reply};
 use crate::api_server::{Conn, Incoming};
 use crate::appearance::Appearance;
@@ -38,6 +38,19 @@ const ENDING_WAIT: Duration = Duration::from_secs(2);
 const WAIT_TICK: Duration = Duration::from_millis(200);
 /// How many lines a text wait searches.
 const WAIT_TEXT_LINES: usize = 200;
+
+/// How long a request waits for a screen to arrive from the background service.
+const SCREEN_WAIT: Duration = Duration::from_secs(10);
+/// How often requests waiting for a screen look again.
+const SCREEN_TICK: Duration = Duration::from_millis(20);
+
+/// A request that reads a screen not arrived yet from the background service (a reopened
+/// session not shown so far): answered once it has (`retry_deferred`), never from a blank one.
+pub(crate) struct Deferred {
+    request: Request,
+    conn: Conn,
+    since: Instant,
+}
 
 /// What the request loop sends for a request.
 enum Reply {
@@ -79,8 +92,127 @@ impl Workspace {
         })
     }
 
-    /// What to send for one request: waits may reply later; everything else replies now.
+    /// What to send for one request: one reading a screen that hasn't arrived yet waits for
+    /// it; otherwise `dispatch`.
     fn reply_to(
+        &mut self,
+        request: &Request,
+        conn: &Conn,
+        close_later: &mut Option<EntityId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        match self.screens_pending(request, cx) {
+            Ok(ids) if ids.is_empty() => self.dispatch(request, conn, close_later, window, cx),
+            Ok(_) => {
+                self.deferred.push(Deferred {
+                    request: request.clone(),
+                    conn: conn.clone(),
+                    since: Instant::now(),
+                });
+                self.tick_deferred(window, cx);
+                Reply::Later
+            }
+            Err(e) => Reply::Now(Err(e)),
+        }
+    }
+
+    /// The sessions whose screens `request` reads but which haven't arrived yet from the
+    /// background service (each is asked for now); see `screens_to_wait_for`. A request that
+    /// reads no screen, or names a bad target (its own answer says so), waits for nothing.
+    fn screens_pending(&self, request: &Request, cx: &App) -> Result<Vec<u64>, ApiError> {
+        let p = &request.params;
+        let items = self.sessions.items();
+        let target = || self.target_index(p, "target").ok();
+        let (indices, any): (Vec<usize>, bool) = match request.method.as_str() {
+            "session.read" | "session.question" => (target().into_iter().collect(), false),
+            "session.wait" => {
+                let cond = api::parse_wait(
+                    opt_str(p, "for").ok().flatten(),
+                    opt_str(p, "text").ok().flatten(),
+                );
+                if !matches!(cond, Ok(WaitFor::Text(_))) {
+                    return Ok(Vec::new());
+                }
+                if bool_param(p, "any").unwrap_or(false) {
+                    ((0..items.len()).collect(), true)
+                } else {
+                    (target().into_iter().collect(), false)
+                }
+            }
+            _ => return Ok(Vec::new()),
+        };
+        let facts: Vec<(u64, bool, bool)> = indices
+            .iter()
+            .map(|&i| {
+                (
+                    items[i].id,
+                    items[i].view.read(cx).is_drawn(),
+                    items[i].lost,
+                )
+            })
+            .collect();
+        let ids = screens_to_wait_for(&facts, any)?;
+        for s in items.iter().filter(|s| ids.contains(&s.id)) {
+            s.view.read(cx).attach();
+        }
+        Ok(ids)
+    }
+
+    /// Look again at the deferred requests every `SCREEN_TICK` until none is left.
+    fn tick_deferred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.deferred_ticking || self.deferred.is_empty() {
+            return;
+        }
+        self.deferred_ticking = true;
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(SCREEN_TICK).await;
+                let pending = this
+                    .update_in(cx, |this, window, cx| {
+                        this.retry_deferred(window, cx);
+                        this.deferred_ticking = !this.deferred.is_empty();
+                        this.deferred_ticking
+                    })
+                    .unwrap_or(false);
+                if !pending {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Answer the deferred requests whose screens have arrived (or whose sessions closed or
+    /// were lost meanwhile); one still waiting after `SCREEN_WAIT` gets an error.
+    fn retry_deferred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for d in std::mem::take(&mut self.deferred) {
+            if d.conn.peer_gone() {
+                continue;
+            }
+            let reply = match self.screens_pending(&d.request, cx) {
+                Ok(ids) if ids.is_empty() => {
+                    let mut close_later = None;
+                    self.dispatch(&d.request, &d.conn, &mut close_later, window, cx)
+                }
+                Ok(_) if d.since.elapsed() < SCREEN_WAIT => {
+                    self.deferred.push(d);
+                    continue;
+                }
+                Ok(ids) => Reply::Now(Err(ApiError::unavailable(format!(
+                    "s{}: its screen didn't arrive from the background service",
+                    ids[0]
+                )))),
+                Err(e) => Reply::Now(Err(e)),
+            };
+            if let Reply::Now(result) = reply {
+                d.conn.send_line(&api::reply(d.request.id, result));
+            }
+        }
+    }
+
+    /// What to send for one request: waits may reply later; everything else replies now.
+    fn dispatch(
         &mut self,
         request: &Request,
         conn: &Conn,
@@ -807,6 +939,27 @@ fn check_folder(dir: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Of the sessions a request reads the screen of (`(id, drawn, lost)`), the ones to wait for
+/// (their screen hasn't arrived from the background service yet). A lost one whose screen
+/// never arrived can't be read: an error, except for an any-session wait (`any`), which
+/// leaves it out (its blank screen never matches).
+fn screens_to_wait_for(sessions: &[(u64, bool, bool)], any: bool) -> Result<Vec<u64>, ApiError> {
+    let mut wait = Vec::new();
+    for &(id, drawn, lost) in sessions {
+        match (drawn, lost) {
+            (true, _) => {}
+            (false, false) => wait.push(id),
+            (false, true) if any => {}
+            (false, true) => {
+                return Err(ApiError::unavailable(format!(
+                    "s{id}: the background service was lost before its screen arrived (reopen fuxx)"
+                )));
+            }
+        }
+    }
+    Ok(wait)
+}
+
 /// The last lines of session `id`'s screen (empty if it's gone), for text waits.
 fn screen_text(sessions: &[crate::workspace::Session], id: u64, cx: &App) -> String {
     sessions
@@ -843,6 +996,37 @@ fn not_waiting(id: u64, status: Status) -> ApiError {
 mod tests {
     use super::*;
     use crate::cli;
+
+    #[test]
+    fn a_screen_not_arrived_yet_is_waited_for_never_read_blank() {
+        // (id, drawn, lost)
+        assert_eq!(
+            screens_to_wait_for(&[(1, true, false)], false).unwrap(),
+            Vec::<u64>::new()
+        );
+        assert_eq!(
+            screens_to_wait_for(&[(1, false, false)], false).unwrap(),
+            [1]
+        );
+        // Lost before it arrived: it never will.
+        let err = screens_to_wait_for(&[(1, false, true)], false).unwrap_err();
+        assert_eq!(err.code, ApiError::unavailable("").code);
+        assert!(err.message.contains("s1"), "{}", err.message);
+        // Lost after it arrived: its last screen can still be read.
+        assert!(
+            screens_to_wait_for(&[(1, true, true)], false)
+                .unwrap()
+                .is_empty()
+        );
+        // Any session: every one not drawn yet, lost ones left out.
+        let any = [
+            (1, true, false),
+            (2, false, false),
+            (3, false, true),
+            (4, false, false),
+        ];
+        assert_eq!(screens_to_wait_for(&any, true).unwrap(), [2, 4]);
+    }
 
     #[test]
     fn list_entry_shape_and_how_ls_prints_it() {

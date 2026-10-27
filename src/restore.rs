@@ -88,6 +88,10 @@ pub struct SavedState {
     /// One split layout per session (leaves are pane indices); empty means all single panes.
     #[serde(default)]
     pub layouts: Vec<Node<usize>>,
+    /// The background service the sessions' `daemon_id`s belong to (its random instance id):
+    /// ids from another one mean nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_instance: Option<u64>,
 }
 
 /// Pretty JSON with a trailing newline.
@@ -183,6 +187,7 @@ mod tests {
                     second: Box::new(Node::Leaf(1)),
                 },
             ],
+            daemon_instance: Some(u64::MAX),
         }
     }
 
@@ -230,6 +235,8 @@ mod tests {
     fn a_daemon_id_round_trips_and_is_absent_from_older_files() {
         let state = decode(&encode(&sample())).unwrap();
         assert_eq!(state.sessions[1].daemon_id, Some(4));
+        assert_eq!(state.daemon_instance, Some(u64::MAX));
+        assert_eq!(decode("{\"version\": 1}").unwrap().daemon_instance, None);
         assert_eq!(state.sessions[0].daemon_id, None);
         // A file from before persistence: no field, so none.
         let old = decode("{\"version\": 1, \"sessions\": [{\"name\": \"a\"}]}").unwrap();
