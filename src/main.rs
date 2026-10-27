@@ -32,6 +32,7 @@ mod status;
 mod terminal;
 mod terminal_view;
 mod theme;
+mod vt_snapshot;
 mod workspace;
 mod workspace_api;
 
