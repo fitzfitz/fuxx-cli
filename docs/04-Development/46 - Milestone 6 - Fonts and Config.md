@@ -63,6 +63,16 @@ Calls by the AI unless marked as yours. Each was checked on this Mac. Say if any
 - **The rest of the window follows the theme.** The sidebar is a slightly darker shade of the
   background, the active and hovered rows are tints of the foreground, and the rings use the theme's
   yellow, red and green.
+- **Mac line and word keys** (added 2026-10-27 on request, found during the on-screen check):
+  - **cmd-←** goes to the start of the line, **cmd-→** to the end.
+  - **option-←** and **option-→** move back and forward one word.
+  - **cmd-Backspace** deletes back to the start of the line.
+
+  fuxx sends the same keys Ghostty and Zed send for these, ctrl-A / ctrl-E / esc-b / esc-f / ctrl-U, which every shell understands.
+
+  Not changed:
+  - fn-←/→ (Home/End) already send the standard codes. zsh simply has no binding for them by default.
+  - ctrl-←/→ are kept by macOS for switching desktops.
 - **Bad or unknown settings** are skipped, so fuxx always starts. Each skipped setting gets one log line.
 
 ## Rough scope / checklist
