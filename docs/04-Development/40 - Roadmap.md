@@ -58,6 +58,10 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 - **M11 — UI/UX uplift** *(added 2026-10-27 on request)*: polish how fuxx looks and feels before the first signed
   release. What's in it is decided together when we reach it (brainstorm first); nothing is assumed yet.
+  Input: [[M11 Input - UI-UX Review]] (honest review + ranked plan, 2026-10-27). Already requested: **animations
+  can be turned on/off** (`animations = on|off` + a Preferences switch; with them off, statuses keep distinct still
+  shapes). Open: the default, and whether macOS Reduce motion / Low Power Mode pause them. Kept after M9 and M10
+  on purpose (your call, 2026-10-27): those may change the layout, so polish comes last.
 - **M12 — Ship as a real `.app`:** take M4b's bundle and sign/notarize it → fixes the notification identity (vs "Script Editor"), and **clicking a notification switches to that session** (moved from M4 by D5, 2026-10-26). Universal (Apple Silicon + Intel) per **D7**, decided 2026-10-26.
 - **M13 — Homebrew cask** for install. (Later: Windows support.)
 
