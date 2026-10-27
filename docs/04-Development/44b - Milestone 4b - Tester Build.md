@@ -24,6 +24,8 @@ new version number. Signing, notarization and Homebrew stay later ([[40 - Roadma
 ## Rough scope / checklist
 
 - [x] One command builds `target/dist/fuxx-<version>.dmg` (version from `Cargo.toml`), and refuses to reuse a version.
+- [x] *(2026-10-27)* The app carries the licence texts of its bundled fonts and themes in `fuxx.app/Contents/Resources/Licenses/`
+  (required since JetBrains Mono, the Nerd Font icons and the themes are compiled in). First build with them: **0.2.0** (M6b–M8).
 - [x] The app inside is universal (`arm64` + `x86_64`), minimum macOS 11.0, ad-hoc sealed.
 - [x] A check script confirms a DMG is installable before it goes to testers.
 - [x] Installed like a tester (a "downloaded" copy, Open Anyway), the M4 app works when opened from Finder.
@@ -41,7 +43,7 @@ sessions, rings and banners.
 3. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to fuxx, and confirm.
    This is needed once per new version.
 4. Banners appear as "Script Editor" for now. That's expected.
-5. If your prompt uses icons (powerlevel10k, Starship and similar), they show as `?` boxes for now. Fonts come in a later version.
+5. Prompt icons (powerlevel10k, Starship and similar) draw correctly from 0.2.0 on: fuxx carries its own icon font and JetBrains Mono.
 
 ## Related
 

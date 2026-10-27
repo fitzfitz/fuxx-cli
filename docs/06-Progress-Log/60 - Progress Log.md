@@ -22,6 +22,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-27 — Tester build 0.2.0
+- **Did:** Bumped to **0.2.0** and built `target/dist/fuxx-0.2.0.dmg` (universal: arm64 + x86_64, ad-hoc signed, 13 MB)
+  with the M4b script. The script now copies the bundled fonts' and themes' licence texts into
+  `fuxx.app/Contents/Resources/Licenses/`, as their licences require for every copy. Checked by mounting the DMG.
+- **Learned:** Nothing new.
+- **Blocked:** Nothing. The M6b/M7/M8 on-screen check is still yours to do (the DMG is a way to do it).
+- **Next task:** Combined 👀 check; then plan M9.
+
 ### 2026-10-27 — M6b, M7 and M8 built, reviewed and merged (on-screen check pending)
 - **Did:** On request, plan changes first: the default session name is 🖕; **M7 and M8 built before the M6b check**,
   with all three checks done together; **split panes moved into scope** ([[12 - Scope]], [[40 - Roadmap]], AGENTS.md);

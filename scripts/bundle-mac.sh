@@ -28,6 +28,13 @@ mkdir -p "$app/Contents/MacOS"
 lipo -create -output "$app/Contents/MacOS/fuxx" \
     target/aarch64-apple-darwin/release/fuxx target/x86_64-apple-darwin/release/fuxx
 sed "s/@VERSION@/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+# The bundled fonts and themes are compiled into the binary; their licences require the notices to
+# travel with every copy, so they ship in Resources/Licenses.
+licenses="$app/Contents/Resources/Licenses"
+mkdir -p "$licenses"
+cp assets/fonts/LICENSE-* assets/fonts/NOTICE-* "$licenses/"
+cp assets/themes/LICENSE-* "$licenses/"
+cp assets/themes/NOTICE.md "$licenses/NOTICE-Themes.md"
 # Ad-hoc seal over the whole bundle (binary + Info.plist). Not a Developer ID signature: M11.
 codesign --force --sign - "$app"
 ln -s /Applications "$stage/Applications"
