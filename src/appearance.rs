@@ -27,6 +27,8 @@ pub struct Appearance {
     /// The agent presets: built-ins plus `agent-preset` lines.
     pub presets: Vec<Preset>,
     pub restore: RestoreMode,
+    /// `scripting = on|off`: whether the scripting socket starts (default on).
+    pub scripting: bool,
 }
 
 impl Global for Appearance {}
@@ -36,6 +38,21 @@ fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
+}
+
+/// The last valid `scripting` entry wins (`on` / `off`, any case); an empty value resets to on.
+/// Returns the setting and a warning per invalid value (the previous value stays).
+fn scripting_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    let mut on = true;
+    let mut warnings = Vec::new();
+    for entry in entries.iter().filter(|e| e.key == "scripting") {
+        match entry.value.trim().to_lowercase().as_str() {
+            "" | "on" => on = true,
+            "off" => on = false,
+            _ => warnings.push(format!("scripting \"{}\": expected on or off", entry.value)),
+        }
+    }
+    (on, warnings)
 }
 
 /// Read fuxx's settings file and build the appearance. Never fails: anything missing or
@@ -107,7 +124,12 @@ pub fn load(cx: &App) -> Appearance {
 
     let (presets, preset_warnings) = presets::from_entries(&entries);
     let (restore, restore_warnings) = RestoreMode::from_entries(&entries);
-    for warning in preset_warnings.iter().chain(&restore_warnings) {
+    let (scripting, scripting_warnings) = scripting_from_entries(&entries);
+    for warning in preset_warnings
+        .iter()
+        .chain(&restore_warnings)
+        .chain(&scripting_warnings)
+    {
         eprintln!("[fuxx] config: {warning}");
     }
 
@@ -121,6 +143,7 @@ pub fn load(cx: &App) -> Appearance {
         user_theme_dir: user_dir,
         presets,
         restore,
+        scripting,
     }
 }
 
@@ -128,4 +151,27 @@ pub fn load(cx: &App) -> Appearance {
 pub fn reload(cx: &mut App) {
     let appearance = load(cx);
     cx.set_global(appearance);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(value: &str) -> Entry {
+        Entry {
+            key: "scripting".into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn scripting_setting_defaults_on_and_warns_on_junk() {
+        assert_eq!(scripting_from_entries(&[]), (true, vec![]));
+        assert_eq!(scripting_from_entries(&[s(" OFF ")]), (false, vec![]));
+        let (on, warnings) = scripting_from_entries(&[s("off"), s("maybe")]);
+        assert!(!on); // the bad value leaves the previous one in place
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("maybe"));
+        assert_eq!(scripting_from_entries(&[s("off"), s("")]), (true, vec![]));
+    }
 }
