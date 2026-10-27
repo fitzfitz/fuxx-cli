@@ -21,3 +21,7 @@ The bundled font file is `SymbolsNerdFontMono-Regular.ttf` from Nerd Fonts 3.5.1
 | Powerline Symbols      | https://github.com/powerline/powerline                | 1.000 (ca 2013) | MIT         |
 | Power Symbols IEC      | https://github.com/jloughry/Unicode                   | Feb 2015        | MIT         |
 | Weather Icons          | https://github.com/erikflowers/weather-icons          | 2.0.10 (1.100)  | OFL 1.1     |
+
+## JetBrains Mono
+
+fuxx also bundles JetBrains Mono v2.304 (Regular, Bold, Italic, BoldItalic) from https://github.com/JetBrains/JetBrainsMono, under the SIL Open Font License 1.1 (`LICENSE-JetBrainsMono-OFL.txt`).

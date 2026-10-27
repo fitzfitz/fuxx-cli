@@ -34,7 +34,8 @@ Calls by the AI unless marked as yours. Each was checked on this Mac. Say if any
     leading `?` makes it optional, and include loops are cut.
   - The file is read **once at startup**; restart fuxx to apply a change.
   - fuxx never creates or edits the file. If it doesn't exist, the defaults are used.
-- **Defaults** (Ghostty's, which look good): background `#282c34`, foreground `#ffffff`, a 16-color
+- **Defaults** (Ghostty's, which look good; *the font changed in M6b: JetBrains Mono now ships with fuxx,
+  so it is always the default*): background `#282c34`, foreground `#ffffff`, a 16-color
   palette, and font size 13. The font is **JetBrains Mono** if it's installed, otherwise Menlo.
 - **Font settings.**
   - `font-family`: the first entry is the font. Further entries are fallbacks. Families that aren't

@@ -49,6 +49,9 @@ this: [[31 - API Fact Sheet (pinned rev)]]. Decisions: [[00 - Plan Tracker (Star
 - **fuxx's own settings file** `~/.config/fuxx/config` (Ghostty-style `key = value`, `src/settings.rs`); themes from
   `~/.config/fuxx/themes`, then six **built-in themes** in `assets/themes/` (from iTerm2-Color-Schemes, MIT; per-theme
   credits in `assets/themes/NOTICE.md`; TokyoNight is Apache-2.0 and ships its licence text).
+- **Default font:** the bundled **JetBrains Mono 2.304** (Regular/Bold/Italic/Bold Italic) in `assets/fonts/`, SIL Open
+  Font License 1.1 (licence text alongside). Registered with CoreText for the process at startup, like the icon font;
+  an installed copy takes precedence. *(M6b, added 2026-10-27 on request.)*
 - **Prompt icons:** the bundled **Symbols Nerd Font Mono** (Nerd Fonts 3.5.1) in `assets/fonts/`: MIT, plus icon
   sets under CC BY 4.0, Apache-2.0 and OFL (`NOTICE-NerdFonts-IconSets.md`). Registered with CoreText at startup
   (process scope) from a cached copy in `~/Library/Caches/fuxx/`. No new crates: two `extern "C"` calls.
