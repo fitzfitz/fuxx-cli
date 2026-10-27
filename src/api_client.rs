@@ -3,12 +3,20 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::api::Request;
+
+/// The socket a client talks to: `FUXX_SOCKET` when set and non-empty (inside a fuxx session),
+/// else the one under the home folder.
+pub fn client_socket_path(env_socket: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    match env_socket.filter(|s| !s.is_empty()) {
+        Some(socket) => Some(PathBuf::from(socket)),
+        None => home.map(crate::api_server::socket_path),
+    }
+}
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -54,13 +62,9 @@ pub fn parse_reply(line: &str) -> Result<Value, ClientError> {
     Ok(reply.get("result").cloned().unwrap_or(Value::Null))
 }
 
-fn call_with(
-    path: &Path,
-    request: &Request,
-    timeout: Option<Duration>,
-) -> Result<Value, ClientError> {
+/// Send one request and wait for its reply.
+pub fn call(path: &Path, request: &Request) -> Result<Value, ClientError> {
     let mut reader = open(path, request)?;
-    reader.get_ref().set_read_timeout(timeout).map_err(lost)?;
     let mut line = String::new();
     if reader.read_line(&mut line).map_err(lost)? == 0 {
         return Err(ClientError::Unreachable(
@@ -68,24 +72,6 @@ fn call_with(
         ));
     }
     parse_reply(&line)
-}
-
-/// Send one request and wait for its reply.
-pub fn call(path: &Path, request: &Request) -> Result<Value, ClientError> {
-    call_with(path, request, None)
-}
-
-/// Whether a fuxx answers `system.ping` at `path` within `timeout` (any reply counts).
-pub fn answers(path: &Path, timeout: Duration) -> bool {
-    let ping = Request {
-        id: Some(0),
-        method: "system.ping".into(),
-        params: Value::Null,
-    };
-    !matches!(
-        call_with(path, &ping, Some(timeout)),
-        Err(ClientError::Unreachable(_))
-    )
 }
 
 /// Send one request, then hand every line (without its newline) to `on_line` until it returns
@@ -102,4 +88,26 @@ pub fn stream(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fuxx_socket_wins_over_home() {
+        let home = Path::new("/Users/me");
+        let via_home = PathBuf::from("/Users/me/Library/Application Support/fuxx/fuxx.sock");
+        assert_eq!(
+            client_socket_path(Some("/tmp/f.sock"), Some(home)),
+            Some(PathBuf::from("/tmp/f.sock"))
+        );
+        assert_eq!(
+            client_socket_path(Some(""), Some(home)),
+            Some(via_home.clone())
+        );
+        assert_eq!(client_socket_path(None, Some(home)), Some(via_home));
+        assert_eq!(client_socket_path(None, None), None);
+        assert_eq!(client_socket_path(Some(""), None), None);
+    }
 }
