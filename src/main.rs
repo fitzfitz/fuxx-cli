@@ -75,11 +75,11 @@ fn preset_item(n: usize, name: &str) -> Option<MenuItem> {
     })
 }
 
-/// The scripting socket's path, from `$HOME`.
-fn scripting_socket() -> Option<PathBuf> {
+/// `$HOME`, unless unset or empty.
+fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
-        .map(|h| api_server::socket_path(std::path::Path::new(&h)))
+        .map(PathBuf::from)
 }
 
 /// Print an error the way every `fuxx` command does and return its exit code.
@@ -108,8 +108,13 @@ fn run_command(command: &str, mut request: api::Request, json: bool, stream: boo
         }
         request.params["text"] = json!(text);
     }
-    let Some(path) = scripting_socket() else {
-        return fail("$HOME is unset, so the fuxx socket can't be found", 3);
+    let env_socket = std::env::var("FUXX_SOCKET").ok();
+    let Some(path) = api_client::client_socket_path(env_socket.as_deref(), home_dir().as_deref())
+    else {
+        return fail(
+            "$HOME and FUXX_SOCKET are unset, so the fuxx socket can't be found",
+            3,
+        );
     };
     let mut out = std::io::stdout().lock();
     let mut print = |text: String| -> bool {
@@ -169,7 +174,7 @@ fn start_scripting(cx: &mut App) {
         eprintln!("[fuxx] scripting: off (scripting = off in the settings)");
         return;
     }
-    let Some(path) = scripting_socket() else {
+    let Some(path) = home_dir().map(|home| api_server::socket_path(&home)) else {
         eprintln!("[fuxx] scripting: $HOME is unset; running without it");
         return;
     };

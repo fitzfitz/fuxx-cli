@@ -473,6 +473,7 @@ pub fn render(command: &str, result: &Value, json: bool) -> String {
             _ => String::new(),
         },
         "events" => event_line(result),
+        "ping" => "pong".to_string(),
         "presets" => result
             .as_array()
             .map(|a| {
@@ -640,6 +641,11 @@ mod tests {
         assert_eq!(render("new", &json!({"id": 5}), false), "s5");
         assert_eq!(render("status", &json!("done"), false), "done");
         assert_eq!(render("send", &json!({}), false), "");
+        assert_eq!(render("ping", &json!({"pong": true}), false), "pong");
+        assert_eq!(
+            render("ping", &json!({"pong": true}), true),
+            r#"{"pong":true}"#
+        );
         assert_eq!(render("ls", &ls, true), ls.to_string());
         let ev = json!({"event": "status", "session": {"id": 4, "number": 2, "name": "api"}, "from": "working", "to": "waiting", "ts": 43_263_000u64});
         let line = render("events", &ev, false);

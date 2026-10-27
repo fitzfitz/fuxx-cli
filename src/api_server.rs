@@ -19,13 +19,9 @@ use std::time::Duration;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::api::{self, ApiError, Request};
-use crate::api_client;
 
 /// Lines a connection may have waiting to be written before it counts as stuck and is closed.
 const QUEUE: usize = 256;
-
-/// How long a leftover socket gets to answer a ping before it counts as stale.
-const PING_TIMEOUT: Duration = Duration::from_millis(300);
 
 // libSystem; `uid_t` is u32 on macOS.
 unsafe extern "C" {
@@ -109,7 +105,7 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
 }
 
 /// Create the private folder, clear a stale socket, bind, and start accepting. Requests arrive
-/// on the returned receiver. `AddrInUse` when another fuxx already answers at `path`.
+/// on the returned receiver. `AddrInUse` when something already listens at `path`.
 pub fn start(path: &Path) -> std::io::Result<(ServerGuard, UnboundedReceiver<Incoming>)> {
     if let Some(dir) = path.parent() {
         std::fs::DirBuilder::new()
@@ -120,7 +116,9 @@ pub fn start(path: &Path) -> std::io::Result<(ServerGuard, UnboundedReceiver<Inc
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     if std::fs::symlink_metadata(path).is_ok() {
-        if api_client::answers(path, PING_TIMEOUT) {
+        // A listener that accepts is in use, even if it's too busy to answer: never take a
+        // live fuxx's socket. Only a file nobody listens on (refused, not a socket) is stale.
+        if UnixStream::connect(path).is_ok() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AddrInUse,
                 format!("another fuxx is listening on {}", path.display()),
@@ -288,6 +286,18 @@ mod tests {
             start(&path).err().unwrap().kind(),
             std::io::ErrorKind::AddrInUse
         );
+    }
+
+    #[test]
+    fn a_listener_that_never_replies_is_in_use_and_kept() {
+        let path = temp_dir("busy").join("f.sock");
+        // Accepts connections (the kernel backlog) but never answers, like a busy UI.
+        let _busy = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(
+            start(&path).err().unwrap().kind(),
+            std::io::ErrorKind::AddrInUse
+        );
+        assert!(path.exists());
     }
 
     #[test]
