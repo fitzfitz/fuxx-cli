@@ -21,7 +21,7 @@ use crate::theme::UiColors;
 use crate::workspace::CloseSession;
 
 const WIDTH: f32 = 560.0;
-const HEIGHT: f32 = 600.0;
+const HEIGHT: f32 = 660.0;
 const LIST_HEIGHT: f32 = 180.0;
 const ROW_HEIGHT: f32 = 24.0;
 /// The size the monospace test measures glyphs at; any size gives the same answer.
