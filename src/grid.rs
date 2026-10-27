@@ -91,52 +91,69 @@ pub enum TextScope {
 }
 
 /// Plain text of the terminal, one line per logical line: wrapped rows are joined, wide-char
-/// spacers skipped, trailing spaces trimmed, and blank lines at either end dropped.
+/// spacers skipped, trailing spaces trimmed, and blank lines at either end dropped. `Last(n)`
+/// walks up from the bottom and stops after n non-blank lines, so it never copies all history.
 pub fn text_lines<L: EventListener>(term: &Term<L>, scope: TextScope) -> String {
     let grid = term.grid();
-    let first = match scope {
+    let cols = term.columns();
+    let top = match scope {
         TextScope::Screen => 0,
         _ => -(grid.history_size() as i32),
     };
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for row in first..term.screen_lines() as i32 {
-        let cells = &grid[Line(row)];
-        for c in 0..term.columns() {
-            let cell = &cells[Column(c)];
-            if !cell
-                .flags
-                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-            {
-                current.push(cell.c);
-            }
-        }
-        if cells[Column(term.columns() - 1)]
+    let limit = match scope {
+        TextScope::Last(n) => Some(n),
+        _ => None,
+    };
+    let wraps = |row: i32| {
+        grid[Line(row)][Column(cols - 1)]
             .flags
             .contains(Flags::WRAPLINE)
-        {
-            continue; // this row continues on the next
+    };
+    // Logical lines, bottom first.
+    let mut lines: Vec<String> = Vec::new();
+    let mut found = 0;
+    let mut end = term.screen_lines() as i32 - 1;
+    while end >= top && limit.is_none_or(|n| found < n) {
+        let mut start = end;
+        while start > top && wraps(start - 1) {
+            start -= 1;
         }
-        lines.push(current.trim_end().to_string());
-        current.clear();
+        let mut text = String::new();
+        for row in start..=end {
+            let cells = &grid[Line(row)];
+            for c in 0..cols {
+                let cell = &cells[Column(c)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                text.push(cell.c);
+                if let Some(extra) = cell.zerowidth() {
+                    text.extend(extra);
+                }
+            }
+        }
+        let text = text.trim_end();
+        if !text.is_empty() {
+            found += 1;
+        }
+        if !text.is_empty() || limit.is_none() {
+            lines.push(text.to_string());
+        }
+        end = start - 1;
     }
-    if !current.is_empty() {
-        lines.push(current.trim_end().to_string());
-    }
-    if let TextScope::Last(n) = scope {
-        lines.retain(|l| !l.is_empty());
-        let skip = lines.len().saturating_sub(n);
-        lines.drain(..skip);
-    }
-    let start = lines
+    lines.reverse();
+    let first = lines
         .iter()
         .position(|l| !l.is_empty())
         .unwrap_or(lines.len());
-    let end = lines
+    let last = lines
         .iter()
         .rposition(|l| !l.is_empty())
-        .map_or(start, |i| i + 1);
-    lines[start..end].join("\n")
+        .map_or(first, |i| i + 1);
+    lines[first..last].join("\n")
 }
 
 /// Copy the visible screen out of the `Term` (call while holding its lock, then release it).
@@ -368,6 +385,75 @@ mod tests {
         let mut t = term(5, 3);
         feed(&mut t, "abcdefgh");
         assert_eq!(text_lines(&t, TextScope::Screen), "abcdefgh");
+    }
+
+    #[test]
+    fn text_lines_joins_a_wrap_across_history_and_screen() {
+        let mut t = term(5, 2);
+        feed(&mut t, "abcdefgh\r\nx\r\ny");
+        assert_eq!(text_lines(&t, TextScope::All), "abcdefgh\nx\ny");
+        feed(&mut t, "\r\nz");
+        assert_eq!(
+            text_lines(&t, TextScope::Last(3)),
+            "x
+y
+z"
+        );
+    }
+
+    #[test]
+    fn text_lines_wide_chars_have_no_padding() {
+        let mut t = term(5, 2);
+        feed(&mut t, "あいう");
+        assert_eq!(text_lines(&t, TextScope::Screen), "あいう");
+        // The third wide char doesn't fit in column 5: it wraps, leaving a leading spacer.
+        assert_eq!(text_lines(&t, TextScope::All), "あいう");
+    }
+
+    #[test]
+    fn text_lines_blank_handling() {
+        let mut t = term(10, 6);
+        feed(&mut t, "\r\n\r\nhi\r\n\r\n");
+        assert_eq!(text_lines(&t, TextScope::Screen), "hi");
+        assert_eq!(text_lines(&t, TextScope::Last(5)), "hi");
+        assert_eq!(text_lines(&term(10, 3), TextScope::All), "");
+        assert_eq!(text_lines(&term(10, 3), TextScope::Last(3)), "");
+    }
+
+    #[test]
+    fn text_lines_last_n_edge_cases() {
+        let mut t = term(5, 4);
+        feed(&mut t, "a\r\n\r\nb\r\nabcdefg");
+        // n larger than the line count; blank gaps are skipped, not counted.
+        assert_eq!(text_lines(&t, TextScope::Last(50)), "a\nb\nabcdefg");
+        assert_eq!(text_lines(&t, TextScope::Last(2)), "b\nabcdefg");
+        assert_eq!(text_lines(&t, TextScope::Last(0)), "");
+        assert_eq!(text_lines(&t, TextScope::Last(3)), "a\nb\nabcdefg");
+    }
+
+    #[test]
+    fn text_lines_last_with_long_history() {
+        let mut t = term(10, 3);
+        let text: String = (1..=500).map(|i| format!("l{i}\r\n")).collect();
+        feed(&mut t, &text);
+        assert_eq!(text_lines(&t, TextScope::Last(2)), "l499\nl500");
+    }
+
+    #[test]
+    fn text_lines_screen_ignores_scroll_position() {
+        let mut t = term(10, 3);
+        let text: String = (1..=10).map(|i| format!("l{i}\r\n")).collect();
+        feed(&mut t, &text);
+        let before = text_lines(&t, TextScope::Screen);
+        t.scroll_display(Scroll::Delta(1));
+        assert_eq!(text_lines(&t, TextScope::Screen), before);
+    }
+
+    #[test]
+    fn text_lines_keeps_combining_marks() {
+        let mut t = term(10, 2);
+        feed(&mut t, "e\u{301}x");
+        assert_eq!(text_lines(&t, TextScope::Screen), "e\u{301}x");
     }
 
     fn cell(ch: char, fg: Rgb, bg: Rgb) -> CellView {

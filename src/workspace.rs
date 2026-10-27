@@ -1073,17 +1073,17 @@ impl Render for Workspace {
     }
 }
 
-/// `$HOME`; unset or empty counts as absent.
 /// The scripting variables for a shell: the socket, the session id, and `fuxx` on the PATH.
 fn scripting_env(id: u64) -> Vec<(String, String)> {
     let mut env = Vec::new();
+    // Without a socket path the session id means nothing, so set neither.
     if let Some(home) = home_dir() {
         env.push((
             "FUXX_SOCKET".to_string(),
             api_server::socket_path(&home).display().to_string(),
         ));
+        env.push(("FUXX_SESSION".to_string(), format!("s{id}")));
     }
-    env.push(("FUXX_SESSION".to_string(), format!("s{id}")));
     if let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
@@ -1098,6 +1098,7 @@ fn scripting_env(id: u64) -> Vec<(String, String)> {
     env
 }
 
+/// `$HOME`; unset or empty counts as absent.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|v| !v.is_empty())
