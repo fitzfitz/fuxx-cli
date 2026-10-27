@@ -290,6 +290,50 @@ fn set_theme_changes_snapshot_colors() {
   - `cargo fmt --check`: clean.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m6b): menu bar and the Preferences window (cmd-,)"`
 
+### Task 4b: Bundle JetBrains Mono as the default font — ⬜
+
+*Added 2026-10-27 on request, after the ligature check showed no change with the installed fonts. Spec: "Also in M6b: JetBrains Mono comes with fuxx".*
+
+**Files:** Add `assets/fonts/JetBrainsMono-{Regular,Bold,Italic,BoldItalic}.ttf` and `assets/fonts/LICENSE-JetBrainsMono-OFL.txt` (from the official v2.304 release zip, sha256 `6f6376c6…f7bbf`) · Modify `src/fonts.rs`, `src/appearance.rs`, `src/preferences.rs` (if it calls the registration).
+
+**Interfaces:**
+- `fonts::register_bundled_fonts(installed: &[String]) -> bool` replaces `register_symbols_font()`. It writes each bundled file to `~/Library/Caches/fuxx/` (same temp + rename + size check as today) and registers it for this process, cached once per process (`OnceLock`). It skips the four JetBrains Mono files when `"JetBrains Mono"` is already in `installed`, so your own copy wins and CoreText doesn't report a duplicate. Returns whether every file it tried was registered. Failures log one `[fuxx] font: …` line each.
+- `appearance::load` calls it with `all_font_names()` taken **before** registering, then takes the font list again for `gpui_font`. `gpui_font` keeps its rule (JetBrains Mono if listed, else Menlo), so the bundled copy becomes the default by being listed.
+
+- [ ] **Step 1: Failing tests** (headless text system, as in `bundled_symbols_draw_the_apple_icon`):
+
+```rust
+#[test]
+fn bundled_jetbrains_mono_is_listed_and_the_default() {
+    let ts = gpui_platform::current_platform(true).text_system();
+    assert!(register_bundled_fonts(&ts.all_font_names()));
+    let installed = ts.all_font_names();
+    assert!(installed.iter().any(|f| f == "JetBrains Mono"));
+    let d = gpui_font(&FontSettings { families: vec![], size: 13.0, features: vec![] }, &installed);
+    assert_eq!(d.family.as_ref(), "JetBrains Mono");
+}
+
+#[test]
+fn jetbrains_mono_ligatures_follow_calt() {
+    // "->" is drawn with different glyphs when contextual alternates are on.
+    use gpui::{FontRun, px};
+    let ts = gpui_platform::current_platform(true).text_system();
+    assert!(register_bundled_fonts(&ts.all_font_names()));
+    let glyphs = |features: Vec<(String, u32)>| {
+        let font = gpui_font(&FontSettings { families: vec!["JetBrains Mono".into()], size: 13.0, features }, &ts.all_font_names());
+        let id = ts.font_id(&font).unwrap();
+        let layout = ts.layout_line("->", px(13.0), &[FontRun { len: 2, font_id: id }]);
+        layout.runs.iter().flat_map(|r| r.glyphs.iter().map(|g| g.id)).collect::<Vec<_>>()
+    };
+    assert_ne!(glyphs(vec![]), glyphs(vec![("calt".into(), 0)]));
+}
+```
+
+- [ ] **Step 2: Run** `cargo test fonts`. Expected: compile errors.
+- [ ] **Step 3: Implement** as specified; update the module docs and the `bundled_symbols_draw_the_apple_icon` test to the new function.
+- [ ] **Step 4: Run** `cargo test`. Expected: all pass (120), 0 warnings, fmt clean.
+- [ ] **Step 5: Commit:** `git add assets src && git commit -m "feat(m6b): bundle JetBrains Mono as the default font"`
+
 ### Task 5: On screen — 👀 ⬜
 
 Run `cargo run` and report.
@@ -308,6 +352,7 @@ Run `cargo run` and report.
 - [ ] **Your override still wins:** with `background = #000000` in the file, switching themes keeps the black background.
 - [ ] **Quitting:** with Preferences open, close the terminal window. fuxx quits.
 - [ ] **Unchanged:** M5 and M6 behaviours (selection, links, Mac keys, rings).
+- [ ] **JetBrains Mono (added 2026-10-27):** with no `font-family` line (or "Default" picked), the text is JetBrains Mono. `echo "-> => != >= ==="` shows arrows/≠/≥ with Ligatures On and plain characters with Off.
 - [ ] **Session name (added on request 2026-10-27):** a new session shows `N  🖕` in the sidebar and `fuxx — 🖕` in the window title, and the emoji draws in color (not a `?` box). Implemented in `src/workspace.rs` `Session::label`; no unit test (needs a live GPUI session), checked on screen here.
 
 ### Task 6: Update the docs — ⬜
