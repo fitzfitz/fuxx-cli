@@ -49,7 +49,7 @@ follows the theme.
 
 ## Global Constraints
 
-- Everything from the M0–M5 plans. **No new crates.** 0 warnings from our code; `cargo fmt --check` clean. Final count: **104 tests** (85 at the start; +1 from Task 1's fix round, +2 in Task 6).
+- Everything from the M0–M5 plans. **No new crates.** 0 warnings from our code; `cargo fmt --check` clean. Final count: **106 tests** (85 at the start; +1 from Task 1's fix round, +3 in Task 6 and its fixes, +1 in Task 6b).
 - Behaviour is exactly the list in [[46 - Milestone 6 - Fonts and Config]]; nothing under "Not in M6".
 - **fuxx never fails to start because of a config.** Missing files, unreadable files, bad values, unknown keys, missing theme or font → skipped (one `eprintln!("[fuxx] config: …")` line each), defaults used.
 - **fuxx never writes settings files** (its own or anyone's). The only file fuxx writes is the cached font copy (Task 4).
@@ -492,6 +492,60 @@ fn builtin_themes_load_and_change_colors() {
   - `cargo fmt --check`: clean.
 - [ ] **Step 5: Commit:** `git add -A src assets && git commit -m "feat(m6): fuxx's own settings file and six built-in themes (no Ghostty paths); review fixes"`
 
+### Task 6b: Mac line and word keys — ⬜
+
+*(Added 2026-10-27 on request, after the on-screen check found that cmd-← / option-← didn't move the cursor.)*
+
+**Evidence** (key logger, 2026-10-27):
+
+| Key | Ghostty sends | fuxx sent |
+|---|---|---|
+| cmd-← / cmd-→ | `\x01` / `\x05` | nothing (cmd keys are dropped) |
+| option-← / option-→ | `\x1bb` / `\x1bf` | `\x1b[1;3D` / `\x1b[1;3C` |
+
+Plain zsh binds `^A`, `^E`, `^[b` and `^[f`, but not `\x1b[1;3D`. Zed's terminal keymap maps these keys the same way as Ghostty (`cmd-left` → `ctrl-a`, `alt-left` → `\u001bb`, `cmd-backspace` → `ctrl-u`).
+
+**Files:** Modify `src/keys.rs`, `src/terminal_view.rs`.
+
+**Interfaces:**
+- **Add to `keys.rs`:** `pub fn mac_shortcut(key: &str, cmd: bool, alt: bool, ctrl: bool, shift: bool) -> Option<&'static [u8]>`. It matches only when exactly that one modifier is held:
+
+  | Key + modifier | Bytes |
+  |---|---|
+  | `left` + cmd | `\x01` |
+  | `right` + cmd | `\x05` |
+  | `backspace` + cmd | `\x15` |
+  | `left` + option | `\x1bb` |
+  | `right` + option | `\x1bf` |
+
+  Anything else returns `None`.
+- **Change `TerminalView::on_key_down`:** call `mac_shortcut` **before** the existing `if m.platform { return }`. On `Some(bytes)`, do exactly what a keystroke does: `core.input`, the tracker's `on_input`, then `stop_propagation`.
+- **Leave alone:** the key bindings for other cmd keys (cmd-c / cmd-v / cmd-up / cmd-down…). GPUI dispatches them first.
+
+- [ ] **Step 1: Failing test** in `keys.rs`:
+
+```rust
+#[test]
+fn mac_line_and_word_shortcuts() {
+    assert_eq!(mac_shortcut("left", true, false, false, false), Some(&b"\x01"[..]));
+    assert_eq!(mac_shortcut("right", true, false, false, false), Some(&b"\x05"[..]));
+    assert_eq!(mac_shortcut("backspace", true, false, false, false), Some(&b"\x15"[..]));
+    assert_eq!(mac_shortcut("left", false, true, false, false), Some(&b"\x1bb"[..]));
+    assert_eq!(mac_shortcut("right", false, true, false, false), Some(&b"\x1bf"[..]));
+    assert_eq!(mac_shortcut("left", true, false, false, true), None); // cmd-shift-left: not ours
+    assert_eq!(mac_shortcut("up", true, false, false, false), None); // cmd-up scrolls (binding)
+    assert_eq!(mac_shortcut("left", false, false, false, false), None);
+}
+```
+
+- [ ] **Step 2: Run** `cargo test mac_line`. Expected: compile error.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Gates:**
+  - `cargo test`: 106 passed.
+  - `cargo build`: 0 warnings of ours.
+  - `cargo fmt --check`: clean.
+- [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m6): Mac line and word keys (cmd/option + arrows, cmd-backspace)"`
+
 ### Task 7: On screen — 👀 ⬜
 
 Run `cargo run` and report.
@@ -512,6 +566,7 @@ Run `cargo run` and report.
 - [ ] **Override:** add `background = #000000` under the theme. The background is black and the rest of the theme stays.
 - [ ] **Broken settings:** temporarily add `background = notacolor`, `font-size = 0.3` and `config-file = /nope`. fuxx still starts at size 13, and logs one line each.
 - [ ] **Ligatures:** only if you have a ligature font such as JetBrains Mono or Fira Code. `=> != >=` join, and the text after them stays aligned. `font-feature = -calt` turns them off. Otherwise, "skipped".
+- [ ] **Mac keys (Task 6b):** at the zsh prompt, type a few words. cmd-←/→ jumps to the start/end of the line, option-←/→ moves by words, and cmd-Backspace deletes to the start of the line.
 - [ ] **M5 behaviours unchanged:** selection is visible, cmd-click links work, and the rings change.
 - [ ] Keep or delete `~/.config/fuxx/config` afterwards: it's yours now.
 
