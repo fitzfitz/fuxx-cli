@@ -22,7 +22,7 @@ use crate::presets::Preset;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
-use crate::split_tree::{Axis, Dir, Node, Rect};
+use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
@@ -182,6 +182,7 @@ impl Workspace {
                             self.open_session(launch, None, window, cx);
                         }
                         if !self.sessions.is_empty() {
+                            self.restore_layouts(state.layouts, state.sessions.len());
                             self.collapsed = state.collapsed;
                             let last = self.sessions.items().len() - 1;
                             let active = state.active.unwrap_or(0).min(last);
@@ -210,6 +211,39 @@ impl Workspace {
         self.open_session(Launch::default(), None, window, cx);
     }
 
+    /// The layouts as session indices, for the file. A tree with a pane that isn't a session
+    /// (never, by the layout invariant) is left out rather than saved wrong.
+    fn saved_layouts(&self) -> Vec<Node<usize>> {
+        let index_of = |id: EntityId| self.sessions.position(|s| s.view.entity_id() == id);
+        self.layouts
+            .iter()
+            .filter(|t| t.leaves().into_iter().all(|id| index_of(id).is_some()))
+            .map(|t| t.map(&|id| index_of(id).unwrap_or(0)))
+            .collect()
+    }
+
+    /// Put the saved split layouts back on the restored sessions. Saved indices follow the saved
+    /// order, so if a session didn't start they no longer line up and every session stays alone.
+    fn restore_layouts(&mut self, saved: Vec<Node<usize>>, saved_count: usize) {
+        let views: Vec<EntityId> = self
+            .sessions
+            .items()
+            .iter()
+            .map(|s| s.view.entity_id())
+            .collect();
+        if views.len() != saved_count {
+            eprintln!("[fuxx] restore: a session didn't start, so split layouts weren't restored");
+            return;
+        }
+        let (trees, changed) = split_tree::sanitize(saved, views.len());
+        if changed {
+            eprintln!(
+                "[fuxx] restore: some split layouts didn't match the saved sessions; those sessions open on their own"
+            );
+        }
+        self.layouts = trees.iter().map(|t| t.map(&|i| views[i])).collect();
+    }
+
     /// Write the session list to the sessions file (not while restoring). One log line on failure.
     fn save(&self) {
         if self.restoring {
@@ -220,7 +254,7 @@ impl Workspace {
             version: restore::VERSION,
             active: self.sessions.active_index(),
             collapsed: self.collapsed.clone(),
-            layouts: vec![], // filled in by M8 Task 5
+            layouts: self.saved_layouts(),
             sessions: self
                 .sessions
                 .items()
@@ -445,6 +479,7 @@ impl Workspace {
             return;
         };
         let was_active = self.sessions.active_index() == Some(index);
+        self.dragging = None; // the layout changes under a drag
         // The pane's neighbour takes its space, and the focus if it had it.
         let mut next = None;
         if let Some(pos) = self.layouts.iter().position(|t| t.contains(id)) {
@@ -517,7 +552,7 @@ impl Workspace {
         };
         if let Some(tree) = self.layouts.iter_mut().find(|t| t.contains(active)) {
             tree.equalize();
-            // M8 Task 5: save the layouts here.
+            self.save();
             cx.notify();
         }
     }
@@ -558,7 +593,7 @@ impl Workspace {
 
     fn end_drag(&mut self, cx: &mut Context<Self>) {
         if self.dragging.take().is_some() {
-            // M8 Task 5: save the layouts here (once per drag, not on every move).
+            self.save(); // once per drag, not on every move
             cx.notify();
         }
     }
@@ -567,6 +602,12 @@ impl Workspace {
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(project) = self.sessions.active().and_then(|s| s.project.clone()) {
             self.collapsed.retain(|c| *c != project);
+        }
+        // A divider drag belongs to the layout it started in; drop it if another is shown now.
+        if let Some((pane, _)) = &self.dragging
+            && !self.shown_layout().is_some_and(|t| t.contains(*pane))
+        {
+            self.dragging = None;
         }
         self.focus_active(window, cx);
         self.save();
