@@ -381,7 +381,7 @@ Run `cargo run` and report.
 - The current row isn't scrolled into view; the first font-list scan takes time; each click re-lists fonts.
 - Picking a font writes one `font-family` line (extra fallbacks dropped); the ligature switch copies features from included files into the main file.
 - `theme = light:A,dark:B` highlights no row; `theme = nord` (wrong case) shows defaults while "Nord" is highlighted.
-- The bundled fonts' licence texts aren't inside the binary yet: they must go into any DMG / `.app` (M4b script, M11).
+- The bundled fonts' licence texts aren't inside the binary yet: they must go into any DMG / `.app` (M4b script, M12).
 
 
 | Limitation | Lands in |

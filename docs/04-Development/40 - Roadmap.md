@@ -28,7 +28,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 - [[42 - Milestone 2 - Agent State Detection]] — ✅ — detect working / done / waiting per session (reuse v1's OSC-9 work)
 - [[43 - Milestone 3 - Many Sessions]] — ✅ — session manager + sidebar; quick-switch
 - [[44 - Milestone 4 - Notification Rings]] — ✅ — per-session status rings + background notifications. **← usable product.**
-- [[44b - Milestone 4b - Tester Build]] — ✅ — wrap the release binary in an **unsigned, universal (Apple Silicon + Intel, D7) `.app`**, ship it in a versioned **DMG** (drag to Applications) so testers can try the MVP. *Added 2026-10-26 on request.* No signing/notarization (that stays M11), so testers clear Gatekeeper once per version (System Settings → Privacy & Security → Open Anyway). Opened from Finder, detection relies on the quiet timer and screen patterns (D8). Plan: [[M4b Plan - Tester Build]].
+- [[44b - Milestone 4b - Tester Build]] — ✅ — wrap the release binary in an **unsigned, universal (Apple Silicon + Intel, D7) `.app`**, ship it in a versioned **DMG** (drag to Applications) so testers can try the MVP. *Added 2026-10-26 on request.* No signing/notarization (that stays M12), so testers clear Gatekeeper once per version (System Settings → Privacy & Security → Open Anyway). Opened from Finder, detection relies on the quiet timer and screen patterns (D8). Plan: [[M4b Plan - Tester Build]].
 
 ## Phase 2 — Daily driver (polish enough to live in it)
 
@@ -50,10 +50,16 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 - **M9 — Socket/scripting API** per session (cmux-style programmability).
 - **M10 — cmux extras:** in-app browser · SSH workspaces · remote/tmux daemon. Each is its own project.
 
-## Phase 4 — Distribution
+## Phase 4 — Polish and distribution
 
-- **M11 — Ship as a real `.app`:** take M4b's bundle and sign/notarize it → fixes the notification identity (vs "Script Editor"), and **clicking a notification switches to that session** (moved from M4 by D5, 2026-10-26). Universal (Apple Silicon + Intel) per **D7**, decided 2026-10-26.
-- **M12 — Homebrew cask** for install. (Later: Windows support.)
+> [!note] Renumbered 2026-10-27, on request
+> A new **M11 — UI/UX uplift** comes before shipping. The signed `.app` moved from M11 to **M12**, and Homebrew
+> from M12 to **M13**. Older notes and log entries written before this date use the old numbers.
+
+- **M11 — UI/UX uplift** *(added 2026-10-27 on request)*: polish how fuxx looks and feels before the first signed
+  release. What's in it is decided together when we reach it (brainstorm first); nothing is assumed yet.
+- **M12 — Ship as a real `.app`:** take M4b's bundle and sign/notarize it → fixes the notification identity (vs "Script Editor"), and **clicking a notification switches to that session** (moved from M4 by D5, 2026-10-26). Universal (Apple Silicon + Intel) per **D7**, decided 2026-10-26.
+- **M13 — Homebrew cask** for install. (Later: Windows support.)
 
 ---
 

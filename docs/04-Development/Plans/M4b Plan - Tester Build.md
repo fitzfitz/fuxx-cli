@@ -47,11 +47,11 @@ banners) on an **Apple Silicon or Intel** Mac.
 
 - Everything from the M0–M4 plans. **No new crates, no Rust source changes.** `cargo test` stays at **61 passed**.
 - **D7:** the binary in the app is **universal**: `arm64` + `x86_64` slices, both with minimum macOS **11.0** (`MACOSX_DEPLOYMENT_TARGET=11.0`, matching `LSMinimumSystemVersion`).
-- **Unsigned for Apple:** ad-hoc seal only (`codesign --sign -`). **No Developer ID, no notarization** (M11). Testers click "Open Anyway" once per version.
+- **Unsigned for Apple:** ad-hoc seal only (`codesign --sign -`). **No Developer ID, no notarization** (M12). Testers click "Open Anyway" once per version.
 - **D8:** the shell's environment stays inherited as-is. Opened from Finder, Claude Code sends no notifications; rings rely on the 3 s quiet timer and the screen's question patterns. Nothing is built for this.
 - Version comes **only** from `Cargo.toml`'s `version`. One DMG per version; the script never overwrites one.
-- Bundle identifier: **`io.github.fitzfitz.fuxx`** (from the GitHub repo owner). M11 signs with it, so it shouldn't change later.
-- Banners still say **"Script Editor"** (osascript; fixed in M11). Expected.
+- Bundle identifier: **`io.github.fitzfitz.fuxx`** (from the GitHub repo owner). M12 signs with it, so it shouldn't change later.
+- Banners still say **"Script Editor"** (osascript; fixed in M12). Expected.
 - Scripts: `#!/usr/bin/env bash`, `set -euo pipefail`, executable. Never `cmd | grep -q` (under `pipefail` an early-exiting `grep` can fail the pipe): capture the output first.
 
 ## Review Focus
@@ -75,8 +75,8 @@ banners) on an **Apple Silicon or Intel** Mac.
 
 ### Task 0: Record D7 + D8 — ✅
 
-- [x] [[00 - Plan Tracker (Start Here)]]: **D7** ✅ "universal (Apple Silicon + Intel), decided 2026-10-26; affects M4b, M11, M12". **D8** ✅ "accept the weaker detection, decided 2026-10-26". M4b row → this plan, ⬜ 0/4. **Where we are** → M4b, next action Task 1. Fix the stale "merged into `master` locally, not pushed" (M4 is pushed).
-- [x] [[40 - Roadmap]]: M4b line → universal + D8 outcome, link this plan. M11 line: drop "Open decision D7" (decided).
+- [x] [[00 - Plan Tracker (Start Here)]]: **D7** ✅ "universal (Apple Silicon + Intel), decided 2026-10-26; affects M4b, M12, M13". **D8** ✅ "accept the weaker detection, decided 2026-10-26". M4b row → this plan, ⬜ 0/4. **Where we are** → M4b, next action Task 1. Fix the stale "merged into `master` locally, not pushed" (M4 is pushed).
+- [x] [[40 - Roadmap]]: M4b line → universal + D8 outcome, link this plan. M12 line: drop "Open decision D7" (decided).
 - [x] Create [[44b - Milestone 4b - Tester Build]] (goal, checklist, success check, tester install steps).
 - [x] [[60 - Progress Log]]: entry "M4b plan written; D7 + D8 decided".
 - [x] Commit *(when you say so)*: `git add docs && git commit -m "docs(m4b): D7 universal, D8 accept weaker detection, M4b plan"`
@@ -172,9 +172,9 @@ The AI prepares a "downloaded" copy; **you** do the rest and report what you see
 
 | Limitation | Lands in |
 |---|---|
-| Testers click "Open Anyway" once per new version (ad-hoc seal, not Developer ID) | M11 (signing + notarization) |
+| Testers click "Open Anyway" once per new version (ad-hoc seal, not Developer ID) | M12 (signing + notarization) |
 | Opened from Finder, Claude Code sends no notifications; Done/Waiting come from the quiet timer and screen patterns (D8) | Revisit if testers report missed rings |
-| Banners say "Script Editor"; clicking one opens Script Editor | M11 (D5) |
+| Banners say "Script Editor"; clicking one opens Script Editor | M12 (D5) |
 | No app icon (macOS shows the generic one) | Not in the plan; ask if wanted |
 | The Intel slice is only checked under Rosetta, not on a real Intel Mac | A tester with an Intel Mac |
 | A tester whose shell config sets no locale may see accented text garbled when fuxx is opened from Finder (macOS sets no `LANG` for apps; yours is fine) | Revisit if a tester reports it |

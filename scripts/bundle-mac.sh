@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the tester DMG (M4b): a universal (Apple Silicon + Intel, D7) fuxx.app in
 # target/dist/fuxx-<version>.dmg. Ad-hoc signed only: Developer ID signing and notarization are
-# M11, so testers click "Open Anyway" once per version. The version comes from Cargo.toml.
+# M12, so testers click "Open Anyway" once per version. The version comes from Cargo.toml.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -35,7 +35,7 @@ mkdir -p "$licenses"
 cp assets/fonts/LICENSE-* assets/fonts/NOTICE-* "$licenses/"
 cp assets/themes/LICENSE-* "$licenses/"
 cp assets/themes/NOTICE.md "$licenses/NOTICE-Themes.md"
-# Ad-hoc seal over the whole bundle (binary + Info.plist). Not a Developer ID signature: M11.
+# Ad-hoc seal over the whole bundle (binary + Info.plist). Not a Developer ID signature: M12.
 codesign --force --sign - "$app"
 ln -s /Applications "$stage/Applications"
 

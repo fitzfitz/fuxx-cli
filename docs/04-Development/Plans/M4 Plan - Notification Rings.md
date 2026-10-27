@@ -15,7 +15,7 @@ updated: 2026-10-26
 | **Status** | ✅ Done 2026-10-26 (commits `5af9f85`, `a0990fc` + docs on `m4-notification-rings`) |
 | **Tasks done** | 4 / 4 |
 | **▶ Pick up here** | M4 complete → M4b (tester build), plan to be written |
-| **Decisions used** | ✅ **D5** = notification click → session moves to M11 (decided 2026-10-26) · ✅ **D4** = Idle ring |
+| **Decisions used** | ✅ **D5** = notification click → session moves to M12 (decided 2026-10-26) · ✅ **D4** = Idle ring |
 | **Needs your eyes** | ✅ Task 3 confirmed by you on 2026-10-26 (all checks, incl. real `claude` runs) |
 
 **Goal:** Every session row in the sidebar shows a live **status ring**, and when a session you're
@@ -48,8 +48,8 @@ silent. If fuxx is in the background, even the active session notifies you.
 - Notifications go **only** through `osascript` (v1's `notifier::fire`), run **off the UI thread** (it blocks ~100 ms).
 - Session titles come from the programs (OSC 0/2) and are **untrusted**: escape them for AppleScript (`applescript_escape`).
 - Notify only on a **change** into Done/Waiting, never for Working/Idle, never twice for the same state.
-- Banners are attributed to **"Script Editor"** until the app is bundled (M11). That's expected.
-- **D5:** "click a notification → jump to the session" is **not built in M4** (osascript can't deliver clicks back). It's recorded for M11.
+- Banners are attributed to **"Script Editor"** until the app is bundled (M12). That's expected.
+- **D5:** "click a notification → jump to the session" is **not built in M4** (osascript can't deliver clicks back). It's recorded for M12.
 
 ## Review Focus
 
@@ -72,8 +72,8 @@ silent. If fuxx is in the background, even the active session notifies you.
 
 ### Task 0: Decide D5 — ✅
 
-- [x] *(Decided 2026-10-26: moved to M11, after comparing how Ghostty, iTerm2, Warp and Zed do it.)* In [[00 - Plan Tracker (Start Here)]] → **D5**. Recommended: move "clicking a notification
-  switches to that session" to **M11** (a real `.app` can receive notification clicks). If you
+- [x] *(Decided 2026-10-26: moved to M12, after comparing how Ghostty, iTerm2, Warp and Zed do it.)* In [[00 - Plan Tracker (Start Here)]] → **D5**. Recommended: move "clicking a notification
+  switches to that session" to **M12** (a real `.app` can receive notification clicks). If you
   choose otherwise, this plan needs a new task *before* building. Don't improvise it.
 
 ### Task 1: `notifier.rs` — ✅
@@ -478,12 +478,12 @@ impl Render for Workspace {
 - [x] Start the loop on the active session, then **click another app** so fuxx is in the background. When it finishes you **do** get a banner.
 - [x] Real agents: `claude` in two sessions with different tasks; work in a third. You get pulled back exactly when each finishes or asks.
 - [x] While a banner fires, typing in the active session stays smooth (no hitch).
-- [x] *(Expected, not a bug:)* banners say **Script Editor**, and clicking one opens Script Editor (D5 → M11).
+- [x] *(Expected, not a bug:)* banners say **Script Editor**, and clicking one opens Script Editor (D5 → M12).
 
 ### Task 4: Update the docs (this completes Phase 1) — ✅
 
-- [x] [[44 - Milestone 4 - Notification Rings]]: tick the checklist (the click item → "moved to M11 per D5"); **Status:: ✅ Done**.
-- [x] [[40 - Roadmap]]: M4 → ✅, and add "notification click → session" under **M11**.
+- [x] [[44 - Milestone 4 - Notification Rings]]: tick the checklist (the click item → "moved to M12 per D5"); **Status:: ✅ Done**.
+- [x] [[40 - Roadmap]]: M4 → ✅, and add "notification click → session" under **M12**.
 - [x] [[00 - Plan Tracker (Start Here)]]: M4 → ✅ 4/4; **Where we are** → "Phase 1 complete. Next: plan M5 (Phase 2)." *(Superseded: M4b, the tester build added 2026-10-26, comes next.)*
 - [x] [[60 - Progress Log]]: new entry ("first genuinely useful version").
 - [x] Commit docs *(when you say so)*.
@@ -505,7 +505,7 @@ impl Render for Workspace {
 
 | Limitation | Lands in |
 |---|---|
-| Clicking a notification doesn't jump to the session; banner says "Script Editor" | M11 `.app` bundle (D5) |
+| Clicking a notification doesn't jump to the session; banner says "Script Editor" | M12 `.app` bundle (D5) |
 | Rings don't animate (Working is a solid amber dot) | Polish, if wanted |
 | No notification history / activity feed | P2 in [[11 - Features]] |
 | A green/red ring stays lit after you switch to that session; it goes grey once you type (the ring shows the detected state, not "unseen") | By design (M2 detection); revisit if it bites |
