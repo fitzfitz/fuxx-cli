@@ -7,8 +7,8 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 
 use crate::terminal::{CellPx, TermDims};
 
-/// The user's login shell (`$SHELL`, run as `-zsh` etc.), started in `cwd` or `$HOME`.
-pub fn shell_command(cwd: Option<&Path>) -> CommandBuilder {
+/// The user's login shell (`$SHELL`, run as `-zsh` etc.), started in `cwd` or `$HOME`, with `env` added.
+pub fn shell_command(cwd: Option<&Path>, env: &[(String, String)]) -> CommandBuilder {
     let mut cmd = CommandBuilder::new_default_prog();
     match cwd {
         Some(dir) => cmd.cwd(dir),
@@ -22,6 +22,9 @@ pub fn shell_command(cwd: Option<&Path>) -> CommandBuilder {
     // terminal inherits *that* terminal's TERM. `alacritty` terminfo isn't on stock macOS.
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
     cmd
 }
 

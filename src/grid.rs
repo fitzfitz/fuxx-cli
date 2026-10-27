@@ -78,6 +78,67 @@ pub fn screen_tail_text<L: EventListener>(term: &Term<L>, n: usize) -> String {
     tail.join("\n")
 }
 
+/// How much of a terminal's text to read out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Last and All are used from M9 Task 5
+pub enum TextScope {
+    /// The live screen.
+    Screen,
+    /// The last n non-blank lines of history + screen.
+    Last(usize),
+    /// History, then the screen.
+    All,
+}
+
+/// Plain text of the terminal, one line per logical line: wrapped rows are joined, wide-char
+/// spacers skipped, trailing spaces trimmed, and blank lines at either end dropped.
+pub fn text_lines<L: EventListener>(term: &Term<L>, scope: TextScope) -> String {
+    let grid = term.grid();
+    let first = match scope {
+        TextScope::Screen => 0,
+        _ => -(grid.history_size() as i32),
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for row in first..term.screen_lines() as i32 {
+        let cells = &grid[Line(row)];
+        for c in 0..term.columns() {
+            let cell = &cells[Column(c)];
+            if !cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                current.push(cell.c);
+            }
+        }
+        if cells[Column(term.columns() - 1)]
+            .flags
+            .contains(Flags::WRAPLINE)
+        {
+            continue; // this row continues on the next
+        }
+        lines.push(current.trim_end().to_string());
+        current.clear();
+    }
+    if !current.is_empty() {
+        lines.push(current.trim_end().to_string());
+    }
+    if let TextScope::Last(n) = scope {
+        lines.retain(|l| !l.is_empty());
+        let skip = lines.len().saturating_sub(n);
+        lines.drain(..skip);
+    }
+    let start = lines
+        .iter()
+        .position(|l| !l.is_empty())
+        .unwrap_or(lines.len());
+    let end = lines
+        .iter()
+        .rposition(|l| !l.is_empty())
+        .map_or(start, |i| i + 1);
+    lines[start..end].join("\n")
+}
+
 /// Copy the visible screen out of the `Term` (call while holding its lock, then release it).
 pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot {
     let rows = term.screen_lines();
@@ -282,6 +343,31 @@ mod tests {
         let mut processor: Processor<StdSyncHandler> = Processor::new();
         processor.advance(&mut term, bytes);
         term
+    }
+
+    fn term(cols: usize, rows: usize) -> Term<VoidListener> {
+        Term::new(Config::default(), &TermDims { cols, rows }, VoidListener)
+    }
+
+    fn feed(term: &mut Term<VoidListener>, text: &str) {
+        let mut processor: Processor<StdSyncHandler> = Processor::new();
+        processor.advance(term, text.as_bytes());
+    }
+
+    #[test]
+    fn text_lines_screen_last_and_all() {
+        let mut t = term(20, 3);
+        feed(&mut t, "one\r\ntwo\r\nthree\r\nfour");
+        assert_eq!(text_lines(&t, TextScope::Screen), "two\nthree\nfour");
+        assert_eq!(text_lines(&t, TextScope::Last(2)), "three\nfour");
+        assert_eq!(text_lines(&t, TextScope::All), "one\ntwo\nthree\nfour");
+    }
+
+    #[test]
+    fn text_lines_joins_wrapped_rows() {
+        let mut t = term(5, 3);
+        feed(&mut t, "abcdefgh");
+        assert_eq!(text_lines(&t, TextScope::Screen), "abcdefgh");
     }
 
     fn cell(ch: char, fg: Rgb, bg: Rgb) -> CellView {

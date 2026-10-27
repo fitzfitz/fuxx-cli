@@ -23,7 +23,7 @@ use gpui::{
 };
 
 use crate::appearance::Appearance;
-use crate::grid::{self, GridSnapshot};
+use crate::grid::{self, GridSnapshot, TextScope};
 use crate::keys;
 use crate::links::Link;
 use crate::mouse::{self, Button, Mods, MouseAction, ScrollAccumulator};
@@ -93,18 +93,20 @@ impl Focusable for TerminalView {
 
 impl TerminalView {
     /// Start a login shell (in `cwd`, else home) and wrap it in a new view entity (focused).
-    /// `startup` is typed into the shell right after it starts, with Enter.
+    /// `startup` is typed into the shell right after it starts, with Enter; `env` is added to
+    /// the shell's environment.
     pub fn spawn(
         window: &mut Window,
         cx: &mut App,
         cwd: Option<&Path>,
         startup: Option<&str>,
+        env: &[(String, String)],
     ) -> Result<Entity<Self>, String> {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         // 80x24 until the first paint measures the real size and resizes.
         let theme = cx.global::<Appearance>().theme;
         let core = TerminalCore::spawn(
-            pty::shell_command(cwd),
+            pty::shell_command(cwd, env),
             TermDims { cols: 80, rows: 24 },
             tx,
             theme,
@@ -114,6 +116,31 @@ impl TerminalView {
             core.write(format!("{cmd}\r").as_bytes());
         }
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
+    }
+
+    /// The terminal's text (see `grid::TextScope`).
+    #[allow(dead_code)] // used from M9 Task 5
+    pub fn text(&self, scope: TextScope) -> String {
+        self.core.text(scope)
+    }
+
+    /// Type bytes as if from the keyboard (snaps to the bottom).
+    #[allow(dead_code)] // used from M9 Task 5
+    pub fn type_bytes(&self, bytes: &[u8]) {
+        self.core.input(bytes);
+    }
+
+    /// Paste text, bracketed when the program asked for it.
+    #[allow(dead_code)] // used from M9 Task 5
+    pub fn paste(&self, text: &str) {
+        let bracketed = self.core.mode().contains(TermMode::BRACKETED_PASTE);
+        self.core.input(&keys::paste_bytes(text, bracketed));
+    }
+
+    /// Whether the program wants application-cursor arrow keys.
+    #[allow(dead_code)] // used from M9 Task 5
+    pub fn app_cursor(&self) -> bool {
+        self.core.mode().contains(TermMode::APP_CURSOR)
     }
 
     fn new(
@@ -453,12 +480,11 @@ impl TerminalView {
     }
 
     /// cmd-v: paste as user input (snaps to the bottom, clears the selection, counts as typing).
-    fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+    fn paste_clipboard(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        let bracketed = self.core.mode().contains(TermMode::BRACKETED_PASTE);
-        self.core.input(&keys::paste_bytes(&text, bracketed));
+        self.paste(&text);
         if let Some(status) = self.tracker.on_input(Instant::now()) {
             self.status_changed(status, cx);
         }
@@ -527,7 +553,7 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_action(cx.listener(Self::copy))
-            .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::paste_clipboard))
             .on_action(cx.listener(Self::scroll_page_up))
             .on_action(cx.listener(Self::scroll_page_down))
             .child(
