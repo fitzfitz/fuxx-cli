@@ -5,8 +5,12 @@
 //! messages go to stdout; logs go to stderr. Each tool is one protocol request, and its text is
 //! what the matching `fuxx` command prints, so the CLI and MCP read the same.
 
+use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
@@ -19,6 +23,11 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18"];
 
 /// How long `wait` blocks when the agent gives no timeout, so a tool call can't hang forever.
 const DEFAULT_WAIT_SECS: u64 = 600;
+/// The longest `wait` an agent can ask for.
+const MAX_WAIT_SECS: u64 = 6 * 60 * 60;
+
+/// How long, at the end of input, calls still running get to finish and answer.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// JSON-RPC error codes.
 const PARSE_ERROR: i64 = -32700;
@@ -163,7 +172,8 @@ fn schema(name: &str) -> Value {
         ),
         "send" => (
             "Type text into a session as if typed on the keyboard. Set enter to press Enter \
-             after it. To reply to an agent that is waiting, prefer answer.",
+             after it. To reply to an agent that is waiting, prefer answer. Give a target; \
+             omit target only to act on your own session.",
             json!({
                 "target": target(),
                 "text": text("The text to type."),
@@ -172,7 +182,8 @@ fn schema(name: &str) -> Value {
             &["text"],
         ),
         "press_keys" => (
-            "Press keys in a session, in order.",
+            "Press keys in a session, in order. Give a target; omit target only to act on your \
+             own session.",
             json!({
                 "target": target(),
                 "keys": {
@@ -212,7 +223,8 @@ fn schema(name: &str) -> Value {
         ),
         "answer" => (
             "Answer a waiting session: types the text and presses Enter. Refused unless the \
-             session is waiting, so it never types into a busy agent.",
+             session is waiting, so it never types into a busy agent. Give a target; omit \
+             target only to act on your own session.",
             json!({
                 "target": target(),
                 "text": text("The answer, e.g. y, 1, or a sentence."),
@@ -224,7 +236,10 @@ fn schema(name: &str) -> Value {
             "Block until a session (or any session) meets a condition: reaches a status \
              (default: waiting, meaning it needs input), changes status, its program exits, or \
              some text appears on its screen. Returns the id of the session that met it; fails \
-             if the timeout passes first.",
+             if the timeout passes first. Give a target (another session) or any: true. \
+             Omitting target waits on your own session, which is busy while you call this, so \
+             it would only time out. Waits up to `timeout` seconds (default 600, max 21600). \
+             If your MCP client gives up sooner, pass a shorter timeout and call again.",
             json!({
                 "target": target(),
                 "any": switch("Wait on every session instead of one; returns the first to meet \
@@ -241,24 +256,28 @@ fn schema(name: &str) -> Value {
                     "type": "number",
                     "minimum": 0,
                     "description": format!(
-                        "Seconds to wait before giving up (default {DEFAULT_WAIT_SECS})."
+                        "Seconds to wait before giving up (default {DEFAULT_WAIT_SECS}, max \
+                         {MAX_WAIT_SECS})."
                     ),
                 },
             }),
             &[],
         ),
         "close_session" => (
-            "Close a session; the program running in it is stopped.",
+            "Close a session; the program running in it is stopped. Give a target; omit target \
+             only to act on your own session.",
             json!({ "target": target() }),
             &[],
         ),
         "focus" => (
-            "Show and focus a session in the fuxx window, bringing fuxx to the front.",
+            "Show and focus a session in the fuxx window, bringing fuxx to the front. Give a \
+             target; omit target only to act on your own session.",
             json!({ "target": target() }),
             &[],
         ),
         "rename" => (
-            "Rename a session. An empty name restores the automatic one.",
+            "Rename a session. An empty name restores the automatic one. Give a target; omit \
+             target only to act on your own session.",
             json!({ "target": target(), "name": text("The new name.") }),
             &["name"],
         ),
@@ -309,7 +328,8 @@ fn request_for(tool: &Tool, args: Option<&Value>) -> Result<Request, String> {
                 .as_f64()
                 .filter(|s| s.is_finite() && *s >= 0.0)
                 .ok_or("timeout must be a number of seconds")?,
-        };
+        }
+        .min(MAX_WAIT_SECS as f64);
         params.insert("timeout_ms".into(), json!((secs * 1000.0).round() as u64));
     }
     Ok(Request {
@@ -329,7 +349,9 @@ fn call_tool(
     params: &Value,
     call: &mut dyn FnMut(Request) -> Result<Value, ApiError>,
 ) -> Result<Value, (i64, String)> {
-    let name = params["name"].as_str().unwrap_or_default();
+    let Some(name) = params["name"].as_str() else {
+        return Err((INVALID_PARAMS, "tools/call needs a tool name".into()));
+    };
     let Some(tool) = TOOLS.iter().find(|t| t.name == name) else {
         return Err((INVALID_PARAMS, format!("unknown tool: {name}")));
     };
@@ -469,30 +491,43 @@ fn send(reply: &Value) {
     let _ = writeln!(out, "{reply}").and_then(|_| out.flush());
 }
 
-/// Serve MCP on stdio until standard input closes; returns the exit code. `socket` is the fuxx
-/// socket, `caller` the session this runs in. Each tool call runs on its own thread, so a long
-/// `wait` doesn't hold up pings or other calls; calls still running when input closes are
-/// finished and answered before it returns.
-pub fn run(socket: Option<PathBuf>, caller: Option<u64>) -> i32 {
-    match &socket {
-        Some(path) => eprintln!("[fuxx] mcp: forwarding to {}", path.display()),
-        None => eprintln!("[fuxx] mcp: $HOME and FUXX_SOCKET are unset; every tool will fail"),
-    }
-    let mut stdin = std::io::stdin().lock();
-    let mut buf = Vec::new();
-    let mut calls: Vec<std::thread::JoinHandle<()>> = Vec::new();
-    let code = loop {
-        buf.clear();
-        match stdin.read_until(b'\n', &mut buf) {
-            Ok(0) => break 0,
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("[fuxx] mcp: couldn't read standard input: {e}");
-                break 1;
-            }
+/// A lock that a panicked call thread can't poison for the rest.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Sends a protocol request to fuxx.
+type Call = Arc<dyn Fn(Request) -> Result<Value, ApiError> + Send + Sync>;
+/// Writes one reply line.
+type Out = Arc<dyn Fn(&Value) + Send + Sync>;
+
+/// The message loop without the stdio: input lines in, reply lines out through `out`.
+struct Server {
+    call: Call,
+    out: Out,
+    /// The ids (as JSON text) of tool calls still running whose replies are wanted; a
+    /// cancelled call is taken out, so its reply is dropped.
+    in_flight: Arc<Mutex<HashSet<String>>>,
+    calls: Vec<JoinHandle<()>>,
+}
+
+impl Server {
+    fn new(call: Call, out: Out) -> Self {
+        Self {
+            call,
+            out,
+            in_flight: Arc::default(),
+            calls: Vec::new(),
         }
-        let msg = match std::str::from_utf8(&buf).map_err(|e| e.to_string()) {
-            Ok(line) if line.trim().is_empty() => continue,
+    }
+
+    /// Handle one input line. Each tool call runs on its own thread, so a long `wait` doesn't
+    /// hold up pings or other calls.
+    fn line(&mut self, bytes: &[u8]) {
+        let msg = match std::str::from_utf8(bytes).map_err(|e| e.to_string()) {
+            Ok(line) if line.trim().is_empty() => return,
             Ok(line) => parse_line(line),
             Err(e) => Err(error_reply(
                 Value::Null,
@@ -502,29 +537,74 @@ pub fn run(socket: Option<PathBuf>, caller: Option<u64>) -> i32 {
         };
         let msg = match msg {
             Ok(msg) => msg,
-            Err(reply) => {
-                send(&reply);
-                continue;
-            }
+            Err(reply) => return (self.out)(&reply),
         };
-        let is_tool_call = msg["method"] == "tools/call";
-        let socket = socket.clone();
-        let serve = move || {
-            let mut call = |request| forward(socket.as_deref(), caller, request);
+        if msg["method"] == "notifications/cancelled" {
+            // The call may still finish; only its reply is dropped.
+            let id = msg["params"]["requestId"].to_string();
+            lock(&self.in_flight).remove(&id);
+            return;
+        }
+        if msg["method"] != "tools/call" {
+            let mut call = |request: Request| (self.call)(request);
             if let Some(reply) = handle(&msg, &mut call) {
-                send(&reply);
+                (self.out)(&reply);
             }
-        };
-        if is_tool_call {
-            calls.retain(|call| !call.is_finished());
-            calls.push(std::thread::spawn(serve));
-        } else {
-            serve();
+            return;
+        }
+        let id = msg["id"].to_string();
+        lock(&self.in_flight).insert(id.clone());
+        let (call, out, in_flight) = (self.call.clone(), self.out.clone(), self.in_flight.clone());
+        self.calls.retain(|c| !c.is_finished());
+        self.calls.push(std::thread::spawn(move || {
+            let mut call = |request: Request| call(request);
+            let reply = handle(&msg, &mut call);
+            if lock(&in_flight).remove(&id)
+                && let Some(reply) = reply
+            {
+                out(&reply);
+            }
+        }));
+    }
+
+    /// At the end of input: calls still running get until `grace` to finish and answer. The
+    /// rest (pending waits) are abandoned; their sockets close when the process exits, which
+    /// ends them in fuxx.
+    fn finish(mut self, grace: Duration) {
+        let deadline = Instant::now() + grace;
+        loop {
+            self.calls.retain(|c| !c.is_finished());
+            if self.calls.is_empty() || Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Serve MCP on stdio until standard input closes; returns the exit code. `socket` is the fuxx
+/// socket, `caller` the session this runs in.
+pub fn run(socket: Option<PathBuf>, caller: Option<u64>) -> i32 {
+    match &socket {
+        Some(path) => eprintln!("[fuxx] mcp: forwarding to {}", path.display()),
+        None => eprintln!("[fuxx] mcp: $HOME and FUXX_SOCKET are unset; every tool will fail"),
+    }
+    let call: Call = Arc::new(move |request| forward(socket.as_deref(), caller, request));
+    let mut server = Server::new(call, Arc::new(send));
+    let mut stdin = std::io::stdin().lock();
+    let mut buf = Vec::new();
+    let code = loop {
+        buf.clear();
+        match stdin.read_until(b'\n', &mut buf) {
+            Ok(0) => break 0,
+            Ok(_) => server.line(&buf),
+            Err(e) => {
+                eprintln!("[fuxx] mcp: couldn't read standard input: {e}");
+                break 1;
+            }
         }
     };
-    for call in calls {
-        let _ = call.join();
-    }
+    server.finish(EXIT_GRACE);
     code
 }
 
@@ -756,5 +836,149 @@ mod tests {
             .unwrap();
             assert_eq!(got.as_deref(), Some(method), "{name}");
         }
+    }
+
+    #[test]
+    fn wait_timeouts_are_capped_and_must_be_numbers() {
+        let mut seen = Vec::new();
+        let mut fake = |req: Request| -> Result<serde_json::Value, ApiError> {
+            seen.push(req);
+            Ok(serde_json::json!({"id": "s4"}))
+        };
+        let call = |args: serde_json::Value| {
+            rpc(
+                1,
+                "tools/call",
+                serde_json::json!({"name": "wait", "arguments": args}),
+            )
+        };
+        handle(
+            &call(serde_json::json!({"any": true, "timeout": 99999})),
+            &mut fake,
+        )
+        .unwrap();
+        handle(
+            &call(serde_json::json!({"any": true, "timeout": 21600})),
+            &mut fake,
+        )
+        .unwrap();
+        for bad in [
+            serde_json::json!(-1),
+            serde_json::json!("soon"),
+            serde_json::json!(true),
+        ] {
+            let r = handle(&call(serde_json::json!({ "timeout": bad })), &mut fake).unwrap();
+            assert_eq!(r["result"]["isError"], true, "{bad}");
+        }
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].params["timeout_ms"], MAX_WAIT_SECS * 1000);
+        assert_eq!(seen[1].params["timeout_ms"], 21_600_000);
+    }
+
+    #[test]
+    fn tools_call_without_a_name_is_invalid_params() {
+        let mut never = |_: Request| -> Result<serde_json::Value, ApiError> { panic!("no call") };
+        let r = handle(&rpc(1, "tools/call", serde_json::json!({})), &mut never).unwrap();
+        assert_eq!(r["error"]["code"], -32602);
+        assert_eq!(r["error"]["message"], "tools/call needs a tool name");
+    }
+
+    #[test]
+    fn descriptions_warn_about_omitting_the_target() {
+        let description = |name: &str| schema(name)["description"].as_str().unwrap().to_string();
+        let wait = description("wait");
+        assert!(wait.contains("any: true"), "{wait}");
+        assert!(wait.contains("would only time out"), "{wait}");
+        assert!(wait.contains("default 600, max 21600"), "{wait}");
+        assert!(
+            wait.contains("pass a shorter timeout and call again"),
+            "{wait}"
+        );
+        for name in [
+            "close_session",
+            "focus",
+            "rename",
+            "send",
+            "press_keys",
+            "answer",
+        ] {
+            assert!(
+                description(name).contains("omit target only to act on your own session"),
+                "{name}"
+            );
+        }
+    }
+
+    type Lines = std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+
+    /// A server whose `session.wait` blocks until `release` gets a message (or is dropped) and
+    /// whose other calls answer at once; its reply lines are collected.
+    fn blocking_server() -> (Server, std::sync::mpsc::Sender<()>, Lines) {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let blocked = std::sync::Mutex::new(blocked);
+        let call: Call = std::sync::Arc::new(move |req: Request| {
+            if req.method == "session.wait" {
+                let _ = blocked.lock().unwrap().recv();
+            }
+            Ok(serde_json::json!({"status": "idle", "id": "s4"}))
+        });
+        let lines: Lines = Default::default();
+        let sink = lines.clone();
+        let out: Out =
+            std::sync::Arc::new(move |v: &serde_json::Value| sink.lock().unwrap().push(v.clone()));
+        (Server::new(call, out), release, lines)
+    }
+
+    fn tool_line(id: u64, name: &str) -> Vec<u8> {
+        rpc(id, "tools/call", serde_json::json!({ "name": name }))
+            .to_string()
+            .into_bytes()
+    }
+
+    fn ids(lines: &Lines) -> Vec<serde_json::Value> {
+        let mut ids: Vec<_> = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|l| l["id"].clone())
+            .collect();
+        ids.sort_by_key(|id| id.to_string());
+        ids
+    }
+
+    #[test]
+    fn a_cancelled_call_gets_no_reply() {
+        let (mut server, release, lines) = blocking_server();
+        server.line(&tool_line(7, "wait"));
+        server.line(&tool_line(8, "wait"));
+        server.line(br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"user"}}"#);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        server.finish(std::time::Duration::from_secs(5));
+        assert_eq!(ids(&lines), vec![serde_json::json!(8)]);
+    }
+
+    #[test]
+    fn end_of_input_answers_fast_calls_and_abandons_pending_waits() {
+        let (mut server, _release, lines) = blocking_server();
+        server.line(&tool_line(1, "wait"));
+        server.line(&tool_line(3, "status"));
+        server.line(
+            &rpc(2, "ping", serde_json::json!({}))
+                .to_string()
+                .into_bytes(),
+        );
+        server.line(b"{oops");
+        let start = std::time::Instant::now();
+        server.finish(std::time::Duration::from_millis(300));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(
+            ids(&lines),
+            vec![
+                serde_json::json!(2),
+                serde_json::json!(3),
+                serde_json::Value::Null
+            ]
+        );
     }
 }
