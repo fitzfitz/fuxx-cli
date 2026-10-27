@@ -39,11 +39,14 @@ use serde_json::{Map, Value, json};
 
 use crate::daemon_session::{self, CreateSpec, DaemonSession, FrameReceiver, QUEUE_CAPACITY};
 use crate::grid::TextScope;
+use crate::groups;
 use crate::mux_proto::{
     self, DaemonInfo, Decoder, Frame, Hello, HelloOk, IncompatibleInfo, PROTO_MAX, PROTO_MIN,
     ProtoError, Role, SessionInfo, StopReply,
 };
+use crate::notifier;
 use crate::private_socket::{self, Slot, SocketGuard};
+use crate::status::Status;
 use crate::terminal::{CellPx, TermDims};
 use crate::theme::{self, Theme};
 
@@ -355,6 +358,8 @@ struct Shared {
     hello_timeout: Duration,
     /// Input threads running, across connections (for tests: they end with their session).
     input_threads: AtomicUsize,
+    /// Connections that said `Hello` as `Ui`: while any is open, the GUI does the notifying.
+    ui_clients: AtomicUsize,
 }
 
 impl Shared {
@@ -491,6 +496,7 @@ fn start_with(path: &Path, tuning: Tuning) -> io::Result<Running> {
         instance: new_instance(),
         hello_timeout: tuning.hello_timeout,
         input_threads: AtomicUsize::new(0),
+        ui_clients: AtomicUsize::new(0),
     });
     let accepting = shared.clone();
     std::thread::Builder::new()
@@ -518,10 +524,33 @@ fn start_with(path: &Path, tuning: Tuning) -> io::Result<Running> {
     })
 }
 
+/// The notification text for a status change, if the daemon should send one: only while no UI
+/// is attached (the GUI keeps its own focus-aware notifications), and by the same rule as the
+/// GUI's with the window out of sight.
+fn daemon_should_notify(ui_attached: bool, old: Status, new: Status) -> Option<&'static str> {
+    if ui_attached || !notifier::should_notify(old, new, false, false) {
+        return None;
+    }
+    notifier::message(new)
+}
+
+/// "fuxx — <name>": the name the GUI shows (user name, then title, then preset).
+fn notification_summary(info: &SessionInfo) -> String {
+    let name = groups::auto_name(
+        Some(&info.name),
+        info.title.as_deref(),
+        info.preset.as_deref(),
+    );
+    format!("fuxx — {name}")
+}
+
 /// Every `TICK` until asked to quit or idle: tick the sessions, forget the ones that ended.
 /// Then end every session and connection and remove the socket.
 fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: bool) {
     let mut idle_since: Option<Instant> = None;
+    // The last status seen per session. A session's first sighting only records it, so a
+    // daemon that just started (or a new session) never bursts notifications.
+    let mut seen: HashMap<u64, Status> = HashMap::new();
     while !shared.quit.load(Ordering::Acquire) {
         let now = Instant::now();
         let sessions = shared.all();
@@ -529,6 +558,19 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
             // The returned Status frames are already queued to subscribers.
             if catch_unwind(AssertUnwindSafe(|| session.tick(now))).is_err() {
                 log!("s{}: tick panicked", session.id());
+            }
+            let info = session.info();
+            let Some(new) = Status::parse(&info.status) else {
+                continue;
+            };
+            let Some(old) = seen.insert(session.id(), new) else {
+                continue;
+            };
+            let ui_attached = shared.ui_clients.load(Ordering::Acquire) > 0;
+            if let Some(body) = daemon_should_notify(ui_attached, old, new) {
+                let summary = notification_summary(&info);
+                // `osascript` blocks ~100 ms: never on the tick thread.
+                std::thread::spawn(move || notifier::fire(&summary, body));
             }
         }
         // A session's `alive` turns false together with queueing `Exited`, so forgetting it now
@@ -539,6 +581,9 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
             .map(|s| s.id())
             .collect();
         drop(sessions);
+        for id in &ended {
+            seen.remove(id);
+        }
         if !ended.is_empty() {
             let removed: Vec<_> = {
                 let mut table = lock(&shared.sessions);
@@ -929,6 +974,7 @@ impl Connection {
                 }
                 self.role = Some(hello.role);
                 if hello.role == Role::Ui {
+                    self.shared.ui_clients.fetch_add(1, Ordering::AcqRel);
                     self.shared.resize_owner.store(self.id, Ordering::Release);
                 }
                 self.send(&Frame::HelloOk(HelloOk {
@@ -1058,6 +1104,9 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        if self.role == Some(Role::Ui) {
+            self.shared.ui_clients.fetch_sub(1, Ordering::AcqRel);
+        }
         // Input threads hand over what is queued without waiting, then end.
         for (_, queue) in lock(&self.inputs).drain() {
             queue.close();
@@ -1344,6 +1393,90 @@ mod tests {
     fn daemon(name: &str) -> (Running, PathBuf) {
         let path = temp_sock(name);
         (start(&path, IDLE_EXIT).unwrap(), path)
+    }
+
+    #[test]
+    fn a_ui_attached_means_the_daemon_never_notifies() {
+        for old in [Status::Idle, Status::Working, Status::Waiting, Status::Done] {
+            for new in [Status::Idle, Status::Working, Status::Waiting, Status::Done] {
+                assert_eq!(daemon_should_notify(true, old, new), None);
+            }
+        }
+    }
+
+    #[test]
+    fn with_no_ui_the_daemon_matches_the_focus_aware_rule_for_a_hidden_window() {
+        for old in [Status::Idle, Status::Working, Status::Waiting, Status::Done] {
+            for new in [Status::Idle, Status::Working, Status::Waiting, Status::Done] {
+                let expected = notifier::should_notify(old, new, false, false)
+                    .then(|| notifier::message(new))
+                    .flatten();
+                assert_eq!(daemon_should_notify(false, old, new), expected);
+            }
+        }
+        assert_eq!(
+            daemon_should_notify(false, Status::Working, Status::Waiting),
+            Some("Needs your input")
+        );
+        assert_eq!(
+            daemon_should_notify(false, Status::Working, Status::Done),
+            Some("Finished")
+        );
+    }
+
+    #[test]
+    fn the_summary_names_the_session_by_name_then_title_then_preset() {
+        let info = |name: &str, title: Option<&str>, preset: Option<&str>| SessionInfo {
+            name: name.into(),
+            title: title.map(Into::into),
+            preset: preset.map(Into::into),
+            ..sample_info()
+        };
+        assert_eq!(
+            notification_summary(&info("api", Some("vim"), Some("claude"))),
+            "fuxx — api"
+        );
+        assert_eq!(
+            notification_summary(&info("", Some("vim"), Some("claude"))),
+            "fuxx — vim"
+        );
+        assert_eq!(
+            notification_summary(&info("", None, Some("claude"))),
+            "fuxx — claude"
+        );
+        assert_eq!(notification_summary(&info("", None, None)), "fuxx — 🖕");
+    }
+
+    fn sample_info() -> SessionInfo {
+        SessionInfo {
+            id: 1,
+            name: String::new(),
+            project: None,
+            preset: None,
+            title: None,
+            status: "idle".into(),
+            note: None,
+            progress: None,
+            dims: Dims { cols: 80, rows: 24 },
+            alive: true,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn ui_clients_are_counted_while_connected() {
+        let (d, path) = daemon("uicount");
+        assert_eq!(d.shared.ui_clients.load(Ordering::Acquire), 0);
+        let _s = connect(&path, Role::Script);
+        assert_eq!(d.shared.ui_clients.load(Ordering::Acquire), 0);
+        let ui = connect(&path, Role::Ui);
+        assert_eq!(d.shared.ui_clients.load(Ordering::Acquire), 1);
+        drop(ui);
+        let t = Instant::now();
+        while d.shared.ui_clients.load(Ordering::Acquire) != 0 {
+            assert!(t.elapsed() < Duration::from_secs(5), "never dropped");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn connect(path: &Path, role: Role) -> Client {
