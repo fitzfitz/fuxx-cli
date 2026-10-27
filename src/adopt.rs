@@ -76,24 +76,27 @@ pub struct Placement {
     pub active: usize,
 }
 
-/// Place the live sessions (`live`) by the saved state: a saved session whose `daemon_id` is
-/// live is shown there, with the service's name, note, progress, title and status where it has
+/// Place the live sessions (`live`, of the service with random id `instance`) by the saved
+/// state: a saved session whose `daemon_id` is live in the same service is shown there, with the service's name, note, progress, title and status where it has
 /// them; the others are started again per `mode` (`off`: not at all); live sessions the file
 /// doesn't know join their group (or the ungrouped run) as layouts of their own. Live ones are
 /// always shown, whatever the mode: hiding them would leave processes running unseen.
 pub fn place(
     saved: &SavedState,
     live: &[LiveInfo],
+    instance: Option<u64>,
     mode: RestoreMode,
     presets: &[Preset],
 ) -> Placement {
+    // Ids are only the same sessions under the same service (a new one numbers from 1 again).
+    let same_service = saved.daemon_instance.is_some() && saved.daemon_instance == instance;
     let mut shown: Vec<u64> = Vec::new();
     let mut slots: Vec<(Origin, Slot)> = Vec::new();
     for (i, s) in saved.sessions.iter().enumerate() {
         // A live session is shown once: a second entry with its id (a damaged file) is dead.
         let found = s
             .daemon_id
-            .filter(|id| !shown.contains(id))
+            .filter(|id| same_service && !shown.contains(id))
             .and_then(|id| live.iter().find(|l| l.id == id));
         let slot = match found {
             Some(info) => {
@@ -279,6 +282,7 @@ mod tests {
             collapsed: vec![PathBuf::from("/w/api")],
             sessions,
             layouts,
+            daemon_instance: Some(INSTANCE),
         }
     }
     fn split(axis: Axis, first: Node<usize>, second: Node<usize>) -> Node<usize> {
@@ -299,8 +303,51 @@ mod tests {
             })
             .collect()
     }
+    const INSTANCE: u64 = 0xfeed;
     fn place_all(saved: &SavedState, live: &[LiveInfo], mode: RestoreMode) -> Placement {
-        place(saved, live, mode, &builtins())
+        place(saved, live, Some(INSTANCE), mode, &builtins())
+    }
+
+    #[test]
+    fn ids_from_another_service_match_nothing() {
+        let saved = state(
+            vec![s("a", Some(1)), s("b", Some(2))],
+            vec![split(Axis::Row, Node::Leaf(0), Node::Leaf(1))],
+            1,
+        );
+        let live_now = [live(1), live(2)];
+        // A new service (after a reboot) reuses the numbers: they are other sessions.
+        let other = place(&saved, &live_now, Some(1), RestoreMode::Agents, &builtins());
+        assert_eq!(shown(&other), ["+a", "+b", "s1", "s2"]);
+        let off = place(&saved, &live_now, Some(1), RestoreMode::Off, &builtins());
+        assert_eq!(shown(&off), ["s1", "s2"]);
+        let Slot::Live(one) = &off.slots[0] else {
+            panic!()
+        };
+        assert_eq!(one.saved.name, None, "not the saved session's name");
+        // A file from before instance ids, or a service without them: no match either.
+        let mut old = saved.clone();
+        old.daemon_instance = None;
+        let p = place(
+            &old,
+            &live_now,
+            Some(INSTANCE),
+            RestoreMode::Off,
+            &builtins(),
+        );
+        assert_eq!(shown(&p), ["s1", "s2"]);
+        assert!(matches!(&p.slots[0], Slot::Live(a) if a.saved.name.is_none()));
+        let p = place(&saved, &live_now, None, RestoreMode::Off, &builtins());
+        assert!(matches!(&p.slots[0], Slot::Live(a) if a.saved.name.is_none()));
+        // The same service: matched.
+        assert_eq!(
+            shown(&place_all(&saved, &live_now, RestoreMode::Off)),
+            ["s1", "s2"]
+        );
+        let Slot::Live(a) = &place_all(&saved, &live_now, RestoreMode::Off).slots[0] else {
+            panic!()
+        };
+        assert_eq!(a.saved.name.as_deref(), Some("a"));
     }
 
     #[test]

@@ -314,6 +314,17 @@ fn text_scope(scope: &str) -> Option<TextScope> {
     }
 }
 
+/// A random id for one daemon run. std's `RandomState` is keyed from the OS's randomness
+/// (and differs for each one made), so no extra dependency is needed.
+fn new_instance() -> u64 {
+    use std::hash::BuildHasher;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::collections::hash_map::RandomState::new().hash_one((now, std::process::id()))
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -338,6 +349,8 @@ struct Shared {
     /// `Running` let go).
     quit: AtomicBool,
     started: Instant,
+    /// Random, for this run: tells this daemon from any other (a pid can be reused).
+    instance: u64,
     /// A connection that hasn't said `Hello` within this is closed.
     hello_timeout: Duration,
     /// Input threads running, across connections (for tests: they end with their session).
@@ -475,6 +488,7 @@ fn start_with(path: &Path, tuning: Tuning) -> io::Result<Running> {
         closing: AtomicBool::new(false),
         quit: AtomicBool::new(false),
         started: Instant::now(),
+        instance: new_instance(),
         hello_timeout: tuning.hello_timeout,
         input_threads: AtomicUsize::new(0),
     });
@@ -850,6 +864,7 @@ impl Connection {
                     proto: PROTO_MAX,
                     uptime_secs: self.shared.started.elapsed().as_secs(),
                     sessions,
+                    instance: Some(self.shared.instance),
                 }))
             }
             Frame::Stop { force } => self.stop(force),
@@ -920,6 +935,7 @@ impl Connection {
                     proto,
                     daemon_version: VERSION.into(),
                     pid: std::process::id(),
+                    instance: Some(self.shared.instance),
                 }))
             }
             Err(e) => {

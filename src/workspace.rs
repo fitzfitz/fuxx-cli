@@ -165,6 +165,9 @@ pub struct Workspace {
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
     /// events are sent).
     pub(crate) restoring: bool,
+    /// Reopening with the background service failed (its List, or the service itself): the
+    /// sessions file is kept as it is, for the next launch, instead of saving this run over it.
+    pub(crate) hold_saving: bool,
     /// The id the next session gets (`s1`, `s2`, ...); never reused.
     pub(crate) next_id: u64,
     window_active: bool,
@@ -194,6 +197,12 @@ pub struct Workspace {
     /// A quit that first ends sessions (or waits for replies) is under way: other quits wait
     /// for it.
     pub(crate) quitting: bool,
+    /// On quitting, lets what the views queued for the background service go out first.
+    _flush_on_quit: Subscription,
+    /// Requests that read a screen not arrived yet from the background service (`deferred`).
+    pub(crate) deferred: Vec<crate::workspace_api::Deferred>,
+    /// Whether the deferred requests' check is running.
+    pub(crate) deferred_ticking: bool,
 }
 
 impl Workspace {
@@ -221,6 +230,7 @@ impl Workspace {
             collapsed: Vec::new(),
             renaming: None,
             restoring: true,
+            hold_saving: false,
             next_id: 1,
             window_active: window.is_window_active(),
             _requests: requests.map(|rx| Self::serve_requests(rx, window, cx)),
@@ -240,6 +250,9 @@ impl Workspace {
             notice: None,
             quit_count: 0,
             quitting: false,
+            _flush_on_quit: cx.on_app_quit(Self::flush_on_quit),
+            deferred: Vec::new(),
+            deferred_ticking: false,
         };
         // While a quit ends sessions first, the red button waits for it.
         let me = cx.weak_entity();
@@ -356,7 +369,7 @@ impl Workspace {
 
     /// Write the session list to the sessions file (not while restoring). One log line on failure.
     pub(crate) fn save(&self) {
-        if self.restoring {
+        if self.restoring || self.hold_saving {
             return;
         }
         let Some(home) = home_dir() else { return };
@@ -365,6 +378,7 @@ impl Workspace {
             active: self.sessions.active_index(),
             collapsed: self.collapsed.clone(),
             layouts: self.saved_layouts(),
+            daemon_instance: self.service.instance().filter(|_| self.daemon_backed()),
             sessions: self
                 .sessions
                 .items()

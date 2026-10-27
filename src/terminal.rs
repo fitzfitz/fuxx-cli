@@ -9,7 +9,7 @@
 //!   never waits on the socket. The daemon answers terminal queries and works out status, title
 //!   and exit; the replica's own query, title and bell events are dropped.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -159,20 +159,48 @@ struct DaemonLink {
     /// The connection it goes through (to tell an old connection's views from the current).
     client: Arc<DaemonClient>,
     /// To the pump thread.
-    commands: Sender<Command>,
+    commands: PumpSender,
     /// The first snapshot was asked for (an adopted session waits until it is shown).
     attached: AtomicBool,
+    /// The first snapshot has landed: the replica's screen is the session's.
+    drawn: Arc<AtomicBool>,
 }
 
 impl DaemonLink {
     fn send(&self, command: Command) {
-        let _ = self.commands.send(command);
+        self.commands.send(command);
+    }
+}
+
+/// The pump's queue, counted, so a quit can wait until it has gone out.
+#[derive(Clone)]
+struct PumpSender {
+    tx: Sender<Command>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl PumpSender {
+    fn send(&self, command: Command) {
+        self.queued.fetch_add(1, Ordering::AcqRel);
+        if self.tx.send(command).is_err() {
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }
 
 impl Drop for DaemonLink {
     fn drop(&mut self) {
         self.send(Command::Detach);
+    }
+}
+
+/// How many commands a core's pump still has to hand to the connection.
+#[derive(Clone)]
+pub struct PumpQueue(Arc<AtomicUsize>);
+
+impl PumpQueue {
+    pub fn is_empty(&self) -> bool {
+        self.0.load(Ordering::Acquire) == 0
     }
 }
 
@@ -192,9 +220,18 @@ enum Command {
     Detach,
 }
 
-/// Send `commands` to daemon session `id` (stream `token`) until `Detach`.
-fn pump(commands: &std::sync::mpsc::Receiver<Command>, client: &DaemonClient, id: u64, token: u64) {
+/// Send `commands` to daemon session `id` (stream `token`) until `Detach`; `queued` counts
+/// those not handed to the connection yet.
+fn pump(
+    commands: &std::sync::mpsc::Receiver<Command>,
+    queued: &AtomicUsize,
+    client: &DaemonClient,
+    id: u64,
+    token: u64,
+) {
+    let done = || queued.fetch_sub(1, Ordering::AcqRel);
     for command in commands {
+        let detach = matches!(command, Command::Detach);
         match command {
             Command::Attach => client.reattach(id),
             Command::Write(bytes) => client.write(id, &bytes),
@@ -203,10 +240,18 @@ fn pump(commands: &std::sync::mpsc::Receiver<Command>, client: &DaemonClient, id
             Command::SetTheme(theme) => client.set_theme(&theme),
             Command::SetMeta(meta) => client.set_meta(meta),
             Command::Close => client.close(id),
-            Command::Detach => break,
+            Command::Detach => {}
+        }
+        done();
+        if detach {
+            break;
         }
     }
     client.detach(id, token);
+    // Anything after the `Detach` (a replica's late re-attach) is moot.
+    while commands.try_recv().is_ok() {
+        done();
+    }
 }
 
 #[derive(Clone)]
@@ -340,12 +385,18 @@ impl TerminalCore {
             processor: Processor::new(),
         }));
         let (token, stream) = client.route(id);
-        let (commands, queued) = std::sync::mpsc::channel();
+        let (tx, pending) = std::sync::mpsc::channel();
+        let commands = PumpSender {
+            tx,
+            queued: Arc::new(AtomicUsize::new(0)),
+        };
+        let drawn = Arc::new(AtomicBool::new(false));
         let link = Arc::new(DaemonLink {
             id,
             client: client.clone(),
             commands: commands.clone(),
             attached: AtomicBool::new(attach),
+            drawn: drawn.clone(),
         });
         // So OSC 4/10/11/12 replies match what this window shows; then the first snapshot.
         link.send(Command::SetTheme(theme));
@@ -353,14 +404,16 @@ impl TerminalCore {
             link.send(Command::Attach);
         }
         let pumping = client.clone();
+        let queued = commands.queued.clone();
         std::thread::Builder::new()
             .name(format!("fuxx-pump-s{id}"))
-            .spawn(move || pump(&queued, &pumping, id, token))?;
+            .spawn(move || pump(&pending, &queued, &pumping, id, token))?;
         let replica = Replica {
             id,
             listener,
             events,
             commands,
+            drawn,
             next: None,
             title: None,
             status: None,
@@ -405,6 +458,23 @@ impl TerminalCore {
     pub fn close(&self) {
         if let Backend::Daemon(link) = &self.backend {
             link.send(Command::Close);
+        }
+    }
+
+    /// Whether the screen is there to read: always for Local; for the Daemon backend once the
+    /// first snapshot has landed (an adopted session's comes on `attach`).
+    pub fn is_drawn(&self) -> bool {
+        match &self.backend {
+            Backend::Local { .. } => true,
+            Backend::Daemon(link) => link.drawn.load(Ordering::Acquire),
+        }
+    }
+
+    /// The Daemon backend's queue to the daemon, to wait until what was sent has gone out.
+    pub fn pump_queue(&self) -> Option<PumpQueue> {
+        match &self.backend {
+            Backend::Local { .. } => None,
+            Backend::Daemon(link) => Some(PumpQueue(link.commands.queued.clone())),
         }
     }
 
@@ -611,7 +681,9 @@ struct Replica {
     listener: Listener,
     events: UnboundedSender<TermEvent>,
     /// To the pump, for re-attaching.
-    commands: Sender<Command>,
+    commands: PumpSender,
+    /// Set once the first snapshot is in the Term.
+    drawn: Arc<AtomicBool>,
     /// The seq the next `Output` or `Resized` must carry; `None` while waiting for a snapshot.
     next: Option<u64>,
     title: Option<String>,
@@ -624,13 +696,14 @@ impl Replica {
             match self.apply(frame, shared) {
                 Step::Continue => {}
                 // Through the pump, so it stays in order with a `Detach`.
-                Step::Reattach => {
-                    let _ = self.commands.send(Command::Attach);
-                }
+                Step::Reattach => self.commands.send(Command::Attach),
                 // Status frames from before the snapshot (or dropped with an overflowed
                 // stream) never arrive: ask. Asked after the snapshot came, so the answer is at
                 // least as new as it, and the frames after it apply on top.
-                Step::Snapshotted => self.refresh_status(client),
+                Step::Snapshotted => {
+                    self.drawn.store(true, Ordering::Release);
+                    self.refresh_status(client);
+                }
                 Step::End => return,
             }
         }
@@ -1271,15 +1344,15 @@ mod daemon_tests {
         let core = TerminalCore::adopt_daemon(client.clone(), id, tx, Theme::default()).unwrap();
         assert_eq!(core.daemon_id(), Some(id));
         std::thread::sleep(Duration::from_millis(300));
+        assert!(!core.is_drawn(), "nothing to read yet");
         assert!(
             !screen_lines(&core).iter().any(|l| l == "MARK"),
             "no snapshot before attach"
         );
         assert!(core.attach(), "the first attach asks");
         assert!(!core.attach(), "later ones don't");
-        assert!(eventually(|| screen_lines(&core)
-            .iter()
-            .any(|l| l == "MARK")));
+        assert!(eventually(|| core.is_drawn()));
+        assert!(screen_lines(&core).iter().any(|l| l == "MARK"));
         // One attached from the start never asks again.
         let (tx, _rx) = unbounded();
         let attached = TerminalCore::attach_daemon(client, id, tx, Theme::default()).unwrap();
@@ -1314,6 +1387,19 @@ mod daemon_tests {
             let info = client.list().unwrap().remove(0);
             info.name == "n50" && info.progress.map(|p| p.percent) == Some(50)
         }));
+        // Once the pump's queue is empty, a List (after it on the one connection) sees the
+        // last one: what quitting waits for.
+        let queue = core.pump_queue().unwrap();
+        for round in 0..20u8 {
+            for n in 0..200u8 {
+                core.set_meta(SetMeta {
+                    name: Some(Some(format!("r{round}-{n}"))),
+                    ..meta(n % 100)
+                });
+            }
+            assert!(eventually(|| queue.is_empty()));
+            assert_eq!(client.list().unwrap()[0].name, format!("r{round}-199"));
+        }
     }
 
     #[test]
@@ -1425,6 +1511,7 @@ mod daemon_tests {
                 proto: 1,
                 daemon_version: "test".into(),
                 pid: 1,
+                instance: None,
             });
             s.write_all(&encode(&ok)).unwrap();
             std::thread::sleep(Duration::from_secs(4));
@@ -1520,6 +1607,7 @@ mod daemon_tests {
                             proto: 1,
                             daemon_version: "test".into(),
                             pid: 1,
+                            instance: None,
                         })],
                         Frame::List => vec![Frame::Sessions(vec![mux_proto::SessionInfo {
                             id: 7,
@@ -1698,6 +1786,7 @@ mod daemon_tests {
                                 proto: 1,
                                 daemon_version: "test".into(),
                                 pid: 1,
+                                instance: None,
                             });
                             s.write_all(&encode(&ok)).unwrap();
                         }

@@ -99,6 +99,10 @@ pub struct HelloOk {
     pub proto: u32,
     pub daemon_version: String,
     pub pid: u32,
+    /// Random, chosen when the daemon starts: tells this daemon from any other (a pid can be
+    /// reused). Absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,6 +226,9 @@ pub struct DaemonInfo {
     pub proto: u32,
     pub uptime_secs: u64,
     pub sessions: u64,
+    /// As in `HelloOk`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<u64>,
 }
 
 /// Reply to `Stop` (`fuxx daemon stop`): `stopping` false means refused because of `sessions`;
@@ -691,6 +698,18 @@ impl Decoder {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_older_daemon_s_hello_and_info_have_no_instance() {
+        let ok: HelloOk =
+            serde_json::from_str(r#"{"proto":1,"daemon_version":"0.1","pid":3}"#).unwrap();
+        assert_eq!(ok.instance, None);
+        let info: DaemonInfo = serde_json::from_str(
+            r#"{"pid":3,"version":"0.1","proto":1,"uptime_secs":1,"sessions":0}"#,
+        )
+        .unwrap();
+        assert_eq!(info.instance, None);
+    }
+
     fn dims() -> Dims {
         Dims { cols: 80, rows: 24 }
     }
@@ -775,6 +794,13 @@ mod tests {
                 proto: 1,
                 daemon_version: "0.1".into(),
                 pid: 42,
+                instance: Some(u64::MAX),
+            }),
+            Frame::HelloOk(HelloOk {
+                proto: 1,
+                daemon_version: "0.1".into(),
+                pid: 42,
+                instance: None,
             }),
             Frame::Incompatible(IncompatibleInfo {
                 proto_min: 1,
@@ -831,6 +857,7 @@ mod tests {
                 proto: 1,
                 uptime_secs: 75,
                 sessions: 3,
+                instance: Some(7),
             }),
             Frame::Stop { force: true },
             Frame::Stop { force: false },

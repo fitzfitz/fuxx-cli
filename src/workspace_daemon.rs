@@ -18,6 +18,7 @@ use crate::mux_proto::{self, Create, Progress, SetMeta};
 use crate::restore::{RestoreMode, SavedState, VERSION};
 use crate::session_list::SessionList;
 use crate::status::Status;
+use crate::terminal::PumpQueue;
 use crate::terminal_view::TerminalView;
 use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
 
@@ -28,10 +29,11 @@ pub(crate) enum Service {
     /// Connecting to the background service at startup; no session opens yet.
     Starting,
     On(Arc<DaemonClient>),
-    /// The connection to the background service (process `pid`) was lost. The sessions stay,
-    /// marked; no new one starts (the ids are the service's).
+    /// The connection to the background service (process `pid`, random id `instance`) was
+    /// lost. The sessions stay, marked; no new one starts (the ids are the service's).
     Lost {
         pid: u32,
+        instance: Option<u64>,
     },
 }
 
@@ -55,12 +57,27 @@ impl Service {
             _ => None,
         }
     }
+
+    /// The random id of the service the sessions belong to (also once it was lost).
+    pub(crate) fn instance(&self) -> Option<u64> {
+        match self {
+            Service::On(client) => client.instance(),
+            Service::Lost { instance, .. } => *instance,
+            Service::Off | Service::Starting => None,
+        }
+    }
 }
 
 /// After reopening, the sessions not on screen fetch their screens from this long on, one at
 /// a time this far apart, so the window is up first.
 const ATTACH_REST_AFTER: Duration = Duration::from_secs(1);
 const ATTACH_STAGGER: Duration = Duration::from_millis(100);
+
+/// At most this long, quitting waits for what the views queued for the background service.
+const QUIT_FLUSH: Duration = Duration::from_millis(150);
+
+/// How long after a failed List at startup fuxx asks once more.
+const RELIST_AFTER: Duration = Duration::from_millis(500);
 
 /// How long after losing the background service fuxx tries to reach it again.
 const RECONNECT_AFTER: Duration = Duration::from_millis(500);
@@ -130,8 +147,17 @@ impl Workspace {
     ) {
         cx.spawn_in(window, async move |this, cx| {
             let listing = client.clone();
-            let listed = cx.background_spawn(async move { listing.list() }).await;
-            let Ok((placement, creates)) = this.update(cx, |this, cx| this.placement(listed, cx))
+            let mut listed = cx.background_spawn(async move { listing.list() }).await;
+            if let Err(err) = &listed {
+                eprintln!(
+                    "[fuxx] background service: could not list its sessions ({err}); trying again"
+                );
+                cx.background_executor().timer(RELIST_AFTER).await;
+                let listing = client.clone();
+                listed = cx.background_spawn(async move { listing.list() }).await;
+            }
+            let Ok((placement, creates)) =
+                this.update(cx, |this, cx| this.placement(&client, listed, cx))
             else {
                 return;
             };
@@ -153,32 +179,28 @@ impl Workspace {
 
     /// Where every session goes, and per slot the `Create` of one to start again.
     fn placement(
-        &self,
+        &mut self,
+        client: &DaemonClient,
         listed: std::io::Result<Vec<mux_proto::SessionInfo>>,
         cx: &Context<Self>,
     ) -> (Placement, Vec<Option<Create>>) {
+        if let Err(err) = &listed {
+            eprintln!(
+                "[fuxx] background service: could not list its sessions ({err}); not reopening them, and keeping the sessions file for the next launch"
+            );
+        }
         let appearance = cx.global::<Appearance>();
-        let (live, mode) = match listed {
-            Ok(list) => (
-                list.iter().filter_map(LiveInfo::from_list).collect(),
-                appearance.restore,
-            ),
-            // Starting saved sessions again could double ones that still run: none.
-            Err(err) => {
-                eprintln!(
-                    "[fuxx] background service: could not list its sessions ({err}); not reopening them"
-                );
-                (Vec::new(), RestoreMode::Off)
-            }
-        };
+        let (live, mode, hold) = listed_sessions(listed, appearance.restore);
+        self.hold_saving |= hold;
         let saved = read_saved().unwrap_or(SavedState {
             version: VERSION,
             active: None,
             collapsed: Vec::new(),
             sessions: Vec::new(),
             layouts: Vec::new(),
+            daemon_instance: None,
         });
-        let placement = adopt::place(&saved, &live, mode, &appearance.presets);
+        let placement = adopt::place(&saved, &live, client.instance(), mode, &appearance.presets);
         let creates = placement
             .slots
             .iter()
@@ -227,6 +249,14 @@ impl Workspace {
                     gone.push(i);
                 }
             }
+        }
+        // The service went away meanwhile: what's shown is missing what couldn't start, so the
+        // sessions file stays as it is for the next launch.
+        if client.is_closed() || !matches!(self.service, Service::On(_)) {
+            eprintln!(
+                "[fuxx] background service: lost while reopening; keeping the sessions file for the next launch"
+            );
+            self.hold_saving = true;
         }
         let placement = placement.without(&gone);
         let entities: Vec<EntityId> = views.iter().map(|(_, v)| v.entity_id()).collect();
@@ -303,6 +333,23 @@ impl Workspace {
             .any(|s| s.view.read(cx).attach())
     }
 
+    /// Quitting (⌘Q, the red button, ⌥⌘Q): give each view's queue to the background service
+    /// time to go out (GPUI waits up to its shutdown timeout).
+    pub(crate) fn flush_on_quit(&mut self, cx: &mut Context<Self>) -> gpui::Task<()> {
+        let queues: Vec<PumpQueue> = self
+            .sessions
+            .items()
+            .iter()
+            .filter_map(|s| s.view.read(cx).pump_queue())
+            .collect();
+        let client = self.service.client();
+        cx.background_spawn(async move {
+            if client.is_some() {
+                flush_pumps(&queues, client.as_deref(), QUIT_FLUSH);
+            }
+        })
+    }
+
     /// Tell the background service session `index`'s name, note and progress, so a reopen
     /// shows them (the service's facts win over the sessions file). Local: nothing.
     pub(crate) fn push_meta(&self, index: usize, cx: &Context<Self>) {
@@ -360,13 +407,17 @@ impl Workspace {
             _ => false,
         };
         if current && let Service::On(client) = &self.service {
-            let pid = client.pid();
+            let lost = (client.pid(), client.instance());
             eprintln!(
-                "[fuxx] background service: lost the connection (pid {pid}); keeping the sessions, trying again"
+                "[fuxx] background service: lost the connection (pid {}); keeping the sessions, trying again",
+                lost.0
             );
-            self.service = Service::Lost { pid };
+            self.service = Service::Lost {
+                pid: lost.0,
+                instance: lost.1,
+            };
             self.notice = Some(LOST_NOTICE.into());
-            self.reconnect(pid, window, cx);
+            self.reconnect(lost, window, cx);
         }
         self.sync_quit_title(cx);
         cx.notify();
@@ -374,7 +425,7 @@ impl Workspace {
 
     /// Try once to reach the background service again (connect only: a new one wouldn't have
     /// these sessions).
-    fn reconnect(&mut self, pid: u32, window: &mut Window, cx: &mut Context<Self>) {
+    fn reconnect(&mut self, lost: (u32, Option<u64>), window: &mut Window, cx: &mut Context<Self>) {
         let Some(socket) = daemon_socket() else {
             return;
         };
@@ -388,29 +439,29 @@ impl Workspace {
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
-                this.reconnected(pid, found, window, cx)
+                this.reconnected(lost, found, window, cx)
             })
             .ok();
         })
         .detach();
     }
 
-    /// The same service (process `pid`) answers: show its live sessions again and go on with
-    /// it. Another one, or none: the sessions stay lost.
+    /// The same service (`lost`: pid and instance; `same_service`) answers: show its live
+    /// sessions again and go on with it. Another one, or none: the sessions stay lost.
     fn reconnected(
         &mut self,
-        pid: u32,
+        lost: (u32, Option<u64>),
         found: std::io::Result<(Arc<DaemonClient>, Vec<mux_proto::SessionInfo>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(self.service, Service::Lost { pid: lost } if lost == pid) {
+        if !matches!(self.service, Service::Lost { pid, instance } if (pid, instance) == lost) {
             return;
         }
         match found {
-            Ok((client, live)) if client.pid() == pid => {
+            Ok((client, live)) if same_service(lost, (client.pid(), client.instance())) => {
                 let live: Vec<u64> = live.iter().filter(|s| s.alive).map(|s| s.id).collect();
-                eprintln!("[fuxx] background service: reconnected (pid {pid})");
+                eprintln!("[fuxx] background service: reconnected (pid {})", lost.0);
                 self.reattach_lost(&client, &live, window, cx);
                 self.service = Service::On(client);
                 let ended = self.sessions.items().iter().filter(|s| s.lost).count();
@@ -467,6 +518,8 @@ impl Workspace {
                 session._subscription = subscription;
                 session.lost = false;
             }
+            // A rename, note or progress while it was lost reached only the window.
+            self.push_meta(index, cx);
         }
         self.focus_active(window, cx);
     }
@@ -523,6 +576,51 @@ impl Workspace {
     }
 }
 
+/// Wait (at most `within`) until every pump (`queues`) has handed its commands to the
+/// connection, then until the service has read them: a List, answered after them on the one
+/// connection. So a rename or note just before quitting isn't lost.
+pub(crate) fn flush_pumps(queues: &[PumpQueue], client: Option<&DaemonClient>, within: Duration) {
+    let deadline = std::time::Instant::now() + within;
+    while !queues.iter().all(PumpQueue::is_empty) {
+        if std::time::Instant::now() >= deadline {
+            eprintln!("[fuxx] background service: quitting before everything was sent");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    if let Some(client) = client
+        && let Err(err) = client.list()
+    {
+        eprintln!("[fuxx] background service: quitting unconfirmed: {err}");
+    }
+}
+
+/// Whether a service found again (`found`: pid, instance) is the one lost (`lost`). With
+/// instance ids, they decide (a pid can be reused); between older daemons, the pid.
+pub(crate) fn same_service(lost: (u32, Option<u64>), found: (u32, Option<u64>)) -> bool {
+    match (lost.1, found.1) {
+        (None, None) => lost.0 == found.0,
+        (lost, found) => lost == found,
+    }
+}
+
+/// What reopening goes on: the live sessions listed, the restore mode to use, and whether
+/// saving must wait. A failed List shows nothing, starts nothing again (that could double
+/// sessions still running), and keeps the sessions file as it is for the next launch.
+pub(crate) fn listed_sessions(
+    list: std::io::Result<Vec<mux_proto::SessionInfo>>,
+    mode: RestoreMode,
+) -> (Vec<LiveInfo>, RestoreMode, bool) {
+    match list {
+        Ok(list) => (
+            list.iter().filter_map(LiveInfo::from_list).collect(),
+            mode,
+            false,
+        ),
+        Err(_) => (Vec::new(), RestoreMode::Off, true),
+    }
+}
+
 /// The background service's socket (`FUXX_DAEMON_SOCKET`, else under `$HOME`).
 pub(crate) fn daemon_socket() -> Option<PathBuf> {
     let env_socket = std::env::var("FUXX_DAEMON_SOCKET").ok();
@@ -548,7 +646,76 @@ pub(crate) fn wait_ended(client: &DaemonClient, id: u64, within: Duration) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{Service, open_refusal, wait_ended};
+    use super::{Service, listed_sessions, open_refusal, same_service, wait_ended};
+    use crate::restore::RestoreMode;
+
+    #[test]
+    fn the_same_service_is_known_by_its_instance_not_its_pid() {
+        use crate::daemon_client::DaemonClient;
+        use crate::daemon_client::tests::daemon;
+        let (_a, a_path) = daemon("ws-same-a");
+        let (_b, b_path) = daemon("ws-same-b");
+        let a = DaemonClient::connect(&a_path).unwrap();
+        let b = DaemonClient::connect(&b_path).unwrap();
+        let id = |c: &DaemonClient| (c.pid(), c.instance());
+        // In-process daemons share the pid, as a reused pid would.
+        assert!(!same_service(id(&a), id(&b)));
+        assert!(same_service(
+            id(&a),
+            id(&DaemonClient::connect(&a_path).unwrap())
+        ));
+        // Older daemons (no instance): the pid.
+        assert!(same_service((5, None), (5, None)));
+        assert!(!same_service((5, None), (6, None)));
+        // One side has an instance, the other not: different daemons.
+        assert!(!same_service((5, Some(1)), (5, None)));
+    }
+
+    #[test]
+    fn quitting_waits_until_what_the_views_sent_has_reached_the_service() {
+        use super::flush_pumps;
+        use crate::daemon_client::DaemonClient;
+        use crate::daemon_client::tests::{daemon, sh_create};
+        use crate::mux_proto::SetMeta;
+        use crate::terminal::TerminalCore;
+        use crate::theme::Theme;
+        use std::time::Duration;
+        let (_d, path) = daemon("ws-flush");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let core =
+            TerminalCore::create_daemon(client.clone(), sh_create(40, 5), tx, Theme::default())
+                .unwrap();
+        let id = core.daemon_id().unwrap();
+        let queues = [core.pump_queue().unwrap()];
+        for round in 0..10 {
+            for n in 0..300 {
+                core.set_meta(SetMeta {
+                    id,
+                    name: Some(Some(format!("r{round}-{n}"))),
+                    project: None,
+                    preset: None,
+                    note: None,
+                    progress: None,
+                });
+            }
+            flush_pumps(&queues, Some(&client), Duration::from_secs(5));
+            assert!(queues[0].is_empty());
+            assert_eq!(client.list().unwrap()[0].name, format!("r{round}-299"));
+        }
+    }
+
+    #[test]
+    fn a_failed_list_shows_nothing_restarts_nothing_and_holds_the_file() {
+        let err = std::io::Error::new(std::io::ErrorKind::TimedOut, "no answer");
+        let (live, mode, hold) = listed_sessions(Err(err), RestoreMode::Agents);
+        assert!(live.is_empty());
+        assert_eq!(mode, RestoreMode::Off);
+        assert!(hold, "the sessions file is kept for the next launch");
+        let (live, mode, hold) = listed_sessions(Ok(vec![]), RestoreMode::Agents);
+        assert!(live.is_empty() && !hold);
+        assert_eq!(mode, RestoreMode::Agents);
+    }
 
     #[test]
     fn new_sessions_wait_for_the_service_and_its_restore() {
@@ -559,7 +726,14 @@ mod tests {
         assert_eq!(open_refusal(&Service::Off, true), None);
         let starting = open_refusal(&Service::Starting, true).unwrap();
         assert!(starting.contains("starting"), "{starting}");
-        let lost = open_refusal(&Service::Lost { pid: 9 }, false).unwrap();
+        let lost = open_refusal(
+            &Service::Lost {
+                pid: 9,
+                instance: None,
+            },
+            false,
+        )
+        .unwrap();
         assert!(lost.contains("lost"), "{lost}");
         let (_d, path) = daemon("ws-refusal");
         let on = Service::On(DaemonClient::connect(&path).unwrap());

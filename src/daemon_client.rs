@@ -224,6 +224,16 @@ impl DaemonClient {
         self.hello.pid
     }
 
+    /// The connection is gone (the daemon exited or closed it).
+    pub fn is_closed(&self) -> bool {
+        lock(&self.routes).closed
+    }
+
+    /// The daemon's random instance id (`None` from an older daemon).
+    pub fn instance(&self) -> Option<u64> {
+        self.hello.instance
+    }
+
     /// Every session the daemon has.
     pub fn list(&self) -> io::Result<Vec<SessionInfo>> {
         match self.request(&Frame::List, Expect::Sessions)? {
@@ -342,7 +352,6 @@ impl DaemonClient {
         });
     }
 
-    #[allow(dead_code)] // for scripting while the window is closed (a later step)
     pub fn set_meta(&self, meta: SetMeta) {
         self.send(&Frame::SetMeta(meta));
     }
@@ -642,6 +651,24 @@ pub(crate) mod tests {
     pub(crate) fn daemon(name: &str) -> (Running, PathBuf) {
         let path = temp_sock(name);
         (daemon::start(&path, daemon::IDLE_EXIT).unwrap(), path)
+    }
+
+    #[test]
+    fn every_daemon_has_its_own_instance_id() {
+        let (_a, a_path) = daemon("inst-a");
+        let (_b, b_path) = daemon("inst-b");
+        let a = DaemonClient::connect(&a_path).unwrap();
+        let b = DaemonClient::connect(&b_path).unwrap();
+        // Same process (in-process daemons), so the pid can't tell them apart.
+        assert_eq!(a.pid(), b.pid());
+        assert!(a.instance().is_some() && b.instance().is_some());
+        assert_ne!(a.instance(), b.instance());
+        // Stable for one daemon, and `fuxx daemon status` reports the same one.
+        assert_eq!(
+            DaemonClient::connect(&a_path).unwrap().instance(),
+            a.instance()
+        );
+        assert_eq!(daemon::info(&a_path).unwrap().instance, a.instance());
     }
 
     /// `Create` for `/bin/sh` with a `$ ` prompt: quick and the same everywhere.
