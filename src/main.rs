@@ -14,6 +14,7 @@ mod grid;
 mod groups;
 mod keys;
 mod links;
+mod mcp;
 mod mouse;
 mod name_input;
 mod notifier;
@@ -96,6 +97,12 @@ fn client_failure(err: ClientError) -> i32 {
     }
 }
 
+/// The socket `fuxx <command>` and `fuxx mcp` talk to.
+fn client_socket() -> Option<PathBuf> {
+    let env_socket = std::env::var("FUXX_SOCKET").ok();
+    api_client::client_socket_path(env_socket.as_deref(), home_dir().as_deref())
+}
+
 /// Run one `fuxx <command>` against the running app; returns the exit code.
 fn run_command(command: &str, mut request: api::Request, json: bool, stream: bool) -> i32 {
     if command == "paste" {
@@ -117,9 +124,7 @@ fn run_command(command: &str, mut request: api::Request, json: bool, stream: boo
     {
         request.params["folder"] = json!(cwd.join(folder).display().to_string());
     }
-    let env_socket = std::env::var("FUXX_SOCKET").ok();
-    let Some(path) = api_client::client_socket_path(env_socket.as_deref(), home_dir().as_deref())
-    else {
+    let Some(path) = client_socket() else {
         return fail(
             "$HOME and FUXX_SOCKET are unset, so the fuxx socket can't be found",
             3,
@@ -217,10 +222,7 @@ fn main() {
             print!("{usage}");
             std::process::exit(0);
         }
-        Ok(Cli::Mcp) => {
-            // M9 Task 8.
-            std::process::exit(fail("mcp: not yet available in this build", 2));
-        }
+        Ok(Cli::Mcp) => std::process::exit(mcp::run(client_socket(), caller)),
         Ok(Cli::Call {
             command,
             request,
