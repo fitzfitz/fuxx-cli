@@ -127,6 +127,20 @@ f32::from(pixels)   // Pixels → f32
 ```
 Key **bindings run before** a view's `on_key_down` (window.rs ~4905–4960); `cx.propagate()` in an action lets the key fall through.
 
+## Fonts on macOS (M6)
+
+```rust
+gpui::Font { family, features: FontFeatures(Arc<Vec<(String, u32)>>), fallbacks: Option<FontFallbacks>, weight, style }
+FontFallbacks::from_fonts(vec![..]) /* tried before the system cascade */;  text_system.all_font_names() -> Vec<String>
+text_system.resolve_font(&font)   // a MISSING family silently becomes Helvetica: check all_font_names() first
+gpui_platform::current_platform(true).text_system()   // headless text system, usable from `cargo test`
+```
+- A font loaded only into memory (`add_fonts`) is **ignored by CoreText's fallback** for missing glyphs (the icon
+  draws as the last-resort `?`). Register the font **file** with `CTFontManagerRegisterFontsForURL(url,
+  kCTFontManagerScopeProcess, ..)` and list its family in `fallbacks` (see `src/fonts.rs`).
+- `force_width` locks one glyph per cell: contextual-alternates ligatures (JetBrains Mono, Fira Code) are fine;
+  fonts that merge `=>` into one wide glyph would shift the rest of the run.
+
 ## portable-pty 0.9.0
 
 ```rust

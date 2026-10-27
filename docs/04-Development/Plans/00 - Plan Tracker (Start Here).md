@@ -19,10 +19,10 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M6 — Fonts & config** (Phase 2). M5 Terminal UX is complete |
-| **Status** | 🟨 In progress: [[M6 Plan - Fonts and Config]] written and approved 2026-10-27. M5 ✅ done 2026-10-27. |
-| **▶ Next action** | [[M6 Plan - Fonts and Config]] → Task 7 (👀 your on-screen check). Then M6b (settings window), plan to be written. |
-| **Blocked on** | Nothing. |
+| **Current milestone** | **M6b — Settings window** (Phase 2). M6 Fonts & config is complete |
+| **Status** | ⬜ Not started. M6 ✅ done 2026-10-27: fuxx's own settings file, six built-in themes, theme-driven colors, prompt icons for everyone, Mac line/word keys; all on-screen checks confirmed by you. |
+| **▶ Next action** | Decide **D9**, then write the M6b plan (settings window: File → Preferences… / cmd-,). |
+| **Blocked on** | ❓ **D9** (how colors are entered), needed for the M6b plan. |
 | **Last updated** | 2026-10-26 |
 
 ## Legend
@@ -47,7 +47,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M4 | Notification rings (**usable product**) | [[M4 Plan - Notification Rings]] | ✅ | 4/4 | Rings update; background sessions notify |
 | M4b | Tester build (unsigned universal `.app` in a DMG) — *added 2026-10-26* | [[M4b Plan - Tester Build]] | ✅ | 4/4 | A tester drags fuxx to Applications and opens it |
 | M5 | Terminal UX (scrollback, selection, copy/paste, mouse, links, resize) | [[M5 Plan - Terminal UX]] | ✅ | 8/8 | Scroll back, select/copy/paste, mouse apps, cmd-click links, resize cleanly |
-| M6 | Fonts & config (own settings file, themes, prompt icons) | [[M6 Plan - Fonts and Config]] | 🟨 | 6/8 | fuxx's own settings file + themes; prompt icons for everyone |
+| M6 | Fonts & config (own settings file, themes, prompt icons) | [[M6 Plan - Fonts and Config]] | ✅ | 9/9 | fuxx's own settings file + themes; prompt icons for everyone |
 | M6b | Settings window (File → Preferences… / cmd-,) — *added 2026-10-27* | written when M6 is done | ⬜ ❓D9 | — | Change theme/font/size in a window; saved and applied live |
 
 Phase 2+ (M5–M12) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
@@ -94,6 +94,7 @@ Known problems we chose to leave for later. Each row says what we already know, 
   | M3 | ✅ 0 warnings | 44 pass → **54** after the 2026-10-26 plan changes (re-verified) → **55** in the repo (Working fix) |
   | M4 | ✅ 0 warnings | 50 pass → 61 expected → **61** in the repo (built and run) |
   | M5 | ✅ 0 warnings | plan: 83 → **85** in the repo (crash test for stale points + shift-extend test, added by reviews) |
+  | M6 | ✅ 0 warnings | plan: 101 → **106** in the repo (include-loop test, plan change to own settings file + built-in themes, review fixes, Mac keys) |
 
   (The only warning is an upstream one inside GPUI's own dependencies, `block` and
   `proc-macro-error2`. It isn't ours, and it can be ignored.)

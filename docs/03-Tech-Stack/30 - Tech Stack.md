@@ -44,6 +44,15 @@ this: [[31 - API Fact Sheet (pinned rev)]]. Decisions: [[00 - Plan Tracker (Star
 `osascript` shell-out on macOS (v1 finding: `notify-rust` silently fails on modern macOS — see memory
 `macos-notify-rust-broken`). Revisit for a proper app identity once bundled.
 
+## Settings, themes, fonts (M6)
+
+- **fuxx's own settings file** `~/.config/fuxx/config` (Ghostty-style `key = value`, `src/settings.rs`); themes from
+  `~/.config/fuxx/themes`, then six **built-in themes** in `assets/themes/` (from iTerm2-Color-Schemes, MIT; per-theme
+  credits in `assets/themes/NOTICE.md`; TokyoNight is Apache-2.0 and ships its licence text).
+- **Prompt icons:** the bundled **Symbols Nerd Font Mono** (Nerd Fonts 3.5.1) in `assets/fonts/`: MIT, plus icon
+  sets under CC BY 4.0, Apache-2.0 and OFL (`NOTICE-NerdFonts-IconSets.md`). Registered with CoreText at startup
+  (process scope) from a cached copy in `~/Library/Caches/fuxx/`. No new crates: two `extern "C"` calls.
+
 ## Considered & not chosen
 
 - **Swift + libghostty** (the cmux stack) — best rendering, but Swift + macOS-only. See
