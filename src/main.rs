@@ -35,11 +35,12 @@ use gpui_platform::application;
 
 use terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
 use workspace::{
-    CloseSession, LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5,
-    LaunchPreset6, LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp,
-    NewSession, NewSessionInFolder, NextSession, PrevSession, RenameSession, SelectSession1,
-    SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7,
-    SelectSession8, SelectSession9, SplitDown, SplitRight, Workspace,
+    CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
+    LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
+    LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp, NewSession,
+    NewSessionInFolder, NextPane, NextSession, PrevPane, PrevSession, RenameSession,
+    SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6,
+    SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, Workspace,
 };
 
 actions!(fuxx, [Quit, OpenPreferences]);
@@ -96,6 +97,13 @@ fn main() {
                 KeyBinding::new("ctrl-cmd-9", LaunchPreset9, None),
                 KeyBinding::new("cmd-d", SplitRight, None),
                 KeyBinding::new("cmd-shift-d", SplitDown, None),
+                KeyBinding::new("cmd-alt-left", FocusPaneLeft, None),
+                KeyBinding::new("cmd-alt-right", FocusPaneRight, None),
+                KeyBinding::new("cmd-alt-up", FocusPaneUp, None),
+                KeyBinding::new("cmd-alt-down", FocusPaneDown, None),
+                KeyBinding::new("cmd-[", PrevPane, None),
+                KeyBinding::new("cmd-]", NextPane, None),
+                KeyBinding::new("ctrl-cmd-=", EqualizePanes, None),
                 // Terminal pane only. Bindings run before the pane's own key handler.
                 KeyBinding::new("cmd-c", Copy, Some("Terminal")),
                 KeyBinding::new("cmd-v", Paste, Some("Terminal")),
@@ -145,6 +153,15 @@ fn main() {
                 Menu::new("Pane").items([
                     MenuItem::action("Split Right", SplitRight),
                     MenuItem::action("Split Down", SplitDown),
+                    MenuItem::separator(),
+                    MenuItem::action("Previous Pane", PrevPane),
+                    MenuItem::action("Next Pane", NextPane),
+                    MenuItem::action("Focus Pane Left", FocusPaneLeft),
+                    MenuItem::action("Focus Pane Right", FocusPaneRight),
+                    MenuItem::action("Focus Pane Up", FocusPaneUp),
+                    MenuItem::action("Focus Pane Down", FocusPaneDown),
+                    MenuItem::separator(),
+                    MenuItem::action("Equalize Panes", EqualizePanes),
                 ]),
             ]);
 
