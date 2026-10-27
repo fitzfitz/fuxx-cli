@@ -14,13 +14,29 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M9 — Scripting API** (not started; brainstorm first). M0–M8 and M4b, M6b ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M10 — cmux extras (not planned). M0–M9 ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-27 — Milestone 9 complete: scripting API (+ Caps Lock fix)
+- **Did:** You skipped the design questions and asked for more than cmux / Warp / iTerm2. Built
+  [[M9 Plan - Scripting API]] (10 tasks, every one reviewed; security review of the socket): a same-user socket,
+  the `fuxx` command (ls/new/close/focus/rename/send/key/paste/read/status/question/answer/wait/events/note/
+  progress/notify/equalize/presets), agent-aware `wait`/`question`/`answer`, a live event stream, sidebar note and
+  progress bar, and `fuxx mcp` so an agent can drive other agents. A whole-branch review found two real problems
+  (a nested fuxx inheriting the outer one's session, and `wait --text` matching text already on screen), fixed
+  before your check. All on-screen checks passed. Also fixed: **Caps Lock** now capitalises letters (GPUI's
+  macOS key events ignore it). Saved a survey of multi-agent tools as input ([[Input - Agent Sessions Research]]);
+  not on the roadmap yet (your call). 243 tests, 0 warnings.
+- **Learned:** GPUI's macOS `key_char` only applies Shift/Option, never Caps Lock (`window.capslock()` has it).
+  Claude Code has grown its own agent view (`claude agents`), so fuxx's edge is cross-vendor exact state and
+  answering in place, not copying single-vendor orchestrators.
+- **Blocked:** Nothing.
+- **Next task:** Decide the next milestone (M10, or the agent-sessions input).
 
 ### 2026-10-27 — Milestones 6b, 7 and 8 complete
 - **Did:** You ran the combined on-screen check (M6b Task 5, M7 Task 7, M8 Task 6): all good, including JetBrains
