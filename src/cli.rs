@@ -18,6 +18,8 @@ pub enum Cli {
     Help(String),
     /// M10a Task 0 spike (hidden, throwaway): the detached-process probe, or its child.
     Probe { child: bool, disclaim: bool },
+    /// `fuxx daemon ...`: the background service that keeps sessions (M10a).
+    Daemon(DaemonCommand),
     /// Send one request. `stream`: read lines until the reply line or the end (`events`, `wait`).
     Call {
         /// The command word (`ls`, `wait`, …), for `render`.
@@ -26,6 +28,17 @@ pub enum Cli {
         json: bool,
         stream: bool,
     },
+}
+
+/// What `fuxx daemon` is asked to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonCommand {
+    /// Serve in the foreground (`fuxx daemon` or `fuxx daemon run`).
+    Run,
+    /// Print pid, version, protocol, uptime and session count.
+    Status,
+    /// Exit; refused while sessions live unless `force`, which hangs them up.
+    Stop { force: bool },
 }
 
 const USAGE: &str = "\
@@ -59,9 +72,12 @@ usage: fuxx [command]   (no command opens the app)
   ping                                 check that fuxx is reachable
   version                              print the version and the methods
   mcp                                  run as an MCP server on stdio
+  daemon [run]                         run the session daemon in the foreground
+  daemon status                        print whether the session daemon runs, and its details
+  daemon stop [--force]                stop the session daemon (--force ends its sessions)
   help                                 this text
 
-Every command takes --json. TARGET is s4, #2 or a session name.
+Every command but daemon takes --json. TARGET is s4, #2 or a session name.
 Exit codes: 0 ok, 1 refused or nothing to show, 2 bad arguments, 3 fuxx not reachable, 124 wait timed out.
 ";
 
@@ -170,6 +186,23 @@ fn usage_err(cmd: &str, what: &str) -> String {
     format!("fuxx {cmd}: {what} (see `fuxx help`)")
 }
 
+/// `fuxx daemon [run | status | stop [--force]]`.
+fn parse_daemon(args: &[String], json: bool) -> Result<DaemonCommand, String> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let cmd = match args[..] {
+        _ if json => None,
+        [] | ["run"] => Some(DaemonCommand::Run),
+        ["status"] => Some(DaemonCommand::Status),
+        ["stop"] => Some(DaemonCommand::Stop { force: false }),
+        ["stop", "--force"] => Some(DaemonCommand::Stop { force: true }),
+        _ => None,
+    };
+    cmd.ok_or_else(|| {
+        "fuxx daemon: usage: fuxx daemon [run | status | stop [--force]] (see `fuxx help`)"
+            .to_string()
+    })
+}
+
 /// Parse the command line (without argv[0]). `caller` is the session in `FUXX_SESSION`.
 /// Only no arguments (or macOS's `-psn_…` launch argument) opens the app; anything else that
 /// isn't a command is an error, so a typo never opens a window.
@@ -190,6 +223,7 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
     match first.as_str() {
         "help" | "--help" | "-h" => return Ok(Cli::Help(USAGE.to_string())),
         "mcp" => return Ok(Cli::Mcp),
+        "daemon" => return parse_daemon(&rest[1..], leading_json > 0).map(Cli::Daemon),
         // M10a Task 0 spike: hidden, not in USAGE.
         "__detach-probe" | "__detach-probe-child" => {
             let child = first == "__detach-probe-child";
@@ -641,6 +675,38 @@ mod tests {
         ));
         assert!(p(&["__detach-probe", "--bogus"]).is_err());
         assert!(!USAGE.contains("__detach"));
+    }
+
+    #[test]
+    fn daemon_commands_parse() {
+        let d = |args: &[&str]| match p(args) {
+            Ok(Cli::Daemon(cmd)) => Ok(cmd),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e),
+        };
+        assert_eq!(d(&["daemon"]), Ok(DaemonCommand::Run));
+        assert_eq!(d(&["daemon", "run"]), Ok(DaemonCommand::Run));
+        assert_eq!(d(&["daemon", "status"]), Ok(DaemonCommand::Status));
+        assert_eq!(
+            d(&["daemon", "stop"]),
+            Ok(DaemonCommand::Stop { force: false })
+        );
+        assert_eq!(
+            d(&["daemon", "stop", "--force"]),
+            Ok(DaemonCommand::Stop { force: true })
+        );
+        for bad in [
+            &["daemon", "start"][..],
+            &["daemon", "run", "--force"],
+            &["daemon", "status", "x"],
+            &["daemon", "stop", "--force", "--force"],
+            &["daemon", "stop", "--bogus"],
+            &["--json", "daemon", "status"],
+        ] {
+            let e = d(bad).unwrap_err();
+            assert!(e.contains("fuxx daemon"), "{bad:?}: {e}");
+        }
+        assert!(USAGE.contains("daemon stop [--force]"));
     }
 
     #[test]

@@ -5,11 +5,8 @@
 //! `Incoming`, forwarded to the UI) and a writer thread fed by a bounded queue, so a client that
 //! never reads can't block whoever replies to it.
 
-use std::ffi::c_int;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -19,6 +16,7 @@ use std::time::Duration;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::api::{self, ApiError, Request};
+use crate::private_socket::{self, Slot};
 
 /// Lines a connection may have waiting to be written before it counts as stuck and is closed.
 const QUEUE: usize = 256;
@@ -28,12 +26,6 @@ const MAX_LINE: u64 = 16 << 20;
 
 /// Live connections at most; more are accepted and closed at once.
 const MAX_CONNECTIONS: usize = 64;
-
-// libSystem; `uid_t` is u32 on macOS.
-unsafe extern "C" {
-    fn getpeereid(fd: c_int, uid: *mut u32, gid: *mut u32) -> c_int;
-    fn getuid() -> u32;
-}
 
 /// `~/Library/Application Support/fuxx/fuxx.sock`.
 pub fn socket_path(home: &Path) -> PathBuf {
@@ -109,31 +101,7 @@ pub struct Incoming {
 }
 
 /// Keeps the server's socket file; removing it on drop (the threads stop on their own).
-pub struct ServerGuard {
-    path: PathBuf,
-    stop: Arc<AtomicBool>,
-    /// (device, inode) of the socket we bound, so drop never removes another instance's.
-    file_id: (u64, u64),
-}
-
-/// A file's (device, inode), without following a symlink.
-fn file_id(path: &Path) -> Option<(u64, u64)> {
-    std::fs::symlink_metadata(path)
-        .ok()
-        .map(|m| (m.dev(), m.ino()))
-}
-
-impl Drop for ServerGuard {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        // Only if the file is still ours: another fuxx may have replaced it since.
-        if file_id(&self.path) == Some(self.file_id) {
-            // Wake the accept thread so it sees `stop` and lets go of the listener.
-            let _ = UnixStream::connect(&self.path);
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
+pub type ServerGuard = private_socket::SocketGuard;
 
 /// Marks a connection's client as gone when its reader thread ends.
 struct HangUp(Arc<AtomicBool>);
@@ -142,30 +110,6 @@ impl Drop for HangUp {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
     }
-}
-
-/// One live connection, counted until its writer thread ends.
-struct Slot(Arc<AtomicUsize>);
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-/// Whether a peer with this uid may connect: only the user fuxx runs as.
-fn same_user(peer_uid: u32) -> bool {
-    // SAFETY: getuid takes no arguments and always succeeds.
-    peer_uid == unsafe { getuid() }
-}
-
-/// The uid of the process on the other end, if the system can tell.
-fn peer_uid(stream: &UnixStream) -> Option<u32> {
-    let (mut uid, mut gid) = (0u32, 0u32);
-    // SAFETY: the fd is a live socket owned by `stream` for the whole call, and both
-    // out-pointers point at local u32s (macOS uid_t / gid_t).
-    let rc = unsafe { getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-    (rc == 0).then_some(uid)
 }
 
 /// Create the private folder, clear a stale socket, bind, and start accepting. Requests arrive
@@ -179,94 +123,26 @@ fn start_with(
     path: &Path,
     max_connections: usize,
 ) -> std::io::Result<(ServerGuard, UnboundedReceiver<Incoming>)> {
-    if let Some(dir) = path.parent() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
-        // `mode` only applies to folders it creates; an existing one is made private too.
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    let explain = |e: std::io::Error| {
-        if e.kind() == std::io::ErrorKind::InvalidInput {
-            std::io::Error::new(
-                e.kind(),
-                format!(
-                    "socket path too long ({} bytes; macOS allows about 104): {}",
-                    path.as_os_str().len(),
-                    path.display()
-                ),
-            )
-        } else {
-            e
-        }
-    };
-    // Bind first: only a taken path needs a look. A listener that accepts is in use, even if
-    // it's too busy to answer, so a live fuxx never loses its socket. Only a file nobody
-    // listens on (refused, or not a socket) is stale: removed, then bound once more.
-    let listener = match UnixListener::bind(path) {
-        Ok(listener) => listener,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            if UnixStream::connect(path).is_ok() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
-                    format!("another fuxx is listening on {}", path.display()),
-                ));
-            }
-            std::fs::remove_file(path)?;
-            UnixListener::bind(path).map_err(explain)?
-        }
-        Err(e) => return Err(explain(e)),
-    };
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-
+    let listener = private_socket::bind(path)?;
     let (tx, rx) = unbounded();
     let stop = Arc::new(AtomicBool::new(false));
-    let guard = ServerGuard {
-        path: path.to_path_buf(),
-        stop: stop.clone(),
-        file_id: file_id(path).unwrap_or_default(),
-    };
+    let guard = ServerGuard::new(path, stop.clone());
     std::thread::Builder::new()
         .name("fuxx-api-accept".into())
-        .spawn(move || accept_loop(listener, tx, stop, max_connections))?;
+        .spawn(move || {
+            let live = Arc::new(AtomicUsize::new(0));
+            let open = tx.clone();
+            private_socket::accept_loop(
+                listener,
+                stop,
+                live,
+                max_connections,
+                "scripting",
+                move || !open.is_closed(),
+                |stream, slot| serve(stream, tx.clone(), slot),
+            );
+        })?;
     Ok((guard, rx))
-}
-
-fn accept_loop(
-    listener: UnixListener,
-    tx: UnboundedSender<Incoming>,
-    stop: Arc<AtomicBool>,
-    max_connections: usize,
-) {
-    let live = Arc::new(AtomicUsize::new(0));
-    let mut warned = false;
-    for stream in listener.incoming() {
-        if stop.load(Ordering::Acquire) || tx.is_closed() {
-            return;
-        }
-        let stream = match stream {
-            Ok(s) => s,
-            Err(_) => {
-                // e.g. out of file descriptors: don't spin.
-                std::thread::sleep(Duration::from_millis(50));
-                continue;
-            }
-        };
-        // Over the cap: closed at once (a runaway script can't use up fuxx's threads).
-        if live.load(Ordering::Acquire) >= max_connections {
-            if !warned {
-                eprintln!("[fuxx] scripting: {max_connections} connections open; refusing more");
-                warned = true;
-            }
-            continue;
-        }
-        // Anyone else is dropped unanswered.
-        if peer_uid(&stream).is_some_and(same_user) {
-            live.fetch_add(1, Ordering::AcqRel);
-            serve(stream, tx.clone(), Slot(live.clone()));
-        }
-    }
 }
 
 /// Start the writer and reader threads for one accepted connection. `slot` is released when
@@ -550,12 +426,6 @@ mod tests {
         let mut line = String::new();
         std::io::BufReader::new(&s).read_line(&mut line).unwrap();
         assert!(line.contains("\"bad_request\""));
-    }
-
-    #[test]
-    fn peer_check_accepts_only_the_same_user() {
-        assert!(same_user(unsafe { getuid() }));
-        assert!(!same_user(unsafe { getuid() } + 1));
     }
 
     #[test]
