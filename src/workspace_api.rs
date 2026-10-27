@@ -339,7 +339,7 @@ impl Workspace {
         // Too far ahead to represent counts as no limit.
         let deadline = timeout_param(p)?.and_then(|t| now.checked_add(t));
         let sessions = self.statuses();
-        let mut wait = Wait::new(conn.clone(), request.id, watch, cond, &sessions, deadline);
+        let wait = Wait::new(conn.clone(), request.id, watch, cond, &sessions, deadline);
         let items = self.sessions.items();
         let mut screen = |id: u64| screen_text(items, id, cx);
         if let Some(outcome) = wait.outcome(now, &sessions, &[], &mut screen) {

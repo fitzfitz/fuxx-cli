@@ -463,7 +463,12 @@ fn event_line(e: &Value) -> String {
             if let Some(kind) = str_of(e, "event") {
                 line.push_str(&format!("  {kind}"));
             }
-            if let Some(extra) = str_of(e, "title").or_else(|| str_of(e, "body")) {
+            // A notification shows its text as `title: body`.
+            let extra = match (str_of(e, "title"), str_of(e, "body")) {
+                (Some(title), Some(body)) => Some(format!("{title}: {body}")),
+                (title, body) => title.or(body).map(str::to_string),
+            };
+            if let Some(extra) = extra {
                 line.push_str(&format!(" {extra}"));
             }
         }
@@ -700,6 +705,15 @@ mod tests {
         let ev = json!({"event": "status", "session": {"id": 4, "number": 2, "name": "api"}, "from": "working", "to": "waiting", "ts": 43_263_000u64});
         let line = render("events", &ev, false);
         assert!(line.ends_with("  s4 #2 api  working → waiting"), "{line}");
+        let note = json!({"event": "notification", "title": "fuxx — api", "body": "Needs your input", "ts": 0});
+        assert!(
+            render("events", &note, false).ends_with("  notification fuxx — api: Needs your input"),
+            "{note}"
+        );
+        let bare = json!({"event": "notification", "body": "hi", "ts": 0});
+        assert!(render("events", &bare, false).ends_with("  notification hi"));
+        let titled = json!({"event": "title.changed", "title": "vim", "ts": 0});
+        assert!(render("events", &titled, false).ends_with("  title.changed vim"));
     }
 
     #[test]
