@@ -203,6 +203,12 @@ impl TerminalView {
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let m = &keystroke.modifiers;
+        if let Some(bytes) =
+            keys::mac_shortcut(&keystroke.key, m.platform, m.alt, m.control, m.shift)
+        {
+            self.send_key_bytes(bytes, cx);
+            return;
+        }
         if m.platform {
             return; // cmd-shortcuts belong to the app (cmd-q, cmd-t, ...)
         }
@@ -218,12 +224,17 @@ impl TerminalView {
             m.shift,
             app_cursor,
         ) {
-            self.core.input(&bytes);
-            if let Some(status) = self.tracker.on_input(Instant::now()) {
-                self.status_changed(status, cx);
-            }
-            cx.stop_propagation();
+            self.send_key_bytes(&bytes, cx);
         }
+    }
+
+    /// What a keystroke does once it has bytes: write to the pty, tell the tracker, swallow the event.
+    fn send_key_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.core.input(bytes);
+        if let Some(status) = self.tracker.on_input(Instant::now()) {
+            self.status_changed(status, cx);
+        }
+        cx.stop_propagation();
     }
 
     /// Grid point, cell side and viewport col/row under a window position, or `None` before the

@@ -159,6 +159,28 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// Mac line/word editing keys that readline-style shells understand, sent as Ghostty and Zed do.
+/// Matches only when exactly that one modifier is held; everything else is `None`.
+pub fn mac_shortcut(
+    key: &str,
+    cmd: bool,
+    alt: bool,
+    ctrl: bool,
+    shift: bool,
+) -> Option<&'static [u8]> {
+    if ctrl || shift || (cmd && alt) {
+        return None;
+    }
+    match (key, cmd, alt) {
+        ("left", true, false) => Some(b"\x01"), // cmd-left: line start (^A)
+        ("right", true, false) => Some(b"\x05"), // cmd-right: line end (^E)
+        ("backspace", true, false) => Some(b"\x15"), // cmd-backspace: kill line (^U)
+        ("left", false, true) => Some(b"\x1bb"), // option-left: word back (ESC b)
+        ("right", false, true) => Some(b"\x1bf"), // option-right: word forward (ESC f)
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +290,32 @@ mod tests {
     #[test]
     fn plain_paste_turns_newlines_into_enter() {
         assert_eq!(paste_bytes("a\r\nb\nc", false), b"a\rb\rc".to_vec());
+    }
+
+    #[test]
+    fn mac_line_and_word_shortcuts() {
+        assert_eq!(
+            mac_shortcut("left", true, false, false, false),
+            Some(&b"\x01"[..])
+        );
+        assert_eq!(
+            mac_shortcut("right", true, false, false, false),
+            Some(&b"\x05"[..])
+        );
+        assert_eq!(
+            mac_shortcut("backspace", true, false, false, false),
+            Some(&b"\x15"[..])
+        );
+        assert_eq!(
+            mac_shortcut("left", false, true, false, false),
+            Some(&b"\x1bb"[..])
+        );
+        assert_eq!(
+            mac_shortcut("right", false, true, false, false),
+            Some(&b"\x1bf"[..])
+        );
+        assert_eq!(mac_shortcut("left", true, false, false, true), None); // cmd-shift-left: not ours
+        assert_eq!(mac_shortcut("up", true, false, false, false), None); // cmd-up scrolls (binding)
+        assert_eq!(mac_shortcut("left", false, false, false, false), None);
     }
 }
