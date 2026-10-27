@@ -8,6 +8,7 @@ mod api_server;
 mod appearance;
 mod cli;
 mod colors;
+mod detach_probe;
 mod detector;
 mod fonts;
 mod grid;
@@ -222,6 +223,11 @@ fn main() {
             print!("{usage}");
             std::process::exit(0);
         }
+        Ok(Cli::Probe { child, disclaim }) => std::process::exit(if child {
+            detach_probe::run_child(disclaim)
+        } else {
+            detach_probe::run_parent(disclaim)
+        }),
         Ok(Cli::Mcp) => std::process::exit(mcp::run(client_socket(), caller)),
         Ok(Cli::Call {
             command,
