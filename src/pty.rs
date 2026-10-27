@@ -3,6 +3,8 @@
 use std::ffi::c_int;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -144,19 +146,30 @@ pub fn spawn_reader(
 /// Starts the thread that owns the PTY writer for the whole session and returns its queue, so
 /// a child that stops reading can't block whoever sends. The thread ends when every sender is
 /// dropped or the child goes away.
-pub fn spawn_writer(mut writer: Box<dyn Write + Send>) -> io::Result<Sender<Vec<u8>>> {
+pub fn spawn_writer(writer: Box<dyn Write + Send>) -> io::Result<Sender<Vec<u8>>> {
+    spawn_counted_writer(writer, Arc::new(AtomicUsize::new(0)))
+}
+
+/// `spawn_writer`, taking `pending` down by each chunk's length once it is written (or
+/// dropped because the child went away). The sender adds to it before sending.
+pub fn spawn_counted_writer(
+    mut writer: Box<dyn Write + Send>,
+    pending: Arc<AtomicUsize>,
+) -> io::Result<Sender<Vec<u8>>> {
     let (input, queued) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::Builder::new()
         .name("fuxx-pty-writer".into())
         .spawn(move || {
-            for bytes in queued {
-                if writer
-                    .write_all(&bytes)
-                    .and_then(|()| writer.flush())
-                    .is_err()
-                {
+            for bytes in &queued {
+                let written = writer.write_all(&bytes).and_then(|()| writer.flush());
+                pending.fetch_sub(bytes.len(), Ordering::Relaxed);
+                if written.is_err() {
                     break;
                 }
+            }
+            // Whatever is still queued will never be written.
+            for bytes in queued.try_iter() {
+                pending.fetch_sub(bytes.len(), Ordering::Relaxed);
             }
         })?;
     Ok(input)

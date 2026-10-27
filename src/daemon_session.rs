@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvError, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -426,6 +427,8 @@ struct State {
     pty: Option<Pty>,
     /// To the writer thread: client input and query replies. `None` once closed.
     to_child: Option<Sender<Vec<u8>>>,
+    /// Bytes sent to the writer thread and not yet written.
+    backlog: Arc<AtomicUsize>,
     /// Bytes of an unfinished sequence, appended to snapshots.
     tail: SequenceTail,
 }
@@ -478,9 +481,7 @@ impl State {
                     let (overrides, theme) = (self.term.colors(), &self.theme);
                     let color = |index| colors::resolve_index(index, overrides, theme);
                     if let Some(reply) = query_reply(&event, color, size) {
-                        if let Some(to_child) = &self.to_child {
-                            let _ = to_child.send(reply.into_bytes());
-                        }
+                        self.send_to_child(reply.into_bytes());
                     }
                 }
             }
@@ -513,6 +514,17 @@ impl State {
         self.handle_events(now);
     }
 
+    /// Queue bytes for the child, counted in the backlog until the writer has written them.
+    fn send_to_child(&self, bytes: Vec<u8>) {
+        if let Some(to_child) = &self.to_child {
+            let len = bytes.len();
+            self.backlog.fetch_add(len, Ordering::Relaxed);
+            if to_child.send(bytes).is_err() {
+                self.backlog.fetch_sub(len, Ordering::Relaxed); // the writer is gone
+            }
+        }
+    }
+
     /// Not alive any more, and `Exited` sent: once, whether the child exited or was closed.
     fn mark_exited(&mut self) {
         if self.alive {
@@ -539,6 +551,8 @@ fn wire_dims(dims: TermDims) -> Dims {
 pub struct DaemonSession {
     id: u64,
     state: Arc<FairMutex<State>>,
+    /// The same counter as `State::backlog`, readable without the lock.
+    backlog: Arc<AtomicUsize>,
 }
 
 #[allow(dead_code)] // used by the daemon from M10a Task 4
@@ -553,11 +567,8 @@ impl DaemonSession {
         if spec.cell != CellPx::default() {
             let _ = pty.resize(dims, spec.cell);
         }
-        let to_child = pty::spawn_writer(writer)?;
-        if let Some(startup) = &spec.startup {
-            // The program reads this as typed-ahead input once it is up.
-            let _ = to_child.send(format!("{startup}\r").into_bytes());
-        }
+        let backlog = Arc::new(AtomicUsize::new(0));
+        let to_child = pty::spawn_counted_writer(writer, backlog.clone())?;
         let (events_tx, events) = mpsc::channel();
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -586,8 +597,15 @@ impl DaemonSession {
             created_at,
             pty: Some(pty),
             to_child: Some(to_child),
+            backlog: backlog.clone(),
             tail: SequenceTail::default(),
         }));
+        if let Some(startup) = &spec.startup {
+            // The program reads this as typed-ahead input once it is up.
+            state
+                .lock()
+                .send_to_child(format!("{startup}\r").into_bytes());
+        }
 
         let reader_state = state.clone();
         let eof_state = state.clone();
@@ -603,7 +621,7 @@ impl DaemonSession {
             },
             move || eof_state.lock().mark_exited(),
         )?;
-        Ok(Self { id, state })
+        Ok(Self { id, state, backlog })
     }
 
     pub fn id(&self) -> u64 {
@@ -646,9 +664,7 @@ impl DaemonSession {
         if let Some(status) = s.tracker.on_input(Instant::now()) {
             s.set_status(status);
         }
-        if let Some(to_child) = &s.to_child {
-            let _ = to_child.send(bytes.to_vec());
-        }
+        s.send_to_child(bytes.to_vec());
     }
 
     /// Resize the Term and the PTY. A change of cell count is numbered into the output stream
@@ -757,6 +773,12 @@ impl DaemonSession {
             alive: s.alive,
             created_at: s.created_at,
         }
+    }
+
+    /// Bytes queued for the child but not yet written to it, so the daemon can push back on a
+    /// client flooding `Input`. `input` itself never blocks.
+    pub fn input_backlog(&self) -> usize {
+        self.backlog.load(Ordering::Relaxed)
     }
 
     /// The authoritative Term's text, for `ReadText`.
@@ -1158,6 +1180,36 @@ mod tests {
         until_exited(&rx);
         s.close();
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn input_backlog_counts_bytes_the_child_has_not_taken() {
+        // Raw mode and not reading: the terminal's input queue fills and writes stall.
+        let s = spawn("stty raw -echo; echo ready; sleep 30");
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        until_output(&rx, "ready");
+        let started = Instant::now();
+        for _ in 0..64 {
+            s.input(&[b'x'; 1024]);
+        }
+        assert!(started.elapsed() < Duration::from_secs(1), "input blocked");
+        assert!(s.input_backlog() > 0);
+        assert!(s.input_backlog() <= 64 * 1024);
+
+        // A child that reads everything drains it to zero.
+        let s = spawn("stty raw -echo; echo ready; cat > /dev/null");
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        until_output(&rx, "ready");
+        for _ in 0..64 {
+            s.input(&[b'x'; 1024]);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while s.input_backlog() > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(s.input_backlog(), 0);
     }
 
     #[test]
