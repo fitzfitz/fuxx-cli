@@ -143,7 +143,8 @@ fn schema(name: &str) -> Value {
     let (description, properties, required): (&str, Value, &[&str]) = match name {
         "list_sessions" => (
             "List every fuxx session in sidebar order: id, #number, status (idle, working, \
-             waiting or done), name, folder and agent preset.",
+             waiting or done), name, folder, agent preset, and progress and note when set. \
+             A leading * marks the focused session, + another one on screen.",
             json!({}),
             &[],
         ),
@@ -160,8 +161,8 @@ fn schema(name: &str) -> Value {
                 "split": {
                     "type": "string",
                     "enum": ["right", "down"],
-                    "description": "Open it as a split pane next to a session instead of a new \
-                        sidebar row.",
+                    "description": "Open it as a split pane beside a session. It is still a \
+                        new session, with its own sidebar row.",
                 },
                 "of": text("With split: the session to split (id, #N or name). Default: the \
                     session this MCP server runs in."),
@@ -234,9 +235,11 @@ fn schema(name: &str) -> Value {
         ),
         "wait" => (
             "Block until a session (or any session) meets a condition: reaches a status \
-             (default: waiting, meaning it needs input), changes status, its program exits, or \
-             some text appears on its screen. Returns the id of the session that met it; fails \
-             if the timeout passes first. Give a target (another session) or any: true. \
+             (default: waiting, meaning it needs input), changes status, closes, or new text \
+             appears on its screen. Returns the id of the session that met it; fails if the \
+             timeout passes first. Waiting for a status the session already has (or, with any, \
+             one that some session already has) returns immediately; use change to wait for \
+             the next change. Give a target (another session) or any: true. \
              Omitting target waits on your own session, which is busy while you call this, so \
              it would only time out. Waits up to `timeout` seconds (default 600, max 21600). \
              If your MCP client gives up sooner, pass a shorter timeout and call again.",
@@ -248,10 +251,14 @@ fn schema(name: &str) -> Value {
                     "type": "string",
                     "enum": ["waiting", "done", "idle", "working", "change", "exit"],
                     "description": "The condition (default waiting): a status, change (any \
-                        status change) or exit (its program ended).",
+                        status change) or exit (the session closed: its shell ended). A command \
+                        finishing doesn't close the session; for that use done or text.",
                 },
-                "text": text("Wait until this plain text is on the screen instead (overrides \
-                    for)."),
+                "text": text("Wait until this plain text appears on the screen instead \
+                    (overrides for). Only text that appears after the wait starts counts, but \
+                    the command you typed is echoed on screen too: use a marker the command \
+                    prints but doesn't contain, e.g. echo ALL''DONE (wait for ALLDONE) or \
+                    echo $((1+1))DONE (wait for 2DONE)."),
                 "timeout": {
                     "type": "number",
                     "minimum": 0,
@@ -881,6 +888,32 @@ mod tests {
         let r = handle(&rpc(1, "tools/call", serde_json::json!({})), &mut never).unwrap();
         assert_eq!(r["error"]["code"], -32602);
         assert_eq!(r["error"]["message"], "tools/call needs a tool name");
+    }
+
+    #[test]
+    fn descriptions_say_what_exit_split_and_text_mean() {
+        let description = |name: &str| schema(name)["description"].as_str().unwrap().to_string();
+        let wait = schema("wait");
+        let props = &wait["inputSchema"]["properties"];
+        let for_ = props["for"]["description"].as_str().unwrap();
+        assert!(
+            for_.contains("exit (the session closed: its shell ended)"),
+            "{for_}"
+        );
+        let wait_text = description("wait");
+        assert!(wait_text.contains("returns immediately"), "{wait_text}");
+        assert!(!wait_text.contains("its program exits"), "{wait_text}");
+        let text = props["text"]["description"].as_str().unwrap();
+        assert!(text.contains("appears after the wait starts"), "{text}");
+        assert!(text.contains("echo ALL''DONE"), "{text}");
+        let split = schema("new_session")["inputSchema"]["properties"]["split"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(split.contains("its own sidebar row"), "{split}");
+        assert!(!split.contains("instead of"), "{split}");
+        let list = description("list_sessions");
+        assert!(list.contains("* marks the focused session"), "{list}");
     }
 
     #[test]

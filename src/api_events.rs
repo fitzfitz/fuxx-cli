@@ -81,11 +81,15 @@ pub struct Wait<C> {
     pub cond: WaitFor,
     /// Each watched session's status when the wait began (for `change`).
     start: Vec<(u64, Status)>,
+    /// Text waits: each watched session's last lines as of the last check (at first, when the
+    /// wait began). Only occurrences beyond these count (see `new_occurrences`).
+    seen: Vec<(u64, String)>,
     pub deadline: Option<Instant>,
 }
 
 impl<C> Wait<C> {
-    /// `sessions`: every open session's (id, status), in sidebar order.
+    /// `sessions`: every open session's (id, status), in sidebar order; `screen`: a session's
+    /// last lines (read only for text waits, as their starting point).
     pub fn new(
         conn: C,
         request: Option<u64>,
@@ -93,18 +97,24 @@ impl<C> Wait<C> {
         cond: WaitFor,
         sessions: &[(u64, Status)],
         deadline: Option<Instant>,
+        screen: &mut dyn FnMut(u64) -> String,
     ) -> Self {
-        let start = sessions
+        let start: Vec<(u64, Status)> = sessions
             .iter()
             .filter(|(id, _)| watch == Watch::Any || watch == Watch::One(*id))
             .copied()
             .collect();
+        let seen = match cond {
+            WaitFor::Text(_) => start.iter().map(|&(id, _)| (id, screen(id))).collect(),
+            _ => Vec::new(),
+        };
         Self {
             conn,
             request,
             watch,
             cond,
             start,
+            seen,
             deadline,
         }
     }
@@ -114,7 +124,7 @@ impl<C> Wait<C> {
     /// look at their status and screen); `screen`: a session's last lines (read only for text
     /// waits).
     pub fn outcome(
-        &self,
+        &mut self,
         now: Instant,
         sessions: &[(u64, Status)],
         closed: &[u64],
@@ -131,7 +141,7 @@ impl<C> Wait<C> {
 
     /// The condition's outcome, deadline aside.
     fn met(
-        &self,
+        &mut self,
         sessions: &[(u64, Status)],
         closed: &[u64],
         screen: &mut dyn FnMut(u64) -> String,
@@ -167,19 +177,56 @@ impl<C> Wait<C> {
     }
 
     /// Whether the condition holds for an open session. One opened after the wait began starts
-    /// from idle (every session opens idle, and ids are never reused).
-    fn holds(&self, id: u64, now: Status, screen: &mut dyn FnMut(u64) -> String) -> bool {
+    /// from idle (every session opens idle, and ids are never reused) and from a blank screen.
+    /// A text wait holds when the text appears anew since the last check.
+    fn holds(&mut self, id: u64, now: Status, screen: &mut dyn FnMut(u64) -> String) -> bool {
+        if let WaitFor::Text(text) = &self.cond {
+            let lines = screen(id);
+            let slot = self.seen.iter().position(|(s, _)| *s == id);
+            let before = slot.map_or("", |i| self.seen[i].1.as_str());
+            let met = new_occurrences(before, &lines, text) > 0;
+            match slot {
+                Some(i) => self.seen[i].1 = lines,
+                None => self.seen.push((id, lines)),
+            }
+            return met;
+        }
         let start = self
             .start
             .iter()
             .find(|(s, _)| *s == id)
             .map_or(Status::Idle, |&(_, start)| start);
-        let text = match self.cond {
-            WaitFor::Text(_) => screen(id),
-            _ => String::new(),
-        };
-        wait_met(&self.cond, start, now, &text, false)
+        wait_met(&self.cond, start, now, "", false)
     }
+}
+
+/// How many more times `text` is in `now` than in what is left of `before` (both a session's
+/// last lines, oldest first). Output scrolls `before`'s first lines away, so `now` is lined up
+/// where `before`'s lines match its first lines for longest (the fewest scrolled away on a tie);
+/// the lines above that are gone and their occurrences don't count as still there. Nothing
+/// lining up (a cleared screen, or a whole window of new output) makes all of `now` new.
+fn new_occurrences(before: &str, now: &str, text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let old: Vec<&str> = before.lines().collect();
+    let new: Vec<&str> = now.lines().collect();
+    let mut gone = old.len();
+    let mut longest = 0;
+    for start in 0..old.len() {
+        let matching = old[start..]
+            .iter()
+            .zip(&new)
+            .take_while(|(a, b)| a == b)
+            .count();
+        if matching > longest {
+            (gone, longest) = (start, matching);
+        }
+    }
+    let kept = old[gone..].join("\n");
+    now.matches(text)
+        .count()
+        .saturating_sub(kept.matches(text).count())
 }
 
 /// The reply a finished wait sends.
@@ -351,13 +398,87 @@ mod tests {
     }
 
     fn wait(watch: Watch, cond: WaitFor, sessions: &[(u64, Status)]) -> Wait<()> {
-        Wait::new((), Some(1), watch, cond, sessions, None)
+        Wait::new((), Some(1), watch, cond, sessions, None, &mut no_screen())
+    }
+
+    /// A text wait started while every session showed `start`.
+    fn text_wait(watch: Watch, text: &str, sessions: &[(u64, Status)], start: &str) -> Wait<()> {
+        let mut screen = |_| start.to_string();
+        Wait::new(
+            (),
+            Some(1),
+            watch,
+            WaitFor::Text(text.into()),
+            sessions,
+            None,
+            &mut screen,
+        )
+    }
+
+    #[test]
+    fn new_occurrences_count_only_text_that_wasnt_there() {
+        // Nothing new: the same lines, or more lines without it.
+        assert_eq!(new_occurrences("x PASS\ny", "x PASS\ny", "PASS"), 0);
+        assert_eq!(new_occurrences("x PASS\ny", "x PASS\ny\nz", "PASS"), 0);
+        // A second one.
+        assert_eq!(
+            new_occurrences("PASS\n$ again", "PASS\n$ again\nPASS", "PASS"),
+            1
+        );
+        // Appended to a line already there (e.g. `Building... PASS`).
+        assert_eq!(
+            new_occurrences("a\nBuilding...", "a\nBuilding... PASS", "PASS"),
+            1
+        );
+        // The old one scrolled off the top in the same pass a new one appeared.
+        assert_eq!(new_occurrences("a\nPASS\nb\nc", "b\nc\nd\nPASS", "PASS"), 1);
+        // Erased (a cleared screen, a redrawn prompt) isn't new, and what follows is.
+        assert_eq!(new_occurrences("PASS\n$ clear", "$", "PASS"), 0);
+        assert_eq!(new_occurrences("$", "$\nPASS", "PASS"), 1);
+        // Nothing lines up (a screenful of new output, or a new session): all of it is new.
+        assert_eq!(new_occurrences("a\nb", "PASS\nc\nPASS", "PASS"), 2);
+        assert_eq!(new_occurrences("", "PASS", "PASS"), 1);
+        assert_eq!(new_occurrences("", "", "PASS"), 0);
+    }
+
+    #[test]
+    fn text_on_screen_when_the_wait_starts_doesnt_count() {
+        // `fuxx send s4 "make test && echo ALLDONE" --enter; fuxx wait s4 --text ALLDONE`:
+        // the echoed command line already holds the text.
+        let now = Instant::now();
+        let open = [(4, Status::Idle)];
+        let start = "ALLDONE (an earlier run)\n$ make test && echo ALLDONE";
+        let mut w = text_wait(Watch::One(4), "ALLDONE", &open, start);
+        let mut screen = |_| start.to_string();
+        assert_eq!(w.outcome(now, &open, &[], &mut screen), None);
+        let mut screen = |_| format!("{start}\nrunning 3 tests");
+        assert_eq!(w.outcome(now, &open, &[], &mut screen), None);
+        let mut screen = |_| format!("{start}\nrunning 3 tests\nALLDONE");
+        assert_eq!(
+            w.outcome(now, &open, &[], &mut screen),
+            Some(Outcome::Met(4))
+        );
+    }
+
+    #[test]
+    fn any_text_wait_counts_from_each_sessions_start() {
+        let now = Instant::now();
+        let start = [(1, Status::Idle), (4, Status::Idle)];
+        let mut w = text_wait(Watch::Any, "PASS", &start, "old PASS");
+        let mut screen = |_| "old PASS".to_string();
+        assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
+        // s7 opened after the wait began: everything on it is new.
+        let later = [(1, Status::Idle), (4, Status::Idle), (7, Status::Idle)];
+        assert_eq!(
+            w.outcome(now, &later, &[], &mut screen),
+            Some(Outcome::Met(7))
+        );
     }
 
     #[test]
     fn one_session_waits_for_its_status() {
         let now = Instant::now();
-        let w = wait(
+        let mut w = wait(
             Watch::One(4),
             WaitFor::Status(Status::Waiting),
             &[(4, Status::Working)],
@@ -387,7 +508,7 @@ mod tests {
     fn change_compares_with_the_status_at_the_start() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
+        let mut w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
         assert_eq!(
             w.outcome(now, &[(4, Status::Working)], &[], &mut screen),
             None
@@ -397,7 +518,7 @@ mod tests {
             Some(Outcome::Met(4))
         );
         // Closing is a change too.
-        let w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
+        let mut w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
         assert_eq!(
             w.outcome(now, &[], &[4], &mut screen),
             Some(Outcome::Met(4))
@@ -409,7 +530,7 @@ mod tests {
         let now = Instant::now();
         let mut screen = no_screen();
         let open = [(4, Status::Idle), (5, Status::Idle)];
-        let exit = wait(Watch::One(4), WaitFor::Exit, &open);
+        let mut exit = wait(Watch::One(4), WaitFor::Exit, &open);
         assert_eq!(exit.outcome(now, &open, &[], &mut screen), None);
         assert_eq!(
             exit.outcome(now, &[(4, Status::Idle)], &[5], &mut screen),
@@ -419,13 +540,13 @@ mod tests {
             exit.outcome(now, &[(5, Status::Idle)], &[4], &mut screen),
             Some(Outcome::Met(4))
         );
-        let status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             status.outcome(now, &[(5, Status::Idle)], &[4], &mut screen),
             Some(Outcome::Closed(4))
         );
         // Gone without being reported closed (never, but not forever pending either).
-        let status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             status.outcome(now, &[(5, Status::Idle)], &[], &mut screen),
             Some(Outcome::Closed(4))
@@ -437,7 +558,7 @@ mod tests {
         let now = Instant::now();
         let mut screen = no_screen();
         let start = [(1, Status::Working), (4, Status::Working)];
-        let w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
+        let mut w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
         assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
         assert_eq!(
             w.outcome(
@@ -449,14 +570,14 @@ mod tests {
             Some(Outcome::Met(4))
         );
         // `exit`: any session closing, named in the reply.
-        let w = wait(Watch::Any, WaitFor::Exit, &start);
+        let mut w = wait(Watch::Any, WaitFor::Exit, &start);
         assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
         assert_eq!(
             w.outcome(now, &[(1, Status::Working)], &[4], &mut screen),
             Some(Outcome::Met(4))
         );
         // A status wait isn't met by a session closing.
-        let w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
+        let mut w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
         assert_eq!(
             w.outcome(now, &[(1, Status::Working)], &[4], &mut screen),
             None
@@ -467,7 +588,7 @@ mod tests {
     fn any_change_counts_new_sessions_from_idle() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
+        let mut w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
         // s7 opened after the wait began: every session opens idle, so idle is no change...
         let later = [(1, Status::Working), (7, Status::Idle)];
         assert_eq!(w.outcome(now, &later, &[], &mut screen), None);
@@ -481,7 +602,7 @@ mod tests {
             Some(Outcome::Met(7))
         );
         // ...and one first seen already working has changed (from idle), even unseen at idle.
-        let w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
+        let mut w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
         assert_eq!(
             w.outcome(
                 now,
@@ -500,29 +621,29 @@ mod tests {
         let now = Instant::now();
         let mut screen = |id: u64| {
             if id == 4 {
-                "tests PASS".to_string()
+                "$ make test\ntests PASS".to_string()
             } else {
                 String::new()
             }
         };
         let open = [(1, Status::Idle), (4, Status::Done)];
-        let text = wait(Watch::One(4), WaitFor::Text("PASS".into()), &open);
+        let mut text = text_wait(Watch::One(4), "PASS", &open, "$ make test");
         assert_eq!(
             text.outcome(now, &open, &[4], &mut screen),
             Some(Outcome::Met(4))
         );
-        let done = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut done = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             done.outcome(now, &open, &[4], &mut screen),
             Some(Outcome::Met(4))
         );
-        let any = wait(Watch::Any, WaitFor::Text("PASS".into()), &open);
+        let mut any = text_wait(Watch::Any, "PASS", &open, "$ make test");
         assert_eq!(
             any.outcome(now, &open, &[4], &mut screen),
             Some(Outcome::Met(4))
         );
         // Not on its last screen either: closed.
-        let fail = wait(Watch::One(4), WaitFor::Text("FAIL".into()), &open);
+        let mut fail = text_wait(Watch::One(4), "FAIL", &open, "$ make test");
         assert_eq!(
             fail.outcome(now, &open, &[4], &mut screen),
             Some(Outcome::Closed(4))
@@ -542,9 +663,9 @@ mod tests {
             }
         };
         let open = [(1, Status::Idle), (4, Status::Idle)];
-        let one = wait(Watch::One(1), WaitFor::Text("PASS".into()), &open);
+        let mut one = text_wait(Watch::One(1), "PASS", &open, "");
         assert_eq!(one.outcome(now, &open, &[], &mut screen), None);
-        let any = wait(Watch::Any, WaitFor::Text("PASS".into()), &open);
+        let mut any = text_wait(Watch::Any, "PASS", &open, "");
         assert_eq!(
             any.outcome(now, &open, &[], &mut screen),
             Some(Outcome::Met(4))
@@ -557,13 +678,14 @@ mod tests {
         let base = Instant::now();
         let mut screen = no_screen();
         let open = [(4, Status::Working)];
-        let w = Wait::new(
+        let mut w = Wait::new(
             (),
             None,
             Watch::One(4),
             WaitFor::Status(Status::Done),
             &open,
             Some(at(base, 1000)),
+            &mut no_screen(),
         );
         assert_eq!(w.outcome(at(base, 999), &open, &[], &mut screen), None);
         // Met beats the deadline in the same pass.
@@ -576,7 +698,7 @@ mod tests {
             Some(Outcome::TimedOut)
         );
         // No deadline: never times out.
-        let w = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut w = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             w.outcome(at(base, 86_400_000), &open, &[], &mut screen),
             None
@@ -614,6 +736,7 @@ mod tests {
                 WaitFor::Status(Status::Done),
                 &open,
                 None,
+                &mut no_screen(),
             ));
         }
         let finished = table.check(
@@ -637,14 +760,7 @@ mod tests {
         let open = [(4, Status::Idle)];
         let mut table = WaitTable::new();
         for text in ["PASS", "FAIL"] {
-            table.push(Wait::new(
-                (),
-                None,
-                Watch::One(4),
-                WaitFor::Text(text.into()),
-                &open,
-                None,
-            ));
+            table.push(text_wait(Watch::One(4), text, &open, ""));
         }
         let mut reads = 0;
         let finished = table.check(

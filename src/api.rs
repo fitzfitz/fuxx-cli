@@ -124,8 +124,9 @@ pub struct SessionRef {
     pub label: String,
 }
 
-/// Pick the session a command is about. No target means the calling session (if it still
-/// exists), else the focused one.
+/// Pick the session a command is about. No target means the calling session, or the focused
+/// one when there's no caller (outside fuxx). A caller that's gone is an error: acting on
+/// whatever is focused instead could type into the wrong agent.
 pub fn resolve(
     target: Option<&Target>,
     sessions: &[SessionRef],
@@ -134,10 +135,13 @@ pub fn resolve(
 ) -> Result<u64, ApiError> {
     let exists = |id: u64| sessions.iter().any(|s| s.id == id);
     match target {
-        None => caller
-            .filter(|&id| exists(id))
-            .or(focused.filter(|&id| exists(id)))
-            .ok_or_else(|| ApiError::not_found("no session to act on")),
+        None => match caller {
+            Some(id) if exists(id) => Ok(id),
+            Some(id) => Err(ApiError::not_found(format!("your session s{id} is gone"))),
+            None => focused
+                .filter(|&id| exists(id))
+                .ok_or_else(|| ApiError::not_found("no session to act on")),
+        },
         Some(Target::Id(id)) => {
             if exists(*id) {
                 Ok(*id)
@@ -286,7 +290,12 @@ mod tests {
             Ok(4)
         );
         assert_eq!(resolve(None, &r, Some(7), Some(1)), Ok(7));
-        assert_eq!(resolve(None, &r, Some(99), Some(1)), Ok(1)); // caller gone: the focused one
+        // No caller (outside fuxx): the focused one.
+        assert_eq!(resolve(None, &r, None, Some(1)), Ok(1));
+        // A caller that's gone is an error, never whatever happens to be focused.
+        let gone = resolve(None, &r, Some(99), Some(1)).unwrap_err();
+        assert_eq!(gone.code, "not_found");
+        assert_eq!(gone.message, "your session s99 is gone");
     }
 
     #[test]

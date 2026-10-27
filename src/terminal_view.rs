@@ -93,14 +93,14 @@ impl Focusable for TerminalView {
 
 impl TerminalView {
     /// Start a login shell (in `cwd`, else home) and wrap it in a new view entity (focused).
-    /// `startup` is typed into the shell right after it starts, with Enter; `env` is added to
+    /// `startup` is typed into the shell right after it starts, with Enter; `env` is applied to
     /// the shell's environment.
     pub fn spawn(
         window: &mut Window,
         cx: &mut App,
         cwd: Option<&Path>,
         startup: Option<&str>,
-        env: &[(String, String)],
+        env: &pty::ShellEnv,
     ) -> Result<Entity<Self>, String> {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         // 80x24 until the first paint measures the real size and resizes.

@@ -357,9 +357,17 @@ impl Workspace {
         // Too far ahead to represent counts as no limit.
         let deadline = timeout_param(p)?.and_then(|t| now.checked_add(t));
         let sessions = self.statuses();
-        let wait = Wait::new(conn.clone(), request.id, watch, cond, &sessions, deadline);
         let items = self.sessions.items();
         let mut screen = |id: u64| screen_text(items, id, cx);
+        let mut wait = Wait::new(
+            conn.clone(),
+            request.id,
+            watch,
+            cond,
+            &sessions,
+            deadline,
+            &mut screen,
+        );
         if let Some(outcome) = wait.outcome(now, &sessions, &[], &mut screen) {
             return wait_reply(outcome).map(Some);
         }
@@ -791,7 +799,7 @@ mod tests {
         );
         assert_eq!(
             cli::render("ls", &json!([v]), false),
-            "s4  #2  waiting  api  [/x/api]  (claude)"
+            "* s4  #2  waiting  api  [/x/api]  (claude)  40% build · tests"
         );
         let bare = list_entry(&ListEntry {
             title: None,

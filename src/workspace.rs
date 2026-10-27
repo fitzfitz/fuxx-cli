@@ -3,6 +3,7 @@
 //! notifications.
 
 use std::cell::Cell;
+use std::ffi::OsStr;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -22,6 +23,7 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
 use crate::panes::{self, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
+use crate::pty::ShellEnv;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
@@ -151,6 +153,9 @@ pub struct Workspace {
     window_active: bool,
     /// Answers scripting requests (see `workspace_api`); none when scripting is off.
     _requests: Option<Task<()>>,
+    /// The socket this fuxx serves; none when it isn't serving (scripting off, or another fuxx
+    /// has it). Decides the shells' scripting variables.
+    socket: Option<PathBuf>,
     /// Connections that asked for events (`events.subscribe`).
     pub(crate) subscribers: Vec<Conn>,
     /// Pending `session.wait`s.
@@ -165,9 +170,10 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// `requests`: the scripting socket's requests, answered for as long as the workspace lives.
+    /// `scripting`: the socket this fuxx serves and its requests, answered for as long as the
+    /// workspace lives.
     pub fn new(
-        requests: Option<UnboundedReceiver<api_server::Incoming>>,
+        scripting: Option<(PathBuf, UnboundedReceiver<api_server::Incoming>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -176,6 +182,7 @@ impl Workspace {
             cx.notify();
         });
         let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
+        let (socket, requests) = scripting.unzip();
         let mut this = Self {
             sessions: SessionList::new(),
             layouts: Vec::new(),
@@ -187,6 +194,7 @@ impl Workspace {
             next_id: 1,
             window_active: window.is_window_active(),
             _requests: requests.map(|rx| Self::serve_requests(rx, window, cx)),
+            socket,
             subscribers: Vec::new(),
             waits: WaitTable::new(),
             waits_ticking: false,
@@ -333,11 +341,15 @@ impl Workspace {
             .map(|p| p.command.as_str());
         let session_id = self.next_id;
         self.next_id += 1;
-        let env = if cx.global::<Appearance>().scripting {
-            scripting_env(session_id)
-        } else {
-            Vec::new()
-        };
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        let env = scripting_env(
+            self.socket.as_deref(),
+            session_id,
+            exe_dir.as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        );
         let view = match TerminalView::spawn(window, cx, cwd, startup, &env) {
             Ok(view) => view,
             Err(err) => {
@@ -1201,29 +1213,38 @@ impl Render for Workspace {
     }
 }
 
-/// The scripting variables for a shell: the socket, the session id, and `fuxx` on the PATH.
-fn scripting_env(id: u64) -> Vec<(String, String)> {
-    let mut env = Vec::new();
-    // Without a socket path the session id means nothing, so set neither.
-    if let Some(home) = home_dir() {
-        env.push((
-            "FUXX_SOCKET".to_string(),
-            api_server::socket_path(&home).display().to_string(),
-        ));
-        env.push(("FUXX_SESSION".to_string(), format!("s{id}")));
-    }
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    {
-        let mut path = std::env::var_os("PATH").unwrap_or_default();
+/// The scripting variables for a shell. While this fuxx serves `socket`: the socket, the
+/// session id, and the `fuxx` program's folder (`exe_dir`) at the end of `path`. Otherwise both
+/// variables are removed, so one inherited from another fuxx can't make `fuxx` in this shell
+/// drive that fuxx's sessions.
+fn scripting_env(
+    socket: Option<&Path>,
+    id: u64,
+    exe_dir: Option<&Path>,
+    path: Option<&OsStr>,
+) -> ShellEnv {
+    let Some(socket) = socket else {
+        return ShellEnv {
+            set: Vec::new(),
+            remove: vec!["FUXX_SOCKET", "FUXX_SESSION"],
+        };
+    };
+    let mut set = vec![
+        ("FUXX_SOCKET".to_string(), socket.display().to_string()),
+        ("FUXX_SESSION".to_string(), format!("s{id}")),
+    ];
+    if let Some(dir) = exe_dir {
+        let mut path = path.map(OsStr::to_os_string).unwrap_or_default();
         if !path.is_empty() {
             path.push(":");
         }
         path.push(dir);
-        env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+        set.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
     }
-    env
+    ShellEnv {
+        set,
+        remove: Vec::new(),
+    }
 }
 
 /// `$HOME`; unset or empty counts as absent.
@@ -1235,7 +1256,51 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::sub_line;
+    use super::{scripting_env, sub_line};
+    use crate::pty::apply_env;
+    use portable_pty::CommandBuilder;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    #[test]
+    fn scripting_variables_follow_whether_this_fuxx_serves_the_socket() {
+        let ours = Path::new("/me/Library/Application Support/fuxx/fuxx.sock");
+        let exe = Path::new("/apps/fuxx.app/Contents/MacOS");
+        for serving in [true, false] {
+            // Inherited: as if this fuxx was started from a session of another fuxx.
+            for inherited in [true, false] {
+                let mut cmd = CommandBuilder::new("sh");
+                cmd.env_clear();
+                cmd.env("PATH", "/usr/bin");
+                if inherited {
+                    cmd.env("FUXX_SOCKET", "/other/fuxx.sock");
+                    cmd.env("FUXX_SESSION", "s2");
+                }
+                let env = scripting_env(
+                    serving.then_some(ours),
+                    7,
+                    Some(exe),
+                    Some(OsStr::new("/usr/bin")),
+                );
+                apply_env(&mut cmd, &env);
+                let var = |k: &str| cmd.get_env(k).map(|v| v.to_string_lossy().into_owned());
+                let case = format!("serving {serving}, inherited {inherited}");
+                if serving {
+                    assert_eq!(var("FUXX_SOCKET").as_deref(), ours.to_str(), "{case}");
+                    assert_eq!(var("FUXX_SESSION").as_deref(), Some("s7"), "{case}");
+                    assert_eq!(
+                        var("PATH").as_deref(),
+                        Some("/usr/bin:/apps/fuxx.app/Contents/MacOS"),
+                        "{case}"
+                    );
+                } else {
+                    assert_eq!(var("FUXX_SOCKET"), None, "{case}");
+                    assert_eq!(var("FUXX_SESSION"), None, "{case}");
+                    assert_eq!(var("PATH").as_deref(), Some("/usr/bin"), "{case}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_line_under_the_name_joins_label_and_note() {
