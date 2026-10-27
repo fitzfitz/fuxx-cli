@@ -2,7 +2,6 @@
 //! reader thread feeding the child's output into the Term. No GPUI here: the view talks to it
 //! through `TerminalCore` (cheap to clone, every field is an `Arc`) and an event channel.
 
-use std::io::{ErrorKind, Read, Write};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -18,10 +17,11 @@ use futures::channel::mpsc::UnboundedSender;
 use portable_pty::CommandBuilder;
 
 use crate::colors;
+use crate::daemon_session;
 use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
-use crate::pty::Pty;
+use crate::pty::{self, Pty};
 use crate::theme::Theme;
 
 /// Terminal size in cells. Implements alacritty's `Dimensions` so `Term` can use it directly.
@@ -47,6 +47,16 @@ impl Dimensions for TermDims {
     }
     fn columns(&self) -> usize {
         self.cols
+    }
+}
+
+/// What `CSI 14 t` reports for a terminal of `dims` cells of `cell` pixels.
+pub fn window_size(dims: TermDims, cell: CellPx) -> WindowSize {
+    WindowSize {
+        num_lines: dims.rows as u16,
+        num_cols: dims.cols as u16,
+        cell_width: cell.width,
+        cell_height: cell.height,
     }
 }
 
@@ -101,7 +111,7 @@ impl TerminalCore {
         events: UnboundedSender<TermEvent>,
         theme: Theme,
     ) -> Result<Self, String> {
-        let (pty, mut reader, mut writer) = Pty::spawn(cmd, dims)?;
+        let (pty, reader, writer) = Pty::spawn(cmd, dims)?;
         let term = Term::new(Config::default(), &dims, Listener(events.clone()));
         let shared = Arc::new(FairMutex::new(Shared {
             term,
@@ -109,50 +119,29 @@ impl TerminalCore {
         }));
 
         let reader_shared = shared.clone();
-        std::thread::Builder::new()
-            .name("fuxx-pty-reader".into())
-            .spawn(move || {
-                let mut buf = [0u8; 8192];
-                // alacritty_terminal ignores notification OSCs, so a byte scanner watches the raw stream.
-                let mut detector = OscDetector::new();
-                loop {
-                    match reader.read(&mut buf) {
-                        // EOF. portable-pty already maps macOS's EIO-at-exit to Ok(0).
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let notifications = detector.feed(&buf[..n]);
-                            {
-                                let mut guard = reader_shared.lock();
-                                let Shared { term, processor } = &mut *guard;
-                                processor.advance(term, &buf[..n]);
-                            } // lock released before waking the UI
-                            let _ = events.unbounded_send(TermEvent::Output { notifications });
-                        }
-                        Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                        Err(_) => break,
-                    }
-                }
-                let _ = events.unbounded_send(TermEvent::Exited);
-            })
-            .map_err(|e| e.to_string())?;
+        let eof_events = events.clone();
+        // alacritty_terminal ignores notification OSCs, so a byte scanner watches the raw stream.
+        let mut detector = OscDetector::new();
+        pty::spawn_reader(
+            reader,
+            move |bytes| {
+                let notifications = detector.feed(bytes);
+                {
+                    let mut guard = reader_shared.lock();
+                    let Shared { term, processor } = &mut *guard;
+                    processor.advance(term, bytes);
+                } // lock released before waking the UI
+                let _ = events.unbounded_send(TermEvent::Output { notifications });
+            },
+            move || {
+                let _ = eof_events.unbounded_send(TermEvent::Exited);
+            },
+        )
+        .map_err(|e| e.to_string())?;
 
         // The writer thread owns the PTY writer for the whole session. It ends when every
         // `TerminalCore` clone is dropped (the channel closes) or the child goes away.
-        let (input, queued) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::Builder::new()
-            .name("fuxx-pty-writer".into())
-            .spawn(move || {
-                for bytes in queued {
-                    if writer
-                        .write_all(&bytes)
-                        .and_then(|()| writer.flush())
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .map_err(|e| e.to_string())?;
+        let input = pty::spawn_writer(writer).map_err(|e| e.to_string())?;
 
         Ok(Self {
             shared,
@@ -255,12 +244,13 @@ impl TerminalCore {
     /// Cell counts and cell pixel size from the last resize, for `CSI 14 t` replies.
     pub fn window_size(&self) -> WindowSize {
         let (dims, cell) = *self.dims.lock().unwrap();
-        WindowSize {
-            num_lines: dims.rows as u16,
-            num_cols: dims.cols as u16,
-            cell_width: cell.width,
-            cell_height: cell.height,
-        }
+        window_size(dims, cell)
+    }
+
+    /// The reply a terminal query (`PtyWrite`, `ColorRequest`, `TextAreaSizeRequest`) wants
+    /// written back to the child; `None` for any other event.
+    pub fn query_reply(&self, event: &Event) -> Option<String> {
+        daemon_session::query_reply(event, |index| self.color(index), self.window_size())
     }
 
     pub fn mode(&self) -> TermMode {
@@ -450,6 +440,32 @@ mod tests {
             _ => false,
         }));
         assert_eq!(reply.as_deref(), Some("\x1b[4;408;640t"));
+    }
+
+    #[test]
+    fn colour_queries_are_answered_from_the_theme() {
+        let (tx, mut rx) = unbounded();
+        let mut theme = Theme::default();
+        theme.background = crate::theme::parse_color("#123456").unwrap();
+        let core = TerminalCore::spawn(
+            sh("printf '\\033]11;?\\007'; sleep 1"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            theme,
+        )
+        .unwrap();
+        let mut reply = None;
+        assert!(wait_for(&mut rx, |e| match e {
+            TermEvent::Term(event @ Event::ColorRequest(..)) => {
+                reply = core.query_reply(event);
+                true
+            }
+            _ => false,
+        }));
+        assert_eq!(reply.as_deref(), Some("\x1b]11;rgb:1212/3434/5656\x07"));
+        let cpr = Event::PtyWrite("\x1b[1;1R".into());
+        assert_eq!(core.query_reply(&cpr).as_deref(), Some("\x1b[1;1R"));
+        assert_eq!(core.query_reply(&Event::Bell), None);
     }
 
     #[test]

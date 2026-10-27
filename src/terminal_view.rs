@@ -207,14 +207,14 @@ impl TerminalView {
             TermEvent::Term(Event::Bell) => self.tracker.on_bell(Instant::now()),
             // Replies to terminal queries (cursor position, device attributes, ...) MUST go back
             // to the child, or programs that ask (shells, vim, Claude Code) hang waiting.
-            TermEvent::Term(Event::PtyWrite(text)) => self.core.write(text.as_bytes()),
-            TermEvent::Term(Event::ColorRequest(index, format)) => {
-                let reply = format(self.core.color(index));
-                self.core.write(reply.as_bytes());
-            }
-            TermEvent::Term(Event::TextAreaSizeRequest(format)) => {
-                let reply = format(self.core.window_size());
-                self.core.write(reply.as_bytes());
+            TermEvent::Term(
+                event @ (Event::PtyWrite(_)
+                | Event::ColorRequest(..)
+                | Event::TextAreaSizeRequest(_)),
+            ) => {
+                if let Some(reply) = self.core.query_reply(&event) {
+                    self.core.write(reply.as_bytes());
+                }
             }
             TermEvent::Term(Event::Title(title)) => {
                 cx.emit(TerminalEvent::TitleChanged(Some(title.into())))

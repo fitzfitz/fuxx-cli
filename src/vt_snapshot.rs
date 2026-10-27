@@ -81,9 +81,18 @@ const MODES: [(TermMode, &str); 14] = [
 /// swap does clear any selection, mark the whole Term damaged, and reset the kitty keyboard
 /// mode bits to the top of the alt screen's stack (what they already were). All harmless for
 /// the daemon, which has no selection and does not render.
-#[allow(dead_code)] // used by the daemon from M10a Task 3
+#[allow(dead_code)] // the daemon uses the capped form; tests use this one
 pub fn encode<L: EventListener>(term: &mut Term<L>) -> Vec<u8> {
-    let mut enc = Encoder::default();
+    encode_with_history(term, usize::MAX)
+}
+
+/// `encode`, keeping only the newest `history` lines of scrollback (the daemon's cap on a
+/// snapshot's size). The first row kept starts a fresh line even if it continued a wrapped one.
+pub fn encode_with_history<L: EventListener>(term: &mut Term<L>, history: usize) -> Vec<u8> {
+    let mut enc = Encoder {
+        history,
+        ..Encoder::default()
+    };
     enc.out.extend_from_slice(b"\x1bc");
     if term.mode().contains(TermMode::ALT_SCREEN) {
         let alt = term.grid().clone();
@@ -147,6 +156,8 @@ struct Encoder {
     out: Vec<u8>,
     pen: Pen,
     link: Option<Hyperlink>,
+    /// Scrollback lines to write, newest first.
+    history: usize,
 }
 
 impl Encoder {
@@ -157,7 +168,8 @@ impl Encoder {
         self.out.reserve(grid.total_lines() * cols);
         let bottom = grid.bottommost_line();
         let mut prev_wrapped = false;
-        for line in grid.topmost_line().0..=bottom.0 {
+        let oldest = -(i32::try_from(self.history).unwrap_or(i32::MAX));
+        for line in grid.topmost_line().0.max(oldest)..=bottom.0 {
             let row = &grid[Line(line)];
             let last_row = line == bottom.0;
             let wrapped = !last_row && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
@@ -622,6 +634,32 @@ mod tests {
         }
         let (a, _) = round_trip(bytes.as_bytes(), 30, 24);
         assert_eq!(a.grid().history_size(), 500 - 23);
+    }
+
+    #[test]
+    fn history_can_be_capped() {
+        let mut a = term(30, 4);
+        let mut bytes = String::new();
+        for i in 0..50 {
+            bytes.push_str(&format!("\x1b[3{}mline {i}\r\n", i % 8));
+        }
+        bytes.push_str("\x1b[?1049halt");
+        feed(&mut a, bytes.as_bytes());
+        let before = state(&a);
+        let capped = encode_with_history(&mut a, 10);
+        assert_same(&before, &state(&a));
+        let mut b = term(30, 4);
+        feed(&mut b, &capped);
+        b.swap_alt(); // the primary screen, under the alt one
+        a.swap_alt();
+        assert_eq!(b.grid().history_size(), 10);
+        let (sa, sb) = (state(&a), state(&b));
+        assert_eq!(
+            sa.lines[sa.lines.len() - 14..],
+            sb.lines[..],
+            "newest lines kept"
+        );
+        assert_eq!(encode_with_history(&mut a, usize::MAX), encode(&mut a));
     }
 
     #[test]
