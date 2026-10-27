@@ -1,6 +1,12 @@
-//! One live terminal: a PTY child, an `alacritty_terminal::Term` holding its screen, and a
-//! reader thread feeding the child's output into the Term. No GPUI here: the view talks to it
-//! through `TerminalCore` (cheap to clone, every field is an `Arc`) and an event channel.
+//! One live terminal: an `alacritty_terminal::Term` holding its screen, fed by one of two
+//! backends. No GPUI here: the view talks to it through `TerminalCore` (cheap to clone, every
+//! field is an `Arc`) and an event channel.
+//! - Local: a PTY child of this process, its output parsed by a reader thread.
+//! - Daemon (M10a, study §2.3.2): a replica of a session the background daemon owns. It starts
+//!   from the daemon's `Snapshot` and is fed its numbered `Output` and `Resized` frames, so it
+//!   ends up in the daemon's state. A gap in the numbers, or a `Resync`, re-attaches for a fresh
+//!   snapshot. Input and resizes go to the daemon. The daemon answers terminal queries and works
+//!   out status, title and exit; the replica's own query, title and bell events are dropped.
 
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -17,10 +23,13 @@ use futures::channel::mpsc::UnboundedSender;
 use portable_pty::CommandBuilder;
 
 use crate::colors;
+use crate::daemon_client::{DaemonClient, SessionStream};
 use crate::detector::OscDetector;
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
+use crate::mux_proto::{self, Frame};
 use crate::pty::{self, Pty};
+use crate::status::Status;
 use crate::theme::Theme;
 
 /// Terminal size in cells. Implements alacritty's `Dimensions` so `Term` can use it directly.
@@ -86,16 +95,34 @@ pub enum TermEvent {
     Output { notifications: usize },
     /// The child closed the PTY (shell exited).
     Exited,
+    /// Daemon backend: the daemon's status for this session changed.
+    Status(Status),
 }
 
 /// Receives `Term` events. It runs *inside* `Processor::advance` while the Term lock is held,
 /// so it must never lock the Term: it only forwards into the channel.
 #[derive(Clone)]
-pub struct Listener(UnboundedSender<TermEvent>);
+pub struct Listener {
+    events: UnboundedSender<TermEvent>,
+    /// A daemon replica's: the daemon answers queries and reports title and bell, so the
+    /// replica's own are dropped (answering them here would answer twice).
+    replica: bool,
+}
 
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
-        let _ = self.0.unbounded_send(TermEvent::Term(event));
+        let daemons = matches!(
+            event,
+            Event::PtyWrite(_)
+                | Event::ColorRequest(..)
+                | Event::TextAreaSizeRequest(_)
+                | Event::Title(_)
+                | Event::ResetTitle
+                | Event::Bell
+        );
+        if !(self.replica && daemons) {
+            let _ = self.events.unbounded_send(TermEvent::Term(event));
+        }
     }
 }
 
@@ -106,14 +133,40 @@ struct Shared {
     processor: Processor<StdSyncHandler>,
 }
 
+/// Where a terminal's bytes come from and go to.
+#[derive(Clone)]
+enum Backend {
+    /// A PTY child of this process.
+    Local {
+        pty: Arc<Mutex<Pty>>,
+        /// Bytes for the child, written by the writer thread so a child that stops reading
+        /// can't block the UI.
+        input: Sender<Vec<u8>>,
+    },
+    /// A replica of a daemon session.
+    Daemon(Arc<DaemonLink>),
+}
+
+/// The daemon session a replica mirrors. Dropped with the last `TerminalCore` clone, it
+/// detaches: the session keeps running in the daemon (closing it is `DaemonClient::close`).
+struct DaemonLink {
+    id: u64,
+    client: Arc<DaemonClient>,
+}
+
+impl Drop for DaemonLink {
+    fn drop(&mut self) {
+        self.client.detach(self.id);
+    }
+}
+
 #[derive(Clone)]
 pub struct TerminalCore {
     shared: Arc<FairMutex<Shared>>,
-    pty: Arc<Mutex<Pty>>,
+    backend: Backend,
+    /// The size last asked for (Daemon: the replica takes it when the daemon's `Resized`
+    /// arrives).
     dims: Arc<Mutex<(TermDims, CellPx)>>,
-    /// Bytes for the child, written by the writer thread so a child that stops reading can't
-    /// block the UI.
-    input: Sender<Vec<u8>>,
     /// Built once: compiling the URL regex is not free.
     links: Arc<Mutex<LinkFinder>>,
     /// Shared by every clone, so a theme change reaches them all.
@@ -128,7 +181,11 @@ impl TerminalCore {
         theme: Theme,
     ) -> Result<Self, String> {
         let (pty, reader, writer) = Pty::spawn(cmd, dims)?;
-        let term = Term::new(Config::default(), &dims, Listener(events.clone()));
+        let listener = Listener {
+            events: events.clone(),
+            replica: false,
+        };
+        let term = Term::new(Config::default(), &dims, listener);
         let shared = Arc::new(FairMutex::new(Shared {
             term,
             processor: Processor::new(),
@@ -161,12 +218,99 @@ impl TerminalCore {
 
         Ok(Self {
             shared,
-            pty: Arc::new(Mutex::new(pty)),
+            backend: Backend::Local {
+                pty: Arc::new(Mutex::new(pty)),
+                input,
+            },
             dims: Arc::new(Mutex::new((dims, CellPx::default()))),
-            input,
             links: Arc::new(Mutex::new(LinkFinder::new())),
             theme: Arc::new(Mutex::new(theme)),
         })
+    }
+
+    /// A replica of daemon session `id`: attaches, then mirrors the daemon's Term (Daemon
+    /// backend).
+    pub fn attach_daemon(
+        client: Arc<DaemonClient>,
+        id: u64,
+        events: UnboundedSender<TermEvent>,
+        theme: Theme,
+    ) -> std::io::Result<Self> {
+        // 80x24 until the snapshot brings the session's size.
+        let dims = (TermDims { cols: 80, rows: 24 }, CellPx::default());
+        Self::replica(client, id, dims, events, theme)
+    }
+
+    fn replica(
+        client: Arc<DaemonClient>,
+        id: u64,
+        dims: (TermDims, CellPx),
+        events: UnboundedSender<TermEvent>,
+        theme: Theme,
+    ) -> std::io::Result<Self> {
+        let listener = Listener {
+            events: events.clone(),
+            replica: true,
+        };
+        // The daemon's Term has the same `Config::default()` (and so the same history).
+        let term = Term::new(Config::default(), &dims.0, listener.clone());
+        let shared = Arc::new(FairMutex::new(Shared {
+            term,
+            processor: Processor::new(),
+        }));
+        // So OSC 4/10/11/12 replies match what this window shows.
+        client.set_theme(&theme);
+        let stream = client.attach(id);
+        let link = Arc::new(DaemonLink {
+            id,
+            client: client.clone(),
+        });
+        let replica = Replica {
+            id,
+            listener,
+            events,
+            next: None,
+            title: None,
+            status: None,
+        };
+        let feeding = shared.clone();
+        std::thread::Builder::new()
+            .name(format!("fuxx-replica-s{id}"))
+            .spawn(move || replica.run(&stream, &feeding, &client))?;
+        Ok(Self {
+            shared,
+            backend: Backend::Daemon(link),
+            dims: Arc::new(Mutex::new(dims)),
+            links: Arc::new(Mutex::new(LinkFinder::new())),
+            theme: Arc::new(Mutex::new(theme)),
+        })
+    }
+
+    /// Ask the daemon for a new session (`create`), then attach to it.
+    pub fn create_daemon(
+        client: Arc<DaemonClient>,
+        create: mux_proto::Create,
+        events: UnboundedSender<TermEvent>,
+        theme: Theme,
+    ) -> std::io::Result<Self> {
+        let dims = TermDims {
+            cols: create.dims.cols.into(),
+            rows: create.dims.rows.into(),
+        };
+        let cell = CellPx {
+            width: create.cell_px.w,
+            height: create.cell_px.h,
+        };
+        let id = client.create(create)?;
+        Self::replica(client, id, (dims, cell), events, theme)
+    }
+
+    /// The daemon session this mirrors; `None` for a Local terminal.
+    pub fn daemon_id(&self) -> Option<u64> {
+        match &self.backend {
+            Backend::Local { .. } => None,
+            Backend::Daemon(link) => Some(link.id),
+        }
     }
 
     /// The allowed-scheme link under `point`, if any. The point is clamped to the grid under
@@ -177,9 +321,16 @@ impl TerminalCore {
         self.links.lock().unwrap().find(term, point)
     }
 
-    /// Queue bytes for the child (keystrokes, query replies). Never blocks.
+    /// Queue bytes for the child (keystrokes, query replies, mouse reports). Local never
+    /// blocks; Daemon waits only while the client's send queue is full (the daemon pushes back
+    /// on input its child doesn't read).
     pub fn write(&self, bytes: &[u8]) {
-        let _ = self.input.send(bytes.to_vec());
+        match &self.backend {
+            Backend::Local { input, .. } => {
+                let _ = input.send(bytes.to_vec());
+            }
+            Backend::Daemon(link) => link.client.input(link.id, bytes),
+        }
     }
 
     /// User input: snap the view back to the live bottom, drop any selection, then send the
@@ -238,18 +389,26 @@ impl TerminalCore {
     }
 
     /// Resize screen + PTY. No-op when unchanged, so it's cheap to call every frame.
+    /// Daemon: asks the daemon, and the replica resizes when the daemon's `Resized` arrives, at
+    /// the same point in the output as the daemon's Term.
     pub fn resize(&self, dims: TermDims, cell: CellPx) {
         if dims.cols == 0 || dims.rows == 0 {
             return;
         }
+        // Held throughout, so racing resizes apply in the order they were stored.
         let mut current = self.dims.lock().unwrap();
         if *current == (dims, cell) {
             return;
         }
         *current = (dims, cell);
-        self.shared.lock().term.resize(dims);
-        if let Ok(pty) = self.pty.lock() {
-            let _ = pty.resize(dims, cell);
+        match &self.backend {
+            Backend::Local { pty, .. } => {
+                self.shared.lock().term.resize(dims);
+                if let Ok(pty) = pty.lock() {
+                    let _ = pty.resize(dims, cell);
+                }
+            }
+            Backend::Daemon(link) => link.client.resize(link.id, dims, cell),
         }
     }
 
@@ -279,6 +438,9 @@ impl TerminalCore {
 
     pub fn set_theme(&self, theme: Theme) {
         *self.theme.lock().unwrap() = theme;
+        if let Backend::Daemon(link) = &self.backend {
+            link.client.set_theme(&theme);
+        }
     }
 
     pub fn snapshot(&self) -> GridSnapshot {
@@ -307,6 +469,172 @@ impl TerminalCore {
             }
             _ => false,
         }
+    }
+}
+
+/// What the replica thread does after a frame.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Continue,
+    /// Out of step with the daemon: ask for a fresh snapshot.
+    Reattach,
+    /// The session ended.
+    End,
+}
+
+/// Feeds a Daemon backend's replica Term from its session's frames, on its own thread.
+struct Replica {
+    id: u64,
+    listener: Listener,
+    events: UnboundedSender<TermEvent>,
+    /// The seq the next `Output` or `Resized` must carry; `None` while waiting for a snapshot.
+    next: Option<u64>,
+    title: Option<String>,
+    status: Option<Status>,
+}
+
+impl Replica {
+    fn run(mut self, stream: &SessionStream, shared: &FairMutex<Shared>, client: &DaemonClient) {
+        self.refresh_status(client);
+        while let Ok(frame) = stream.recv() {
+            match self.apply(frame, shared) {
+                Step::Continue => {}
+                Step::Reattach => {
+                    client.reattach(self.id);
+                    // Status frames dropped with the old stream are lost: ask. Asked after the
+                    // Attach, so the answer is at least as new as the snapshot.
+                    self.refresh_status(client);
+                }
+                Step::End => return,
+            }
+        }
+        // The stream ended without `Exited`: detached (no one is listening any more) or the
+        // connection to the daemon is gone, and its sessions with it.
+        self.emit(TermEvent::Exited);
+    }
+
+    fn apply(&mut self, frame: Frame, shared: &FairMutex<Shared>) -> Step {
+        match frame {
+            Frame::Snapshot(snap) => {
+                let dims = wire_dims(snap.dims.cols, snap.dims.rows);
+                {
+                    // A fresh Term and parser: an old parser could be inside a synchronized
+                    // update (DEC 2026) or an escape sequence, and would swallow the snapshot.
+                    let mut guard = shared.lock();
+                    guard.term = Term::new(Config::default(), &dims, self.listener.clone());
+                    guard.processor = Processor::new();
+                    let Shared { term, processor } = &mut *guard;
+                    processor.advance(term, &snap.vt_bytes);
+                }
+                self.next = Some(snap.seq + 1);
+                self.set_title(snap.title);
+                self.emit(TermEvent::Output { notifications: 0 });
+            }
+            Frame::Output {
+                seq,
+                notifications,
+                bytes,
+                ..
+            } => {
+                if let Err(step) = self.take_seq(seq) {
+                    return step;
+                }
+                {
+                    let mut guard = shared.lock();
+                    let Shared { term, processor } = &mut *guard;
+                    processor.advance(term, &bytes);
+                }
+                let notifications = usize::try_from(notifications).unwrap_or(usize::MAX);
+                self.emit(TermEvent::Output { notifications });
+            }
+            Frame::Resized(r) => {
+                if let Err(step) = self.take_seq(r.seq) {
+                    return step;
+                }
+                shared.lock().term.resize(wire_dims(r.cols, r.rows));
+                self.emit(TermEvent::Term(Event::Wakeup));
+            }
+            Frame::Exited { .. } => {
+                self.emit(TermEvent::Exited);
+                return Step::End;
+            }
+            // Until the snapshot, the rest belongs to the old stream: the snapshot brings the
+            // title and `refresh_status` the status.
+            _ if self.next.is_none() => {}
+            Frame::Resync { .. } => {
+                self.next = None;
+                return Step::Reattach;
+            }
+            Frame::Status { status, .. } => {
+                if let Some(status) = Status::parse(&status) {
+                    self.set_status(status);
+                }
+            }
+            Frame::Title { title, .. } => self.set_title(title),
+            // `Bell` (the daemon's status tracker has it), and anything newer.
+            _ => {}
+        }
+        Step::Continue
+    }
+
+    /// Accept numbered frame `seq` if it is the next one. Otherwise: while waiting for a
+    /// snapshot, drop it; after a gap, re-attach.
+    fn take_seq(&mut self, seq: u64) -> Result<(), Step> {
+        match self.next {
+            Some(next) if next == seq => {
+                self.next = Some(next + 1);
+                Ok(())
+            }
+            Some(_) => {
+                self.next = None;
+                Err(Step::Reattach)
+            }
+            None => Err(Step::Continue),
+        }
+    }
+
+    fn refresh_status(&mut self, client: &DaemonClient) {
+        match client.list() {
+            Ok(sessions) => {
+                let status = sessions
+                    .iter()
+                    .find(|s| s.id == self.id)
+                    .and_then(|s| Status::parse(&s.status));
+                if let Some(status) = status {
+                    self.set_status(status);
+                }
+            }
+            Err(e) => eprintln!("[fuxx] s{}: no status from the daemon: {e}", self.id),
+        }
+    }
+
+    fn set_status(&mut self, status: Status) {
+        if self.status != Some(status) {
+            self.status = Some(status);
+            self.emit(TermEvent::Status(status));
+        }
+    }
+
+    fn set_title(&mut self, title: Option<String>) {
+        if self.title != title {
+            self.title.clone_from(&title);
+            self.emit(TermEvent::Term(match title {
+                Some(title) => Event::Title(title),
+                None => Event::ResetTitle,
+            }));
+        }
+    }
+
+    fn emit(&self, event: TermEvent) {
+        let _ = self.events.unbounded_send(event);
+    }
+}
+
+/// A wire size as cells, at least 1x1.
+fn wire_dims(cols: u16, rows: u16) -> TermDims {
+    TermDims {
+        cols: usize::from(cols).max(1),
+        rows: usize::from(rows).max(1),
     }
 }
 
@@ -689,5 +1017,387 @@ mod tests {
         clone.set_theme(t);
         assert_eq!(core.snapshot().lines[0][0].fg, t.foreground); // every clone sees it
         assert_eq!(core.theme(), t);
+    }
+}
+
+/// The Daemon backend, against an in-process daemon (or a scripted fake one).
+#[cfg(test)]
+mod daemon_tests {
+    use super::*;
+    use crate::daemon_client::tests::{daemon, sh_create, temp_sock};
+    use crate::mux_proto::{Decoder, Dims, Frame, encode};
+    use futures::channel::mpsc::{UnboundedReceiver, unbounded};
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::Path;
+    use std::time::Duration;
+
+    fn eventually(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        cond()
+    }
+
+    /// Every event that arrived in the next `wait`.
+    fn drain(rx: &mut UnboundedReceiver<TermEvent>, wait: Duration) -> Vec<TermEvent> {
+        let deadline = Instant::now() + wait;
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(e) => events.push(e),
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        events
+    }
+
+    /// Wait (10 s) for an event `pred` accepts.
+    fn wait_event(
+        rx: &mut UnboundedReceiver<TermEvent>,
+        mut pred: impl FnMut(&TermEvent) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(e) if pred(&e) => return true,
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        false
+    }
+
+    fn screen_lines(core: &TerminalCore) -> Vec<String> {
+        core.text(grid::TextScope::Screen)
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn typed_echo_shows_on_the_replica() {
+        let (_d, path) = daemon("t-echo");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client, sh_create(40, 5), tx, Theme::default()).unwrap();
+        assert!(core.daemon_id().is_some());
+        core.input(b"echo hi\r");
+        assert!(
+            eventually(|| screen_lines(&core).iter().any(|l| l == "hi")),
+            "{:?}",
+            screen_lines(&core)
+        );
+    }
+
+    #[test]
+    fn attaching_to_a_busy_session_matches_the_daemon() {
+        let (_d, path) = daemon("t-busy");
+        let client = DaemonClient::connect(&path).unwrap();
+        let id = client.create(sh_create(50, 8)).unwrap();
+        // DO''NE: the echoed command line doesn't match a line that is just DONE.
+        client.input(
+            id,
+            b"i=0; while [ $i -lt 20000 ]; do i=$((i+1)); echo line$i; done; echo DO''NE\r",
+        );
+        assert!(eventually(|| client
+            .read_text(id, "screen")
+            .unwrap()
+            .contains("line")));
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client.clone(), id, tx, Theme::default()).unwrap();
+        let busy = client.read_text(id, "screen").unwrap();
+        assert!(!busy.lines().any(|l| l == "DONE"), "attached too late");
+        assert!(eventually(|| screen_lines(&core)
+            .iter()
+            .any(|l| l == "DONE")));
+        assert!(
+            eventually(
+                || core.text(grid::TextScope::All) == client.read_text(id, "all").unwrap()
+                    && core.text(grid::TextScope::Screen)
+                        == client.read_text(id, "screen").unwrap()
+            ),
+            "replica:\n{}\ndaemon:\n{}",
+            core.text(grid::TextScope::Screen),
+            client.read_text(id, "screen").unwrap()
+        );
+    }
+
+    #[test]
+    fn resize_round_trips_through_the_daemon() {
+        let (_d, path) = daemon("t-resize");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client.clone(), sh_create(40, 5), tx, Theme::default())
+                .unwrap();
+        let id = core.daemon_id().unwrap();
+        assert!(eventually(|| core.snapshot().cols == 40));
+        core.resize(
+            TermDims { cols: 60, rows: 10 },
+            CellPx {
+                width: 8,
+                height: 16,
+            },
+        );
+        assert!(eventually(|| {
+            let snap = core.snapshot();
+            (snap.cols, snap.rows) == (60, 10)
+        }));
+        let daemon_dims = client.list().unwrap()[0].dims;
+        assert_eq!(daemon_dims, Dims { cols: 60, rows: 10 });
+        assert_eq!(core.dims(), TermDims { cols: 60, rows: 10 });
+        // The replica reflowed at the same point as the daemon.
+        core.input(b"echo after-resize\r");
+        assert!(eventually(|| core.text(grid::TextScope::All)
+            == client.read_text(id, "all").unwrap()
+            && core.text(grid::TextScope::Screen).contains("after-resize")));
+    }
+
+    #[test]
+    fn status_title_and_exit_come_from_the_daemon_and_queries_are_not_answered_here() {
+        let (_d, path) = daemon("t-events");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client, sh_create(40, 5), tx, Theme::default()).unwrap();
+        core.input(
+            b"printf '\\033]2;mytitle\\007\\033[6n\\033]11;?\\007\\033[14t'; sleep 1; echo x\r",
+        );
+        let mut seen = Vec::new();
+        assert!(wait_event(&mut rx, |e| {
+            let done = matches!(e, TermEvent::Status(Status::Working));
+            seen.push(format!("{e:?}"));
+            done
+        }));
+        let replica_queries = |e: &String| {
+            e.contains("PtyWrite") || e.contains("ColorRequest") || e.contains("TextAreaSize")
+        };
+        assert!(
+            seen.iter().any(|e| e.contains("Title(mytitle)")),
+            "{seen:?}"
+        );
+        assert!(!seen.iter().any(replica_queries), "{seen:?}");
+        // The daemon's answers to the queries were typed ahead into the shell: clear them.
+        std::thread::sleep(Duration::from_millis(1500));
+        core.input(b"\x03");
+        std::thread::sleep(Duration::from_millis(300));
+        core.input(b"exit\r");
+        let rest: Vec<String> = drain(&mut rx, Duration::from_secs(2))
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect();
+        assert!(rest.iter().any(|e| e == "Exited"), "{rest:?}");
+        assert!(!rest.iter().any(replica_queries), "{rest:?}");
+    }
+
+    #[test]
+    fn dropping_the_view_side_detaches_without_ending_the_session() {
+        let (_d, path) = daemon("t-detach");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client.clone(), sh_create(40, 5), tx, Theme::default())
+                .unwrap();
+        let id = core.daemon_id().unwrap();
+        let clone = core.clone();
+        drop(core);
+        drop(clone);
+        std::thread::sleep(Duration::from_millis(200));
+        let sessions = client.list().unwrap();
+        assert!(sessions.iter().any(|s| s.id == id && s.alive));
+        // And it can be attached again, with what it showed.
+        client.input(id, b"echo still-here\r");
+        let (tx, _rx) = unbounded();
+        let again = TerminalCore::attach_daemon(client, id, tx, Theme::default()).unwrap();
+        assert!(eventually(|| screen_lines(&again)
+            .iter()
+            .any(|l| l == "still-here")));
+    }
+
+    /// A scripted daemon for one connection: answers Hello and List, and for the nth Attach
+    /// sends `script[n]`. Returns how many Attach frames it saw.
+    fn scripted_daemon(path: &Path, script: Vec<Vec<Frame>>) -> std::thread::JoinHandle<usize> {
+        let listener = UnixListener::bind(path).unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut decoder = Decoder::new();
+            let mut buf = [0u8; 4096];
+            let mut attaches = 0;
+            loop {
+                let n = match s.read(&mut buf) {
+                    Ok(0) | Err(_) => return attaches,
+                    Ok(n) => n,
+                };
+                decoder.push(&buf[..n]);
+                while let Some(frame) = decoder.next() {
+                    let reply = match frame.unwrap() {
+                        Frame::Hello(_) => vec![Frame::HelloOk(mux_proto::HelloOk {
+                            proto: 1,
+                            daemon_version: "test".into(),
+                            pid: 1,
+                        })],
+                        Frame::List => vec![Frame::Sessions(vec![mux_proto::SessionInfo {
+                            id: 7,
+                            name: String::new(),
+                            project: None,
+                            preset: None,
+                            title: None,
+                            status: "waiting".into(),
+                            note: None,
+                            progress: None,
+                            dims: Dims { cols: 20, rows: 3 },
+                            alive: true,
+                            created_at: 0,
+                        }])],
+                        Frame::Attach { id: 7 } => {
+                            attaches += 1;
+                            script.get(attaches - 1).cloned().unwrap_or_default()
+                        }
+                        _ => vec![],
+                    };
+                    for f in reply {
+                        s.write_all(&encode(&f)).unwrap();
+                    }
+                }
+            }
+        })
+    }
+
+    fn snap(seq: u64, text: &str, title: Option<&str>) -> Frame {
+        Frame::Snapshot(mux_proto::Snapshot {
+            id: 7,
+            seq,
+            dims: Dims { cols: 20, rows: 3 },
+            title: title.map(String::from),
+            vt_bytes: text.as_bytes().to_vec(),
+        })
+    }
+
+    fn out(seq: u64, text: &str) -> Frame {
+        Frame::Output {
+            id: 7,
+            seq,
+            notifications: 0,
+            bytes: text.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_seq_gap_or_resync_reattaches_onto_a_fresh_replica() {
+        let path = temp_sock("t-gap");
+        let fake = scripted_daemon(
+            &path,
+            vec![
+                // Starts a synchronized update that never ends, then skips seq 2.
+                vec![
+                    snap(0, "one", Some("T1")),
+                    out(1, " two\x1b[?2026hhidden"),
+                    out(3, "BAD"),
+                ],
+                // A fresh Term and parser: no "one two", and not stuck in the sync update.
+                vec![
+                    snap(10, "fresh", None),
+                    out(11, "!"),
+                    Frame::Resync { id: 7 },
+                ],
+                vec![
+                    snap(20, "third", None),
+                    Frame::Resized(mux_proto::Resized {
+                        id: 7,
+                        seq: 21,
+                        cols: 30,
+                        rows: 4,
+                    }),
+                    out(22, "?"),
+                    Frame::Title {
+                        id: 7,
+                        title: Some("T2".into()),
+                    },
+                    Frame::Status {
+                        id: 7,
+                        status: "done".into(),
+                    },
+                    Frame::Exited { id: 7 },
+                ],
+            ],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        let mut seen = Vec::new();
+        assert!(wait_event(&mut rx, |e| {
+            seen.push(format!("{e:?}"));
+            matches!(e, TermEvent::Exited)
+        }));
+        assert_eq!(screen_lines(&core)[0], "third?");
+        let snap = core.snapshot();
+        assert_eq!((snap.cols, snap.rows), (30, 4));
+        let wanted = [
+            "Status(Waiting)",
+            "Term(Title(T1))",
+            "Term(ResetTitle)",
+            "Term(Title(T2))",
+            "Status(Done)",
+            "Exited",
+        ];
+        let got: Vec<&String> = seen
+            .iter()
+            .filter(|e| wanted.contains(&e.as_str()))
+            .collect();
+        assert_eq!(got, wanted, "{seen:?}");
+        drop(core);
+        assert_eq!(fake.join().unwrap(), 3);
+    }
+
+    #[test]
+    fn the_replica_drops_frames_until_the_new_snapshot() {
+        let path = temp_sock("t-stale");
+        let fake = scripted_daemon(
+            &path,
+            vec![
+                vec![
+                    snap(0, "a", None),
+                    out(2, "GAP"),
+                    out(3, "STALE"),
+                    // Old news: the new snapshot and `List` say otherwise.
+                    Frame::Title {
+                        id: 7,
+                        title: Some("OLD".into()),
+                    },
+                    Frame::Status {
+                        id: 7,
+                        status: "working".into(),
+                    },
+                ],
+                vec![snap(5, "b", None), out(6, "c")],
+            ],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        assert!(eventually(|| screen_lines(&core)
+            .first()
+            .is_some_and(|l| l == "bc")));
+        assert!(!core.text(grid::TextScope::All).contains("STALE"));
+        let seen: Vec<String> = drain(&mut rx, Duration::from_millis(300))
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect();
+        assert!(seen.contains(&"Status(Waiting)".to_string()), "{seen:?}");
+        assert!(
+            !seen
+                .iter()
+                .any(|e| e.contains("OLD") || e == "Status(Working)"),
+            "{seen:?}"
+        );
+        drop(core);
+        assert_eq!(fake.join().unwrap(), 2);
     }
 }

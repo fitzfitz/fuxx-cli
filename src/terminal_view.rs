@@ -1,9 +1,14 @@
 //! The GPUI view for one terminal: paints a `GridSnapshot`, turns keystrokes into PTY bytes,
 //! tracks the agent status, and reports what happened to whoever owns it (the workspace).
+//!
+//! On the Daemon backend (M10a) the daemon tracks the status and answers terminal queries, so
+//! the view takes `Status` from the backend and runs no tracker of its own; its owner sees the
+//! same `TerminalEvent`s either way.
 
 use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::Event;
@@ -23,10 +28,12 @@ use gpui::{
 };
 
 use crate::appearance::Appearance;
+use crate::daemon_client::DaemonClient;
 use crate::grid::{self, GridSnapshot, TextScope};
 use crate::keys;
 use crate::links::Link;
 use crate::mouse::{self, Button, Mods, MouseAction, ScrollAccumulator};
+use crate::mux_proto;
 use crate::pty;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
@@ -118,6 +125,48 @@ impl TerminalView {
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
 
+    /// A view of daemon session `id`, attached now (Daemon backend; M10a Task 7's adoption).
+    #[allow(dead_code)] // used by the workspace from M10a Task 7
+    pub fn attach_daemon(
+        window: &mut Window,
+        cx: &mut App,
+        client: Arc<DaemonClient>,
+        id: u64,
+    ) -> Result<Entity<Self>, String> {
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let theme = cx.global::<Appearance>().theme;
+        let core = TerminalCore::attach_daemon(client, id, tx, theme).map_err(|e| e.to_string())?;
+        Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
+    }
+
+    /// A new daemon session made from `create` (its `startup` is typed in by the daemon), in a
+    /// new view (Daemon backend; M10a Task 6). The id is `daemon_id()`.
+    #[allow(dead_code)] // used by the workspace from M10a Task 6
+    pub fn create_in_daemon(
+        window: &mut Window,
+        cx: &mut App,
+        client: Arc<DaemonClient>,
+        create: mux_proto::Create,
+    ) -> Result<Entity<Self>, String> {
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let theme = cx.global::<Appearance>().theme;
+        let core =
+            TerminalCore::create_daemon(client, create, tx, theme).map_err(|e| e.to_string())?;
+        Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
+    }
+
+    /// The daemon session this view shows; `None` on the Local backend.
+    #[allow(dead_code)] // used by the workspace from M10a Task 6
+    pub fn daemon_id(&self) -> Option<u64> {
+        self.core.daemon_id()
+    }
+
+    /// Whether this view works out the status itself (Local). On the Daemon backend the
+    /// daemon does, and its `Status` arrives as `TermEvent::Status`.
+    fn tracks_status(&self) -> bool {
+        self.core.daemon_id().is_none()
+    }
+
     /// The terminal's text (see `grid::TextScope`).
     pub fn text(&self, scope: TextScope) -> String {
         self.core.text(scope)
@@ -194,7 +243,9 @@ impl TerminalView {
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
             TermEvent::Output { notifications } => {
-                if let Some(status) = self.tracker.on_output(Instant::now(), notifications) {
+                if self.tracks_status()
+                    && let Some(status) = self.tracker.on_output(Instant::now(), notifications)
+                {
                     self.status_changed(status, cx);
                 }
                 // Link spans are absolute grid lines that shift as output scrolls; the next
@@ -204,9 +255,11 @@ impl TerminalView {
             }
             TermEvent::Term(Event::Wakeup) => cx.notify(),
             // A real BEL (not an OSC terminator). Must come before the `TermEvent::Term(_)` catch-all.
+            // (A Daemon replica never reports one: the daemon's tracker has it.)
             TermEvent::Term(Event::Bell) => self.tracker.on_bell(Instant::now()),
             // Replies to terminal queries (cursor position, device attributes, ...) MUST go back
-            // to the child, or programs that ask (shells, vim, Claude Code) hang waiting.
+            // to the child, or programs that ask (shells, vim, Claude Code) hang waiting. (A
+            // Daemon replica never reports one: the daemon answers.)
             TermEvent::Term(
                 event @ (Event::PtyWrite(_)
                 | Event::ColorRequest(..)
@@ -221,6 +274,7 @@ impl TerminalView {
             }
             TermEvent::Term(Event::ResetTitle) => cx.emit(TerminalEvent::TitleChanged(None)),
             TermEvent::Exited => cx.emit(TerminalEvent::Exited),
+            TermEvent::Status(status) => self.status_changed(status, cx),
             TermEvent::Term(_) => {}
         }
     }
@@ -228,6 +282,9 @@ impl TerminalView {
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         if self.core.flush_stale_sync() {
             cx.notify();
+        }
+        if !self.tracks_status() {
+            return;
         }
         let core = &self.core;
         if let Some(status) = self
@@ -285,7 +342,9 @@ impl TerminalView {
     /// Input from the user or a script: write to the pty and tell the tracker it was typing.
     fn input_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.core.input(bytes);
-        if let Some(status) = self.tracker.on_input(Instant::now()) {
+        if self.tracks_status()
+            && let Some(status) = self.tracker.on_input(Instant::now())
+        {
             self.status_changed(status, cx);
         }
     }

@@ -9,6 +9,8 @@ mod appearance;
 mod cli;
 mod colors;
 mod daemon;
+#[allow(dead_code)] // the workspace connects from M10a Task 6 (persistence on)
+mod daemon_client;
 mod daemon_session;
 mod detach_probe;
 mod detector;
