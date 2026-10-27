@@ -29,7 +29,7 @@ pub enum Cli {
 const USAGE: &str = "\
 usage: fuxx [command]   (no command opens the app)
 
-  ls                                   list sessions (* focused, + on screen)
+  ls                                   list sessions (#N* focused, #N+ on screen)
   new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME]
       [--split right|down [--of TARGET]] [--background]   open a session; prints its id
   close [TARGET]                       close a session
@@ -388,15 +388,15 @@ fn tildify(path: &str, home: &str) -> String {
 /// then id, number, status, name, folder, preset, and progress and note when set.
 fn session_line(s: &Value) -> String {
     let flag = |key: &str| s.get(key).and_then(Value::as_bool).unwrap_or(false);
-    let mut line = match (flag("focused"), flag("on_screen")) {
-        (true, _) => "* ",
-        (false, true) => "+ ",
-        _ => "  ",
-    }
-    .to_string();
-    line.push_str(&id_text(&s["id"]).unwrap_or_else(|| "?".into()));
+    // The id stays the first word, so `awk '{print $1}'` gets it; the marker follows the number.
+    let marker = match (flag("focused"), flag("on_screen")) {
+        (true, _) => "*",
+        (false, true) => "+",
+        _ => "",
+    };
+    let mut line = id_text(&s["id"]).unwrap_or_else(|| "?".into());
     if let Some(n) = s.get("number").and_then(Value::as_u64) {
-        line.push_str(&format!("  #{n}"));
+        line.push_str(&format!("  #{n}{marker}"));
     }
     for key in ["status", "name"] {
         if let Some(v) = str_of(s, key) {
@@ -715,7 +715,7 @@ mod tests {
         // The `wait --text` echo caveat and the `ls` markers are explained.
         assert!(matches!(p(&["help"]), Ok(Cli::Help(u))
             if u.contains("echo ALL''DONE") && u.contains("$((1+1))DONE")
-                && u.contains("* focused, + on screen")));
+                && u.contains("#N* focused, #N+ on screen")));
     }
 
     #[test]
@@ -729,27 +729,27 @@ mod tests {
         };
         assert_eq!(
             row(json!({"focused": true, "on_screen": true})),
-            "* s4  #2  working  api"
+            "s4  #2*  working  api"
         );
         assert_eq!(
             row(json!({"focused": false, "on_screen": true})),
-            "+ s4  #2  working  api"
+            "s4  #2+  working  api"
         );
         assert_eq!(
             row(json!({"focused": false, "on_screen": false, "note": null, "progress": null})),
-            "  s4  #2  working  api"
+            "s4  #2  working  api"
         );
         assert_eq!(
             row(json!({"progress": {"percent": 40, "label": "tests"}, "note": "building"})),
-            "  s4  #2  working  api  40% tests · building"
+            "s4  #2  working  api  40% tests · building"
         );
         assert_eq!(
             row(json!({"progress": {"percent": 40, "label": null}})),
-            "  s4  #2  working  api  40%"
+            "s4  #2  working  api  40%"
         );
         assert_eq!(
             row(json!({"note": "building"})),
-            "  s4  #2  working  api  building"
+            "s4  #2  working  api  building"
         );
     }
 
@@ -758,7 +758,7 @@ mod tests {
         let ls = json!([{"id": 4, "number": 2, "status": "waiting", "name": "api", "project": "/x/api", "preset": "claude"}]);
         assert_eq!(
             render("ls", &ls, false),
-            "  s4  #2  waiting  api  [/x/api]  (claude)"
+            "s4  #2  waiting  api  [/x/api]  (claude)"
         );
         assert_eq!(render("new", &json!({"id": 5}), false), "s5");
         assert_eq!(render("status", &json!("done"), false), "done");
