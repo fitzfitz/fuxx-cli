@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: in-progress
+status: done
 ---
 
 # 49 - Milestone 9 - Scripting API
 
-**Status:: 🟨 In progress (plan written 2026-10-27).**  ·  **Phase 3: fuxx you can drive from scripts and from agents.**
+**Status:: ✅ Done (2026-10-27). All on-screen checks confirmed by you.**  ·  **Phase 3: fuxx you can drive from scripts and from agents.**
 **Plan:** [[M9 Plan - Scripting API]] (step-by-step, with status per task)
 
 ## Goal
@@ -116,6 +116,8 @@ Each line carries the session id, number and name, and a timestamp.
 - The reply is `{"id": 1, "result": …}` or `{"id": 1, "error": {"code": "not_found", "message": "…"}}`.
 - Methods mirror the commands: `system.ping`, `system.version`, `session.list|new|close|focus|rename|send|key|paste|read|status|question|answer|wait|note|progress`, `pane.equalize`, `preset.list`, `notify`, `events.subscribe`.
 - A connection can send several requests. `events.subscribe` turns the connection into an event stream.
+- **Keep the connection open** while a `session.wait` or `events.subscribe` is pending: fuxx treats a closed (or half-closed) connection as gone and drops it without a reply.
+- `caller` is a number (the N of `s<N>`); a caller that no longer exists is `not_found`. Booleans must be JSON `true`/`false`. A request line is at most 16 MiB; at most 64 connections at once.
 
 ### MCP server: agents driving fuxx
 
@@ -132,12 +134,12 @@ sessions, reads them, and arranges them. It never runs anything outside a sessio
 
 ## Rough scope / checklist
 
-- [ ] Private socket (on by default, `scripting = off`), same-user check, env vars and PATH in sessions.
-- [ ] `fuxx` command: ls, new (folder/preset/run/name/split/background), close, focus, rename.
-- [ ] Input and output: send, key, paste, read (screen, last N, all).
-- [ ] Agent-aware: status, question, answer, wait (status/text/exit, any session, timeout).
-- [ ] Event stream; note and progress in the sidebar; notify; equalize; presets; ping/version.
-- [ ] `fuxx mcp` MCP server.
+- [x] Private socket (on by default, `scripting = off`), same-user check, env vars and PATH in sessions.
+- [x] `fuxx` command: ls, new (folder/preset/run/name/split/background), close, focus, rename.
+- [x] Input and output: send, key, paste, read (screen, last N, all).
+- [x] Agent-aware: status, question, answer, wait (status/text/exit, any session, timeout).
+- [x] Event stream; note and progress in the sidebar; notify; equalize; presets; ping/version.
+- [x] `fuxx mcp` MCP server.
 
 ## Not in M9
 

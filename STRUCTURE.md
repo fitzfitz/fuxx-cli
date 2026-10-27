@@ -77,6 +77,15 @@ src/
 ├── split_tree.rs         M8 · nested split tree: split, close, neighbours, ratios, sanitize
 ├── panes.rs              M8 · draws a layout: nested panes, dividers, dimming
 │
+│   scripting (M9)
+├── api.rs                M9 · protocol: requests/replies, targets, key names, wait conditions
+├── api_server.rs         M9 · private socket: same-user check, caps, per-connection threads
+├── api_client.rs         M9 · the client side the `fuxx` command and `fuxx mcp` use
+├── api_events.rs         M9 · event JSON and the wait rules (pure)
+├── cli.rs                M9 · `fuxx <command>` parsing, output and exit codes
+├── mcp.rs                M9 · `fuxx mcp`: Model Context Protocol server on stdio
+├── workspace_api.rs      M9 · the workspace answering requests, waits, events, note/progress
+│
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
 ├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row
@@ -86,7 +95,7 @@ src/
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
-21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6 and 150 after M6b + M7 + M8.
+21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6, 150 after M6b + M7 + M8, and 243 after M9.
 
 `assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits.
 

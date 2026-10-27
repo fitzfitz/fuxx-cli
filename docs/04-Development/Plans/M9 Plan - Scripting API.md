@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M9
-status: in-progress
+status: done
 updated: 2026-10-27
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[49 - Milestone 9 - Scripting API]] (the spec) |
-| **Status** | 🟨 In progress |
-| **Tasks done** | 0 / 10 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | ✅ Done (2026-10-27). All on-screen checks confirmed by you. |
+| **Tasks done** | 10 / 10 |
+| **▶ Pick up here** | — (done) |
 | **Decisions used** | **Yours (2026-10-27):** "go ahead", and more functionality than cmux / Warp / iTerm2. Everything else is the AI's call, listed in the spec. |
 | **Needs your eyes** | 👀 Task 9 |
 
@@ -76,7 +76,7 @@ text}], isError}` (checked via Context7, 2026-10-27).
 
 ---
 
-### Task 1: The protocol, without I/O — ⬜
+### Task 1: The protocol, without I/O — ✅
 
 **Files:** Create `src/api.rs` · Modify `src/main.rs` (`mod api;`), `src/status.rs` (names).
 
@@ -174,7 +174,7 @@ fn reply_shapes() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (156), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m9): scripting protocol types, targets, key names, wait conditions"`
 
-### Task 2: The `fuxx` command line, without I/O — ⬜
+### Task 2: The `fuxx` command line, without I/O — ✅
 
 **Files:** Create `src/cli.rs` · Modify `src/main.rs` (`mod cli;`).
 
@@ -272,7 +272,7 @@ fn exit_codes() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (162), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m9): fuxx command-line parsing and output"`
 
-### Task 3: The socket — server, client, and starting it — ⬜
+### Task 3: The socket — server, client, and starting it — ✅
 
 **Files:** Create `src/api_server.rs`, `src/api_client.rs` · Modify `src/main.rs`, `src/appearance.rs`.
 
@@ -352,7 +352,7 @@ fn unreachable_socket_is_exit_3() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (167), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m9): private scripting socket, client, and CLI dispatch"`
 
-### Task 4: Session ids, shell environment, reading and typing — ⬜
+### Task 4: Session ids, shell environment, reading and typing — ✅
 
 **Files:** Modify `src/grid.rs`, `src/terminal.rs`, `src/terminal_view.rs`, `src/pty.rs`, `src/workspace.rs`.
 
@@ -392,7 +392,7 @@ fn text_lines_joins_wrapped_rows() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (169), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m9): session ids, scripting env in shells, read and type helpers"`
 
-### Task 5: Handling requests in the workspace — ⬜
+### Task 5: Handling requests in the workspace — ✅
 
 **Files:** Modify `src/workspace.rs` (or a new `src/workspace_api.rs` with `impl Workspace` if workspace.rs would pass ~1300 lines), `src/main.rs`.
 
@@ -423,7 +423,7 @@ fn text_lines_joins_wrapped_rows() {
 - [ ] **Step 2: Run** `cargo build`, `cargo test`. Expected: 0 warnings, all pass. Remove the Task 1–3 dead-code allows that are now used.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m9): the workspace answers scripting requests"`
 
-### Task 6: Events and wait — ⬜
+### Task 6: Events and wait — ✅
 
 **Files:** Modify `src/workspace.rs` (or `workspace_api.rs`).
 
@@ -445,7 +445,7 @@ fn text_lines_joins_wrapped_rows() {
 - [ ] **Step 2: Run** `cargo build`, `cargo test`. Expected: 0 warnings, all pass.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m9): event stream and wait"`
 
-### Task 7: Note and progress in the sidebar — ⬜
+### Task 7: Note and progress in the sidebar — ✅
 
 **Files:** Modify `src/workspace.rs`.
 
@@ -458,7 +458,7 @@ fn text_lines_joins_wrapped_rows() {
 - [ ] **Step 2: Run** `cargo build`, `cargo test`. Expected: 0 warnings, all pass.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m9): session note and progress in the sidebar"`
 
-### Task 8: `fuxx mcp` — ⬜
+### Task 8: `fuxx mcp` — ✅
 
 **Files:** Create `src/mcp.rs` · Modify `src/main.rs`.
 
@@ -517,32 +517,48 @@ fn tools_call_maps_to_requests_and_errors() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (171), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m9): fuxx as an MCP server"`
 
-### Task 9: On screen — 👀 ⬜
+### Task 9: On screen — ✅
 
 Run `cargo run`, then in a fuxx session:
 
-- [ ] `fuxx ping` → ok. `fuxx ls` lists the sessions with ids. `echo $FUXX_SESSION $FUXX_SOCKET` shows them.
-- [ ] `fuxx new --preset claude --split right --background` → prints an id. A split appears, claude starts, and your focus stays.
-- [ ] `fuxx wait <id>` returns when Claude asks something. `fuxx question <id>` shows it. `fuxx answer <id> "…"` answers it. `fuxx answer` on a working session refuses.
-- [ ] `fuxx send <id> "echo hi" --enter`, `fuxx key <id> ctrl-c`, `echo hello | fuxx paste <id>`, `fuxx read <id> --lines 5`.
-- [ ] `fuxx events` in another pane prints status changes live. `fuxx wait --any --for done --timeout 5` exits 124 if nothing finishes.
-- [ ] `fuxx note "building"` and `fuxx progress 40 --label tests` show under the session's row; `--clear` removes them.
-- [ ] `fuxx rename api`, `fuxx focus api`, `fuxx equalize`, `fuxx close <id>`, `fuxx notify "done"`.
-- [ ] `claude mcp add fuxx -- fuxx mcp`: in Claude Code, "list my fuxx sessions" works, and reading one works.
-- [ ] `scripting = off` + restart → `fuxx ping` exits 3 with a clear message.
-- [ ] Everything from M5–M8 unchanged.
+- [x] `fuxx ping` → ok. `fuxx ls` lists the sessions with ids. `echo $FUXX_SESSION $FUXX_SOCKET` shows them.
+- [x] `fuxx new --preset claude --split right --background` → prints an id. A split appears, claude starts, and your focus stays.
+- [x] `fuxx wait <id>` returns when Claude asks something. `fuxx question <id>` shows it. `fuxx answer <id> "…"` answers it. `fuxx answer` on a working session refuses.
+- [x] `fuxx send <id> "echo hi" --enter`, `fuxx key <id> ctrl-c`, `echo hello | fuxx paste <id>`, `fuxx read <id> --lines 5`.
+- [x] `fuxx events` in another pane prints status changes live. `fuxx wait --any --for done --timeout 5` exits 124 if nothing finishes.
+- [x] `fuxx note "building"` and `fuxx progress 40 --label tests` show under the session's row; `--clear` removes them.
+- [x] `fuxx rename api`, `fuxx focus api`, `fuxx equalize`, `fuxx close <id>`, `fuxx notify "done"`.
+- [x] `claude mcp add fuxx -- fuxx mcp`: in Claude Code, "list my fuxx sessions" works, and reading one works.
+- [x] `scripting = off` + restart → `fuxx ping` exits 3 with a clear message.
+- [x] Everything from M5–M8 unchanged.
 
-### Task 10: Update the docs — ⬜
+### Task 10: Update the docs — ✅
 
-- [ ] Milestone note 49 ✅ with the checklist; this plan ✅; roadmap M9 ✅; tracker; Progress Log.
-- [ ] `STRUCTURE.md`: `api.rs`, `api_server.rs`, `api_client.rs`, `cli.rs`, `mcp.rs`.
-- [ ] A short user doc: `docs/05-Agentic-Workflow/` or README section "Scripting fuxx" with the command table and the MCP setup line.
+- [x] Milestone note 49 ✅ with the checklist; this plan ✅; roadmap M9 ✅; tracker; Progress Log.
+- [x] `STRUCTURE.md`: `api.rs`, `api_server.rs`, `api_client.rs`, `cli.rs`, `mcp.rs`.
+- [x] A short user doc: `docs/05-Agentic-Workflow/` or README section "Scripting fuxx" with the command table and the MCP setup line.
 
 ## Verification log
 
 _(filled in as tasks complete)_
 
 ## Known limitations
+
+**Calls made during the build (2026-10-27; you skipped the design questions):**
+- Scripting is on by default; same-user socket in `~/Library/Application Support/fuxx/`.
+- A live socket (connect succeeds) is never replaced; a second fuxx runs without scripting. Unknown commands (`fuxx lss`) are errors and never open a window.
+- Shells get `FUXX_SOCKET`/`FUXX_SESSION` only when this fuxx is actually serving; otherwise inherited ones are removed.
+- A caller session that's gone is an error, never the focused session. `answer` refuses unless the agent is waiting (`--force` overrides).
+- Scripted typing counts as typing for the status ring. `wait --text` counts only text that appears after the wait starts.
+- `fuxx focus` brings the window to the front. `fuxx ls` keeps the id as the first word (`s4  #2*  …`).
+- MCP: waits default to 600 s, capped at 6 h; `fuxx mcp` exits within ~2 s when its client closes.
+
+**Small issues left for later:**
+- `wait --text`: >200 identical lines in one 0.2 s tick can hide a new marker; full-screen redraws of the top line can count old text again.
+- 64 idle connections can hold every slot (no read timeout). A dead event subscriber holds its slot until the next event.
+- A scripted `new`/`focus` cancels an open rename box; `--background` emits two `focus.changed` events; `title.changed` can be chatty.
+- After the last session closes, the window can stay up to 0.5 s while replies flush.
+- MCP `list_sessions` uses the CLI `ls` line; relative folders aren't made absolute by MCP (the app rejects them).
 
 - `wait --text` is plain text, not a pattern.
 - Ids last one launch.
