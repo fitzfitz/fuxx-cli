@@ -26,7 +26,6 @@ pub struct Appearance {
     pub user_theme_dir: Option<PathBuf>,
     /// The agent presets: built-ins plus `agent-preset` lines.
     pub presets: Vec<Preset>,
-    #[allow(dead_code)] // read from M7 Task 4/6
     pub restore: RestoreMode,
 }
 

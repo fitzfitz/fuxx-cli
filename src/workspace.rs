@@ -14,8 +14,9 @@ use crate::groups::{self, Row};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
 use crate::presets::Preset;
-use crate::restore::{Launch, SavedSession};
+use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
+use crate::settings;
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
@@ -111,6 +112,8 @@ pub struct Workspace {
     collapsed: Vec<PathBuf>,
     /// The rename box, and the session (by its view) it renames.
     renaming: Option<(EntityId, Entity<NameInput>)>,
+    /// True while the saved sessions are being reopened, so nothing is saved halfway.
+    restoring: bool,
     window_active: bool,
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
@@ -128,12 +131,84 @@ impl Workspace {
             sessions: SessionList::new(),
             collapsed: Vec::new(),
             renaming: None,
+            restoring: true,
             window_active: window.is_window_active(),
             _activation: activation,
             _appearance: appearance,
         };
-        this.open_session(Launch::default(), window, cx);
+        this.restore(window, cx);
+        this.restoring = false;
+        this.save();
         this
+    }
+
+    /// Reopen the saved sessions per the `session-restore` mode, or start one plain session.
+    fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mode = cx.global::<Appearance>().restore;
+        if mode != RestoreMode::Off
+            && let Some(home) = home_dir()
+        {
+            let path = restore::state_path(&home);
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match restore::decode(&text) {
+                    Some(state) if !state.sessions.is_empty() => {
+                        for launch in restore::launches(&state, mode) {
+                            self.open_session(launch, window, cx);
+                        }
+                        if !self.sessions.is_empty() {
+                            self.collapsed = state.collapsed;
+                            let last = self.sessions.items().len() - 1;
+                            let active = state.active.unwrap_or(0).min(last);
+                            // The normal route, so the active session's group opens.
+                            self.sessions.select(active);
+                            self.activate(window, cx);
+                            return;
+                        }
+                        eprintln!(
+                            "[fuxx] restore: no saved session could start, opening a new one"
+                        );
+                    }
+                    Some(_) => {}
+                    None => eprintln!(
+                        "[fuxx] restore: {} is not a valid sessions file, starting fresh",
+                        path.display()
+                    ),
+                },
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => eprintln!(
+                    "[fuxx] restore: could not read {}: {err}, starting fresh",
+                    path.display()
+                ),
+            }
+        }
+        self.open_session(Launch::default(), window, cx);
+    }
+
+    /// Write the session list to the sessions file (not while restoring). One log line on failure.
+    fn save(&self) {
+        if self.restoring {
+            return;
+        }
+        let Some(home) = home_dir() else { return };
+        let state = SavedState {
+            version: restore::VERSION,
+            active: self.sessions.active_index(),
+            collapsed: self.collapsed.clone(),
+            sessions: self
+                .sessions
+                .items()
+                .iter()
+                .map(|s| SavedSession {
+                    name: s.name.clone(),
+                    project: s.project.clone(),
+                    preset: s.preset.clone(),
+                })
+                .collect(),
+        };
+        let path = restore::state_path(&home);
+        if let Err(err) = settings::write_atomic(&path, &restore::encode(&state)) {
+            eprintln!("[fuxx] restore: could not save {}: {err}", path.display());
+        }
     }
 
     /// Open a session for `launch` next to its group and make it active.
@@ -309,6 +384,7 @@ impl Workspace {
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child.
         self.sessions.remove(index);
         if self.sessions.is_empty() {
+            self.save(); // an empty list, so the next launch starts fresh
             window.remove_window(); // last session gone: close the window (and quit)
             return;
         }
@@ -331,6 +407,7 @@ impl Workspace {
             self.collapsed.retain(|c| *c != project);
         }
         self.focus_active(window, cx);
+        self.save();
         cx.notify();
     }
 
@@ -341,6 +418,7 @@ impl Workspace {
             }
             None => self.collapsed.push(project.to_path_buf()),
         }
+        self.save();
         cx.notify();
     }
 
@@ -359,6 +437,7 @@ impl Workspace {
             .detach();
         input.focus_handle(cx).focus(window, cx);
         self.renaming = Some((view, input));
+        self.save(); // opening the group may have changed what's collapsed
         cx.notify();
     }
 
@@ -383,6 +462,7 @@ impl Workspace {
             if session.name.is_some() || *text != session.label().as_ref() {
                 session.name = (!text.is_empty()).then(|| text.clone());
             }
+            self.save();
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -395,6 +475,7 @@ impl Workspace {
             return;
         };
         if groups::same_group(&self.projects(), from, to) && self.sessions.move_item(from, to) {
+            self.save();
             cx.notify();
         }
     }
@@ -412,6 +493,7 @@ impl Workspace {
             return;
         };
         if groups::same_group(&self.projects(), from, to) && self.sessions.move_item(from, to) {
+            self.save();
             cx.notify();
         }
     }
@@ -666,4 +748,11 @@ impl Render for Workspace {
                     .children(self.sessions.active().map(|s| s.view.clone())),
             )
     }
+}
+
+/// `$HOME`; unset or empty counts as absent.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }

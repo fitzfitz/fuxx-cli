@@ -15,13 +15,17 @@ use gpui::{
 
 use crate::appearance::{self, Appearance};
 use crate::prefs::{self, DEFAULT_CHOICE};
+use crate::restore::RestoreMode;
 use crate::settings;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::workspace::CloseSession;
 
 const WIDTH: f32 = 560.0;
-const HEIGHT: f32 = 660.0;
+/// The 660 px that fit the first four sections, plus the Restore sessions section: its gap (8),
+/// top margin (8), heading line (20), gap (8) and switch (30: 2 px padding and 1 px border on each
+/// side around a 24 px row, the same as the Ligatures switch) = 74.
+const HEIGHT: f32 = 734.0;
 const LIST_HEIGHT: f32 = 180.0;
 const ROW_HEIGHT: f32 = 24.0;
 /// The size the monospace test measures glyphs at; any size gives the same answer.
@@ -256,6 +260,43 @@ impl Render for PreferencesView {
             .child(ligature_option("ligatures-on", "On", true))
             .child(ligature_option("ligatures-off", "Off", false));
 
+        let restore = appearance.restore;
+        let restore_option = |id: &'static str, label: &'static str, mode: RestoreMode| {
+            row(id, mode == restore, ui)
+                .px_3()
+                .child(label)
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    if cx.global::<Appearance>().restore != mode {
+                        // The default (agents) is the absence of the line.
+                        let values = if mode == RestoreMode::default() {
+                            vec![]
+                        } else {
+                            vec![mode.as_str().to_string()]
+                        };
+                        apply(cx, "session-restore", &values);
+                    }
+                }))
+        };
+        let restore_switch = div()
+            .flex()
+            .flex_row()
+            .p_0p5()
+            .gap_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(hsla(ui.sidebar_border))
+            .child(restore_option("restore-off", "Off", RestoreMode::Off))
+            .child(restore_option(
+                "restore-layout",
+                "Layout",
+                RestoreMode::Layout,
+            ))
+            .child(restore_option(
+                "restore-agents",
+                "Layout + agents",
+                RestoreMode::Agents,
+            ));
+
         div()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|_, _: &CloseSession, window, _| window.remove_window()))
@@ -275,6 +316,8 @@ impl Render for PreferencesView {
             .child(size_row)
             .child(heading("Ligatures", ui).mt_2())
             .child(div().flex().child(ligature_switch))
+            .child(heading("Restore sessions", ui).mt_2())
+            .child(div().flex().child(restore_switch))
     }
 }
 

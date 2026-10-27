@@ -16,7 +16,6 @@ mod preferences;
 mod prefs;
 mod presets;
 mod pty;
-#[allow(dead_code)] // the state file and launches are used from M7 Task 4/6
 mod restore;
 mod session_list;
 mod settings;
