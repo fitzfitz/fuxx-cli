@@ -3,8 +3,9 @@
 
 #[allow(dead_code)] // wired up by the socket server (M9 Task 5)
 mod api;
+mod api_client;
+mod api_server;
 mod appearance;
-#[allow(dead_code)] // wired up by main.rs dispatch (M9 Task 3)
 mod cli;
 mod colors;
 mod detector;
@@ -31,11 +32,19 @@ mod terminal_view;
 mod theme;
 mod workspace;
 
+use std::io::{IsTerminal, Read, Write};
+use std::path::PathBuf;
+
 use gpui::{
-    App, Bounds, KeyBinding, Menu, MenuItem, QuitMode, TitlebarOptions, WindowBounds,
+    App, Bounds, Global, KeyBinding, Menu, MenuItem, QuitMode, TitlebarOptions, WindowBounds,
     WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_platform::application;
+use serde_json::{Value, json};
+
+use api::ApiError;
+use api_client::ClientError;
+use cli::Cli;
 
 use terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
 use workspace::{
@@ -66,7 +75,166 @@ fn preset_item(n: usize, name: &str) -> Option<MenuItem> {
     })
 }
 
+/// The scripting socket's path, from `$HOME`.
+fn scripting_socket() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|h| api_server::socket_path(std::path::Path::new(&h)))
+}
+
+/// Print an error the way every `fuxx` command does and return its exit code.
+fn fail(message: &str, code: i32) -> i32 {
+    eprintln!("fuxx: {message}");
+    code
+}
+
+fn client_failure(err: ClientError) -> i32 {
+    match err {
+        ClientError::Unreachable(message) => fail(&message, 3),
+        ClientError::Api { code, message } => fail(&message, cli::exit_code(&code)),
+    }
+}
+
+/// Run one `fuxx <command>` against the running app; returns the exit code.
+fn run_command(command: &str, mut request: api::Request, json: bool, stream: bool) -> i32 {
+    if command == "paste" {
+        let mut stdin = std::io::stdin();
+        if stdin.is_terminal() {
+            return fail("pipe text into fuxx paste (e.g. `pbpaste | fuxx paste`)", 2);
+        }
+        let mut text = String::new();
+        if let Err(e) = stdin.read_to_string(&mut text) {
+            return fail(&format!("couldn't read standard input: {e}"), 2);
+        }
+        request.params["text"] = json!(text);
+    }
+    let Some(path) = scripting_socket() else {
+        return fail("$HOME is unset, so the fuxx socket can't be found", 3);
+    };
+    let mut out = std::io::stdout().lock();
+    let mut print = |text: String| -> bool {
+        text.is_empty() || writeln!(out, "{text}").and_then(|_| out.flush()).is_ok()
+    };
+
+    if !stream {
+        return match api_client::call(&path, &request) {
+            Ok(result) => {
+                print(cli::render(command, &result, json));
+                0
+            }
+            Err(err) => client_failure(err),
+        };
+    }
+    // `events`: every event line until stopped. `wait`: until its one reply line.
+    let mut outcome: Option<Result<Value, ClientError>> = None;
+    let streamed = api_client::stream(&path, &request, |line| {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return true;
+        };
+        let is_reply = value.get("result").is_some() || value.get("error").is_some();
+        if !is_reply {
+            return print(cli::render(command, &value, json));
+        }
+        match api_client::parse_reply(line) {
+            // The subscription's own acknowledgement: keep reading events.
+            Ok(_) if command == "events" => true,
+            reply => {
+                outcome = Some(reply);
+                false
+            }
+        }
+    });
+    match (streamed, outcome) {
+        (Err(err), _) => client_failure(err),
+        (Ok(()), Some(Ok(result))) => {
+            print(cli::render(command, &result, json));
+            0
+        }
+        (Ok(()), Some(Err(err))) => client_failure(err),
+        // `events` ends when fuxx quits; `wait` must have had its reply first.
+        (Ok(()), None) if command == "events" => 0,
+        (Ok(()), None) => fail("fuxx closed the connection without replying", 3),
+    }
+}
+
+/// The scripting socket, kept for the app's lifetime; dropping it removes the socket file.
+struct Scripting(#[allow(dead_code)] api_server::ServerGuard);
+
+impl Global for Scripting {}
+
+/// Start the scripting socket if the settings allow it. Any failure is one log line, and the
+/// app runs without scripting.
+fn start_scripting(cx: &mut App) {
+    if !cx.global::<appearance::Appearance>().scripting {
+        eprintln!("[fuxx] scripting: off (scripting = off in the settings)");
+        return;
+    }
+    let Some(path) = scripting_socket() else {
+        eprintln!("[fuxx] scripting: $HOME is unset; running without it");
+        return;
+    };
+    let (guard, requests) = match api_server::start(&path) {
+        Ok(started) => started,
+        Err(e) => {
+            eprintln!("[fuxx] scripting: {e}; running without it");
+            return;
+        }
+    };
+    eprintln!("[fuxx] scripting: listening on {}", path.display());
+    cx.set_global(Scripting(guard));
+    // GPUI doesn't drop globals on quit; take the guard so the socket file goes away.
+    cx.on_app_quit(|cx| {
+        drop(cx.remove_global::<Scripting>());
+        async {}
+    })
+    .detach();
+
+    // TEMPORARY (M9 Task 5 replaces this with the workspace handling requests): answer pings
+    // so `fuxx ping` works, and everything else with `unavailable`.
+    std::thread::spawn(move || {
+        for incoming in futures::executor::block_on_stream(requests) {
+            let result = if incoming.request.method == "system.ping" {
+                Ok(json!({ "pong": true }))
+            } else {
+                Err(ApiError::unavailable(
+                    "this build of fuxx doesn't handle that request yet",
+                ))
+            };
+            incoming
+                .conn
+                .send_line(&api::reply(incoming.request.id, result));
+        }
+    });
+}
+
 fn main() {
+    // `fuxx <command>` talks to the running app and exits; only no command opens the window.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let caller = std::env::var("FUXX_SESSION")
+        .ok()
+        .and_then(|s| s.strip_prefix('s')?.parse().ok());
+    match cli::parse(&args, caller) {
+        Ok(Cli::Gui) => {}
+        Ok(Cli::Help(usage)) => {
+            print!("{usage}");
+            std::process::exit(0);
+        }
+        Ok(Cli::Mcp) => {
+            // M9 Task 8.
+            std::process::exit(fail("mcp: not yet available in this build", 2));
+        }
+        Ok(Cli::Call {
+            request,
+            json,
+            stream,
+        }) => std::process::exit(run_command(&args[0], request, json, stream)),
+        // Already worded `fuxx <command>: …`.
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    }
+
     // macOS apps normally keep running with no windows; a terminal should quit instead.
     application()
         .with_quit_mode(QuitMode::LastWindowClosed)
@@ -139,6 +307,7 @@ fn main() {
                 .filter_map(|(n, preset)| preset_item(n, &preset.name))
                 .collect();
             cx.set_global(appearance);
+            start_scripting(cx);
             // After the key bindings: a menu shows the shortcut bound when the menus are set.
             cx.set_menus([
                 Menu::new("fuxx").items([MenuItem::action("Quit fuxx", Quit)]),
