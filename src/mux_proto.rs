@@ -7,7 +7,7 @@
 //! other kind is a JSON object. Unknown JSON fields are ignored, so a newer peer can add
 //! fields; an unknown kind byte decodes to [`Frame::Unknown`] so a newer peer can add kinds.
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 
 /// Oldest and newest protocol version this build speaks.
@@ -54,6 +54,27 @@ pub struct Dims {
     pub rows: u16,
 }
 
+/// Cell size in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellPx {
+    pub w: u16,
+    pub h: u16,
+}
+
+/// A session's progress bar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Progress {
+    pub percent: u8,
+    pub label: Option<String>,
+}
+
+/// Tri-state field: absent = leave (`None`), `null` = clear (`Some(None)`), value = set.
+fn tri<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -95,7 +116,7 @@ pub struct SessionInfo {
     pub title: Option<String>,
     pub status: String,
     pub note: Option<String>,
-    pub progress: Option<(u8, Option<String>)>,
+    pub progress: Option<Progress>,
     pub dims: Dims,
     pub alive: bool,
     /// Unix seconds.
@@ -109,8 +130,7 @@ pub struct Create {
     /// The GUI's environment plus the `FUXX_*` scripting variables.
     pub env: BTreeMap<String, String>,
     pub dims: Dims,
-    /// Cell size in pixels (width, height).
-    pub cell_px: (u16, u16),
+    pub cell_px: CellPx,
     pub name: Option<String>,
     pub project: Option<String>,
     pub preset: Option<String>,
@@ -125,15 +145,41 @@ pub struct Resize {
     pub cell_h: u16,
 }
 
-/// `None` leaves a field as it is.
+/// Per field: absent leaves it as it is, `null` clears it, a value sets it
+/// (`None` / `Some(None)` / `Some(Some(v))`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetMeta {
     pub id: u64,
-    pub name: Option<String>,
-    pub project: Option<String>,
-    pub preset: Option<String>,
-    pub note: Option<String>,
-    pub progress: Option<(u8, Option<String>)>,
+    #[serde(
+        default,
+        deserialize_with = "tri",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub name: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "tri",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub project: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "tri",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub preset: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "tri",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub note: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "tri",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub progress: Option<Option<Progress>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -384,8 +430,10 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         Frame::Text(b) => json(kind::TEXT, b),
         Frame::Unknown { kind } => (*kind, Vec::new()),
     };
+    debug_assert!(payload.len() < MAX_FRAME, "frame over MAX_FRAME");
+    let len = u32::try_from(payload.len() + 1).expect("frame length fits u32");
     let mut out = Vec::with_capacity(5 + payload.len());
-    out.extend_from_slice(&((payload.len() + 1) as u32).to_be_bytes());
+    out.extend_from_slice(&len.to_be_bytes());
     out.push(k);
     out.extend_from_slice(&payload);
     out
@@ -514,6 +562,9 @@ impl Decoder {
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
+        if self.fatal.is_some() {
+            return; // desynced; don't buffer more
+        }
         if self.pos > 0 {
             self.buf.drain(..self.pos);
             self.pos = 0;
@@ -565,7 +616,10 @@ mod tests {
             title: Some("vim".into()),
             status: "running".into(),
             note: Some("n".into()),
-            progress: Some((40, Some("half".into()))),
+            progress: Some(Progress {
+                percent: 40,
+                label: Some("half".into()),
+            }),
             dims: dims(),
             alive: true,
             created_at: 1_700_000_000,
@@ -588,7 +642,7 @@ mod tests {
                 startup: None,
                 env,
                 dims: dims(),
-                cell_px: (9, 18),
+                cell_px: CellPx { w: 9, h: 18 },
                 name: Some("a".into()),
                 project: None,
                 preset: Some("claude".into()),
@@ -611,11 +665,14 @@ mod tests {
             },
             Frame::SetMeta(SetMeta {
                 id: 7,
-                name: Some("n".into()),
+                name: Some(Some("n".into())),
                 project: None,
-                preset: None,
-                note: Some("x".into()),
-                progress: Some((10, None)),
+                preset: Some(None),
+                note: Some(Some("x".into())),
+                progress: Some(Some(Progress {
+                    percent: 10,
+                    label: None,
+                })),
             }),
             Frame::Close { id: 7 },
             Frame::ReadText(ReadText {
@@ -833,5 +890,111 @@ mod tests {
             matches!(negotiate(5, 2), Err(ProtoError::Incompatible { .. })),
             "inverted range"
         );
+    }
+
+    fn raw(k: u8, payload: &[u8]) -> Vec<u8> {
+        let mut v = ((payload.len() + 1) as u32).to_be_bytes().to_vec();
+        v.push(k);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn one(bytes: &[u8]) -> Result<Frame, ProtoError> {
+        let mut d = Decoder::new();
+        d.push(bytes);
+        d.next().unwrap()
+    }
+
+    #[test]
+    fn set_meta_absent_leaves_null_clears_value_sets() {
+        let m = |j: &str| match one(&raw(kind::SET_META, j.as_bytes())) {
+            Ok(Frame::SetMeta(m)) => m,
+            other => panic!("{other:?}"),
+        };
+        let leave = m(r#"{"id":1}"#);
+        assert_eq!(
+            (&leave.name, &leave.note, &leave.progress),
+            (&None, &None, &None)
+        );
+        let clear = m(r#"{"id":1,"name":null,"note":null,"progress":null}"#);
+        assert_eq!(
+            (clear.name, clear.note, clear.progress),
+            (Some(None), Some(None), Some(None))
+        );
+        let set = m(r#"{"id":1,"name":"a","note":"b","progress":{"percent":5,"label":null}}"#);
+        assert_eq!(set.name, Some(Some("a".into())));
+        assert_eq!(set.note, Some(Some("b".into())));
+        assert_eq!(
+            set.progress,
+            Some(Some(Progress {
+                percent: 5,
+                label: None
+            }))
+        );
+    }
+
+    #[test]
+    fn object_forms_on_the_wire() {
+        let f = encode(&Frame::Create(Create {
+            cwd: None,
+            startup: None,
+            env: BTreeMap::new(),
+            dims: dims(),
+            cell_px: CellPx { w: 9, h: 18 },
+            name: None,
+            project: None,
+            preset: None,
+        }));
+        assert!(String::from_utf8_lossy(&f).contains(r#""cell_px":{"w":9,"h":18}"#));
+    }
+
+    #[test]
+    fn fatal_decoder_stops_buffering() {
+        let mut d = Decoder::new();
+        d.push(&0u32.to_be_bytes());
+        assert!(d.next().is_some());
+        d.push(&[1; 1000]);
+        assert!(d.buf.len() <= 4);
+        assert!(matches!(d.next(), Some(Err(ProtoError::BadLength(0)))));
+    }
+
+    #[test]
+    fn short_binary_headers_are_malformed() {
+        assert!(matches!(
+            one(&raw(kind::SNAPSHOT, &[0; 19])),
+            Err(ProtoError::Malformed(_))
+        ));
+        assert!(matches!(
+            one(&raw(kind::OUTPUT, &[0; 19])),
+            Err(ProtoError::Malformed(_))
+        ));
+        // meta_len claims more than the frame holds
+        let mut p = vec![0; 16];
+        p.extend(100u32.to_be_bytes());
+        p.extend(b"{}");
+        assert!(matches!(
+            one(&raw(kind::SNAPSHOT, &p)),
+            Err(ProtoError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn snapshot_byte_layout_is_pinned() {
+        let meta = br#"{"dims":{"cols":80,"rows":24},"title":null}"#;
+        let got = encode(&Frame::Snapshot(Snapshot {
+            id: 1,
+            seq: 2,
+            dims: dims(),
+            title: None,
+            vt_bytes: b"vt".to_vec(),
+        }));
+        let mut want = ((1 + 20 + meta.len() + 2) as u32).to_be_bytes().to_vec();
+        want.push(kind::SNAPSHOT);
+        want.extend(1u64.to_be_bytes());
+        want.extend(2u64.to_be_bytes());
+        want.extend((meta.len() as u32).to_be_bytes());
+        want.extend(meta);
+        want.extend(b"vt");
+        assert_eq!(got, want);
     }
 }
