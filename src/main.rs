@@ -4,6 +4,8 @@
 #[allow(dead_code)] // wired up by the socket server (M9 Task 5)
 mod api;
 mod appearance;
+#[allow(dead_code)] // wired up by main.rs dispatch (M9 Task 3)
+mod cli;
 mod colors;
 mod detector;
 mod fonts;
