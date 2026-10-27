@@ -39,6 +39,52 @@ pub fn parse(text: &str) -> Vec<Entry> {
         .collect()
 }
 
+/// Replace every `key` line in `text` with one `key = value` line per value, leaving all other
+/// lines (comments, other keys, blanks) exactly as written. The new lines go where the first old
+/// one was, or at the end if the key was absent. No values just removes the key.
+pub fn set_key(text: &str, key: &str, values: &[String]) -> String {
+    let new_lines: String = values.iter().map(|v| format!("{key} = {v}\n")).collect();
+    let mut out = String::new();
+    let mut placed = false;
+    for line in text.split_inclusive('\n') {
+        // the same rules `parse` uses to find a line's key
+        let trimmed = line.trim();
+        let is_key = !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(k, _)| k.trim() == key);
+        if !is_key {
+            out.push_str(line);
+            if !line.ends_with('\n') {
+                out.push('\n'); // an unterminated last line gets its newline
+            }
+        } else if !placed {
+            out.push_str(&new_lines);
+            placed = true;
+        }
+    }
+    if !placed {
+        out.push_str(&new_lines);
+    }
+    out
+}
+
+/// Write `text` to `path` through a temp file in the same directory and a rename, so a crash
+/// never leaves a half-written settings file. The temp file is removed if anything fails.
+pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::write(&tmp, text))
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// fuxx's own settings file: `{XDG_CONFIG_HOME or ~/.config}/fuxx/config`.
 pub fn settings_path(home: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
     xdg_config_home
@@ -211,5 +257,48 @@ mod tests {
             load(&[PathBuf::from("/c/a"), PathBuf::from("/c/b")], &read),
             vec![e("x", "1"), e("y", "2")]
         );
+    }
+
+    #[test]
+    fn set_key_replaces_in_place_and_keeps_everything_else() {
+        let text = "# my comment\nbackground = #000000\ntheme = Nord\nfont-size = 14\n";
+        assert_eq!(
+            set_key(text, "theme", &["Dracula".into()]),
+            "# my comment\nbackground = #000000\ntheme = Dracula\nfont-size = 14\n"
+        );
+        let multi = "font-feature = -calt\nx = 1\nfont-feature = ss01\n";
+        assert_eq!(
+            set_key(multi, "font-feature", &["ss01=1".into()]),
+            "font-feature = ss01=1\nx = 1\n"
+        );
+    }
+
+    #[test]
+    fn set_key_with_no_values_removes_the_key() {
+        assert_eq!(set_key("theme = Nord\n# keep\n", "theme", &[]), "# keep\n");
+        assert_eq!(set_key("", "theme", &[]), "");
+    }
+
+    #[test]
+    fn set_key_appends_when_missing() {
+        assert_eq!(
+            set_key("x = 1", "theme", &["Nord".into()]),
+            "x = 1\ntheme = Nord\n"
+        );
+        assert_eq!(set_key("", "font-size", &["15".into()]), "font-size = 15\n");
+    }
+
+    #[test]
+    fn write_atomic_replaces_the_file() {
+        let dir = std::env::temp_dir().join(format!("fuxx-write-atomic-{}", std::process::id()));
+        let path = dir.join("sub/config");
+        write_atomic(&path, "a = 1\n").unwrap();
+        write_atomic(&path, "a = 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 2\n");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        ); // no tmp left behind
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
