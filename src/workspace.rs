@@ -13,6 +13,7 @@ use gpui::{
     SharedString, Subscription, Window, actions, canvas, div, prelude::*, px,
 };
 
+use crate::api_server;
 use crate::appearance::Appearance;
 use crate::groups::{self, Row};
 use crate::name_input::{NameInput, NameInputEvent};
@@ -71,6 +72,9 @@ actions!(
 const SIDEBAR_WIDTH: f32 = 220.0;
 
 pub struct Session {
+    /// Scripting id: shown to scripts as `s<id>`.
+    #[allow(dead_code)] // used from M9 Task 5
+    pub id: u64,
     pub view: Entity<TerminalView>,
     pub status: Status,
     pub title: Option<SharedString>,
@@ -136,6 +140,8 @@ pub struct Workspace {
     renaming: Option<(EntityId, Entity<NameInput>)>,
     /// True while the saved sessions are being reopened, so nothing is saved halfway.
     restoring: bool,
+    /// The id the next session gets (`s1`, `s2`, ...); never reused.
+    next_id: u64,
     window_active: bool,
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
@@ -157,6 +163,7 @@ impl Workspace {
             collapsed: Vec::new(),
             renaming: None,
             restoring: true,
+            next_id: 1,
             window_active: window.is_window_active(),
             _activation: activation,
             _appearance: appearance,
@@ -298,7 +305,14 @@ impl Workspace {
             .as_ref()
             .filter(|_| run_preset)
             .map(|p| p.command.as_str());
-        let view = match TerminalView::spawn(window, cx, cwd, startup) {
+        let session_id = self.next_id;
+        self.next_id += 1;
+        let env = if cx.global::<Appearance>().scripting {
+            scripting_env(session_id)
+        } else {
+            Vec::new()
+        };
+        let view = match TerminalView::spawn(window, cx, cwd, startup, &env) {
             Ok(view) => view,
             Err(err) => {
                 eprintln!("fuxx: could not start a shell: {err}");
@@ -321,6 +335,7 @@ impl Workspace {
         self.sessions.insert(
             index,
             Session {
+                id: session_id,
                 view,
                 status: Status::Idle,
                 title: None,
@@ -1059,6 +1074,30 @@ impl Render for Workspace {
 }
 
 /// `$HOME`; unset or empty counts as absent.
+/// The scripting variables for a shell: the socket, the session id, and `fuxx` on the PATH.
+fn scripting_env(id: u64) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if let Some(home) = home_dir() {
+        env.push((
+            "FUXX_SOCKET".to_string(),
+            api_server::socket_path(&home).display().to_string(),
+        ));
+    }
+    env.push(("FUXX_SESSION".to_string(), format!("s{id}")));
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        let mut path = std::env::var_os("PATH").unwrap_or_default();
+        if !path.is_empty() {
+            path.push(":");
+        }
+        path.push(dir);
+        env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+    }
+    env
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|v| !v.is_empty())

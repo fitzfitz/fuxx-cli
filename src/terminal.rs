@@ -227,6 +227,11 @@ impl TerminalCore {
         grid::screen_tail_text(&self.shared.lock().term, n)
     }
 
+    /// The terminal's text for a scripting read.
+    pub fn text(&self, scope: grid::TextScope) -> String {
+        grid::text_lines(&self.shared.lock().term, scope)
+    }
+
     /// Resize screen + PTY. No-op when unchanged, so it's cheap to call every frame.
     pub fn resize(&self, dims: TermDims, cell: CellPx) {
         if dims.cols == 0 || dims.rows == 0 {
