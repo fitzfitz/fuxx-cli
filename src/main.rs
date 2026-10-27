@@ -10,6 +10,7 @@ mod keys;
 mod links;
 mod mouse;
 mod notifier;
+mod prefs;
 mod pty;
 mod session_list;
 mod settings;
