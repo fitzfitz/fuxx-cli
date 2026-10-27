@@ -11,6 +11,7 @@ pub enum Axis {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used from M8 Task 4
 pub enum Dir {
     Left,
     Right,
@@ -19,6 +20,7 @@ pub enum Dir {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(dead_code)] // used from M8 Task 4
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -26,10 +28,13 @@ pub struct Rect {
     pub h: f32,
 }
 
+#[allow(dead_code)] // used from M8 Task 4
 pub const MIN_RATIO: f32 = 0.1;
+#[allow(dead_code)] // used from M8 Task 4
 pub const MAX_RATIO: f32 = 0.9;
 
 /// Slack when comparing rect edges.
+#[allow(dead_code)] // used from M8 Task 4
 const EPS: f32 = 1e-4;
 
 /// A leaf (one pane) or a split of two subtrees; `ratio` is the share the first child gets.
@@ -46,6 +51,7 @@ pub enum Node<T> {
 }
 
 /// Clamp into `MIN_RATIO..=MAX_RATIO`; NaN becomes an even split.
+#[allow(dead_code)] // used from M8 Task 4
 fn clamp_ratio(ratio: f32) -> f32 {
     if ratio.is_nan() {
         0.5
@@ -55,6 +61,7 @@ fn clamp_ratio(ratio: f32) -> f32 {
 }
 
 /// The areas of a split's two children.
+#[allow(dead_code)] // used from M8 Task 4
 fn child_rects(axis: Axis, ratio: f32, area: Rect) -> (Rect, Rect) {
     match axis {
         Axis::Row => {
@@ -168,6 +175,7 @@ impl<T: Copy + PartialEq> Node<T> {
     }
 
     /// Each leaf's area within `area`, in reading order.
+    #[allow(dead_code)] // used from M8 Task 4
     pub fn rects(&self, area: Rect) -> Vec<(T, Rect)> {
         match self {
             Node::Leaf(id) => vec![(*id, area)],
@@ -186,6 +194,7 @@ impl<T: Copy + PartialEq> Node<T> {
     }
 
     /// The axis and area of the split reached by `path` (`false` = first child, `true` = second).
+    #[allow(dead_code)] // used from M8 Task 4
     pub fn split_rect(&self, path: &[bool], area: Rect) -> Option<(Axis, Rect)> {
         match self {
             Node::Leaf(_) => None,
@@ -209,6 +218,7 @@ impl<T: Copy + PartialEq> Node<T> {
     }
 
     /// Set the ratio of the split reached by `path`, clamped; false if `path` ends elsewhere.
+    #[allow(dead_code)] // used from M8 Task 4
     pub fn set_ratio(&mut self, path: &[bool], ratio: f32) -> bool {
         match self {
             Node::Leaf(_) => false,
@@ -236,6 +246,7 @@ impl<T: Copy + PartialEq> Node<T> {
     /// The leaf next to `from` in direction `dir`, judged on the rects of a unit square: it lies
     /// wholly on that side and overlaps on the other axis. Nearest wins, then biggest overlap,
     /// then reading order.
+    #[allow(dead_code)] // used from M8 Task 4
     pub fn neighbor(&self, from: T, dir: Dir) -> Option<T> {
         let rects = self.rects(Rect {
             x: 0.0,
@@ -289,6 +300,7 @@ impl<T: Copy + PartialEq> Node<T> {
     }
 
     /// Give every leaf an equal share: a child on the same axis counts as all its leaves along it.
+    #[allow(dead_code)] // used from M8 Task 4
     pub fn equalize(&mut self) {
         if let Node::Split {
             axis,
@@ -317,6 +329,7 @@ impl<T: Copy + PartialEq> Node<T> {
         }
     }
 
+    #[allow(dead_code)] // used from M8 Task 5
     pub fn map<U>(&self, f: &impl Fn(T) -> U) -> Node<U> {
         match self {
             Node::Leaf(id) => Node::Leaf(f(*id)),
@@ -336,11 +349,13 @@ impl<T: Copy + PartialEq> Node<T> {
 }
 
 /// Length of the overlap of two spans `[a, a + a_len]` and `[b, b + b_len]` (negative if apart).
+#[allow(dead_code)] // used from M8 Task 4
 fn span_overlap(a: f32, a_len: f32, b: f32, b_len: f32) -> f32 {
     (a + a_len).min(b + b_len) - a.max(b)
 }
 
 /// Clamp every ratio in place; true if any changed.
+#[allow(dead_code)] // used from M8 Task 5
 fn fix_ratios(node: &mut Node<usize>) -> bool {
     match node {
         Node::Leaf(_) => false,
@@ -363,6 +378,7 @@ fn fix_ratios(node: &mut Node<usize>) -> bool {
 /// Make loaded trees match `count` sessions: drop trees with an out-of-range or repeated index,
 /// clamp ratios, then add a leaf for every session no kept tree shows. The bool is true when a
 /// tree was dropped or a ratio fixed.
+#[allow(dead_code)] // used from M8 Task 5
 pub fn sanitize(trees: Vec<Node<usize>>, count: usize) -> (Vec<Node<usize>>, bool) {
     let mut used = vec![false; count];
     let mut kept = Vec::new();

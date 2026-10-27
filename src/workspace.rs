@@ -1,22 +1,27 @@
-//! The root view: a sidebar listing every session (with its status ring) and the active
-//! session's terminal. Owns session lifecycle, switching, and background notifications.
+//! The root view: a sidebar listing every session (with its status ring) and the layout of
+//! panes holding the active session. Owns session lifecycle, switching, splits, and background
+//! notifications.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, EntityId, Focusable, MouseButton, MouseDownEvent,
-    PathPromptOptions, SharedString, Subscription, Window, actions, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, Entity, EntityId, Focusable, Hsla, MouseButton,
+    MouseDownEvent, PathPromptOptions, SharedString, Subscription, Window, actions, div,
+    prelude::*, px,
 };
 
 use crate::appearance::Appearance;
 use crate::groups::{self, Row};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
+use crate::panes::{self, PaneColors, SelectPane};
 use crate::presets::Preset;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
+use crate::split_tree::{Axis, Node};
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
@@ -50,6 +55,8 @@ actions!(
         RenameSession,
         MoveSessionUp,
         MoveSessionDown,
+        SplitRight,
+        SplitDown,
     ]
 );
 
@@ -108,6 +115,9 @@ impl Render for DragPreview {
 
 pub struct Workspace {
     sessions: SessionList<Session>,
+    /// The split layouts, by each session's view. Every session is in exactly one; a session
+    /// never split is a layout of its own.
+    layouts: Vec<Node<EntityId>>,
     /// The projects whose groups are closed in the sidebar.
     collapsed: Vec<PathBuf>,
     /// The rename box, and the session (by its view) it renames.
@@ -129,6 +139,7 @@ impl Workspace {
         let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
         let mut this = Self {
             sessions: SessionList::new(),
+            layouts: Vec::new(),
             collapsed: Vec::new(),
             renaming: None,
             restoring: true,
@@ -154,7 +165,7 @@ impl Workspace {
                     Some(state) if !state.sessions.is_empty() => {
                         let presets = cx.global::<Appearance>().presets.clone();
                         for launch in restore::launches(&state, mode, &presets) {
-                            self.open_session(launch, window, cx);
+                            self.open_session(launch, None, window, cx);
                         }
                         if !self.sessions.is_empty() {
                             self.collapsed = state.collapsed;
@@ -182,7 +193,7 @@ impl Workspace {
                 ),
             }
         }
-        self.open_session(Launch::default(), window, cx);
+        self.open_session(Launch::default(), None, window, cx);
     }
 
     /// Write the session list to the sessions file (not while restoring). One log line on failure.
@@ -213,8 +224,15 @@ impl Workspace {
         }
     }
 
-    /// Open a session for `launch` next to its group and make it active.
-    fn open_session(&mut self, launch: Launch, window: &mut Window, cx: &mut Context<Self>) {
+    /// Open a session for `launch` next to its group and make it active: a layout of its own, or
+    /// with `split`, a new pane beside (Row) or under (Column) the active one.
+    fn open_session(
+        &mut self,
+        launch: Launch,
+        split: Option<Axis>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Launch { saved, run_preset } = launch;
         let cwd: Option<&Path> = match saved.project.as_deref() {
             Some(dir) if dir.is_dir() => Some(dir),
@@ -240,6 +258,17 @@ impl Workspace {
             }
         };
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
+        let id = view.entity_id();
+        let active = self.sessions.active().map(|s| s.view.entity_id());
+        let split_done = split.zip(active).is_some_and(|(axis, active)| {
+            self.layouts
+                .iter_mut()
+                .find(|t| t.contains(active))
+                .is_some_and(|t| t.split(active, id, axis))
+        });
+        if !split_done {
+            self.layouts.push(Node::Leaf(id));
+        }
         let index = groups::insert_index(&self.projects(), saved.project.as_deref());
         self.sessions.insert(
             index,
@@ -280,6 +309,7 @@ impl Workspace {
                 saved,
                 run_preset: false,
             },
+            None,
             window,
             cx,
         );
@@ -318,7 +348,20 @@ impl Workspace {
             },
             run_preset: false,
         };
-        self.open_session(launch, window, cx);
+        self.open_session(launch, None, window, cx);
+    }
+
+    /// A plain session in the active session's group, as a new pane beside or under it.
+    fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = SavedSession {
+            project: self.active_project(),
+            ..Default::default()
+        };
+        let launch = Launch {
+            saved,
+            run_preset: false,
+        };
+        self.open_session(launch, Some(axis), window, cx);
     }
 
     /// Preset `n` (0-based) of the settings, in the active session's group; absent is ignored.
@@ -336,6 +379,7 @@ impl Workspace {
                 saved,
                 run_preset: true,
             },
+            None,
             window,
             cx,
         );
@@ -383,6 +427,21 @@ impl Workspace {
     }
 
     fn close_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.sessions.items().get(index).map(|s| s.view.entity_id()) else {
+            return;
+        };
+        let was_active = self.sessions.active_index() == Some(index);
+        // The pane's neighbour takes its space, and the focus if it had it.
+        let mut next = None;
+        if let Some(pos) = self.layouts.iter().position(|t| t.contains(id)) {
+            let tree = self.layouts.remove(pos);
+            if was_active {
+                next = tree.cycle(id, false);
+            }
+            if let Some(rest) = tree.remove(id) {
+                self.layouts.insert(pos, rest);
+            }
+        }
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child.
         self.sessions.remove(index);
         if self.sessions.is_empty() {
@@ -394,6 +453,9 @@ impl Workspace {
         let sessions = self.sessions.items();
         self.collapsed
             .retain(|c| sessions.iter().any(|s| s.project.as_ref() == Some(c)));
+        if let Some(i) = next.and_then(|n| self.sessions.position(|s| s.view.entity_id() == n)) {
+            self.sessions.select(i);
+        }
         self.activate(window, cx);
     }
 
@@ -401,6 +463,22 @@ impl Workspace {
         if self.sessions.select(index) {
             self.activate(window, cx);
         }
+    }
+
+    /// A click in a pane: make its session the active one (if it isn't already).
+    fn select_view(&mut self, view: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.sessions.position(|s| s.view.entity_id() == view) else {
+            return;
+        };
+        if self.sessions.active_index() != Some(index) {
+            self.select(index, window, cx);
+        }
+    }
+
+    /// The layout holding the active session (the one on screen).
+    fn shown_layout(&self) -> Option<&Node<EntityId>> {
+        let active = self.sessions.active()?.view.entity_id();
+        self.layouts.iter().find(|t| t.contains(active))
     }
 
     /// After the active session changed (by any route): open its group and focus it.
@@ -506,6 +584,25 @@ impl Workspace {
         }
     }
 
+    /// The layout holding the active session, its unfocused panes dimmed.
+    fn render_panes(&self, colors: PaneColors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let active = self.sessions.active()?.view.entity_id();
+        let tree = self.shown_layout()?;
+        let view = |id: EntityId| {
+            self.sessions
+                .items()
+                .iter()
+                .find(|s| s.view.entity_id() == id)
+                .map(|s| s.view.clone())
+        };
+        let this = cx.entity().downgrade();
+        let select: SelectPane = Rc::new(move |id, window, cx| {
+            this.update(cx, |this, cx| this.select_view(id, window, cx))
+                .ok();
+        });
+        Some(panes::render_layout(tree, active, &view, &select, colors))
+    }
+
     fn render_sidebar(&self, ui: UiColors, cx: &mut Context<Self>) -> impl IntoElement {
         let projects = self.projects();
         let all: Vec<&Path> = projects.iter().flatten().copied().collect();
@@ -607,6 +704,8 @@ impl Workspace {
         let session = &self.sessions.items()[index];
         let is_active = self.sessions.active_index() == Some(index);
         let view = session.view.entity_id();
+        // In the layout on screen, but not the focused pane: a faint highlight.
+        let on_screen = !is_active && self.shown_layout().is_some_and(|t| t.contains(view));
         let rename_box = self
             .renaming
             .as_ref()
@@ -631,6 +730,7 @@ impl Workspace {
             .text_sm()
             .text_color(hsla(if is_active { ui.text } else { ui.text_dim }))
             .when(is_active, |row| row.bg(hsla(ui.row_active)))
+            .when(on_screen, |row| row.bg(hsla(ui.row_hover)))
             .hover(|style| style.bg(hsla(ui.row_hover)))
             .cursor_pointer()
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -691,6 +791,13 @@ impl Render for Workspace {
         window.set_window_title(&title);
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
+        let colors = PaneColors {
+            dim: Hsla {
+                a: 0.3,
+                ..hsla(theme.background)
+            },
+            divider: hsla(ui.sidebar_border),
+        };
 
         div()
             .flex()
@@ -722,6 +829,8 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &MoveSessionUp, _, cx| this.move_active(true, cx)))
             .on_action(cx.listener(|this, _: &MoveSessionDown, _, cx| this.move_active(false, cx)))
+            .on_action(cx.listener(|this, _: &SplitRight, w, cx| this.split(Axis::Row, w, cx)))
+            .on_action(cx.listener(|this, _: &SplitDown, w, cx| this.split(Axis::Column, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession1, w, cx| this.select(0, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession2, w, cx| this.select(1, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession3, w, cx| this.select(2, w, cx)))
@@ -741,13 +850,14 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &LaunchPreset8, w, cx| this.launch_preset(7, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset9, w, cx| this.launch_preset(8, w, cx)))
             .child(self.render_sidebar(ui, cx))
-            // Only the active terminal is rendered; background sessions keep running (their
+            // Only the active session's layout is rendered; other sessions keep running (their
             // reader threads and tickers live in their views, which the list keeps alive).
             .child(
                 div()
                     .flex_1()
                     .h_full()
-                    .children(self.sessions.active().map(|s| s.view.clone())),
+                    .overflow_hidden()
+                    .children(self.render_panes(colors, cx)),
             )
     }
 }

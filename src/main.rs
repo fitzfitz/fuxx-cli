@@ -12,6 +12,7 @@ mod links;
 mod mouse;
 mod name_input;
 mod notifier;
+mod panes;
 mod preferences;
 mod prefs;
 mod presets;
@@ -19,7 +20,6 @@ mod pty;
 mod restore;
 mod session_list;
 mod settings;
-#[allow(dead_code)] // used from M8 Task 3
 mod split_tree;
 mod status;
 mod terminal;
@@ -39,7 +39,7 @@ use workspace::{
     LaunchPreset6, LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp,
     NewSession, NewSessionInFolder, NextSession, PrevSession, RenameSession, SelectSession1,
     SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7,
-    SelectSession8, SelectSession9, Workspace,
+    SelectSession8, SelectSession9, SplitDown, SplitRight, Workspace,
 };
 
 actions!(fuxx, [Quit, OpenPreferences]);
@@ -94,6 +94,8 @@ fn main() {
                 KeyBinding::new("ctrl-cmd-7", LaunchPreset7, None),
                 KeyBinding::new("ctrl-cmd-8", LaunchPreset8, None),
                 KeyBinding::new("ctrl-cmd-9", LaunchPreset9, None),
+                KeyBinding::new("cmd-d", SplitRight, None),
+                KeyBinding::new("cmd-shift-d", SplitDown, None),
                 // Terminal pane only. Bindings run before the pane's own key handler.
                 KeyBinding::new("cmd-c", Copy, Some("Terminal")),
                 KeyBinding::new("cmd-v", Paste, Some("Terminal")),
@@ -139,6 +141,10 @@ fn main() {
                     MenuItem::action("Close Session", CloseSession),
                     MenuItem::separator(),
                     MenuItem::action("Preferences\u{2026}", OpenPreferences),
+                ]),
+                Menu::new("Pane").items([
+                    MenuItem::action("Split Right", SplitRight),
+                    MenuItem::action("Split Down", SplitDown),
                 ]),
             ]);
 
