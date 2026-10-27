@@ -104,6 +104,10 @@ enum Expect {
 impl Expect {
     /// Whether `frame` is this request's reply. An `Error` answers a `Create` (no id) or a
     /// `ReadText` (its session's id).
+    ///
+    /// Limitation: the daemon also sends id-less `Error`s for a bad `SetTheme` palette or a
+    /// second `Hello`, and those would be taken as the pending `Create`'s reply. This client
+    /// never sends either (`set_theme` always sends a valid palette).
     fn answered_by(self, frame: &Frame) -> bool {
         match (self, frame) {
             (Expect::Sessions, Frame::Sessions(_)) | (Expect::Created, Frame::Created { .. }) => {
@@ -125,8 +129,10 @@ struct Pending {
 /// What the reader thread routes to.
 #[derive(Default)]
 struct Routes {
-    /// Per attached session, its stream.
-    sessions: HashMap<u64, Sender<Frame>>,
+    /// Per attached session, its stream and the token `route` gave it.
+    sessions: HashMap<u64, (u64, Sender<Frame>)>,
+    /// The next token.
+    next_token: u64,
     /// Requests waiting for a reply, in the order they were sent.
     pending: VecDeque<Pending>,
     /// The connection is gone: nothing more will be routed.
@@ -225,7 +231,27 @@ impl DaemonClient {
         }
     }
 
-    /// Start a session; its id.
+    /// `create` on its own thread, for callers that must not wait (the UI thread): the id
+    /// arrives on the returned channel (`.await` it).
+    pub fn create_in_background(
+        self: &Arc<Self>,
+        create: Create,
+    ) -> futures::channel::oneshot::Receiver<io::Result<u64>> {
+        let (done, id) = futures::channel::oneshot::channel();
+        let client = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("fuxx-daemon-create".into())
+            .spawn(move || {
+                let _ = done.send(client.create(create));
+            });
+        if let Err(e) = spawned {
+            log!("no thread to create a session: {e}");
+        }
+        id
+    }
+
+    /// Start a session; its id. Waits for the daemon: not on the UI thread
+    /// (`create_in_background`).
     pub fn create(&self, create: Create) -> io::Result<u64> {
         match self.request(&Frame::Create(create), Expect::Created)? {
             Frame::Created { id } => Ok(id),
@@ -236,16 +262,23 @@ impl DaemonClient {
     /// Start receiving session `id`'s frames: a `Snapshot`, then everything after it. Asking
     /// again (after a `Resync` or a gap) brings a new `Snapshot` on the same stream. One stream
     /// per session: attaching again replaces it.
-    pub fn attach(&self, id: u64) -> SessionStream {
-        let (tx, rx) = mpsc::channel();
-        {
-            let mut routes = lock(&self.routes);
-            if !routes.closed {
-                routes.sessions.insert(id, tx);
-            }
-        }
+    pub fn attach(&self, id: u64) -> (u64, SessionStream) {
+        let route = self.route(id);
         self.reattach(id);
-        rx
+        route
+    }
+
+    /// Register session `id`'s stream without asking for it yet (no socket I/O, so fine on
+    /// the UI thread); `reattach` asks. Returns the stream's token for `detach`.
+    pub fn route(&self, id: u64) -> (u64, SessionStream) {
+        let (tx, rx) = mpsc::channel();
+        let mut routes = lock(&self.routes);
+        routes.next_token += 1;
+        let token = routes.next_token;
+        if !routes.closed {
+            routes.sessions.insert(id, (token, tx));
+        }
+        (token, rx)
     }
 
     /// Ask for a fresh `Snapshot` on session `id`'s existing stream.
@@ -253,9 +286,18 @@ impl DaemonClient {
         self.send(&Frame::Attach { id });
     }
 
-    /// Stop session `id`'s stream; the session keeps running.
-    pub fn detach(&self, id: u64) {
-        lock(&self.routes).sessions.remove(&id);
+    /// Stop session `id`'s stream `token`; the session keeps running. A stale token (the
+    /// stream was replaced by a later `attach`) does nothing.
+    pub fn detach(&self, id: u64, token: u64) {
+        {
+            let mut routes = lock(&self.routes);
+            match routes.sessions.get(&id) {
+                Some((current, _)) if *current == token => {
+                    routes.sessions.remove(&id);
+                }
+                _ => return,
+            }
+        }
         self.send(&Frame::Detach { id });
     }
 
@@ -263,6 +305,17 @@ impl DaemonClient {
     pub fn input(&self, id: u64, bytes: &[u8]) {
         for chunk in bytes.chunks(INPUT_CHUNK) {
             self.send(&Frame::Input {
+                id,
+                bytes: chunk.to_vec(),
+            });
+        }
+    }
+
+    /// Bytes for session `id`'s program that aren't typing (mouse reports): the daemon's
+    /// status tracker doesn't count them.
+    pub fn write(&self, id: u64, bytes: &[u8]) {
+        for chunk in bytes.chunks(INPUT_CHUNK) {
+            self.send(&Frame::Write {
                 id,
                 bytes: chunk.to_vec(),
             });
@@ -472,7 +525,7 @@ fn route(routes: &Mutex<Routes>, frame: Frame) {
     let mut routes = lock(routes);
     if let Some(id) = session_of(&frame) {
         let exited = matches!(frame, Frame::Exited { .. });
-        if let Some(stream) = routes.sessions.get(&id)
+        if let Some((_, stream)) = routes.sessions.get(&id)
             && (stream.send(frame).is_err() || exited)
         {
             // Nothing more comes after Exited; a dropped receiver wants nothing more.
@@ -638,7 +691,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             [1]
         );
-        let stream = client.attach(id);
+        let (_, stream) = client.attach(id);
         let first = stream.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(
             matches!(first, Frame::Snapshot(ref s) if s.id == id),
@@ -823,6 +876,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_stale_detach_leaves_a_newer_stream_alone() {
+        let (_d, path) = daemon("tokens");
+        let client = DaemonClient::connect(&path).unwrap();
+        let id = client.create(sh_create(40, 5)).unwrap();
+        let (first, _old) = client.attach(id);
+        let (second, stream) = client.attach(id);
+        assert_ne!(first, second);
+        client.detach(id, first); // e.g. the first view going away late
+        recv_until(&stream, |f| matches!(f, Frame::Snapshot(_)));
+        client.input(id, b"echo $((6*7))T\r");
+        recv_until(
+            &stream,
+            |f| matches!(f, Frame::Output { bytes, .. } if String::from_utf8_lossy(bytes).contains("42T")),
+        );
+    }
+
+    #[test]
+    fn create_in_background_hands_back_the_id() {
+        let (_d, path) = daemon("bgcreate");
+        let client = DaemonClient::connect(&path).unwrap();
+        let id = futures::executor::block_on(client.create_in_background(sh_create(40, 5)));
+        assert_eq!(id.unwrap().unwrap(), 1);
+        let failed = futures::executor::block_on(client.create_in_background(sh_create(0, 0)));
+        assert!(failed.unwrap().is_err());
+    }
+
+    #[test]
     fn create_env_applies_the_shell_env_to_ours() {
         let env = create_env(&ShellEnv {
             set: vec![("FUXX_TEST_SET".into(), "1".into())],
@@ -838,7 +918,7 @@ pub(crate) mod tests {
         let (_d, path) = daemon("drop");
         let client = DaemonClient::connect(&path).unwrap();
         let id = client.create(sh_create(40, 5)).unwrap();
-        let stream = client.attach(id);
+        let (_, stream) = client.attach(id);
         recv_until(&stream, |f| matches!(f, Frame::Snapshot(_)));
         let other = client.clone();
         drop(client);

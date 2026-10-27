@@ -2,10 +2,11 @@
 //! Pure: no I/O, no threads, no gpui.
 //!
 //! A frame is `u32 BE length | u8 kind | payload`. `length` counts the kind byte and the
-//! payload, and may not exceed [`MAX_FRAME`]. Hot-path frames (`Input`, `Output`, `Snapshot`)
-//! have a fixed binary header followed by raw bytes, so PTY output is never base64'd. Every
-//! other kind is a JSON object. Unknown JSON fields are ignored, so a newer peer can add
-//! fields; an unknown kind byte decodes to [`Frame::Unknown`] so a newer peer can add kinds.
+//! payload, and may not exceed [`MAX_FRAME`]. Hot-path frames (`Input`, `Write`, `Output`,
+//! `Snapshot`) have a fixed binary header followed by raw bytes, so PTY output is never
+//! base64'd. Every other kind is a JSON object. Unknown JSON fields are ignored, so a newer
+//! peer can add fields; an unknown kind byte decodes to [`Frame::Unknown`] so a newer peer can
+//! add kinds.
 
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
@@ -247,6 +248,12 @@ pub enum Frame {
         id: u64,
         bytes: Vec<u8>,
     },
+    /// Bytes for the child that aren't typing (mouse reports): as `Input`, but the daemon's
+    /// status tracker doesn't count them.
+    Write {
+        id: u64,
+        bytes: Vec<u8>,
+    },
     Resize(Resize),
     SetTheme {
         palette: serde_json::Value,
@@ -338,6 +345,7 @@ mod kind {
     pub const STOP: u8 = 0x1B;
     pub const STOP_REPLY: u8 = 0x1C;
     pub const ERROR: u8 = 0x1D;
+    pub const WRITE: u8 = 0x1E;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -407,11 +415,15 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         Frame::Create(b) => json(kind::CREATE, b),
         Frame::Attach { id } => id_only(kind::ATTACH, *id),
         Frame::Detach { id } => id_only(kind::DETACH, *id),
-        Frame::Input { id, bytes } => {
+        Frame::Input { id, bytes } | Frame::Write { id, bytes } => {
             let mut p = Vec::with_capacity(8 + bytes.len());
             p.extend_from_slice(&id.to_be_bytes());
             p.extend_from_slice(bytes);
-            (kind::INPUT, p)
+            let k = match frame {
+                Frame::Input { .. } => kind::INPUT,
+                _ => kind::WRITE,
+            };
+            (k, p)
         }
         Frame::Resize(b) => json(kind::RESIZE, b),
         Frame::SetTheme { palette } => json(
@@ -527,13 +539,14 @@ fn decode_frame(k: u8, p: &[u8]) -> Result<Frame, ProtoError> {
         kind::DETACH => Frame::Detach {
             id: parse::<IdOnly>(p)?.id,
         },
-        kind::INPUT => {
+        kind::INPUT | kind::WRITE => {
             if p.len() < 8 {
                 return Err(ProtoError::Malformed("Input header"));
             }
-            Frame::Input {
-                id: be_u64(p),
-                bytes: p[8..].to_vec(),
+            let (id, bytes) = (be_u64(p), p[8..].to_vec());
+            match k {
+                kind::INPUT => Frame::Input { id, bytes },
+                _ => Frame::Write { id, bytes },
             }
         }
         kind::RESIZE => Frame::Resize(parse(p)?),
@@ -724,6 +737,10 @@ mod tests {
             Frame::Input {
                 id: 7,
                 bytes: vec![0, 1, 255, b'\n'],
+            },
+            Frame::Write {
+                id: 7,
+                bytes: vec![0x1b, b'[', b'M', 255],
             },
             Frame::Resize(Resize {
                 id: 7,
@@ -964,6 +981,19 @@ mod tests {
             inp,
             [
                 vec![0, 0, 0, 10, kind::INPUT],
+                1u64.to_be_bytes().to_vec(),
+                b"x".to_vec()
+            ]
+            .concat()
+        );
+        let write = encode(&Frame::Write {
+            id: 1,
+            bytes: b"x".to_vec(),
+        });
+        assert_eq!(
+            write,
+            [
+                vec![0, 0, 0, 10, kind::WRITE],
                 1u64.to_be_bytes().to_vec(),
                 b"x".to_vec()
             ]

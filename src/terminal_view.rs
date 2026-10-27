@@ -33,7 +33,6 @@ use crate::grid::{self, GridSnapshot, TextScope};
 use crate::keys;
 use crate::links::Link;
 use crate::mouse::{self, Button, Mods, MouseAction, ScrollAccumulator};
-use crate::mux_proto;
 use crate::pty;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
@@ -125,8 +124,10 @@ impl TerminalView {
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
 
-    /// A view of daemon session `id`, attached now (Daemon backend; M10a Task 7's adoption).
-    #[allow(dead_code)] // used by the workspace from M10a Task 7
+    /// A view of daemon session `id` (Daemon backend). It never waits on the daemon. For a new
+    /// session (M10a Task 6), get the id with `DaemonClient::create_in_background` first (its
+    /// `startup` is typed in by the daemon); for adoption (Task 7), from `list`.
+    #[allow(dead_code)] // used by the workspace from M10a Task 6
     pub fn attach_daemon(
         window: &mut Window,
         cx: &mut App,
@@ -136,22 +137,6 @@ impl TerminalView {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         let theme = cx.global::<Appearance>().theme;
         let core = TerminalCore::attach_daemon(client, id, tx, theme).map_err(|e| e.to_string())?;
-        Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
-    }
-
-    /// A new daemon session made from `create` (its `startup` is typed in by the daemon), in a
-    /// new view (Daemon backend; M10a Task 6). The id is `daemon_id()`.
-    #[allow(dead_code)] // used by the workspace from M10a Task 6
-    pub fn create_in_daemon(
-        window: &mut Window,
-        cx: &mut App,
-        client: Arc<DaemonClient>,
-        create: mux_proto::Create,
-    ) -> Result<Entity<Self>, String> {
-        let (tx, rx) = futures::channel::mpsc::unbounded();
-        let theme = cx.global::<Appearance>().theme;
-        let core =
-            TerminalCore::create_daemon(client, create, tx, theme).map_err(|e| e.to_string())?;
         Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
     }
 

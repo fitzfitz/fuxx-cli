@@ -667,6 +667,12 @@ impl DaemonSession {
         s.send_to_child(bytes.to_vec());
     }
 
+    /// Bytes from a client that aren't typing (mouse reports, `Write`): to the child like
+    /// `input`, and counted in `input_backlog`, but the status tracker doesn't see them.
+    pub fn write(&self, bytes: &[u8]) {
+        self.state.lock().send_to_child(bytes.to_vec());
+    }
+
     /// Resize the Term and the PTY. A change of cell count is numbered into the output stream
     /// as `Resized`, before the child can redraw for it, so replicas reflow at the same byte.
     /// Zero sizes and no-change calls are ignored; sizes over `MAX_COLS` x `MAX_ROWS` are
@@ -1180,6 +1186,37 @@ mod tests {
         until_exited(&rx);
         s.close();
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn write_is_not_typing_but_input_is() {
+        let s = spawn("stty -echo; sleep 30");
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        s.write(b"\x1b[M !!"); // a mouse report
+        let out_at = Instant::now() + Duration::from_millis(500);
+        s.state.lock().output(b"redraw\r\n", 0, out_at);
+        assert_eq!(s.info().status, "idle", "a mouse report counted as typing");
+        let statuses = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|f| matches!(f, Frame::Status { .. }))
+            .count();
+        assert_eq!(statuses, 0);
+        s.input(b"go");
+        let out_at = Instant::now() + Duration::from_millis(500);
+        s.state.lock().output(b"busy\r\n", 0, out_at);
+        recv_until(
+            &rx,
+            |f| matches!(f, Frame::Status { id: ID, status } if status == "working"),
+        );
+        // Written bytes still count in the backlog the daemon pushes back on.
+        let s = spawn("stty raw -echo; echo ready; sleep 30");
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        until_output(&rx, "ready");
+        for _ in 0..64 {
+            s.write(&[b'x'; 1024]);
+        }
+        assert!(s.input_backlog() > 0);
     }
 
     #[test]

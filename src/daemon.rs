@@ -7,7 +7,9 @@
 //!   writer thread fed by a bounded queue. Each session the client attaches gets a forwarding
 //!   thread that moves frames from that session's own bounded subscriber queue to the writer
 //!   queue. Sessions never wait for a client: a slow one overflows its subscriber queue and gets
-//!   `Resync` (`daemon_session`), and only its own threads wait on the writer;
+//!   `Resync` (`daemon_session`), and only its own threads wait on the writer. Each session the
+//!   client sends input to gets an input thread with a bounded queue, which waits while that
+//!   session's child is behind, so one stuck child never holds up input to the others;
 //! - one tick thread: every 50 ms it ticks each session (status, stuck synchronized updates),
 //!   forgets sessions whose `Exited` has gone out, and exits the daemon after `IDLE_EXIT` with
 //!   no sessions and no connections.
@@ -21,14 +23,14 @@
 //! Control comes only from the socket, never from PTY output (§2.3.8). Logging goes to stderr,
 //! which is `~/Library/Logs/fuxx/daemon.log` when the GUI spawns the daemon.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -60,6 +62,93 @@ const OUT_QUEUE: usize = 256;
 /// Bytes of a session's input still unwritten to its child above which the daemon stops
 /// reading the sending client's frames until the child catches up.
 const INPUT_BACKLOG_MAX: usize = 1 << 20;
+
+/// Input bytes one connection may have queued for one session before its reader waits.
+const SESSION_INPUT_QUEUE: usize = 16 << 20;
+
+/// One connection's input for one session (`Input` and `Write`, in order), byte-bounded.
+#[derive(Default)]
+struct InputQueue {
+    inner: Mutex<InputQueued>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct InputQueued {
+    /// `(typing, bytes)`: `Input` is typing, `Write` isn't.
+    items: VecDeque<(bool, Vec<u8>)>,
+    bytes: usize,
+    /// The connection is gone: deliver what is queued without waiting, then stop.
+    closed: bool,
+}
+
+impl InputQueue {
+    /// Queue input, waiting while the queue holds `SESSION_INPUT_QUEUE` bytes (one item always
+    /// fits). Only the connection's reader calls it.
+    fn push(&self, typing: bool, bytes: Vec<u8>) {
+        let mut q = lock(&self.inner);
+        while !q.items.is_empty() && q.bytes + bytes.len() > SESSION_INPUT_QUEUE && !q.closed {
+            q = self.ready.wait(q).unwrap_or_else(PoisonError::into_inner);
+        }
+        q.bytes += bytes.len();
+        q.items.push_back((typing, bytes));
+        self.ready.notify_all();
+    }
+
+    /// The next input; `None` once closed and empty.
+    fn pop(&self) -> Option<(bool, Vec<u8>)> {
+        let mut q = lock(&self.inner);
+        loop {
+            if let Some((typing, bytes)) = q.items.pop_front() {
+                q.bytes -= bytes.len();
+                self.ready.notify_all();
+                return Some((typing, bytes));
+            }
+            if q.closed {
+                return None;
+            }
+            q = self.ready.wait(q).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    fn close(&self) {
+        lock(&self.inner).closed = true;
+        self.ready.notify_all();
+    }
+
+    fn closed(&self) -> bool {
+        lock(&self.inner).closed
+    }
+}
+
+/// Hand a connection's input to one session in order. Backpressure is per session: while the
+/// session holds more than `INPUT_BACKLOG_MAX` unwritten bytes, wait (this queue then fills,
+/// and only then the connection's reader). The wait ends early if the session ends, the daemon
+/// exits or the connection closes. Nothing is dropped while the session lives.
+fn deliver_input(queue: &InputQueue, session: &Weak<DaemonSession>, shared: &Shared) {
+    while let Some((typing, bytes)) = queue.pop() {
+        let Some(session) = session.upgrade() else {
+            continue; // the session is gone: nothing can take it
+        };
+        while session.input_backlog() > INPUT_BACKLOG_MAX
+            && !shared.closing()
+            && !queue.closed()
+            && session.info().alive
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        deliver_now(&session, typing, &bytes);
+    }
+}
+
+/// Input straight to the session: `Input` counts as typing, `Write` doesn't.
+fn deliver_now(session: &DaemonSession, typing: bool, bytes: &[u8]) {
+    if typing {
+        session.input(bytes);
+    } else {
+        session.write(bytes);
+    }
+}
 
 /// A connection must say `Hello` within this.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -479,6 +568,7 @@ fn serve(stream: UnixStream, slot: Slot, shared: Arc<Shared>) {
                 out,
                 role: None,
                 attached: HashMap::new(),
+                inputs: HashMap::new(),
             };
             // An exit decided before we registered won't shut this socket: leave at once.
             if !conn.shared.closing() && catch_unwind(AssertUnwindSafe(|| conn.run())).is_err() {
@@ -534,6 +624,8 @@ struct Connection {
     role: Option<Role>,
     /// The forwarding thread per attached session.
     attached: HashMap<u64, (Weak<DaemonSession>, JoinHandle<bool>)>,
+    /// The input queue per session this client sent input to (`deliver_input` drains it).
+    inputs: HashMap<u64, Arc<InputQueue>>,
 }
 
 impl Connection {
@@ -615,10 +707,11 @@ impl Connection {
                 true
             }
             Frame::Input { id, bytes } => {
-                if let Some(session) = self.shared.session(id) {
-                    self.wait_for_child(&session);
-                    session.input(&bytes);
-                }
+                self.queue_input(id, true, bytes);
+                true
+            }
+            Frame::Write { id, bytes } => {
+                self.queue_input(id, false, bytes);
                 true
             }
             Frame::Resize(r) => {
@@ -694,17 +787,31 @@ impl Connection {
         }
     }
 
-    /// Backpressure: while the session holds more than `INPUT_BACKLOG_MAX` unwritten input
-    /// bytes, stop reading this client's frames (its socket then fills, and it waits). Nothing
-    /// is dropped, and other clients are unaffected. Ends early if the session ends or the
-    /// daemon exits.
-    fn wait_for_child(&self, session: &DaemonSession) {
-        while session.input_backlog() > INPUT_BACKLOG_MAX
-            && !self.shared.closing()
-            && session.info().alive
-        {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    /// Pass input to session `id` through this connection's input thread for it (started on
+    /// first use), so a session whose child is behind holds up only its own input. This waits
+    /// only when that session's queue is full (`SESSION_INPUT_QUEUE`).
+    fn queue_input(&mut self, id: u64, typing: bool, bytes: Vec<u8>) {
+        let queue = match self.inputs.get(&id) {
+            Some(queue) => queue.clone(),
+            None => {
+                let Some(session) = self.shared.session(id) else {
+                    return;
+                };
+                let queue = Arc::new(InputQueue::default());
+                let (draining, shared, weak) =
+                    (queue.clone(), self.shared.clone(), Arc::downgrade(&session));
+                let spawned = std::thread::Builder::new()
+                    .name("fuxx-daemon-input".into())
+                    .spawn(move || deliver_input(&draining, &weak, &shared));
+                if spawned.is_err() {
+                    log!("connection {}: no input thread for s{id}", self.id);
+                    return deliver_now(&session, typing, &bytes);
+                }
+                self.inputs.insert(id, queue.clone());
+                queue
+            }
+        };
+        queue.push(typing, bytes);
     }
 
     fn hello(&mut self, hello: &Hello) -> bool {
@@ -841,6 +948,10 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        // Input threads hand over what is queued without waiting, then end.
+        for (_, queue) in self.inputs.drain() {
+            queue.close();
+        }
         for (_, (session, _thread)) in self.attached.drain() {
             // Not joined: a forwarder may be waiting on a client that stopped reading; it ends
             // once the socket is shut below.
@@ -1645,10 +1756,12 @@ mod tests {
 
         let mut f = connect(&path, Role::Script);
         const CHUNK: usize = 64 * 1024;
+        // More than the per-session queue holds, so the flooder is held back.
+        const FRAMES: usize = SESSION_INPUT_QUEUE / CHUNK + 64;
         let sent = Arc::new(AtomicUsize::new(0));
         let counter = sent.clone();
         std::thread::spawn(move || {
-            for _ in 0..64 {
+            for _ in 0..FRAMES {
                 let frame = Frame::Input {
                     id,
                     bytes: vec![b'x'; CHUNK],
@@ -1667,10 +1780,90 @@ mod tests {
             "backlog {backlog} over the bound"
         );
         // The flooder is held back (its frames wait unread), not cut off or dropped.
-        assert!(sent.load(Ordering::Acquire) < 64);
+        assert!(sent.load(Ordering::Acquire) < FRAMES);
         // Other clients are unaffected.
         assert_eq!(ids(&list(&mut c)), vec![id]);
         drop(session);
+    }
+
+    /// Create a `sh` session that runs `startup`; its id.
+    fn create_running(c: &mut Client, startup: &str) -> u64 {
+        c.send(&Frame::Create(Create {
+            startup: Some(startup.into()),
+            ..match create_frame("s") {
+                Frame::Create(c) => c,
+                _ => unreachable!(),
+            }
+        }))
+        .unwrap();
+        match recv_until(c, |f| matches!(f, Frame::Created { .. })).pop() {
+            Some(Frame::Created { id }) => id,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn read_screen(c: &mut Client, id: u64) -> String {
+        c.send(&Frame::ReadText(ReadText {
+            id,
+            scope: "screen".into(),
+        }))
+        .unwrap();
+        match recv_until(c, |f| matches!(f, Frame::Text(_))).pop() {
+            Some(Frame::Text(t)) => t.text,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stuck_session_does_not_hold_up_input_to_another_on_the_same_connection() {
+        let (_d, path) = daemon("persession");
+        let mut c = connect(&path, Role::Ui);
+        const TOTAL: usize = 2 << 20;
+        // Raw mode and not reading for 3 s, then it counts what it was sent.
+        let stuck = create_running(
+            &mut c,
+            &format!("stty raw -echo; echo RE\"\"ADY; sleep 3; head -c {TOTAL} | wc -c"),
+        );
+        let other = create_running(&mut c, "stty -echo");
+        assert!(eventually(|| read_screen(&mut c, stuck).contains("READY")));
+        let started = Instant::now();
+        let mut f = connect(&path, Role::Ui);
+        std::thread::spawn(move || {
+            for _ in 0..TOTAL / (64 * 1024) {
+                let bytes = vec![b'x'; 64 * 1024];
+                f.send(&Frame::Input { id: stuck, bytes }).unwrap();
+            }
+            f.send(&Frame::Input {
+                id: other,
+                bytes: b"echo B''OK\r".to_vec(),
+            })
+            .unwrap();
+            std::thread::sleep(Duration::from_secs(10)); // keep the connection
+        });
+        assert!(eventually(|| read_screen(&mut c, other).contains("BOK")));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "waited for the stuck session"
+        );
+        // Nothing was dropped: the stuck one got every byte once it read.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !read_screen(&mut c, stuck).contains(&TOTAL.to_string()) {
+            assert!(Instant::now() < deadline, "{}", read_screen(&mut c, stuck));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn write_frames_reach_the_child() {
+        let (_d, path) = daemon("write");
+        let mut c = connect(&path, Role::Ui);
+        let id = create(&mut c, "w");
+        c.send(&Frame::Write {
+            id,
+            bytes: b"echo $((6*7))W\r".to_vec(),
+        })
+        .unwrap();
+        assert!(eventually(|| read_screen(&mut c, id).contains("42W")));
     }
 
     #[test]
