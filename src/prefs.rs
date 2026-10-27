@@ -7,24 +7,30 @@ use crate::theme::BUILTIN_THEMES;
 /// First list entry: leave the setting out of the file and use the built-in default.
 pub const DEFAULT_CHOICE: &str = "Default";
 
-fn sort_dedupe(names: &mut Vec<String>) {
+/// Sort case-insensitively (stable), drop case-variants (first spelling wins) and any `Default`,
+/// then put `DEFAULT_CHOICE` first.
+fn finish(mut names: Vec<String>) -> Vec<String> {
+    names.retain(|n| !n.eq_ignore_ascii_case(DEFAULT_CHOICE));
     names.sort_by_key(|n| n.to_lowercase());
-    names.dedup();
-}
-
-/// `Default`, then built-in and user theme names, sorted case-insensitively without duplicates.
-pub fn theme_choices(user_themes: &[String]) -> Vec<String> {
-    let mut names: Vec<String> = BUILTIN_THEMES
-        .iter()
-        .map(|s| s.to_string())
-        .chain(user_themes.iter().cloned())
-        .collect();
-    sort_dedupe(&mut names);
+    names.dedup_by_key(|n| n.to_lowercase());
     names.insert(0, DEFAULT_CHOICE.to_string());
     names
 }
 
+/// `Default`, then user and built-in theme names, sorted case-insensitively. Case-variants
+/// collapse to one row and the user's spelling wins (user themes are listed first).
+pub fn theme_choices(user_themes: &[String]) -> Vec<String> {
+    finish(
+        user_themes
+            .iter()
+            .cloned()
+            .chain(BUILTIN_THEMES.iter().map(|s| s.to_string()))
+            .collect(),
+    )
+}
+
 /// `Default`, then installed monospace families (system-private `.` names skipped) and `current`.
+/// `current` matches an installed family regardless of case; the installed spelling wins.
 pub fn font_choices(
     installed: &[String],
     is_mono: &dyn Fn(&str) -> bool,
@@ -35,12 +41,8 @@ pub fn font_choices(
         .filter(|n| !n.starts_with('.') && is_mono(n))
         .cloned()
         .collect();
-    if let Some(c) = current {
-        names.push(c.to_string());
-    }
-    sort_dedupe(&mut names);
-    names.insert(0, DEFAULT_CHOICE.to_string());
-    names
+    names.extend(current.map(str::to_string));
+    finish(names)
 }
 
 /// A font is monospace when a narrow glyph ("i") and a wide one ("m") advance equally.
@@ -102,6 +104,26 @@ mod tests {
         assert_eq!(
             font_choices(&installed, &mono, None),
             vec![DEFAULT_CHOICE, "Menlo", "MesloLGS NF"]
+        );
+    }
+
+    #[test]
+    fn lists_never_duplicate_default_or_case_variants() {
+        let c = theme_choices(&["Default".into(), "nord".into()]);
+        assert_eq!(c.iter().filter(|n| n.as_str() == DEFAULT_CHOICE).count(), 1);
+        assert_eq!(c[0], DEFAULT_CHOICE);
+        let nords: Vec<_> = c.iter().filter(|n| n.to_lowercase() == "nord").collect();
+        assert_eq!(nords, vec!["nord"]);
+        assert_eq!(c.len(), 1 + 6);
+
+        let installed = vec!["Menlo".to_string()];
+        let f = font_choices(&installed, &|_| true, Some("menlo"));
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0], DEFAULT_CHOICE);
+        assert_eq!(f[1].to_lowercase(), "menlo");
+        assert_eq!(
+            font_choices(&installed, &|_| true, Some("Default")),
+            vec![DEFAULT_CHOICE, "Menlo"]
         );
     }
 
