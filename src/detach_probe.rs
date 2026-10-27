@@ -5,14 +5,20 @@
 //! `posix_spawn`, output appended to ~/Library/Logs/fuxx/probe.log, and exits. The child waits 15 s
 //! (time to quit the app), then tries each folder and logs what happened. Neither command is listed
 //! in `fuxx help`. Remove at the end of the milestone unless it becomes the daemon's spawn code.
+//!
+//! `spawn_detached` is that spawn code now: M10a Task 5's `daemon_client` starts `fuxx daemon run`
+//! with it. Task 11 decides what happens to the probe commands.
 
-use std::ffi::{CString, c_char, c_int, c_void};
+use std::ffi::{CString, OsStr, OsString, c_char, c_int, c_void};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `POSIX_SPAWN_SETSID` (sys/spawn.h in the macOS SDK).
 const POSIX_SPAWN_SETSID: i16 = 0x0400;
+/// `POSIX_SPAWN_CLOEXEC_DEFAULT` (Apple): only the file actions' descriptors are inherited.
+const POSIX_SPAWN_CLOEXEC_DEFAULT: i16 = 0x4000;
 const O_RDONLY: c_int = 0x0;
 const O_WRONLY: c_int = 0x1;
 const O_APPEND: c_int = 0x8;
@@ -44,7 +50,6 @@ unsafe extern "C" {
     fn posix_spawnattr_init(attr: *mut *mut c_void) -> c_int;
     fn posix_spawnattr_destroy(attr: *mut *mut c_void) -> c_int;
     fn posix_spawnattr_setflags(attr: *mut *mut c_void, flags: i16) -> c_int;
-    fn _NSGetEnviron() -> *mut *const *const c_char;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn getppid() -> c_int;
 }
@@ -75,32 +80,68 @@ pub fn run_parent(disclaim: bool) -> i32 {
 
 fn spawn_child(disclaim: bool) -> Result<c_int, String> {
     let log = log_path();
-    fs::create_dir_all(log.parent().unwrap()).map_err(|e| format!("create log folder: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    let c = |s: &str| CString::new(s).map_err(|e| e.to_string());
-    let exe_c = c(exe.to_str().ok_or("exe path is not UTF-8")?)?;
-    let log_c = c(log.to_str().ok_or("log path is not UTF-8")?)?;
-    let null_c = c("/dev/null")?;
-    let child_c = c("__detach-probe-child")?;
-    let flag_c = c(if disclaim { "--disclaimed" } else { "--plain" })?;
-    let argv = [
-        exe_c.as_ptr() as *mut c_char,
-        child_c.as_ptr() as *mut c_char,
-        flag_c.as_ptr() as *mut c_char,
-        std::ptr::null_mut(),
-    ];
+    let flag = if disclaim { "--disclaimed" } else { "--plain" };
+    let (pid, note) = spawn_detached(&exe, &["__detach-probe-child", flag], &log, &[], disclaim)?;
+    if let Some(n) = note {
+        // Into the same log, so the reader sees it next to the child's lines.
+        append(&log, &format!("[parent] {n}"));
+        println!("{n}");
+    }
+    Ok(pid)
+}
+
+/// Start `exe args…` detached: in its own session (`POSIX_SPAWN_SETSID`), stdin from
+/// `/dev/null`, stdout and stderr appended to `log` (its folder is created), every other file
+/// descriptor closed (`POSIX_SPAWN_CLOEXEC_DEFAULT`), and fuxx's environment with `env`
+/// overriding. With `disclaim`, also `responsibility_spawnattrs_setdisclaim` when the private
+/// symbol exists (else the returned note says so). Returns the pid. The caller reaps it.
+pub fn spawn_detached(
+    exe: &Path,
+    args: &[&str],
+    log: &Path,
+    env: &[(&str, &OsStr)],
+    disclaim: bool,
+) -> Result<(c_int, Option<&'static str>), String> {
+    if let Some(folder) = log.parent() {
+        fs::create_dir_all(folder).map_err(|e| format!("create log folder: {e}"))?;
+    }
+    let c = |s: &[u8]| CString::new(s).map_err(|e| e.to_string());
+    let exe_c = c(exe.as_os_str().as_bytes())?;
+    let log_c = c(log.as_os_str().as_bytes())?;
+    let null_c = c(b"/dev/null")?;
+    let args_c = args
+        .iter()
+        .map(|a| c(a.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut argv: Vec<*mut c_char> = vec![exe_c.as_ptr() as *mut c_char];
+    argv.extend(args_c.iter().map(|a| a.as_ptr() as *mut c_char));
+    argv.push(std::ptr::null_mut());
+    let mut vars: Vec<(OsString, OsString)> = std::env::vars_os()
+        .filter(|(key, _)| !env.iter().any(|(k, _)| OsStr::new(k) == key))
+        .collect();
+    vars.extend(
+        env.iter()
+            .map(|(k, v)| (OsString::from(k), v.to_os_string())),
+    );
+    let env_c = vars
+        .iter()
+        .map(|(k, v)| c(&[k.as_bytes(), b"=", v.as_bytes()].concat()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut envp: Vec<*const c_char> = env_c.iter().map(|e| e.as_ptr()).collect();
+    envp.push(std::ptr::null());
 
     let mut note = None;
     let mut pid: c_int = 0;
-    // SAFETY: the CStrings and argv outlive the posix_spawn call; argv is null-terminated; the
-    // attr and file-actions objects are initialised before use and destroyed exactly once;
-    // `environ` comes from _NSGetEnviron and is valid for the process lifetime.
+    // SAFETY: the CStrings, argv and envp outlive the posix_spawn call; argv and envp are
+    // null-terminated; the attr and file-actions objects are initialised before use and
+    // destroyed exactly once.
     let rc = unsafe {
         let mut attr: *mut c_void = std::ptr::null_mut();
         let mut fa: *mut c_void = std::ptr::null_mut();
         posix_spawnattr_init(&mut attr);
         posix_spawn_file_actions_init(&mut fa);
-        posix_spawnattr_setflags(&mut attr, POSIX_SPAWN_SETSID);
+        posix_spawnattr_setflags(&mut attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT);
         posix_spawn_file_actions_addopen(&mut fa, 0, null_c.as_ptr(), O_RDONLY, 0);
         posix_spawn_file_actions_addopen(
             &mut fa,
@@ -111,7 +152,7 @@ fn spawn_child(disclaim: bool) -> Result<c_int, String> {
         );
         posix_spawn_file_actions_adddup2(&mut fa, 1, 2);
         if disclaim {
-            let sym = c("responsibility_spawnattrs_setdisclaim")?;
+            let sym = c(b"responsibility_spawnattrs_setdisclaim")?;
             let f = dlsym(RTLD_DEFAULT, sym.as_ptr());
             if f.is_null() {
                 note = Some("disclaim unavailable");
@@ -127,24 +168,19 @@ fn spawn_child(disclaim: bool) -> Result<c_int, String> {
             &fa,
             &attr,
             argv.as_ptr(),
-            *_NSGetEnviron(),
+            envp.as_ptr(),
         );
         posix_spawn_file_actions_destroy(&mut fa);
         posix_spawnattr_destroy(&mut attr);
         rc
     };
-    if let Some(n) = note {
-        // Into the same log, so the reader sees it next to the child's lines.
-        append(&log, &format!("[parent] {n}"));
-        println!("{n}");
-    }
     if rc != 0 {
         return Err(format!(
             "posix_spawn failed: {}",
             std::io::Error::from_raw_os_error(rc)
         ));
     }
-    Ok(pid)
+    Ok((pid, note))
 }
 
 fn append(path: &Path, line: &str) {
