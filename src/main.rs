@@ -19,6 +19,8 @@ mod pty;
 mod restore;
 mod session_list;
 mod settings;
+#[allow(dead_code)] // used from M8 Task 3
+mod split_tree;
 mod status;
 mod terminal;
 mod terminal_view;
