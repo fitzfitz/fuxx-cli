@@ -39,7 +39,7 @@ use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
-use crate::workspace_daemon::Service;
+use crate::workspace_daemon::{Service, open_refusal};
 
 actions!(
     workspace,
@@ -190,6 +190,9 @@ pub struct Workspace {
     pub(crate) notice: Option<SharedString>,
     /// How many sessions the Quit item last said keep running.
     pub(crate) quit_count: usize,
+    /// A quit that first ends sessions (or waits for replies) is under way: other quits wait
+    /// for it.
+    pub(crate) quitting: bool,
 }
 
 impl Workspace {
@@ -235,7 +238,13 @@ impl Workspace {
             },
             notice: None,
             quit_count: 0,
+            quitting: false,
         };
+        // While a quit ends sessions first, the red button waits for it.
+        let me = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            !me.upgrade().is_some_and(|this| this.read(cx).quitting)
+        });
         if persistent {
             this.connect_service(window, cx);
         } else {
@@ -341,18 +350,21 @@ impl Workspace {
         // The normal route, so the active session's group opens.
         self.sessions.select(active);
         self.activate(window, cx);
-        self.finish_restoring();
+        self.finish_restoring(cx);
     }
 
     /// One plain session, then saving starts.
     fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let done: Opened = Box::new(|this, _, _, _| this.finish_restoring());
-        self.open_session_then(Launch::default(), None, Some(done), window, cx);
+        let done: Opened = Box::new(|this, _, _, cx| this.finish_restoring(cx));
+        // Part of the restore, so not refused as other opens are meanwhile.
+        self.open_now(Launch::default(), None, Some(done), window, cx);
     }
 
-    fn finish_restoring(&mut self) {
+    /// Saving starts, and the Quit item says how many sessions keep running.
+    fn finish_restoring(&mut self, cx: &mut Context<Self>) {
         self.restoring = false;
         self.save();
+        self.sync_quit_title(cx);
     }
 
     /// The layouts as session indices, for the file. A tree with a pane that isn't a session
@@ -430,7 +442,27 @@ impl Workspace {
 
     /// `open_session`, then `then` with the new session's id (`None`: it didn't start). With the
     /// background service that is once the service has created it; otherwise right away.
+    /// Refused (`open_refusal`) while the service is starting, lost, or reopening sessions.
     pub(crate) fn open_session_then(
+        &mut self,
+        launch: Launch,
+        split: Option<Axis>,
+        then: Option<Opened>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(why) = open_refusal(&self.service, self.restoring) {
+            eprintln!("[fuxx] session: not started, {why}");
+            if let Some(then) = then {
+                then(self, None, window, cx);
+            }
+            return;
+        }
+        self.open_now(launch, split, then, window, cx);
+    }
+
+    /// `open_session_then` without the refusal (the restore's own opens).
+    fn open_now(
         &mut self,
         launch: Launch,
         split: Option<Axis>,

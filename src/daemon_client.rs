@@ -85,7 +85,7 @@ impl std::fmt::Display for Incompatible {
 impl std::error::Error for Incompatible {}
 
 /// The `Incompatible` inside `e`, if that is why connecting failed.
-#[allow(dead_code)] // tests; the GUI shows the error's own text
+#[cfg(test)] // the GUI shows the error's own text
 pub fn incompatible(e: &io::Error) -> Option<&Incompatible> {
     e.get_ref()?.downcast_ref()
 }
@@ -263,7 +263,7 @@ impl DaemonClient {
     /// Start receiving session `id`'s frames: a `Snapshot`, then everything after it. Asking
     /// again (after a `Resync` or a gap) brings a new `Snapshot` on the same stream. One stream
     /// per session: attaching again replaces it.
-    #[allow(dead_code)] // tests; views use `route` + `reattach`
+    #[cfg(test)] // views use `route` + `reattach`
     pub fn attach(&self, id: u64) -> (u64, SessionStream) {
         let route = self.route(id);
         self.reattach(id);

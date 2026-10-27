@@ -155,6 +155,8 @@ enum Backend {
 /// detaches: the session keeps running in the daemon (closing it is `DaemonClient::close`).
 struct DaemonLink {
     id: u64,
+    /// The connection it goes through (to tell an old connection's views from the current).
+    client: Arc<DaemonClient>,
     /// To the pump thread.
     commands: Sender<Command>,
 }
@@ -311,6 +313,7 @@ impl TerminalCore {
         let (commands, queued) = std::sync::mpsc::channel();
         let link = Arc::new(DaemonLink {
             id,
+            client: client.clone(),
             commands: commands.clone(),
         });
         // So OSC 4/10/11/12 replies match what this window shows; then the first snapshot.
@@ -363,11 +366,20 @@ impl TerminalCore {
         Self::replica(client, id, (dims, cell), events, theme)
     }
 
-    /// Daemon backend: end the session in the daemon (its `Exited` follows), after the input
-    /// already queued. Local: nothing (dropping the last clone ends the child).
+    /// Daemon backend: end the session in the daemon (its `Exited` follows). It is sent after
+    /// the input already queued here, but the daemon discards input it hasn't delivered to the
+    /// program yet. Local: nothing (dropping the last clone ends the child).
     pub fn close(&self) {
         if let Backend::Daemon(link) = &self.backend {
             link.send(Command::Close);
+        }
+    }
+
+    /// Whether this mirrors a session through `client` (that very connection).
+    pub fn uses_client(&self, client: &Arc<DaemonClient>) -> bool {
+        match &self.backend {
+            Backend::Local { .. } => false,
+            Backend::Daemon(link) => Arc::ptr_eq(&link.client, client),
         }
     }
 
@@ -1612,6 +1624,18 @@ mod daemon_tests {
         assert!(!seen.iter().any(|e| e == "Exited"), "{seen:?}");
         // The screen it had stays.
         assert_eq!(screen_lines(&core)[0], "still here");
+    }
+
+    #[test]
+    fn a_core_knows_which_connection_it_uses() {
+        let (_d, path) = daemon("t-client");
+        let client = DaemonClient::connect(&path).unwrap();
+        let other = DaemonClient::connect(&path).unwrap();
+        let id = client.create(sh_create(40, 5)).unwrap();
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client.clone(), id, tx, Theme::default()).unwrap();
+        assert!(core.uses_client(&client));
+        assert!(!core.uses_client(&other));
     }
 
     #[test]

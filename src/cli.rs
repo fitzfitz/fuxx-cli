@@ -447,10 +447,15 @@ fn session_line(s: &Value) -> String {
     if let Some(n) = s.get("number").and_then(Value::as_u64) {
         line.push_str(&format!("  #{n}{marker}"));
     }
-    for key in ["status", "name"] {
-        if let Some(v) = str_of(s, key) {
-            line.push_str(&format!("  {v}"));
-        }
+    // A session lost with the background service says so instead of its frozen status.
+    let lost = s.get("live").and_then(Value::as_bool) == Some(false);
+    let status = if lost {
+        Some("lost")
+    } else {
+        str_of(s, "status")
+    };
+    for v in [status, str_of(s, "name")].into_iter().flatten() {
+        line.push_str(&format!("  {v}"));
     }
     if let Some(f) = str_of(s, "project") {
         let home = std::env::var("HOME").unwrap_or_default();
@@ -866,6 +871,9 @@ mod tests {
             row(json!({"note": "building"})),
             "s4  #2  working  api  building"
         );
+        // Lost with the background service: said instead of the (frozen) status.
+        assert_eq!(row(json!({"live": false})), "s4  #2  lost  api");
+        assert_eq!(row(json!({"live": true})), "s4  #2  working  api");
     }
 
     #[test]
