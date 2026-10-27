@@ -55,6 +55,8 @@ pub struct Workspace {
     next_id: u64,
     window_active: bool,
     _activation: Subscription,
+    /// Repaints the sidebar when the appearance changes.
+    _appearance: Subscription,
 }
 
 impl Workspace {
@@ -63,11 +65,13 @@ impl Workspace {
             this.window_active = window.is_window_active();
             cx.notify();
         });
+        let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
         let mut this = Self {
             sessions: SessionList::new(),
             next_id: 1,
             window_active: window.is_window_active(),
             _activation: activation,
+            _appearance: appearance,
         };
         this.add_session(window, cx);
         this

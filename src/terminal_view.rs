@@ -17,8 +17,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EventEmitter,
     FocusHandle, Focusable, Font, FontStyle, FontWeight, HitboxBehavior, Hsla, KeyDownEvent,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Rgba, ScrollWheelEvent, SharedString, Task, TextAlign, TextRun, TouchPhase,
-    UnderlineStyle, Window, actions, canvas, div, fill, point, prelude::*, px, size,
+    Pixels, Rgba, ScrollWheelEvent, SharedString, Subscription, Task, TextAlign, TextRun,
+    TouchPhase, UnderlineStyle, Window, actions, canvas, div, fill, point, prelude::*, px, size,
 };
 
 use crate::appearance::Appearance;
@@ -78,6 +78,8 @@ pub struct TerminalView {
     /// Dropping a GPUI `Task` cancels it, so these live as long as the view.
     _events: Task<()>,
     _ticker: Task<()>,
+    /// Follows the appearance global so a theme change repaints this session.
+    _appearance: Subscription,
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -130,6 +132,12 @@ impl TerminalView {
             }
         });
 
+        let appearance = cx.observe_global::<Appearance>(|this, cx| {
+            let theme = cx.global::<Appearance>().theme;
+            this.core.set_theme(theme);
+            cx.notify();
+        });
+
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         Self {
@@ -144,6 +152,7 @@ impl TerminalView {
             mouse_reported: false,
             _events: events,
             _ticker: ticker,
+            _appearance: appearance,
         }
     }
 
@@ -491,7 +500,7 @@ impl Render for TerminalView {
         let focused = self.focus_handle.is_focused(window);
         let resize_core = self.core.clone();
         let paint_core = self.core.clone();
-        let theme = *self.core.theme();
+        let theme = self.core.theme();
         let layout = self.layout.clone();
         let hovered = self.hovered.clone();
         let view = cx.entity();

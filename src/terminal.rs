@@ -90,7 +90,8 @@ pub struct TerminalCore {
     input: Sender<Vec<u8>>,
     /// Built once: compiling the URL regex is not free.
     links: Arc<Mutex<LinkFinder>>,
-    theme: Theme,
+    /// Shared by every clone, so a theme change reaches them all.
+    theme: Arc<Mutex<Theme>>,
 }
 
 impl TerminalCore {
@@ -159,7 +160,7 @@ impl TerminalCore {
             dims: Arc::new(Mutex::new((dims, CellPx::default()))),
             input,
             links: Arc::new(Mutex::new(LinkFinder::new())),
-            theme,
+            theme: Arc::new(Mutex::new(theme)),
         })
     }
 
@@ -261,17 +262,24 @@ impl TerminalCore {
         *self.shared.lock().term.mode()
     }
 
-    pub fn theme(&self) -> &Theme {
-        &self.theme
+    pub fn theme(&self) -> Theme {
+        *self.theme.lock().unwrap()
+    }
+
+    pub fn set_theme(&self, theme: Theme) {
+        *self.theme.lock().unwrap() = theme;
     }
 
     pub fn snapshot(&self) -> GridSnapshot {
-        grid::snapshot(&self.shared.lock().term, &self.theme)
+        // Copy the theme out first so its lock is not held while the terminal is locked.
+        let theme = self.theme();
+        grid::snapshot(&self.shared.lock().term, &theme)
     }
 
     /// Color for an OSC 4/10/11/12 query reply.
     pub fn color(&self, index: usize) -> Rgb {
-        colors::resolve_index(index, self.shared.lock().term.colors(), &self.theme)
+        let theme = self.theme();
+        colors::resolve_index(index, self.shared.lock().term.colors(), &theme)
     }
 
     /// Synchronized updates (DEC mode 2026, used by Claude Code and most TUIs) buffer output
@@ -585,5 +593,24 @@ mod tests {
         core.start_selection(SelectionType::Simple, far_up, Side::Left);
         core.extend_selection(far_down, Side::Right);
         let _ = core.selection_text();
+    }
+
+    #[test]
+    fn set_theme_changes_snapshot_colors() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'x'; sleep 1"),
+            TermDims { cols: 10, rows: 2 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains('x')));
+        let clone = core.clone();
+        let mut t = Theme::default();
+        t.foreground = crate::theme::parse_color("#123456").unwrap();
+        clone.set_theme(t);
+        assert_eq!(core.snapshot().lines[0][0].fg, t.foreground); // every clone sees it
+        assert_eq!(core.theme(), t);
     }
 }
