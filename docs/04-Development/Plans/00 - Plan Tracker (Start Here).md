@@ -20,8 +20,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M9 — Scripting API** (Phase 3). M6b, M7 and M8 are complete |
-| **Status** | ⬜ Not started: no plan yet. M6b, M7, M8 ✅ done 2026-10-27 (on-screen checks confirmed by you). |
-| **▶ Next action** | Brainstorm M9 with you (what scripts should control), then write its spec and plan. |
+| **Status** | 🟨 In progress: [[M9 Plan - Scripting API]] written 2026-10-27 (you said "go ahead": the AI made the design calls). |
+| **▶ Next action** | [[M9 Plan - Scripting API]] → Task 1 (protocol types). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-10-27 |
 
@@ -51,6 +51,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M6b | Settings window (File → Preferences… / cmd-,) + bundled JetBrains Mono — *added 2026-10-27* | [[M6b Plan - Settings Window]] | ✅ | 7/7 | Change theme/font/size in a window; saved and applied live |
 | M7 | Session ergonomics (groups, rename/reorder, presets, restore) | [[M7 Plan - Session Ergonomics]] | ✅ | 8/8 | Groups, names, order, presets come back after a restart |
 | M8 | Split panes (nested) — *moved into scope 2026-10-27* | [[M8 Plan - Split Panes]] | ✅ | 7/7 | ⌘D / ⌘⇧D, drag dividers, layouts restored |
+| M9 | Scripting API (socket, `fuxx` command, events, wait, MCP) | [[M9 Plan - Scripting API]] | 🟨 | 0/10 | Script and agents drive fuxx; wait/question/answer an agent |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
