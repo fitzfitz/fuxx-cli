@@ -618,7 +618,7 @@ pub fn create_env(shell: &ShellEnv) -> BTreeMap<String, String> {
 
 /// Whether a failed connect means "no live daemon here, start one": nothing at the path, a
 /// stale socket file, or a daemon that hung up during the handshake (it was exiting).
-fn respawnable(e: &io::Error) -> bool {
+pub(crate) fn respawnable(e: &io::Error) -> bool {
     matches!(
         e.kind(),
         ErrorKind::NotFound

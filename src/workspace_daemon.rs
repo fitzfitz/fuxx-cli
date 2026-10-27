@@ -4,22 +4,23 @@
 //! reconnect, which shows the same service's live sessions again), the Quit item's count, and
 //! "Quit fuxx and End All Sessions". Opening and closing sessions live in `workspace`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{Context, EntityId, Window, prelude::*};
 
-use crate::adopt::{self, LiveInfo, Placement, Slot};
+use crate::adopt::{self, LiveInfo, Placement, Probe, Slot};
 use crate::appearance::Appearance;
 use crate::daemon;
-use crate::daemon_client::DaemonClient;
+use crate::daemon_client::{self, DaemonClient};
 use crate::mux_proto::{self, Create, Progress, SetMeta};
 use crate::restore::{RestoreMode, SavedState, VERSION};
 use crate::session_list::SessionList;
 use crate::status::Status;
 use crate::terminal::PumpQueue;
 use crate::terminal_view::TerminalView;
+use crate::theme::Theme;
 use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
 
 /// The sidebar notice when persistence is off but `live` sessions still run in a background
@@ -34,6 +35,26 @@ pub(crate) fn leftover_notice(live: usize) -> String {
         "{sessions} in the background service \u{2014} turn Preferences \u{2192} Sessions \u{2192} Keep running after quit back on, or run `fuxx daemon stop --force`."
     )
 }
+
+/// The sidebar notice when persistence is on but the background service couldn't be reached
+/// (`err`); `held`: saved sessions it may still run weren't started again.
+pub(crate) fn unavailable_notice(err: &str, held: bool) -> String {
+    let notice = format!(
+        "Background service unavailable, so sessions end when fuxx quits this time ({err})."
+    );
+    if !held {
+        return notice;
+    }
+    format!(
+        "{notice} Sessions it may still run weren't started again \u{2014} reopen fuxx to try again, or run `fuxx daemon stop --force`."
+    )
+}
+
+/// The sidebar notice when persistence is off and a background service is there but didn't
+/// answer, so the saved sessions it ran weren't started again.
+pub(crate) const UNANSWERED_NOTICE: &str = "A background service is running but didn't answer, \
+     so sessions it may still run weren't started again \u{2014} turn Preferences \u{2192} \
+     Sessions \u{2192} Keep running after quit back on, or run `fuxx daemon stop --force`.";
 
 /// Who runs the sessions (M10a).
 pub(crate) enum Service {
@@ -89,6 +110,10 @@ const ATTACH_STAGGER: Duration = Duration::from_millis(100);
 /// At most this long, quitting waits for what the views queued for the background service.
 const QUIT_FLUSH: Duration = Duration::from_millis(150);
 
+/// At most this long, starting with persistence off waits for a background service that is
+/// there to say which sessions it still runs.
+const PROBE_WAIT: Duration = Duration::from_millis(500);
+
 /// How long after a failed List at startup fuxx asks once more.
 const RELIST_AFTER: Duration = Duration::from_millis(500);
 
@@ -119,30 +144,24 @@ impl Workspace {
         .detach();
     }
 
-    /// Persistence is off: look (never start one) for a background service still holding
-    /// sessions from an earlier run, off the UI thread, and say so in the sidebar. Nothing is
-    /// adopted.
-    pub(crate) fn probe_leftover_service(&mut self, cx: &mut Context<Self>) {
-        let socket = daemon_socket();
-        let probing = cx.background_spawn(async move {
-            let client = DaemonClient::connect(&socket?).ok()?;
-            let live = client.list().ok()?.iter().filter(|s| s.alive).count();
-            Some(live)
-        });
-        cx.spawn(async move |this, cx| {
-            let Some(live) = probing.await.filter(|n| *n > 0) else {
-                return;
-            };
-            let notice = leftover_notice(live);
-            eprintln!("[fuxx] background service: {notice}");
-            this.update(cx, |this, cx| {
-                // A service-lost notice or the like is already on screen: don't replace it.
-                this.notice.get_or_insert_with(|| notice.into());
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    /// Persistence is off: look (connect only, never start one) for a background service still
+    /// holding sessions from an earlier run, and say so in the sidebar. Nothing is adopted; the
+    /// restore leaves what it still runs to it (`adopt::without_service`). Nothing listening
+    /// is found at once; otherwise this waits at most `PROBE_WAIT`.
+    pub(crate) fn probe_leftover_service(&mut self) -> Probe {
+        let probe = daemon_socket().map_or(Probe::Absent, |s| probe_service(&s, PROBE_WAIT));
+        match &probe {
+            Probe::Found { live, .. } if !live.is_empty() => {
+                let notice = leftover_notice(live.len());
+                eprintln!("[fuxx] background service: {notice}");
+                self.notice = Some(notice.into());
+            }
+            Probe::NoAnswer => {
+                eprintln!("[fuxx] background service: one is there but didn't answer the probe");
+            }
+            _ => {}
+        }
+        probe
     }
 
     fn service_started(
@@ -157,22 +176,20 @@ impl Workspace {
                     "[fuxx] background service: connected (pid {})",
                     client.pid()
                 );
-                self.service = Service::On(client);
+                service_ready(&client, &cx.global::<Appearance>().theme);
+                self.service = Service::On(client.clone());
+                self.reopen(client, window, cx);
             }
             Err(err) => {
                 eprintln!(
                     "[fuxx] background service: unavailable ({err}); sessions end when fuxx quits this time"
                 );
-                self.notice = Some(
-                    format!(
-                        "Background service unavailable, so sessions end when fuxx quits this time ({err})."
-                    )
-                    .into(),
-                );
                 self.service = Service::Off;
+                // It may still run the saved sessions: those aren't started a second time.
+                let held = self.restore(&Probe::NoAnswer, window, cx);
+                self.notice = Some(unavailable_notice(&err.to_string(), held).into());
             }
         }
-        self.restore(window, cx);
     }
 
     /// Reopen with the background service: list its live sessions, place them by the sessions
@@ -660,6 +677,42 @@ pub(crate) fn listed_sessions(
     }
 }
 
+/// Look (connect only, never start one) at the background service at `socket`, waiting at
+/// most `within` for its answer.
+/// Nothing listening (or a service exiting) is `Absent`; a service that doesn't answer in time
+/// or can't be talked to is `NoAnswer`.
+pub(crate) fn probe_service(socket: &Path, within: Duration) -> Probe {
+    let socket = socket.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let probing = std::thread::Builder::new()
+        .name("fuxx-probe".into())
+        .spawn(move || {
+            let found = match DaemonClient::connect(&socket) {
+                Err(e) if daemon_client::respawnable(&e) => Probe::Absent,
+                Err(_) => Probe::NoAnswer,
+                Ok(client) => match client.list() {
+                    Ok(list) => Probe::Found {
+                        instance: client.instance(),
+                        live: list.iter().filter(|s| s.alive).map(|s| s.id).collect(),
+                    },
+                    Err(_) => Probe::NoAnswer,
+                },
+            };
+            // The look took too long and nobody waits any more: dropped.
+            let _ = tx.send(found);
+        });
+    if probing.is_err() {
+        return Probe::NoAnswer;
+    }
+    rx.recv_timeout(within).unwrap_or(Probe::NoAnswer)
+}
+
+/// Right after connecting, before any session is created: the user's theme, so even the
+/// first sessions of a fresh service answer colour queries with it.
+pub(crate) fn service_ready(client: &DaemonClient, theme: &Theme) {
+    client.set_theme(theme);
+}
+
 /// The background service's socket (`FUXX_DAEMON_SOCKET`, else under `$HOME`).
 pub(crate) fn daemon_socket() -> Option<PathBuf> {
     let env_socket = std::env::var("FUXX_DAEMON_SOCKET").ok();
@@ -811,5 +864,109 @@ mod tests {
             assert!(n.contains("Preferences \u{2192} Sessions \u{2192} Keep running after quit"));
             assert!(n.contains("fuxx daemon stop --force"));
         }
+    }
+
+    #[test]
+    fn starting_without_the_service_leaves_its_live_sessions_to_it() {
+        use super::probe_service;
+        use crate::adopt::{Probe, without_service};
+        use crate::daemon_client::DaemonClient;
+        use crate::daemon_client::tests::{daemon, sh_create, temp_sock};
+        use crate::restore::{SavedSession, SavedState, VERSION};
+        use crate::split_tree::Node;
+        use std::time::{Duration, Instant};
+        let (_d, path) = daemon("ws-probe");
+        let client = DaemonClient::connect(&path).unwrap();
+        let held = client.create(sh_create(40, 5)).unwrap();
+        let s = |name: &str, daemon_id: Option<u64>| SavedSession {
+            name: Some(name.into()),
+            daemon_id,
+            ..Default::default()
+        };
+        let saved = SavedState {
+            version: VERSION,
+            active: Some(0),
+            collapsed: Vec::new(),
+            sessions: vec![s("held", Some(held)), s("gone", Some(held + 1))],
+            layouts: vec![Node::Leaf(0), Node::Leaf(1)],
+            daemon_instance: client.instance(),
+        };
+        let probe = probe_service(&path, Duration::from_secs(5));
+        assert_eq!(
+            probe,
+            Probe::Found {
+                instance: client.instance(),
+                live: vec![held]
+            }
+        );
+        let (state, hold) = without_service(saved.clone(), &probe);
+        assert!(hold, "the sessions file is kept");
+        let restarted: Vec<_> = state.sessions.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(
+            restarted,
+            [Some("gone".to_string())],
+            "held is not restarted"
+        );
+        // Another service's file: today's behaviour.
+        let other = SavedState {
+            daemon_instance: client.instance().map(|i| i ^ 1),
+            ..saved
+        };
+        assert_eq!(without_service(other.clone(), &probe), (other, false));
+        // Nothing listening: found at once.
+        let start = Instant::now();
+        let none = temp_sock("ws-probe-none");
+        assert_eq!(probe_service(&none, Duration::from_secs(5)), Probe::Absent);
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_service_that_does_not_answer_in_time_is_no_answer() {
+        use super::probe_service;
+        use crate::adopt::Probe;
+        use crate::daemon_client::tests::temp_sock;
+        use std::time::{Duration, Instant};
+        // Listening, but never says HelloOk.
+        let path = temp_sock("ws-probe-mute");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let start = Instant::now();
+        assert_eq!(
+            probe_service(&path, Duration::from_millis(200)),
+            Probe::NoAnswer
+        );
+        assert!(start.elapsed() < Duration::from_secs(1), "bounded");
+    }
+
+    #[test]
+    fn a_fresh_service_knows_the_theme_before_the_first_session_is_created() {
+        use super::service_ready;
+        use crate::daemon_client::DaemonClient;
+        use crate::daemon_client::tests::{daemon, sh_create};
+        use crate::theme::{Theme, parse_color};
+        let (running, path) = daemon("ws-theme");
+        let client = DaemonClient::connect(&path).unwrap();
+        let mut theme = Theme::default();
+        theme.background = parse_color("#123456").unwrap();
+        service_ready(&client, &theme);
+        // Same connection, so the daemon handled what came before this Create.
+        client.create(sh_create(40, 5)).unwrap();
+        assert_eq!(running.theme(), Some(theme));
+    }
+
+    #[test]
+    fn the_notices_say_when_sessions_were_left_to_an_unreachable_service() {
+        use super::{UNANSWERED_NOTICE, unavailable_notice};
+        let plain = unavailable_notice("timed out", false);
+        assert_eq!(
+            plain,
+            "Background service unavailable, so sessions end when fuxx quits this time (timed out)."
+        );
+        let held = unavailable_notice("timed out", true);
+        assert!(held.starts_with(&plain), "{held}");
+        assert!(held.contains("weren't started again"), "{held}");
+        assert!(held.contains("fuxx daemon stop --force"), "{held}");
+        assert!(UNANSWERED_NOTICE.contains("didn't answer"));
+        assert!(UNANSWERED_NOTICE.contains("weren't started again"));
+        assert!(UNANSWERED_NOTICE.contains("fuxx daemon stop --force"));
     }
 }
