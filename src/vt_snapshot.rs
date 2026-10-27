@@ -6,7 +6,12 @@
 //! (soft wraps written as overflow, never `\r\n`, so the rebuilt Term reflows the same way);
 //! the kitty keyboard flags; the saved cursor (`ESC 7`); the cursor, its pen and a pending
 //! wrap. If the alt screen is up, all of that is written for the primary screen first, then
-//! `CSI ?1049h` and the alt screen's. Last come the modes, the cursor shape, and insert mode.
+//! `CSI ?1049h`, a clear with a default pen, and the alt screen's. Last come the modes, the
+//! cursor shape, and insert mode.
+//!
+//! Reaching the primary screen under the alt screen means swapping screens on the source Term
+//! (see `encode`): that also clears its selection, marks it fully damaged and replaces its
+//! kitty keyboard mode bits with the stack top. Harmless for the daemon.
 //!
 //! Round-trips (tested): cells (char, colours, SGR flags, underline colour, wide and
 //! zero-width chars, tabs, hyperlinks), `WRAPLINE`, history, the alt screen with the primary
@@ -21,8 +26,10 @@
 //!   program sets one again;
 //! - **tab stops** (default every 8 columns) and **G0–G3 charsets** (cell contents are already
 //!   translated, only later output would differ);
-//! - the kitty keyboard mode **stack**: only its top entry is restored. In fuxx this is moot:
-//!   `Config::default()` has `kitty_keyboard: false`, so the flags are never set.
+//! - the kitty keyboard mode **stack**: only its top entry is restored, pushed with `CSI > n u`
+//!   (the study said `CSI = n u`, which sets the top entry; on a fresh Term, whose stack is
+//!   empty, a push is what recreates it). In fuxx this is moot: `Config::default()` has
+//!   `kitty_keyboard: false`, so the flags are never set.
 //!
 //! Also not restored: the saved cursor's pending-wrap flag and charsets; OSC 4/10/11 colour
 //! changes; the scrolled-back view; a pending DEC 2026 synchronized update (that lives in the
@@ -70,7 +77,10 @@ const MODES: [(TermMode, &str); 14] = [
 ///
 /// Takes `&mut` only to reach the primary screen while the alt screen is up (alacritty has no
 /// getter for the inactive grid): it swaps to the primary screen and back, then puts the alt
-/// grid back as it was. The Term is left as it was found, except that any selection is cleared.
+/// grid back as it was. The Term's contents, cursors and modes are left as they were found; the
+/// swap does clear any selection, mark the whole Term damaged, and reset the kitty keyboard
+/// mode bits to the top of the alt screen's stack (what they already were). All harmless for
+/// the daemon, which has no selection and does not render.
 #[allow(dead_code)] // used by the daemon from M10a Task 3
 pub fn encode<L: EventListener>(term: &mut Term<L>) -> Vec<u8> {
     let mut enc = Encoder::default();
@@ -83,7 +93,11 @@ pub fn encode<L: EventListener>(term: &mut Term<L>) -> Vec<u8> {
         enc.cursors(term.grid());
         term.swap_alt();
         *term.grid_mut() = alt;
-        enc.out.extend_from_slice(b"\x1b[?1049h\x1b[H");
+        // `?1049h` hands the alt screen the primary cursor's pen, background included: clear
+        // it with a default pen so the alt grid starts out as blank as the original's.
+        enc.out
+            .extend_from_slice(b"\x1b[?1049h\x1b[H\x1b[0m\x1b[2J");
+        enc.pen = Pen::default();
     }
     let mode = *term.mode();
     enc.screen(term.grid());
@@ -140,6 +154,7 @@ impl Encoder {
     /// rebuilding Term pushes off the top land in its scrollback, as they did in the original.
     fn screen(&mut self, grid: &Grid<Cell>) {
         let cols = grid.columns();
+        self.out.reserve(grid.total_lines() * cols);
         let bottom = grid.bottommost_line();
         let mut prev_wrapped = false;
         for line in grid.topmost_line().0..=bottom.0 {
@@ -322,51 +337,47 @@ impl Encoder {
 
     /// A full SGR from reset: `CSI 0 ; ... m`.
     fn sgr(&mut self, pen: &Pen) {
-        let mut params = vec!["0".to_owned()];
-        let flags = [
-            (Flags::BOLD, "1"),
-            (Flags::DIM, "2"),
-            (Flags::ITALIC, "3"),
-            (Flags::UNDERLINE, "4"),
-            (Flags::DOUBLE_UNDERLINE, "4:2"),
-            (Flags::UNDERCURL, "4:3"),
-            (Flags::DOTTED_UNDERLINE, "4:4"),
-            (Flags::DASHED_UNDERLINE, "4:5"),
-            (Flags::INVERSE, "7"),
-            (Flags::HIDDEN, "8"),
-            (Flags::STRIKEOUT, "9"),
+        const FLAGS: [(Flags, &[u8]); 11] = [
+            (Flags::BOLD, b";1"),
+            (Flags::DIM, b";2"),
+            (Flags::ITALIC, b";3"),
+            (Flags::UNDERLINE, b";4"),
+            (Flags::DOUBLE_UNDERLINE, b";4:2"),
+            (Flags::UNDERCURL, b";4:3"),
+            (Flags::DOTTED_UNDERLINE, b";4:4"),
+            (Flags::DASHED_UNDERLINE, b";4:5"),
+            (Flags::INVERSE, b";7"),
+            (Flags::HIDDEN, b";8"),
+            (Flags::STRIKEOUT, b";9"),
         ];
-        params.extend(
-            flags
-                .iter()
-                .filter(|(f, _)| pen.flags.contains(*f))
-                .map(|(_, p)| p.to_string()),
-        );
-        params.extend(colour(pen.fg, 30, 90, 38));
-        params.extend(colour(pen.bg, 40, 100, 48));
-        if let Some(underline) = pen.underline {
-            params.extend(colour(underline, 0, 0, 58));
-        }
-        let _ = write!(self.out, "\x1b[{}m", params.join(";"));
-    }
-}
-
-/// The SGR parameter for a colour: `base + n` for the 8 named colours, `bright + n` for their
-/// bright forms, `ext;5;n` for indexed and `ext;2;r;g;b` for RGB. Default colours need none
-/// (SGR 0 already set them); the other named colours cannot come from SGR.
-fn colour(color: Color, base: u8, bright: u8, ext: u8) -> Option<String> {
-    match color {
-        Color::Spec(rgb) => Some(format!("{ext};2;{};{};{}", rgb.r, rgb.g, rgb.b)),
-        Color::Indexed(n) => Some(format!("{ext};5;{n}")),
-        Color::Named(named) if base > 0 => {
-            let n = named as usize;
-            match n {
-                0..=7 => Some(format!("{}", base as usize + n)),
-                8..=15 => Some(format!("{}", bright as usize + n - 8)),
-                _ => None,
+        self.out.extend_from_slice(b"\x1b[0");
+        for (flag, param) in FLAGS {
+            if pen.flags.contains(flag) {
+                self.out.extend_from_slice(param);
             }
         }
-        Color::Named(_) => None,
+        self.colour(pen.fg, 30, 90, 38);
+        self.colour(pen.bg, 40, 100, 48);
+        if let Some(underline) = pen.underline {
+            self.colour(underline, 0, 0, 58);
+        }
+        self.out.push(b'm');
+    }
+
+    /// `;` and the SGR parameter for a colour: `base + n` for the 8 named colours, `bright + n`
+    /// for their bright forms, `ext;5;n` for indexed and `ext;2;r;g;b` for RGB. Default colours
+    /// need none (SGR 0 already set them); the other named colours cannot come from SGR.
+    fn colour(&mut self, color: Color, base: u8, bright: u8, ext: u8) {
+        let _ = match color {
+            Color::Spec(rgb) => write!(self.out, ";{ext};2;{};{};{}", rgb.r, rgb.g, rgb.b),
+            Color::Indexed(n) => write!(self.out, ";{ext};5;{n}"),
+            Color::Named(named) if base > 0 => match named as usize {
+                n @ 0..=7 => write!(self.out, ";{}", base as usize + n),
+                n @ 8..=15 => write!(self.out, ";{}", bright as usize + n - 8),
+                _ => Ok(()),
+            },
+            Color::Named(_) => Ok(()),
+        };
     }
 }
 
@@ -636,5 +647,19 @@ mod tests {
             "  \x1b[2m? for shortcuts\x1b[22m\x1b[3A\x1b[6G",
         );
         round_trip(bytes.as_bytes(), 40, 12);
+    }
+
+    #[test]
+    fn the_alt_screen_does_not_inherit_the_primary_pen() {
+        // `?1049h` copies the primary cursor's pen, and the alt grid is cleared with its
+        // background; the snapshot must not leave the alt screen blue.
+        round_trip(b"hello\x1b[44m\x1b[?1049h\x1b[0m\x1b[2J\x1b[Hvim", 20, 4);
+    }
+
+    #[test]
+    fn a_wrap_into_an_emptied_row_keeps_its_wrapline() {
+        // Row 0 wraps into row 1, whose only character is then erased.
+        let (a, _) = round_trip(b"0123456789x\x1b[1D\x1b[K\x1b[3;1Hz", 10, 4);
+        assert!(a.grid()[Line(0)][Column(9)].flags.contains(Flags::WRAPLINE));
     }
 }
