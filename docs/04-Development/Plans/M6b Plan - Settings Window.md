@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M6b
-status: not-started
+status: built-awaiting-check
 updated: 2026-10-27
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[46b - Milestone 6b - Settings Window]] (the spec) |
-| **Status** | ⬜ Not started |
-| **Tasks done** | 0 / 6 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do. |
+| **Tasks done** | 6 / 7 |
+| **▶ Pick up here** | Task 5 — your on-screen check (combined with M7 and M8) |
 | **Decisions used** | **Yours:** File → Preferences… + cmd-, (2026-10-27); **D9** = pick from the theme list, no typing. The rest are the AI's calls listed in the spec. |
 | **Needs your eyes** | 👀 Task 5: menus, the window, live theme/font/size/ligature changes, the saved file |
 
@@ -41,7 +41,7 @@ session, and saves only the changed line of `~/.config/fuxx/config`.
 ## Global Constraints
 
 - **Inherited:** everything from the M0–M6 plans. **No new crates.**
-- **Gates:** 0 warnings from our code; `cargo fmt --check` clean. Final count **116 tests** (106 today).
+- **Gates:** 0 warnings from our code; `cargo fmt --check` clean. Final count **116 tests** planned; **120** in the end (extra tests in review fixes and Task 4b).
 - **Behaviour:** exactly the spec's "How it behaves", and nothing under "Not in M6b".
 - **Writing the settings file:**
   - Only the Preferences window writes, and only `~/.config/fuxx/config` (or `$XDG_CONFIG_HOME/fuxx/config`).
@@ -75,7 +75,7 @@ session, and saves only the changed line of `~/.config/fuxx/config`.
 
 ---
 
-### Task 1: Saving one setting safely — ⬜
+### Task 1: Saving one setting safely — ✅
 
 **Files:** Modify `src/settings.rs`.
 
@@ -129,7 +129,7 @@ fn write_atomic_replaces_the_file() {
 - [ ] **Step 4: Run** `cargo test`. Expected: `110 passed` (dead code allowed until Task 4).
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m6b): change one setting in the settings file, written atomically"`
 
-### Task 2: `prefs.rs` — the window's choices, without GPUI — ⬜
+### Task 2: `prefs.rs` — the window's choices, without GPUI — ✅
 
 **Files:** Create `src/prefs.rs` · Modify `src/main.rs` (`mod prefs;`).
 
@@ -193,7 +193,7 @@ fn feature_lines_toggle_only_calt() {
 - [ ] **Step 4: Run** `cargo test`. Expected: `115 passed`.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m6b): pure choices for the preferences window"`
 
-### Task 3: Live reload of the look — ⬜
+### Task 3: Live reload of the look — ✅
 
 **Files:** Modify `src/terminal.rs`, `src/appearance.rs`, `src/terminal_view.rs`, `src/workspace.rs`.
 
@@ -234,7 +234,7 @@ fn set_theme_changes_snapshot_colors() {
 - [ ] **Step 4: Run** `cargo test`. Expected: `116 passed`.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m6b): theme and font changes reach every open session live"`
 
-### Task 4: Menus and the Preferences window — ⬜
+### Task 4: Menus and the Preferences window — ✅
 
 **Files:** Create `src/preferences.rs` · Modify `src/main.rs`.
 
@@ -290,7 +290,7 @@ fn set_theme_changes_snapshot_colors() {
   - `cargo fmt --check`: clean.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m6b): menu bar and the Preferences window (cmd-,)"`
 
-### Task 4b: Bundle JetBrains Mono as the default font — ⬜
+### Task 4b: Bundle JetBrains Mono as the default font — ✅
 
 *Added 2026-10-27 on request, after the ligature check showed no change with the installed fonts. Spec: "Also in M6b: JetBrains Mono comes with fuxx".*
 
@@ -355,7 +355,7 @@ Run `cargo run` and report.
 - [ ] **JetBrains Mono (added 2026-10-27):** with no `font-family` line (or "Default" picked), the text is JetBrains Mono. `echo "-> => != >= ==="` shows arrows/≠/≥ with Ligatures On and plain characters with Off.
 - [ ] **Session name (added on request 2026-10-27):** a new session shows `N  🖕` in the sidebar and `fuxx — 🖕` in the window title, and the emoji draws in color (not a `?` box). Implemented in `src/workspace.rs` `Session::label`; no unit test (needs a live GPUI session), checked on screen here.
 
-### Task 6: Update the docs — ⬜
+### Task 6: Update the docs — ✅
 
 - [ ] [[46b - Milestone 6b - Settings Window]]: tick the checklist; **Status:: ✅ Done**.
 - [ ] [[40 - Roadmap]]: M6b → ✅ (link the note).
@@ -374,6 +374,15 @@ Run `cargo run` and report.
 | — | Task code itself | ⚠️ not pre-compiled (signatures and tests) | Verified per task during execution |
 
 ## Known limitations
+
+**Small issues found in review and left for later (2026-10-27):**
+- The file's permissions aren't kept when Preferences rewrites it; CRLF files get mixed line endings; no `fsync`.
+- A dangling chain of symlinks is followed only one hop. `reload` treats an unreadable file as defaults.
+- The current row isn't scrolled into view; the first font-list scan takes time; each click re-lists fonts.
+- Picking a font writes one `font-family` line (extra fallbacks dropped); the ligature switch copies features from included files into the main file.
+- `theme = light:A,dark:B` highlights no row; `theme = nord` (wrong case) shows defaults while "Nord" is highlighted.
+- The bundled fonts' licence texts aren't inside the binary yet: they must go into any DMG / `.app` (M4b script, M11).
+
 
 | Limitation | Lands in |
 |---|---|

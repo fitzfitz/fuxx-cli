@@ -33,6 +33,12 @@ Spawns the shell/agent per session; bidirectional bytes. **Reused directly from 
 extra crate (decision **D2**, 2026-10-26; built and confirmed on screen in
 [[41 - Milestone 1 - One Terminal Pane]]). Font: Menlo 14 px for now (config comes in M6).
 
+## Saved sessions: `serde` + `serde_json` (M7)
+
+`serde = { version = "1.0.228", features = ["derive"] }` and `serde_json = "1.0.150"`, added 2026-10-27 for
+`~/Library/Application Support/fuxx/sessions.json`. Both were already in `Cargo.lock` through GPUI, so nothing new
+is downloaded (checked via Context7).
+
 ## Reader thread → UI channel: `futures`
 
 `futures::channel::mpsc` (decision **D3**, 2026-10-26), declared as `futures = "0.3"` (locked at

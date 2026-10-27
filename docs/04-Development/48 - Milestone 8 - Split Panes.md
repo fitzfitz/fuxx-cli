@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: in-progress
+status: built-awaiting-check
 ---
 
 # 48 - Milestone 8 - Split Panes
 
-**Status:: 🟨 In progress (plan written 2026-10-27).**  ·  **Phase 2 (moved up from Phase 3 on request).**
+**Status:: 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do.**  ·  **Phase 2 (moved up from Phase 3 on request).**
 **Plan:** [[M8 Plan - Split Panes]] (step-by-step, with status per task)
 
 ## Goal

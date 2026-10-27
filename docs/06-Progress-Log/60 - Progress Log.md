@@ -14,13 +14,29 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** **M6b — Settings window** (see [[40 - Roadmap]]; the **new terminal app**). ⬜ M0–M6 and M4b ✅ done: the first genuinely useful version. Pick up at [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** **M6b, M7 and M8** — built, reviewed and merged to `master` 2026-10-27; 👀 your combined on-screen check is next (see [[00 - Plan Tracker (Start Here)]]).
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-10-27 — M6b, M7 and M8 built, reviewed and merged (on-screen check pending)
+- **Did:** On request, plan changes first: the default session name is 🖕; **M7 and M8 built before the M6b check**,
+  with all three checks done together; **split panes moved into scope** ([[12 - Scope]], [[40 - Roadmap]], AGENTS.md);
+  **JetBrains Mono bundled as the default font** (M6b Task 4b) after the ligature check showed none of the installed
+  fonts have ligatures. Wrote [[47 - Milestone 7 - Session Ergonomics]] / [[M7 Plan - Session Ergonomics]] and
+  [[48 - Milestone 8 - Split Panes]] / [[M8 Plan - Split Panes]] (your choices: 3 built-in presets + your own;
+  restore = layout + re-run presets, as a setting; nested splits). Every task was built by one agent and reviewed
+  by another; each milestone had a whole-branch review. Fixes from review: restore uses today's presets (M7),
+  focus after closing goes to the pane that takes the space (M8). Then, on request, merged all three to `master`
+  before the on-screen check. 150 tests, 0 warnings.
+- **Learned:** A process-registered font shows up in GPUI's font list, so bundling a text font needs no extra API.
+  GPUI's capture-phase mouse listener lets a pane switch focus without stealing the terminal's own click; a div with
+  no listeners gets no hitbox, so an overlay can dim a pane without blocking it.
+- **Blocked:** Nothing. Your on-screen checks for M6b, M7 and M8.
+- **Next task:** Combined 👀 check (M6b Task 5, M7 Task 7, M8 Task 6); fix what fails; then a tester DMG with the font licences.
 
 ### 2026-10-27 — M6b plan written and approved
 - **Did:** D9 decided (theme list, pick only). You skipped the design questions ("go"); researched GPUI menus, second

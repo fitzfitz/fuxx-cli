@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: in-progress
+status: built-awaiting-check
 ---
 
 # 47 - Milestone 7 - Session Ergonomics
 
-**Status:: 🟨 In progress (plan written 2026-10-27).**  ·  **Phase 2: living in fuxx all day.**
+**Status:: 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do.**  ·  **Phase 2: living in fuxx all day.**
 **Plan:** [[M7 Plan - Session Ergonomics]] (step-by-step, with status per task)
 
 ## Goal

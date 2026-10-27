@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M8
-status: in-progress
+status: built-awaiting-check
 updated: 2026-10-27
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[48 - Milestone 8 - Split Panes]] (the spec) |
-| **Status** | 🟨 In progress |
-| **Tasks done** | 0 / 7 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 👀 Built, reviewed and merged to `master` 2026-10-27; your on-screen check is still to do. |
+| **Tasks done** | 6 / 7 |
+| **▶ Pick up here** | Task 6 — your on-screen check (combined with M6b and M7) |
 | **Decisions used** | **Yours (2026-10-27):** split panes in scope, built right after M7; nested splits (⌘D right, ⌘⇧D down), draggable dividers, each pane its own session. The rest are the AI's calls listed in the spec. |
 | **Needs your eyes** | 👀 Task 6, done together with the M6b and M7 checks |
 
@@ -71,7 +71,7 @@ updated: 2026-10-27
 
 ---
 
-### Task 1: The split tree, without GPUI — ⬜
+### Task 1: The split tree, without GPUI — ✅
 
 **Files:** Create `src/split_tree.rs` · Modify `src/main.rs` (`mod split_tree;`).
 
@@ -207,7 +207,7 @@ fn sanitize_drops_bad_trees_and_fixes_ratios() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (M7 count + 8), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m8): pure split tree (split, close, neighbours, ratios, sanitize)"`
 
-### Task 2: Layouts in the saved state — ⬜
+### Task 2: Layouts in the saved state — ✅
 
 **Files:** Modify `src/restore.rs`.
 
@@ -230,7 +230,7 @@ fn layouts_round_trip_and_default_to_none() {
 - [ ] **Step 4: Run** `cargo test`. Expected: all pass (+1), 0 warnings.
 - [ ] **Step 5: Commit:** `git add src && git commit -m "feat(m8): saved sessions carry their split layouts"`
 
-### Task 3: Split, close and show panes — ⬜
+### Task 3: Split, close and show panes — ✅
 
 **Files:** Create `src/panes.rs` · Modify `src/workspace.rs`, `src/main.rs`.
 
@@ -251,7 +251,7 @@ fn layouts_round_trip_and_default_to_none() {
 - [ ] **Step 2: Run** `cargo build`, `cargo test`. Expected: 0 warnings, all pass.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m8): split right/down, closing a pane, dimmed unfocused panes"`
 
-### Task 4: Moving between panes, dragging dividers, equalizing — ⬜
+### Task 4: Moving between panes, dragging dividers, equalizing — ✅
 
 **Files:** Modify `src/panes.rs`, `src/workspace.rs`, `src/main.rs`.
 
@@ -270,7 +270,7 @@ fn layouts_round_trip_and_default_to_none() {
 - [ ] **Step 2: Run** `cargo build`, `cargo test`. Expected: 0 warnings, all pass.
 - [ ] **Step 3: Commit:** `git add src && git commit -m "feat(m8): focus panes by direction or order, drag dividers, equalize"`
 
-### Task 5: Save and restore the layouts — ⬜
+### Task 5: Save and restore the layouts — ✅
 
 **Files:** Modify `src/workspace.rs`.
 
@@ -298,7 +298,7 @@ Done together with the M6b and M7 checks (your choice, 2026-10-27). Run `cargo r
 - [ ] **Restore:** quit with ⌘Q and reopen → the same panes, splits and divider positions.
 - [ ] **Unchanged:** M7 (groups, rename, reorder, presets, restore) and earlier.
 
-### Task 7: Update the docs — ⬜
+### Task 7: Update the docs — ✅
 
 - [ ] Milestone note 48 ✅ with the checklist ticked; this plan's tasks ✅; roadmap M8 ✅; tracker.
 - [ ] `STRUCTURE.md`: `split_tree.rs`, `panes.rs`.
@@ -310,6 +310,17 @@ Done together with the M6b and M7 checks (your choice, 2026-10-27). Run `cargo r
 _(filled in as tasks complete)_
 
 ## Known limitations
+
+**Calls made during the build (2026-10-27):**
+- After you close the pane you're in, the pane that takes its space gets the focus (spec over plan: the plan said "previous pane").
+- A pane that exits in the background doesn't take the focus from the pane you're typing in.
+
+**Small issues left for later:**
+- Equalize doesn't clamp ratios, so 11+ panes in one row go below 10% and the next restore logs a misleading line.
+- One session failing to start on restore drops every split layout, not just its own; a malformed `layouts` field rejects the whole file.
+- The pointer can show the text I-beam during a drag at the 10%/90% stop; the line can sit about 1 px off the mouse.
+- A session closing in another layout cancels a divider drag.
+
 
 - Hidden layouts' terminals re-fit when they're shown again (M5 behaviour: only on-screen views measure).
 - No zoom, no moving panes between layouts (see the spec's "Not in M8").

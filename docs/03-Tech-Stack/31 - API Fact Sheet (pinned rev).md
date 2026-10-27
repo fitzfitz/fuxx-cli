@@ -167,6 +167,25 @@ vs `"f5"`), there was no modified Delete, and alt+named-key sent `"\x1bspace"`.
 | modified arrows/home/end/F1–4 | `\x1b[1;{m}X` | m = 1 + shift + 2·alt + 4·ctrl |
 | F5–F12, ins/del/pgup/pgdn | `\x1b[N~` / `\x1b[N;{m}~` | |
 
+## Menus, second window, lists, inputs, drag (M6b–M8)
+
+- **Menus:** `cx.set_menus(vec![Menu { .. }])` with `MenuItem::action`, `MenuItem::separator()`, `MenuItem::submenu(Menu)`.
+  Shortcuts shown in menus come from context-free `cx.bind_keys` made **before** `set_menus`.
+- **Second window:** `cx.open_window(..)` → `WindowHandle`; reuse it with `activate_window()`; open it from an action
+  via `cx.defer` so a key press in the window itself can't open a second one. `cx.on_window_closed` to quit with the main window.
+- **Lists:** `uniform_list` for long scrolling lists (fonts, themes). `cx.observe_global::<G>` to redraw on a global change.
+- **Folder picker:** `cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt })`
+  → oneshot receiver of `Result<Option<Vec<PathBuf>>>`; await it in `cx.spawn_in(window, ..)`.
+- **Text input:** implement `EntityInputHandler` and register `ElementInputHandler` in paint with `window.handle_input`
+  (as `examples/input.rs`); ranges are UTF-16. That is what makes the emoji picker and ⌥ accents work.
+- **Drag and drop:** `.on_drag(value, |v, offset, window, cx| preview_entity)`, `.on_drop(listener)`, `.can_drop(..)`
+  (which also gates `.drag_over` styling).
+- **Panes:** nested `flex_row` / `flex_col` with `flex_basis(relative(r))`; a `canvas` prepaint captures bounds for drags;
+  `capture_any_mouse_down` sees a click without stopping the child's own handler; a div with no listeners has no
+  hitbox, so a dimming overlay doesn't block the mouse; `block_mouse_except_scroll` for the divider grab strip.
+- **Fonts:** a font file registered with `CTFontManagerRegisterFontsForURL` (process scope) appears in
+  `text_system().all_font_names()` and works as a fallback.
+
 ## Related
 
 [[30 - Tech Stack]] · [[00 - Plan Tracker (Start Here)]] · [[52 - Known Risks and Gotchas]]
