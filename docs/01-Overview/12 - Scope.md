@@ -31,7 +31,7 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - **Split panes** (M8, moved into scope 2026-10-27 on request): nested splits, each pane its own session.
 - macOS first (Linux capable via the Rust stack).
 - A **tester build** after the MVP (M4b, added 2026-10-26): an unsigned `.app` in a DMG. Signing,
-  notarization and Homebrew stay later (M11, M12).
+  notarization and Homebrew stay later (M12, M13).
 
 ## Out of scope (for now — resist scope creep)
 

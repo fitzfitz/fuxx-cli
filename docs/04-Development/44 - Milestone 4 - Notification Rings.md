@@ -19,7 +19,7 @@ the product's payoff.
 - [x] Render a per-session ring/badge in the sidebar (working / done / waiting), updating live.
 - [x] Fire a desktop notification when a **non-active** session becomes done / waiting (focus-aware —
       don't nag about the session you're looking at).
-- [x] ~~Clicking a notification switches to that session.~~ **Moved to M11 (D5, decided 2026-10-26).**
+- [x] ~~Clicking a notification switches to that session.~~ **Moved to M12 (D5, decided 2026-10-26).**
       Not possible with `osascript` (clicking its banner opens Script Editor); a real `.app` can receive
       the click, as Ghostty and iTerm2 do. See [[00 - Plan Tracker (Start Here)]].
 - [x] Notifications via `osascript` (macOS; v1 finding — see memory `macos-notify-rust-broken`).
@@ -27,7 +27,7 @@ the product's payoff.
 ## Success check
 
 Run agents in background sessions; when one finishes or needs input, its ring updates **and** a
-desktop notification fires. The active session doesn't nag. (Clicking it to jump to the session: M11, per D5.)
+desktop notification fires. The active session doesn't nag. (Clicking it to jump to the session: M12, per D5.)
 
 ## Related
 

@@ -140,8 +140,9 @@ No file names yet: those milestones get detailed plans when we reach them (see
 | M8 · Split panes | several sessions visible at once | [Screen 3](mockups/3-full-vision.html) |
 | M9 · Socket/scripting API | a socket per session for scripts | [Screen 3](mockups/3-full-vision.html) |
 | M10 · cmux extras | in-app browser, SSH workspaces, remote/tmux daemon | [Screen 3](mockups/3-full-vision.html) |
-| M11 · Real `.app` | bundle, signing, notarization; notifications as "fuxx"; click → jump | [Screen 3](mockups/3-full-vision.html) |
-| M12 · Homebrew cask | `brew install --cask` | [Screen 3](mockups/3-full-vision.html) |
+| M11 · UI/UX uplift | polish of look and feel; scope decided when we get there | — |
+| M12 · Real `.app` | bundle, signing, notarization; notifications as "fuxx"; click → jump | [Screen 3](mockups/3-full-vision.html) |
+| M13 · Homebrew cask | `brew install --cask` | [Screen 3](mockups/3-full-vision.html) |
 
 ## `docs/` (the vault)
 

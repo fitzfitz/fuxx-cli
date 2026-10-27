@@ -22,6 +22,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-10-27 — Roadmap renumbered: M11 is the UI/UX uplift
+- **Did:** On request, a new **M11 — UI/UX uplift** before shipping; the signed `.app` (+ notification click) moved
+  M11 → **M12**, Homebrew M12 → **M13**. M9 (scripting API) and M10 (cmux extras) unchanged. Every current note,
+  plan, STRUCTURE.md and the bundle script now use the new numbers; older log entries keep the old ones.
+- **Learned:** Nothing new.
+- **Blocked:** Nothing.
+- **Next task:** Your M6b/M7/M8 on-screen check; then M9.
+
 ### 2026-10-27 — Tester build 0.2.0
 - **Did:** Bumped to **0.2.0** and built `target/dist/fuxx-0.2.0.dmg` (universal: arm64 + x86_64, ad-hoc signed, 13 MB)
   with the M4b script. The script now copies the bundled fonts' and themes' licence texts into

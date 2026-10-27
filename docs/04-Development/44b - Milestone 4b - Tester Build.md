@@ -12,7 +12,7 @@ status: done
 
 Wrap the M4 app in an **unsigned `.app`** and ship it in a **DMG**, so a tester can drag fuxx to
 Applications and run it, on an **Apple Silicon or Intel** Mac (D7). Each update is a new DMG with a
-new version number. Signing, notarization and Homebrew stay later ([[40 - Roadmap]]: M11, M12).
+new version number. Signing, notarization and Homebrew stay later ([[40 - Roadmap]]: M12, M13).
 
 ## Decisions (2026-10-26)
 
