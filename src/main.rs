@@ -45,6 +45,8 @@ mod status;
 mod terminal;
 mod terminal_view;
 mod theme;
+#[cfg(feature = "ui-shots")]
+mod ui_shots;
 mod vt_snapshot;
 mod workspace;
 mod workspace_api;
@@ -330,6 +332,11 @@ fn start_scripting(cx: &mut App) -> Option<(PathBuf, UnboundedReceiver<api_serve
 fn main() {
     // `fuxx <command>` talks to the running app and exits; only no command opens the window.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Dev-only (`ui-shots` feature): render the UI scenes off-screen to PNGs, then exit.
+    #[cfg(feature = "ui-shots")]
+    if args.first().map(String::as_str) == Some("__ui-shots") {
+        ui_shots::run(args.get(1).map(String::as_str));
+    }
     let caller = std::env::var("FUXX_SESSION")
         .ok()
         .and_then(|s| s.strip_prefix('s')?.parse().ok());
