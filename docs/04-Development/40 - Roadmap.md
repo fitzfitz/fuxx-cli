@@ -52,7 +52,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
   - [[50 - Milestone 10a - Persistent Sessions]] — ✅ — a background `fuxx daemon` owns the sessions; the window
     reattaches. **Opt-in** (your choice): by default quitting still ends sessions. Notifications keep coming while
     the window is closed (your choice). Scripting with the window closed comes later (your choice).
-  - **M10b — SSH workspaces** (▶ next): a session runs local `ssh` (host picker from `~/.ssh/config`, connection reuse,
+  - [[51 - Milestone 10b - SSH Workspaces]] (▶ next, planned 2026-11-05: [[M10b Plan - SSH Workspaces]]): a session runs local `ssh` (host picker from `~/.ssh/config`, connection reuse,
     reconnect). A remote fuxx daemon is deferred.
   - **M10c — Browser for agents to automate** (your choice: agents automating it, like cmux). Large and uncertain
     (a native web view over GPUI has real pitfalls); designed separately when we get there.

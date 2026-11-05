@@ -22,6 +22,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-05 — Milestone 10b planned: SSH workspaces
+- **Did:** You said "m10b go" and to skip the questions, so the design is the feasibility study's Option A, AI's
+  call throughout. Wrote [[51 - Milestone 10b - SSH Workspaces]] and [[M10b Plan - SSH Workspaces]] (9 tasks): a
+  host picker (⇧⌘S) fed by `~/.ssh/config` and recent hosts, panes that run your own `ssh`, one shared connection
+  per host, sidebar groups by host, a "press Enter to reconnect" line when the link drops (automatic with the tmux
+  option), restore and background-service support, and `fuxx new --ssh`.
+- **Learned:** Today every session is a login shell with the agent typed into it, and a session that exits just
+  disappears with no exit code. SSH needs both changed: ssh runs as the program itself, and its exit code (255 =
+  connection failed) decides whether the pane stays. Also, macOS caps socket paths at 104 bytes, so the shared
+  ssh connection lives under `/tmp/fuxx-<uid>`, not Application Support. Your `~/.ssh/config` currently lists only
+  git hosts, which the picker hides, so you'd type a host the first time.
+
 ### 2026-11-05 — Milestone 10a complete: persistent sessions
 - **Did:** Built [[M10a Plan - Persistent Sessions]] (12 tasks, each reviewed, plus a whole-branch review). With
   `persistent-sessions = on` (or Preferences → Sessions), a small background service (`fuxx daemon`) owns your
