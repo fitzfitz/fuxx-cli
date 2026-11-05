@@ -7,20 +7,38 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{App, AsyncApp, BackgroundExecutor};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{MainThreadMarker, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags, NSEventType,
-    NSWindow,
+    NSAppearanceCustomization, NSApplication, NSApplicationActivationPolicy, NSBitmapImageFileType,
+    NSEvent, NSEventModifierFlags, NSEventType, NSResponder, NSToolbarItem, NSWindow,
+    NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
-use objc2_foundation::{NSPoint, NSString};
+use objc2_foundation::{NSDictionary, NSPoint, NSString};
 use objc2_web_kit::WKWebsiteDataStore;
 use serde_json::{Value, json};
 
-use super::{Browser, CLOSED, EVAL_REFUSED_HINT, PageState, WINDOW_SIZE, png_size, within};
+use super::{
+    BarLook, Browser, CLOSED, EVAL_REFUSED_HINT, PageState, WINDOW_SIZE, png_size, within,
+};
 use crate::browser_js::{self, Snapshot};
+use crate::settings;
+use crate::theme::{self, Theme};
+use crate::workspace_browser::bar_look;
+
+/// The bar the probe's other browsers have (the bar's own checks make theirs from themes).
+const PROBE_LOOK: BarLook = BarLook {
+    dark: true,
+    accent: Rgb {
+        r: 0x89,
+        g: 0xb4,
+        b: 0xfa,
+    },
+    address_bar: true,
+};
 
 /// The probe gives up and exits with code 2 after this long, whatever is still pending.
 const PROBE_DEADLINE: Duration = Duration::from_secs(15);
@@ -99,12 +117,12 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     let home = format!("{base}/");
     let two = format!("{base}/two");
     // Keep-data off: the probe's pages leave nothing in the real, saved data store.
-    let b = Browser::offscreen(mtm, false);
+    let b = Browser::offscreen(mtm, false, &PROBE_LOOK);
 
     // The data stores. Off: every window shares the run's one in-memory store. On: the default
     // store, which keeps data on disk. Only looked at: the probe never deletes from it.
-    let other = Browser::offscreen(mtm, false);
-    let kept = Browser::offscreen(mtm, true);
+    let other = Browser::offscreen(mtm, false, &PROBE_LOOK);
+    let kept = Browser::offscreen(mtm, true, &PROBE_LOOK);
     let (off_store, other_store, kept_store) = (store_of(&b), store_of(&other), store_of(&kept));
     // SAFETY: main thread (the marker); plain WebKit class method and property reads.
     let (default_store, off_persistent, on_persistent) = unsafe {
@@ -138,6 +156,9 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     )?;
     other.close();
     kept.close();
+
+    // The top bar.
+    let bar = probe_bar(mtm, &ex, &base).await?;
 
     // A load that fails: nothing listens on that port.
     let dead = format!("http://127.0.0.1:{}/", unused_port()?);
@@ -423,7 +444,10 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     let undo = b.window.respondsToSelector(sel!(undo:)) && b.window.respondsToSelector(sel!(redo:));
     check(undo, "an undo responder", &undo)?;
     // The window's own ⌘W closes it; other shortcuts aren't the window's.
-    let keyed = Browser::offscreen(mtm, false);
+    let keyed = Browser::offscreen(mtm, false, &PROBE_LOOK);
+    // With the keyboard in the page, WebKit takes every ⌘ key for the page first (and sends
+    // back what the page leaves); the window alone is asked here.
+    keyed.window.makeFirstResponder(None);
     let quit = keyed
         .window
         .performKeyEquivalent(&*command_key(&keyed.window, "q")?);
@@ -482,6 +506,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
 
     Ok(json!({
         "data_store": stores,
+        "bar": bar,
         "failed_load": failed.error,
         "failed_load_over_a_page": { "url": failed_over.url, "error": failed_over.error },
         "error_after_a_link_click": followed_link.error,
@@ -535,6 +560,306 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         "ms": started.elapsed().as_millis() as u64,
     })
     .to_string())
+}
+
+/// The top bar of a fresh browser: its items, the address field (Enter, a refused address,
+/// Escape, ⌘L), the buttons' states over two navigations and back, the loading line, the
+/// light and dark looks, and the address field turned off and on again. Saves a picture of the
+/// window in each look next to the screenshot.
+async fn probe_bar(
+    mtm: MainThreadMarker,
+    ex: &BackgroundExecutor,
+    base: &str,
+) -> Result<Value, String> {
+    let (home, x) = (format!("{base}/"), format!("{base}/x"));
+    let dark = bar_look(&theme_named("Catppuccin Mocha"), true);
+    let light = bar_look(&theme_named("Catppuccin Latte"), true);
+    let b = Browser::offscreen(mtm, false, &dark);
+    b.set_title("probe \u{2014} page two");
+    let window = &b.window;
+
+    let items = bar_items(&b);
+    check(
+        items == ["fuxx.back", "fuxx.forward", "fuxx.reload", "fuxx.address"],
+        "the bar's items",
+        &items,
+    )?;
+    let compact = window.toolbarStyle() == NSWindowToolbarStyle::UnifiedCompact;
+    let title_hidden = window.titleVisibility() == NSWindowTitleVisibility::Hidden;
+    check(
+        compact && title_hidden,
+        "a compact bar, no title",
+        &(compact, title_hidden),
+    )?;
+    let content = window.contentView().map(|v| v.frame().size);
+    check(content == Some(WINDOW_SIZE), "the content size", &content)?;
+    check(
+        page_has_keyboard(&b),
+        "the page has the keyboard at first",
+        &(),
+    )?;
+    let fresh = buttons_now(&b);
+    check(
+        fresh == (false, false, "Reload".into()),
+        "fresh buttons",
+        &fresh,
+    )?;
+
+    // Enter in the field opens what was typed, as agents' addresses are checked.
+    let host = base.trim_start_matches("http://");
+    type_in_field(&b, &format!("{host}/"), sel!(insertNewline:))?;
+    let after_enter = (
+        b.state().loading,
+        buttons_now(&b).2,
+        !b.bar.line().isHidden(),
+    );
+    let entered = settle(&b, ex, |s| !s.loading && s.url == home).await?;
+    check(
+        page_has_keyboard(&b),
+        "Enter gives the page the keyboard",
+        &(),
+    )?;
+    b.refresh_bar();
+    let field_after = b.bar.field().stringValue().to_string();
+    check(
+        field_after == home,
+        "the field shows the page",
+        &field_after,
+    )?;
+    let line_idle = b.bar.line().isHidden();
+    check(line_idle, "no loading line once loaded", &())?;
+    type_in_field(&b, &format!("{host}/x"), sel!(insertNewline:))?;
+    settle(&b, ex, |s| !s.loading && s.url == x).await?;
+    b.refresh_bar();
+    let two_pages = buttons_now(&b);
+    check(
+        two_pages == (true, false, "Reload".into()),
+        "after two pages",
+        &two_pages,
+    )?;
+    press_item(&b, "fuxx.back")?;
+    settle(&b, ex, |s| !s.loading && s.url == home).await?;
+    b.refresh_bar();
+    let went_back = buttons_now(&b);
+    check(
+        went_back == (false, true, "Reload".into()),
+        "after back",
+        &went_back,
+    )?;
+    press_item(&b, "fuxx.forward")?;
+    settle(&b, ex, |s| !s.loading && s.url == x).await?;
+
+    // A refused address loads nothing: it stays in the field, red, with why as its tooltip.
+    type_in_field(&b, "javascript:alert(1)", sel!(insertNewline:))?;
+    let field = b.bar.field();
+    let refused = json!({
+        "url": b.state().url,
+        "text": field.stringValue().to_string(),
+        "tooltip": field.toolTip().map(|t| t.to_string()),
+        "still_typing": field.currentEditor().is_some(),
+    });
+    check(
+        refused["url"] == json!(x)
+            && refused["still_typing"] == json!(true)
+            && refused["tooltip"]
+                .as_str()
+                .is_some_and(|t| t.contains("http")),
+        "a javascript: address is refused",
+        &refused,
+    )?;
+    // Escape puts the page's address back and gives the page the keyboard.
+    type_in_field(&b, "half-typed", sel!(cancelOperation:))?;
+    let escaped = (
+        field.stringValue().to_string(),
+        field.toolTip().is_none(),
+        page_has_keyboard(&b),
+    );
+    check(escaped == (x.clone(), true, true), "Escape", &escaped)?;
+
+    // ⌘L: the field takes the keyboard with all of it selected.
+    let cmd_l = window.performKeyEquivalent(&*command_key(window, "l")?);
+    let selected = field.currentEditor().map(|e| e.selectedRange());
+    check(
+        cmd_l && selected.is_some_and(|r| r.location == 0 && r.length == x.chars().count()),
+        "⌘L focuses the field",
+        &(cmd_l, selected),
+    )?;
+    // The font-size keys are still swallowed with the field focused.
+    let font_in_field = window.performKeyEquivalent(&*command_key(window, "=")?);
+    check(font_in_field, "⌘= in the field is swallowed", &())?;
+    type_in_field(&b, "", sel!(cancelOperation:))?;
+
+    // Light and dark follow the fuxx theme.
+    let looks = [&dark, &light].map(|look| {
+        b.set_look(look);
+        window
+            .appearance()
+            .map(|a| a.name().to_string())
+            .unwrap_or_default()
+    });
+    check(
+        looks == ["NSAppearanceNameDarkAqua", "NSAppearanceNameAqua"],
+        "light and dark",
+        &looks,
+    )?;
+    let dir = std::env::temp_dir().join("fuxx-browser-probe");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut pictures = vec![];
+    for (name, look) in [("bar-dark.png", &dark), ("bar-light.png", &light)] {
+        b.set_look(look);
+        let path = dir.join(name);
+        std::fs::write(&path, window_png(window)?)
+            .map_err(|e| format!("couldn't save {}: {e}", path.display()))?;
+        pictures.push(path.display().to_string());
+    }
+
+    // The address field off: the buttons stay, the title shows, ⌘L isn't the window's.
+    let off = BarLook {
+        address_bar: false,
+        ..dark
+    };
+    b.set_look(&off);
+    let items_off = bar_items(&b);
+    let title_shown = window.titleVisibility() == NSWindowTitleVisibility::Visible;
+    // ⌘L goes on to the page (WebKit takes ⌘ keys for the page first), not to the field.
+    window.performKeyEquivalent(&*command_key(window, "l")?);
+    let cmd_l_off = field.currentEditor().is_some();
+    check(
+        items_off == ["fuxx.back", "fuxx.forward", "fuxx.reload"]
+            && title_shown
+            && !cmd_l_off
+            && page_has_keyboard(&b),
+        "the address field off",
+        &(&items_off, title_shown, cmd_l_off),
+    )?;
+    let path = dir.join("bar-off.png");
+    std::fs::write(&path, window_png(window)?)
+        .map_err(|e| format!("couldn't save {}: {e}", path.display()))?;
+    pictures.push(path.display().to_string());
+    b.set_look(&dark);
+    let items_on = bar_items(&b);
+    check(items_on == items, "the address field back", &items_on)?;
+    // ⌘W still closes the window with the bar there.
+    let closed = window.performKeyEquivalent(&*command_key(window, "w")?);
+    check(closed && b.is_closed(), "⌘W with the bar", &closed)?;
+    b.close();
+
+    Ok(json!({
+        "items": items,
+        "compact": compact,
+        "title_hidden": title_hidden,
+        "fresh_buttons": fresh,
+        "enter": { "url": entered.url, "right_after": after_enter, "field": field_after },
+        "after_two_pages": two_pages,
+        "after_back": went_back,
+        "refused": refused,
+        "escape": escaped,
+        "cmd_l": { "handled": cmd_l, "selected": selected.map(|r| [r.location, r.length]) },
+        "font_key_in_field": font_in_field,
+        "appearance": looks,
+        "address_bar_off": { "items": items_off, "title_shown": title_shown, "cmd_l_focuses": cmd_l_off },
+        "address_bar_on_again": items_on,
+        "cmd_w": closed,
+        "pictures": pictures,
+    }))
+}
+
+/// A built-in theme by name, as `theme = <name>` gives it.
+fn theme_named(name: &str) -> Theme {
+    theme::resolve(&settings::parse(&format!("theme = {name}")), true, &|n| {
+        theme::builtin_theme(n).map(str::to_string)
+    })
+}
+
+/// The identifiers of the items in `b`'s bar, in order.
+fn bar_items(b: &Browser) -> Vec<String> {
+    b.window
+        .toolbar()
+        .map(|t| {
+            t.items()
+                .iter()
+                .map(|i| i.itemIdentifier().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The bar's item `identifier`.
+fn bar_item(b: &Browser, identifier: &str) -> Result<Retained<NSToolbarItem>, String> {
+    b.window
+        .toolbar()
+        .and_then(|t| {
+            t.items()
+                .iter()
+                .find(|i| i.itemIdentifier().to_string() == identifier)
+        })
+        .ok_or_else(|| format!("no {identifier} in the bar"))
+}
+
+/// Back enabled, forward enabled, the reload button's label.
+fn buttons_now(b: &Browser) -> (bool, bool, String) {
+    let enabled = |id| bar_item(b, id).is_ok_and(|i| i.isEnabled());
+    let reload = bar_item(b, "fuxx.reload").map_or_else(|e| e, |i| i.label().to_string());
+    (enabled("fuxx.back"), enabled("fuxx.forward"), reload)
+}
+
+/// Click the bar's button `identifier`, as AppKit does: its action to its target.
+fn press_item(b: &Browser, identifier: &str) -> Result<(), String> {
+    let item = bar_item(b, identifier)?;
+    let app = NSApplication::sharedApplication(MainThreadMarker::from(&*b.window));
+    // SAFETY: main thread; the item's own action and target, with the item as the sender.
+    let sent = unsafe {
+        app.sendAction_to_from(
+            item.action().ok_or("no action")?,
+            item.target().as_deref(),
+            Some(&item),
+        )
+    };
+    check(sent, "the button's action was sent", &identifier)
+}
+
+/// Type `text` into the address field (it takes the keyboard first), then the key whose
+/// command is `command` (`insertNewline:` for Enter, `cancelOperation:` for Escape).
+fn type_in_field(b: &Browser, text: &str, command: Sel) -> Result<(), String> {
+    let field = b.bar.field();
+    if field.currentEditor().is_none() {
+        b.window.makeFirstResponder(Some(field));
+    }
+    let editor = field
+        .currentEditor()
+        .ok_or("the field didn't take the keyboard")?;
+    editor.setString(&NSString::from_str(text));
+    // SAFETY: main thread; the field editor runs the command as a key would.
+    let _: () = unsafe { msg_send![&*editor, doCommandBySelector: command] };
+    Ok(())
+}
+
+/// Whether the page (not the address field) has the keyboard.
+fn page_has_keyboard(b: &Browser) -> bool {
+    let page: &NSResponder = &b.view;
+    b.window
+        .firstResponder()
+        .is_some_and(|r| std::ptr::eq(&*r, page))
+}
+
+/// A PNG of the whole window, title bar and all, as it would draw on screen.
+fn window_png(window: &NSWindow) -> Result<Vec<u8>, String> {
+    // SAFETY: main thread; the content view's parent is the window's frame view, which draws
+    // the title bar and toolbar.
+    let frame_view = unsafe { window.contentView().and_then(|v| v.superview()) }
+        .ok_or("the window has no frame view")?;
+    let bounds = frame_view.bounds();
+    frame_view.layoutSubtreeIfNeeded();
+    let bitmap = frame_view
+        .bitmapImageRepForCachingDisplayInRect(bounds)
+        .ok_or("no bitmap for the window")?;
+    frame_view.cacheDisplayInRect_toBitmapImageRep(bounds, &bitmap);
+    // SAFETY: an empty properties dictionary is valid for every file type.
+    let png = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+    }
+    .ok_or("the window couldn't be encoded as PNG")?;
+    Ok(png.to_vec())
 }
 
 /// `Err` naming `what` and showing `got` unless `ok`.

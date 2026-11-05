@@ -135,6 +135,11 @@ fn readable(mut fg: Rgb, bgs: &[Rgb], min: f32) -> Rgb {
 }
 
 impl Theme {
+    /// Whether the background is dark (the chrome, and the browser windows, go dark with it).
+    pub fn is_dark(&self) -> bool {
+        luminance(self.background) < 0.5
+    }
+
     /// The chrome colours. Surfaces are mixed from the theme; everything drawn on them is then
     /// pushed (hue kept) to the contrast floors in `ui_tokens`, so light themes read as well as
     /// dark ones.
@@ -142,7 +147,7 @@ impl Theme {
         let (bg, fg) = (self.background, self.foreground);
         let black = hex(0x000000);
         let white = hex(0xffffff);
-        let dark = luminance(bg) < 0.5;
+        let dark = self.is_dark();
         // A dark sidebar sinks below the terminal. A light one dips slightly toward the theme's
         // own ink (black would turn it grey).
         let sidebar = if dark {
@@ -671,6 +676,15 @@ mod tests {
                 assert!(l(c) < 0.5, "{name}: {token} is dark ink");
             }
         }
+    }
+
+    #[test]
+    fn dark_and_light_themes_are_told_apart() {
+        let themes = every_theme();
+        let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1;
+        assert!(named("Catppuccin Mocha").is_dark());
+        assert!(!named("Catppuccin Latte").is_dark());
+        assert!(Theme::default().is_dark());
     }
 
     #[test]
