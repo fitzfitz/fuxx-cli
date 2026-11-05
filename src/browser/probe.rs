@@ -14,10 +14,10 @@ use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{MainThreadMarker, msg_send, sel};
 use objc2_app_kit::{
     NSAppearanceCustomization, NSApplication, NSApplicationActivationPolicy, NSBitmapImageFileType,
-    NSEvent, NSEventModifierFlags, NSEventType, NSResponder, NSToolbarItem, NSWindow,
+    NSEvent, NSEventModifierFlags, NSEventType, NSResponder, NSToolbarItem, NSView, NSWindow,
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
-use objc2_foundation::{NSDictionary, NSPoint, NSString};
+use objc2_foundation::{NSDictionary, NSPoint, NSString, NSUserDefaults};
 use objc2_web_kit::WKWebsiteDataStore;
 use serde_json::{Value, json};
 
@@ -598,6 +598,17 @@ async fn probe_bar(
         "the page has the keyboard at first",
         &(),
     )?;
+    // A window never shown can't be seen: its loading doesn't speed up the browser check.
+    let seen = b.can_be_seen();
+    check(!seen, "a hidden window can't be seen", &seen)?;
+    // A copy the toolbar asks for but won't show (as for a customisation palette) is left
+    // alone: the bar's buttons and its field stay the ones in the bar.
+    palette_copies(&b)?;
+    let field_in_bar = bar_item(&b, "fuxx.address")?.view().is_some_and(|v| {
+        let field: &NSView = b.bar.field();
+        std::ptr::eq(&*v, field)
+    });
+    check(field_in_bar, "the field stays in the bar", &())?;
     let fresh = buttons_now(&b);
     check(
         fresh == (false, false, "Reload".into()),
@@ -689,6 +700,23 @@ async fn probe_bar(
     check(font_in_field, "⌘= in the field is swallowed", &())?;
     type_in_field(&b, "", sel!(cancelOperation:))?;
 
+    // The page's light or dark follows macOS, not the fuxx theme (only the bar does): pages
+    // and agents see what they saw before the bar.
+    let system_dark = system_is_dark(mtm);
+    let mut page_dark = vec![];
+    for look in [&light, &dark] {
+        b.set_look(look);
+        b.refresh_bar();
+        let dark_page = settle_value(
+            &b,
+            ex,
+            "matchMedia('(prefers-color-scheme: dark)').matches",
+            |v| *v == json!(system_dark),
+        )
+        .await?;
+        page_dark.push(dark_page);
+    }
+
     // Light and dark follow the fuxx theme.
     let looks = [&dark, &light].map(|look| {
         b.set_look(look);
@@ -757,11 +785,40 @@ async fn probe_bar(
         "cmd_l": { "handled": cmd_l, "selected": selected.map(|r| [r.location, r.length]) },
         "font_key_in_field": font_in_field,
         "appearance": looks,
+        "page_follows_macos": { "system_dark": system_dark, "page_dark_with_light_then_dark_bar": page_dark },
+        "field_in_bar_after_palette_copies": field_in_bar,
+        "hidden_window_can_be_seen": seen,
         "address_bar_off": { "items": items_off, "title_shown": title_shown, "cmd_l_focuses": cmd_l_off },
         "address_bar_on_again": items_on,
         "cmd_w": closed,
         "pictures": pictures,
     }))
+}
+
+/// Ask `b`'s toolbar delegate for copies of a button and the field that won't be put in the
+/// bar (`willBeInsertedIntoToolbar:` NO).
+fn palette_copies(b: &Browser) -> Result<(), String> {
+    let toolbar = b.window.toolbar().ok_or("no toolbar")?;
+    let delegate = toolbar.delegate().ok_or("no toolbar delegate")?;
+    for id in ["fuxx.back", "fuxx.address"] {
+        // SAFETY: main thread; the toolbar delegate's own method, with its argument types.
+        let _: Option<Retained<NSToolbarItem>> = unsafe {
+            msg_send![
+                &*delegate,
+                toolbar: &*toolbar,
+                itemForItemIdentifier: &*NSString::from_str(id),
+                willBeInsertedIntoToolbar: false
+            ]
+        };
+    }
+    Ok(())
+}
+
+/// Whether macOS is in dark mode, from its own setting (not from fuxx's code).
+fn system_is_dark(_mtm: MainThreadMarker) -> bool {
+    let style = NSUserDefaults::standardUserDefaults()
+        .stringForKey(&NSString::from_str("AppleInterfaceStyle"));
+    style.is_some_and(|s| s.to_string() == "Dark")
 }
 
 /// A built-in theme by name, as `theme = <name>` gives it.
