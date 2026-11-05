@@ -47,6 +47,7 @@ mod terminal_view;
 mod theme;
 #[cfg(feature = "ui-shots")]
 mod ui_shots;
+mod ui_tokens;
 mod vt_snapshot;
 mod workspace;
 mod workspace_api;

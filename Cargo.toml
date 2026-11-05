@@ -30,6 +30,6 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 block2 = "0.6.2"
 
 [features]
-# Off-screen screenshots of UI scenes (M11): `cargo test --features ui-shots -- --ignored ui_shots`.
+# Off-screen screenshots of UI scenes (M11): `cargo run --features ui-shots -- __ui-shots [filter]`.
 # Pulls GPUI's test support, so it is never part of a normal build.
 ui-shots = ["gpui/test-support", "gpui_platform/test-support"]
