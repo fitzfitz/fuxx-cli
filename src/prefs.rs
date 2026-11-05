@@ -2,6 +2,7 @@
 //!
 //! Pure functions, no GPUI types, so they are unit-tested. The window feeds its state in.
 
+use crate::fonts;
 use crate::theme::BUILTIN_THEMES;
 
 /// First list entry: leave the setting out of the file and use the built-in default.
@@ -53,6 +54,26 @@ pub fn is_monospace(i_advance: f32, m_advance: f32) -> bool {
 /// Change the font size by `delta` points from the rounded size, within 4 to 200.
 pub fn step_size(size: f32, delta: i32) -> f32 {
     (size.round() + delta as f32).clamp(4.0, 200.0)
+}
+
+/// The View menu's font size items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontStep {
+    /// One point bigger (`step_size`).
+    Bigger,
+    /// One point smaller.
+    Smaller,
+    /// Back to the default size.
+    ActualSize,
+}
+
+/// The font size after `step` from `size`.
+pub fn font_size_for(size: f32, step: FontStep) -> f32 {
+    match step {
+        FontStep::Bigger => step_size(size, 1),
+        FontStep::Smaller => step_size(size, -1),
+        FontStep::ActualSize => fonts::DEFAULT_SIZE,
+    }
 }
 
 /// Ligatures are on unless the last `calt` entry is 0.

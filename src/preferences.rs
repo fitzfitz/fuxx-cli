@@ -214,12 +214,11 @@ impl Render for PreferencesView {
             cx,
         );
 
-        let step_button = |id: &'static str, label: &'static str, delta: i32| {
+        let step_button = |id: &'static str, label: &'static str, step: prefs::FontStep| {
             button(id, ui)
                 .child(label)
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    let size = prefs::step_size(cx.global::<Appearance>().font_size, delta);
-                    apply(cx, "font-size", &[format_size(size)]);
+                    step_font_size(cx, step);
                 }))
         };
         let size_row = div()
@@ -227,7 +226,11 @@ impl Render for PreferencesView {
             .flex_row()
             .items_center()
             .gap_3()
-            .child(step_button("size-down", "\u{2212}", -1))
+            .child(step_button(
+                "size-down",
+                "\u{2212}",
+                prefs::FontStep::Smaller,
+            ))
             .child(
                 div()
                     .min_w(px(56.0))
@@ -235,7 +238,7 @@ impl Render for PreferencesView {
                     .justify_center()
                     .child(size_label),
             )
-            .child(step_button("size-up", "+", 1));
+            .child(step_button("size-up", "+", prefs::FontStep::Bigger));
 
         let ligature_option = |id: &'static str, label: &'static str, on: bool| {
             let chosen = on == ligatures;
@@ -424,25 +427,75 @@ fn apply(cx: &mut App, key: &str, values: &[String]) {
         eprintln!("[fuxx] preferences: $HOME is unset, so there is no settings file to change");
         return;
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => {
-            // Writing anyway would replace the user's file with only this one setting.
-            eprintln!(
-                "[fuxx] preferences: could not read {}: {err}",
-                path.display()
-            );
-            return;
-        }
-    };
-    let text = settings::set_key(&text, key, values);
-    if let Err(err) = settings::write_atomic(&path, &text) {
-        eprintln!(
-            "[fuxx] preferences: could not write {}: {err}",
-            path.display()
-        );
+    if let Err(err) = write_setting(&path, key, values) {
+        eprintln!("[fuxx] preferences: {err}");
         return;
     }
     appearance::reload(cx);
+}
+
+/// Rewrite only `key`'s lines in the settings file at `path` (created if missing).
+fn write_setting(path: &Path, key: &str, values: &[String]) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        // Writing anyway would replace the user's file with only this one setting.
+        Err(err) => return Err(format!("could not read {}: {err}", path.display())),
+    };
+    let text = settings::set_key(&text, key, values);
+    settings::write_atomic(path, &text)
+        .map_err(|err| format!("could not write {}: {err}", path.display()))
+}
+
+/// The View menu's Bigger, Smaller and Actual Size: write the new `font-size` as the
+/// Preferences window does, so it applies to every session and is kept.
+pub fn step_font_size(cx: &mut App, step: prefs::FontStep) {
+    let Some(path) = cx.global::<Appearance>().settings_path.clone() else {
+        eprintln!("[fuxx] preferences: $HOME is unset, so there is no settings file to change");
+        return;
+    };
+    let size = cx.global::<Appearance>().font_size;
+    if let Err(err) = write_font_step(&path, size, step) {
+        eprintln!("[fuxx] preferences: {err}");
+        return;
+    }
+    appearance::reload(cx);
+}
+
+/// Write the `font-size` that `step` from `size` gives to the settings file at `path`.
+fn write_font_step(path: &Path, size: f32, step: prefs::FontStep) -> Result<(), String> {
+    let size = prefs::font_size_for(size, step);
+    write_setting(path, "font-size", &[format_size(size)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_font_step;
+    use crate::prefs::FontStep;
+
+    #[test]
+    fn font_size_steps_write_the_setting() {
+        let dir = std::env::temp_dir().join(format!("fuxx-font-step-{}", std::process::id()));
+        let path = dir.join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "# mine\ntheme = Nord\nfont-size = 14\n").unwrap();
+        let read = || std::fs::read_to_string(&path).unwrap();
+
+        write_font_step(&path, 14.0, FontStep::Bigger).unwrap();
+        assert_eq!(read(), "# mine\ntheme = Nord\nfont-size = 15\n");
+        write_font_step(&path, 15.0, FontStep::Smaller).unwrap();
+        assert_eq!(read(), "# mine\ntheme = Nord\nfont-size = 14\n");
+        // Actual Size: the default size (13), written out.
+        write_font_step(&path, 14.0, FontStep::ActualSize).unwrap();
+        assert_eq!(read(), "# mine\ntheme = Nord\nfont-size = 13\n");
+        // A fractional size steps from its rounded value, and is written without ".0".
+        write_font_step(&path, 13.4, FontStep::Bigger).unwrap();
+        assert_eq!(read(), "# mine\ntheme = Nord\nfont-size = 14\n");
+
+        // No file yet: it is created with only that line.
+        let fresh = dir.join("fresh/config");
+        write_font_step(&fresh, 13.0, FontStep::Smaller).unwrap();
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "font-size = 12\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

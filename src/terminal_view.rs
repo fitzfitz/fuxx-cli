@@ -37,6 +37,7 @@ use crate::pty;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
 use crate::theme::Theme;
+use crate::ui_tokens::size as ui_size;
 
 // Bound in main.rs with the "Terminal" key context. GPUI runs key bindings before `on_key_down`,
 // so these win over the byte mapping.
@@ -72,6 +73,62 @@ struct GridLayout {
     dims: TermDims,
 }
 
+impl GridLayout {
+    /// The grid that fits `area` (see `inset`): as many whole cells as fit, with the pixels left
+    /// over shared evenly on either side.
+    fn fit(area: Bounds<Pixels>, cell_width: Pixels, line_height: Pixels) -> Self {
+        let dims = dims_for(area, cell_width, line_height);
+        let spare_x = (area.size.width - cell_width * dims.cols as f32).max(px(0.0));
+        let spare_y = (area.size.height - line_height * dims.rows as f32).max(px(0.0));
+        Self {
+            origin: area.origin + point(spare_x / 2.0, spare_y / 2.0),
+            cell_width,
+            line_height,
+            dims,
+        }
+    }
+
+    /// The grid point and cell side under a window position; `display_offset` is the live
+    /// scrollback offset. Always in range: clamped to `dims`.
+    fn grid_point(&self, pos: gpui::Point<Pixels>, display_offset: usize) -> (Point, Side) {
+        let rel = pos - self.origin;
+        mouse::grid_point(
+            f32::from(rel.x),
+            f32::from(rel.y),
+            f32::from(self.cell_width),
+            f32::from(self.line_height),
+            self.dims,
+            display_offset,
+        )
+    }
+}
+
+/// The space inside a terminal's padding (10 px sides, 8 px top and bottom; 8 and 6 in a split).
+/// The grid is fitted into it (`GridLayout::fit`); the padding is painted with the background.
+pub fn inset(bounds: Bounds<Pixels>, split: bool) -> Bounds<Pixels> {
+    let (x, y) = if split {
+        ui_size::SPLIT_TERMINAL_PADDING
+    } else {
+        ui_size::TERMINAL_PADDING
+    };
+    let (x, y) = (px(x), px(y));
+    Bounds::new(
+        bounds.origin + point(x, y),
+        size(
+            (bounds.size.width - x * 2.0).max(px(0.0)),
+            (bounds.size.height - y * 2.0).max(px(0.0)),
+        ),
+    )
+}
+
+/// How many whole cells fit in `area` (at least 2 columns and 1 row).
+fn dims_for(area: Bounds<Pixels>, cell_width: Pixels, line_height: Pixels) -> TermDims {
+    TermDims {
+        cols: ((area.size.width / cell_width).floor() as usize).max(2),
+        rows: ((area.size.height / line_height).floor() as usize).max(1),
+    }
+}
+
 pub struct TerminalView {
     core: TerminalCore,
     focus_handle: FocusHandle,
@@ -88,6 +145,9 @@ pub struct TerminalView {
     selecting: bool,
     /// A press was reported to the program, so drags and the release are reported too.
     mouse_reported: bool,
+    /// Whether this pane shares the screen with others (a split), which takes less padding. Set
+    /// by the workspace as it lays the panes out.
+    split: Cell<bool>,
     /// Held after an SSH disconnect (M10b): the program is gone, so input goes nowhere and Enter
     /// asks for a reconnect; the status no longer changes.
     disconnected: bool,
@@ -211,6 +271,18 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Whether this pane is one of several in a split (less padding). Read when the view renders,
+    /// which for a pane on screen is in the same frame as the workspace render that sets it.
+    pub fn set_split(&self, split: bool) {
+        self.split.set(split);
+    }
+
+    /// Write `text` into the screen as if the program had printed it (UI screenshots).
+    #[cfg(feature = "ui-shots")]
+    pub fn show_text(&self, text: &str) {
+        self.core.show_local(text);
+    }
+
     /// When the program first printed (`TerminalCore::first_output`).
     pub fn first_output(&self) -> Option<Instant> {
         self.core.first_output()
@@ -281,6 +353,7 @@ impl TerminalView {
             pressed_link: None,
             selecting: false,
             mouse_reported: false,
+            split: Cell::new(false),
             disconnected: false,
             _events: events,
             _ticker: ticker,
@@ -418,15 +491,7 @@ impl TerminalView {
     fn point_at(&self, pos: gpui::Point<Pixels>) -> Option<(Point, Side, usize, usize)> {
         let layout = self.layout.get()?;
         let display_offset = self.core.display_offset();
-        let rel = pos - layout.origin;
-        let (point, side) = mouse::grid_point(
-            f32::from(rel.x),
-            f32::from(rel.y),
-            f32::from(layout.cell_width),
-            f32::from(layout.line_height),
-            layout.dims,
-            display_offset,
-        );
+        let (point, side) = layout.grid_point(pos, display_offset);
         let row = (point.line.0 + display_offset as i32) as usize;
         Some((point, side, point.column.0, row))
     }
@@ -665,6 +730,7 @@ impl Render for TerminalView {
         let theme = self.core.theme();
         let layout = self.layout.clone();
         let hovered = self.hovered.clone();
+        let split = self.split.get();
         let view = cx.entity();
 
         div()
@@ -683,34 +749,39 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::scroll_page_down))
             .child(
                 canvas(
-                    // prepaint: measure cells, fit the terminal to the space we were given,
-                    // remember the layout for hit-testing.
+                    // prepaint: measure cells, fit the terminal inside the padding of the space
+                    // we were given, remember the layout for hit-testing. The hitbox is the
+                    // whole pane: a click in the padding lands on the nearest cell.
                     move |bounds, window, cx| {
                         let metrics = CellMetrics::measure(cx.global::<Appearance>(), window);
+                        let grid = GridLayout::fit(
+                            inset(bounds, split),
+                            metrics.cell_width,
+                            metrics.line_height,
+                        );
                         resize_core.resize(
-                            metrics.dims_for(bounds),
+                            grid.dims,
                             CellPx {
                                 width: f32::from(metrics.cell_width).round() as u16,
                                 height: f32::from(metrics.line_height).round() as u16,
                             },
                         );
-                        layout.set(Some(GridLayout {
-                            origin: bounds.origin,
-                            cell_width: metrics.cell_width,
-                            line_height: metrics.line_height,
+                        let grid = GridLayout {
                             dims: resize_core.dims(),
-                        }));
+                            ..grid
+                        };
+                        layout.set(Some(grid));
                         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                        (metrics, hitbox)
+                        (metrics, grid.origin, hitbox)
                     },
                     // paint: draw the current screen, set the pointer, follow the mouse.
-                    move |bounds, (metrics, hitbox), window, cx| {
+                    move |bounds, (metrics, origin, hitbox), window, cx| {
                         let mut snap = paint_core.snapshot();
                         if let Some(link) = &hovered {
                             let offset = paint_core.display_offset();
                             grid::underline_cells(&mut snap, link.start, link.end, offset);
                         }
-                        paint_grid(snap, &theme, &metrics, bounds, focused, window, cx);
+                        paint_grid(snap, &theme, &metrics, bounds, origin, focused, window, cx);
 
                         let style = if hovered.is_some() && window.modifiers().platform {
                             CursorStyle::PointingHand
@@ -774,13 +845,6 @@ impl CellMetrics {
             line_height,
         }
     }
-
-    fn dims_for(&self, bounds: Bounds<Pixels>) -> TermDims {
-        TermDims {
-            cols: ((bounds.size.width / self.cell_width).floor() as usize).max(2),
-            rows: ((bounds.size.height / self.line_height).floor() as usize).max(1),
-        }
-    }
 }
 
 pub fn hsla(c: Rgb) -> Hsla {
@@ -793,11 +857,15 @@ pub fn hsla(c: Rgb) -> Hsla {
     .into()
 }
 
+/// Paint `snap` with its first cell at `origin`, over `bounds` (the whole pane, padding
+/// included) filled with the theme background.
+#[allow(clippy::too_many_arguments)]
 fn paint_grid(
     mut snap: GridSnapshot,
     theme: &Theme,
     m: &CellMetrics,
     bounds: Bounds<Pixels>,
+    origin: gpui::Point<Pixels>,
     focused: bool,
     window: &mut Window,
     cx: &mut App,
@@ -820,8 +888,8 @@ fn paint_grid(
 
     let cell_origin = |row: usize, col: usize| {
         point(
-            bounds.origin.x + m.cell_width * col as f32,
-            bounds.origin.y + m.line_height * row as f32,
+            origin.x + m.cell_width * col as f32,
+            origin.y + m.line_height * row as f32,
         )
     };
 
@@ -896,5 +964,55 @@ fn paint_grid(
             )),
             _ => window.paint_quad(gpui::outline(full, color, gpui::BorderStyle::Solid)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Bounds, point, px, size};
+
+    use super::{GridLayout, inset};
+
+    #[test]
+    fn inset_balances_leftover() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(400.0), px(300.0)));
+        // 10 px sides, 8 px top and bottom; 8 and 6 in a split.
+        assert_eq!(
+            inset(bounds, false),
+            Bounds::new(point(px(10.0), px(8.0)), size(px(380.0), px(284.0)))
+        );
+        assert_eq!(
+            inset(bounds, true),
+            Bounds::new(point(px(8.0), px(6.0)), size(px(384.0), px(288.0)))
+        );
+        // 9 x 17 cells: 42 columns use 378 of 380 px, 16 rows 272 of 284. What's left over is
+        // shared evenly, so the grid sits 1 px further in on each side, 6 px top and bottom.
+        let grid = GridLayout::fit(inset(bounds, false), px(9.0), px(17.0));
+        assert_eq!((grid.dims.cols, grid.dims.rows), (42, 16));
+        assert_eq!(grid.origin, point(px(11.0), px(14.0)));
+        let right = bounds.size.width - (grid.origin.x + grid.cell_width * 42.0);
+        let bottom = bounds.size.height - (grid.origin.y + grid.line_height * 16.0);
+        assert_eq!((right, bottom), (px(11.0), px(14.0)));
+    }
+
+    #[test]
+    fn hit_testing_uses_the_inset_origin() {
+        // A pane right of a 220 px sidebar: 580 x 384 inside the padding, 8 x 17 cells, so
+        // 72 x 22 cells with 4 and 10 px left over; the grid starts at (232, 13).
+        let bounds = Bounds::new(point(px(220.0), px(0.0)), size(px(600.0), px(400.0)));
+        let grid = GridLayout::fit(inset(bounds, false), px(8.0), px(17.0));
+        let at = |x: f32, y: f32| {
+            let (p, _) = grid.grid_point(point(px(x), px(y)), 0);
+            (p.column.0, p.line.0)
+        };
+        // Just inside cell (3, 2).
+        assert_eq!(at(232.0 + 3.0 * 8.0 + 1.0, 13.0 + 2.0 * 17.0 + 1.0), (3, 2));
+        // In the padding, left of and above the grid: the first cell, not the second.
+        assert_eq!(at(229.0, 10.0), (0, 0));
+        // The last cell's far edge.
+        assert_eq!(
+            at(232.0 + 72.0 * 8.0 - 1.0, 13.0 + 22.0 * 17.0 - 1.0),
+            (71, 21)
+        );
     }
 }

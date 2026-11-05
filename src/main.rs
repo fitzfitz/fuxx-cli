@@ -61,13 +61,15 @@ use std::path::{Path, PathBuf};
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     App, Bounds, Global, KeyBinding, Menu, MenuItem, OsAction, QuitMode, TitlebarOptions,
-    WindowBounds, WindowOptions, actions, prelude::*, px, size,
+    WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
 };
 use gpui_platform::application;
 use serde_json::{Value, json};
 
 use api_client::ClientError;
 use cli::Cli;
+use prefs::FontStep;
+use ui_tokens::size::TRAFFIC_LIGHTS;
 
 use terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
 use workspace::{
@@ -77,10 +79,15 @@ use workspace::{
     NewSessionInFolder, NewSshSession, NextPane, NextSession, OpenBrowser, PrevPane, PrevSession,
     RenameSession, SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5,
     SelectSession6, SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight,
-    Workspace,
+    ToggleSidebar, Workspace,
 };
 
-actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions]);
+actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions, Hide]);
+
+// The View menu's font size items (every window: they change the setting) and the Window menu's
+// (the key fuxx window).
+actions!(view, [Bigger, Smaller, ActualSize]);
+actions!(window, [Minimize, Zoom]);
 
 // The Edit menu's Cut and Select All. Nothing in fuxx handles them: their items work only
 // through their macOS selectors (`cut:`, `selectAll:`), which a browser's web view answers.
@@ -99,6 +106,36 @@ fn edit_menu() -> Menu {
         MenuItem::os_action("Paste", Paste, OsAction::Paste),
         MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
     ])
+}
+
+/// The View menu: the sidebar, and the font size (written to the settings file, as Preferences
+/// does).
+fn view_menu() -> Menu {
+    Menu::new("View").items([
+        MenuItem::action("Toggle Sidebar", ToggleSidebar),
+        MenuItem::separator(),
+        MenuItem::action("Bigger", Bigger),
+        MenuItem::action("Smaller", Smaller),
+        MenuItem::action("Actual Size", ActualSize),
+    ])
+}
+
+/// The Window menu: Minimize and Zoom, for the key fuxx window.
+fn window_menu() -> Menu {
+    Menu::new("Window").items([
+        MenuItem::action("Minimize", Minimize),
+        MenuItem::action("Zoom", Zoom),
+    ])
+}
+
+/// Run `f` on the key fuxx window. Deferred: a menu action runs while that window is checked out
+/// of the app, so it can't be updated until the action is over (see `preferences`).
+fn with_key_window(cx: &mut App, f: fn(&mut gpui::Window)) {
+    cx.defer(move |cx| {
+        if let Some(window) = cx.active_window() {
+            window.update(cx, |_, window, _| f(window)).ok();
+        }
+    });
 }
 
 /// The File-menu item for preset `n` (0-based), bound to its `LaunchPresetN`.
@@ -130,10 +167,11 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
         .enumerate()
         .filter_map(|(n, preset)| preset_item(n, &preset.name))
         .collect();
-    let mut app_items = vec![MenuItem::action(
-        quit_title(keep_running.unwrap_or(0)),
-        Quit,
-    )];
+    let mut app_items = vec![
+        MenuItem::action("Hide fuxx", Hide),
+        MenuItem::separator(),
+        MenuItem::action(quit_title(keep_running.unwrap_or(0)), Quit),
+    ];
     if keep_running.is_some() {
         app_items.push(MenuItem::action(
             "Quit fuxx and End All Sessions",
@@ -171,6 +209,8 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
             MenuItem::separator(),
             MenuItem::action("Equalize Panes", EqualizePanes),
         ]),
+        view_menu(),
+        window_menu(),
     ]);
 }
 
@@ -406,6 +446,14 @@ fn main() {
                 KeyBinding::new("cmd-[", PrevPane, None),
                 KeyBinding::new("cmd-]", NextPane, None),
                 KeyBinding::new("ctrl-cmd-=", EqualizePanes, None),
+                KeyBinding::new("cmd-\\", ToggleSidebar, None),
+                // The first binding is the one a menu shows: ⌘=, with ⌘+ (shift-=) as well.
+                KeyBinding::new("cmd-=", Bigger, None),
+                KeyBinding::new("cmd-+", Bigger, None),
+                KeyBinding::new("cmd--", Smaller, None),
+                KeyBinding::new("cmd-0", ActualSize, None),
+                KeyBinding::new("cmd-h", Hide, None),
+                KeyBinding::new("cmd-m", Minimize, None),
                 // Terminal pane only. Bindings run before the pane's own key handler.
                 KeyBinding::new("cmd-c", Copy, Some("Terminal")),
                 KeyBinding::new("cmd-v", Paste, Some("Terminal")),
@@ -446,18 +494,39 @@ fn main() {
                 cx.bind_keys([KeyBinding::new("alt-cmd-q", QuitAndEndSessions, None)]);
             }
             cx.on_action(|_: &OpenPreferences, cx: &mut App| preferences::open_or_activate(cx));
+            cx.on_action(|_: &Bigger, cx: &mut App| {
+                preferences::step_font_size(cx, FontStep::Bigger)
+            });
+            cx.on_action(|_: &Smaller, cx: &mut App| {
+                preferences::step_font_size(cx, FontStep::Smaller)
+            });
+            cx.on_action(|_: &ActualSize, cx: &mut App| {
+                preferences::step_font_size(cx, FontStep::ActualSize)
+            });
+            cx.on_action(|_: &Hide, cx: &mut App| cx.hide());
+            cx.on_action(|_: &Minimize, cx: &mut App| {
+                with_key_window(cx, |window| window.minimize_window())
+            });
+            cx.on_action(|_: &Zoom, cx: &mut App| {
+                with_key_window(cx, |window| window.zoom_window())
+            });
             let scripting = start_scripting(cx);
             set_menus(cx, persistent.then_some(0));
 
-            let bounds = Bounds::centered(None, size(px(1100.0), px(640.0)), cx);
+            let bounds = Bounds::centered(None, size(px(1280.0), px(800.0)), cx);
+            let (light_x, light_y) = TRAFFIC_LIGHTS;
             let main_window = cx
                 .open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        // Integrated: no system titlebar; the traffic lights sit in the window's
+                        // top band, which fuxx draws and moves the window by (see `Workspace`).
                         titlebar: Some(TitlebarOptions {
                             title: Some("fuxx".into()),
-                            ..Default::default()
+                            appears_transparent: true,
+                            traffic_light_position: Some(point(px(light_x), px(light_y))),
                         }),
+                        app_owns_titlebar_drag: true,
                         ..Default::default()
                     },
                     move |window, cx| {
@@ -512,7 +581,7 @@ fn quit_title(keep_running: usize) -> String {
 mod tests {
     use gpui::{MenuItem, OsAction};
 
-    use super::{edit_menu, quit_title};
+    use super::{edit_menu, quit_title, view_menu, window_menu};
     use crate::terminal_view::{Copy, Paste};
 
     #[test]
@@ -546,6 +615,26 @@ mod tests {
         // The terminal's own ⌘C and ⌘V stay what they were.
         assert!(items[1].1.partial_eq(&Copy));
         assert!(items[2].1.partial_eq(&Paste));
+    }
+
+    /// Each item's name.
+    fn names(menu: &gpui::Menu) -> Vec<String> {
+        menu.items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_view_and_window_menus() {
+        assert_eq!(
+            names(&view_menu()),
+            ["Toggle Sidebar", "Bigger", "Smaller", "Actual Size"]
+        );
+        assert_eq!(names(&window_menu()), ["Minimize", "Zoom"]);
     }
 
     #[test]
