@@ -771,6 +771,8 @@ impl Workspace {
         if !split_done {
             self.layouts.push(Node::Leaf(id));
         }
+        // A split puts a new divider at the hovered path's place, with no enter event.
+        self.divider_hover = None;
         let keys = self.groups();
         let key = groups::key(
             saved.ssh.as_ref().map(|t| t.host.as_str()),
@@ -1088,6 +1090,7 @@ impl Workspace {
         let mut replied = self.check_waits(&[session_id], cx);
         let was_active = self.sessions.active_index() == Some(index);
         self.dragging = None; // the layout changes under a drag
+        self.divider_hover = None; // and a divider may be gone, with no leave event
         // The pane's neighbour takes its space, and the focus if it had it.
         let mut next = None;
         if let Some(pos) = self.layouts.iter().position(|t| t.contains(id)) {
@@ -1133,6 +1136,10 @@ impl Workspace {
         };
         if self.sessions.active_index() != Some(index) {
             self.select(index, window, cx);
+        } else {
+            // A click on the active pane (or its header) takes the keyboard back from a
+            // rename, address or picker box.
+            self.focus_active(window, cx);
         }
     }
 
