@@ -69,6 +69,11 @@ impl NameInput {
         }
     }
 
+    /// The text as typed so far (with any IME composition in progress).
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     fn caret_to_end(&mut self) {
         self.marked = None;
         self.selected = self.text.len()..self.text.len();
