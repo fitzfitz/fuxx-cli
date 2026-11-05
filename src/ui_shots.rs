@@ -210,6 +210,7 @@ const SCENES: &[(&str, fn())] = &[
     ("cached-panes", cached_panes),
     ("sidebar", sidebar_scenes),
     ("splits", split_scenes),
+    ("switcher", switcher_scenes),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -1537,6 +1538,107 @@ fn split_scenes() {
                 assert_eq!(accent, 0, "{n}: no accent on a quiet divider");
                 assert_eq!(plain, scale as usize, "{n}: 1 px plain divider");
             }
+            println!("ui-shots: {}", path.display());
+        }
+    }
+}
+
+/// The switcher's eight sessions: api (waiting with a boxed question, working, done, idle), web
+/// (waiting with no question found, done) and the SSH host build-box (working, idle).
+const SWITCHER_EIGHT: [ShotSession; 8] = [
+    shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
+    shot("codex", API, Status::Working, 32, AGENT_TEXT),
+    shot("tests", API, Status::Done, 12 * 60, SHELL_TEXT),
+    shot("shell", API, Status::Idle, 0, SHELL_TEXT),
+    shot("agent", WEB, Status::Waiting, 95, SHELL_TEXT),
+    shot("build", WEB, Status::Done, 40, SHELL_TEXT),
+    shot("deploy", OPS, Status::Working, 3 * 60, AGENT_TEXT),
+    shot("logs", OPS, Status::Idle, 0, SHELL_TEXT),
+];
+
+/// The folder build-box's sessions open in, before they're made SSH sessions to it.
+const OPS: &str = "/Users/me/ops";
+
+/// `SWITCHER_EIGHT` with shell (4) active, its last two as SSH sessions to build-box.
+fn switcher_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
+    let mut ws = sidebar_workspace(&SWITCHER_EIGHT, None, 3, &[], window, cx);
+    ws.sidebar.hint_dismissed = true;
+    for i in [6, 7] {
+        ws.sessions.get_mut(i).expect("opened").ssh = Some(crate::ssh_target::SshTarget {
+            host: "build-box".into(),
+            tmux: false,
+            tmux_name: None,
+        });
+    }
+    ws
+}
+
+/// The ⌘P switcher over a real workspace, in both themes:
+/// - `switcher`: just opened, every session most urgent first (claude, which waited longest, then
+///   agent, the done ones, the working ones, the idle ones);
+/// - `switcher-filter`: "build" typed, which finds web's build session by name and build-box's
+///   two by group;
+/// - `rename`: the rename box just opened on shell, its old name selected.
+///
+/// Panics unless the rows are in that order, the filter leaves three, and the rename box has
+/// the old name.
+fn switcher_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for scene in ["switcher", "switcher-filter", "rename"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| switcher_workspace(window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| match scene {
+                        "rename" => ws.start_rename(3, window, cx),
+                        _ => ws.open_switcher(window, cx),
+                    })
+                })
+                .expect("open it");
+                cx.run_until_parked();
+                if scene == "switcher-filter" {
+                    cx.simulate_input(window, "build");
+                }
+                let shown = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| {
+                        let switcher = ws.read(cx).switcher.clone().expect("the switcher");
+                        let rows = switcher.read(cx).shown().map(|e| e.label.clone());
+                        rows.collect::<Vec<_>>()
+                    })
+                };
+                match scene {
+                    "switcher" => assert_eq!(
+                        shown(cx),
+                        [
+                            "claude", "agent", "tests", "build", "codex", "deploy", "shell", "logs"
+                        ],
+                        "{scene}-{slug}: most urgent first"
+                    ),
+                    "switcher-filter" => assert_eq!(
+                        shown(cx),
+                        ["build", "deploy", "logs"],
+                        "{scene}-{slug}: filtered by name and group"
+                    ),
+                    _ => cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        let (_, input) = ws.renaming.as_ref().expect("the rename box is open");
+                        assert_eq!(input.read(cx).text(), "shell", "{scene}-{slug}");
+                    }),
+                }
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, act);
             println!("ui-shots: {}", path.display());
         }
     }

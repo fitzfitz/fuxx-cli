@@ -49,6 +49,7 @@ use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
 use crate::status_mark;
+use crate::switcher::Switcher;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{TOP_BAND, UNFOCUSED_VEIL};
@@ -99,6 +100,8 @@ actions!(
         NextPane,
         EqualizePanes,
         ToggleSidebar,
+        NextNeedingYou,
+        OpenSwitcher,
     ]
 );
 
@@ -195,6 +198,8 @@ pub struct Workspace {
     pub(crate) renaming: Option<(EntityId, Entity<NameInput>)>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
+    /// The ⌘P session switcher, while it is open (M11).
+    pub(crate) switcher: Option<Entity<Switcher>>,
     /// The sessions' browsers (M10c).
     pub(crate) browsers: Browsers,
     /// Whether the 500 ms browser check is running (only while a browser is open).
@@ -314,6 +319,7 @@ impl Workspace {
             collapsed: Vec::new(),
             renaming: None,
             host_picker: None,
+            switcher: None,
             browsers: Browsers::new(),
             browsers_ticking: false,
             address_box: None,
@@ -809,8 +815,16 @@ impl Workspace {
     }
 
     /// Each session's group, in sidebar order.
-    fn groups(&self) -> Vec<Option<GroupKey>> {
+    pub(crate) fn groups(&self) -> Vec<Option<GroupKey>> {
         self.sessions.items().iter().map(Session::group).collect()
+    }
+
+    /// Session `index`'s group as the sidebar labels it; none when it has no group.
+    pub(crate) fn group_label(&self, index: usize) -> Option<String> {
+        let keys = self.groups();
+        let key = keys.get(index)?.as_ref()?;
+        let all: Vec<&GroupKey> = keys.iter().flatten().collect();
+        Some(groups::group_label(key, &all))
     }
 
     /// The active session's folder, so a new session joins its group.
@@ -1033,7 +1047,9 @@ impl Workspace {
         }
         if notify && notifier::should_notify(old, new, is_active, window_active) {
             if let Some(body) = notifier::message(new) {
-                let summary = format!("fuxx — {label}");
+                // The group says more than the name (often 🖕) among many sessions.
+                let who = self.group_label(index).unwrap_or_else(|| label.to_string());
+                let summary = notification_summary(index + 1, &who, body);
                 let posted = Event::Notification {
                     title: &summary,
                     body,
@@ -1280,7 +1296,12 @@ impl Workspace {
         if let Some(key) = session.group() {
             self.collapsed.retain(|c| *c != key);
         }
-        let input = cx.new(|cx| NameInput::new(text, window, cx));
+        // The old name selected, so typing replaces it.
+        let input = cx.new(|cx| {
+            let mut input = NameInput::new(text, window, cx);
+            input.select_all();
+            input
+        });
         cx.subscribe_in(&input, window, Self::on_name_event)
             .detach();
         input.focus_handle(cx).focus(window, cx);
@@ -1548,7 +1569,14 @@ impl Workspace {
         let animations = cx.global::<Appearance>().animations;
         let reduce = cx.try_global::<SystemReduceMotion>().is_some_and(|r| r.on);
         let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
-        status_mark::should_tick(animations, reduce, seen, &self.visible_statuses())
+        // The switcher's rows too, while it's open.
+        let mut on_screen = self.visible_statuses();
+        on_screen.extend(
+            self.switcher_shown(cx)
+                .into_iter()
+                .map(|(status, _)| status),
+        );
+        status_mark::should_tick(animations, reduce, seen, &on_screen)
     }
 
     /// Start the marks' 100 ms ticker unless it's running or nothing on screen moves; it stops,
@@ -1603,8 +1631,8 @@ impl Render for Workspace {
         self.refresh_ages(self.marks_ticking, cx);
         let title = self
             .sessions
-            .active()
-            .map(|s| format!("fuxx — {}", s.label()))
+            .active_index()
+            .map(|i| window_title(i + 1, &self.sessions.items()[i].label()))
             .unwrap_or_else(|| "fuxx".into());
         window.set_window_title(&title);
         let theme = cx.global::<Appearance>().theme;
@@ -1620,6 +1648,7 @@ impl Render for Workspace {
         // The top band is the sidebar's top; with the sidebar hidden, the pane area's.
         let sidebar = (!self.sidebar.hidden).then(|| self.render_sidebar(ui, window, cx));
         let new_menu = self.render_new_menu(ui, cx);
+        self.refresh_switcher(cx);
         let pane_band = self
             .sidebar
             .hidden
@@ -1686,6 +1715,10 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &EqualizePanes, _, cx| this.equalize_panes(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| this.toggle_sidebar(w, cx)))
+            .on_action(
+                cx.listener(|this, _: &NextNeedingYou, w, cx| this.jump_to_needing_you(w, cx)),
+            )
+            .on_action(cx.listener(|this, _: &OpenSwitcher, w, cx| this.open_switcher(w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession1, w, cx| this.select(0, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession2, w, cx| this.select(1, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession3, w, cx| this.select(2, w, cx)))
@@ -1724,10 +1757,13 @@ impl Render for Workspace {
                             .children(self.render_panes(colors, ui, cx)),
                     ),
             )
-            // The host picker and the address box: over everything, centred near the top of
-            // the window.
+            // The host picker, the switcher and the address box: over everything, centred near
+            // the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {
                 root.child(top_panel(picker))
+            })
+            .when_some(self.switcher.clone(), |root, switcher| {
+                root.child(top_panel(switcher))
             })
             .when_some(self.address_box.clone(), |root, address| {
                 root.child(top_panel(address))
@@ -1781,6 +1817,17 @@ impl Workspace {
         self.next_id += 1;
         self.insert_session(id, view, saved, at, window, cx);
     }
+}
+
+/// A notification's title: `#<n> <who> — <message>`, `who` being the session's group (else its
+/// name).
+pub(crate) fn notification_summary(number: usize, who: &str, message: &str) -> String {
+    format!("#{number} {who} — {message}")
+}
+
+/// The window's title for the active session: `fuxx — #<n> <name>`.
+pub(crate) fn window_title(number: usize, name: &str) -> String {
+    format!("fuxx — #{number} {name}")
 }
 
 /// `panel` over the window, centred near its top.
@@ -1970,7 +2017,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_create, scripting_env, session_env};
+    use super::{daemon_create, notification_summary, scripting_env, session_env, window_title};
     use crate::presets::Preset;
     use crate::pty::apply_env;
     use crate::restore::SavedSession;
@@ -2108,5 +2155,18 @@ mod tests {
             ),
             (None, None, None, None, None)
         );
+    }
+
+    #[test]
+    fn notification_and_title_text() {
+        assert_eq!(
+            notification_summary(3, "api", "Needs your input"),
+            "#3 api \u{2014} Needs your input"
+        );
+        assert_eq!(
+            notification_summary(12, "\u{1f595}", "Finished"),
+            "#12 \u{1f595} \u{2014} Finished"
+        );
+        assert_eq!(window_title(3, "claude"), "fuxx \u{2014} #3 claude");
     }
 }
