@@ -138,8 +138,12 @@ pub fn load_recent(path: &Path) -> Vec<Recent> {
 }
 
 /// Put `target` first, replacing any earlier entry for the same host, keep the newest ten,
-/// and write the file.
+/// and write the file. A session's own tmux name isn't kept: it belongs to that session.
 pub fn record_recent(path: &Path, target: &SshTarget, now: u64) -> io::Result<()> {
+    let target = &SshTarget {
+        tmux_name: None,
+        ..target.clone()
+    };
     let mut list = load_recent(path);
     list.retain(|r| r.target.host != target.host);
     list.insert(
@@ -166,6 +170,7 @@ pub fn picker_rows(recent: &[Recent], config: &[(String, Option<Effective>)]) ->
             rows.push(SshTarget {
                 host: host.clone(),
                 tmux: false,
+                tmux_name: None,
             });
         }
     }
@@ -266,6 +271,7 @@ mod tests {
         SshTarget {
             host: host.to_string(),
             tmux: false,
+            tmux_name: None,
         }
     }
 
@@ -342,8 +348,15 @@ mod tests {
         let tmux_a = SshTarget {
             host: "a".into(),
             tmux: true,
+            tmux_name: None,
         };
-        record_recent(&file, &tmux_a, 3).unwrap();
+        // A session's own tmux name is not the host's: it isn't kept.
+        let named = SshTarget {
+            tmux_name: Some("a-1a2b3c".into()),
+            ..tmux_a.clone()
+        };
+        record_recent(&file, &named, 3).unwrap();
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("1a2b3c"));
         assert_eq!(
             load_recent(&file),
             vec![
@@ -385,6 +398,7 @@ mod tests {
                 target: SshTarget {
                     host: "b".into(),
                     tmux: true,
+                    tmux_name: None,
                 },
                 used_at: 2,
             },

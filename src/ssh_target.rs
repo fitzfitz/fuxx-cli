@@ -15,6 +15,11 @@ pub struct SshTarget {
     pub host: String,
     #[serde(default)]
     pub tmux: bool,
+    /// The session's own tmux session name (after `fuxx-`), made once when it opens, so each
+    /// pane has its own and a reconnect or restore comes back to it. Never kept for recent
+    /// hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_name: Option<String>,
 }
 
 /// Trim `host` and refuse anything ssh could read as an option or that has no business in a
@@ -150,6 +155,7 @@ mod tests {
         SshTarget {
             host: host.to_string(),
             tmux,
+            tmux_name: None,
         }
     }
 

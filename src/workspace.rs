@@ -47,7 +47,9 @@ use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
-use crate::workspace_ssh::{Disconnected, ExitAction, Place, on_exit, ssh_program, ssh_refusal};
+use crate::workspace_ssh::{
+    Disconnected, ExitAction, Place, checked_launches, on_exit, ssh_program, ssh_refusal,
+};
 
 actions!(
     workspace,
@@ -119,6 +121,8 @@ pub struct Session {
     pub(crate) retries: u32,
     /// When this session (this connection, for SSH) opened.
     pub(crate) opened_at: Instant,
+    /// SSH: this connection is a reconnect of a held session (its drop may be the same one).
+    pub(crate) reconnected: bool,
     pub(crate) _subscription: Subscription,
 }
 
@@ -345,6 +349,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A saved host is checked as a typed one is: a refused one isn't started.
+        let (launches, refused) = checked_launches(launches);
+        for why in refused {
+            self.ssh_failed(&why, cx);
+        }
         let targets: Vec<Option<SshTarget>> =
             launches.iter().map(|l| l.saved.ssh.clone()).collect();
         if targets.iter().all(Option::is_none) {
@@ -618,7 +627,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let ssh = program.is_some();
+        let ssh = launch.saved.ssh.is_some();
         let create = self.create_for(&launch, program);
         let pending = client.create_in_background(create);
         cx.spawn_in(window, async move |this, cx| {
@@ -741,6 +750,7 @@ impl Workspace {
                 disconnected: None,
                 retries: 0,
                 opened_at: Instant::now(),
+                reconnected: false,
                 _subscription: subscription,
             },
         );
@@ -818,6 +828,7 @@ impl Workspace {
                     .unwrap_or_else(|| SshTarget {
                         host: host.clone(),
                         tmux: false,
+                        tmux_name: None,
                     });
                 self.open_ssh(target, Place::New, window, cx);
             }
@@ -892,7 +903,7 @@ impl Workspace {
             // A held pane's ring stays done.
             TerminalEvent::StatusChanged(new) => {
                 if self.sessions.items()[index].disconnected.is_none() {
-                    self.set_status(index, *new, cx);
+                    self.set_status(index, *new, true, cx);
                 }
             }
             TerminalEvent::TitleChanged(title) => {
@@ -928,9 +939,15 @@ impl Workspace {
         }
     }
 
-    /// Session `index`'s status is now `new`: scripts hear of a change, and a notification
-    /// follows the M4 rules (not while you look at it).
-    pub(crate) fn set_status(&mut self, index: usize, new: Status, cx: &mut Context<Self>) {
+    /// Session `index`'s status is now `new`: scripts hear of a change, and with `notify` a
+    /// notification follows the M4 rules (not while you look at it).
+    pub(crate) fn set_status(
+        &mut self,
+        index: usize,
+        new: Status,
+        notify: bool,
+        cx: &mut Context<Self>,
+    ) {
         let is_active = self.sessions.active_index() == Some(index);
         let window_active = self.window_active;
         let Some(session) = self.sessions.get_mut(index) else {
@@ -943,7 +960,7 @@ impl Workspace {
             let change = Event::StatusChanged { from: old, to: new };
             self.emit(&change, Some(index));
         }
-        if notifier::should_notify(old, new, is_active, window_active) {
+        if notify && notifier::should_notify(old, new, is_active, window_active) {
             if let Some(body) = notifier::message(new) {
                 let summary = format!("fuxx — {label}");
                 let posted = Event::Notification {

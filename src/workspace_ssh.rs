@@ -22,8 +22,15 @@ use crate::{ssh_control, ssh_hosts};
 /// opens.
 const SSH_CHECK: Duration = Duration::from_secs(2);
 
-/// An SSH connection that lasted this long starts the automatic reconnect waits over.
+/// An SSH connection that lasted this long starts the automatic reconnect waits over, and its
+/// drop is news again.
 const RETRIES_FORGOTTEN: Duration = Duration::from_secs(60);
+
+/// Written into the screen (only) before the reconnect line, so it isn't drawn in the remote
+/// program's state: plain colours, out of a full-screen program's alternate screen, and the
+/// whole screen as the scroll region (the cursor saved around it, since setting the region
+/// moves it home).
+const SCREEN_RESET: &str = "\x1b[0m\x1b[?1049l\x1b7\x1b[r\x1b8";
 
 /// A held SSH session (M10b): its screen stays, with the reconnect line.
 pub(crate) struct Disconnected {
@@ -69,13 +76,100 @@ pub fn reconnect_delay(attempt: u32) -> Duration {
 }
 
 /// The line a held SSH session shows, on a line of its own; `next`: the seconds until the
-/// automatic reconnect (tmux). `host` passed `validate_host`, so it holds no control text.
+/// automatic reconnect (tmux). Control characters in `host` are left out (one that passed
+/// `validate_host` has none), so it can't drive the screen.
 pub fn disconnect_banner(host: &str, next: Option<u64>) -> String {
+    let host: String = host.chars().filter(|c| !c.is_control()).collect();
     let line = match next {
         Some(secs) => format!("Disconnected from {host} — reconnecting in {secs}s, or press Enter"),
         None => format!("Disconnected from {host} — press Enter to reconnect"),
     };
     format!("\r\n{line}\r\n")
+}
+
+/// What a held pane shows: the screen reset (`SCREEN_RESET`), then the reconnect line.
+pub fn held_screen(host: &str, next: Option<u64>) -> String {
+    format!("{SCREEN_RESET}{}", disconnect_banner(host, next))
+}
+
+/// Whether a connection's drop is news (the usual done notification, per the M4 rules): the
+/// first of a run. A reconnect that drops again before it held a while (`lasted` under
+/// `RETRIES_FORGOTTEN`) is the same drop going on.
+pub fn drop_is_news(reconnected: bool, lasted: Duration) -> bool {
+    !reconnected || lasted >= RETRIES_FORGOTTEN
+}
+
+/// The target a session opens with. With tmux it has its own tmux session name: a new one for
+/// a new session (`fresh`), else the one it has (a reconnect or restore comes back to it),
+/// made if it has none. Without tmux, none.
+pub fn session_target(target: SshTarget, fresh: bool) -> SshTarget {
+    let tmux_name = match target.tmux_name {
+        _ if !target.tmux => None,
+        Some(name) if !fresh => Some(name),
+        _ => Some(new_tmux_name(&target.host)),
+    };
+    SshTarget {
+        tmux_name,
+        ..target
+    }
+}
+
+/// `<host>-<6 random hex digits>`: tmux-safe, and at most 32 characters (the host part is
+/// cut), as the name after `fuxx-` must be.
+fn new_tmux_name(host: &str) -> String {
+    use std::hash::BuildHasher;
+    // Keyed from the OS's randomness, and new keys for every `RandomState`.
+    let random = std::collections::hash_map::RandomState::new()
+        .hash_one((std::time::SystemTime::now(), std::process::id()));
+    let host: String = ssh_target::tmux_session_name(host)
+        .chars()
+        .take(25)
+        .collect();
+    format!("{host}-{:06x}", random & 0xff_ffff)
+}
+
+/// A saved SSH session about to be started again: its host checked and trimmed as a typed
+/// one is, and its tmux name kept (made if missing). Err: the host is refused, so it isn't
+/// started. A local session passes as it is.
+pub(crate) fn check_restored(launch: &mut Launch) -> Result<(), String> {
+    let Some(target) = &launch.saved.ssh else {
+        return Ok(());
+    };
+    let host = ssh_target::validate_host(&target.host)
+        .map_err(|why| format!("saved host {:?}: {why}", target.host))?;
+    let checked = SshTarget {
+        host,
+        ..target.clone()
+    };
+    launch.saved.ssh = Some(session_target(checked, false));
+    Ok(())
+}
+
+/// `launches` without the SSH ones whose saved host is refused (`check_restored`), and why
+/// each of those was.
+pub(crate) fn checked_launches(launches: Vec<Launch>) -> (Vec<Launch>, Vec<String>) {
+    let mut refused = Vec::new();
+    let kept = launches
+        .into_iter()
+        .filter_map(|mut launch| match check_restored(&mut launch) {
+            Ok(()) => Some(launch),
+            Err(why) => {
+                refused.push(why);
+                None
+            }
+        })
+        .collect();
+    (kept, refused)
+}
+
+/// `ssh_argv` with the session's own tmux name (the host for one without).
+pub(crate) fn argv_for(
+    target: &SshTarget,
+    effective: &Effective,
+    control: Option<&Path>,
+) -> Vec<String> {
+    let name = target.tmux_name.as_deref().unwrap_or(&target.host);
+    ssh_target::ssh_argv(target, name, effective, control)
 }
 
 /// The argv an SSH session runs: connection reuse and keepalive only where the host's
@@ -105,7 +199,7 @@ pub(crate) fn ssh_program(target: &SshTarget, recent: Option<&Path>) -> Vec<Stri
             eprintln!("[fuxx] ssh: could not save {}: {err}", path.display());
         }
     }
-    ssh_target::ssh_argv(target, &target.host, &effective, control.as_deref())
+    argv_for(target, &effective, control.as_deref())
 }
 
 /// Why the background service didn't create an SSH session (e.g. a version-1 service, which
@@ -167,6 +261,7 @@ impl Workspace {
             disconnected: None,
             retries: session.retries,
             opened_at: Instant::now(),
+            reconnected: true,
             _subscription: subscription,
         };
         self.emit(&Event::Opened, Some(index));
@@ -205,8 +300,10 @@ impl Workspace {
                 then(this, None, window, cx);
             }
         };
+        // A new session gets its own tmux name; a reconnect keeps the one it has.
+        let fresh = !matches!(place, Place::Replace(_));
         let target = match ssh_target::validate_host(&target.host) {
-            Ok(host) => SshTarget { host, ..target },
+            Ok(host) => session_target(SshTarget { host, ..target }, fresh),
             Err(why) => {
                 self.ssh_failed(&why, cx);
                 return not_opened(self, then, window, cx);
@@ -249,9 +346,14 @@ impl Workspace {
 
     /// An SSH session couldn't open (`why`): logged, and said at the foot of the sidebar.
     pub(crate) fn ssh_failed(&mut self, why: &str, cx: &mut Context<Self>) {
+        self.note_ssh_failed(why);
+        cx.notify();
+    }
+
+    /// `ssh_failed` for the caller to redraw.
+    pub(crate) fn note_ssh_failed(&mut self, why: &str) {
         eprintln!("[fuxx] ssh: session not started: {why}");
         self.notice = Some(format!("SSH session not started: {why}").into());
-        cx.notify();
     }
 
     /// The active session's SSH target and index, if it is an SSH session.
@@ -262,19 +364,38 @@ impl Workspace {
     }
 
     /// SSH session `index`'s connection failed (ssh exited 255): it stays, with its screen and
-    /// the reconnect line, and its ring shows done. With tmux it reconnects by itself after a
-    /// wait that grows with each try in a row (the remote programs are there to come back to).
+    /// the reconnect line, and its ring shows done. Only the first drop of a run notifies
+    /// (`drop_is_news`). With tmux it reconnects by itself after a wait that grows with each
+    /// try in a row (the remote programs are there to come back to).
     pub(crate) fn hold(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
+        let Some(host) = session.ssh.as_ref().map(|t| t.host.clone()) else {
+            return;
+        };
+        let lasted = session.opened_at.elapsed();
+        // A connection that held a while starts the waits over.
+        if lasted >= RETRIES_FORGOTTEN {
+            session.retries = 0;
+        }
+        let news = drop_is_news(session.reconnected, lasted);
+        eprintln!("[fuxx] ssh: s{} disconnected from {host}", session.id);
+        self.await_reconnect(index, window, cx);
+        self.set_status(index, Status::Done, news, cx);
+        // Its background-service session has ended: one fewer keeps running.
+        self.sync_quit_title(cx);
+    }
+
+    /// Show held session `index`'s reconnect line and, with tmux, start the wait for the next
+    /// automatic try (its length from the tries so far).
+    fn await_reconnect(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
         };
         let Some(target) = session.ssh.clone() else {
             return;
         };
-        // A connection that held a while starts the waits over.
-        if session.opened_at.elapsed() >= RETRIES_FORGOTTEN {
-            session.retries = 0;
-        }
         let wait = target.tmux.then(|| reconnect_delay(session.retries));
         let view = session.view.entity_id();
         let timer = wait.map(|wait| {
@@ -288,24 +409,18 @@ impl Workspace {
                 .ok();
             })
         });
+        // Replacing an earlier wait drops (cancels) it.
         session.disconnected = Some(Disconnected {
             _timer: timer,
             reconnecting: false,
         });
-        eprintln!(
-            "[fuxx] ssh: s{} disconnected from {}",
-            session.id, target.host
-        );
-        let banner = disconnect_banner(&target.host, wait.map(|w| w.as_secs()));
-        session.view.update(cx, |view, cx| view.hold(&banner, cx));
-        self.set_status(index, Status::Done, cx);
-        // Its background-service session has ended: one fewer keeps running.
-        self.sync_quit_title(cx);
+        let text = held_screen(&target.host, wait.map(|w| w.as_secs()));
+        session.view.update(cx, |view, cx| view.hold(&text, cx));
     }
 
     /// Reconnect held SSH session `index` in place (Enter, or the tmux timer when `auto`):
-    /// same pane, name, group, host and option, on a fresh screen. If it can't start, the
-    /// pane stays held for another Enter.
+    /// same pane, name, group, host, option and tmux session, on a fresh screen. If it can't
+    /// start, the pane stays held: the line is shown again and, with tmux, the next try waits.
     pub(crate) fn reconnect_ssh(
         &mut self,
         index: usize,
@@ -329,15 +444,11 @@ impl Workspace {
             0
         };
         let view = session.view.entity_id();
-        let failed: Opened = Box::new(move |this, id, _, _| {
+        let failed: Opened = Box::new(move |this, id, window, cx| {
             if id.is_none()
                 && let Some(i) = this.sessions.position(|s| s.view.entity_id() == view)
-                && let Some(held) = this
-                    .sessions
-                    .get_mut(i)
-                    .and_then(|s| s.disconnected.as_mut())
             {
-                held.reconnecting = false;
+                this.await_reconnect(i, window, cx);
             }
         });
         self.open_ssh_then(target, Place::Replace(index), Some(failed), window, cx);
@@ -346,15 +457,41 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitAction, disconnect_banner, on_exit, reconnect_delay};
-    use crate::ssh_target::SshTarget;
-    use std::time::Duration;
+    use super::{
+        ExitAction, RETRIES_FORGOTTEN, argv_for, check_restored, checked_launches,
+        disconnect_banner, drop_is_news, held_screen, on_exit, reconnect_delay, session_target,
+    };
+    use crate::restore::{Launch, SavedSession};
+    use crate::ssh_target::{Effective, SshTarget};
+    use crate::terminal::{TermDims, TerminalCore};
+    use crate::theme::Theme;
+    use alacritty_terminal::term::TermMode;
+    use std::time::{Duration, Instant};
+
+    fn tmux(host: &str, name: Option<&str>) -> SshTarget {
+        SshTarget {
+            host: host.into(),
+            tmux: true,
+            tmux_name: name.map(String::from),
+        }
+    }
+
+    fn ssh_launch(host: &str) -> Launch {
+        Launch {
+            saved: SavedSession {
+                ssh: Some(tmux(host, None)),
+                ..Default::default()
+            },
+            run_preset: false,
+        }
+    }
 
     #[test]
     fn on_exit_holds_only_ssh_255() {
         let ssh = SshTarget {
             host: "devbox".into(),
             tmux: false,
+            tmux_name: None,
         };
         // ssh's "connection failed" code: the pane stays.
         assert_eq!(on_exit(Some(&ssh), Some(255)), ExitAction::Hold);
@@ -376,6 +513,8 @@ mod tests {
 
     #[test]
     fn banner_texts() {
+        // Control characters never reach the screen, whatever the host.
+        assert!(!disconnect_banner("dev\u{1b}[2Jbox", None)[2..].contains('\u{1b}'));
         assert_eq!(
             disconnect_banner("devbox", None),
             "\r\nDisconnected from devbox \u{2014} press Enter to reconnect\r\n"
@@ -384,5 +523,125 @@ mod tests {
             disconnect_banner("me@devbox", Some(12)),
             "\r\nDisconnected from me@devbox \u{2014} reconnecting in 12s, or press Enter\r\n"
         );
+    }
+
+    #[test]
+    fn each_new_session_gets_its_own_tmux_name() {
+        let a = session_target(tmux("devbox", None), true);
+        let b = session_target(tmux("devbox", Some("devbox-000001")), true);
+        let (a, b) = (a.tmux_name.unwrap(), b.tmux_name.unwrap());
+        assert_ne!(a, b, "two panes to one host don't share a tmux session");
+        let (host, hex) = a.rsplit_once('-').unwrap();
+        assert_eq!(host, "devbox");
+        assert!(
+            hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()),
+            "{a}"
+        );
+        // tmux-safe, and at most 32 after `fuxx-`: a long host is cut.
+        let long = session_target(tmux(&format!("me@{}", "x".repeat(40)), None), true);
+        let long = long.tmux_name.unwrap();
+        assert!(long.len() <= 32, "{long}");
+        assert!(long.starts_with("me_xxx"), "{long}");
+        // Without tmux there's none.
+        let plain = SshTarget {
+            tmux: false,
+            ..tmux("devbox", Some("devbox-000001"))
+        };
+        assert_eq!(session_target(plain, true).tmux_name, None);
+    }
+
+    #[test]
+    fn a_reconnect_or_restore_keeps_the_tmux_name() {
+        let kept = session_target(tmux("devbox", Some("devbox-0a0b0c")), false);
+        assert_eq!(kept.tmux_name.as_deref(), Some("devbox-0a0b0c"));
+        // ssh attaches to that very tmux session.
+        let argv = argv_for(&kept, &Effective::default(), None);
+        assert_eq!(
+            argv[argv.len() - 5..],
+            ["tmux", "new", "-A", "-s", "fuxx-devbox-0a0b0c"]
+        );
+        // An entry saved before names existed gets one.
+        assert!(
+            session_target(tmux("devbox", None), false)
+                .tmux_name
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_saved_session_with_a_bad_host_is_not_launched() {
+        let mut ok = ssh_launch(" devbox ");
+        assert_eq!(check_restored(&mut ok), Ok(()));
+        let target = ok.saved.ssh.unwrap();
+        assert_eq!(target.host, "devbox", "trimmed");
+        assert!(target.tmux_name.is_some(), "named");
+        assert!(check_restored(&mut ssh_launch("-oProxyCommand=x")).is_err());
+        let (kept, refused) = checked_launches(vec![
+            Launch::default(),
+            ssh_launch("-oProxyCommand=x"),
+            ssh_launch("devbox"),
+            ssh_launch("dev\nbox"),
+        ]);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0], Launch::default(), "a local session is untouched");
+        assert_eq!(kept[1].saved.ssh.as_ref().unwrap().host, "devbox");
+        assert_eq!(refused.len(), 2);
+    }
+
+    #[test]
+    fn only_the_first_drop_of_a_run_is_news() {
+        let short = Duration::from_secs(2);
+        // The connection drops: notified (per the M4 rules).
+        assert!(drop_is_news(false, Duration::from_secs(600)));
+        assert!(drop_is_news(false, short), "even one that never got far");
+        // Each reconnect that drops again before it held a while: the same drop, no notice.
+        assert!(!drop_is_news(true, short));
+        assert!(!drop_is_news(true, short), "a second failed try in a row");
+        // A reconnect that held, then dropped: a new drop.
+        assert!(drop_is_news(true, RETRIES_FORGOTTEN));
+    }
+
+    #[test]
+    fn the_reconnect_line_resets_the_screen_first() {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        // TOP on the main screen; then a full-screen program: alternate screen, a two-line
+        // scroll region, red text.
+        cmd.args([
+            "-c",
+            "printf 'TOP\\n\\033[?1049h\\033[2;3r\\033[31malt'; sleep 5",
+        ]);
+        let core =
+            TerminalCore::spawn(cmd, TermDims { cols: 60, rows: 5 }, tx, Theme::default()).unwrap();
+        let screen = |core: &TerminalCore| core.text(crate::grid::TextScope::Screen);
+        let start = Instant::now();
+        while !screen(&core).contains("alt") && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(core.mode().contains(TermMode::ALT_SCREEN));
+        core.show_local(&held_screen("devbox", None));
+        assert!(
+            !core.mode().contains(TermMode::ALT_SCREEN),
+            "back on the main screen"
+        );
+        let text = screen(&core);
+        assert!(text.contains("Disconnected from devbox"), "{text}");
+        assert!(!text.contains("alt"), "{text}");
+        // In the default colour.
+        let snap = core.snapshot();
+        let row = snap
+            .lines
+            .iter()
+            .find(|l| {
+                l.iter()
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .contains("Disconnected")
+            })
+            .unwrap();
+        assert_eq!(row[0].fg, Theme::default().foreground);
+        // The whole screen scrolls again: enough lines push TOP off.
+        core.show_local("1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+        assert!(!screen(&core).contains("TOP"), "{}", screen(&core));
     }
 }

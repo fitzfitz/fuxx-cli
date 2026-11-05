@@ -708,6 +708,7 @@ mod tests {
         let dev = SshTarget {
             host: "devbox".into(),
             tmux: true,
+            tmux_name: Some("devbox-0a0b0c".into()),
         };
         let ssh = |mut s: SavedSession| {
             s.ssh = Some(dev.clone());

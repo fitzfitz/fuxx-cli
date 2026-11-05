@@ -24,7 +24,7 @@ use crate::terminal::PumpQueue;
 use crate::terminal_view::TerminalView;
 use crate::theme::Theme;
 use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
-use crate::workspace_ssh::{ssh_program, ssh_refusal};
+use crate::workspace_ssh::{check_restored, ssh_program, ssh_refusal};
 
 /// The sidebar notice when persistence is off but `live` sessions still run in a background
 /// service.
@@ -278,7 +278,19 @@ impl Workspace {
             layouts: Vec::new(),
             daemon_instance: None,
         });
-        let placement = adopt::place(&saved, &live, client.instance(), mode, &appearance.presets);
+        let mut placement =
+            adopt::place(&saved, &live, client.instance(), mode, &appearance.presets);
+        // A saved host is checked as a typed one is: a refused one isn't started.
+        let mut refused = Vec::new();
+        for (i, slot) in placement.slots.iter_mut().enumerate() {
+            if let Slot::Restore(launch) = slot
+                && let Err(why) = check_restored(launch)
+            {
+                self.note_ssh_failed(&why);
+                refused.push(i);
+            }
+        }
+        let placement = placement.without(&refused);
         let creates = placement
             .slots
             .iter()
@@ -394,6 +406,7 @@ impl Workspace {
             disconnected: None,
             retries: 0,
             opened_at: Instant::now(),
+            reconnected: false,
             _subscription: subscription,
         }
     }
