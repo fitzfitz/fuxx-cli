@@ -4,6 +4,9 @@ tags: [development, input, ui]
 
 > [!note] Input for [[40 - Roadmap]] M11 (UI/UX uplift), written 2026-10-27 by a reviewer agent from screenshots, the mockups and the code (it could not run the app). Nothing here is decided: M11 is planned with you when we reach it. You asked to keep M11 after M9 and M10, since those may change the layout.
 
+> [!important] Your direction for M11 (2026-11-05)
+> "I want to make the UI and UX fun and not boring but keep it professional." Order stays M10b → M10c (browser) → M11 (your choice).
+
 # fuxx: UI/UX review and uplift plan (input for M11)
 
 *Reviewer stance: product designer for developer tools. Sources: the owner's screenshots 2/4/7/8 (8 = current

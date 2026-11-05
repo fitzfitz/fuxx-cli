@@ -14,13 +14,30 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M10b — SSH workspaces (not planned yet). M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M10b — SSH workspaces 🟨 built and reviewed, on-screen check pending; M10c next (not planned yet). M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-06 — Milestone 10b built: SSH workspaces (on-screen check pending)
+- **Did:** You asked me to run M10b, then M10c, then M11 on my own, with all the on-screen checks saved for the
+  end. So M10b is built and reviewed but **not** marked done: no ✅ until you run the checks. Built
+  [[M10b Plan - SSH Workspaces]] (8 of 9 tasks; the ninth is your check): a host picker (⇧⌘S) fed by
+  `~/.ssh/config` and recent hosts, panes that run your own `ssh`, one shared connection per host, sidebar groups by
+  host, a "press Enter to reconnect" line when the link drops (automatic with tmux), restore and background-service
+  support, and `fuxx new --ssh`. Every task was reviewed, then a whole-branch review found three real problems
+  (SSH panes missed your login-shell settings when opened from Finder; early ssh errors vanished; retries stayed
+  noisy), plus focus, `#` comments and a hung shared connection. All fixed and re-reviewed. 457 tests. The merged
+  21-item on-screen list is in [[51 - Milestone 10b - SSH Workspaces]]; the minor findings left on purpose are in
+  the plan.
+- **Learned:** An app opened from Finder does not get your `.zshrc`, so anything ssh needs from it (agent socket,
+  ProxyCommand tools) has to be read from a login shell once. Also: two tmux panes to one host mirrored each other
+  until each got its own tmux session name, and a connection that drops right after connecting must not count as
+  "was working", or the retries restart at 3 s forever.
+- **Blocked:** Nothing. Branch `m10b-ssh-workspaces` is not merged; the next milestones stack on it until you check.
 
 ### 2026-11-05 — Milestone 10b planned: SSH workspaces
 - **Did:** You said "m10b go" and to skip the questions, so the design is the feasibility study's Option A, AI's
