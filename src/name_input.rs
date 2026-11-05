@@ -303,15 +303,22 @@ impl EntityInputHandler for NameInput {
 }
 
 impl Render for NameInput {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
+        // Focused, the edge is the focus colour: softer than the dim text on a light theme, and
+        // still a 3:1 line.
+        let edge = if self.focus_handle.is_focused(window) {
+            ui.focus_ring
+        } else {
+            ui.text_dim
+        };
         div()
             .flex_1()
             .overflow_hidden()
             .px_1()
             .rounded_sm()
             .border_1()
-            .border_color(hsla(ui.text_dim))
+            .border_color(hsla(edge))
             .bg(hsla(ui.sidebar_background))
             .key_context("NameInput")
             .track_focus(&self.focus_handle)
@@ -453,7 +460,7 @@ impl Element for NameText {
         if !selection.is_empty() {
             let left = origin.x + line.x_for_index(selection.start);
             let right = origin.x + line.x_for_index(selection.end);
-            let shade = cx.global::<Appearance>().theme.ui().row_active;
+            let shade = cx.global::<Appearance>().theme.ui().selection;
             window.paint_quad(fill(
                 Bounds::from_corners(point(left, bounds.top()), point(right, bounds.bottom())),
                 hsla(shade),

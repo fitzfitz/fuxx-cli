@@ -26,7 +26,7 @@ use crate::terminal_view::hsla;
 use crate::theme::mix;
 use crate::ui_tokens::size::{SIDEBAR_ROW, WAITING_ROW};
 use crate::ui_tokens::text;
-use crate::workspace::Workspace;
+use crate::workspace::{Overlay, Workspace};
 
 // Bound in main.rs with the "Switcher" key context; Enter and Escape are the box's own.
 actions!(switcher, [SelectPrev, SelectNext]);
@@ -376,15 +376,18 @@ impl Render for Switcher {
         let field = div()
             .relative()
             .flex()
+            // A little in from the panel's edge.
+            .m(px(2.0))
             .text_size(px(text::NAME))
             .child(self.input.clone())
             .when(empty, |field| {
                 field.child(
                     div()
                         .absolute()
-                        // Inside the box's 1 px border and 4 px padding.
+                        // Inside the box's 1 px border and 4 px padding, and clear of the
+                        // caret at the start.
                         .top(px(1.0))
-                        .left(px(5.0))
+                        .left(px(7.0))
                         .text_color(hsla(ui.text_dim))
                         .child(PLACEHOLDER),
                 )
@@ -461,6 +464,7 @@ impl Workspace {
             switcher.focus_handle(cx).focus(window, cx);
             return;
         }
+        self.close_overlays(Overlay::Switcher);
         let (entries, phase) = (self.switcher_entries(), self.phase);
         let switcher = cx.new(|cx| Switcher::new(entries, phase, window, cx));
         cx.subscribe_in(&switcher, window, Self::on_switcher_event)

@@ -1,6 +1,7 @@
 use std::process::Command;
+use std::time::Duration;
 
-use crate::status::Status;
+use crate::status::{Status, age_label};
 
 /// Fire a native macOS desktop notification via `osascript`.
 ///
@@ -54,6 +55,18 @@ pub fn message(status: Status) -> Option<&'static str> {
     }
 }
 
+/// A notification's text under its title: what a waiting session asks (`question`), or how long
+/// a finished one worked (`worked`: the Working stretch that just ended). Without those, the
+/// plain message.
+pub fn body(status: Status, question: Option<&str>, worked: Option<Duration>) -> Option<String> {
+    let shown = match (status, question, worked) {
+        (Status::Waiting, Some(question), _) => question.to_string(),
+        (Status::Done, _, Some(worked)) => format!("Worked for {}", age_label(worked)),
+        _ => message(status)?.to_string(),
+    };
+    Some(shown)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +97,27 @@ mod tests {
     fn escape_neutralises_quotes_backslashes_and_control_chars() {
         assert_eq!(applescript_escape(r#"a"b\c"#), r#"a\"b\\c"#);
         assert_eq!(applescript_escape("x\ny\u{7}"), "xy");
+    }
+
+    #[test]
+    fn notification_bodies() {
+        let q = "Do you want to make this edit to auth.rs?";
+        assert_eq!(body(Status::Waiting, Some(q), None).as_deref(), Some(q));
+        assert_eq!(
+            body(Status::Waiting, None, Some(Duration::from_secs(9))).as_deref(),
+            Some("Needs your input")
+        );
+        assert_eq!(
+            body(Status::Done, None, Some(Duration::from_secs(4 * 60 + 12))).as_deref(),
+            Some("Worked for 4m")
+        );
+        assert_eq!(
+            body(Status::Done, Some(q), Some(Duration::from_secs(12))).as_deref(),
+            Some("Worked for 12s")
+        );
+        assert_eq!(body(Status::Done, None, None).as_deref(), Some("Finished"));
+        assert_eq!(body(Status::Working, None, None), None);
+        assert_eq!(body(Status::Idle, Some(q), None), None);
     }
 
     #[test]

@@ -148,6 +148,15 @@ pub struct Session {
     pub(crate) _subscription: Subscription,
 }
 
+/// The boxes over the window that take the keyboard; only one is open at a time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Overlay {
+    Rename,
+    HostPicker,
+    AddressBox,
+    Switcher,
+}
+
 /// Where a new session's pane goes, by view (so it holds while the list changes): a layout of
 /// its own, split from a pane, or in that pane's place.
 #[derive(Clone, Copy)]
@@ -1023,6 +1032,8 @@ impl Workspace {
             return;
         };
         let old = session.status;
+        // How long it worked, when a Working stretch ends here (for a Done notification).
+        let worked = (old == Status::Working && new != old).then(|| session.status_since.elapsed());
         session.status = new;
         if old != new {
             session.status_since = Instant::now();
@@ -1041,21 +1052,24 @@ impl Workspace {
             _ => None,
         };
         let label = session.label();
+        let question = session.question.clone();
         if old != new {
             let change = Event::StatusChanged { from: old, to: new };
             self.emit(&change, Some(index));
         }
         if notify && notifier::should_notify(old, new, is_active, window_active) {
-            if let Some(body) = notifier::message(new) {
+            if let Some((message, body)) =
+                notifier::message(new).zip(notifier::body(new, question.as_deref(), worked))
+            {
                 // The group says more than the name (often 🖕) among many sessions.
                 let who = self.group_label(index).unwrap_or_else(|| label.to_string());
-                let summary = notification_summary(index + 1, &who, body);
+                let summary = notification_summary(index + 1, &who, message);
                 let posted = Event::Notification {
                     title: &summary,
-                    body,
+                    body: &body,
                 };
                 self.emit(&posted, Some(index));
-                cx.background_spawn(async move { notifier::fire(&summary, body) })
+                cx.background_spawn(async move { notifier::fire(&summary, &body) })
                     .detach();
             }
         }
@@ -1281,6 +1295,24 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Close every box over the window but `keep`, before `keep` takes the keyboard. Each box's
+    /// late "lost focus" then finds it already closed and leaves the focus alone (their event
+    /// handlers ignore a box that isn't the current one).
+    pub(crate) fn close_overlays(&mut self, keep: Overlay) {
+        if keep != Overlay::Rename {
+            self.renaming = None;
+        }
+        if keep != Overlay::HostPicker {
+            self.host_picker = None;
+        }
+        if keep != Overlay::AddressBox {
+            self.address_box = None;
+        }
+        if keep != Overlay::Switcher {
+            self.switcher = None;
+        }
+    }
+
     /// Open the rename box on session `index` (opening its group) and focus it.
     pub(crate) fn start_rename(
         &mut self,
@@ -1296,6 +1328,7 @@ impl Workspace {
         if let Some(key) = session.group() {
             self.collapsed.retain(|c| *c != key);
         }
+        self.close_overlays(Overlay::Rename);
         // The old name selected, so typing replaces it.
         let input = cx.new(|cx| {
             let mut input = NameInput::new(text, window, cx);

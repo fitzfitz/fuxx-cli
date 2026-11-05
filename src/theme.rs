@@ -7,7 +7,7 @@
 //! empty value resets a key, and `palette = N=COLOR` takes a decimal or `0x`/`0o`/`0b` index.
 
 use crate::settings::{Entry, parse};
-use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, ensure_contrast};
+use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, contrast, ensure_contrast};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::{Path, PathBuf};
 
@@ -110,6 +110,9 @@ pub struct UiColors {
     pub panel: Rgb,
     pub panel_border: Rgb,
     pub shadow: Rgb,
+    /// Selected text in a box (the rename, filter and address boxes): the accent washed over
+    /// the box, as strong as keeps the text readable.
+    pub selection: Rgb,
 }
 
 /// `fg` moved along its hue (see `ensure_contrast`) until it reaches `min` on every one of `bgs`.
@@ -175,12 +178,19 @@ impl Theme {
         let text_dim = text(mix(sidebar, fg, 0.72));
         let accent = mark(self.palette[4]);
         let quiet = |c: Rgb, on: &[Rgb]| readable(c, on, QUIET_LINE_MIN);
+        let ink = text(fg);
+        // The accent over the box (drawn on the sidebar colour), 30 % or less: as much as keeps
+        // the text on it readable. At 0 it is the box itself, which the text reads on.
+        let selection = (0..=6)
+            .map(|step| mix(sidebar, accent, 0.30 - 0.05 * step as f32))
+            .find(|&s| contrast(ink, s) >= TEXT_MIN)
+            .unwrap_or(sidebar);
         UiColors {
             sidebar_background: sidebar,
             sidebar_border: quiet(mix(sidebar, fg, 0.12), &[sidebar, bg]),
             row_active,
             row_hover,
-            text: text(fg),
+            text: ink,
             text_dim,
             ring_idle: text_dim,
             ring_working: mark(self.palette[3]),
@@ -197,6 +207,7 @@ impl Theme {
             panel_border: quiet(mix(panel, fg, 0.16), &[panel, bg]),
             // Overlays' shadow, drawn with transparency: black on dark, the ink darkened on light.
             shadow: if dark { black } else { mix(fg, black, 0.5) },
+            selection,
         }
     }
 }
@@ -258,6 +269,12 @@ impl Theme {
                 }
             }
         }
+        // Selected text in a box.
+        pairs.push(pair(
+            ("text", ui.text),
+            ("selection", ui.selection),
+            TEXT_MIN,
+        ));
         // The browser panel prints its error in the waiting colour, as text.
         pairs.push(pair(
             ("ring_waiting", ui.ring_waiting),
@@ -577,6 +594,24 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn a_selection_shows_and_its_text_reads() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            // The boxes are drawn on the sidebar colour.
+            let shows = contrast(ui.selection, ui.sidebar_background);
+            assert!(
+                shows >= 1.25,
+                "{name}: the selection is only {shows:.2} from its box"
+            );
+            let reads = contrast(ui.text, ui.selection);
+            assert!(
+                reads >= TEXT_MIN,
+                "{name}: text on the selection is {reads:.2}"
+            );
+        }
     }
 
     #[test]

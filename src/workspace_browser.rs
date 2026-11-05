@@ -27,7 +27,7 @@ use crate::browser_js::{self, Snapshot};
 use crate::browser_url::normalize_url;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::terminal_view::hsla;
-use crate::workspace::Workspace;
+use crate::workspace::{Overlay, Workspace};
 use crate::workspace_api::{now_ms, opt_str, required_str};
 
 /// How often the open browsers' titles are brought up to date and closed windows noticed.
@@ -208,9 +208,10 @@ impl Render for AddressBox {
                 field.child(
                     div()
                         .absolute()
-                        // Inside the box's 1 px border and 4 px padding.
+                        // Inside the box's 1 px border and 4 px padding, and clear of the
+                        // caret at the start.
                         .top(px(1.0))
-                        .left(px(5.0))
+                        .left(px(7.0))
                         .text_color(hsla(ui.text_dim))
                         .child(PLACEHOLDER),
                 )
@@ -332,6 +333,7 @@ impl Workspace {
             .map(|b| b.state().url)
             .filter(|url| url != "about:blank")
             .unwrap_or_default();
+        self.close_overlays(Overlay::AddressBox);
         let address = cx.new(|cx| AddressBox::new(current, window, cx));
         cx.subscribe_in(&address, window, Self::on_address_event)
             .detach();
