@@ -48,6 +48,7 @@ mod vt_snapshot;
 mod workspace;
 mod workspace_api;
 mod workspace_daemon;
+mod workspace_ssh;
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};

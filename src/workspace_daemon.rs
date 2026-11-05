@@ -23,9 +23,8 @@ use crate::status::Status;
 use crate::terminal::PumpQueue;
 use crate::terminal_view::TerminalView;
 use crate::theme::Theme;
-use crate::workspace::{
-    Session, Workspace, created, home_dir, read_saved, ssh_program, ssh_refusal,
-};
+use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
+use crate::workspace_ssh::{ssh_program, ssh_refusal};
 
 /// The sidebar notice when persistence is off but `live` sessions still run in a background
 /// service.
