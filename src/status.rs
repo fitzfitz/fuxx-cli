@@ -66,10 +66,13 @@ pub fn looks_like_waiting(screen_tail: &str) -> bool {
 
 /// The last line of `screen_tail` holding a waiting pattern (the newest question on screen).
 fn waiting_match(screen_tail: &str) -> Option<&str> {
-    screen_tail.lines().rev().find(|line| {
-        let line = line.to_lowercase();
-        WAITING_PATTERNS.iter().any(|p| line.contains(p))
-    })
+    screen_tail.lines().rev().find(|line| asks(line))
+}
+
+/// Whether `line` holds a waiting pattern.
+fn asks(line: &str) -> bool {
+    let line = line.to_lowercase();
+    WAITING_PATTERNS.iter().any(|p| line.contains(p))
 }
 
 /// The longest question line kept; the renderer ellipsises it to fit.
@@ -78,11 +81,29 @@ const QUESTION_MAX_CHARS: usize = 120;
 /// Words that mark a prompt for a secret; its line is never shown in the sidebar.
 const SECRET_WORDS: &[&str] = &["password", "passphrase", "token"];
 
-/// The screen line that made a session look Waiting, for the sidebar's question: trimmed,
-/// without control characters, at most 120 chars. A prompt for a secret gives none.
+/// The screen line that made a session look Waiting, for the sidebar's question: without the
+/// box it may be drawn in (agents like Claude Code frame their prompts with box-drawing
+/// characters), tabs as spaces, trimmed, without control characters, at most 120 chars. A line
+/// that is only the pattern ("(y/n)") gets the line above it in front, which holds the question.
+/// A prompt for a secret gives none.
 pub fn waiting_line(tail: &str) -> Option<String> {
-    let line = crate::cli::plain_text(waiting_match(tail)?);
-    let line = line.trim();
+    let lines: Vec<&str> = tail.lines().collect();
+    let at = lines.iter().rposition(|line| asks(line))?;
+    let mut line = clean_line(lines[at]);
+    let lower = line.to_lowercase();
+    let bare = WAITING_PATTERNS
+        .iter()
+        .any(|p| lower.trim_end_matches([':', '?', ' ']) == *p);
+    if bare {
+        let above = lines[..at]
+            .iter()
+            .rev()
+            .map(|l| clean_line(l))
+            .find(|l| !l.is_empty());
+        if let Some(above) = above {
+            line = format!("{above} {line}");
+        }
+    }
     let lower = line.to_lowercase();
     if SECRET_WORDS.iter().any(|w| lower.contains(w)) {
         return None;
@@ -90,9 +111,15 @@ pub fn waiting_line(tail: &str) -> Option<String> {
     Some(line.chars().take(QUESTION_MAX_CHARS).collect())
 }
 
+/// A screen line as the question shows it: tabs as spaces, no control characters, and no box
+/// border or spaces at either end.
+fn clean_line(line: &str) -> String {
+    let line = crate::cli::plain_text(&line.replace('\t', " "));
+    line.trim_matches(|c: char| c.is_whitespace() || ('\u{2500}'..='\u{257f}').contains(&c))
+        .to_string()
+}
+
 /// How long ago, for a sidebar row: "12s", "4m", "2h", "3d" (rounded down).
-// The sidebar rows (M11 task 5) are its first caller.
-#[allow(dead_code)]
 pub fn age_label(d: Duration) -> String {
     let secs = d.as_secs();
     match secs {
@@ -246,6 +273,55 @@ mod tests {
         ] {
             assert_eq!(waiting_line(tail), None, "{tail}");
         }
+    }
+
+    #[test]
+    fn waiting_line_trims_box_borders_and_tabs() {
+        // Claude Code draws its prompt inside a box.
+        let tail = "╭──────────────╮\n│ Do you want to make this edit to auth.rs? │\n│ ❯ 1. Yes │\n╰──────────────╯";
+        assert_eq!(
+            waiting_line(tail).as_deref(),
+            Some("Do you want to make this edit to auth.rs?")
+        );
+        // A tab is a space; box characters inside the line stay.
+        assert_eq!(
+            waiting_line("┃\tProceed?\t(y/n) ┃").as_deref(),
+            Some("Proceed? (y/n)")
+        );
+        assert_eq!(waiting_line("a ─ b (y/n)").as_deref(), Some("a ─ b (y/n)"));
+    }
+
+    #[test]
+    fn waiting_line_prefixes_the_previous_line_when_only_the_pattern() {
+        assert_eq!(
+            waiting_line("Overwrite foo.txt?\n  (y/n)  ").as_deref(),
+            Some("Overwrite foo.txt? (y/n)")
+        );
+        // Blank lines and bare box borders in between are skipped.
+        assert_eq!(
+            waiting_line("│ Apply the patch? │\n│              │\n│ [Y/n] │").as_deref(),
+            Some("Apply the patch? [Y/n]")
+        );
+        // Nothing above it: the pattern alone.
+        assert_eq!(waiting_line("(yes/no)").as_deref(), Some("(yes/no)"));
+    }
+
+    #[test]
+    fn waiting_line_last_matching_line_wins() {
+        let tail = "Do you want to edit a.rs? (y/n)\nok\nDo you want to edit b.rs? (y/n)\n";
+        assert_eq!(
+            waiting_line(tail).as_deref(),
+            Some("Do you want to edit b.rs? (y/n)")
+        );
+    }
+
+    #[test]
+    fn waiting_line_a_secret_on_the_newest_line_gives_none() {
+        // An older, harmless question doesn't stand in for the newest one.
+        let tail = "Do you want to continue? (y/n)\nEnter your password (y/n)";
+        assert_eq!(waiting_line(tail), None);
+        // Nor does a secret in the line the bare pattern borrows.
+        assert_eq!(waiting_line("Paste your token\n(y/n)"), None);
     }
 
     #[test]
