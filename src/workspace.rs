@@ -12,7 +12,7 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -595,20 +595,13 @@ impl Workspace {
         let (cwd, startup) = start_in(&saved, run_preset);
         let session_id = self.next_id;
         self.next_id += 1;
-        let env = scripting_env(
+        let env = session_env(
             self.socket.as_deref(),
             Some(session_id),
             exe_dir().as_deref(),
-            std::env::var_os("PATH").as_deref(),
+            ssh_login_env(&saved),
         );
-        let spawned = TerminalView::spawn(
-            window,
-            cx,
-            program,
-            cwd.as_deref(),
-            startup.as_deref(),
-            &env,
-        );
+        let spawned = TerminalView::spawn(cx, program, cwd.as_deref(), startup.as_deref(), &env);
         let view = match spawned {
             Ok(view) => view,
             Err(err) => {
@@ -654,26 +647,30 @@ impl Workspace {
         .detach();
     }
 
-    /// The `Create` for `launch`: the scripting variables as `open_local` gives them, except
+    /// The `Create` for `launch`: the environment as `open_local` gives it, except
     /// `FUXX_SESSION`, which the service sets (it knows the id). `program`: run instead of a
     /// login shell.
     pub(crate) fn create_for(&self, launch: &Launch, program: Option<Vec<String>>) -> Create {
         let (cwd, startup) = start_in(&launch.saved, launch.run_preset);
-        let env = scripting_env(
-            self.socket.as_deref(),
-            None,
-            exe_dir().as_deref(),
-            std::env::var_os("PATH").as_deref(),
-        );
         Create {
             program,
             ..daemon_create(
                 cwd.as_deref(),
                 startup.as_deref(),
-                daemon_client::create_env(&env),
+                self.create_env(&launch.saved),
                 &launch.saved,
             )
         }
+    }
+
+    /// The environment a background-service session for `saved` starts with.
+    pub(crate) fn create_env(&self, saved: &SavedSession) -> BTreeMap<String, String> {
+        daemon_client::create_env(&session_env(
+            self.socket.as_deref(),
+            None,
+            exe_dir().as_deref(),
+            ssh_login_env(saved),
+        ))
     }
 
     /// Show background-service session `id` (as `open_session` places one); its id. If it
@@ -687,7 +684,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<u64> {
-        let placed = match TerminalView::attach_daemon(window, cx, client.clone(), id) {
+        let placed = match TerminalView::attach_daemon(cx, client.clone(), id) {
             Ok(view) => self.insert_session(id, view, saved, at, window, cx),
             Err(err) => {
                 eprintln!("[fuxx] session: could not show s{id}: {err}");
@@ -933,10 +930,10 @@ impl Workspace {
                 if session.disconnected.is_some() {
                     return; // already held
                 }
-                match on_exit(session.ssh.as_ref(), *code) {
+                match on_exit(session.ssh.as_ref(), *code, session.opened_at.elapsed()) {
                     // Ended by itself (or by a close already under way): nothing more to end.
                     ExitAction::Close => self.remove_at(index, None, window, cx),
-                    ExitAction::Hold => self.hold(index, window, cx),
+                    ExitAction::Hold(held) => self.hold(index, held, window, cx),
                 }
             }
             TerminalEvent::Reconnect => self.reconnect_ssh(index, false, window, cx),
@@ -1151,6 +1148,12 @@ impl Workspace {
 
     /// After the active session changed (by any route): open its group and focus it.
     pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_active(cx);
+        self.focus_active(window, cx);
+    }
+
+    /// `activate` without moving the focus (an SSH session reconnected by its timer, M10b).
+    pub(crate) fn note_active(&mut self, cx: &mut Context<Self>) {
         self.note_focus();
         if let Some(key) = self.sessions.active().and_then(Session::group) {
             self.collapsed.retain(|c| *c != key);
@@ -1161,7 +1164,6 @@ impl Workspace {
         {
             self.dragging = None;
         }
-        self.focus_active(window, cx);
         self.save();
         self.sync_quit_title(cx);
         cx.notify();
@@ -1731,6 +1733,7 @@ fn scripting_env(
 ) -> ShellEnv {
     let Some(socket) = socket else {
         return ShellEnv {
+            base: None,
             set: Vec::new(),
             remove: vec!["FUXX_SOCKET", "FUXX_SESSION"],
         };
@@ -1748,9 +1751,40 @@ fn scripting_env(
         set.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
     }
     ShellEnv {
+        base: None,
         set,
         remove: Vec::new(),
     }
+}
+
+/// A session's environment: `scripting_env` on fuxx's own, or with `login` (an SSH session's,
+/// M10b: your login shell's) on that, its `PATH` included.
+fn session_env(
+    socket: Option<&Path>,
+    id: Option<u64>,
+    exe_dir: Option<&Path>,
+    login: Option<&[(String, String)]>,
+) -> ShellEnv {
+    let path = match login {
+        Some(login) => login
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, path)| OsString::from(path)),
+        None => std::env::var_os("PATH"),
+    };
+    ShellEnv {
+        base: login.map(<[_]>::to_vec),
+        ..scripting_env(socket, id, exe_dir, path.as_deref())
+    }
+}
+
+/// An SSH session's base environment: the login shell's, once read (`ssh_program` reads it
+/// before any SSH session opens). `None` for a local session, or if it couldn't be read.
+fn ssh_login_env(saved: &SavedSession) -> Option<&'static [(String, String)]> {
+    saved
+        .ssh
+        .as_ref()
+        .and_then(|_| crate::workspace_ssh::login_env_read())
 }
 
 /// The background service's `Create` for a session: as `TerminalView::spawn` would start it
@@ -1854,7 +1888,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_create, scripting_env, sub_line};
+    use super::{daemon_create, scripting_env, session_env, sub_line};
     use crate::presets::Preset;
     use crate::pty::apply_env;
     use crate::restore::SavedSession;
@@ -1901,6 +1935,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_ssh_session_starts_from_the_login_environment() {
+        let ours = Path::new("/me/fuxx.sock");
+        let exe = Path::new("/apps/fuxx.app/Contents/MacOS");
+        let login = [
+            ("PATH".to_string(), "/opt/homebrew/bin:/usr/bin".to_string()),
+            ("SSH_AUTH_SOCK".to_string(), "/agent".to_string()),
+        ];
+        let env = session_env(Some(ours), Some(4), Some(exe), Some(&login));
+        assert_eq!(env.base.as_deref(), Some(&login[..]));
+        let var = |k: &str| {
+            env.set
+                .iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        // The login PATH, with fuxx's folder at the end.
+        assert_eq!(
+            var("PATH"),
+            Some("/opt/homebrew/bin:/usr/bin:/apps/fuxx.app/Contents/MacOS")
+        );
+        assert_eq!(var("FUXX_SESSION"), Some("s4"));
+        // Without it (a local session, or none read): fuxx's own, as before.
+        let own = session_env(Some(ours), Some(4), Some(exe), None);
+        assert!(own.base.is_none());
+        let path = std::env::var("PATH").unwrap_or_default();
+        let expected = if path.is_empty() {
+            exe.display().to_string()
+        } else {
+            format!("{path}:{}", exe.display())
+        };
+        assert_eq!(
+            own.set.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v),
+            Some(&expected)
+        );
     }
 
     #[test]

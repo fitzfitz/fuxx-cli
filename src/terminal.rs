@@ -138,6 +138,8 @@ impl EventListener for Listener {
 struct Shared {
     term: Term<Listener>,
     processor: Processor<StdSyncHandler>,
+    /// When the program first printed (not a snapshot, not `show_local`'s text).
+    first_output: Option<Instant>,
 }
 
 /// Where a terminal's bytes come from and go to.
@@ -285,6 +287,7 @@ impl TerminalCore {
         let shared = Arc::new(FairMutex::new(Shared {
             term,
             processor: Processor::new(),
+            first_output: None,
         }));
 
         let reader_shared = shared.clone();
@@ -298,7 +301,12 @@ impl TerminalCore {
                 let notifications = detector.feed(bytes);
                 {
                     let mut guard = reader_shared.lock();
-                    let Shared { term, processor } = &mut *guard;
+                    let Shared {
+                        term,
+                        processor,
+                        first_output,
+                    } = &mut *guard;
+                    first_output.get_or_insert_with(Instant::now);
                     processor.advance(term, bytes);
                 } // lock released before waking the UI
                 let _ = events.unbounded_send(TermEvent::Output { notifications });
@@ -387,6 +395,7 @@ impl TerminalCore {
         let shared = Arc::new(FairMutex::new(Shared {
             term,
             processor: Processor::new(),
+            first_output: None,
         }));
         let (token, stream) = client.route(id);
         let (tx, pending) = std::sync::mpsc::channel();
@@ -525,11 +534,19 @@ impl TerminalCore {
         }
     }
 
+    /// When the program first printed: its own bytes (a daemon session's after the first
+    /// snapshot), not text from `show_local`. `None` until then.
+    pub fn first_output(&self) -> Option<Instant> {
+        self.shared.lock().first_output
+    }
+
     /// Parse `text` into the screen as if the program had printed it; nothing reaches the
     /// program (an SSH session's reconnect line, M10b). The caller redraws.
     pub fn show_local(&self, text: &str) {
         let mut guard = self.shared.lock();
-        let Shared { term, processor } = &mut *guard;
+        let Shared {
+            term, processor, ..
+        } = &mut *guard;
         processor.advance(term, text.as_bytes());
     }
 
@@ -665,7 +682,9 @@ impl TerminalCore {
     /// Returns true if something was flushed (redraw needed).
     pub fn flush_stale_sync(&self) -> bool {
         let mut guard = self.shared.lock();
-        let Shared { term, processor } = &mut *guard;
+        let Shared {
+            term, processor, ..
+        } = &mut *guard;
         match processor.sync_timeout().sync_timeout() {
             Some(deadline) if Instant::now() >= deadline => {
                 processor.stop_sync(term);
@@ -737,7 +756,9 @@ impl Replica {
                     let mut guard = shared.lock();
                     guard.term = Term::new(Config::default(), &dims, self.listener.clone());
                     guard.processor = Processor::new();
-                    let Shared { term, processor } = &mut *guard;
+                    let Shared {
+                        term, processor, ..
+                    } = &mut *guard;
                     processor.advance(term, &snap.vt_bytes);
                 }
                 self.next = Some(snap.seq + 1);
@@ -756,7 +777,12 @@ impl Replica {
                 }
                 {
                     let mut guard = shared.lock();
-                    let Shared { term, processor } = &mut *guard;
+                    let Shared {
+                        term,
+                        processor,
+                        first_output,
+                    } = &mut *guard;
+                    first_output.get_or_insert_with(Instant::now);
                     processor.advance(term, &bytes);
                 }
                 let notifications = usize::try_from(notifications).unwrap_or(usize::MAX);
@@ -949,6 +975,7 @@ mod tests {
     #[test]
     fn pty_runs_argv_without_a_shell() {
         let env = pty::ShellEnv {
+            base: None,
             set: Vec::new(),
             remove: Vec::new(),
         };
@@ -985,6 +1012,24 @@ mod tests {
     }
 
     #[test]
+    fn first_output_is_when_the_program_first_printed() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("sleep 1; echo hi; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        // Text fuxx writes into the screen itself is not the program's.
+        core.show_local("Connecting\r\n");
+        assert_eq!(core.first_output(), None);
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("hi")));
+        let first = core.first_output().expect("printed");
+        assert!(first.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
     fn show_local_writes_to_the_screen_only() {
         // The child prints the first line it reads: had the text reached it, that would be it.
         let (tx, mut rx) = unbounded();
@@ -1008,6 +1053,7 @@ mod tests {
     fn a_plain_shell_exit_has_its_code() {
         // The login shell (no program), `/bin/sh` through the env, not a process-wide variable.
         let env = pty::ShellEnv {
+            base: None,
             set: vec![("SHELL".into(), "/bin/sh".into())],
             remove: Vec::new(),
         };
