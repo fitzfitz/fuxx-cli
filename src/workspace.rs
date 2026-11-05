@@ -32,6 +32,7 @@ use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::daemon_client::{self, DaemonClient};
 use crate::groups::{self, GroupKey, Row};
+use crate::host_picker::HostPicker;
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
@@ -56,6 +57,7 @@ actions!(
     [
         NewSession,
         NewSessionInFolder,
+        NewSshSession,
         CloseSession,
         NextSession,
         PrevSession,
@@ -199,6 +201,8 @@ pub struct Workspace {
     pub(crate) collapsed: Vec<GroupKey>,
     /// The rename box, and the session (by its view) it renames.
     pub(crate) renaming: Option<(EntityId, Entity<NameInput>)>,
+    /// The SSH host picker, while it is open (M10b).
+    pub(crate) host_picker: Option<Entity<HostPicker>>,
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
     /// events are sent).
     pub(crate) restoring: bool,
@@ -266,6 +270,7 @@ impl Workspace {
             dragging: None,
             collapsed: Vec::new(),
             renaming: None,
+            host_picker: None,
             restoring: true,
             hold_saving: false,
             next_id: 1,
@@ -1620,6 +1625,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NewSessionInFolder, window, cx| {
                 this.new_session_in_folder(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &NewSshSession, window, cx| {
+                    this.open_host_picker(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
                 if let Some(i) = this.sessions.active_index() {
                     this.close_at(i, window, cx);
@@ -1691,6 +1701,20 @@ impl Render for Workspace {
                     .child(self.render_pane_area(cx))
                     .children(self.render_panes(colors, cx)),
             )
+            // The host picker: over everything, centred near the top of the window.
+            .when_some(self.host_picker.clone(), |root, picker| {
+                root.child(
+                    div()
+                        .absolute()
+                        .top(px(48.0))
+                        .left_0()
+                        .right_0()
+                        .px_4()
+                        .flex()
+                        .justify_center()
+                        .child(picker),
+                )
+            })
     }
 }
 

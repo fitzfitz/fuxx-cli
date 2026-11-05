@@ -6,9 +6,10 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Entity, EntityId, Task, Window, prelude::*};
+use gpui::{Context, Entity, EntityId, Focusable, Task, Window, prelude::*};
 
 use crate::api_events::Event;
+use crate::host_picker::{HostPicker, HostPickerEvent};
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::ssh_target::{self, Effective, SshTarget};
@@ -342,6 +343,49 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// File → New SSH Session…: open the host picker with the recent hosts and those in
+    /// `~/.ssh/config`, and put the typing there. Already open: back to its box.
+    pub(crate) fn open_host_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = &self.host_picker {
+            picker.focus_handle(cx).focus(window, cx);
+            return;
+        }
+        let (recent, hosts) = match home_dir() {
+            Some(home) => (
+                ssh_hosts::load_recent(&ssh_hosts::recent_path(&home)),
+                ssh_hosts::config_hosts(&home.join(".ssh").join("config"), &home),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        let picker = cx.new(|cx| HostPicker::new(recent, hosts, window, cx));
+        cx.subscribe_in(&picker, window, Self::on_host_picker_event)
+            .detach();
+        picker.focus_handle(cx).focus(window, cx);
+        self.host_picker = Some(picker);
+        cx.notify();
+    }
+
+    /// The picker chose a host (a new session to it, as its own layout) or was closed; either
+    /// way it goes and the typing returns to the terminal.
+    fn on_host_picker_event(
+        &mut self,
+        picker: &Entity<HostPicker>,
+        event: &HostPickerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A picker already closed can still report losing focus: ignore it.
+        if self.host_picker.as_ref() != Some(picker) {
+            return;
+        }
+        self.host_picker = None;
+        if let HostPickerEvent::Open(target) = event {
+            self.open_ssh(target.clone(), Place::New, window, cx);
+        }
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     /// An SSH session couldn't open (`why`): logged, and said at the foot of the sidebar.

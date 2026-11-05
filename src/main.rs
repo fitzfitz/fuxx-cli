@@ -16,6 +16,7 @@ mod detector;
 mod fonts;
 mod grid;
 mod groups;
+mod host_picker;
 mod keys;
 mod links;
 mod mcp;
@@ -35,9 +36,6 @@ mod session_list;
 mod settings;
 mod split_tree;
 mod ssh_control;
-// The host picker (M10b Task 6) uses the config hosts and the picker rows; until then only the
-// tests do.
-#[cfg_attr(not(test), allow(dead_code))]
 mod ssh_hosts;
 mod ssh_target;
 mod status;
@@ -69,7 +67,7 @@ use workspace::{
     CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
     LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp, NewSession,
-    NewSessionInFolder, NextPane, NextSession, PrevPane, PrevSession, RenameSession,
+    NewSessionInFolder, NewSshSession, NextPane, NextSession, PrevPane, PrevSession, RenameSession,
     SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6,
     SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, Workspace,
 };
@@ -120,6 +118,7 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
         Menu::new("File").items([
             MenuItem::action("New Session", NewSession),
             MenuItem::action("New Session in Folder\u{2026}", NewSessionInFolder),
+            MenuItem::action("New SSH Session\u{2026}", NewSshSession),
             MenuItem::submenu(Menu::new("New Agent Session").items(preset_items)),
             MenuItem::action("Rename Session\u{2026}", RenameSession),
             MenuItem::action("Move Session Up", MoveSessionUp),
@@ -331,6 +330,7 @@ fn main() {
                 KeyBinding::new("cmd-,", OpenPreferences, None),
                 KeyBinding::new("cmd-t", NewSession, None),
                 KeyBinding::new("cmd-o", NewSessionInFolder, None),
+                KeyBinding::new("cmd-shift-s", NewSshSession, None),
                 KeyBinding::new("cmd-w", CloseSession, None),
                 KeyBinding::new("cmd-r", RenameSession, None),
                 // macOS reports cmd-shift-] as key "}" (shift folded into the character).
@@ -375,6 +375,12 @@ fn main() {
                 KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
                 KeyBinding::new("enter", name_input::Confirm, Some("NameInput")),
                 KeyBinding::new("escape", name_input::Cancel, Some("NameInput")),
+                // The SSH host picker: its box is a NameInput (Enter, Escape above); these keys
+                // move through the hosts and choose.
+                KeyBinding::new("up", host_picker::SelectPrev, Some("HostPicker")),
+                KeyBinding::new("down", host_picker::SelectNext, Some("HostPicker")),
+                KeyBinding::new("tab", host_picker::ToggleTmux, Some("HostPicker")),
+                KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
                 // There's no Edit menu to supply "Emoji & Symbols", so bind its shortcut here.
                 KeyBinding::new(
                     "ctrl-cmd-space",
