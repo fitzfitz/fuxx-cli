@@ -3,9 +3,9 @@
 //! run come back through M7 restore; live ones the file doesn't know are added to the sidebar.
 //! Pure and GPUI-free, so the rules are unit-tested; listing and attaching are the caller's.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::groups;
+use crate::groups::{self, GroupKey};
 use crate::mux_proto::SessionInfo;
 use crate::presets::Preset;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
@@ -72,6 +72,7 @@ pub struct Placement {
     pub slots: Vec<Slot>,
     pub layouts: Vec<Node<usize>>,
     pub collapsed: Vec<PathBuf>,
+    pub collapsed_hosts: Vec<String>,
     /// The active slot (0 when there are none).
     pub active: usize,
 }
@@ -117,8 +118,10 @@ pub fn place(
         .map(|t| t.map(&Origin::Saved))
         .collect();
     for (k, info) in live.iter().filter(|l| !shown.contains(&l.id)).enumerate() {
-        let projects: Vec<Option<&Path>> = slots.iter().map(|(_, s)| s.project()).collect();
-        let at = groups::insert_index(&projects, info.project.as_deref());
+        let keys: Vec<Option<GroupKey>> = slots.iter().map(|(_, s)| s.group()).collect();
+        let keys: Vec<Option<&GroupKey>> = keys.iter().map(Option::as_ref).collect();
+        let key = groups::key(None, info.project.as_deref());
+        let at = groups::insert_index(&keys, key.as_ref());
         slots.insert(at, (Origin::New(k), Slot::Live(newcomer(info, presets))));
         layouts.push(Node::Leaf(Origin::New(k)));
     }
@@ -135,6 +138,7 @@ pub fn place(
         slots,
         layouts,
         collapsed: saved.collapsed.clone(),
+        collapsed_hosts: saved.collapsed_hosts.clone(),
     }
 }
 
@@ -166,16 +170,22 @@ impl Placement {
             slots,
             layouts,
             collapsed: self.collapsed,
+            collapsed_hosts: self.collapsed_hosts,
         }
     }
 }
 
 impl Slot {
-    fn project(&self) -> Option<&Path> {
-        match self {
-            Slot::Live(a) => a.saved.project.as_deref(),
-            Slot::Restore(l) => l.saved.project.as_deref(),
-        }
+    /// Its sidebar group (an SSH session's is its host).
+    fn group(&self) -> Option<GroupKey> {
+        let saved = match self {
+            Slot::Live(a) => &a.saved,
+            Slot::Restore(l) => &l.saved,
+        };
+        groups::key(
+            saved.ssh.as_ref().map(|t| t.host.as_str()),
+            saved.project.as_deref(),
+        )
     }
 }
 
@@ -195,6 +205,8 @@ fn adopted(s: &SavedSession, info: &LiveInfo) -> Adopted {
             project: s.project.clone().or_else(|| info.project.clone()),
             preset: s.preset.clone(),
             daemon_id: Some(info.id),
+            // The service doesn't know hosts: the file does.
+            ssh: s.ssh.clone(),
         },
         title: info.title.clone(),
         status: info.status,
@@ -223,6 +235,7 @@ fn newcomer(info: &LiveInfo, presets: &[Preset]) -> Adopted {
             project: info.project.clone(),
             preset,
             daemon_id: Some(info.id),
+            ssh: None,
         },
         title: info.title.clone(),
         status: info.status,
@@ -322,6 +335,7 @@ mod tests {
     use crate::presets::builtins;
     use crate::restore::VERSION;
     use crate::split_tree::Axis;
+    use crate::ssh_target::SshTarget;
 
     fn s(name: &str, id: Option<u64>) -> SavedSession {
         SavedSession {
@@ -351,6 +365,7 @@ mod tests {
             version: VERSION,
             active: Some(active),
             collapsed: vec![PathBuf::from("/w/api")],
+            collapsed_hosts: Vec::new(),
             sessions,
             layouts,
             daemon_instance: Some(INSTANCE),
@@ -686,6 +701,50 @@ mod tests {
         assert_eq!(p.active, 0);
         let none = p.without(&[0, 1]);
         assert!(none.slots.is_empty() && none.layouts.is_empty());
+    }
+
+    #[test]
+    fn adoption_keeps_the_ssh_target() {
+        let dev = SshTarget {
+            host: "devbox".into(),
+            tmux: true,
+        };
+        let ssh = |mut s: SavedSession| {
+            s.ssh = Some(dev.clone());
+            s
+        };
+        let mut saved = state(
+            vec![
+                s("plain", Some(3)),
+                ssh(s("a", Some(1))),
+                ssh(s("b", Some(2))),
+            ],
+            vec![],
+            0,
+        );
+        saved.collapsed_hosts = vec!["devbox".into()];
+        let p = place_all(&saved, &[live(1), live(3), live(9)], RestoreMode::Agents);
+        // The SSH sessions are a group (their host's), so the ungrouped newcomer goes before it.
+        assert_eq!(shown(&p), ["s3", "s9", "s1", "+b"]);
+        let Slot::Live(a) = &p.slots[2] else { panic!() };
+        assert_eq!(
+            a.saved.ssh.as_ref(),
+            Some(&dev),
+            "still running: shown with its host"
+        );
+        let Slot::Restore(b) = &p.slots[3] else {
+            panic!()
+        };
+        assert_eq!(
+            b.saved.ssh.as_ref(),
+            Some(&dev),
+            "restarted: connects again"
+        );
+        let Slot::Live(nine) = &p.slots[1] else {
+            panic!()
+        };
+        assert_eq!(nine.saved.ssh, None, "the service doesn't know hosts");
+        assert_eq!(p.collapsed_hosts, ["devbox"]);
     }
 
     #[test]

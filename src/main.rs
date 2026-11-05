@@ -34,14 +34,11 @@ mod restore;
 mod session_list;
 mod settings;
 mod split_tree;
-// Tasks 3-5 build the launch path and UI on these; until then only the tests use them.
-#[allow(dead_code)]
-mod ssh_hosts;
-// The launch path (M10b Task 5) calls the shared-connection folder and health check; until
-// then only the tests use them.
-#[allow(dead_code)]
 mod ssh_control;
+// The host picker (M10b Task 6) uses the config hosts and the picker rows; until then only the
+// tests do.
 #[cfg_attr(not(test), allow(dead_code))]
+mod ssh_hosts;
 mod ssh_target;
 mod status;
 mod terminal;

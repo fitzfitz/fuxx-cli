@@ -53,11 +53,11 @@ pub enum TerminalEvent {
     StatusChanged(Status),
     /// The program set (Some) or reset (None) the title via OSC 0/2.
     TitleChanged(Option<SharedString>),
-    /// The program exited (`code`: its exit code, if known); the session should close.
-    Exited {
-        #[allow(dead_code)] // read by the workspace from M10b Task 5 (SSH disconnects)
-        code: Option<u32>,
-    },
+    /// The program exited (`code`: its exit code, if known); the session should close, or
+    /// with SSH's "connection failed" (255) hold for a reconnect (M10b).
+    Exited { code: Option<u32> },
+    /// Enter was pressed in a held (disconnected) pane: reconnect it.
+    Reconnect,
     /// Daemon backend: the connection to the daemon is gone. Not an exit: the session may
     /// still run there, so it stays.
     DaemonLost,
@@ -88,6 +88,9 @@ pub struct TerminalView {
     selecting: bool,
     /// A press was reported to the program, so drags and the release are reported too.
     mouse_reported: bool,
+    /// Held after an SSH disconnect (M10b): the program is gone, so input goes nowhere and Enter
+    /// asks for a reconnect; the status no longer changes.
+    disconnected: bool,
     /// Dropping a GPUI `Task` cancels it, so these live as long as the view.
     _events: Task<()>,
     _ticker: Task<()>,
@@ -196,10 +199,18 @@ impl TerminalView {
         self.core.daemon_id()
     }
 
-    /// Whether this view works out the status itself (Local). On the Daemon backend the
-    /// daemon does, and its `Status` arrives as `TermEvent::Status`.
+    /// Whether this view works out the status itself (Local, still connected). On the Daemon
+    /// backend the daemon does, and its `Status` arrives as `TermEvent::Status`.
     fn tracks_status(&self) -> bool {
-        self.core.daemon_id().is_none()
+        self.core.daemon_id().is_none() && !self.disconnected
+    }
+
+    /// Hold the pane after an SSH disconnect: show `banner` under the last screen (it reaches
+    /// no program) and from now on drop input; Enter emits `Reconnect`.
+    pub fn hold(&mut self, banner: &str, cx: &mut Context<Self>) {
+        self.disconnected = true;
+        self.core.show_local(banner);
+        cx.notify();
     }
 
     /// The terminal's text (see `grid::TextScope`).
@@ -269,6 +280,7 @@ impl TerminalView {
             pressed_link: None,
             selecting: false,
             mouse_reported: false,
+            disconnected: false,
             _events: events,
             _ticker: ticker,
             _appearance: appearance,
@@ -369,19 +381,34 @@ impl TerminalView {
         }
     }
 
-    /// What a keystroke does once it has bytes: write to the pty, tell the tracker, swallow the event.
+    /// What a keystroke does once it has bytes: write to the pty, tell the tracker, swallow the
+    /// event. Held (disconnected): Enter asks for a reconnect, anything else is dropped.
     fn send_key_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        if self.disconnected && bytes == b"\r" {
+            cx.emit(TerminalEvent::Reconnect);
+        }
         self.input_bytes(bytes, cx);
         cx.stop_propagation();
     }
 
     /// Input from the user or a script: write to the pty and tell the tracker it was typing.
+    /// Held (disconnected): dropped, there is no program to take it.
     fn input_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        if self.disconnected {
+            return;
+        }
         self.core.input(bytes);
         if self.tracks_status()
             && let Some(status) = self.tracker.on_input(Instant::now())
         {
             self.status_changed(status, cx);
+        }
+    }
+
+    /// A mouse report (or wheel as arrows) for the program; dropped once disconnected.
+    fn report(&self, bytes: &[u8]) {
+        if !self.disconnected {
+            self.core.write(bytes);
         }
     }
 
@@ -444,11 +471,11 @@ impl TerminalView {
                     row,
                     mode,
                 ) {
-                    self.core.write(&bytes);
+                    self.report(&bytes);
                 }
             }
         } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !shift {
-            self.core.write(&mouse::alt_scroll(lines));
+            self.report(&mouse::alt_scroll(lines));
         } else {
             self.core.scroll(Scroll::Delta(lines));
         }
@@ -473,7 +500,7 @@ impl TerminalView {
                 && let Some(bytes) =
                     mouse::report(button, MouseAction::Press, mods(m), col, row, mode)
             {
-                self.core.write(&bytes);
+                self.report(&bytes);
                 self.mouse_reported = true;
             }
         } else if e.button == MouseButton::Left {
@@ -516,7 +543,7 @@ impl TerminalView {
                     mode,
                 )
             {
-                self.core.write(&bytes);
+                self.report(&bytes);
             }
         }
         let hovered = if e.modifiers.platform && over_pane {
@@ -555,7 +582,7 @@ impl TerminalView {
                     self.core.mode(),
                 )
             {
-                self.core.write(&bytes);
+                self.report(&bytes);
             }
         }
         self.selecting = false;

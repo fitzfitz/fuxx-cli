@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::presets::Preset;
 use crate::settings::Entry;
 use crate::split_tree::Node;
+use crate::ssh_target::SshTarget;
 
 /// How much of the last run comes back at startup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -73,6 +74,9 @@ pub struct SavedSession {
     /// The background service's id for it (persistence on), so a reopen finds it running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_id: Option<u64>,
+    /// An SSH session's host and tmux choice (M10b); a restore connects again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshTarget>,
 }
 
 /// Everything saved about the workspace.
@@ -83,6 +87,9 @@ pub struct SavedState {
     pub active: Option<usize>,
     #[serde(default)]
     pub collapsed: Vec<PathBuf>,
+    /// The SSH hosts whose groups are closed (M10b).
+    #[serde(default)]
+    pub collapsed_hosts: Vec<String>,
     #[serde(default)]
     pub sessions: Vec<SavedSession>,
     /// One split layout per session (leaves are pane indices); empty means all single panes.
@@ -154,6 +161,7 @@ mod tests {
     use super::*;
     use crate::presets::builtins;
     use crate::split_tree::Axis;
+    use crate::ssh_target::SshTarget;
 
     fn r(value: &str) -> Entry {
         Entry {
@@ -166,6 +174,7 @@ mod tests {
             version: VERSION,
             active: Some(1),
             collapsed: vec![PathBuf::from("/w/api")],
+            collapsed_hosts: Vec::new(),
             sessions: vec![
                 SavedSession::default(),
                 SavedSession {
@@ -176,6 +185,7 @@ mod tests {
                         command: "claude".into(),
                     }),
                     daemon_id: Some(4),
+                    ssh: None,
                 },
             ],
             layouts: vec![
@@ -284,6 +294,44 @@ mod tests {
         let gone = launches(&sample(), RestoreMode::Agents, &[]);
         assert_eq!(gone[1].saved.preset, None);
         assert!(!gone[1].run_preset);
+    }
+
+    fn devbox(tmux: bool) -> SshTarget {
+        SshTarget {
+            host: "devbox".into(),
+            tmux,
+        }
+    }
+
+    #[test]
+    fn saved_ssh_round_trips_and_old_files_load() {
+        let mut s = sample();
+        s.sessions[0].ssh = Some(devbox(true));
+        s.collapsed_hosts = vec!["devbox".into()];
+        assert_eq!(decode(&encode(&s)), Some(s));
+        // Not written for a local session.
+        assert!(!encode(&sample()).contains("\"ssh\""));
+        // A file from before SSH sessions: none, and no collapsed hosts.
+        let old = decode("{\"version\": 1, \"sessions\": [{\"name\": \"a\"}]}").unwrap();
+        assert_eq!(old.sessions[0].ssh, None);
+        assert!(old.collapsed_hosts.is_empty());
+        // tmux left out reads as off.
+        let bare = decode(r#"{"version": 1, "sessions": [{"ssh": {"host": "devbox"}}]}"#).unwrap();
+        assert_eq!(bare.sessions[0].ssh, Some(devbox(false)));
+    }
+
+    #[test]
+    fn restore_reopens_ssh_in_layout_and_agents_not_off() {
+        let mut s = sample();
+        s.sessions[0].ssh = Some(devbox(true));
+        assert!(launches(&s, RestoreMode::Off, &builtins()).is_empty());
+        for mode in [RestoreMode::Layout, RestoreMode::Agents] {
+            let l = launches(&s, mode, &builtins());
+            assert_eq!(l[0].saved.ssh, Some(devbox(true)), "{mode:?}");
+            // Connecting is the place, not a program: nothing is typed in.
+            assert!(!l[0].run_preset, "{mode:?}");
+            assert_eq!(l[1].saved.ssh, None, "{mode:?}");
+        }
     }
 
     #[test]

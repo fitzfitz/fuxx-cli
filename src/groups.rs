@@ -17,18 +17,48 @@ pub fn auto_name(user: Option<&str>, title: Option<&str>, preset: Option<&str>) 
         .to_string()
 }
 
+/// What a sidebar group is for: a folder (M7), or a host (M10b SSH sessions).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum GroupKey {
+    Folder(PathBuf),
+    Host(String),
+}
+
+/// A session's group: its host if it is an SSH session, else its folder, else none.
+pub fn key(host: Option<&str>, project: Option<&Path>) -> Option<GroupKey> {
+    match (host, project) {
+        (Some(host), _) => Some(GroupKey::Host(host.to_string())),
+        (None, Some(project)) => Some(GroupKey::Folder(project.to_path_buf())),
+        (None, None) => None,
+    }
+}
+
+/// The collapsed groups as the sessions file keeps them (folders and hosts apart), joined.
+pub fn collapsed_keys(folders: &[PathBuf], hosts: &[String]) -> Vec<GroupKey> {
+    let folders = folders.iter().cloned().map(GroupKey::Folder);
+    folders
+        .chain(hosts.iter().cloned().map(GroupKey::Host))
+        .collect()
+}
+
 fn last_component(path: &Path) -> Option<String> {
     path.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
-/// The folder's name; when a different path in `all` shares it, the parent's name is appended.
-pub fn group_label(project: &Path, all: &[&Path]) -> String {
+/// A host group's label is the host. A folder's is its name; when a different folder in `all`
+/// shares it, the parent's name is appended.
+pub fn group_label(key: &GroupKey, all: &[&GroupKey]) -> String {
+    let project = match key {
+        GroupKey::Host(host) => return host.clone(),
+        GroupKey::Folder(project) => project.as_path(),
+    };
     let Some(name) = last_component(project) else {
         return project.display().to_string();
     };
-    let clash = all
-        .iter()
-        .any(|p| *p != project && last_component(p).as_deref() == Some(name.as_str()));
+    let clash = all.iter().any(|k| match k {
+        GroupKey::Folder(p) => p != project && last_component(p).as_deref() == Some(name.as_str()),
+        GroupKey::Host(_) => false,
+    });
     match project.parent().and_then(last_component) {
         Some(parent) if clash => format!("{name} ({parent})"),
         _ => name,
@@ -37,13 +67,13 @@ pub fn group_label(project: &Path, all: &[&Path]) -> String {
 
 /// Where a new session goes so groups stay together: ungrouped ones sit in the leading run,
 /// a grouped one goes right after its group (or at the end when the group is new).
-pub fn insert_index(projects: &[Option<&Path>], project: Option<&Path>) -> usize {
-    match project {
-        None => projects.iter().take_while(|p| p.is_none()).count(),
-        Some(p) => projects
+pub fn insert_index(keys: &[Option<&GroupKey>], key: Option<&GroupKey>) -> usize {
+    match key {
+        None => keys.iter().take_while(|k| k.is_none()).count(),
+        Some(k) => keys
             .iter()
-            .rposition(|q| *q == Some(p))
-            .map_or(projects.len(), |i| i + 1),
+            .rposition(|q| *q == Some(k))
+            .map_or(keys.len(), |i| i + 1),
     }
 }
 
@@ -61,11 +91,11 @@ pub fn rolled_up(statuses: impl IntoIterator<Item = Status>) -> Status {
         .unwrap_or(Status::Idle)
 }
 
-/// One sidebar row: a project header, or a session (by index into the session list).
+/// One sidebar row: a group header, or a session (by index into the session list).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
     Header {
-        project: PathBuf,
+        key: GroupKey,
         first: usize,
         len: usize,
         collapsed: bool,
@@ -76,18 +106,18 @@ pub enum Row {
     },
 }
 
-/// The sidebar rows: leading ungrouped sessions, then each project run under a header
-/// (its sessions are omitted when the project is collapsed).
-pub fn rows(projects: &[Option<&Path>], collapsed: &[PathBuf]) -> Vec<Row> {
+/// The sidebar rows: leading ungrouped sessions, then each group's run under a header
+/// (its sessions are omitted when the group is collapsed).
+pub fn rows(keys: &[Option<&GroupKey>], collapsed: &[GroupKey]) -> Vec<Row> {
     let mut out = Vec::new();
-    let lead = projects.iter().take_while(|p| p.is_none()).count();
+    let lead = keys.iter().take_while(|k| k.is_none()).count();
     out.extend((0..lead).map(|index| Row::Session {
         index,
         grouped: false,
     }));
     let mut i = lead;
-    while i < projects.len() {
-        let Some(project) = projects[i] else {
+    while i < keys.len() {
+        let Some(key) = keys[i] else {
             // Ungrouped session after a group: not produced by insert_index; show it plainly.
             out.push(Row::Session {
                 index: i,
@@ -96,13 +126,10 @@ pub fn rows(projects: &[Option<&Path>], collapsed: &[PathBuf]) -> Vec<Row> {
             i += 1;
             continue;
         };
-        let len = projects[i..]
-            .iter()
-            .take_while(|p| **p == Some(project))
-            .count();
-        let is_collapsed = collapsed.iter().any(|c| c == project);
+        let len = keys[i..].iter().take_while(|k| **k == Some(key)).count();
+        let is_collapsed = collapsed.contains(key);
         out.push(Row::Header {
-            project: project.to_path_buf(),
+            key: key.clone(),
             first: i,
             len,
             collapsed: is_collapsed,
@@ -118,9 +145,9 @@ pub fn rows(projects: &[Option<&Path>], collapsed: &[PathBuf]) -> Vec<Row> {
     out
 }
 
-/// True when both indexes exist and belong to the same project (or are both ungrouped).
-pub fn same_group(projects: &[Option<&Path>], a: usize, b: usize) -> bool {
-    a < projects.len() && b < projects.len() && projects[a] == projects[b]
+/// True when both indexes exist and belong to the same group (or are both ungrouped).
+pub fn same_group(keys: &[Option<&GroupKey>], a: usize, b: usize) -> bool {
+    a < keys.len() && b < keys.len() && keys[a] == keys[b]
 }
 
 #[cfg(test)]
@@ -135,26 +162,30 @@ mod tests {
         assert_eq!(auto_name(None, None, None), "🖕");
     }
 
+    fn folder(path: &str) -> GroupKey {
+        GroupKey::Folder(path.into())
+    }
+
     #[test]
     fn group_label_adds_the_parent_only_on_a_clash() {
         let (a, b, c) = (
-            Path::new("/w/work/api"),
-            Path::new("/w/home/api"),
-            Path::new("/w/web"),
+            folder("/w/work/api"),
+            folder("/w/home/api"),
+            folder("/w/web"),
         );
-        assert_eq!(group_label(a, &[a, b, c]), "api (work)");
-        assert_eq!(group_label(c, &[a, b, c]), "web");
-        assert_eq!(group_label(a, &[a, a]), "api");
+        assert_eq!(group_label(&a, &[&a, &b, &c]), "api (work)");
+        assert_eq!(group_label(&c, &[&a, &b, &c]), "web");
+        assert_eq!(group_label(&a, &[&a, &a]), "api");
     }
 
     #[test]
     fn insert_index_keeps_groups_together() {
-        let (a, b) = (Path::new("/a"), Path::new("/b"));
-        let p = [None, Some(a), Some(a), Some(b)];
+        let (a, b) = (folder("/a"), folder("/b"));
+        let p = [None, Some(&a), Some(&a), Some(&b)];
         assert_eq!(insert_index(&p, None), 1);
-        assert_eq!(insert_index(&p, Some(a)), 3);
-        assert_eq!(insert_index(&p, Some(b)), 4);
-        assert_eq!(insert_index(&p, Some(Path::new("/c"))), 4);
+        assert_eq!(insert_index(&p, Some(&a)), 3);
+        assert_eq!(insert_index(&p, Some(&b)), 4);
+        assert_eq!(insert_index(&p, Some(&folder("/c"))), 4);
         assert_eq!(insert_index(&[], None), 0);
     }
 
@@ -171,23 +202,23 @@ mod tests {
 
     #[test]
     fn rows_hide_collapsed_groups() {
-        let (a, b) = (Path::new("/a"), Path::new("/b"));
-        let p = [None, Some(a), Some(a), Some(b)];
+        let (a, b) = (folder("/a"), folder("/b"));
+        let p = [None, Some(&a), Some(&a), Some(&b)];
         assert_eq!(
-            rows(&p, &[a.to_path_buf()]),
+            rows(&p, std::slice::from_ref(&a)),
             vec![
                 Row::Session {
                     index: 0,
                     grouped: false
                 },
                 Row::Header {
-                    project: a.into(),
+                    key: a.clone(),
                     first: 1,
                     len: 2,
                     collapsed: true
                 },
                 Row::Header {
-                    project: b.into(),
+                    key: b.clone(),
                     first: 3,
                     len: 1,
                     collapsed: false
@@ -201,9 +232,69 @@ mod tests {
     }
 
     #[test]
+    fn groups_key_by_folder_or_host() {
+        let api = GroupKey::Folder("/w/work/api".into());
+        let other_api = GroupKey::Folder("/w/home/api".into());
+        let dev = GroupKey::Host("devbox".into());
+        let host_api = GroupKey::Host("api".into());
+        // A host group is labelled with the host; only folders clash with folders.
+        assert_eq!(group_label(&dev, &[&api, &dev]), "devbox");
+        assert_eq!(group_label(&api, &[&api, &host_api]), "api");
+        assert_eq!(group_label(&api, &[&api, &other_api]), "api (work)");
+        // The host wins: an SSH session has no folder group.
+        assert_eq!(
+            key(Some("devbox"), Some(Path::new("/w/work/api"))),
+            Some(dev.clone())
+        );
+        assert_eq!(key(None, Some(Path::new("/w/work/api"))), Some(api.clone()));
+        assert_eq!(key(None, None), None);
+        // Ungrouped first, then the groups in first-seen order.
+        let keys = [None, Some(&api), Some(&dev), Some(&dev)];
+        assert_eq!(insert_index(&keys, None), 1);
+        assert_eq!(insert_index(&keys, Some(&api)), 2);
+        assert_eq!(insert_index(&keys, Some(&dev)), 4);
+        assert_eq!(insert_index(&keys, Some(&GroupKey::Host("new".into()))), 4);
+        // A collapsed host hides its sessions.
+        assert_eq!(
+            rows(&keys, std::slice::from_ref(&dev)),
+            vec![
+                Row::Session {
+                    index: 0,
+                    grouped: false
+                },
+                Row::Header {
+                    key: api.clone(),
+                    first: 1,
+                    len: 1,
+                    collapsed: false
+                },
+                Row::Session {
+                    index: 1,
+                    grouped: true
+                },
+                Row::Header {
+                    key: dev.clone(),
+                    first: 2,
+                    len: 2,
+                    collapsed: true
+                },
+            ]
+        );
+        // A folder and a host of the same name are different groups.
+        let same_name = GroupKey::Folder("api".into());
+        assert!(!same_group(&[Some(&same_name), Some(&host_api)], 0, 1));
+        assert!(same_group(&keys, 2, 3));
+        // The sessions file keeps collapsed folders and hosts apart; they join back in order.
+        assert_eq!(
+            collapsed_keys(&[PathBuf::from("/w/work/api")], &["devbox".to_string()]),
+            vec![api, dev]
+        );
+    }
+
+    #[test]
     fn same_group_rules() {
-        let (a, b) = (Path::new("/a"), Path::new("/b"));
-        let p = [None, None, Some(a), Some(a), Some(b)];
+        let (a, b) = (folder("/a"), folder("/b"));
+        let p = [None, None, Some(&a), Some(&a), Some(&b)];
         assert!(same_group(&p, 0, 1));
         assert!(same_group(&p, 2, 3));
         assert!(!same_group(&p, 1, 2));
