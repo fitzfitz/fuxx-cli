@@ -17,9 +17,13 @@ use gpui::{
 };
 use gpui_platform::current_platform;
 
+use crate::appearance::Appearance;
+use crate::restore::RestoreMode;
+use crate::split_tree::Axis;
 use crate::terminal_view::hsla;
 use crate::theme::{self, Theme, UiColors};
 use crate::ui_tokens::{self, contrast};
+use crate::workspace::Workspace;
 use crate::{fonts, settings};
 
 /// The two themes every scene is shot in: (file slug, built-in theme name).
@@ -169,7 +173,11 @@ pub fn mono_font(cx: &App) -> Font {
 }
 
 /// Every scene: (name, function). A UI task adds its scenes here.
-const SCENES: &[(&str, fn())] = &[("smoke", smoke), ("tokens", tokens)];
+const SCENES: &[(&str, fn())] = &[
+    ("smoke", smoke),
+    ("tokens", tokens),
+    ("window", window_scenes),
+];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
 pub fn run(filter: Option<&str>) -> ! {
@@ -685,5 +693,118 @@ mod tests {
         assert_eq!(&bytes[12..16], b"IHDR");
         assert_eq!(&bytes[16..24], &[0, 0, 0, 2, 0, 0, 0, 1]);
         assert!(bytes.ends_with(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]));
+    }
+}
+
+/// The appearance a scene's app runs with: `theme`, and the default font and size.
+fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
+    Appearance {
+        theme,
+        font: mono_font(cx),
+        font_size: fonts::DEFAULT_SIZE,
+        theme_name: None,
+        font_settings: fonts::from_entries(&[]),
+        settings_path: None,
+        user_theme_dir: None,
+        presets: Vec::new(),
+        restore: RestoreMode::default(),
+        scripting: false,
+        persistent: false,
+    }
+}
+
+/// What a shell shows in the scenes, the same every time.
+const SHELL_TEXT: &str = "~/code/api $ cargo test\r\n   Compiling api v0.4.2 (/Users/me/code/api)\r\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s\r\n     Running unittests src/main.rs\r\n\r\nrunning 42 tests\r\ntest result: ok. 42 passed; 0 failed; 0 ignored\r\n\r\n~/code/api $ ";
+
+const AGENT_TEXT: &str =
+    "~/code/api $ claude\r\n\r\n  Reading src/auth.rs\r\n  Editing src/auth.rs (+12 -3)\r\n\r\n> ";
+
+/// The whole window, as the app draws it, from a real `Workspace` with plain sessions (each a
+/// fixed screen over a silent `cat`, so the shots don't depend on your shell): one session; the
+/// same split in two; and one session with the sidebar hidden. Checks that the terminal's
+/// padding and the top band are drawn in the terminal background (nothing painted in them).
+/// Off-screen windows have no traffic lights, so the band is empty in the shots.
+fn window_scenes() {
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for (scene, split, hidden) in [
+            ("window", false, false),
+            ("window-split", true, false),
+            ("window-no-sidebar", false, true),
+        ] {
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    let project = std::path::Path::new("/Users/me/code/api");
+                    ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                    if split {
+                        let axis = Some(Axis::Row);
+                        ws.open_shot_session("claude", project, AGENT_TEXT, axis, window, cx);
+                    }
+                    ws.sidebar_hidden = hidden;
+                    ws
+                })
+                .into()
+            };
+            let path = shoot(scene, slug, &theme, dims, build);
+            let shot = render(&theme, dims, build);
+            check_window(&shot, &theme, dims, split, hidden, scene, slug);
+            println!("ui-shots: {}", path.display());
+        }
+    }
+}
+
+/// Panics unless the padding (and with the sidebar hidden, the top band) of the pane at the
+/// right edge is all terminal background.
+fn check_window(
+    shot: &Shot,
+    theme: &Theme,
+    dims: Size<Pixels>,
+    split: bool,
+    hidden: bool,
+    scene: &str,
+    slug: &str,
+) {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let bg = theme.background;
+    let is_bg = |x: f32, y: f32| {
+        let (x, y) = ((x * scale) as usize, (y * scale) as usize);
+        let i = (y * shot.width as usize + x) * 4;
+        let px = &shot.rgba[i..i + 3];
+        px.iter()
+            .zip([bg.r, bg.g, bg.b])
+            .all(|(a, b)| a.abs_diff(b) <= 2)
+    };
+    let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+    let (pad_x, pad_y) = if split {
+        ui_tokens::size::SPLIT_TERMINAL_PADDING
+    } else {
+        ui_tokens::size::TERMINAL_PADDING
+    };
+    let top = if hidden {
+        ui_tokens::size::TOP_BAND
+    } else {
+        0.0
+    };
+    // The right pane's right and top padding, and (hidden) the band above it.
+    let mut y = 0.0;
+    while y < h {
+        for dx in 0..pad_x as usize {
+            assert!(
+                is_bg(w - 1.0 - dx as f32, y),
+                "{scene}-{slug}: right padding at y {y}"
+            );
+        }
+        y += 1.0;
+    }
+    // Right of a split's divider (the pane area starts after the sidebar, at most 1/4 in).
+    let mut x = w * 0.75;
+    while x < w {
+        for dy in 0..(top + pad_y) as usize {
+            assert!(is_bg(x, dy as f32), "{scene}-{slug}: top padding at x {x}");
+        }
+        x += 1.0;
     }
 }

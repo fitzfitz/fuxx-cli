@@ -23,7 +23,8 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
-    SharedString, Subscription, Task, Window, actions, canvas, div, prelude::*, px, relative,
+    SharedString, Subscription, Task, Window, WindowControlArea, actions, canvas, div, prelude::*,
+    px, relative,
 };
 
 use crate::adopt::{self, Probe};
@@ -47,6 +48,7 @@ use crate::ssh_target::SshTarget;
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
+use crate::ui_tokens::size::TOP_BAND;
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -93,6 +95,7 @@ actions!(
         PrevPane,
         NextPane,
         EqualizePanes,
+        ToggleSidebar,
     ]
 );
 
@@ -252,6 +255,10 @@ pub struct Workspace {
     pub(crate) deferred: Vec<crate::workspace_api::Deferred>,
     /// Whether the deferred requests' check is running.
     pub(crate) deferred_ticking: bool,
+    /// The sidebar is hidden (⌘\); the pane area then has the top band itself.
+    pub(crate) sidebar_hidden: bool,
+    /// The top band was pressed and the mouse hasn't moved since: the next move drags the window.
+    band_pressed: bool,
 }
 
 impl Workspace {
@@ -265,13 +272,37 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let mut this = Self::blank(scripting, persistent, window, cx);
+        // While a quit ends sessions first, the red button waits for it.
+        let me = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            !me.upgrade().is_some_and(|this| this.read(cx).quitting)
+        });
+        if persistent {
+            this.connect_service(window, cx);
+        } else {
+            let probe = this.probe_leftover_service();
+            if this.restore(&probe, window, cx) && probe == Probe::NoAnswer {
+                this.notice = Some(UNANSWERED_NOTICE.into());
+            }
+        }
+        this
+    }
+
+    /// A workspace with no sessions, still restoring (so nothing is saved yet).
+    fn blank(
+        scripting: Option<(PathBuf, UnboundedReceiver<api_server::Incoming>)>,
+        persistent: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
             cx.notify();
         });
         let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
         let (socket, requests) = scripting.unzip();
-        let mut this = Self {
+        Self {
             sessions: SessionList::new(),
             layouts: Vec::new(),
             pane_area: Rc::new(Cell::new(None)),
@@ -306,21 +337,9 @@ impl Workspace {
             _flush_on_quit: cx.on_app_quit(Self::flush_on_quit),
             deferred: Vec::new(),
             deferred_ticking: false,
-        };
-        // While a quit ends sessions first, the red button waits for it.
-        let me = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
-            !me.upgrade().is_some_and(|this| this.read(cx).quitting)
-        });
-        if persistent {
-            this.connect_service(window, cx);
-        } else {
-            let probe = this.probe_leftover_service();
-            if this.restore(&probe, window, cx) && probe == Probe::NoAnswer {
-                this.notice = Some(UNANSWERED_NOTICE.into());
-            }
+            sidebar_hidden: false,
+            band_pressed: false,
         }
-        this
     }
 
     /// Without the background service (persistence off, or it couldn't be reached): reopen
@@ -1294,10 +1313,13 @@ impl Workspace {
                 .find(|s| s.view.entity_id() == id)
                 .map(|s| s.view.clone())
         };
-        // Shown, so an adopted session fetches its screen now (once; reopening, M10a).
+        // Shown, so an adopted session fetches its screen now (once; reopening, M10a). Panes
+        // in a split take less padding.
+        let split = matches!(tree, Node::Split { .. });
         for id in tree.leaves() {
             if let Some(view) = view(id) {
                 view.read(cx).attach();
+                view.read(cx).set_split(split);
             }
         }
         let this = cx.entity().downgrade();
@@ -1360,7 +1382,68 @@ impl Workspace {
         .size_full()
     }
 
-    fn render_sidebar(&self, ui: UiColors, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The window's top band, the traffic lights' place: pressing it and moving drags the
+    /// window, and a double-click does what the macOS setting "Double-click a window's title bar
+    /// to" says. None in full screen, which has no traffic lights.
+    fn render_top_band(
+        &self,
+        id: &'static str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if window.is_fullscreen() {
+            return None;
+        }
+        // As Zed's own title bar does: the move starts on the first mouse move after a press,
+        // so a plain click (or double-click) stays a click.
+        let band = div()
+            .id(id)
+            .flex_none()
+            .w_full()
+            .h(px(TOP_BAND))
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, _| this.band_pressed = true),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.band_pressed = false),
+            )
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, _| this.band_pressed = false),
+            )
+            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
+                if this.band_pressed {
+                    this.band_pressed = false;
+                    window.start_window_move();
+                }
+            }))
+            .on_click(|event: &ClickEvent, window, _| {
+                if event.click_count() == 2 {
+                    window.titlebar_double_click();
+                }
+            });
+        Some(band.into_any_element())
+    }
+
+    /// ⌘\: hide or show the sidebar. Hiding it during a rename gives the keyboard back to the
+    /// terminal, which ends the rename (as clicking away from it does).
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_hidden = !self.sidebar_hidden;
+        if self.sidebar_hidden && self.renaming.is_some() {
+            self.focus_active(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The sidebar: the top band (under the traffic lights), then the sessions.
+    fn render_sidebar(
+        &self,
+        ui: UiColors,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let keys = self.groups();
         let keys = key_refs(&keys);
         let all: Vec<&GroupKey> = keys.iter().flatten().copied().collect();
@@ -1382,25 +1465,16 @@ impl Workspace {
                     .into_any_element(),
             })
             .collect();
-        div()
+        let band = self.render_top_band("sidebar-band", window, cx);
+        let sessions = div()
             .flex()
             .flex_col()
-            .w(px(SIDEBAR_WIDTH))
-            .h_full()
+            .flex_1()
             .p_1()
             .gap_1()
-            .bg(hsla(ui.sidebar_background))
-            .border_r_1()
-            .border_color(hsla(ui.sidebar_border))
-            // A click in the sidebar gives focus back to the terminal, which cancels a rename
-            // (the rename box keeps its own clicks).
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_active(window, cx)),
-            )
             .children(rows)
-            .when_some(self.notice.clone(), |sidebar, notice| {
-                sidebar.child(
+            .when_some(self.notice.clone(), |sessions, notice| {
+                sessions.child(
                     div()
                         .mt_auto()
                         .px_2()
@@ -1411,7 +1485,24 @@ impl Workspace {
                         .text_color(hsla(ui.text))
                         .child(notice),
                 )
-            })
+            });
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(SIDEBAR_WIDTH))
+            .h_full()
+            .bg(hsla(ui.sidebar_background))
+            .border_r_1()
+            .border_color(hsla(ui.sidebar_border))
+            // A click in the sidebar gives focus back to the terminal, which cancels a rename
+            // (the rename box keeps its own clicks).
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_active(window, cx)),
+            )
+            .children(band)
+            .child(sessions)
     }
 
     /// A group's header: arrow, name, the group's most urgent ring, and a + for a new session.
@@ -1628,6 +1719,13 @@ impl Render for Workspace {
             },
             divider: hsla(ui.sidebar_border),
         };
+        // The top band is the sidebar's top; with the sidebar hidden, the pane area's.
+        let sidebar =
+            (!self.sidebar_hidden).then(|| self.render_sidebar(ui, window, cx).into_any_element());
+        let pane_band = self
+            .sidebar_hidden
+            .then(|| self.render_top_band("pane-band", window, cx))
+            .flatten();
 
         div()
             .flex()
@@ -1688,6 +1786,7 @@ impl Render for Workspace {
                 this.focus_pane(|t, a| t.cycle(a, true), w, cx)
             }))
             .on_action(cx.listener(|this, _: &EqualizePanes, _, cx| this.equalize_panes(cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| this.toggle_sidebar(w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession1, w, cx| this.select(0, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession2, w, cx| this.select(1, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSession3, w, cx| this.select(2, w, cx)))
@@ -1706,17 +1805,25 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &LaunchPreset7, w, cx| this.launch_preset(6, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset8, w, cx| this.launch_preset(7, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset9, w, cx| this.launch_preset(8, w, cx)))
-            .child(self.render_sidebar(ui, cx))
+            .when_some(sidebar, |root, sidebar| root.child(sidebar))
             // Only the active session's layout is rendered; other sessions keep running (their
             // reader threads and tickers live in their views, which the list keeps alive).
             .child(
                 div()
-                    .relative()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .h_full()
-                    .overflow_hidden()
-                    .child(self.render_pane_area(cx))
-                    .children(self.render_panes(colors, cx)),
+                    .children(pane_band)
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .w_full()
+                            .overflow_hidden()
+                            .child(self.render_pane_area(cx))
+                            .children(self.render_panes(colors, cx)),
+                    ),
             )
             // The host picker and the address box: over everything, centred near the top of
             // the window.
@@ -1726,6 +1833,52 @@ impl Render for Workspace {
             .when_some(self.address_box.clone(), |root, address| {
                 root.child(top_panel(address))
             })
+    }
+}
+
+/// Off-screen workspaces for the UI screenshots (`ui_shots`).
+#[cfg(feature = "ui-shots")]
+impl Workspace {
+    /// A workspace that serves no scripting, runs no background service, and reopens and saves
+    /// nothing.
+    pub(crate) fn for_shots(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::blank(None, false, window, cx);
+        this.restoring = false;
+        this.hold_saving = true;
+        this
+    }
+
+    /// Open a session named `name` in `project`'s group showing `text`, behind it a `cat` that
+    /// prints nothing, so the screen is the same every time. `split`: split from the active pane.
+    pub(crate) fn open_shot_session(
+        &mut self,
+        name: &str,
+        project: &Path,
+        text: &str,
+        split: Option<Axis>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let quiet = ShellEnv {
+            base: None,
+            set: Vec::new(),
+            remove: Vec::new(),
+        };
+        let view = TerminalView::spawn(cx, Some(vec!["/bin/cat".into()]), None, None, &quiet)
+            .expect("start cat");
+        view.read(cx).show_text(text);
+        let at = match (split, self.sessions.active()) {
+            (Some(axis), Some(active)) => At::Split(axis, active.view.entity_id()),
+            _ => At::New,
+        };
+        let saved = SavedSession {
+            name: Some(name.into()),
+            project: Some(project.into()),
+            ..SavedSession::default()
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        self.insert_session(id, view, saved, at, window, cx);
     }
 }
 
