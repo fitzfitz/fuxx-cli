@@ -411,6 +411,9 @@ mod tests {
         assert!(rows[0].tmux);
     }
 
+    /// Time for a fake ssh that does finish (see `resolve_uses_a_fake_ssh`).
+    const ENOUGH: Duration = Duration::from_secs(10);
+
     #[test]
     fn resolve_uses_a_fake_ssh() {
         let dir = temp("fake");
@@ -421,12 +424,14 @@ mod tests {
             "[ \"$1 $2 $3\" = \"-G -- devbox\" ] || exit 3\n\
              printf 'user alice\\nhostname example.com\\ncontrolmaster false\\nserveraliveinterval 0\\n'",
         );
-        let e = resolve_with(fake.as_os_str(), "devbox", Duration::from_secs(2)).unwrap();
+        // Generous: under a full parallel test run, a freshly written script can take seconds
+        // to start (seen at > 2 s). The cap itself is `resolve_times_out`'s.
+        let e = resolve_with(fake.as_os_str(), "devbox", ENOUGH).unwrap();
         assert_eq!(e.user.as_deref(), Some("alice"));
         assert_eq!(e.hostname.as_deref(), Some("example.com"));
         assert!(!e.has_control_master && !e.has_keepalive);
         // A failing ssh, or one that doesn't exist, gives None.
-        assert!(resolve_with(fake.as_os_str(), "other", Duration::from_secs(2)).is_none());
+        assert!(resolve_with(fake.as_os_str(), "other", ENOUGH).is_none());
         assert!(
             resolve_with(
                 OsStr::new("/nonexistent/ssh"),

@@ -185,7 +185,7 @@ mod tests {
                 log.display()
             ),
         );
-        ensure_healthy_with(fake.as_os_str(), "devbox", &dir, Duration::from_secs(2));
+        ensure_healthy_with(fake.as_os_str(), "devbox", &dir, ENOUGH);
 
         assert!(!dead.exists());
         assert!(live.exists());
@@ -198,6 +198,10 @@ mod tests {
         assert!(calls.contains("-O exit -- devbox"));
     }
 
+    /// Time for a fake ssh that does finish: under a full parallel test run, a freshly written
+    /// script can take seconds to start (seen at > 2 s in `ssh_hosts`).
+    const ENOUGH: Duration = Duration::from_secs(10);
+
     #[test]
     fn a_healthy_check_changes_nothing() {
         let base = temp("healthy");
@@ -206,7 +210,7 @@ mod tests {
         let dead = dir.join("dead");
         drop(UnixListener::bind(&dead).unwrap());
         let fake = script(&base, "ssh", "exit 0");
-        ensure_healthy_with(fake.as_os_str(), "devbox", &dir, Duration::from_secs(2));
+        ensure_healthy_with(fake.as_os_str(), "devbox", &dir, ENOUGH);
         assert!(dead.exists());
     }
 
