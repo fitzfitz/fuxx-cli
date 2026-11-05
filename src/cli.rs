@@ -16,6 +16,8 @@ pub enum Cli {
     Mcp,
     /// Print this usage text.
     Help(String),
+    /// M10c spike (hidden): drive an off-screen web view end to end, print one JSON line, exit.
+    BrowserProbe,
     /// `fuxx daemon ...`: the background service that keeps sessions (M10a).
     Daemon(DaemonCommand),
     /// Send one request. `stream`: read lines until the reply line or the end (`events`, `wait`).
@@ -224,6 +226,14 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
         "help" | "--help" | "-h" => return Ok(Cli::Help(USAGE.to_string())),
         "mcp" => return Ok(Cli::Mcp),
         "daemon" => return parse_daemon(&rest[1..], leading_json > 0).map(Cli::Daemon),
+        // M10c self-test: hidden, not in USAGE.
+        "__browser-probe" => {
+            return if leading_json == 0 && rest.len() == 1 {
+                Ok(Cli::BrowserProbe)
+            } else {
+                Err("fuxx: usage: fuxx __browser-probe".to_string())
+            };
+        }
         _ => {}
     }
     let Some(&(cmd, method)) = COMMANDS.iter().find(|(c, _)| *c == first.as_str()) else {
@@ -650,6 +660,18 @@ mod tests {
         assert!(matches!(p(&[]), Ok(Cli::Gui)));
         assert!(matches!(p(&["-psn_0_123"]), Ok(Cli::Gui)));
         assert!(matches!(p(&["mcp"]), Ok(Cli::Mcp)));
+    }
+
+    #[test]
+    fn the_browser_probe_parses_and_stays_out_of_help() {
+        assert!(matches!(p(&["__browser-probe"]), Ok(Cli::BrowserProbe)));
+        assert!(p(&["__browser-probe", "--bogus"]).is_err());
+        assert!(p(&["--json", "__browser-probe"]).is_err());
+        assert!(!USAGE.contains("__browser"));
+        let Ok(Cli::Help(usage)) = p(&["help"]) else {
+            panic!("help didn't parse")
+        };
+        assert!(!usage.contains("__browser"));
     }
 
     #[test]

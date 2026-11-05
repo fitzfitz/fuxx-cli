@@ -7,6 +7,7 @@ mod api_client;
 mod api_events;
 mod api_server;
 mod appearance;
+mod browser;
 mod cli;
 mod colors;
 mod daemon;
@@ -306,6 +307,7 @@ fn main() {
             print!("{usage}");
             std::process::exit(0);
         }
+        Ok(Cli::BrowserProbe) => browser::run_probe(),
         Ok(Cli::Mcp) => std::process::exit(mcp::run(client_socket(), caller)),
         Ok(Cli::Daemon(command)) => std::process::exit(run_daemon(command)),
         Ok(Cli::Call {
