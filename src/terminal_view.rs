@@ -856,14 +856,15 @@ impl CellMetrics {
     }
 }
 
-/// Paint `text`, as a program would print it, over `bounds` the way a pane draws its screen: the
-/// configured font and size, the pane's padding, and `theme`'s colours. The Preferences preview.
+/// Paint a fixed screen over `bounds` the way a pane draws its own: the configured font and
+/// size, the pane's padding, and `theme`'s colours. `screen` makes it for the grid that fits
+/// (see `grid::fixed_screen`). The Preferences preview.
 pub fn paint_fixed_screen(
-    text: &str,
     theme: &Theme,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
+    screen: impl FnOnce(TermDims) -> GridSnapshot,
 ) {
     let metrics = CellMetrics::measure(cx.global::<Appearance>(), window);
     let grid = GridLayout::fit(
@@ -871,9 +872,8 @@ pub fn paint_fixed_screen(
         metrics.cell_width,
         metrics.line_height,
     );
-    let snap = grid::fixed_screen(text, grid.dims, theme);
     paint_grid(
-        snap,
+        screen(grid.dims),
         theme,
         &metrics,
         bounds,

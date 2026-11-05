@@ -9,8 +9,10 @@
 //! Sessions. Beside the theme and font lists, the preview paints a fixed terminal screen the way
 //! a pane does, in the current theme, font, size and ligatures, so it changes with every pick.
 
+use std::cell::RefCell;
 use std::ops::Range;
 use std::path::Path;
+use std::rc::Rc;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
@@ -21,12 +23,14 @@ use gpui::{
 
 use crate::appearance::{self, Appearance};
 use crate::fonts;
+use crate::grid::{self, GridSnapshot};
 use crate::prefs::{self, DEFAULT_CHOICE};
 use crate::restore::RestoreMode;
 use crate::settings;
 use crate::sidebar::small_caps;
+use crate::terminal::TermDims;
 use crate::terminal_view::{hsla, paint_fixed_screen};
-use crate::theme::{self, UiColors};
+use crate::theme::{self, Theme, UiColors};
 use crate::ui_tokens::text;
 use crate::workspace::CloseSession;
 
@@ -163,6 +167,8 @@ pub struct PreferencesView {
     installed: Vec<String>,
     /// The family `Default` stands for, to draw that row in it.
     default_family: SharedString,
+    /// The preview's screen, kept between redraws.
+    preview: Rc<PreviewScreen>,
     /// Re-renders the highlighted rows and the colors when the appearance changes.
     _appearance: Subscription,
 }
@@ -214,6 +220,7 @@ impl PreferencesView {
             fonts,
             installed,
             default_family,
+            preview: Rc::default(),
             _appearance: appearance_sub,
         }
     }
@@ -472,6 +479,7 @@ impl Render for PreferencesView {
                 with_note(animation_switch, ANIMATIONS_NOTE, ui),
                 ui,
             ));
+        let kept = self.preview.clone();
         let preview = div()
             .flex_none()
             .w(px(PREVIEW_WIDTH))
@@ -486,7 +494,12 @@ impl Render for PreferencesView {
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
-                        paint_fixed_screen(&preview_text(), &preview_theme, bounds, window, cx)
+                        let theme = &preview_theme;
+                        paint_fixed_screen(theme, bounds, window, cx, |dims| {
+                            kept.get(theme, dims, || {
+                                grid::fixed_screen(&preview_text(dims.cols), dims, theme)
+                            })
+                        })
                     },
                 )
                 .size_full(),
@@ -542,42 +555,149 @@ impl Render for PreferencesView {
     }
 }
 
-/// What the preview shows: a prompt, a coloured `ls`, a diff with code that ligatures join
-/// (`==`, `!=`, `&&`, `>=`), and an agent asking a question in a box. Palette colours only, so
-/// it is drawn in the theme's own. The cursor is hidden.
-fn preview_text() -> String {
-    const PROMPT: &str = "\x1b[34m~/code/api\x1b[0m $ ";
-    // The box's inside, in columns; `│` and `╭` are one column each.
-    const INNER: usize = 26;
-    let edge = |l: char, r: char| format!("\x1b[35m{l}{}{r}\x1b[0m", "─".repeat(INNER));
+/// The preview's screen, kept between frames: built again only when the theme or the grid
+/// (font, size, window) changes, not on every hover redraw.
+#[derive(Default)]
+struct PreviewScreen(RefCell<Option<(Theme, TermDims, GridSnapshot)>>);
+
+impl PreviewScreen {
+    /// The screen for `theme` at `dims`, from `build` unless the last one was for the same.
+    fn get(
+        &self,
+        theme: &Theme,
+        dims: TermDims,
+        build: impl FnOnce() -> GridSnapshot,
+    ) -> GridSnapshot {
+        let mut kept = self.0.borrow_mut();
+        match &*kept {
+            Some((t, d, screen)) if t == theme && *d == dims => screen.clone(),
+            _ => {
+                let screen = build();
+                *kept = Some((*theme, dims, screen.clone()));
+                screen
+            }
+        }
+    }
+}
+
+/// What the preview shows, for a screen `cols` wide: a prompt, a coloured `ls`, a diff with code
+/// that ligatures join (`==`, `!=`, `&&`, `>=`), and an agent asking a question in a box. Every
+/// line fits: the `ls` lists what fits, the box is at most 26 columns inside and its text wraps,
+/// and below `BOX_MIN_COLS` there is no box. Palette colours only, so it is drawn in the theme's
+/// own. The cursor is hidden.
+fn preview_text(cols: usize) -> String {
+    let prompt = if cols >= 16 {
+        "\x1b[34m~/api\x1b[0m $ "
+    } else {
+        "$ "
+    };
+    // `ls`: as many entries as fit (at least one), two spaces apart.
+    let entries = [
+        ("src", "\x1b[1;34m"),
+        ("tests", "\x1b[1;34m"),
+        ("run.sh", "\x1b[32m"),
+        ("Cargo.toml", ""),
+    ];
+    let mut ls = String::new();
+    let mut used = 0;
+    for (i, (name, style)) in entries.iter().enumerate() {
+        let width = name.len() + if i == 0 { 0 } else { 2 };
+        if i > 0 && used + width > cols {
+            break;
+        }
+        let gap = if i == 0 { "" } else { "  " };
+        ls.push_str(&format!("{gap}{style}{name}\x1b[0m"));
+        used += width;
+    }
+    let mut lines = vec![
+        format!("\x1b[?25l{prompt}ls"),
+        ls,
+        // 16 lines in all with the box, the rows the preview has at the default size.
+        format!("{prompt}git diff"),
+        "\x1b[31m- ok = a == b\x1b[0m".to_string(),
+        "\x1b[32m+ ok = a != b\x1b[0m".to_string(),
+        "\x1b[32m+   && n >= 8\x1b[0m".to_string(),
+        format!("{prompt}claude"),
+    ];
+    if cols >= BOX_MIN_COLS {
+        lines.push(String::new());
+        lines.extend(agent_box(cols));
+    }
+    // No newline after the last line: it would take a row, and scroll the first away.
+    lines.join("\r\n")
+}
+
+/// The narrowest screen the agent's box is drawn on: 11 columns of text ("src/auth.rs"), a
+/// space either side and the two borders.
+const BOX_MIN_COLS: usize = 15;
+
+/// The agent's question in a box at most `cols` wide (26 columns inside at most), its text
+/// wrapped to fit.
+fn agent_box(cols: usize) -> Vec<String> {
+    let inner = 26.min(cols - 2);
+    let width = inner - 2;
+    let edge = |l: char, r: char| format!("\x1b[35m{l}{}{r}\x1b[0m", "─".repeat(inner));
     let line = |text: &str, style: &str| {
-        let pad = INNER - 1 - text.chars().count();
+        let pad = width - text.chars().count();
         format!(
-            "\x1b[35m│\x1b[0m {style}{text}\x1b[0m{}\x1b[35m│\x1b[0m\r\n",
+            "\x1b[35m│\x1b[0m {style}{text}\x1b[0m{} \x1b[35m│\x1b[0m",
             " ".repeat(pad)
         )
     };
-    [
-        "\x1b[?25l".to_string(),
-        format!("{PROMPT}ls\r\n"),
-        "Cargo.toml  \x1b[1;34msrc\x1b[0m  \x1b[1;34mtests\x1b[0m  \x1b[32mrun.sh\x1b[0m\r\n"
-            .to_string(),
-        format!("{PROMPT}git diff\r\n"),
-        "\x1b[36m@@ -12 +12 @@\x1b[0m fn check\r\n".to_string(),
-        "\x1b[31m-    ok = a == b\x1b[0m\r\n".to_string(),
-        "\x1b[32m+    ok = a != b && n >= 8\x1b[0m\r\n".to_string(),
-        format!("{PROMPT}claude\r\n\r\n"),
-        edge('╭', '╮') + "\r\n",
-        line("Edit src/auth.rs", "\x1b[1m"),
-        line("", ""),
-        line("Do you want to make this", ""),
-        line("edit to auth.rs?", ""),
-        line("\u{276f} 1. Yes", "\x1b[36m"),
-        line("  2. No", ""),
-        // No newline after the last line: it would take a row, and scroll the first away.
-        edge('╰', '╯'),
-    ]
-    .concat()
+    let mut lines = vec![edge('╭', '╮')];
+    let bold = "\x1b[1m";
+    lines.extend(
+        wrap("Edit src/auth.rs", width)
+            .iter()
+            .map(|t| line(t, bold)),
+    );
+    lines.push(line("", ""));
+    let question = "Do you want to make this edit to auth.rs?";
+    lines.extend(wrap(question, width).iter().map(|t| line(t, "")));
+    lines.extend(
+        wrap("\u{276f} 1. Yes", width)
+            .iter()
+            .map(|t| line(t, "\x1b[36m")),
+    );
+    lines.extend(wrap("  2. No", width).iter().map(|t| line(t, "")));
+    lines.push(edge('╰', '╯'));
+    lines
+}
+
+/// `text` in lines at most `width` wide, broken between words; a word too long for a line is
+/// cut. Leading spaces (the options' indent) are kept on the first line.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let words = text.trim_start();
+    let mut lines = Vec::new();
+    let mut line = text[..text.len() - words.len()].to_string();
+    let mut has_word = false;
+    for word in words.split(' ') {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let used = line.chars().count() + usize::from(has_word);
+            if used + word.len() <= width {
+                if has_word {
+                    line.push(' ');
+                }
+                line.extend(&word);
+                has_word = true;
+                break;
+            }
+            if !line.is_empty() {
+                // Onto a new line.
+                lines.push(std::mem::take(&mut line));
+                has_word = false;
+                continue;
+            }
+            let rest = word.split_off(width);
+            lines.push(word.into_iter().collect());
+            word = rest;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// A section title: small capitals, then a quiet line to the right edge.
@@ -840,6 +960,115 @@ fn write_font_step(path: &Path, size: f32, step: prefs::FontStep) -> Result<(), 
 mod tests {
     use super::*;
     use crate::prefs::FontStep;
+
+    /// `text` without its escape sequences (CSI `ESC [ ... letter`), as it shows on screen.
+    fn visible(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Skip '[' and the parameters, up to and including the final letter.
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn preview_text_fits_its_width() {
+        for cols in [80, 40, 30, 28, 24, 20, 16, 15] {
+            let text = visible(&preview_text(cols));
+            let lines: Vec<&str> = text.split("\r\n").collect();
+            for line in &lines {
+                assert!(
+                    line.chars().count() <= cols,
+                    "{cols} columns: {line:?} is too wide"
+                );
+            }
+            // The agent's box is whole: one top and one bottom edge, every line between them
+            // closed on both sides, all as wide as each other.
+            let top = lines.iter().position(|l| l.starts_with('╭'));
+            let bottom = lines.iter().position(|l| l.starts_with('╰'));
+            let (Some(top), Some(bottom)) = (top, bottom) else {
+                panic!("{cols} columns: no box in {lines:#?}");
+            };
+            let width = lines[top].chars().count();
+            assert!(
+                lines[top].ends_with('╮') && lines[bottom].ends_with('╯'),
+                "{cols}"
+            );
+            for line in &lines[top + 1..bottom] {
+                assert!(
+                    line.starts_with('│') && line.ends_with('│'),
+                    "{cols}: {line:?}"
+                );
+                assert_eq!(line.chars().count(), width, "{cols}: {line:?}");
+            }
+            // The question is all there, however it wraps.
+            let inside: Vec<&str> = lines[top + 1..bottom]
+                .iter()
+                .map(|l| l.trim_matches('│').trim())
+                .collect();
+            assert!(
+                inside
+                    .join(" ")
+                    .contains("Do you want to make this edit to auth.rs?"),
+                "{cols}: {inside:?}"
+            );
+            // The ligature samples are never cut.
+            for sample in ["a == b", "a != b", "&& n >= 8"] {
+                assert!(text.contains(sample), "{cols}: {sample:?} is missing");
+            }
+        }
+        // Too narrow for the box: no box, still a prompt.
+        for cols in [14, 8, 2] {
+            let text = visible(&preview_text(cols));
+            assert!(
+                !text.contains('╭') && !text.contains('│'),
+                "{cols}: {text:?}"
+            );
+            assert!(text.contains("$ claude"), "{cols}");
+        }
+        // Wide enough, the box is as wide as before (26 inside), not the whole screen.
+        let wide = visible(&preview_text(80));
+        let top = wide.split("\r\n").find(|l| l.starts_with('╭')).unwrap();
+        assert_eq!(top.chars().count(), 28);
+    }
+
+    #[test]
+    fn preview_screen_is_built_once_per_theme_and_size() {
+        let cache = PreviewScreen::default();
+        let builds = std::cell::Cell::new(0);
+        let dims = TermDims { cols: 30, rows: 16 };
+        let theme = Theme::default();
+        let get = |theme: &Theme, dims: TermDims| {
+            cache.get(theme, dims, || {
+                builds.set(builds.get() + 1);
+                grid::fixed_screen(&preview_text(dims.cols), dims, theme)
+            })
+        };
+        let first = get(&theme, dims);
+        let again = get(&theme, dims);
+        assert_eq!(
+            builds.get(),
+            1,
+            "a redraw with nothing changed rebuilt the screen"
+        );
+        assert_eq!(first.lines, again.lines);
+        // A new size (font, size or window) or a new theme builds it again.
+        get(&theme, TermDims { cols: 24, rows: 13 });
+        assert_eq!(builds.get(), 2);
+        let mut other = theme;
+        other.background = other.foreground;
+        get(&other, TermDims { cols: 24, rows: 13 });
+        assert_eq!(builds.get(), 3);
+    }
 
     #[test]
     fn window_height_is_computed_from_the_form() {
