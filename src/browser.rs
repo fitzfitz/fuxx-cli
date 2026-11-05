@@ -459,9 +459,12 @@ enum WindowKey {
     Close,
     Undo,
     Redo,
+    /// ⌘= / ⌘+ / ⌘- / ⌘0: the terminals' font size, which is not this window's to change.
+    FontSize,
 }
 
-/// The browser window's own shortcuts: ⌘W, ⌘Z and ⇧⌘Z. `key` is the key pressed without
+/// The browser window's own shortcuts: ⌘W, ⌘Z and ⇧⌘Z, and the font-size keys it swallows.
+/// `key` is the key pressed without
 /// modifiers other than shift (⇧⌘Z gives `Z`).
 fn window_key(key: &str, cmd: bool, shift: bool, alt: bool, ctrl: bool) -> Option<WindowKey> {
     if !cmd || alt || ctrl {
@@ -471,13 +474,18 @@ fn window_key(key: &str, cmd: bool, shift: bool, alt: bool, ctrl: bool) -> Optio
         ("w", false) => Some(WindowKey::Close),
         ("z", false) => Some(WindowKey::Undo),
         ("z", true) => Some(WindowKey::Redo),
+        // ⌘+ is shift-=, so shift is free for the two that can be typed either way.
+        ("=" | "+", _) | ("-" | "0", false) => Some(WindowKey::FontSize),
         _ => None,
     }
 }
 
-/// The key codes (U.S. keyboard places) of W and Z (`kVK_ANSI_W`, `kVK_ANSI_Z`).
+/// The key codes (U.S. keyboard places) of W, Z, `=`, `-` and 0 (`kVK_ANSI_W` and so on).
 const KEY_W: u16 = 0x0D;
 const KEY_Z: u16 = 0x06;
+const KEY_EQUAL: u16 = 0x18;
+const KEY_MINUS: u16 = 0x1B;
+const KEY_ZERO: u16 = 0x1D;
 
 /// The key a shortcut is read as, the way AppKit's menus read it: the key's own character
 /// (`chars`, without modifiers) when the layout types Latin letters, else (another script, or
@@ -490,6 +498,9 @@ fn shortcut_letter(chars: Option<&str>, key_code: u16) -> Option<char> {
         _ => match key_code {
             KEY_W => Some('w'),
             KEY_Z => Some('z'),
+            KEY_EQUAL => Some('='),
+            KEY_MINUS => Some('-'),
+            KEY_ZERO => Some('0'),
             _ => None,
         },
     }
@@ -545,15 +556,20 @@ define_class!(
 );
 
 impl ShortcutWindow {
-    /// fuxx's menu items answer only fuxx's own window, so this window takes ⌘W itself (before
-    /// the page sees it: closing is the window's, as in Safari), and ⌘Z / ⇧⌘Z once the page has
-    /// passed on them (WebKit sends a key the page didn't handle round again). Undo goes to the
-    /// window's undo manager. Cut, copy, paste and select all come from fuxx's Edit menu, as the
-    /// standard selectors.
+    /// Most of fuxx's menu items answer only fuxx's own window, so this window takes ⌘W itself
+    /// (before the page sees it: closing is the window's, as in Safari), and ⌘Z / ⇧⌘Z once the
+    /// page has passed on them (WebKit sends a key the page didn't handle round again). Undo
+    /// goes to the window's undo manager. Cut, copy, paste and select all come from fuxx's Edit
+    /// menu, as the standard selectors. The exception is View's font size (⌘= ⌘+ ⌘- ⌘0), an
+    /// app-wide action that would resize every terminal from here: the window swallows those
+    /// keys and does nothing.
     fn key_equivalent(&self, event: &NSEvent) -> bool {
         let key = key_of(event);
         if key == Some(WindowKey::Close) {
             self.close();
+            return true;
+        }
+        if key == Some(WindowKey::FontSize) {
             return true;
         }
         // SAFETY: NSWindow's own `performKeyEquivalent:`, with the event it was given.
@@ -856,6 +872,21 @@ mod tests {
             window_key("z", true, true, false, false),
             Some(WindowKey::Redo)
         );
+        // ⌘= / ⌘+ / ⌘- / ⌘0 are the terminals' font size (an app-wide menu action): the browser
+        // window takes them and does nothing.
+        for key in ["=", "+", "-", "0"] {
+            assert_eq!(
+                window_key(key, true, false, false, false),
+                Some(WindowKey::FontSize),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            window_key("+", true, true, false, false),
+            Some(WindowKey::FontSize)
+        );
+        assert_eq!(window_key("-", true, false, true, false), None);
+        assert_eq!(window_key("0", false, false, false, false), None);
         // Not with another modifier, nor without ⌘; other keys go on to the page and menus.
         assert_eq!(window_key("w", true, true, false, false), None);
         assert_eq!(window_key("w", true, false, true, false), None);
@@ -880,6 +911,10 @@ mod tests {
         assert_eq!(shortcut_letter(Some("я"), KEY_Z), Some('z'));
         assert_eq!(shortcut_letter(Some("ж"), 0x29), None);
         assert_eq!(shortcut_letter(None, KEY_W), Some('w'));
+        // The font-size keys, in a script that has no `=`, `-` or `0` of its own.
+        assert_eq!(shortcut_letter(Some("ж"), KEY_EQUAL), Some('='));
+        assert_eq!(shortcut_letter(None, KEY_MINUS), Some('-'));
+        assert_eq!(shortcut_letter(Some(""), KEY_ZERO), Some('0'));
         assert_eq!(shortcut_letter(Some(""), KEY_Z), Some('z'));
     }
 

@@ -388,6 +388,19 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         .window
         .performKeyEquivalent(&*command_key(&keyed.window, "q")?);
     check(!quit && !keyed.is_closed(), "⌘Q is not the window's", &quit)?;
+    // ⌘= ⌘- ⌘0 are swallowed (the terminals' font size is not this window's), not passed on.
+    let mut font_keys = vec![];
+    for key in ["=", "-", "0"] {
+        let swallowed = keyed
+            .window
+            .performKeyEquivalent(&*command_key(&keyed.window, key)?);
+        check(
+            swallowed && !keyed.is_closed(),
+            "⌘= ⌘- ⌘0 are swallowed",
+            &(key, swallowed),
+        )?;
+        font_keys.push(swallowed);
+    }
     let closed_by_key = keyed
         .window
         .performKeyEquivalent(&*command_key(&keyed.window, "w")?);
@@ -473,7 +486,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
             "iife": locked_iife,
             "statements": locked_statements.unwrap_err(),
         },
-        "edit": { "selected": selected, "undo_responder": undo, "cmd_w_closes": closed_by_key, "cmd_q_passes": !quit },
+        "edit": { "selected": selected, "undo_responder": undo, "cmd_w_closes": closed_by_key, "cmd_q_passes": !quit, "font_keys_swallowed": font_keys },
         "window_title": window_title,
         "user_closed": { "is_closed": true, "still_answers": after_close },
         "timeout": hang.unwrap_err(),
