@@ -1716,8 +1716,9 @@ fn overlays() {
 }
 
 /// The Preferences window at its computed size: in both themes with the defaults
-/// (`preferences-mocha`, `preferences-latte`), and with Nord picked, 16 pt, ligatures and
-/// animations off (`preferences-nord`), so the list, switches and preview follow the choices.
+/// (`preferences-mocha`, `preferences-latte`), and with Nord picked, ligatures and animations off,
+/// at 16 pt (`preferences-nord`) and 20 pt (`preferences-nord-20pt`), so the list, switches and
+/// preview follow the choices and the preview's text fits its narrower screen.
 ///
 /// Panics unless nothing is drawn in the bottom padding and the last note sits just above it (the
 /// computed height is the form's), and the preview shows the theme's background and its magenta
@@ -1726,18 +1727,19 @@ fn preferences_scenes() {
     use crate::preferences::{self, PreferencesView};
 
     let dims = preferences::window_size();
-    let mut shots: Vec<_> = SHOT_THEMES.iter().map(|&(s, n)| (s, n, false)).collect();
-    shots.push(("nord", "Nord", true));
+    let mut shots: Vec<_> = SHOT_THEMES.iter().map(|&(s, n)| (s, n, None)).collect();
+    shots.push(("nord", "Nord", Some(16.0)));
+    shots.push(("nord-20pt", "Nord", Some(20.0)));
     for (slug, name, changed) in shots {
         let theme = shot_theme(name);
         let build = move |window: &mut Window, cx: &mut App| -> AnyView {
             let mut a = shot_appearance(theme, cx);
             a.theme_name = Some(name.to_string());
-            if changed {
-                a.font_settings.size = 16.0;
+            if let Some(size) = changed {
+                a.font_settings.size = size;
                 a.font_settings.features = vec![("calt".into(), 0)];
                 a.font = fonts::gpui_font(&a.font_settings, &cx.text_system().all_font_names());
-                a.font_size = 16.0;
+                a.font_size = size;
                 a.animations = false;
             }
             cx.set_global(a);
