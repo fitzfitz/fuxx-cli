@@ -713,17 +713,20 @@ unsafe extern "C" {
     fn posix_spawnattr_setflags(attr: *mut *mut c_void, flags: i16) -> c_int;
 }
 
-/// The environment for a new daemon session: ours with `shell` applied (the daemon never uses
-/// its own, study §2.3.7 trap 2).
+/// The environment for a new daemon session: ours (or `shell.base`) with `shell` applied (the
+/// daemon never uses its own, study §2.3.7 trap 2).
 pub fn create_env(shell: &ShellEnv) -> BTreeMap<String, String> {
-    let mut env: BTreeMap<String, String> = std::env::vars_os()
-        .map(|(k, v)| {
-            (
-                k.to_string_lossy().into_owned(),
-                v.to_string_lossy().into_owned(),
-            )
-        })
-        .collect();
+    let mut env: BTreeMap<String, String> = match &shell.base {
+        Some(base) => base.iter().cloned().collect(),
+        None => std::env::vars_os()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
+            .collect(),
+    };
     for key in &shell.remove {
         env.remove(*key);
     }
@@ -1103,12 +1106,29 @@ pub(crate) mod tests {
     #[test]
     fn create_env_applies_the_shell_env_to_ours() {
         let env = create_env(&ShellEnv {
+            base: None,
             set: vec![("FUXX_TEST_SET".into(), "1".into())],
             remove: vec!["HOME"],
         });
         assert_eq!(env.get("FUXX_TEST_SET").map(String::as_str), Some("1"));
         assert!(!env.contains_key("HOME"));
         assert_eq!(env.get("PATH"), std::env::var("PATH").ok().as_ref());
+    }
+
+    #[test]
+    fn create_env_starts_from_a_base_when_given_one() {
+        let env = create_env(&ShellEnv {
+            base: Some(vec![
+                ("PATH".into(), "/login/bin".into()),
+                ("HOME".into(), "/me".into()),
+            ]),
+            set: vec![("FUXX_TEST_SET".into(), "1".into())],
+            remove: vec!["HOME"],
+        });
+        // Names only on failure: the values of fuxx's own environment may be secrets.
+        let names: Vec<&str> = env.keys().map(String::as_str).collect();
+        assert_eq!(names, ["FUXX_TEST_SET", "PATH"]);
+        assert_eq!(env["PATH"], "/login/bin");
     }
 
     #[test]

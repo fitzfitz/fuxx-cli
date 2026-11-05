@@ -16,7 +16,7 @@ use crate::daemon;
 use crate::daemon_client::{self, DaemonClient};
 use crate::groups;
 use crate::mux_proto::{self, Create, Progress, SetMeta};
-use crate::restore::{RestoreMode, SavedState, VERSION};
+use crate::restore::{RestoreMode, SavedSession, SavedState, VERSION};
 use crate::session_list::SessionList;
 use crate::ssh_target::SshTarget;
 use crate::status::Status;
@@ -229,9 +229,17 @@ impl Workspace {
                     Some((mut create, ssh)) => {
                         let is_ssh = ssh.is_some();
                         if let Some(target) = ssh {
+                            let saved = SavedSession {
+                                ssh: Some(target.clone()),
+                                ..Default::default()
+                            };
                             let program =
                                 cx.background_spawn(async move { ssh_program(&target, None) });
                             create.program = Some(program.await);
+                            // Again, now the login shell's environment has been read for it.
+                            if let Ok(env) = this.update(cx, |this, _| this.create_env(&saved)) {
+                                create.env = env;
+                            }
                         }
                         let answer = client.create_in_background(create).await;
                         if is_ssh && refused.is_none() {
@@ -320,10 +328,10 @@ impl Workspace {
         for (i, slot) in placement.slots.iter().enumerate() {
             let view = match (slot, ids.get(i).copied().flatten()) {
                 (Slot::Live(a), _) => {
-                    TerminalView::adopt_daemon(window, cx, client.clone(), a.id).map(|v| (a.id, v))
+                    TerminalView::adopt_daemon(cx, client.clone(), a.id).map(|v| (a.id, v))
                 }
                 (Slot::Restore(_), Some(id)) => {
-                    TerminalView::attach_daemon(window, cx, client.clone(), id)
+                    TerminalView::attach_daemon(cx, client.clone(), id)
                         .map(|v| (id, v))
                         .inspect_err(|_| {
                             // Not shown, so not left running unseen.
@@ -597,7 +605,7 @@ impl Workspace {
                 continue;
             }
             let (id, old) = (session.id, session.view.entity_id());
-            let view = match TerminalView::attach_daemon(window, cx, client.clone(), id) {
+            let view = match TerminalView::attach_daemon(cx, client.clone(), id) {
                 Ok(view) => view,
                 Err(err) => {
                     eprintln!("[fuxx] session: could not show s{id} again: {err}");

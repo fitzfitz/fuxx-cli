@@ -108,10 +108,10 @@ impl Focusable for TerminalView {
 
 impl TerminalView {
     /// Start `program` (argv, run directly), or a login shell when `None`, in `cwd` (else home),
-    /// and wrap it in a new view entity (focused). `startup` is typed into the shell right after
-    /// it starts, with Enter (ignored with a `program`); `env` is applied to the environment.
+    /// and wrap it in a new view entity (not focused: the workspace focuses the active pane).
+    /// `startup` is typed into the shell right after it starts, with Enter (ignored with a
+    /// `program`); `env` is applied to the environment.
     pub fn spawn(
-        window: &mut Window,
         cx: &mut App,
         program: Option<Vec<String>>,
         cwd: Option<&Path>,
@@ -131,14 +131,13 @@ impl TerminalView {
             // The shell reads this as typed-ahead input once it is up.
             core.write(format!("{cmd}\r").as_bytes());
         }
-        Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
+        Ok(cx.new(|cx| Self::new(core, rx, cx)))
     }
 
     /// A view of daemon session `id` (Daemon backend). It never waits on the daemon. For a new
     /// session, get the id with `DaemonClient::create_in_background` first (its `startup` is
     /// typed in by the daemon); for adoption (Task 7), from `list`.
     pub fn attach_daemon(
-        window: &mut Window,
         cx: &mut App,
         client: Arc<DaemonClient>,
         id: u64,
@@ -146,13 +145,12 @@ impl TerminalView {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         let theme = cx.global::<Appearance>().theme;
         let core = TerminalCore::attach_daemon(client, id, tx, theme).map_err(|e| e.to_string())?;
-        Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
+        Ok(cx.new(|cx| Self::new(core, rx, cx)))
     }
 
     /// `attach_daemon` without the session's screen yet: it comes on `attach` (reopening fuxx,
     /// M10a; only the sessions shown attach at once).
     pub fn adopt_daemon(
-        window: &mut Window,
         cx: &mut App,
         client: Arc<DaemonClient>,
         id: u64,
@@ -160,7 +158,7 @@ impl TerminalView {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         let theme = cx.global::<Appearance>().theme;
         let core = TerminalCore::adopt_daemon(client, id, tx, theme).map_err(|e| e.to_string())?;
-        Ok(cx.new(|cx| Self::new(core, rx, window, cx)))
+        Ok(cx.new(|cx| Self::new(core, rx, cx)))
     }
 
     /// Fetch an adopted session's screen; true if this call asked for it (once per view).
@@ -213,6 +211,11 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// When the program first printed (`TerminalCore::first_output`).
+    pub fn first_output(&self) -> Option<Instant> {
+        self.core.first_output()
+    }
+
     /// The terminal's text (see `grid::TextScope`).
     pub fn text(&self, scope: TextScope) -> String {
         self.core.text(scope)
@@ -238,7 +241,6 @@ impl TerminalView {
     fn new(
         core: TerminalCore,
         mut rx: UnboundedReceiver<TermEvent>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // Drain terminal events on the UI thread, in order.
@@ -269,7 +271,6 @@ impl TerminalView {
         });
 
         let focus_handle = cx.focus_handle();
-        focus_handle.focus(window, cx);
         Self {
             core,
             focus_handle,

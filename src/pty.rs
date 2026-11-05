@@ -12,10 +12,12 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 
 use crate::terminal::{CellPx, TermDims};
 
-/// What a shell's environment gets on top of the one fuxx inherited: variables to drop, then
-/// variables to set.
+/// What a shell's environment gets on top of the one fuxx inherited (or `base`): variables to
+/// drop, then variables to set.
 #[derive(Debug)]
 pub struct ShellEnv {
+    /// Start from this environment instead of fuxx's own (an SSH session: your login shell's).
+    pub base: Option<Vec<(String, String)>>,
     pub set: Vec<(String, String)>,
     pub remove: Vec<&'static str>,
 }
@@ -38,6 +40,12 @@ pub fn command(program: Option<&[String]>, cwd: Option<&Path>, env: &ShellEnv) -
             if let Some(home) = std::env::var_os("HOME") {
                 cmd.cwd(home);
             }
+        }
+    }
+    if let Some(base) = &env.base {
+        cmd.env_clear();
+        for (key, value) in base {
+            cmd.env(key, value);
         }
     }
     // Always set these: an app launched from Finder has no TERM, one launched from another
@@ -248,6 +256,7 @@ mod tests {
         apply_env(
             &mut cmd,
             &ShellEnv {
+                base: None,
                 set: vec![("SET".into(), "ours".into())],
                 remove: vec!["GONE", "SET"],
             },
@@ -263,6 +272,7 @@ mod tests {
             None,
             None,
             &ShellEnv {
+                base: None,
                 set: Vec::new(),
                 remove: vec!["FUXX_SESSION"],
             },
@@ -272,6 +282,33 @@ mod tests {
             cmd.get_env("TERM").and_then(|v| v.to_str()),
             Some("xterm-256color")
         );
+    }
+
+    #[test]
+    fn a_base_environment_replaces_fuxx_s_own() {
+        let base = [
+            ("PATH", "/login/bin:/usr/bin"),
+            ("SSH_AUTH_SOCK", "/agent"),
+            ("TERM", "dumb"),
+            ("FUXX_SESSION", "s9"),
+        ];
+        let env = ShellEnv {
+            base: Some(base.map(|(k, v)| (k.to_string(), v.to_string())).to_vec()),
+            set: vec![("FUXX_SOCKET".into(), "/ours.sock".into())],
+            remove: vec!["FUXX_SESSION"],
+        };
+        let cmd = command(Some(&["ssh".to_string()]), None, &env);
+        let var = |k: &str| cmd.get_env(k).and_then(|v| v.to_str()).map(String::from);
+        assert_eq!(var("PATH").as_deref(), Some("/login/bin:/usr/bin"));
+        assert_eq!(var("SSH_AUTH_SOCK").as_deref(), Some("/agent"));
+        // fuxx's own variables on top.
+        assert_eq!(var("TERM").as_deref(), Some("xterm-256color"));
+        assert_eq!(var("COLORTERM").as_deref(), Some("truecolor"));
+        assert_eq!(var("FUXX_SOCKET").as_deref(), Some("/ours.sock"));
+        assert_eq!(var("FUXX_SESSION"), None);
+        // Nothing of fuxx's own environment that the base doesn't have.
+        assert!(std::env::var_os("HOME").is_some());
+        assert_eq!(var("HOME"), None);
     }
 
     #[test]
