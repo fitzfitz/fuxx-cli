@@ -23,8 +23,8 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Entity,
     EntityId, Focusable, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathPromptOptions, Pixels, Point, SharedString, Subscription, Task, Window, WindowControlArea,
-    actions, canvas, div, prelude::*, px, relative,
+    PathPromptOptions, Pixels, Point, SharedString, StyleRefinement, Subscription, Task, Window,
+    WindowControlArea, actions, canvas, div, prelude::*, px, relative,
 };
 
 use crate::adopt::{self, Probe};
@@ -40,7 +40,7 @@ use crate::notifier;
 use crate::panes::{self, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
 use crate::pty::ShellEnv;
-use crate::reduce_motion::SystemReduceMotion;
+use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
@@ -252,8 +252,10 @@ pub struct Workspace {
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
     _appearance: Subscription,
-    /// Repaints (and re-checks the marks' ticker) when macOS Reduce motion changes.
+    /// Repaint (and re-check the marks' ticker) when macOS Reduce motion changes, or the window
+    /// is hidden or shown.
     _reduce_motion: Subscription,
+    _window_visible: Subscription,
     /// The status marks' shared clock (see `status_mark`), advanced by their ticker.
     pub(crate) phase: f32,
     /// Whether the marks' 100 ms ticker is running (only while a mark on screen moves).
@@ -323,6 +325,7 @@ impl Workspace {
         });
         let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
         let reduce_motion = cx.observe_global::<SystemReduceMotion>(|_, cx| cx.notify());
+        let window_visible = cx.observe_global::<WindowVisible>(|_, cx| cx.notify());
         let (socket, requests) = scripting.unzip();
         Self {
             sessions: SessionList::new(),
@@ -348,6 +351,7 @@ impl Workspace {
             _activation: activation,
             _appearance: appearance,
             _reduce_motion: reduce_motion,
+            _window_visible: window_visible,
             phase: 0.0,
             marks_ticking: false,
             pops: 0,
@@ -1352,7 +1356,7 @@ impl Workspace {
     fn render_panes(&self, colors: PaneColors, cx: &mut Context<Self>) -> Option<AnyElement> {
         let active = self.sessions.active()?.view.entity_id();
         let tree = self.shown_layout()?;
-        let view = |id: EntityId| {
+        let find = |id: EntityId| {
             self.sessions
                 .items()
                 .iter()
@@ -1362,12 +1366,28 @@ impl Workspace {
         // Shown, so an adopted session fetches its screen now (once; reopening, M10a). Panes
         // in a split take less padding.
         let split = matches!(tree, Node::Split { .. });
+        let mut resplit = Vec::new();
         for id in tree.leaves() {
-            if let Some(view) = view(id) {
+            if let Some(view) = find(id) {
                 view.read(cx).attach();
-                view.read(cx).set_split(split);
+                if view.read(cx).set_split(split) {
+                    resplit.push(id);
+                }
             }
         }
+        // Cached: a terminal repaints only when it says it changed (or its bounds do), not each
+        // time the workspace redraws (the marks' ticker, the sidebar). One whose padding just
+        // changed is drawn afresh this frame: it can't notify itself mid-frame.
+        let view = |id: EntityId| {
+            find(id).map(|view| {
+                if resplit.contains(&id) {
+                    view.into_any_element()
+                } else {
+                    view.cached(StyleRefinement::default().size_full())
+                        .into_any_element()
+                }
+            })
+        };
         let this = cx.entity().downgrade();
         let select: SelectPane = Rc::new(move |id, window, cx| {
             this.update(cx, |this, cx| this.select_view(id, window, cx))
@@ -1512,17 +1532,19 @@ impl Workspace {
                 .is_some_and(|s| s.group().is_none_or(|key| !self.collapsed.contains(&key)))
     }
 
-    /// Whether the marks' ticker should run now (`status_mark::should_tick`).
+    /// Whether the marks' ticker should run now (`status_mark::should_tick`). Without the
+    /// macOS globals (UI screenshots), Reduce motion is off and the window counts as visible.
     fn marks_move(&self, cx: &App) -> bool {
         let animations = cx.global::<Appearance>().animations;
-        let reduce = cx.try_global::<SystemReduceMotion>().is_some_and(|r| r.0);
-        status_mark::should_tick(animations, reduce, &self.visible_statuses())
+        let reduce = cx.try_global::<SystemReduceMotion>().is_some_and(|r| r.on);
+        let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
+        status_mark::should_tick(animations, reduce, seen, &self.visible_statuses())
     }
 
     /// Start the marks' 100 ms ticker unless it's running or nothing on screen moves; it stops,
     /// without a redraw, once nothing does. `render` calls it, so everything that redraws the
     /// sidebar (a status, a group closed, the sidebar hidden, the `animations` setting, Reduce
-    /// motion) re-checks it.
+    /// motion, the window shown again) re-checks it.
     fn tick_marks(&mut self, cx: &mut Context<Self>) {
         if self.marks_ticking || !self.marks_move(cx) {
             return;

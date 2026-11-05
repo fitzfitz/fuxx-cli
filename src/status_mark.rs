@@ -41,11 +41,13 @@ const HALO_MAX: f32 = 0.45;
 pub const POP: Duration = Duration::from_millis(350);
 
 /// Whether the marks' 100 ms ticker should run: only with animations on, macOS Reduce motion
-/// off, and a mark that moves (Working or Waiting) on screen.
-pub fn should_tick(animations: bool, reduce: bool, visible: &[Status]) -> bool {
+/// off, the window visible (not hidden, minimised or covered), and a mark that moves (Working or
+/// Waiting) on screen.
+pub fn should_tick(animations: bool, reduce: bool, window_visible: bool, marks: &[Status]) -> bool {
     animations
         && !reduce
-        && visible
+        && window_visible
+        && marks
             .iter()
             .any(|s| matches!(s, Status::Working | Status::Waiting))
 }
@@ -246,15 +248,17 @@ mod tests {
     #[test]
     fn should_tick_only_when_something_moves() {
         use Status::*;
-        // Something spins or pulses, with motion on: tick.
-        assert!(should_tick(true, false, &[Idle, Working]));
-        assert!(should_tick(true, false, &[Done, Waiting]));
+        // Something spins or pulses, with motion on and the window in view: tick.
+        assert!(should_tick(true, false, true, &[Idle, Working]));
+        assert!(should_tick(true, false, true, &[Done, Waiting]));
         // Only still marks on screen (or none): no ticker.
-        assert!(!should_tick(true, false, &[Idle, Done]));
-        assert!(!should_tick(true, false, &[]));
+        assert!(!should_tick(true, false, true, &[Idle, Done]));
+        assert!(!should_tick(true, false, true, &[]));
         // Animations off, or macOS Reduce motion on: no ticker whatever is on screen.
-        assert!(!should_tick(false, false, &[Working, Waiting]));
-        assert!(!should_tick(true, true, &[Working, Waiting]));
+        assert!(!should_tick(false, false, true, &[Working, Waiting]));
+        assert!(!should_tick(true, true, true, &[Working, Waiting]));
+        // The window hidden, minimised or fully covered: nothing to see, so no ticker.
+        assert!(!should_tick(true, false, false, &[Working, Waiting]));
     }
 
     #[test]

@@ -273,8 +273,9 @@ impl TerminalView {
 
     /// Whether this pane is one of several in a split (less padding). Read when the view renders,
     /// which for a pane on screen is in the same frame as the workspace render that sets it.
-    pub fn set_split(&self, split: bool) {
-        self.split.set(split);
+    /// True when it changed (the workspace then draws the pane afresh, past its cache).
+    pub fn set_split(&self, split: bool) -> bool {
+        self.split.replace(split) != split
     }
 
     /// Write `text` into the screen as if the program had printed it (UI screenshots).
@@ -482,6 +483,9 @@ impl TerminalView {
         {
             self.status_changed(status, cx);
         }
+        // Input snaps the view to the bottom and drops the selection: repaint even if the
+        // program echoes nothing (the pane is cached, see `Workspace::render_panes`).
+        cx.notify();
     }
 
     /// A mouse report (or wheel as arrows) for the program; dropped once disconnected.
