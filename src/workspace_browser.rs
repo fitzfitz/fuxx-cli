@@ -17,12 +17,13 @@ use gpui::{
     App, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, FocusHandle, Focusable,
     MouseDownEvent, Subscription, WeakEntity, Window, div, prelude::*, px,
 };
+use objc2::MainThreadMarker;
 use serde_json::{Value, json};
 
 use crate::api::{self, ApiError, Request};
 use crate::api_server::Conn;
 use crate::appearance::Appearance;
-use crate::browser::{Browser, CLOSED, PageState, didnt_answer, within};
+use crate::browser::{Browser, CLOSED, PageState, didnt_answer, forget_saved_data, within};
 use crate::browser_js::{self, Snapshot};
 use crate::browser_url::normalize_url;
 use crate::name_input::{NameInput, NameInputEvent};
@@ -55,6 +56,12 @@ pub fn browser_title(session: &str, page: Option<&str>) -> String {
         Some(page) if !page.is_empty() => format!("{session} \u{2014} {page}"),
         _ => session.to_string(),
     }
+}
+
+/// Whether a change of `browser-keep-data` from `was` to `now` deletes what the browser saved:
+/// only turning it from on to off does.
+fn forgets_saved_data(was: bool, now: bool) -> bool {
+    was && !now
 }
 
 /// What `Browsers` needs of a browser: whether the user closed its window, and its title.
@@ -238,7 +245,9 @@ impl Workspace {
         let id = session.id;
         if self.browsers.get(id).is_none() {
             let title = browser_title(&session.label(), None);
-            let browser = Browser::open(&title, cx);
+            // Windows opened from now on follow the setting; open ones keep their store.
+            let keep_data = cx.global::<Appearance>().browser_keep_data;
+            let browser = Browser::open(&title, keep_data, cx);
             self.browsers.insert(id, browser, title);
             self.tick_browsers(cx);
         }
@@ -247,6 +256,18 @@ impl Workspace {
             browser.bring_to_front(take_keyboard);
         }
         Ok(())
+    }
+
+    /// The settings changed: when `browser-keep-data` went from on to off, delete what the
+    /// browser saved. Windows already open keep the store they were opened with.
+    pub(crate) fn browser_settings_changed(&mut self, cx: &App) {
+        let keep_data = cx.global::<Appearance>().browser_keep_data;
+        if forgets_saved_data(self.browser_keep_data, keep_data) {
+            forget_saved_data(
+                MainThreadMarker::new().expect("GPUI's App lives on the main thread"),
+            );
+        }
+        self.browser_keep_data = keep_data;
     }
 
     /// Bring the browsers' titles up to date and drop those the user closed (or whose session
@@ -1032,5 +1053,14 @@ mod tests {
         // Timeouts are `timeout` (exit 124); other page errors are refusals.
         assert_eq!(page_error(didnt_answer(SCRIPT_LIMIT)).code, "timeout");
         assert_eq!(page_error("the script failed: x".into()).code, "refused");
+    }
+
+    #[test]
+    fn only_turning_keep_data_off_forgets_saved_data() {
+        assert!(forgets_saved_data(true, false));
+        // No change, or turning it on: nothing is deleted.
+        assert!(!forgets_saved_data(true, true));
+        assert!(!forgets_saved_data(false, false));
+        assert!(!forgets_saved_data(false, true));
     }
 }

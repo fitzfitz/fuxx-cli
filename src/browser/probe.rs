@@ -16,6 +16,7 @@ use objc2_app_kit::{
     NSWindow,
 };
 use objc2_foundation::{NSPoint, NSString};
+use objc2_web_kit::WKWebsiteDataStore;
 use serde_json::{Value, json};
 
 use super::{Browser, CLOSED, EVAL_REFUSED_HINT, PageState, WINDOW_SIZE, png_size, within};
@@ -97,7 +98,46 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     let base = format!("http://127.0.0.1:{}", serve_probe_pages()?);
     let home = format!("{base}/");
     let two = format!("{base}/two");
-    let b = Browser::offscreen(mtm);
+    // Keep-data off: the probe's pages leave nothing in the real, saved data store.
+    let b = Browser::offscreen(mtm, false);
+
+    // The data stores. Off: every window shares the run's one in-memory store. On: the default
+    // store, which keeps data on disk. Only looked at: the probe never deletes from it.
+    let other = Browser::offscreen(mtm, false);
+    let kept = Browser::offscreen(mtm, true);
+    let (off_store, other_store, kept_store) = (store_of(&b), store_of(&other), store_of(&kept));
+    // SAFETY: main thread (the marker); plain WebKit class method and property reads.
+    let (default_store, off_persistent, on_persistent) = unsafe {
+        (
+            WKWebsiteDataStore::defaultDataStore(mtm),
+            off_store.isPersistent(),
+            kept_store.isPersistent(),
+        )
+    };
+    let stores = json!({
+        "off_persistent": off_persistent,
+        "off_shared": std::ptr::eq(&*off_store, &*other_store),
+        "off_is_default": std::ptr::eq(&*off_store, &*default_store),
+        "on_persistent": on_persistent,
+        "on_is_default": std::ptr::eq(&*kept_store, &*default_store),
+    });
+    check(
+        stores["off_persistent"] == json!(false) && stores["off_is_default"] == json!(false),
+        "keep-data off keeps nothing on disk",
+        &stores,
+    )?;
+    check(
+        stores["off_shared"] == json!(true),
+        "keep-data off windows share one store",
+        &stores,
+    )?;
+    check(
+        stores["on_persistent"] == json!(true) && stores["on_is_default"] == json!(true),
+        "keep-data on uses the default store",
+        &stores,
+    )?;
+    other.close();
+    kept.close();
 
     // A load that fails: nothing listens on that port.
     let dead = format!("http://127.0.0.1:{}/", unused_port()?);
@@ -383,7 +423,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     let undo = b.window.respondsToSelector(sel!(undo:)) && b.window.respondsToSelector(sel!(redo:));
     check(undo, "an undo responder", &undo)?;
     // The window's own ⌘W closes it; other shortcuts aren't the window's.
-    let keyed = Browser::offscreen(mtm);
+    let keyed = Browser::offscreen(mtm, false);
     let quit = keyed
         .window
         .performKeyEquivalent(&*command_key(&keyed.window, "q")?);
@@ -441,6 +481,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     )?;
 
     Ok(json!({
+        "data_store": stores,
         "failed_load": failed.error,
         "failed_load_over_a_page": { "url": failed_over.url, "error": failed_over.error },
         "error_after_a_link_click": followed_link.error,
@@ -503,6 +544,12 @@ fn check(ok: bool, what: &str, got: &impl Debug) -> Result<(), String> {
     } else {
         Err(format!("{what}: got {got:?}"))
     }
+}
+
+/// The data store `b`'s web view was made with.
+fn store_of(b: &Browser) -> Retained<WKWebsiteDataStore> {
+    // SAFETY: main thread (a `Browser` never leaves it); plain property reads.
+    unsafe { b.view.configuration().websiteDataStore() }
 }
 
 /// A ⌘-`key` key-down event for `window`.

@@ -111,6 +111,19 @@ pub fn animations_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
+/// `browser-address-bar` values to write: nothing when on (the default, so no line), `off`
+/// otherwise.
+#[allow(dead_code)] // written by Preferences → Browser (follow-up Task 3)
+pub fn browser_address_bar_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
+/// `browser-keep-data` values to write: `on`, or nothing (off is the default, so no line).
+#[allow(dead_code)] // written by Preferences → Browser (follow-up Task 3)
+pub fn browser_keep_data_values(on: bool) -> Vec<String> {
+    if on { vec!["on".to_string()] } else { vec![] }
+}
+
 /// The theme a list choice stands for, on its own (without the user's other colour lines):
 /// the defaults for `Default`, otherwise the named theme read with `read_theme`.
 pub fn choice_theme(name: &str, read_theme: &dyn Fn(&str) -> Option<String>) -> Theme {
@@ -271,5 +284,15 @@ mod tests {
     fn persistence_line_is_written_only_when_on() {
         assert_eq!(persistence_values(true), vec!["on".to_string()]);
         assert!(persistence_values(false).is_empty());
+    }
+
+    #[test]
+    fn browser_lines_are_written_only_when_not_the_default() {
+        // The address bar is on by default: only off is written.
+        assert!(browser_address_bar_values(true).is_empty());
+        assert_eq!(browser_address_bar_values(false), vec!["off".to_string()]);
+        // Keeping data is off by default: only on is written.
+        assert_eq!(browser_keep_data_values(true), vec!["on".to_string()]);
+        assert!(browser_keep_data_values(false).is_empty());
     }
 }
