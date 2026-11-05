@@ -62,6 +62,19 @@ pub fn ensure_healthy(host: &str, dir: &Path, timeout: Duration) {
 /// socket may still accept (into the kernel's queue), so this host's own socket is removed
 /// too. Blocks, so call it off the UI thread.
 pub fn ensure_healthy_with(program: &OsStr, host: &str, dir: &Path, timeout: Duration) {
+    ensure_healthy_capped(program, host, dir, timeout, EXIT_CAP, RESOLVE_CAP)
+}
+
+/// `ensure_healthy_with` with the caps of the follow-up `-O exit` and `-G` calls given, so a
+/// test can allow them time that a loaded machine needs.
+fn ensure_healthy_capped(
+    program: &OsStr,
+    host: &str,
+    dir: &Path,
+    timeout: Duration,
+    exit_cap: Duration,
+    resolve_cap: Duration,
+) {
     let mut control_path = dir.as_os_str().to_owned();
     control_path.push("/%C");
     let run = |operation: &str, cap: Duration| {
@@ -76,7 +89,7 @@ pub fn ensure_healthy_with(program: &OsStr, host: &str, dir: &Path, timeout: Dur
     if check.as_ref().is_some_and(|(status, _)| status.success()) {
         return;
     }
-    let _ = run("exit", EXIT_CAP);
+    let _ = run("exit", exit_cap);
     if check.is_none() {
         // Hung: where its socket is, as ssh expands `%C` for this host.
         let mut command = Command::new(program);
@@ -85,7 +98,7 @@ pub fn ensure_healthy_with(program: &OsStr, host: &str, dir: &Path, timeout: Dur
             .arg("-o")
             .arg(format!("ControlPath={}", control_path.to_string_lossy()))
             .args(["--", host]);
-        let socket = crate::ssh_hosts::run_capped(&mut command, RESOLVE_CAP)
+        let socket = crate::ssh_hosts::run_capped(&mut command, resolve_cap)
             .filter(|(status, _)| status.success())
             .and_then(|(_, text)| host_socket(&text, dir));
         if let Some(socket) = socket
@@ -274,7 +287,17 @@ mod tests {
                 mine.display()
             ),
         );
-        ensure_healthy_with(fake.as_os_str(), "devbox", &dir, Duration::from_millis(500));
+        // Only the check is meant to time out (the fake sleeps 30 s). The `-O exit` and `-G`
+        // calls finish, but under a full parallel run a fresh script can take seconds to start,
+        // so they get ENOUGH rather than their production caps.
+        ensure_healthy_capped(
+            fake.as_os_str(),
+            "devbox",
+            &dir,
+            Duration::from_secs(2),
+            ENOUGH,
+            ENOUGH,
+        );
         assert!(!mine.exists(), "the hung master's socket is gone");
         assert!(other.exists(), "another host's stays");
         let calls = std::fs::read_to_string(&log).unwrap();
