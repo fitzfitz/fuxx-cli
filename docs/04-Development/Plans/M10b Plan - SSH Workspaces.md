@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M10b
-status: planned
-updated: 2026-11-05
+status: built
+updated: 2026-11-06
 ---
 
 # M10b Plan — SSH Workspaces (local `ssh`, host picker, reconnect)
@@ -12,11 +12,11 @@ updated: 2026-11-05
 | At a glance | |
 |---|---|
 | **Milestone note** | [[51 - Milestone 10b - SSH Workspaces]] (the spec) · design evidence: [[Input - M10 Feasibility Study]] §3.3 |
-| **Status** | ⬜ Planned (2026-11-05) |
-| **Tasks done** | 0 / 9 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built and reviewed (2026-11-06); on-screen check pending |
+| **Tasks done** | 8 / 9 (Task 8 is your on-screen check, batched with M10c and M11) |
+| **▶ Pick up here** | Task 8, when you run the batched checks ([[51 - Milestone 10b - SSH Workspaces]], "On-screen checklist") |
 | **Decisions used** | You skipped the questions ("so"). Design = the study's Option A, AI's call throughout. |
-| **Needs your eyes** | 👀 Task 8 |
+| **Needs your eyes** | 👀 Task 8 (batched with M10c and M11, your choice 2026-11-05) |
 
 **Goal:** An SSH session is a fuxx session whose program is the Mac's own `ssh -t HOST`, opened from a host
 picker, grouped by host, reusing one connection per host, holding its screen with a "press Enter to reconnect" line
@@ -78,7 +78,7 @@ registry source), serde/serde_json, GPUI at the pinned rev.
   `src/daemon.rs`, `src/daemon_client.rs`, `src/workspace.rs`, `src/workspace_daemon.rs`, `src/groups.rs`,
   `src/restore.rs`, `src/adopt.rs`, `src/workspace_api.rs`, `src/cli.rs`, `src/mcp.rs`, `src/main.rs`.
 
-### Task 1: The `ssh` command line — ⬜
+### Task 1: The `ssh` command line — ✅
 
 **Files:** Create `src/ssh_target.rs` (+ `mod` in `main.rs`).
 
@@ -97,7 +97,7 @@ registry source), serde/serde_json, GPUI at the pinned rev.
 - [ ] **Step 4:** `cargo test ssh_target` → PASS; full `cargo test` green.
 - [ ] **Step 5:** commit `feat(m10b): the ssh command line, built from argv with reuse and keepalive unless configured`.
 
-### Task 2: The host list — ⬜
+### Task 2: The host list — ✅
 
 **Files:** Create `src/ssh_hosts.rs`.
 
@@ -112,7 +112,7 @@ registry source), serde/serde_json, GPUI at the pinned rev.
 - [ ] **Steps 2–4:** FAIL → implement → PASS; full suite green.
 - [ ] **Step 5:** commit `feat(m10b): host list from ~/.ssh/config and recent hosts`.
 
-### Task 3: The shared-connection folder and health check — ⬜
+### Task 3: The shared-connection folder and health check — ✅
 
 **Files:** Create `src/ssh_control.rs`.
 
@@ -124,7 +124,7 @@ registry source), serde/serde_json, GPUI at the pinned rev.
 - [ ] **Steps 2–4:** FAIL → implement → PASS; full suite green.
 - [ ] **Step 5:** commit `feat(m10b): private shared-connection folder with a health check before reuse`.
 
-### Task 4: A real program and an exit code, Local and background service — ⬜
+### Task 4: A real program and an exit code, Local and background service — ✅
 
 **Files:** Modify `pty.rs`, `terminal.rs`, `terminal_view.rs`, `mux_proto.rs`, `daemon_session.rs`, `daemon.rs`, `daemon_client.rs`, `workspace_daemon.rs`.
 
@@ -139,7 +139,7 @@ registry source), serde/serde_json, GPUI at the pinned rev.
 - [ ] **Steps 2–4:** FAIL → implement → PASS; full suite green; existing tests unchanged apart from the `Exited` pattern.
 - [ ] **Step 5:** commit `feat(m10b): sessions can run a program directly and report its exit code (protocol 2)`.
 
-### Task 5: SSH sessions in the workspace: launch, groups, disconnect, reconnect, restore — ⬜
+### Task 5: SSH sessions in the workspace: launch, groups, disconnect, reconnect, restore — ✅
 
 **Files:** Modify `workspace.rs`, `workspace_daemon.rs`, `groups.rs`, `restore.rs`, `adopt.rs`, `terminal.rs`.
 
@@ -159,7 +159,7 @@ registry source), serde/serde_json, GPUI at the pinned rev.
 - [ ] **Steps 2–4:** FAIL → implement → PASS; full suite green.
 - [ ] **Step 5:** commit `feat(m10b): ssh sessions open, group by host, hold on disconnect, reconnect and restore`.
 
-### Task 6: The host picker and the menu item — ⬜
+### Task 6: The host picker and the menu item — ✅
 
 **Files:** Create `src/host_picker.rs`; modify `workspace.rs` (overlay, action), `main.rs` (action `NewSshSession`, File menu item "New SSH Session…" after "New Session in Folder…", binding `cmd-shift-s`, key context `HostPicker`).
 
@@ -175,7 +175,7 @@ registry source), serde/serde_json, GPUI at the pinned rev.
 - [ ] **Steps 2–4:** FAIL → implement → PASS; full suite green. GUI behaviour is checked in Task 8.
 - [ ] **Step 5:** commit `feat(m10b): host picker (⇧⌘S) and the File menu item`.
 
-### Task 7: `fuxx new --ssh` and the MCP tool — ⬜
+### Task 7: `fuxx new --ssh` and the MCP tool — ✅
 
 **Files:** Modify `cli.rs`, `workspace_api.rs`, `mcp.rs`.
 
@@ -185,7 +185,9 @@ registry source), serde/serde_json, GPUI at the pinned rev.
 - [ ] **Steps 2–4:** FAIL → implement → PASS; full suite green.
 - [ ] **Step 5:** commit `feat(m10b): fuxx new --ssh and the MCP ssh option`.
 
-### Task 8: On screen — 👀 ⬜
+### Task 8: On screen — 👀 pending (batched)
+
+Run with the M10c and M11 checks. The full merged list is in [[51 - Milestone 10b - SSH Workspaces]] ("On-screen checklist"); the list below is the plan's original.
 
 The spec's success check, plus:
 - [ ] The picker lists your config hosts (git hosts hidden), recent ones first; typing a new host offers "Connect to …"; Escape closes.
@@ -195,19 +197,56 @@ The spec's success check, plus:
 - [ ] Restore and M10a: quit/reopen keeps SSH sessions (persistence on), or reconnects them (persistence off, `session-restore = agents`).
 - [ ] `fuxx new --ssh HOST` works and `fuxx ls` shows the host.
 
-### Task 9: Update the docs — ⬜
+### Task 9: Update the docs — ✅
 
-- [ ] Milestone note 51 ✅; this plan ✅ + verification log; roadmap; tracker; Progress Log; STRUCTURE.md (new files); README (an "SSH sessions" paragraph).
+- [x] Milestone note 51 (🟨 built, check pending, not ✅); this plan + verification log; roadmap; tracker; Progress Log; STRUCTURE.md (new files); README (an "SSH sessions" paragraph).
 
 ## Verification log
 
-_(filled in as tasks complete)_
+Every task was built test-first and reviewed (a fresh reviewer per task); test counts are the full `cargo test`
+total after the task. The branch started from 399 tests. `cargo fmt --check` clean.
+
+| Task | Commits | Tests | Review |
+|---|---|---|---|
+| 1 ssh_target | `f59167f..1ea7919` | 404 | Approved, clean. |
+| 2 ssh_hosts | `1ea7919..af27985` | 411 | Approved, clean. |
+| 3 ssh_control | `af27985..d8ececa` | 416 | Approved, clean. |
+| 4 program and exit code (protocol 2) | `d8ececa..247a8d4` | 424 | Approved, clean (all 3 named risks pass). |
+| 5 workspace SSH | `247a8d4..a361fee` | 438 | Needs fixes (2 Important, plus 2 re-graded Minors and the per-pane tmux name); fix round `36b5a25` (move to `workspace_ssh.rs`), `335d1a4` (flaky fake-ssh tests), `a361fee`; scoped re-review: 6 addressed, 0 open. |
+| 6 host picker | `a361fee..a6c322c` | 442 | Approved, clean. |
+| 7 `fuxx new --ssh`, MCP | `a6c322c..58fc45d` | 447 | Approved with one Important (`fuxx ls` did not show the host); fixed in `58fc45d`, re-reviewed clean. |
+| Final review | `2a72ce6..58fc45d` | 447 | Ready after fixes (0 Critical, 3 Important, 12 Minor). Important: SSH panes lacked the login-shell environment; early ssh failures vanished; retries never reset or stayed noisy. |
+| Final fixes | `b094f75`, `ca215c1` | 457 | 10 new tests, each shown failing first. Also fixed: `#` comments in `Host` lines, auto-reconnect stealing focus, a hung shared connection never cleared. Scoped re-review: all addressed (6 of 6), no new Critical or Important. |
+| 8 On screen | | | Pending: batched with M10c and M11. |
+| 9 Docs | the docs commit | 457 | This commit. |
+
+Rulings taken along the way are summarised in the milestone note, "Decisions made along the way".
+
+## Deferred minors
+
+Minor review findings left on purpose. Copied here from the (git-ignored) working ledger so they are not lost.
+Items marked "(fixed later)" were fixed in a later round and are kept for the record.
+
+- **Task 1:** is_git_host hostname match is case-sensitive; ControlPath built with display() (lossy/'%' expansion, harmless for /tmp/fuxx-<uid>); untested controlmaster variants (no/yes/ask) and " -x". (case-insensitive match fixed in Task 2, Ruling C)
+- **Task 2:** `Host foo # work` adds "#"/"work" as hosts; globs only '*' in the last component; temp test dirs not cleaned; dead-code comment sits above mod ssh_hosts (cosmetic). (the `#` comment case fixed in `b094f75`)
+- **Task 3:** run_capped kills only the direct child (a grandchild holding stdout keeps the reader thread); the 1 s stdout wait also applies to -O check (theoretical); temp test dirs not cleaned; to_string_lossy on the control path.
+- **Task 4:** hang_up killpg can run on an already-reaped pid within one reap tick (documented; pid-reuse race only when the group is empty); a child that closes its terminal but keeps running reports Exited ≤1 s late with code None; signal deaths read as Some(1).
+- **Task 5:** a rename during a reconnect is lost (name captured at reconnect start); waits stop growing on a black-holed network (opened_at includes connect time; fixed later by the "was up" rule in the final fixes); Local restore gap lets a ⌘T during async SSH restore drop saved splits; hold/reconnect/replace have no automated test (GPUI).
+- **Task 5:** a live-adopted session saved before tmux names existed starts a new tmux session on first reconnect (unreleased branch only); tmux name 24 random bits; screen-reset test polls 5 s; failed tries still emit status.changed Idle→Done to scripts (notification suppressed); banner shows the wait once, no countdown; daemon newcomers not in sessions.json come back as plain sessions (List has no host).
+- **Task 6:** typing a host that is a substring of a recent one selects the recent one first (Enter opens it; "Connect to" is last, per brief) — put in the Task 8 checklist; placeholder uses fixed offsets; recent/config files read on the UI thread at open (small); IME + ↑/↓/Tab unverified.
+- **Task 7:** empty folder/preset "" counts as unset in the API but as a clash in MCP/CLI; --name applied via rename after open (brief automatic name); no test for the API's ssh+folder/preset/run clash (inline in GPUI-bound api_new).
+- **Final:** an explicit `ControlMaster no` in ssh config is indistinguishable from the default and gets fuxx's reuse options; other final-review minors as listed in final-review.md.
+- **Final:** login-env failure is cached for the run (one slow rc at first launch → no login env until restart); a hung master process may outlive its removed socket; adopted daemon session's first_output only set on next output; config_hosts doc wording.
+- **Final (from the final review):** a reconnect try shows a blank pane until ssh says something; a tmux pane closed with ⌘W leaves its random-named remote tmux session behind; `session.list` reports a held session as live with no "disconnected" flag; `record_recent` is load-modify-write with no lock, so two opens at once can drop one entry; an adopted live SSH session that ends in the second before its lazy attach shows as "not live" instead of held; restore with several SSH sessions resolves them one after another (up to about 5 s each in the worst case), so the window before splits are placed can last seconds.
 
 ## Known limitations
 
 - No remote fuxx service: remote `fuxx`/MCP and persistent remote sessions without tmux are a later milestone.
 - Notification codes inside remote tmux need `allow-passthrough on` (the user's tmux config).
 - Auto-reconnect runs only while the window is open.
+- An explicit `ControlMaster no` is treated like the default (fuxx adds its reuse options).
+- A remote shell that exits 255 reads as a disconnect.
+- Not run on screen yet (Task 8).
 
 ## Related
 

@@ -20,6 +20,14 @@ when an agent needs you, instead of babysitting a wall of terminal windows.
   service when you quit; reopening brings them back live. `fuxx daemon status` shows it, `fuxx daemon stop`
   (add `--force` to end running sessions) stops it; ⌥⌘Q quits and ends everything.
 
+## SSH sessions
+
+Press ⇧⌘S (File → New SSH Session…) to pick a host from your `~/.ssh/config` or recent hosts, or type one. The
+pane runs your own `ssh`, so your keys, config, jump hosts and 2FA work as in any terminal; nothing is installed
+on the host. Tick "Keep running on the host (tmux)" to run inside tmux there, which reconnects by itself after a
+network drop; otherwise Enter reconnects. From a script: `fuxx new --ssh HOST [--tmux]`. If you used the background
+service before this version, restart it once with `fuxx daemon stop`. Built and reviewed, not yet tried on screen.
+
 ## Scripting fuxx
 
 Inside any fuxx session, the `fuxx` command talks to the running app (outside, put the binary on your `PATH`):

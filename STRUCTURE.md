@@ -96,6 +96,13 @@ src/
 ├── workspace_daemon.rs   M10a · the workspace using the service: connect, reopen, lost service, quit count
 ├── adopt.rs              M10a · reopen rules: live sessions into their saved places, the rest restored (pure)
 │
+│   SSH workspaces (M10b)
+├── ssh_target.rs         M10b · the `ssh` command line from argv: host check, reuse/keepalive options, tmux name
+├── ssh_hosts.rs          M10b · hosts from `~/.ssh/config` (Include, no wildcards), recent hosts, `ssh -G` lookup
+├── ssh_control.rs        M10b · the private shared-connection folder and the health check before reuse
+├── workspace_ssh.rs      M10b · the workspace's SSH sessions: open, hold on disconnect, reconnect, restore
+├── host_picker.rs        M10b · the ⇧⌘S host picker: rows, filter, keys, tmux tick box
+│
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
 ├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row
