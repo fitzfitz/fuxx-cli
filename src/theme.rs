@@ -7,6 +7,7 @@
 //! empty value resets a key, and `palette = N=COLOR` takes a decimal or `0x`/`0o`/`0b` index.
 
 use crate::settings::{Entry, parse};
+use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, ensure_contrast};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::{Path, PathBuf};
 
@@ -95,27 +96,186 @@ pub struct UiColors {
     pub ring_working: Rgb,
     pub ring_waiting: Rgb,
     pub ring_done: Rgb,
+    /// The one accent: the active row's bar, focus, drop lines, a hovered divider.
+    pub accent: Rgb,
+    /// Meta text (numbers, times, the waiting question): quieter than `text_dim`, still readable.
+    pub text_faint: Rgb,
+    /// A plain 1 px line between panes.
+    pub divider: Rgb,
+    /// A waiting row's fill; `done_tint` is the same, subtler, for a finished one.
+    pub waiting_tint: Rgb,
+    pub done_tint: Rgb,
+    pub focus_ring: Rgb,
+    /// Overlays (switcher, popups): a surface raised above the window, its edge and its shadow.
+    pub panel: Rgb,
+    pub panel_border: Rgb,
+    pub shadow: Rgb,
+}
+
+/// `fg` moved along its hue (see `ensure_contrast`) until it reaches `min` on every one of `bgs`.
+/// The chrome's surfaces all sit on the same side of a foreground, so moving away from one never
+/// loses another; the repeat is a guard for odd user themes where they don't.
+fn readable(mut fg: Rgb, bgs: &[Rgb], min: f32) -> Rgb {
+    for _ in 0..3 {
+        let before = fg;
+        for &bg in bgs {
+            fg = ensure_contrast(fg, bg, min);
+        }
+        if fg == before {
+            break;
+        }
+    }
+    fg
 }
 
 impl Theme {
+    /// The chrome colours. Surfaces are mixed from the theme; everything drawn on them is then
+    /// pushed (hue kept) to the contrast floors in `ui_tokens`, so light themes read as well as
+    /// dark ones.
     pub fn ui(&self) -> UiColors {
         let (bg, fg) = (self.background, self.foreground);
         let black = hex(0x000000);
-        // A dark sidebar sinks below the terminal; a light one only dips slightly.
-        let shade = if luminance(bg) < 0.5 { 0.18 } else { 0.06 };
-        let text_dim = mix(bg, fg, 0.6);
+        let white = hex(0xffffff);
+        let dark = luminance(bg) < 0.5;
+        // A dark sidebar sinks below the terminal. A light one dips slightly toward the theme's
+        // own ink (black would turn it grey).
+        let sidebar = if dark {
+            mix(bg, black, 0.18)
+        } else {
+            mix(bg, fg, 0.04)
+        };
+        // Rows are mixed from the sidebar they sit on, toward the ink: hover a little, active more.
+        let row_hover = mix(sidebar, fg, 0.06);
+        let row_active = mix(sidebar, fg, if dark { 0.14 } else { 0.10 });
+        // Overlays are raised: a little lighter than the terminal on dark, near white on light.
+        let panel = if dark {
+            mix(bg, fg, 0.06)
+        } else {
+            mix(bg, white, 0.65)
+        };
+
+        let plain = [sidebar, row_hover, row_active, panel, bg];
+        let waiting = readable(self.palette[1], &plain, MARK_MIN);
+        let done = readable(self.palette[2], &plain, MARK_MIN);
+        // A soft wash of the status colour; done is subtler (it needs you less).
+        let waiting_tint = mix(sidebar, waiting, if dark { 0.12 } else { 0.08 });
+        let done_tint = mix(sidebar, done, if dark { 0.07 } else { 0.05 });
+        // Every surface something is drawn on: rows, tinted rows, overlays, pane headers.
+        let surfaces = [
+            sidebar,
+            row_hover,
+            row_active,
+            panel,
+            bg,
+            waiting_tint,
+            done_tint,
+        ];
+        let text = |c: Rgb| readable(c, &surfaces, TEXT_MIN);
+        let mark = |c: Rgb| readable(c, &surfaces, MARK_MIN);
+        let text_dim = text(mix(sidebar, fg, 0.72));
+        let accent = mark(self.palette[4]);
+        let quiet = |c: Rgb, on: &[Rgb]| readable(c, on, QUIET_LINE_MIN);
         UiColors {
-            sidebar_background: mix(bg, black, shade),
-            sidebar_border: mix(bg, fg, 0.12),
-            row_active: mix(bg, fg, 0.12),
-            row_hover: mix(bg, fg, 0.06),
-            text: fg,
+            sidebar_background: sidebar,
+            sidebar_border: quiet(mix(sidebar, fg, 0.12), &[sidebar, bg]),
+            row_active,
+            row_hover,
+            text: text(fg),
             text_dim,
             ring_idle: text_dim,
-            ring_working: self.palette[3],
-            ring_waiting: self.palette[1],
-            ring_done: self.palette[2],
+            ring_working: mark(self.palette[3]),
+            // Also the browser panel's error text on the sidebar, so it reads as text there.
+            ring_waiting: ensure_contrast(mark(waiting), sidebar, TEXT_MIN),
+            ring_done: mark(done),
+            accent,
+            text_faint: text(mix(sidebar, fg, 0.55)),
+            divider: quiet(mix(bg, fg, 0.16), &[bg]),
+            waiting_tint,
+            done_tint,
+            focus_ring: accent,
+            panel,
+            panel_border: quiet(mix(panel, fg, 0.16), &[panel, bg]),
+            // Overlays' shadow, drawn with transparency: black on dark, the ink darkened on light.
+            shadow: if dark { black } else { mix(fg, black, 0.5) },
         }
+    }
+}
+
+/// A foreground drawn on a background, and the contrast it must reach.
+#[cfg(any(test, feature = "ui-shots"))]
+#[derive(Clone, Copy, Debug)]
+pub struct DrawnPair {
+    pub fg_name: &'static str,
+    pub fg: Rgb,
+    pub bg_name: &'static str,
+    pub bg: Rgb,
+    pub min: f32,
+}
+
+#[cfg(any(test, feature = "ui-shots"))]
+impl Theme {
+    /// Every chrome colour pair the UI draws, with its floor: what the contrast test checks and
+    /// the token swatch board shows. A UI change that draws a token on a new surface adds it here.
+    pub fn drawn_pairs(&self) -> Vec<DrawnPair> {
+        let ui = self.ui();
+        // Rows, tinted rows, overlays and pane headers (on the terminal background).
+        let surfaces = [
+            ("sidebar", ui.sidebar_background),
+            ("row_hover", ui.row_hover),
+            ("row_active", ui.row_active),
+            ("waiting_tint", ui.waiting_tint),
+            ("done_tint", ui.done_tint),
+            ("panel", ui.panel),
+            ("terminal", self.background),
+        ];
+        let text = [
+            ("text", ui.text),
+            ("text_dim", ui.text_dim),
+            ("text_faint", ui.text_faint),
+        ];
+        let marks = [
+            ("ring_idle", ui.ring_idle),
+            ("ring_working", ui.ring_working),
+            ("ring_waiting", ui.ring_waiting),
+            ("ring_done", ui.ring_done),
+            ("accent", ui.accent),
+            ("focus_ring", ui.focus_ring),
+        ];
+        let pair = |(fg_name, fg): (&'static str, Rgb), (bg_name, bg): (&'static str, Rgb), min| {
+            DrawnPair {
+                fg_name,
+                fg,
+                bg_name,
+                bg,
+                min,
+            }
+        };
+        let mut pairs = vec![];
+        for (fgs, min) in [(&text[..], TEXT_MIN), (&marks[..], MARK_MIN)] {
+            for &fg in fgs {
+                for &bg in &surfaces {
+                    pairs.push(pair(fg, bg, min));
+                }
+            }
+        }
+        // The browser panel prints its error in the waiting colour, as text.
+        pairs.push(pair(
+            ("ring_waiting", ui.ring_waiting),
+            surfaces[0],
+            TEXT_MIN,
+        ));
+        let terminal = ("terminal", self.background);
+        let lines = [
+            (("sidebar_border", ui.sidebar_border), surfaces[0]),
+            (("sidebar_border", ui.sidebar_border), terminal),
+            (("divider", ui.divider), terminal),
+            (("panel_border", ui.panel_border), ("panel", ui.panel)),
+            (("panel_border", ui.panel_border), terminal),
+        ];
+        for (line, bg) in lines {
+            pairs.push(pair(line, bg, QUIET_LINE_MIN));
+        }
+        pairs
     }
 }
 
@@ -286,6 +446,7 @@ pub fn builtin_theme(name: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::settings::Entry;
+    use crate::ui_tokens::{contrast, hue};
     use std::path::{Path, PathBuf};
 
     const MOCHA: &str = "palette = 1=#f38ba8\nbackground = #1e1e2e\nforeground = #cdd6f4\ncursor-color = #f5e0dc\nselection-background = #585b70\ntheme = Nested\nconfig-file = evil";
@@ -386,12 +547,103 @@ mod tests {
         assert_eq!(builtin_theme("Nope"), None);
     }
 
+    /// Every built-in theme, resolved as `theme = <name>` does, and the default theme.
+    fn every_theme() -> Vec<(&'static str, Theme)> {
+        let mut all: Vec<_> = BUILTIN_THEMES
+            .iter()
+            .map(|&name| {
+                let t = resolve(&entries(&format!("theme = {name}")), true, &|n| {
+                    builtin_theme(n).map(str::to_string)
+                });
+                (name, t)
+            })
+            .collect();
+        all.push(("default", Theme::default()));
+        all
+    }
+
+    #[test]
+    fn every_builtin_theme_meets_the_floors() {
+        let mut failures = vec![];
+        for (name, theme) in every_theme() {
+            for p in theme.drawn_pairs() {
+                let ratio = contrast(p.fg, p.bg);
+                if ratio < p.min {
+                    failures.push(format!(
+                        "{name}: {} on {} is {ratio:.2}, needs {}",
+                        p.fg_name, p.bg_name, p.min
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn light_themes_get_light_chrome() {
+        let mut plain = Theme::default();
+        plain.background = hex(0xffffff);
+        plain.foreground = hex(0x000000);
+        let (_, latte) = every_theme()
+            .into_iter()
+            .find(|(name, _)| *name == "Catppuccin Latte")
+            .expect("Latte is built in");
+        for (name, theme) in [("Catppuccin Latte", latte), ("plain light", plain)] {
+            let ui = theme.ui();
+            let l = luminance;
+            assert!(
+                l(ui.sidebar_background) > 0.5,
+                "{name}: the sidebar is light"
+            );
+            // Hover and active darken the row (toward the ink), active more than hover.
+            assert!(
+                l(ui.row_hover) < l(ui.sidebar_background),
+                "{name}: hover darkens"
+            );
+            assert!(
+                l(ui.row_active) < l(ui.row_hover),
+                "{name}: active is darker than hover"
+            );
+            // Overlays are raised: lighter than the sidebar, with a darker edge.
+            assert!(
+                l(ui.panel) > l(ui.sidebar_background),
+                "{name}: the panel is raised"
+            );
+            assert!(
+                l(ui.panel_border) < l(ui.panel),
+                "{name}: the panel edge shows"
+            );
+            // Tints stay light; text stays dark.
+            for (tint, c) in [("waiting", ui.waiting_tint), ("done", ui.done_tint)] {
+                assert!(l(c) > 0.5, "{name}: the {tint} tint is light");
+            }
+            for (token, c) in [
+                ("text", ui.text),
+                ("dim", ui.text_dim),
+                ("faint", ui.text_faint),
+            ] {
+                assert!(l(c) < 0.5, "{name}: {token} is dark ink");
+            }
+        }
+    }
+
     #[test]
     fn ui_colors_follow_light_and_dark_themes() {
         let dark = Theme::default();
         let ui = dark.ui();
         assert!(luminance(ui.sidebar_background) < luminance(dark.background));
-        assert_eq!(ui.ring_waiting, dark.palette[1]);
+        // Status colours keep their palette slot's hue; they may be lightened or darkened to read.
+        for (ring, slot) in [
+            (ui.ring_waiting, 1),
+            (ui.ring_done, 2),
+            (ui.ring_working, 3),
+        ] {
+            let d = (hue(ring) - hue(dark.palette[slot])).abs();
+            assert!(
+                d.min(360.0 - d) < 3.0,
+                "ring for palette[{slot}] changed hue"
+            );
+        }
 
         let mut light = Theme::default();
         light.background = hex(0xffffff);
