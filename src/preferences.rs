@@ -1,36 +1,94 @@
-//! The Preferences window (File > Preferences..., cmd-,): theme, font, size and ligatures.
+//! The Preferences window (File > Preferences..., cmd-,): theme, font, size, ligatures and
+//! animations, and how sessions are kept, with a live preview of a terminal.
 //!
 //! Every click changes one line of fuxx's settings file and reloads the appearance, so it applies
 //! at once to every session and is still there next time. The choices and the lines written come
 //! from the tested pure functions in `prefs` and `settings`; this file is only the GPUI wiring.
+//!
+//! The window is a two-column form (labels left, controls right) in two sections, Appearance and
+//! Sessions. Beside the theme and font lists, the preview paints a fixed terminal screen the way
+//! a pane does, in the current theme, font, size and ligatures, so it changes with every pick.
 
 use std::ops::Range;
 use std::path::Path;
 
+use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    App, Bounds, ClickEvent, Context, Div, FocusHandle, Global, SharedString, Stateful,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions,
-    div, font, prelude::*, px, size, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, FocusHandle, FontWeight, Global,
+    SharedString, Stateful, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle,
+    WindowKind, WindowOptions, canvas, div, font, prelude::*, px, size, uniform_list,
 };
 
 use crate::appearance::{self, Appearance};
+use crate::fonts;
 use crate::prefs::{self, DEFAULT_CHOICE};
 use crate::restore::RestoreMode;
 use crate::settings;
-use crate::terminal_view::hsla;
-use crate::theme::UiColors;
+use crate::sidebar::small_caps;
+use crate::terminal_view::{hsla, paint_fixed_screen};
+use crate::theme::{self, UiColors};
+use crate::ui_tokens::text;
 use crate::workspace::CloseSession;
 
-const WIDTH: f32 = 560.0;
-/// The 660 px that fit the first four sections, plus the Restore sessions section: its gap (8),
-/// top margin (8), heading line (20), gap (8) and switch (30: 2 px padding and 1 px border on each
-/// side around a 24 px row, the same as the Ligatures switch) = 74. Then the Sessions section:
-/// the same 74, plus its note (gap 8 and one `text_xs` line of 16) = 98.
-const HEIGHT: f32 = 832.0;
-const LIST_HEIGHT: f32 = 180.0;
-const ROW_HEIGHT: f32 = 24.0;
+const WIDTH: f32 = 760.0;
+/// Between the window's edges and the form.
+const PAD: f32 = 20.0;
+/// A section's title line ("Appearance", "Sessions") and the space under it.
+const HEADER: f32 = 24.0;
+const FIELD_GAP: f32 = 10.0;
+/// Above a section's title, after the last field of the one before.
+const SECTION_GAP: f32 = 20.0;
+/// The labels' column; they are right-aligned against the controls.
+const LABEL_WIDTH: f32 = 150.0;
+const LABEL_GAP: f32 = 16.0;
+/// The controls' column (as wide as the theme list, name and swatch).
+const CONTROL_WIDTH: f32 = 260.0;
+/// Between the controls and the preview.
+const PREVIEW_GAP: f32 = 24.0;
+/// The preview takes the rest of the width.
+const PREVIEW_WIDTH: f32 =
+    WIDTH - 2.0 * PAD - LABEL_WIDTH - LABEL_GAP - CONTROL_WIDTH - PREVIEW_GAP;
+/// A row in the theme and font lists.
+const LIST_ROW: f32 = 24.0;
+/// Inside a list's 1 px border, so its rows' rounded corners clear the box's.
+const LIST_INSET: f32 = 2.0;
+/// Seven rows, so every built-in theme shows without scrolling.
+const THEME_LIST: f32 = list_height(7.0);
+const FONT_LIST: f32 = list_height(5.0);
+/// The size row's square buttons.
+const SIZE_ROW: f32 = 28.0;
+/// A switch: a 24 px option inside 2 px of padding and a 1 px border, top and bottom.
+const SWITCH: f32 = 30.0;
+const SWITCH_INSET: f32 = 2.0;
+/// A note under a control: a small gap and one 16 px line.
+const NOTE: f32 = 20.0;
+/// The preview stands beside the two lists.
+const PREVIEW_HEIGHT: f32 = THEME_LIST + FIELD_GAP + FONT_LIST;
+/// The fields of each section, top to bottom: what the window's height is made of. `render`
+/// draws each field at exactly these heights.
+const APPEARANCE_FIELDS: [f32; 5] = [THEME_LIST, FONT_LIST, SIZE_ROW, SWITCH, SWITCH + NOTE];
+const SESSIONS_FIELDS: [f32; 2] = [SWITCH, SWITCH + NOTE];
 /// The size the monospace test measures glyphs at; any size gives the same answer.
 const MEASURE_SIZE: f32 = 13.0;
+
+/// A list `rows` rows tall, with its border and inset.
+const fn list_height(rows: f32) -> f32 {
+    rows * LIST_ROW + 2.0 * (1.0 + LIST_INSET)
+}
+
+/// A section: its title, then its fields with a gap between each.
+fn section_height(fields: &[f32]) -> f32 {
+    HEADER + fields.iter().sum::<f32>() + FIELD_GAP * fields.len().saturating_sub(1) as f32
+}
+
+/// The window's height: the form's sections stacked between the padding.
+fn window_height() -> f32 {
+    PAD + section_height(&APPEARANCE_FIELDS) + SECTION_GAP + section_height(&SESSIONS_FIELDS) + PAD
+}
+
+/// The notes under the switches.
+const ANIMATIONS_NOTE: &str = "Also off when macOS Reduce motion is on.";
+const KEEP_NOTE: &str = "Takes effect the next time fuxx starts.";
 
 /// The open Preferences window, if any, so cmd-, brings it to the front instead of opening another.
 struct PreferencesWindow(Option<WindowHandle<PreferencesView>>);
@@ -53,7 +111,7 @@ pub fn open_or_activate(cx: &mut App) {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(WIDTH), px(HEIGHT)),
+                window_size(),
                 cx,
             ))),
             titlebar: Some(TitlebarOptions {
@@ -74,26 +132,61 @@ pub fn open_or_activate(cx: &mut App) {
     });
 }
 
+/// The window's content size (the title bar is extra).
+pub fn window_size() -> gpui::Size<gpui::Pixels> {
+    size(px(WIDTH), px(window_height()))
+}
+
+/// Where the preview is drawn, as (x, y, width, height) in the window: for the screenshots' checks.
+#[cfg(feature = "ui-shots")]
+pub(crate) fn preview_area() -> (f32, f32, f32, f32) {
+    let x = PAD + LABEL_WIDTH + LABEL_GAP + CONTROL_WIDTH + PREVIEW_GAP;
+    (x, PAD + HEADER, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+}
+
+/// Where the last note's line is drawn (the form's bottom), as (x, y, width, height).
+#[cfg(feature = "ui-shots")]
+pub(crate) fn last_note_area() -> (f32, f32, f32, f32) {
+    let x = PAD + LABEL_WIDTH + LABEL_GAP;
+    (x, window_height() - PAD - 16.0, CONTROL_WIDTH, 16.0)
+}
+
 pub struct PreferencesView {
     focus_handle: FocusHandle,
     /// `Default`, then every theme (built-in and the user's), worked out once.
     themes: Vec<String>,
+    /// Each theme's swatch (`prefs::swatch`), in the order of `themes`.
+    swatches: Vec<[Rgb; 8]>,
     /// `Default`, then the installed fixed-width families, worked out once (measuring is slow).
     fonts: Vec<String>,
     /// Every installed family, to tell which configured family is really in use.
     installed: Vec<String>,
+    /// The family `Default` stands for, to draw that row in it.
+    default_family: SharedString,
     /// Re-renders the highlighted rows and the colors when the appearance changes.
     _appearance: Subscription,
 }
 
 impl PreferencesView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let appearance_sub = cx.observe_global::<Appearance>(|_, cx| cx.notify());
 
         let appearance = cx.global::<Appearance>();
-        let themes = prefs::theme_choices(&user_theme_names(appearance.user_theme_dir.as_deref()));
+        let user_dir = appearance.user_theme_dir.clone();
+        let themes = prefs::theme_choices(&user_theme_names(user_dir.as_deref()));
+        // As the app reads a theme name: the user's folder first, then the built-ins.
+        let read_theme = |name: &str| {
+            user_dir
+                .as_ref()
+                .and_then(|dir| std::fs::read_to_string(dir.join(name)).ok())
+                .or_else(|| theme::builtin_theme(name).map(str::to_string))
+        };
+        let swatches = themes
+            .iter()
+            .map(|name| prefs::swatch(&prefs::choice_theme(name, &read_theme)))
+            .collect();
         let families = appearance.font_settings.families.clone();
 
         let text_system = cx.text_system().clone();
@@ -112,31 +205,39 @@ impl PreferencesView {
         };
         let current = current_font(&families, &installed);
         let fonts = prefs::font_choices(&installed, &is_mono, current);
+        let default_family = fonts::gpui_font(&fonts::from_entries(&[]), &installed).family;
 
         Self {
             focus_handle,
             themes,
+            swatches,
             fonts,
             installed,
+            default_family,
             _appearance: appearance_sub,
         }
     }
 
     /// One scrolling list of choices; the row matching `current` is highlighted, and clicking a
-    /// row writes `key` (no value for `Default`, which removes the line).
+    /// row writes `key` (no value for `Default`, which removes the line). `content` draws a
+    /// row's inside from its index and name.
+    #[allow(clippy::too_many_arguments)]
     fn choice_list(
         &self,
         id: &'static str,
         key: &'static str,
+        height: f32,
         list: fn(&Self) -> &[String],
         current: fn(&Self, &Appearance) -> String,
+        content: fn(&Self, usize, &str, UiColors) -> AnyElement,
         ui: UiColors,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let count = list(self).len();
         div()
-            .h(px(LIST_HEIGHT))
-            .rounded_md()
+            .h(px(height))
+            .p(px(LIST_INSET))
+            .rounded(px(6.0))
             .border_1()
             .border_color(hsla(ui.sidebar_border))
             .child(
@@ -155,9 +256,8 @@ impl PreferencesView {
                                 } else {
                                     vec![name.clone()]
                                 };
-                                row((id, i), is_current, ui)
-                                    .h(px(ROW_HEIGHT))
-                                    .child(name)
+                                list_row((id, i), is_current, ui)
+                                    .child(content(this, i, &name, ui))
                                     .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                         apply(cx, key, &values)
                                     }))
@@ -167,6 +267,41 @@ impl PreferencesView {
                 )
                 .size_full(),
             )
+    }
+
+    /// A theme row: its name, then its swatch.
+    fn theme_row(&self, i: usize, name: &str, ui: UiColors) -> AnyElement {
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(name.to_string()),
+            )
+            .children(self.swatches.get(i).map(|s| swatch(s, ui)))
+            .into_any_element()
+    }
+
+    /// A font row: its name, drawn in that font.
+    fn font_row(&self, _: usize, name: &str, _: UiColors) -> AnyElement {
+        let family = if name == DEFAULT_CHOICE {
+            self.default_family.clone()
+        } else {
+            SharedString::from(name.to_string())
+        };
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .font_family(family)
+            .child(name.to_string())
+            .into_any_element()
     }
 
     fn current_theme(&self, a: &Appearance) -> String {
@@ -193,23 +328,31 @@ impl PreferencesView {
 impl Render for PreferencesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let appearance = cx.global::<Appearance>();
+        let preview_theme = appearance.theme;
         let ui = appearance.theme.ui();
         let size_label = format!("{} pt", format_size(appearance.font_size));
         let ligatures = prefs::ligatures_on(&appearance.font_settings.features);
+        let animations = appearance.animations;
+        let restore = appearance.restore;
+        let persistent = appearance.persistent;
 
         let theme_list = self.choice_list(
             "theme-list",
             "theme",
+            THEME_LIST,
             Self::themes,
             Self::current_theme,
+            Self::theme_row,
             ui,
             cx,
         );
         let font_list = self.choice_list(
             "font-list",
             "font-family",
+            FONT_LIST,
             Self::fonts,
             Self::current_font,
+            Self::font_row,
             ui,
             cx,
         );
@@ -236,14 +379,13 @@ impl Render for PreferencesView {
                     .min_w(px(56.0))
                     .flex()
                     .justify_center()
+                    .font_features(crate::sidebar::tabular())
                     .child(size_label),
             )
             .child(step_button("size-up", "+", prefs::FontStep::Bigger));
 
         let ligature_option = |id: &'static str, label: &'static str, on: bool| {
-            let chosen = on == ligatures;
-            row(id, chosen, ui)
-                .px_3()
+            option(id, on == ligatures, ui)
                 .child(label)
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     // Clicking the option already chosen changes nothing.
@@ -253,21 +395,26 @@ impl Render for PreferencesView {
                     }
                 }))
         };
-        let ligature_switch = div()
-            .flex()
-            .flex_row()
-            .p_0p5()
-            .gap_0p5()
-            .rounded_md()
-            .border_1()
-            .border_color(hsla(ui.sidebar_border))
+        let ligature_switch = switch(ui)
             .child(ligature_option("ligatures-on", "On", true))
             .child(ligature_option("ligatures-off", "Off", false));
 
-        let restore = appearance.restore;
+        let animation_option = |id: &'static str, label: &'static str, on: bool| {
+            option(id, on == animations, ui)
+                .child(label)
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    if cx.global::<Appearance>().animations != on {
+                        // On is the default: the absence of the line.
+                        apply(cx, "animations", &prefs::animations_values(on));
+                    }
+                }))
+        };
+        let animation_switch = switch(ui)
+            .child(animation_option("animations-on", "On", true))
+            .child(animation_option("animations-off", "Off", false));
+
         let restore_option = |id: &'static str, label: &'static str, mode: RestoreMode| {
-            row(id, mode == restore, ui)
-                .px_3()
+            option(id, mode == restore, ui)
                 .child(label)
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     if cx.global::<Appearance>().restore != mode {
@@ -281,14 +428,7 @@ impl Render for PreferencesView {
                     }
                 }))
         };
-        let restore_switch = div()
-            .flex()
-            .flex_row()
-            .p_0p5()
-            .gap_0p5()
-            .rounded_md()
-            .border_1()
-            .border_color(hsla(ui.sidebar_border))
+        let restore_switch = switch(ui)
             .child(restore_option("restore-off", "Off", RestoreMode::Off))
             .child(restore_option(
                 "restore-layout",
@@ -301,10 +441,8 @@ impl Render for PreferencesView {
                 RestoreMode::Agents,
             ));
 
-        let persistent = appearance.persistent;
         let keep_option = |id: &'static str, label: &'static str, on: bool| {
-            row(id, on == persistent, ui)
-                .px_3()
+            option(id, on == persistent, ui)
                 .child(label)
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     if cx.global::<Appearance>().persistent != on {
@@ -313,16 +451,46 @@ impl Render for PreferencesView {
                     }
                 }))
         };
-        let keep_switch = div()
-            .flex()
-            .flex_row()
-            .p_0p5()
-            .gap_0p5()
-            .rounded_md()
-            .border_1()
-            .border_color(hsla(ui.sidebar_border))
+        let keep_switch = switch(ui)
             .child(keep_option("keep-on", "On", true))
             .child(keep_option("keep-off", "Off", false));
+
+        // The lists' labels line up with their first row; the others with their control.
+        let first_row = LIST_ROW + 2.0 * (1.0 + LIST_INSET);
+        let appearance_form = div()
+            .flex()
+            .flex_col()
+            .gap(px(FIELD_GAP))
+            .child(field("Theme", THEME_LIST, first_row, theme_list, ui))
+            .child(field("Font", FONT_LIST, first_row, font_list, ui))
+            .child(field("Size", SIZE_ROW, SIZE_ROW, size_row, ui))
+            .child(field("Ligatures", SWITCH, SWITCH, ligature_switch, ui))
+            .child(field(
+                "Animations",
+                SWITCH + NOTE,
+                SWITCH,
+                with_note(animation_switch, ANIMATIONS_NOTE, ui),
+                ui,
+            ));
+        let preview = div()
+            .flex_none()
+            .w(px(PREVIEW_WIDTH))
+            .h(px(PREVIEW_HEIGHT))
+            // Inside the border, clear of its rounded corners: the screen is painted square.
+            .p(px(2.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(hsla(ui.sidebar_border))
+            .bg(hsla(preview_theme.background))
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        paint_fixed_screen(&preview_text(), &preview_theme, bounds, window, cx)
+                    },
+                )
+                .size_full(),
+            );
 
         div()
             .track_focus(&self.focus_handle)
@@ -330,50 +498,250 @@ impl Render for PreferencesView {
             .flex()
             .flex_col()
             .size_full()
-            .p_4()
-            .gap_2()
+            .p(px(PAD))
             .bg(hsla(ui.sidebar_background))
-            .text_sm()
+            .text_size(px(text::NAME))
             .text_color(hsla(ui.text))
-            .child(heading("Theme", ui))
-            .child(theme_list)
-            .child(heading("Font", ui).mt_2())
-            .child(font_list)
-            .child(heading("Size", ui).mt_2())
-            .child(size_row)
-            .child(heading("Ligatures", ui).mt_2())
-            .child(div().flex().child(ligature_switch))
-            .child(heading("Restore sessions", ui).mt_2())
-            .child(div().flex().child(restore_switch))
-            .child(heading("Sessions: keep running after quit", ui).mt_2())
-            .child(div().flex().child(keep_switch))
+            .child(heading("Appearance", ui))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(hsla(ui.text_dim))
-                    .child("Takes effect the next time fuxx starts."),
+                    .flex()
+                    .flex_row()
+                    .gap(px(PREVIEW_GAP))
+                    .child(appearance_form)
+                    .child(
+                        div().flex().flex_col().gap(px(6.0)).child(preview).child(
+                            div()
+                                .text_size(px(text::META))
+                                .text_color(hsla(ui.text_faint))
+                                .child("Preview"),
+                        ),
+                    ),
+            )
+            .child(heading("Sessions", ui).mt(px(SECTION_GAP)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(FIELD_GAP))
+                    .child(field(
+                        "Restore sessions",
+                        SWITCH,
+                        SWITCH,
+                        restore_switch,
+                        ui,
+                    ))
+                    .child(field(
+                        "Keep running after quit",
+                        SWITCH + NOTE,
+                        SWITCH,
+                        with_note(keep_switch, KEEP_NOTE, ui),
+                        ui,
+                    )),
             )
     }
 }
 
-/// A section title.
-fn heading(text: &'static str, ui: UiColors) -> Div {
-    div().text_color(hsla(ui.text_dim)).child(text)
+/// What the preview shows: a prompt, a coloured `ls`, a diff with code that ligatures join
+/// (`==`, `!=`, `&&`, `>=`), and an agent asking a question in a box. Palette colours only, so
+/// it is drawn in the theme's own. The cursor is hidden.
+fn preview_text() -> String {
+    const PROMPT: &str = "\x1b[34m~/code/api\x1b[0m $ ";
+    // The box's inside, in columns; `│` and `╭` are one column each.
+    const INNER: usize = 26;
+    let edge = |l: char, r: char| format!("\x1b[35m{l}{}{r}\x1b[0m", "─".repeat(INNER));
+    let line = |text: &str, style: &str| {
+        let pad = INNER - 1 - text.chars().count();
+        format!(
+            "\x1b[35m│\x1b[0m {style}{text}\x1b[0m{}\x1b[35m│\x1b[0m\r\n",
+            " ".repeat(pad)
+        )
+    };
+    [
+        "\x1b[?25l".to_string(),
+        format!("{PROMPT}ls\r\n"),
+        "Cargo.toml  \x1b[1;34msrc\x1b[0m  \x1b[1;34mtests\x1b[0m  \x1b[32mrun.sh\x1b[0m\r\n"
+            .to_string(),
+        format!("{PROMPT}git diff\r\n"),
+        "\x1b[36m@@ -12 +12 @@\x1b[0m fn check\r\n".to_string(),
+        "\x1b[31m-    ok = a == b\x1b[0m\r\n".to_string(),
+        "\x1b[32m+    ok = a != b && n >= 8\x1b[0m\r\n".to_string(),
+        format!("{PROMPT}claude\r\n\r\n"),
+        edge('╭', '╮') + "\r\n",
+        line("Edit src/auth.rs", "\x1b[1m"),
+        line("", ""),
+        line("Do you want to make this", ""),
+        line("edit to auth.rs?", ""),
+        line("\u{276f} 1. Yes", "\x1b[36m"),
+        line("  2. No", ""),
+        // No newline after the last line: it would take a row, and scroll the first away.
+        edge('╰', '╯'),
+    ]
+    .concat()
 }
 
-/// A clickable row (a list entry or a switch option), highlighted when it is the current choice.
-fn row(id: impl Into<gpui::ElementId>, current: bool, ui: UiColors) -> Stateful<Div> {
+/// A section title: small capitals, then a quiet line to the right edge.
+fn heading(title: &'static str, ui: UiColors) -> Div {
+    div()
+        .flex_none()
+        .h(px(HEADER))
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(px(8.0))
+        .child(
+            div()
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .text_size(px(text::GROUP_HEADER))
+                .font_weight(FontWeight::SEMIBOLD)
+                .font_features(small_caps())
+                .text_color(hsla(ui.text_dim))
+                .child(title),
+        )
+        .child(
+            div()
+                .flex_1()
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .child(div().w_full().h(px(1.0)).bg(hsla(ui.sidebar_border))),
+        )
+}
+
+/// One row of the form: the label, right-aligned and centred on the control's first
+/// `label_height` px, then the control. Always `height` tall.
+fn field(
+    label: &'static str,
+    height: f32,
+    label_height: f32,
+    control: impl IntoElement,
+    ui: UiColors,
+) -> Div {
+    div()
+        .flex_none()
+        .h(px(height))
+        .flex()
+        .flex_row()
+        .gap(px(LABEL_GAP))
+        .child(
+            div()
+                .flex_none()
+                .w(px(LABEL_WIDTH))
+                .h(px(label_height))
+                .flex()
+                .items_center()
+                .justify_end()
+                .text_color(hsla(ui.text_dim))
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(CONTROL_WIDTH))
+                .flex()
+                .flex_col()
+                .child(control),
+        )
+}
+
+/// A switch with a one-line note under it.
+fn with_note(control: impl IntoElement, note: &'static str, ui: UiColors) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .child(div().flex().child(control))
+        .child(
+            div()
+                .mt(px(NOTE - 16.0))
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .text_size(px(text::META))
+                .text_color(hsla(ui.text_dim))
+                .child(note),
+        )
+}
+
+/// The box a switch's options sit in, side by side.
+fn switch(ui: UiColors) -> Div {
+    div()
+        .flex_none()
+        .h(px(SWITCH))
+        .flex()
+        .flex_row()
+        .p(px(SWITCH_INSET))
+        .gap(px(SWITCH_INSET))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(hsla(ui.sidebar_border))
+}
+
+/// One option of a switch, filled when it is the current choice.
+fn option(id: &'static str, current: bool, ui: UiColors) -> Stateful<Div> {
     div()
         .id(id)
+        .h(px(SWITCH - 2.0 * (1.0 + SWITCH_INSET)))
         .flex()
         .items_center()
-        .px_2()
-        .py_0p5()
-        .rounded_sm()
+        .px_3()
+        .rounded(px(4.0))
         .text_color(hsla(if current { ui.text } else { ui.text_dim }))
         .when(current, |r| r.bg(hsla(ui.row_active)))
         .hover(|s| s.bg(hsla(ui.row_hover)))
         .cursor_pointer()
+}
+
+/// A row of the theme or font list. The current one has the selection colour and an accent
+/// edge, as the sidebar's active row does.
+fn list_row(id: impl Into<gpui::ElementId>, current: bool, ui: UiColors) -> Stateful<Div> {
+    div()
+        .id(id)
+        .relative()
+        // The list lays each row out on its own, so it would otherwise shrink to its content.
+        .w_full()
+        .h(px(LIST_ROW))
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .rounded(px(4.0))
+        .text_color(hsla(ui.text))
+        .when(current, |r| {
+            r.bg(hsla(ui.selection)).child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(5.0))
+                    .bottom(px(5.0))
+                    .w(px(2.0))
+                    .rounded(px(1.0))
+                    .bg(hsla(ui.accent)),
+            )
+        })
+        .when(!current, |r| r.hover(|s| s.bg(hsla(ui.row_hover))))
+        .cursor_pointer()
+}
+
+/// A theme's colours as a little strip: its background, with the foreground and palette 1-6
+/// on it as chips.
+fn swatch(colours: &[Rgb; 8], ui: UiColors) -> Div {
+    div()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(3.0))
+        .p(px(3.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(hsla(ui.sidebar_border))
+        .bg(hsla(colours[0]))
+        .children(
+            colours[1..]
+                .iter()
+                .map(|&c| div().size(px(10.0)).rounded(px(2.0)).bg(hsla(c))),
+        )
 }
 
 /// A small square push button (there is no built-in button widget).
@@ -383,7 +751,7 @@ fn button(id: &'static str, ui: UiColors) -> Stateful<Div> {
         .flex()
         .items_center()
         .justify_center()
-        .size(px(28.0))
+        .size(px(SIZE_ROW))
         .rounded_md()
         .border_1()
         .border_color(hsla(ui.sidebar_border))
@@ -470,8 +838,28 @@ fn write_font_step(path: &Path, size: f32, step: prefs::FontStep) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::write_font_step;
+    use super::*;
     use crate::prefs::FontStep;
+
+    #[test]
+    fn window_height_is_computed_from_the_form() {
+        // Appearance: its title, the theme list (seven rows, so every built-in shows without
+        // scrolling) and the font list (five), each with its border and inset (2 x 3 px), the
+        // size buttons, two switches and the note under the second, with a gap between fields.
+        let (theme_list, font_list) = (7.0 * LIST_ROW + 6.0, 5.0 * LIST_ROW + 6.0);
+        let appearance =
+            HEADER + theme_list + font_list + SIZE_ROW + SWITCH + (SWITCH + NOTE) + 4.0 * FIELD_GAP;
+        // Sessions: its title, the restore switch, the keep-running switch and its note.
+        let sessions = HEADER + SWITCH + (SWITCH + NOTE) + FIELD_GAP;
+        assert_eq!(
+            window_height(),
+            PAD + appearance + SECTION_GAP + sessions + PAD
+        );
+        // As the constants are today.
+        assert_eq!(window_height(), 646.0);
+        // The preview sits beside the two lists.
+        assert_eq!(PREVIEW_HEIGHT, theme_list + FIELD_GAP + font_list);
+    }
 
     #[test]
     fn font_size_steps_write_the_setting() {

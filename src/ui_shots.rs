@@ -212,6 +212,7 @@ const SCENES: &[(&str, fn())] = &[
     ("splits", split_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
+    ("preferences", preferences_scenes),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -1712,4 +1713,74 @@ fn overlays() {
         }
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
+}
+
+/// The Preferences window at its computed size: in both themes with the defaults
+/// (`preferences-mocha`, `preferences-latte`), and with Nord picked, 16 pt, ligatures and
+/// animations off (`preferences-nord`), so the list, switches and preview follow the choices.
+///
+/// Panics unless nothing is drawn in the bottom padding and the last note sits just above it (the
+/// computed height is the form's), and the preview shows the theme's background and its magenta
+/// (the agent's box).
+fn preferences_scenes() {
+    use crate::preferences::{self, PreferencesView};
+
+    let dims = preferences::window_size();
+    let mut shots: Vec<_> = SHOT_THEMES.iter().map(|&(s, n)| (s, n, false)).collect();
+    shots.push(("nord", "Nord", true));
+    for (slug, name, changed) in shots {
+        let theme = shot_theme(name);
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            let mut a = shot_appearance(theme, cx);
+            a.theme_name = Some(name.to_string());
+            if changed {
+                a.font_settings.size = 16.0;
+                a.font_settings.features = vec![("calt".into(), 0)];
+                a.font = fonts::gpui_font(&a.font_settings, &cx.text_system().all_font_names());
+                a.font_size = 16.0;
+                a.animations = false;
+            }
+            cx.set_global(a);
+            cx.new(|cx| PreferencesView::new(window, cx)).into()
+        };
+        let path = shoot("preferences", slug, &theme, dims, build);
+        let shot = render(&theme, dims, build);
+        let ui = theme.ui();
+        let scene = format!("preferences-{slug}");
+        let width = f32::from(dims.width);
+        let height = f32::from(dims.height);
+        let scale = shot.width as f32 / width;
+        // Every pixel along the row at `y`, from `x0` to `x1`, is the window's background.
+        let full = |y: f32, x0: f32, x1: f32| {
+            let pixels = (x1 * scale) as usize - (x0 * scale) as usize;
+            count_along(&shot, dims, ui.sidebar_background, y, x0, x1) == pixels
+        };
+        // The bottom padding is empty: the form ends where the height says it does.
+        for y in [height - 14.0, height - 8.0, height - 3.0] {
+            assert!(
+                full(y, 0.0, width),
+                "{scene}: something is drawn at y = {y}"
+            );
+        }
+        // The last note is drawn in the line just above the padding.
+        let (nx, ny, nw, nh) = preferences::last_note_area();
+        let inked = (0..nh as usize).any(|dy| !full(ny + dy as f32, nx, nx + nw));
+        assert!(
+            inked,
+            "{scene}: the last note isn't where the layout puts it"
+        );
+        // The preview is painted in the theme: its background and the agent box's magenta.
+        let (px0, py0, pw, ph) = preferences::preview_area();
+        let rows = (py0 as usize + 4..(py0 + ph) as usize - 4).map(|y| y as f32);
+        let count = |c, y| count_along(&shot, dims, c, y, px0 + 4.0, px0 + pw - 4.0);
+        assert!(
+            count(theme.background, py0 + 4.0) > 0,
+            "{scene}: no terminal background in the preview"
+        );
+        assert!(
+            rows.into_iter().any(|y| count(theme.palette[5], y) > 0),
+            "{scene}: the preview's agent box isn't in the theme's magenta"
+        );
+        println!("ui-shots: {}", path.display());
+    }
 }
