@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: in-progress
+status: done
 ---
 
 # 50 - Milestone 10a - Persistent Sessions
 
-**Status:: 🟨 In progress (plan written 2026-10-27).**  ·  **Phase 3: agents keep working when fuxx doesn't.**
+**Status:: ✅ Done (2026-11-05). You confirmed all 21 on-screen checks.**  ·  **Phase 3: agents keep working when fuxx doesn't.**
 **Plan:** [[M10a Plan - Persistent Sessions]] · **Evidence:** [[Input - M10 Feasibility Study]] §2
 
 ## Goal
@@ -66,8 +66,8 @@ Exactly as today: no background service, and quitting ends every session.
 
 - **Logging out or restarting the Mac** ends the background service and its sessions, as it does for tmux.
   Session restore (M7) brings the layout back on the next launch.
-- **macOS privacy folders.** A process that outlives fuxx might be blocked from Documents, Desktop or Downloads.
-  This is checked first (Task 0). If it's blocked, the setting's description says so plainly until signing (M12).
+- **macOS privacy folders.** Checked first (Task 0): a background process that outlives fuxx kept full access to
+  Documents, Desktop and Downloads. See "Task 0 result" below.
 - **Same-user access.** The background service holds every session's screen and accepts typing for them while the
   window is closed. Only your macOS user can reach it, through a private socket like M9's, and nothing listens on the
   network.
@@ -75,13 +75,60 @@ Exactly as today: no background service, and quitting ends every session.
 
 ## Rough scope / checklist
 
-- [ ] Task 0 check: a background process outliving fuxx can still use your Documents and Desktop (or the limit is documented).
-- [ ] `persistent-sessions` setting + Preferences row; off by default.
-- [ ] Background service owns sessions; the window reattaches with screen, scrollback, status; ids stable.
-- [ ] Quit keeps sessions; "Quit and End All Sessions" (⌥⌘Q); ⌘W still ends one.
-- [ ] Reopen places live sessions in their groups and layouts; dead ones go through M7 restore.
-- [ ] Notifications and terminal answers while the window is closed.
-- [ ] `fuxx daemon status` / `stop [--force]`; the service ends itself when idle.
+- [x] Task 0 check: a background process outliving fuxx can still use your Documents and Desktop (it can; see the result below).
+- [x] `persistent-sessions` setting + Preferences row; off by default.
+- [x] Background service owns sessions; the window reattaches with screen, scrollback, status; ids stable.
+- [x] Quit keeps sessions; "Quit and End All Sessions" (⌥⌘Q); ⌘W still ends one.
+- [x] Reopen places live sessions in their groups and layouts; dead ones go through M7 restore.
+- [x] Notifications and terminal answers while the window is closed.
+- [x] `fuxx daemon status` / `stop [--force]`; the service ends itself when idle.
+
+## Task 0 result (2026-11-05)
+
+A background process that outlived `fuxx.app` (ad-hoc signed, macOS Darwin 25.5.0) could still read and write
+Documents, Desktop and Downloads, 15 seconds after ⌘Q. A plain spawn was enough: no private API, so the
+service is started the plain way. Two caveats: access may already have been granted to `fuxx.app` before the
+test, and the check should be repeated after real signing (M12). The throwaway probe code is removed.
+
+## What shipped
+
+- **The setting.** `persistent-sessions = on|off` (off by default), and Preferences → Sessions → Keep running
+  after quit. It takes effect at the next launch.
+- **The background service.** `fuxx daemon run` (started for you), `fuxx daemon status`, and
+  `fuxx daemon stop [--force]`. It ends itself about a minute after the last session closes with no window open.
+- **Quitting.** ⌘Q and the red button keep your sessions running; the Quit item shows how many ("Quit fuxx (N
+  sessions keep running)"). ⌥⌘Q ends them all. ⌘W still ends one.
+- **Reopening.** Live sessions come back into their saved groups, layouts, names and order, with their screen,
+  scrollback and status. Sessions that no longer run come back through session restore (M7).
+- **While the window is closed.** Status is tracked, notifications still arrive, and programs that ask the
+  terminal questions still get answers.
+- **A lost service.** If the window loses the service, it keeps the sessions on screen, says so, and tries to
+  reconnect once. Typing to a lost session is refused, with the reason, instead of vanishing.
+- **Turned off.** Exactly as before. If a service from an earlier run still holds live sessions, fuxx leaves them
+  to it, does not start them a second time, does not touch the saved sessions file, and shows a notice saying how to
+  get them back or end them.
+- **Theme.** The window sends its colours to the service when it connects, so programs restarted after a reboot
+  pick the right light or dark look.
+
+## Known limitations
+
+- Logging out or restarting the Mac ends the service and its sessions (M7 restore brings the layout back).
+- Scripting (`fuxx`, `fuxx mcp`) needs the window for now.
+- Upgrading fuxx doesn't carry sessions into a new service if the protocol changes. A newer fuxx next to an older
+  running service on the same protocol can miss some features until you restart the service.
+- A reattached screen is rebuilt from a snapshot. It does not restore the scroll region, tab stops or character
+  sets; programs normally redraw them.
+- Notifications show as "Script Editor" until the signed app (M12).
+- Session ids start again at `s1` whenever the service restarts. fuxx checks it is the same service before reusing saved ids.
+
+## Deferred
+
+Small things from the per-task and final reviews, none blocking, are kept in the build ledger
+(`.superpowers/sdd/M10a Plan - Persistent Sessions/progress.md`, lines marked "minor (deferred)"). The ones worth
+knowing: ⌥⌘Q pressed during startup ends only the sessions already shown; `fuxx daemon stop --force` with the
+window open can mark sessions "lost" instead of "closed"; a service that dies right after connecting leaves an
+empty window with no notice; the service keeps the window's working folder; `fuxx ls` in off mode now also prints
+`"live": true` in JSON.
 
 ## Not in M10a
 

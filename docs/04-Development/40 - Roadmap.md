@@ -49,10 +49,10 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 
 - [[49 - Milestone 9 - Scripting API]] — ✅ — socket + `fuxx` command, agent-aware status/question/answer/wait, event stream, sidebar note/progress, and `fuxx mcp` (goes beyond cmux / iTerm2 / Warp, on request 2026-10-27). Plan: [[M9 Plan - Scripting API]].
 - **M10 — cmux extras**, split into three (2026-10-27, your go; evidence: [[Input - M10 Feasibility Study]]):
-  - [[50 - Milestone 10a - Persistent Sessions]] — 🟨 — a background `fuxx daemon` owns the sessions; the window
+  - [[50 - Milestone 10a - Persistent Sessions]] — ✅ — a background `fuxx daemon` owns the sessions; the window
     reattaches. **Opt-in** (your choice): by default quitting still ends sessions. Notifications keep coming while
     the window is closed (your choice). Scripting with the window closed comes later (your choice).
-  - **M10b — SSH workspaces:** a session runs local `ssh` (host picker from `~/.ssh/config`, connection reuse,
+  - **M10b — SSH workspaces** (▶ next): a session runs local `ssh` (host picker from `~/.ssh/config`, connection reuse,
     reconnect). A remote fuxx daemon is deferred.
   - **M10c — Browser for agents to automate** (your choice: agents automating it, like cmux). Large and uncertain
     (a native web view over GPUI has real pitfalls); designed separately when we get there.

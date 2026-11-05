@@ -15,6 +15,10 @@ when an agent needs you, instead of babysitting a wall of terminal windows.
 - **Groups, presets, restore, split panes** — sessions per project folder, one-key agent presets,
   your layout back after a restart, nested splits.
 - **Scriptable, and agent-aware** — the `fuxx` command and an MCP server (see below).
+- **Keep running after quit** (opt-in) — turn on Preferences → Sessions → Keep running after quit (or
+  `persistent-sessions = on` in `~/.config/fuxx/config`) and your sessions stay alive in a small background
+  service when you quit; reopening brings them back live. `fuxx daemon status` shows it, `fuxx daemon stop`
+  (add `--force` to end running sessions) stops it; ⌥⌘Q quits and ends everything.
 
 ## Scripting fuxx
 
