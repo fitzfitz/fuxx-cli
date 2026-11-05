@@ -54,7 +54,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
     the window is closed (your choice). Scripting with the window closed comes later (your choice).
   - [[51 - Milestone 10b - SSH Workspaces]] — 🟨 built and reviewed 2026-11-06, on-screen check pending (batched with M10c and M11): [[M10b Plan - SSH Workspaces]]. A session runs local `ssh` (host picker from `~/.ssh/config`, connection reuse,
     reconnect). A remote fuxx daemon is deferred.
-  - **M10c — Browser for agents to automate** (▶ next, not planned yet; your choice: agents automating it, like cmux). Large and uncertain
+  - [[52 - Milestone 10c - Agent Browser]] (▶ in progress, planned 2026-11-06: [[M10c Plan - Agent Browser]]; your choice: agents automating it, like cmux; a separate browser window per session, AI's call). Large and uncertain
     (a native web view over GPUI has real pitfalls); designed separately when we get there.
 
 ## Phase 4 — Polish and distribution
