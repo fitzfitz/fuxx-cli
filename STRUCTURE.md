@@ -86,6 +86,16 @@ src/
 ├── mcp.rs                M9 · `fuxx mcp`: Model Context Protocol server on stdio
 ├── workspace_api.rs      M9 · the workspace answering requests, waits, events, note/progress
 │
+│   persistent sessions (M10a)
+├── vt_snapshot.rs        M10a · a terminal's screen and modes as bytes that rebuild it (for reattaching)
+├── mux_proto.rs          M10a · the window ↔ background service wire format: frames, decoder, versions
+├── daemon.rs             M10a · `fuxx daemon`: the service, its socket, session table, idle exit, notifications
+├── daemon_session.rs     M10a · one session the service owns: shell, screen, numbered output, status
+├── daemon_client.rs      M10a · the window's side of the service socket; starts the service detached
+├── private_socket.rs     M10a · private-socket helpers shared by M9's socket and the service
+├── workspace_daemon.rs   M10a · the workspace using the service: connect, reopen, lost service, quit count
+├── adopt.rs              M10a · reopen rules: live sessions into their saved places, the rest restored (pure)
+│
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
 ├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row
@@ -95,7 +105,7 @@ src/
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
-21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6, 150 after M6b + M7 + M8, and 243 after M9.
+21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6, 150 after M6b + M7 + M8, 243 after M9, and 399 after M10a.
 
 `assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits.
 

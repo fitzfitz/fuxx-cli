@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M10a
-status: in-progress
-updated: 2026-10-27
+status: done
+updated: 2026-11-05
 ---
 
 # M10a Plan — Persistent Sessions (background service, reattach)
@@ -12,9 +12,9 @@ updated: 2026-10-27
 | At a glance | |
 |---|---|
 | **Milestone note** | [[50 - Milestone 10a - Persistent Sessions]] (the spec) · design evidence: [[Input - M10 Feasibility Study]] §2.3 |
-| **Status** | 🟨 In progress |
-| **Tasks done** | 0 / 12 |
-| **▶ Pick up here** | Task 0 |
+| **Status** | ✅ Done (2026-11-05). Task 10 confirmed by you. |
+| **Tasks done** | 12 / 12 |
+| **▶ Pick up here** | — (done) |
 | **Decisions used** | **Yours (2026-10-27):** opt-in (off by default); notifications while closed; scripting-while-closed later. Design = the study's hybrid daemon (§2.3), AI's call. |
 | **Needs your eyes** | 👀 Task 0 (privacy-folder check) and Task 10 |
 
@@ -65,9 +65,9 @@ As study §2.3.2: `vt_snapshot.rs`, `mux_proto.rs`, `daemon.rs`, `daemon_session
 
 ---
 
-### Task 0: Spike — does a process that outlives fuxx keep folder access? — ⬜
+### Task 0: Spike — does a process that outlives fuxx keep folder access? — ✅
 
-**Throwaway**, removed at the end of the milestone or kept only if it becomes the daemon's spawn code.
+**Throwaway.** The probe code was removed at the end (`48b1def`); the plain spawn it proved is the daemon's spawn code, now in `daemon_client.rs`. Result: a process outliving the app kept access to Documents, Desktop and Downloads (recorded in the milestone note).
 
 - A hidden CLI command `fuxx __detach-probe`. It spawns `current_exe() __detach-probe-child` with `posix_spawn` + `POSIX_SPAWN_SETSID`, and stdio sent to `~/Library/Logs/fuxx/probe.log`.
 - The child waits 15 s, then logs:
@@ -83,7 +83,7 @@ As study §2.3.2: `vt_snapshot.rs`, `mux_proto.rs`, `daemon.rs`, `daemon_session
   4. Repeat with `--disclaim`.
 - The result decides the daemon's spawn mode, or documents the limit (spec "Limits"). It gets recorded in the milestone note.
 
-### Task 1: `vt_snapshot` — a Term as bytes that rebuild it — ⬜
+### Task 1: `vt_snapshot` — a Term as bytes that rebuild it — ✅
 
 **Files:** Create `src/vt_snapshot.rs` (pure, no gpui).
 
@@ -116,7 +116,7 @@ Cases, each its own test:
 - a long history (500 lines);
 - a recorded fragment of a Claude Code redraw (synthesised with cursor moves, erase-line and SGR).
 
-### Task 2: `mux_proto` — frames and messages — ⬜
+### Task 2: `mux_proto` — frames and messages — ✅
 
 **Files:** Create `src/mux_proto.rs` (pure).
 
@@ -136,7 +136,7 @@ Cases, each its own test:
 - JSON with an extra field decodes;
 - negotiation: overlap picks the max common version, none → `Incompatible`.
 
-### Task 3: `daemon_session` — one session owned by the daemon — ⬜
+### Task 3: `daemon_session` — one session owned by the daemon — ✅
 
 **Files:** Create `src/daemon_session.rs`. Move the PTY/Term/reader/writer/detector/tracker logic from `terminal.rs`; `terminal.rs` keeps a thin Local backend reusing it.
 
@@ -157,7 +157,7 @@ Cases, each its own test:
 - an overflowing subscriber gets `Resync`;
 - the status goes Working, then back once quiet.
 
-### Task 4: `daemon` — the service and its commands — ⬜
+### Task 4: `daemon` — the service and its commands — ✅
 
 **Files:** Create `src/daemon.rs` · Modify `src/cli.rs`, `src/main.rs`.
 
@@ -180,7 +180,7 @@ Cases, each its own test:
 - stop refused while sessions exist, then `--force` works;
 - CLI parse of `daemon status|stop|run`.
 
-### Task 5: The GUI as a client — ⬜
+### Task 5: The GUI as a client — ✅
 
 **Files:** Create `src/daemon_client.rs` · Modify `src/terminal.rs`, `src/terminal_view.rs`.
 
@@ -203,7 +203,7 @@ Cases, each its own test:
 - Resize round-trips.
 - Local backend tests are untouched.
 
-### Task 6: Workspace — create, close, quit, ids — ⬜
+### Task 6: Workspace — create, close, quit, ids — ✅
 
 **Files:** Modify `src/workspace.rs`, `src/workspace_api.rs`, `src/main.rs`.
 
@@ -218,7 +218,7 @@ Cases, each its own test:
 
 **Tests:** pure helpers only; the rest is checked in 👀.
 
-### Task 7: Reopen — adopt live sessions, restore the rest — ⬜
+### Task 7: Reopen — adopt live sessions, restore the rest — ✅
 
 **Files:** Modify `src/workspace.rs`, `src/restore.rs`.
 
@@ -240,7 +240,7 @@ Cases, each its own test:
 - a layout with a dead pane is sanitized (M8 `sanitize`);
 - the active session is kept or falls back.
 
-### Task 8: The setting and the Preferences row — ⬜
+### Task 8: The setting and the Preferences row — ✅
 
 **Files:** Modify `src/appearance.rs`, `src/preferences.rs`.
 
@@ -249,7 +249,7 @@ Cases, each its own test:
 
 **Tests:** `from_entries` parsing (default, on, off, invalid → warning).
 
-### Task 9: Notifications while the window is closed — ⬜
+### Task 9: Notifications while the window is closed — ✅
 
 **Files:** Modify `src/daemon.rs` (+ `notifier.rs` reuse).
 
@@ -262,26 +262,44 @@ Cases, each its own test:
 
 With `persistent-sessions = on` and a restart:
 
-- [ ] The success check from the spec: two claude sessions (one split) → ⌘Q → a question arrives and a notification appears → reopen: scrollback, layout, waiting ring, answer works.
-- [ ] The same after `kill -9` of fuxx (`pkill -9 -f "target/debug/fuxx$"` is not enough; use the pid from `fuxx daemon status` → the GUI's pid).
-- [ ] vim / htop / Claude Code look right after reattach. A resize while attached still re-fits.
-- [ ] ⌥⌘Q ends everything. `fuxx daemon status` then says not running, after about 60 s.
-- [ ] `fuxx daemon stop` refuses while sessions run; `--force` ends them.
-- [ ] Turning the setting off and restarting gives exactly the old behaviour.
-- [ ] M9 commands (`fuxx ls/send/wait/answer`) work against reattached sessions, and `$FUXX_SESSION` still points at the right one.
+- [x] The success check from the spec: two claude sessions (one split) → ⌘Q → a question arrives and a notification appears → reopen: scrollback, layout, waiting ring, answer works.
+- [x] The same after `kill -9` of fuxx (`pkill -9 -f "target/debug/fuxx$"` is not enough; use the pid from `fuxx daemon status` → the GUI's pid).
+- [x] vim / htop / Claude Code look right after reattach. A resize while attached still re-fits.
+- [x] ⌥⌘Q ends everything. `fuxx daemon status` then says not running, after about 60 s.
+- [x] `fuxx daemon stop` refuses while sessions run; `--force` ends them.
+- [x] Turning the setting off and restarting gives exactly the old behaviour.
+- [x] M9 commands (`fuxx ls/send/wait/answer`) work against reattached sessions, and `$FUXX_SESSION` still points at the right one.
 
-### Task 11: Update the docs — ⬜
+### Task 11: Update the docs — ✅
 
-- [ ] Milestone note 50 ✅ + Task 0 result; plan ✅; roadmap; tracker; Progress Log; STRUCTURE.md; README (one line about persistent sessions).
+- [x] Milestone note 50 ✅ + Task 0 result; plan ✅; roadmap; tracker; Progress Log; STRUCTURE.md; README (one line about persistent sessions).
 
 ## Verification log
 
-_(filled in as tasks complete)_
+Every task was built test-first and reviewed; test counts are the full `cargo test` total after the task (the
+start was 243). 0 warnings and `cargo fmt --check` clean throughout.
+
+| Task | Commits | Tests | Notes |
+|---|---|---|---|
+| 0 Spike | `0bca6ee` | 244 | You ran it 2026-11-05: plain and `--disclaim` both kept Documents, Desktop and Downloads. Plain spawn kept; probe removed in `48b1def`. |
+| 1 vt_snapshot | `8c9412e`..`c0f4a7f` | 270 | Review fixes: alt-screen pen, continuation rows, cheaper SGR. |
+| 2 mux_proto | `713a4ea`..`7c84798` | 268 | Review fix: metadata can be cleared; more tests. |
+| 3 daemon_session | `1e02c46`..`7e44786` | 320 | Review fixes: unfinished escape bytes in snapshots, close never waits, input backlog. |
+| 4 daemon | `3d79e12`..`6f0ec1d` | 329 | Review fixes: no lock across sends, no create during exit, input backpressure. |
+| 5 client | `c40f286`..`44f1834` | 354 | Review fixes (two rounds): mouse is not typing, window never blocks, per-session backpressure. |
+| 6 workspace | `ec3f721`..`292d2a7` | 365 | Review fixes: lost sessions refuse input, one quit at a time. |
+| 7 reopen | `119e4d2`..`fecb884` | 387 | Review fixes: reads via the service, same-service check, never save over a failed reopen. |
+| 8 setting | `c4093b6` | 393 (with 9) | Approved. |
+| 9 notifications | `a79e284` | 393 | Approved. |
+| Final review | `165cb8d..a79e284`, fix `45445b8` | 400 | Ready after fixes (0 Critical, 1 Important, 8 Minor). Fixed in `45445b8` (off mode no longer restarts sessions the service still holds; theme sent on connect); scoped re-review approved. |
+| 10 On screen | | | Confirmed by you on 2026-11-05: all 21 checks, plus Caps Lock. |
+| 11 Docs and cleanup | `48b1def` and the docs commit | 399 | Probe removed (one parse test went with it). |
 
 ## Known limitations
 
 - Sessions end at logout or reboot (M7 restore brings the layout back).
 - Scripting needs the window (later step).
+- A reattached screen does not restore scroll region, tab stops or character sets. Notifications show as "Script Editor" until M12.
 - Upgrading fuxx doesn't carry sessions into a new background service if the protocol changes.
 
 ## Related

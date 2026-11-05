@@ -14,13 +14,29 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M10 — cmux extras (not planned). M0–M9 ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M10b — SSH workspaces (not planned yet). M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-05 — Milestone 10a complete: persistent sessions
+- **Did:** Built [[M10a Plan - Persistent Sessions]] (12 tasks, each reviewed, plus a whole-branch review). With
+  `persistent-sessions = on` (or Preferences → Sessions), a small background service (`fuxx daemon`) owns your
+  sessions. Quitting leaves them running; ⌥⌘Q ends them all; reopening puts every live session back in its place
+  with its screen, scrollback and status; notifications still arrive while the window is closed. You ran the
+  privacy-folder spike (a background process keeps access to Documents, Desktop and Downloads, no private API
+  needed) and then all 21 on-screen checks, which passed. The final review found one real problem (starting with
+  the setting off could restart sessions the service still held, giving duplicate agents); fixed and re-reviewed.
+  Also removed the spike code, keeping the plain spawn. 399 tests, 0 warnings.
+- **Learned:** A terminal can be rebuilt from bytes alone (a "snapshot" the service writes), as long as the
+  alt screen's hidden main screen is handled; a few settings (scroll region, tab stops, character sets) are
+  private to the terminal library and can't be copied, so programs have to redraw them. Also, the service's ids
+  restart each time it starts, so fuxx must check it is talking to the same service before trusting saved ids.
+- **Blocked:** Nothing.
+- **Next task:** Decide whether to plan M10b (SSH workspaces); see [[40 - Roadmap]].
 
 ### 2026-10-27 — Milestone 9 complete: scripting API (+ Caps Lock fix)
 - **Did:** You skipped the design questions and asked for more than cmux / Warp / iTerm2. Built
