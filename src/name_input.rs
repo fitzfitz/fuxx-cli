@@ -18,7 +18,14 @@ use crate::terminal_view::hsla;
 // Bound in main.rs with the "NameInput" key context, so these keys never reach the terminal.
 actions!(
     name_input,
-    [Backspace, Clear, Confirm, Cancel, ShowCharacterPalette]
+    [
+        Backspace,
+        Clear,
+        Confirm,
+        Cancel,
+        Paste,
+        ShowCharacterPalette
+    ]
 );
 
 pub enum NameInputEvent {
@@ -33,7 +40,8 @@ pub struct NameInput {
     text: String,
     /// The IME's composition in progress, as a byte range of `text`.
     marked: Option<Range<usize>>,
-    /// The end of `text`, except while the IME places its own caret inside the marked text.
+    /// The end of `text`, except while the IME places its own caret inside the marked text,
+    /// or all of it after `select_all` (until the next edit, which replaces it).
     selected: Range<usize>,
     /// From the last paint, for the IME's candidate window and the caret.
     last_line: Option<ShapedLine>,
@@ -74,13 +82,29 @@ impl NameInput {
         &self.text
     }
 
+    /// Select the whole text: typing (or pasting) replaces it, Backspace erases it.
+    pub fn select_all(&mut self) {
+        self.marked = None;
+        self.selected = 0..self.text.len();
+    }
+
+    /// What `select_all` selected, until an edit; empty otherwise (the IME's own selection
+    /// inside its marked text isn't one).
+    fn selection(&self) -> Range<usize> {
+        match self.marked {
+            Some(_) => self.text.len()..self.text.len(),
+            None => self.selected.clone(),
+        }
+    }
+
     fn caret_to_end(&mut self) {
         self.marked = None;
         self.selected = self.text.len()..self.text.len();
     }
 
     fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
-        self.text.pop();
+        let selection = self.selection();
+        erase(&mut self.text, &selection);
         self.caret_to_end();
         cx.notify();
     }
@@ -97,6 +121,17 @@ impl NameInput {
 
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(NameInputEvent::Cancel);
+    }
+
+    /// The clipboard's text, one line of it, in place of the selection (or at the end).
+    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let range = self.edit_range(None);
+        self.text.replace_range(range, &printable(&text));
+        self.caret_to_end();
+        cx.notify();
     }
 
     fn show_character_palette(
@@ -149,6 +184,15 @@ fn utf16_offset(s: &str, utf8: usize) -> usize {
         .take_while(|(i, _)| *i < utf8)
         .map(|(_, c)| c.len_utf16())
         .sum()
+}
+
+/// Backspace: the selected text if there is some, else the last character.
+fn erase(text: &mut String, selected: &Range<usize>) {
+    if selected.is_empty() {
+        text.pop();
+    } else {
+        text.replace_range(selected.clone(), "");
+    }
 }
 
 /// A name is one line: control characters (tab, newline) are dropped.
@@ -275,6 +319,7 @@ impl Render for NameInput {
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::show_character_palette))
             // Keep clicks in the box: the sidebar row under it would take focus (and so cancel).
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
@@ -386,9 +431,13 @@ impl Element for NameText {
         cx: &mut App,
     ) {
         let Some(line) = line.take() else { return };
-        let (focus_handle, caret_index) = {
+        let (focus_handle, caret_index, selection) = {
             let input = self.input.read(cx);
-            (input.focus_handle.clone(), input.selected.end)
+            (
+                input.focus_handle.clone(),
+                input.selected.end,
+                input.selection(),
+            )
         };
         window.handle_input(
             &focus_handle,
@@ -400,6 +449,16 @@ impl Element for NameText {
         let overflow = (line.width() + caret_width - bounds.size.width).max(px(0.));
         let origin = point(bounds.left() - overflow, bounds.top());
         let line_height = window.line_height();
+        // A selection (from `select_all`) is shaded behind the text.
+        if !selection.is_empty() {
+            let left = origin.x + line.x_for_index(selection.start);
+            let right = origin.x + line.x_for_index(selection.end);
+            let shade = cx.global::<Appearance>().theme.ui().row_active;
+            window.paint_quad(fill(
+                Bounds::from_corners(point(left, bounds.top()), point(right, bounds.bottom())),
+                hsla(shade),
+            ));
+        }
         line.paint(origin, line_height, TextAlign::Left, None, window, cx)
             .ok();
         if focus_handle.is_focused(window) {
@@ -418,5 +477,24 @@ impl Element for NameText {
             input.last_origin = Some(origin);
             input.last_bounds = Some(bounds);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::erase;
+
+    #[test]
+    fn backspace_erases_the_selection_or_the_last_character() {
+        let mut text = "localhost:3000".to_string();
+        erase(&mut text, &(14..14));
+        assert_eq!(text, "localhost:300");
+        erase(&mut text, &(0..13));
+        assert_eq!(text, "");
+        erase(&mut text, &(0..0));
+        assert_eq!(text, "", "nothing left to erase");
+        let mut text = "héé".to_string();
+        erase(&mut text, &(5..5));
+        assert_eq!(text, "hé", "a whole character");
     }
 }

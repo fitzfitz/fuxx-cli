@@ -24,6 +24,7 @@ use crate::terminal::PumpQueue;
 use crate::terminal_view::TerminalView;
 use crate::theme::Theme;
 use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
+use crate::workspace_browser::Browsers;
 use crate::workspace_ssh::{check_restored, ssh_program, ssh_refusal};
 
 /// The sidebar notice when persistence is off but `live` sessions still run in a background
@@ -659,6 +660,8 @@ impl Workspace {
         self.layouts.clear();
         self.collapsed.clear();
         self.renaming = None;
+        self.address_box = None;
+        self.browsers = Browsers::new(); // their windows close with their sessions
         self.dragging = None;
         self.restoring = false; // even mid-startup, the list saved is the empty one
         self.save();

@@ -9,7 +9,6 @@ mod api_server;
 mod appearance;
 mod browser;
 mod browser_js;
-#[allow(dead_code)] // used by the browser tool and CLI from M10c Task 4/5
 mod browser_url;
 mod cli;
 mod colors;
@@ -49,6 +48,7 @@ mod theme;
 mod vt_snapshot;
 mod workspace;
 mod workspace_api;
+mod workspace_browser;
 mod workspace_daemon;
 mod workspace_ssh;
 
@@ -71,9 +71,10 @@ use workspace::{
     CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
     LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp, NewSession,
-    NewSessionInFolder, NewSshSession, NextPane, NextSession, PrevPane, PrevSession, RenameSession,
-    SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6,
-    SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, Workspace,
+    NewSessionInFolder, NewSshSession, NextPane, NextSession, OpenBrowser, PrevPane, PrevSession,
+    RenameSession, SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5,
+    SelectSession6, SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight,
+    Workspace,
 };
 
 actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions]);
@@ -127,6 +128,8 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
             MenuItem::action("Rename Session\u{2026}", RenameSession),
             MenuItem::action("Move Session Up", MoveSessionUp),
             MenuItem::action("Move Session Down", MoveSessionDown),
+            MenuItem::separator(),
+            MenuItem::action("Open Browser\u{2026}", OpenBrowser),
             MenuItem::separator(),
             MenuItem::action("Close Session", CloseSession),
             MenuItem::separator(),
@@ -336,6 +339,7 @@ fn main() {
                 KeyBinding::new("cmd-t", NewSession, None),
                 KeyBinding::new("cmd-o", NewSessionInFolder, None),
                 KeyBinding::new("cmd-shift-s", NewSshSession, None),
+                KeyBinding::new("cmd-shift-b", OpenBrowser, None),
                 KeyBinding::new("cmd-w", CloseSession, None),
                 KeyBinding::new("cmd-r", RenameSession, None),
                 // macOS reports cmd-shift-] as key "}" (shift folded into the character).
@@ -386,6 +390,8 @@ fn main() {
                 KeyBinding::new("down", host_picker::SelectNext, Some("HostPicker")),
                 KeyBinding::new("tab", host_picker::ToggleTmux, Some("HostPicker")),
                 KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
+                // The browser's address box: its box is a NameInput too; an address is pasted.
+                KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
                 // There's no Edit menu to supply "Emoji & Symbols", so bind its shortcut here.
                 KeyBinding::new(
                     "ctrl-cmd-space",

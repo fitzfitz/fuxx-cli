@@ -47,6 +47,7 @@ use crate::ssh_target::SshTarget;
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
+use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
     Disconnected, ExitAction, Place, checked_launches, on_exit, ssh_program, ssh_refusal,
@@ -58,6 +59,7 @@ actions!(
         NewSession,
         NewSessionInFolder,
         NewSshSession,
+        OpenBrowser,
         CloseSession,
         NextSession,
         PrevSession,
@@ -203,6 +205,12 @@ pub struct Workspace {
     pub(crate) renaming: Option<(EntityId, Entity<NameInput>)>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
+    /// The sessions' browsers (M10c).
+    pub(crate) browsers: Browsers,
+    /// Whether the 500 ms browser check is running (only while a browser is open).
+    pub(crate) browsers_ticking: bool,
+    /// The browser's address box, while it is open (M10c).
+    pub(crate) address_box: Option<Entity<AddressBox>>,
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
     /// events are sent).
     pub(crate) restoring: bool,
@@ -271,6 +279,9 @@ impl Workspace {
             collapsed: Vec::new(),
             renaming: None,
             host_picker: None,
+            browsers: Browsers::new(),
+            browsers_ticking: false,
+            address_box: None,
             restoring: true,
             hold_saving: false,
             next_id: 1,
@@ -1015,6 +1026,7 @@ impl Workspace {
         };
         // While its row number and name still stand.
         self.emit(&Event::Closed, Some(index));
+        self.browsers.session_closed(session_id);
         // Waits get a last look at its screen and status (PASS printed just before the shell
         // exited still counts), then exit / change waits are met.
         let mut replied = self.check_waits(&[session_id], cx);
@@ -1632,6 +1644,9 @@ impl Render for Workspace {
                     this.open_host_picker(window, cx)
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &OpenBrowser, window, cx| this.open_address_box(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
                 if let Some(i) = this.sessions.active_index() {
                     this.close_at(i, window, cx);
@@ -1703,21 +1718,28 @@ impl Render for Workspace {
                     .child(self.render_pane_area(cx))
                     .children(self.render_panes(colors, cx)),
             )
-            // The host picker: over everything, centred near the top of the window.
+            // The host picker and the address box: over everything, centred near the top of
+            // the window.
             .when_some(self.host_picker.clone(), |root, picker| {
-                root.child(
-                    div()
-                        .absolute()
-                        .top(px(48.0))
-                        .left_0()
-                        .right_0()
-                        .px_4()
-                        .flex()
-                        .justify_center()
-                        .child(picker),
-                )
+                root.child(top_panel(picker))
+            })
+            .when_some(self.address_box.clone(), |root, address| {
+                root.child(top_panel(address))
             })
     }
+}
+
+/// `panel` over the window, centred near its top.
+fn top_panel(panel: impl IntoElement) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(px(48.0))
+        .left_0()
+        .right_0()
+        .px_4()
+        .flex()
+        .justify_center()
+        .child(panel)
 }
 
 /// The scripting variables for a shell. While this fuxx serves `socket`: the socket, the

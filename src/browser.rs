@@ -77,7 +77,6 @@ impl Browser {
     /// key (or else main) window, centred when there is none. Pages get a `window.open` that
     /// loads in this window; cookies and logins live in the one shared, persistent data store;
     /// Safari's Web Inspector can attach where macOS allows it (13.3 and later).
-    #[allow(dead_code)] // opened by the workspace from M10c Task 4
     pub fn open(title: &str, _cx: &mut App) -> Browser {
         let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
         let window = new_window(
