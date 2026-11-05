@@ -11,6 +11,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use alacritty_terminal::vte::ansi::Rgb;
 use block2::RcBlock;
 use futures::channel::oneshot;
 use futures::future::{self, Either};
@@ -19,8 +20,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSBitmapImageFileType, NSBitmapImageRep, NSEvent,
-    NSEventModifierFlags, NSImage, NSResponder, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSBitmapImageFileType,
+    NSBitmapImageRep, NSEvent, NSEventModifierFlags, NSImage, NSResponder, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSDate, NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
@@ -35,6 +37,7 @@ use serde_json::Value;
 
 use crate::browser_js;
 
+mod bar;
 mod probe;
 
 pub use probe::run_probe;
@@ -59,6 +62,15 @@ pub struct PageState {
     pub error: Option<String>,
 }
 
+/// How a browser window's top bar looks: `dark` (the fuxx theme is), the loading line's colour,
+/// and whether the address field shows (`browser-address-bar`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarLook {
+    pub dark: bool,
+    pub accent: Rgb,
+    pub address_bar: bool,
+}
+
 /// One session's browser: a window holding a web view. Main thread only (it isn't `Send`).
 /// Dropping it (or `close`) closes the window, and every script or screenshot still waiting
 /// answers `browser closed`.
@@ -67,8 +79,8 @@ pub struct Browser {
     view: Retained<WKWebView>,
     /// The window's and the web view's delegate (they hold it weakly, so it lives here).
     delegate: Retained<BrowserDelegate>,
-    /// The address the last `load` asked for: a page that never came is a failed load.
-    requested: RefCell<Option<String>>,
+    /// The top bar (the toolbar and the field hold it weakly, so it lives here too).
+    bar: Retained<bar::TopBar>,
     /// Scripts and screenshots WebKit hasn't answered yet.
     pending: RefCell<Vec<Weak<dyn Unanswered>>>,
 }
@@ -77,9 +89,9 @@ impl Browser {
     /// A new browser window titled `title`, not yet shown (see `bring_to_front`): 1100 × 800
     /// points, cascaded from the key (or else main) window, centred when there is none. Pages get a `window.open` that
     /// loads in this window; cookies and logins live in the data store `keep_data` picks (see
-    /// `data_store`), for as long as the window lives;
+    /// `data_store`), for as long as the window lives; its top bar looks as `look` says.
     /// Safari's Web Inspector can attach where macOS allows it (13.3 and later).
-    pub fn open(title: &str, keep_data: bool, _cx: &mut App) -> Browser {
+    pub fn open(title: &str, keep_data: bool, look: &BarLook, _cx: &mut App) -> Browser {
         let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
         let window = new_window(
             mtm,
@@ -88,6 +100,9 @@ impl Browser {
                 | NSWindowStyleMask::Resizable
                 | NSWindowStyleMask::Miniaturizable,
         );
+        // Placed once the bar has given the window its final size.
+        let browser = Browser::in_window(mtm, window, keep_data, look);
+        let window = &browser.window;
         let app = NSApplication::sharedApplication(mtm);
         match app.keyWindow().or_else(|| app.mainWindow()) {
             Some(beside) => {
@@ -100,22 +115,26 @@ impl Browser {
             }
             None => window.center(),
         }
-        let browser = Browser::in_window(mtm, window, keep_data);
         browser.set_title(title);
         browser
     }
 
-    /// A browser in a borderless window that is never shown (the probe's).
-    fn offscreen(mtm: MainThreadMarker, keep_data: bool) -> Browser {
-        Browser::in_window(
-            mtm,
-            new_window(mtm, NSWindowStyleMask::Borderless),
-            keep_data,
-        )
+    /// A browser in a window that is never shown (the probe's). Titled, as a toolbar needs a
+    /// title bar to sit in.
+    fn offscreen(mtm: MainThreadMarker, keep_data: bool, look: &BarLook) -> Browser {
+        let style =
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
+        Browser::in_window(mtm, new_window(mtm, style), keep_data, look)
     }
 
-    /// Fill `window` with a new web view on the data store `keep_data` picks, and take both on.
-    fn in_window(mtm: MainThreadMarker, window: Retained<NSWindow>, keep_data: bool) -> Browser {
+    /// Fill `window` with a new web view on the data store `keep_data` picks, under a top bar
+    /// that looks as `look` says, and take them on.
+    fn in_window(
+        mtm: MainThreadMarker,
+        window: Retained<NSWindow>,
+        keep_data: bool,
+        look: &BarLook,
+    ) -> Browser {
         let delegate = BrowserDelegate::new(mtm);
         // SAFETY: main thread; plain WebKit set-up with valid arguments. The delegate is kept
         // alive by the `Browser`, which clears both delegate links before it goes.
@@ -138,34 +157,42 @@ impl Browser {
             view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             view
         };
-        window.setContentView(Some(&view));
+        let bar = bar::TopBar::new(mtm, &view, &delegate, look);
+        bar.install(&window, look);
+        // The bar keeps the window's content size; the page fills it, with the loading line
+        // over its top edge.
+        window.setContentSize(WINDOW_SIZE);
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), WINDOW_SIZE);
+        let content = NSView::initWithFrame(mtm.alloc(), frame);
+        view.setFrame(frame);
+        view.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        content.addSubview(&view);
+        content.addSubview(bar.line());
+        window.setContentView(Some(&content));
+        // The page has the keyboard when the window first shows, never the address field (it
+        // takes it only on ⌘L or a click).
+        window.setInitialFirstResponder(Some(&view));
+        window.makeFirstResponder(Some(&view));
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        Browser {
+        let browser = Browser {
             window,
             view,
             delegate,
-            requested: RefCell::new(None),
+            bar,
             pending: RefCell::new(Vec::new()),
-        }
+        };
+        browser.refresh_bar();
+        browser
     }
 
     /// Go to `url` (already normalised to http or https). Returns at once; `state` tells when
     /// the page has loaded, or that it failed to.
     pub fn load(&self, url: &str) {
-        self.requested.replace(Some(url.to_string()));
-        self.delegate.ivars().failure.take();
-        match NSURL::URLWithString(&NSString::from_str(url)) {
-            // SAFETY: main thread; the view copies the request.
-            Some(address) => unsafe {
-                self.view
-                    .loadRequest(&NSURLRequest::requestWithURL(&address));
-            },
-            // Nothing loads, and whatever page was showing stays: say so.
-            None => {
-                let failure = Some("not a valid address".to_string());
-                self.delegate.ivars().failure.replace(failure);
-            }
-        }
+        navigate(&self.view, &self.delegate, url);
+        self.refresh_bar();
     }
 
     /// Run `js` in the page and answer with its value as JSON (`undefined` as `null`; what JSON
@@ -223,7 +250,7 @@ impl Browser {
         };
         let url = url.map(|u| u.to_string()).unwrap_or_default();
         let error = load_error(
-            self.requested.borrow().as_deref(),
+            self.delegate.ivars().requested.borrow().as_deref(),
             &url,
             loading,
             self.delegate.ivars().failure.borrow().as_deref(),
@@ -265,6 +292,7 @@ impl Browser {
         self.delegate.ivars().failure.take();
         // SAFETY: main thread.
         unsafe { self.view.goBack() };
+        self.refresh_bar();
     }
 
     /// Load the page again.
@@ -272,11 +300,23 @@ impl Browser {
         self.delegate.ivars().failure.take();
         // SAFETY: main thread.
         unsafe { self.view.reload() };
+        self.refresh_bar();
     }
 
-    /// The window's title.
+    /// The window's title (shown in the bar when the address field isn't).
     pub fn set_title(&self, title: &str) {
         self.window.setTitle(&NSString::from_str(title));
+    }
+
+    /// Bring the top bar up to date with the page: the buttons, the address (unless the person
+    /// is typing one) and the loading line.
+    pub fn refresh_bar(&self) {
+        self.bar.refresh();
+    }
+
+    /// Restyle the top bar (a theme or setting changed).
+    pub fn set_look(&self, look: &BarLook) {
+        self.bar.set_look(&self.window, look);
     }
 
     /// Show the window (again, if the user closed or minimised it) in front of the others.
@@ -328,6 +368,7 @@ impl Drop for Browser {
             self.view.setUIDelegate(None);
             self.view.setNavigationDelegate(None);
         }
+        self.bar.detach(&self.window);
         self.window.setDelegate(None);
         self.window.close();
     }
@@ -422,6 +463,24 @@ pub fn didnt_answer(limit: Duration) -> String {
     format!("the page didn't answer in {} s", limit.as_secs())
 }
 
+/// Go to `url` (already normalised) in `view`, whose delegate is `page`: a `load`, or Enter in
+/// the address field. An address NSURL can't read loads nothing (the page stays) and is the
+/// error.
+fn navigate(view: &WKWebView, page: &BrowserDelegate, url: &str) {
+    page.ivars().requested.replace(Some(url.to_string()));
+    page.ivars().failure.take();
+    match NSURL::URLWithString(&NSString::from_str(url)) {
+        // SAFETY: main thread; the view copies the request.
+        Some(address) => unsafe {
+            view.loadRequest(&NSURLRequest::requestWithURL(&address));
+        },
+        None => {
+            let failure = Some("not a valid address".to_string());
+            page.ivars().failure.replace(failure);
+        }
+    }
+}
+
 /// Run `script` (an eval script) in `view`; its answer goes to `slot`.
 fn evaluate(view: &WKWebView, script: &str, slot: Slot<Value>) {
     let block = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
@@ -508,9 +567,11 @@ enum WindowKey {
     Redo,
     /// ⌘= / ⌘+ / ⌘- / ⌘0: the terminals' font size, which is not this window's to change.
     FontSize,
+    /// ⌘L: the address field.
+    FocusAddress,
 }
 
-/// The browser window's own shortcuts: ⌘W, ⌘Z and ⇧⌘Z, and the font-size keys it swallows.
+/// The browser window's own shortcuts: ⌘W, ⌘Z and ⇧⌘Z, ⌘L, and the font-size keys it swallows.
 /// `key` is the key pressed without
 /// modifiers other than shift (⇧⌘Z gives `Z`).
 fn window_key(key: &str, cmd: bool, shift: bool, alt: bool, ctrl: bool) -> Option<WindowKey> {
@@ -523,12 +584,14 @@ fn window_key(key: &str, cmd: bool, shift: bool, alt: bool, ctrl: bool) -> Optio
         ("z", true) => Some(WindowKey::Redo),
         // ⌘+ is shift-=, so shift is free for the two that can be typed either way.
         ("=" | "+", _) | ("-" | "0", false) => Some(WindowKey::FontSize),
+        ("l", false) => Some(WindowKey::FocusAddress),
         _ => None,
     }
 }
 
-/// The key codes (U.S. keyboard places) of W, Z, `=`, `-` and 0 (`kVK_ANSI_W` and so on).
+/// The key codes (U.S. keyboard places) of W, Z, L, `=`, `-` and 0 (`kVK_ANSI_W` and so on).
 const KEY_W: u16 = 0x0D;
+const KEY_L: u16 = 0x25;
 const KEY_Z: u16 = 0x06;
 const KEY_EQUAL: u16 = 0x18;
 const KEY_MINUS: u16 = 0x1B;
@@ -545,6 +608,7 @@ fn shortcut_letter(chars: Option<&str>, key_code: u16) -> Option<char> {
         _ => match key_code {
             KEY_W => Some('w'),
             KEY_Z => Some('z'),
+            KEY_L => Some('l'),
             KEY_EQUAL => Some('='),
             KEY_MINUS => Some('-'),
             KEY_ZERO => Some('0'),
@@ -604,7 +668,8 @@ define_class!(
 
 impl ShortcutWindow {
     /// Most of fuxx's menu items answer only fuxx's own window, so this window takes ⌘W itself
-    /// (before the page sees it: closing is the window's, as in Safari), and ⌘Z / ⇧⌘Z once the
+    /// (before the page sees it: closing is the window's, as in Safari), ⌘L likewise when the
+    /// bar has its address field, and ⌘Z / ⇧⌘Z once the
     /// page has passed on them (WebKit sends a key the page didn't handle round again). Undo
     /// goes to the window's undo manager. Cut, copy, paste and select all come from fuxx's Edit
     /// menu, as the standard selectors. The exception is View's font size (⌘= ⌘+ ⌘- ⌘0), an
@@ -617,6 +682,9 @@ impl ShortcutWindow {
             return true;
         }
         if key == Some(WindowKey::FontSize) {
+            return true;
+        }
+        if key == Some(WindowKey::FocusAddress) && bar::focus_address(self) {
             return true;
         }
         // SAFETY: NSWindow's own `performKeyEquivalent:`, with the event it was given.
@@ -647,6 +715,9 @@ impl ShortcutWindow {
 struct DelegateState {
     /// The window has closed.
     closed: Cell<bool>,
+    /// The address the last `load` (or the address field) asked for: a page that never came is
+    /// a failed load.
+    requested: RefCell<Option<String>>,
     /// Why the last navigation failed (cleared when the browser starts a new one, and when a
     /// page arrives, however it was asked for).
     failure: RefCell<Option<String>>,
@@ -934,6 +1005,13 @@ mod tests {
         );
         assert_eq!(window_key("-", true, false, true, false), None);
         assert_eq!(window_key("0", false, false, false, false), None);
+        // ⌘L: the address field, as in Safari.
+        assert_eq!(
+            window_key("l", true, false, false, false),
+            Some(WindowKey::FocusAddress)
+        );
+        assert_eq!(window_key("l", true, true, false, false), None);
+        assert_eq!(window_key("l", false, false, false, false), None);
         // Not with another modifier, nor without ⌘; other keys go on to the page and menus.
         assert_eq!(window_key("w", true, true, false, false), None);
         assert_eq!(window_key("w", true, false, true, false), None);
@@ -963,6 +1041,8 @@ mod tests {
         assert_eq!(shortcut_letter(None, KEY_MINUS), Some('-'));
         assert_eq!(shortcut_letter(Some(""), KEY_ZERO), Some('0'));
         assert_eq!(shortcut_letter(Some(""), KEY_Z), Some('z'));
+        // ⌘L, in a script with no L of its own.
+        assert_eq!(shortcut_letter(Some("д"), KEY_L), Some('l'));
     }
 
     #[test]

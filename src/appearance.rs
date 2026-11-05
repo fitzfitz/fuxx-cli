@@ -36,7 +36,6 @@ pub struct Appearance {
     /// it too (see `reduce_motion`).
     pub animations: bool,
     /// `browser-address-bar = on|off`: the browser windows' address field (default on).
-    #[allow(dead_code)] // read by the browser's top bar (follow-up Task 2)
     pub browser_address_bar: bool,
     /// `browser-keep-data = on|off`: browser windows opened from now on keep cookies, logins and
     /// site data on disk between runs (default off: each run starts from nothing).

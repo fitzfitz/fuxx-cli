@@ -1,9 +1,11 @@
 //! M10c: the workspace's browsers, one per session at most (`Browsers`), and File → Open
 //! Browser… (⇧⌘B): a box over the window for an address, opened for the active session.
 //!
-//! A browser window is titled `<session name> — <page title>`. One 500 ms timer runs while any
-//! browser is open: it keeps the titles up to date (a renamed session, a new page) and forgets
-//! the windows the user closed. Closing a session closes its browser.
+//! A browser window is titled `<session name> — <page title>`. One timer runs while any browser
+//! is open (every 500 ms, 100 ms while a page loads): it keeps the titles and the top bars up to
+//! date (a renamed session, a new page, the loading line) and forgets the windows the user
+//! closed. Closing a session closes its browser. The bars follow the theme and the
+//! `browser-address-bar` setting as soon as they change.
 //!
 //! Also the `browser.*` socket methods (`fuxx browser …`, the MCP `browser_*` tools): checked
 //! at once, then answered from a GPUI task once the page has loaded or answered, each wait
@@ -23,18 +25,23 @@ use serde_json::{Value, json};
 use crate::api::{self, ApiError, Request};
 use crate::api_server::Conn;
 use crate::appearance::Appearance;
-use crate::browser::{Browser, CLOSED, PageState, didnt_answer, forget_saved_data, within};
+use crate::browser::{
+    BarLook, Browser, CLOSED, PageState, didnt_answer, forget_saved_data, within,
+};
 use crate::browser_js::{self, Snapshot};
 use crate::browser_url::normalize_url;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::terminal_view::hsla;
+use crate::theme::Theme;
 use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 use crate::workspace_api::{now_ms, opt_str, required_str};
 
-/// How often the open browsers' titles are brought up to date and closed windows noticed.
+/// How often the open browsers' titles and top bars are brought up to date and closed windows
+/// noticed; more often while a page loads, so the loading line moves smoothly.
 const BROWSER_TICK: Duration = Duration::from_millis(500);
+const BROWSER_TICK_LOADING: Duration = Duration::from_millis(100);
 
 /// How often `open`, `back`, `reload` and `wait` look at the page.
 const BROWSER_POLL: Duration = Duration::from_millis(200);
@@ -55,6 +62,25 @@ pub fn browser_title(session: &str, page: Option<&str>) -> String {
     match page.map(str::trim) {
         Some(page) if !page.is_empty() => format!("{session} \u{2014} {page}"),
         _ => session.to_string(),
+    }
+}
+
+/// The browsers' top bar for the fuxx theme and the `browser-address-bar` setting: dark with a
+/// dark theme, its loading line in the theme's accent.
+pub fn bar_look(theme: &Theme, address_bar: bool) -> BarLook {
+    BarLook {
+        dark: theme.is_dark(),
+        accent: theme.ui().accent,
+        address_bar,
+    }
+}
+
+/// The wait before the next browser check: shorter while a page loads.
+fn tick_interval(loading: bool) -> Duration {
+    if loading {
+        BROWSER_TICK_LOADING
+    } else {
+        BROWSER_TICK
     }
 }
 
@@ -143,6 +169,11 @@ impl<B: BrowserWindow> Browsers<B> {
 
     pub fn is_empty(&self) -> bool {
         self.open.is_empty()
+    }
+
+    /// Every open browser.
+    pub fn iter(&self) -> impl Iterator<Item = &B> {
+        self.open.values().map(|(b, _)| b)
     }
 }
 
@@ -246,8 +277,10 @@ impl Workspace {
         if self.browsers.get(id).is_none() {
             let title = browser_title(&session.label(), None);
             // Windows opened from now on follow the setting; open ones keep their store.
-            let keep_data = cx.global::<Appearance>().browser_keep_data;
-            let browser = Browser::open(&title, keep_data, cx);
+            let appearance = cx.global::<Appearance>();
+            let keep_data = appearance.browser_keep_data;
+            let look = bar_look(&appearance.theme, appearance.browser_address_bar);
+            let browser = Browser::open(&title, keep_data, &look, cx);
             self.browsers.insert(id, browser, title);
             self.tick_browsers(cx);
         }
@@ -258,10 +291,16 @@ impl Workspace {
         Ok(())
     }
 
-    /// The settings changed: when `browser-keep-data` went from on to off, delete what the
-    /// browser saved. Windows already open keep the store they were opened with.
+    /// The settings changed: the open browsers' top bars follow the theme and
+    /// `browser-address-bar` at once. When `browser-keep-data` went from on to off, delete what
+    /// the browser saved; windows already open keep the store they were opened with.
     pub(crate) fn browser_settings_changed(&mut self, cx: &App) {
-        let keep_data = cx.global::<Appearance>().browser_keep_data;
+        let appearance = cx.global::<Appearance>();
+        let look = bar_look(&appearance.theme, appearance.browser_address_bar);
+        for browser in self.browsers.iter() {
+            browser.set_look(&look);
+        }
+        let keep_data = appearance.browser_keep_data;
         if forgets_saved_data(self.browser_keep_data, keep_data) {
             forget_saved_data(
                 MainThreadMarker::new().expect("GPUI's App lives on the main thread"),
@@ -270,9 +309,9 @@ impl Workspace {
         self.browser_keep_data = keep_data;
     }
 
-    /// Bring the browsers' titles up to date and drop those the user closed (or whose session
-    /// has gone).
-    fn check_browsers(&mut self) {
+    /// Bring the browsers' titles and top bars up to date and drop those the user closed (or
+    /// whose session has gone). Whether a page is loading in any of them.
+    fn check_browsers(&mut self) -> bool {
         let sessions = self.sessions.items();
         self.browsers
             .forget_closed(|id| sessions.iter().any(|s| s.id == id));
@@ -284,26 +323,36 @@ impl Workspace {
                 .unwrap_or_default();
             browser_title(&label, Some(&browser.state().title))
         });
+        let mut loading = false;
+        for browser in self.browsers.iter() {
+            browser.refresh_bar();
+            loading |= browser.state().loading;
+        }
+        loading
     }
 
-    /// Start the 500 ms browser check unless it's running; it stops once no browser is open.
+    /// Start the browser check (every 500 ms, 100 ms while a page loads) unless it's running;
+    /// it stops once no browser is open.
     fn tick_browsers(&mut self, cx: &mut Context<Self>) {
         if self.browsers_ticking || self.browsers.is_empty() {
             return;
         }
         self.browsers_ticking = true;
         cx.spawn(async move |this, cx| {
+            let mut wait = BROWSER_TICK_LOADING;
             loop {
-                cx.background_executor().timer(BROWSER_TICK).await;
-                let open = this
+                cx.background_executor().timer(wait).await;
+                let next = this
                     .update(cx, |this, _| {
-                        this.check_browsers();
+                        let loading = this.check_browsers();
                         this.browsers_ticking = !this.browsers.is_empty();
-                        this.browsers_ticking
+                        this.browsers_ticking.then(|| tick_interval(loading))
                     })
-                    .unwrap_or(false);
-                if !open {
-                    break;
+                    .ok()
+                    .flatten();
+                match next {
+                    Some(next) => wait = next,
+                    None => break,
                 }
             }
         })
@@ -717,6 +766,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use alacritty_terminal::vte::ansi::Rgb;
 
     /// A browser that says when it has been dropped (its window closed).
     struct Fake {
@@ -1062,5 +1112,42 @@ mod tests {
         assert!(!forgets_saved_data(true, true));
         assert!(!forgets_saved_data(false, false));
         assert!(!forgets_saved_data(false, true));
+    }
+
+    #[test]
+    fn the_bar_follows_the_theme_and_the_setting() {
+        let dark = Theme::default();
+        assert_eq!(
+            bar_look(&dark, true),
+            BarLook {
+                dark: true,
+                accent: dark.ui().accent,
+                address_bar: true,
+            }
+        );
+        let light = Theme {
+            background: Rgb {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff,
+            },
+            foreground: Rgb { r: 0, g: 0, b: 0 },
+            ..Theme::default()
+        };
+        assert_eq!(
+            bar_look(&light, false),
+            BarLook {
+                dark: false,
+                accent: light.ui().accent,
+                address_bar: false,
+            }
+        );
+    }
+
+    #[test]
+    fn the_check_runs_faster_while_a_page_loads() {
+        assert_eq!(tick_interval(false), BROWSER_TICK);
+        assert_eq!(tick_interval(true), BROWSER_TICK_LOADING);
+        assert!(BROWSER_TICK_LOADING < BROWSER_TICK);
     }
 }
