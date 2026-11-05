@@ -45,6 +45,8 @@ usage: fuxx [command]   (no command opens the app)
   ls                                   list sessions (#N* focused, #N+ on screen)
   new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME]
       [--split right|down [--of TARGET]] [--background]   open a session; prints its id
+  new --ssh HOST [--tmux] [--name NAME] [--split right|down [--of TARGET]] [--background]
+                                       open an SSH session (not with --folder, --preset or --run)
   close [TARGET]                       close a session
   focus [TARGET]                       show and focus a session
   rename [TARGET] NAME                 rename (\"\" restores the automatic name)
@@ -108,8 +110,8 @@ const COMMANDS: &[(&str, &str)] = &[
 fn flag_spec(cmd: &str) -> (&'static [&'static str], &'static [&'static str]) {
     match cmd {
         "new" => (
-            &["folder", "preset", "run", "name", "split", "of"],
-            &["background"],
+            &["folder", "preset", "run", "name", "split", "of", "ssh"],
+            &["background", "tmux"],
         ),
         "send" => (&[], &["enter"]),
         "read" => (&["lines"], &["all"]),
@@ -275,6 +277,20 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
             }
             if a.val("of").is_some() && split.is_none() {
                 return Err(usage_err(cmd, "--of needs --split"));
+            }
+            if let Some(host) = a.val("ssh") {
+                if let Some(clash) = ["folder", "preset", "run"]
+                    .into_iter()
+                    .find(|k| a.val(k).is_some())
+                {
+                    return Err(usage_err(
+                        cmd,
+                        &format!("--ssh and --{clash} can't be combined"),
+                    ));
+                }
+                params.insert("ssh".into(), json!({ "host": host, "tmux": a.on("tmux") }));
+            } else if a.on("tmux") {
+                return Err(usage_err(cmd, "--tmux needs --ssh"));
             }
             for k in ["folder", "preset", "run", "name", "split", "of"] {
                 params.insert(k.into(), a.val(k).map_or(Value::Null, |v| json!(v)));
@@ -753,6 +769,44 @@ mod tests {
         );
         assert!(p(&["new", "--split", "sideways"]).is_err());
         assert!(p(&["send"]).is_err());
+    }
+
+    #[test]
+    fn new_ssh_parses_and_conflicts() {
+        let (r, _, _) = call(p(&["new", "--ssh", "dev", "--tmux", "--name", "box"]));
+        assert_eq!(r.method, "session.new");
+        assert_eq!(
+            r.params["ssh"],
+            serde_json::json!({"host": "dev", "tmux": true})
+        );
+        assert_eq!(r.params["name"], "box");
+        let (r, _, _) = call(p(&[
+            "new",
+            "--ssh",
+            "me@dev",
+            "--split",
+            "down",
+            "--of",
+            "s2",
+            "--background",
+        ]));
+        assert_eq!(
+            r.params["ssh"],
+            serde_json::json!({"host": "me@dev", "tmux": false})
+        );
+        assert_eq!(
+            (&r.params["split"], &r.params["of"], &r.params["background"]),
+            (&"down".into(), &"s2".into(), &true.into())
+        );
+        // No --ssh: no ssh key at all.
+        let (r, _, _) = call(p(&["new"]));
+        assert!(r.params.get("ssh").is_none());
+        for clash in ["--folder", "--preset", "--run"] {
+            let e = p(&["new", "--ssh", "dev", clash, "x"]).unwrap_err();
+            assert!(e.contains(clash) && e.contains("--ssh"), "{e}");
+        }
+        let e = p(&["new", "--tmux"]).unwrap_err();
+        assert!(e.contains("--tmux needs --ssh"), "{e}");
     }
 
     #[test]
