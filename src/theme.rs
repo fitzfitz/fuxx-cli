@@ -105,6 +105,9 @@ pub struct UiColors {
     /// A waiting row's fill; `done_tint` is the same, subtler, for a finished one.
     pub waiting_tint: Rgb,
     pub done_tint: Rgb,
+    /// A hovered waiting row's fill, and a hovered row of an overlay (switcher, menu).
+    pub waiting_hover: Rgb,
+    pub panel_hover: Rgb,
     pub focus_ring: Rgb,
     /// Overlays (switcher, popups): a surface raised above the window, its edge and its shadow.
     pub panel: Rgb,
@@ -157,21 +160,25 @@ impl Theme {
             mix(bg, white, 0.65)
         };
 
-        let plain = [sidebar, row_hover, row_active, panel, bg];
+        let panel_hover = mix(panel, fg, 0.08);
+        let plain = [sidebar, row_hover, row_active, panel, panel_hover, bg];
         let waiting = readable(self.palette[1], &plain, MARK_MIN);
         let done = readable(self.palette[2], &plain, MARK_MIN);
         // A soft wash of the status colour; done is subtler (it needs you less).
         let waiting_tint = mix(sidebar, waiting, if dark { 0.12 } else { 0.08 });
         let done_tint = mix(sidebar, done, if dark { 0.07 } else { 0.05 });
+        let waiting_hover = mix(waiting_tint, fg, 0.06);
         // Every surface something is drawn on: rows, tinted rows, overlays, pane headers.
         let surfaces = [
             sidebar,
             row_hover,
             row_active,
             panel,
+            panel_hover,
             bg,
             waiting_tint,
             done_tint,
+            waiting_hover,
         ];
         let text = |c: Rgb| readable(c, &surfaces, TEXT_MIN);
         let mark = |c: Rgb| readable(c, &surfaces, MARK_MIN);
@@ -202,6 +209,8 @@ impl Theme {
             divider: quiet(mix(bg, fg, 0.16), &[bg]),
             waiting_tint,
             done_tint,
+            waiting_hover,
+            panel_hover,
             focus_ring: accent,
             panel,
             panel_border: quiet(mix(panel, fg, 0.16), &[panel, bg]),
@@ -236,7 +245,9 @@ impl Theme {
             ("row_active", ui.row_active),
             ("waiting_tint", ui.waiting_tint),
             ("done_tint", ui.done_tint),
+            ("waiting_hover", ui.waiting_hover),
             ("panel", ui.panel),
+            ("panel_hover", ui.panel_hover),
             ("terminal", self.background),
         ];
         let text = [

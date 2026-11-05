@@ -28,7 +28,7 @@ use crate::restore::SavedState;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
-use crate::theme::{UiColors, mix};
+use crate::theme::UiColors;
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
     SIDEBAR_ROW, STATUS_MARK, WAITING_ROW,
@@ -781,7 +781,7 @@ impl Workspace {
         };
         let hover = match fill {
             _ if row.active => None,
-            Some(tint) => Some(mix(tint, ui.text, 0.06)),
+            Some(_) => Some(ui.waiting_hover),
             None => Some(ui.row_hover),
         };
         let surface = fill.unwrap_or(ui.sidebar_background);
@@ -1183,7 +1183,7 @@ impl Workspace {
         if !self.sidebar.new_menu || self.sidebar.hidden {
             return None;
         }
-        let hover = mix(ui.panel, ui.text, 0.08);
+        let hover = ui.panel_hover;
         let item = |id: (&'static str, usize), label: String, keys: String| {
             div()
                 .id(id)
