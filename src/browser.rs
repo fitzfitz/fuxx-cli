@@ -27,8 +27,8 @@ use objc2_foundation::{
     NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
 };
 use objc2_web_kit::{
-    WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate, WKUserScript,
-    WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
+    WKErrorCode, WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate,
+    WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
     WKWindowFeatures,
 };
 use serde_json::Value;
@@ -150,21 +150,25 @@ impl Browser {
     pub fn load(&self, url: &str) {
         self.requested.replace(Some(url.to_string()));
         self.delegate.ivars().failure.take();
-        // An address NSURL can't read loads nothing, which `state` reports as a failed load.
-        if let Some(address) = NSURL::URLWithString(&NSString::from_str(url)) {
+        match NSURL::URLWithString(&NSString::from_str(url)) {
             // SAFETY: main thread; the view copies the request.
-            unsafe {
+            Some(address) => unsafe {
                 self.view
-                    .loadRequest(&NSURLRequest::requestWithURL(&address))
-            };
+                    .loadRequest(&NSURLRequest::requestWithURL(&address));
+            },
+            // Nothing loads, and whatever page was showing stays: say so.
+            None => {
+                let failure = Some("not a valid address".to_string());
+                self.delegate.ivars().failure.replace(failure);
+            }
         }
     }
 
     /// Run `js` in the page and answer with its value as JSON (`undefined` as `null`; what JSON
     /// can't hold, such as functions and DOM nodes, as `null` or `{}`), or what it threw as
-    /// `the script failed: <error>`. It runs as one expression (on any page); when it isn't one,
-    /// as statements through `eval`, which some pages' Content-Security-Policy forbids. The
-    /// answer never times out by itself: the caller limits the wait (see [`within`]).
+    /// `the script failed: <error>`. It runs as one expression (on any page); when that doesn't
+    /// parse, as statements through `eval`, which some pages' Content-Security-Policy forbids.
+    /// The answer never times out by itself: the caller limits the wait (see [`within`]).
     pub fn eval(&self, js: &str) -> oneshot::Receiver<Result<Value, String>> {
         let (tx, rx) = oneshot::channel();
         let slot = self.pend(tx);
@@ -174,12 +178,13 @@ impl Browser {
         let block = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
             // SAFETY: WebKit passes a valid object or nil for each.
             match unsafe { (result.as_ref(), error.as_ref()) } {
-                // The expression form didn't parse (or the code broke out of it): nothing ran.
-                (_, Some(_)) => match view.load() {
+                // The expression form didn't parse, so nothing ran: try it as statements. Any
+                // other failure may come after the code ran, and is never run again.
+                (_, Some(error)) if is_syntax_error(error) => match view.load() {
                     Some(view) => evaluate(&view, &statements, slot.clone()),
                     None => answer(&slot, Err(CLOSED.to_string())),
                 },
-                (result, None) => answer(&slot, script_answer(result, None)),
+                (result, error) => answer(&slot, script_answer(result, error)),
             }
         });
         let script = NSString::from_str(&browser_js::eval_expression_js(js));
@@ -188,6 +193,16 @@ impl Browser {
             self.view
                 .evaluateJavaScript_completionHandler(&script, Some(&block))
         };
+        rx
+    }
+
+    /// Run one of fuxx's own page scripts (`browser_js`: snapshot, click, fill, press, read,
+    /// wait), answered like `eval`. It is one expression and runs exactly once: never retried as
+    /// statements, so a click can't happen twice.
+    pub fn run_script(&self, script: &str) -> oneshot::Receiver<Result<Value, String>> {
+        let (tx, rx) = oneshot::channel();
+        let script = browser_js::eval_expression_js(script);
+        evaluate(&self.view, &script, self.pend(tx));
         rx
     }
 
@@ -356,7 +371,7 @@ fn script_answer(result: Option<&AnyObject>, error: Option<&NSError>) -> Result<
     match (result, error) {
         (_, Some(error)) => Err(format!(
             "the script failed: {}",
-            error.localizedDescription()
+            exception_message(error).unwrap_or_else(|| error.localizedDescription().to_string())
         )),
         (Some(text), None) => match text.downcast_ref::<NSString>() {
             Some(text) => parse_answer(&text.to_string()).map_err(|e| {
@@ -370,6 +385,30 @@ fn script_answer(result: Option<&AnyObject>, error: Option<&NSError>) -> Result<
         },
         (None, None) => Err("the page's answer is empty".to_string()),
     }
+}
+
+/// The JavaScript exception an evaluation error carries (`SyntaxError: …`), if it carries one.
+fn exception_message(error: &NSError) -> Option<String> {
+    let key = NSString::from_str("WKJavaScriptExceptionMessage");
+    let message = error.userInfo().objectForKey(&key)?;
+    message.downcast::<NSString>().ok().map(|m| m.to_string())
+}
+
+/// Whether WebKit refused a script because it didn't parse (so none of it ran).
+fn is_syntax_error(error: &NSError) -> bool {
+    did_not_parse(
+        &error.domain().to_string(),
+        error.code(),
+        exception_message(error).as_deref(),
+    )
+}
+
+/// `is_syntax_error` on the error's parts: a JavaScript exception in WebKit's domain whose
+/// message is a `SyntaxError`.
+fn did_not_parse(domain: &str, code: isize, message: Option<&str>) -> bool {
+    domain == "WKErrorDomain"
+        && code == WKErrorCode::JavaScriptExceptionOccurred.0
+        && message.is_some_and(|m| m.starts_with("SyntaxError"))
 }
 
 /// Give `slot` its answer, unless it has had one (or the browser closed first).
@@ -402,7 +441,8 @@ fn new_window(mtm: MainThreadMarker, style: NSWindowStyleMask) -> Retained<NSWin
 struct DelegateState {
     /// The window has closed.
     closed: Cell<bool>,
-    /// Why the last navigation failed (cleared when the browser starts a new one).
+    /// Why the last navigation failed (cleared when the browser starts a new one, and when a
+    /// page arrives, however it was asked for).
     failure: RefCell<Option<String>>,
 }
 
@@ -424,9 +464,15 @@ define_class!(
         }
     }
 
-    // SAFETY: the signatures match `webView:didFailProvisionalNavigation:withError:` and
-    // `webView:didFailNavigation:withError:`.
+    // SAFETY: the signatures match `webView:didCommitNavigation:`,
+    // `webView:didFailProvisionalNavigation:withError:` and `webView:didFailNavigation:withError:`.
     unsafe impl WKNavigationDelegate for BrowserDelegate {
+        // A page arrived (a load, a click, a form, a redirect): any earlier failure is over.
+        #[unsafe(method(webView:didCommitNavigation:))]
+        fn did_commit_navigation(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>) {
+            self.ivars().failure.take();
+        }
+
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn did_fail_provisional_navigation(
             &self,
@@ -619,6 +665,24 @@ mod tests {
             load_error(Some(url), "https://example.com/", true, refused),
             None
         );
+    }
+
+    #[test]
+    fn only_a_syntax_error_is_retried_as_statements() {
+        let exception = 4; // WKErrorJavaScriptExceptionOccurred
+        let syntax = Some("SyntaxError: Unexpected keyword 'const'");
+        assert!(did_not_parse("WKErrorDomain", exception, syntax));
+        // The script ran and threw outside fuxx's try (a page patched JSON.stringify): never again.
+        assert!(!did_not_parse(
+            "WKErrorDomain",
+            exception,
+            Some("Error: patched")
+        ));
+        assert!(!did_not_parse("WKErrorDomain", exception, None));
+        // Other WebKit errors (the web view went away, an unsupported result type).
+        assert!(!did_not_parse("WKErrorDomain", 1, syntax));
+        assert!(!did_not_parse("WKErrorDomain", 5, syntax));
+        assert!(!did_not_parse("NSURLErrorDomain", exception, syntax));
     }
 
     #[test]

@@ -42,6 +42,13 @@ const PAGE_TWO: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>page two</title></head>
 <body><h1>Page two</h1></body></html>"#;
 
+/// A page that replaces `JSON.stringify` with one that throws; its button counts clicks in the
+/// title (and carries a ref already, as no snapshot can be answered there).
+const PATCHED_PAGE: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>clicks 0</title>
+<script>window.clicks = 0; JSON.stringify = () => { throw new Error('patched'); };</script></head>
+<body><button data-fuxx-ref="e1" onclick="document.title = 'clicks ' + (++window.clicks)">Count</button></body></html>"#;
+
 /// A page whose Content-Security-Policy allows no script at all (as strict sites do).
 const LOCKED_PAGE: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>locked</title></head>
@@ -119,6 +126,26 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         "failed load over a page",
         &failed_over,
     )?;
+    // A page the page itself asks for (a link click) clears that failure.
+    let link = find_ref(&take_snapshot(&b, &ex).await?, "link", "page two")?;
+    run(&b, &ex, &browser_js::click_js(&link)).await?;
+    let followed_link = settle(&b, &ex, |s| !s.loading && s.url == two).await?;
+    check(
+        followed_link.error.is_none(),
+        "a page-initiated load clears the failure",
+        &followed_link,
+    )?;
+    // An address NSURL can't read: nothing loads, the page stays, and that is the error.
+    b.load("http://[");
+    let invalid = settle(&b, &ex, |s| !s.loading).await?;
+    check(
+        invalid.url == two
+            && invalid.error.as_deref() == Some("the page failed to load: not a valid address"),
+        "an invalid address",
+        &invalid,
+    )?;
+    b.load(&home);
+    settle(&b, &ex, |s| !s.loading && s.url == home).await?;
     b.load(&home);
     let reloaded = settle(&b, &ex, |s| !s.loading && s.url == home).await?;
     check(
@@ -174,9 +201,9 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     let outline_lines = browser_js::render_outline(&snapshot).lines().count();
     let field = find_ref(&snapshot, "textbox", "your name")?;
     let go = find_ref(&snapshot, "button", "Go")?;
-    let filled = ask(&b, &ex, &browser_js::fill_js(&field, "probe")).await?;
+    let filled = run(&b, &ex, &browser_js::fill_js(&field, "probe")).await?;
     check(filled == json!({"ok": true}), "fill", &filled)?;
-    let clicked = ask(&b, &ex, &browser_js::click_js(&go)).await?;
+    let clicked = run(&b, &ex, &browser_js::click_js(&go)).await?;
     check(clicked == json!({"ok": true}), "click", &clicked)?;
     let heading = ask(&b, &ex, "document.getElementById('heading').textContent").await?;
     check(
@@ -184,31 +211,31 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         "heading after click",
         &heading,
     )?;
-    let unknown = ask(&b, &ex, &browser_js::click_js("e999")).await?;
+    let unknown = run(&b, &ex, &browser_js::click_js("e999")).await?;
     check(
         unknown == json!({"error": "unknown ref e999"}),
         "unknown ref",
         &unknown,
     )?;
-    let read = ask(&b, &ex, browser_js::read_js()).await?;
+    let read = run(&b, &ex, browser_js::read_js()).await?;
     check(
         read.as_str().is_some_and(|t| t.contains("Hi, probe")),
         "read",
         &read,
     )?;
-    let wait_hit = ask(
+    let wait_hit = run(
         &b,
         &ex,
         &browser_js::wait_check_js(Some("Hi, probe"), Some("#go")),
     )
     .await?;
-    let wait_miss = ask(&b, &ex, &browser_js::wait_check_js(Some("nowhere"), None)).await?;
+    let wait_miss = run(&b, &ex, &browser_js::wait_check_js(Some("nowhere"), None)).await?;
     check(
         wait_hit == json!(true) && wait_miss == json!(false),
         "wait",
         &(&wait_hit, &wait_miss),
     )?;
-    let not_a_key = ask(&b, &ex, &browser_js::press_js("constructor")).await?;
+    let not_a_key = run(&b, &ex, &browser_js::press_js("constructor")).await?;
     check(
         not_a_key["error"]
             .as_str()
@@ -235,7 +262,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         "link",
         "page two in a new window",
     )?;
-    let followed = ask(&b, &ex, &browser_js::click_js(&blank_link)).await?;
+    let followed = run(&b, &ex, &browser_js::click_js(&blank_link)).await?;
     check(
         followed == json!({"ok": true}),
         "click target=_blank",
@@ -280,6 +307,29 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         path.display()
     );
 
+    // A page that breaks `JSON.stringify`: the answer fails after the click ran, and the click
+    // never runs again (through `run_script` or `eval`).
+    b.load(&format!("{base}/patched"));
+    settle(&b, &ex, |s| !s.loading && s.title == "clicks 0").await?;
+    let patched_run = within(
+        b.run_script(&browser_js::click_js("e1")),
+        PROBE_ANSWER_LIMIT,
+        &ex,
+    )
+    .await;
+    let after_run = settled_title(&b, &ex, "clicks 0").await?;
+    let patched_eval = within(b.eval(&browser_js::click_js("e1")), PROBE_ANSWER_LIMIT, &ex).await;
+    let after_eval = settled_title(&b, &ex, &after_run).await?;
+    check(
+        [&patched_run, &patched_eval]
+            .iter()
+            .all(|r| r.as_ref().is_err_and(|e| e.contains("patched")))
+            && after_run == "clicks 1"
+            && after_eval == "clicks 2",
+        "each click runs once on a patched page",
+        &(&patched_run, &after_run, &patched_eval, &after_eval),
+    )?;
+
     // A page whose CSP allows no script: fuxx's scripts still run.
     b.load(&format!("{base}/locked"));
     settle(&b, &ex, |s| !s.loading && s.title == "locked").await?;
@@ -291,7 +341,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     )?;
     let locked_snapshot = take_snapshot(&b, &ex).await?;
     let press = find_ref(&locked_snapshot, "button", "Press")?;
-    let locked_click = ask(&b, &ex, &browser_js::click_js(&press)).await?;
+    let locked_click = run(&b, &ex, &browser_js::click_js(&press)).await?;
     check(
         locked_click == json!({"ok": true}),
         "click under CSP",
@@ -341,6 +391,8 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     Ok(json!({
         "failed_load": failed.error,
         "failed_load_over_a_page": { "url": failed_over.url, "error": failed_over.error },
+        "error_after_a_link_click": followed_link.error,
+        "invalid_address": invalid.error,
         "loading_right_after_load": loading_at_once,
         "page": { "url": loaded.url, "title": loaded.title },
         "eval": {
@@ -370,6 +422,11 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         "back": back.url,
         "reload": true,
         "screenshot": { "bytes": png.len(), "size": size, "scale": scale },
+        "patched_json": {
+            "run_script": patched_run.unwrap_err(),
+            "eval": patched_eval.unwrap_err(),
+            "titles": [after_run, after_eval],
+        },
         "csp_locked": {
             "eval": locked_title,
             "snapshot_nodes": locked_snapshot.nodes.len(),
@@ -400,10 +457,27 @@ async fn ask(b: &Browser, ex: &BackgroundExecutor, js: &str) -> Result<Value, St
     within(b.eval(js), PROBE_ANSWER_LIMIT, ex).await
 }
 
+/// One of fuxx's own page scripts' value within the probe's limit.
+async fn run(b: &Browser, ex: &BackgroundExecutor, script: &str) -> Result<Value, String> {
+    within(b.run_script(script), PROBE_ANSWER_LIMIT, ex).await
+}
+
 /// The page's snapshot.
 async fn take_snapshot(b: &Browser, ex: &BackgroundExecutor) -> Result<Snapshot, String> {
-    let value = ask(b, ex, browser_js::snapshot_js()).await?;
+    let value = run(b, ex, browser_js::snapshot_js()).await?;
     serde_json::from_value(value).map_err(|e| format!("the snapshot didn't parse: {e}"))
+}
+
+/// The window title once it is no longer `before` and has stayed put for a moment (so a second
+/// change would show).
+async fn settled_title(
+    b: &Browser,
+    ex: &BackgroundExecutor,
+    before: &str,
+) -> Result<String, String> {
+    settle(b, ex, |s| s.title != before).await?;
+    ex.timer(Duration::from_millis(300)).await;
+    Ok(b.state().title)
 }
 
 /// The ref of the control with this role and name.
@@ -461,6 +535,7 @@ fn serve_one(stream: TcpStream) -> std::io::Result<()> {
     let (status, extra, body) = match request.split_whitespace().nth(1).unwrap_or("/") {
         "/" => ("200 OK", "", PROBE_PAGE),
         "/two" => ("200 OK", "", PAGE_TWO),
+        "/patched" => ("200 OK", "", PATCHED_PAGE),
         "/locked" => (
             "200 OK",
             "Content-Security-Policy: default-src 'none'\r\n",
