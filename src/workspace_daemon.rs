@@ -16,7 +16,7 @@ use crate::daemon;
 use crate::daemon_client::{self, DaemonClient};
 use crate::groups;
 use crate::mux_proto::{self, Create, Progress, SetMeta};
-use crate::restore::{RestoreMode, SavedSession, SavedState, VERSION};
+use crate::restore::{RestoreMode, SavedSession};
 use crate::session_list::SessionList;
 use crate::ssh_target::SshTarget;
 use crate::status::Status;
@@ -278,15 +278,7 @@ impl Workspace {
         let appearance = cx.global::<Appearance>();
         let (live, mode, hold) = listed_sessions(listed, appearance.restore);
         self.hold_saving |= hold;
-        let saved = read_saved().unwrap_or(SavedState {
-            version: VERSION,
-            active: None,
-            collapsed: Vec::new(),
-            collapsed_hosts: Vec::new(),
-            sessions: Vec::new(),
-            layouts: Vec::new(),
-            daemon_instance: None,
-        });
+        let saved = read_saved().unwrap_or_default();
         let mut placement =
             adopt::place(&saved, &live, client.instance(), mode, &appearance.presets);
         // A saved host is checked as a typed one is: a refused one isn't started.
@@ -950,6 +942,7 @@ mod tests {
             sessions: vec![s("held", Some(held)), s("gone", Some(held + 1))],
             layouts: vec![Node::Leaf(0), Node::Leaf(1)],
             daemon_instance: client.instance(),
+            ..SavedState::default()
         };
         let probe = probe_service(&path, Duration::from_secs(5));
         assert_eq!(

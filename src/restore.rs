@@ -99,6 +99,33 @@ pub struct SavedState {
     /// ids from another one mean nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_instance: Option<u64>,
+    /// The sidebar's width as you left it (M11); none: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_width: Option<f32>,
+    /// The sidebar was hidden (⌘\).
+    #[serde(default)]
+    pub sidebar_hidden: bool,
+    /// The first-run hint card was closed, for good.
+    #[serde(default)]
+    pub hint_dismissed: bool,
+}
+
+impl Default for SavedState {
+    /// An empty workspace in this file version.
+    fn default() -> Self {
+        Self {
+            version: VERSION,
+            active: None,
+            collapsed: Vec::new(),
+            collapsed_hosts: Vec::new(),
+            sessions: Vec::new(),
+            layouts: Vec::new(),
+            daemon_instance: None,
+            sidebar_width: None,
+            sidebar_hidden: false,
+            hint_dismissed: false,
+        }
+    }
 }
 
 /// Pretty JSON with a trailing newline.
@@ -198,6 +225,7 @@ mod tests {
                 },
             ],
             daemon_instance: Some(u64::MAX),
+            ..SavedState::default()
         }
     }
 
@@ -253,6 +281,23 @@ mod tests {
         assert_eq!(old.sessions[0].daemon_id, None);
         // Not written for a session the service doesn't run.
         assert!(!encode(&sample()).contains("\"daemon_id\": null"));
+    }
+
+    #[test]
+    fn ui_state_round_trips_and_old_files_load() {
+        let state = SavedState {
+            sidebar_width: Some(312.0),
+            sidebar_hidden: true,
+            hint_dismissed: true,
+            ..sample()
+        };
+        assert_eq!(decode(&encode(&state)), Some(state));
+        // A file from before M11: the sidebar at its default width, shown, with the hint.
+        let old = decode(r#"{"version":1,"sessions":[{}]}"#).expect("an old file loads");
+        assert_eq!(old.sidebar_width, None);
+        assert!(!old.sidebar_hidden);
+        assert!(!old.hint_dismissed);
+        assert_eq!(old.sessions.len(), 1);
     }
 
     #[test]

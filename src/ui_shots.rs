@@ -11,9 +11,10 @@
 use std::path::PathBuf;
 use std::process::exit;
 
+use gpui::VisualTestAppContext;
 use gpui::{
-    AnyView, App, BoxShadow, Context, Div, Font, Hsla, IntoElement, Pixels, Render, Size, Window,
-    div, point, prelude::*, px, size,
+    AnyView, AnyWindowHandle, App, BoxShadow, Context, Div, Font, Hsla, IntoElement, Pixels,
+    Render, Size, Window, div, point, prelude::*, px, size,
 };
 use gpui_platform::current_platform;
 
@@ -68,6 +69,17 @@ pub fn render(
     size: Size<Pixels>,
     build: impl FnOnce(&mut Window, &mut App) -> AnyView,
 ) -> Shot {
+    render_with(theme, size, build, |_, _| ())
+}
+
+/// `render`, after `act` has had the window (to move the mouse over it, click, drag, or check
+/// what it drew) and it has settled again.
+pub fn render_with(
+    theme: &Theme,
+    size: Size<Pixels>,
+    build: impl FnOnce(&mut Window, &mut App) -> AnyView,
+    act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle),
+) -> Shot {
     let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
     // As the app does at start (appearance.rs), so the bundled fonts are there to shape text with.
     fonts::register_bundled_fonts(&cx.text_system().all_font_names());
@@ -78,6 +90,8 @@ pub fn render(
             cx.new(|_| Root { theme, scene })
         })
         .expect("open an off-screen window");
+    cx.run_until_parked();
+    act(&mut cx, window.into());
     cx.run_until_parked();
     let image = cx
         .capture_screenshot(window.into())
@@ -97,7 +111,19 @@ pub fn shoot(
     size: Size<Pixels>,
     build: impl FnOnce(&mut Window, &mut App) -> AnyView,
 ) -> PathBuf {
-    let shot = render(theme, size, build);
+    shoot_with(name, slug, theme, size, build, |_, _| ())
+}
+
+/// `shoot`, after `act` (see `render_with`).
+pub fn shoot_with(
+    name: &str,
+    slug: &str,
+    theme: &Theme,
+    size: Size<Pixels>,
+    build: impl FnOnce(&mut Window, &mut App) -> AnyView,
+    act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle),
+) -> PathBuf {
+    let shot = render_with(theme, size, build, act);
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("ui-shots");
@@ -182,6 +208,7 @@ const SCENES: &[(&str, fn())] = &[
     ("marks", marks),
     ("sidebar-marks", sidebar_marks),
     ("cached-panes", cached_panes),
+    ("sidebar", sidebar_scenes),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -749,7 +776,7 @@ fn window_scenes() {
                         let axis = Some(Axis::Row);
                         ws.open_shot_session("claude", project, AGENT_TEXT, axis, window, cx);
                     }
-                    ws.sidebar_hidden = hidden;
+                    ws.sidebar.hidden = hidden;
                     ws
                 })
                 .into()
@@ -1056,4 +1083,292 @@ fn cached_panes() {
         frame(&mut cx) != before,
         "cached-panes: the terminal's own notify didn't repaint it"
     );
+}
+
+/// What the waiting session shows: a Claude Code style prompt, drawn in a box.
+const CLAUDE_PROMPT: &str = "  Editing src/auth.rs (+12 -3)\r\n\r\n╭──────────────────────────────────────────────────╮\r\n│ Edit file                                        │\r\n│ src/auth.rs                                      │\r\n│                                                  │\r\n│ Do you want to make this edit to auth.rs?        │\r\n│ ❯ 1. Yes                                         │\r\n│   2. Yes, and don't ask again this session       │\r\n│   3. No, and tell Claude what to do differently  │\r\n╰──────────────────────────────────────────────────╯\r\n";
+
+/// The question the sidebar must find in `CLAUDE_PROMPT`.
+const CLAUDE_QUESTION: &str = "Do you want to make this edit to auth.rs?";
+
+/// A session in a sidebar scene: name, group folder, status, how long in it, its screen.
+struct ShotSession {
+    name: &'static str,
+    project: &'static str,
+    status: Status,
+    age: u64,
+    text: &'static str,
+}
+
+const fn shot(
+    name: &'static str,
+    project: &'static str,
+    status: Status,
+    age: u64,
+    text: &'static str,
+) -> ShotSession {
+    ShotSession {
+        name,
+        project,
+        status,
+        age,
+        text,
+    }
+}
+
+const API: &str = "/Users/me/code/api";
+const WEB: &str = "/Users/me/code/web";
+
+/// The sidebar scene's eight sessions in two groups: in api a waiting one (with a boxed
+/// question), a working one with a script's progress, a done one and an idle one (split
+/// together, the idle one active), and one with a long title; web closed, holding a waiting,
+/// an idle and a done one.
+const EIGHT: [ShotSession; 8] = [
+    shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
+    shot("codex", API, Status::Working, 32, AGENT_TEXT),
+    shot("tests", API, Status::Done, 12 * 60, SHELL_TEXT),
+    shot("shell", API, Status::Idle, 0, SHELL_TEXT),
+    shot(
+        "✳ Refactor the auth middleware to use the new session store",
+        API,
+        Status::Working,
+        2 * 3600 + 300,
+        AGENT_TEXT,
+    ),
+    shot("agent", WEB, Status::Waiting, 95, SHELL_TEXT),
+    shot("server", WEB, Status::Idle, 0, SHELL_TEXT),
+    shot("build", WEB, Status::Done, 40, SHELL_TEXT),
+];
+
+/// A workspace showing `sessions` (each over a silent `cat`), statuses set the way the app
+/// sets them (so the waiting question is read off its screen). Session `split` is split from
+/// the one before it; `active` is focused; the `collapsed` folders are closed.
+fn sidebar_workspace(
+    sessions: &[ShotSession],
+    split: Option<usize>,
+    active: usize,
+    collapsed: &[&str],
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
+    use crate::groups::GroupKey;
+    use std::time::{Duration, Instant};
+
+    let mut ws = Workspace::for_shots(window, cx);
+    for (i, s) in sessions.iter().enumerate() {
+        let axis = (split == Some(i)).then_some(Axis::Row);
+        ws.open_shot_session(
+            s.name,
+            std::path::Path::new(s.project),
+            s.text,
+            axis,
+            window,
+            cx,
+        );
+    }
+    for (i, s) in sessions.iter().enumerate() {
+        ws.set_status(i, s.status, false, cx);
+        let session = ws.sessions.get_mut(i).expect("just opened");
+        session.status_since = Instant::now() - Duration::from_secs(s.age);
+        session.pop = None; // no pop half-way in a still
+    }
+    ws.select(active, window, cx);
+    ws.collapsed = collapsed
+        .iter()
+        .map(|p| GroupKey::Folder(p.into()))
+        .collect();
+    ws
+}
+
+/// codex (session 2) as a script would mark it: a progress bar with a label, and a note.
+fn with_progress(ws: &mut Workspace) {
+    let codex = ws.sessions.get_mut(1).expect("codex");
+    codex.progress = Some((60, Some("migrate".into())));
+    codex.note = Some("3 of 5 tables".into());
+}
+
+/// The appearance for sidebar scenes: the built-in presets, for the "+ New" menu.
+fn sidebar_appearance(theme: Theme, cx: &App) -> Appearance {
+    Appearance {
+        presets: crate::presets::builtins(),
+        ..shot_appearance(theme, cx)
+    }
+}
+
+type Slot = std::rc::Rc<std::cell::RefCell<Option<gpui::Entity<Workspace>>>>;
+
+/// The workspace a scene built (`Slot`), to act on and check.
+fn slotted(slot: &Slot) -> gpui::Entity<Workspace> {
+    slot.borrow().clone().expect("the workspace")
+}
+
+/// The window position of sidebar row `row`'s centre, `dy` below it.
+fn row_point(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+    row: usize,
+    dy: f32,
+) -> gpui::Point<Pixels> {
+    cx.read(|cx| {
+        let scroll = &ws.read(cx).sidebar.scroll;
+        let b = scroll.bounds_for_item(row).expect("the row was laid out");
+        let c = b.center();
+        point(c.x, c.y + scroll.offset().y + px(dy))
+    })
+}
+
+/// The sidebar, from real workspaces in both themes:
+/// - `sidebar`: eight sessions in two groups (waiting with a boxed question, working with a
+///   script's progress, done and idle split together, a long title, a closed group) and the
+///   first-run hint; `sidebar-narrow` and `sidebar-wide` at 180 and 400 px.
+/// - `sidebar-hover`: the pointer over the closed group's header (its "+" shows).
+/// - `sidebar-menu`: the "+ New" menu open.
+/// - `sidebar-drag`: a row dragged down its group (lifted copy, dimmed source, insertion line).
+/// - `sidebar-scroll`: 24 sessions, the last one active, so the list scrolls to it.
+///
+/// Panics unless the question was read off the boxed prompt, a waiting row is 42 px and a
+/// plain one 28 px, the active row is scrolled into view and rows scrolled away don't count
+/// as on screen.
+fn sidebar_scenes() {
+    use gpui::{Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for (scene, width, dims) in [
+            ("sidebar", 240.0, dims),
+            ("sidebar-narrow", 180.0, size(px(720.0), px(600.0))),
+            ("sidebar-wide", 400.0, dims),
+        ] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                    ws.sidebar.width = width;
+                    with_progress(&mut ws);
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let check = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let question = ws.sessions.items()[0].question.as_deref();
+                    assert_eq!(question, Some(CLAUDE_QUESTION), "{scene}-{slug}: question");
+                    // Rows: api header, its five sessions, web's header.
+                    let height = |i: usize| {
+                        let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
+                        f32::from(b.size.height)
+                    };
+                    assert_eq!(height(1), 42.0, "{scene}-{slug}: waiting row");
+                    assert_eq!(height(4), 28.0, "{scene}-{slug}: plain row");
+                    assert_eq!(ws.sidebar.scroll.children_count(), 7, "{scene}-{slug}");
+                });
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, check);
+            println!("ui-shots: {}", path.display());
+        }
+
+        // The pointer over web's (closed) header; the "+ New" menu open; a row mid-drag.
+        for scene in ["sidebar-hover", "sidebar-menu", "sidebar-drag"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    with_progress(&mut ws);
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let none = Modifiers::none();
+                match scene {
+                    "sidebar-hover" => {
+                        let at = row_point(cx, &ws, 6, 0.0);
+                        cx.simulate_mouse_move(window, at, None, none);
+                    }
+                    "sidebar-menu" => {
+                        let at = point(px(30.0), dims.height - px(18.0));
+                        cx.simulate_click(window, at, none);
+                        assert!(cx.read(|cx| ws.read(cx).sidebar.new_menu), "menu opens");
+                    }
+                    _ => {
+                        // codex (row 2) down past tests, into the lower half of shell (row 4).
+                        let from = row_point(cx, &ws, 2, 0.0);
+                        let to = row_point(cx, &ws, 4, 6.0);
+                        cx.simulate_mouse_down(window, from, MouseButton::Left, none);
+                        let left = MouseButton::Left;
+                        cx.simulate_mouse_move(window, from + point(px(0.0), px(8.0)), left, none);
+                        cx.simulate_mouse_move(window, to, left, none);
+                        let line = cx.read(|cx| ws.read(cx).sidebar.drop_at.map(|(_, b)| b));
+                        assert_eq!(line, Some(true), "the line is below shell");
+                    }
+                }
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            println!("ui-shots: {}", path.display());
+        }
+
+        // More sessions than fit: the last one is active, so the list scrolls to it.
+        let statuses = [Status::Working, Status::Idle, Status::Done, Status::Waiting];
+        let names = [
+            "claude", "codex", "tests", "shell", "server", "agent", "docs", "lint",
+        ];
+        let many: Vec<ShotSession> = [API, WEB, "/Users/me/code/infra"]
+            .iter()
+            .flat_map(|project| {
+                names.iter().enumerate().map(|(i, name)| {
+                    shot(name, project, statuses[i % 4], 60 * i as u64, SHELL_TEXT)
+                })
+            })
+            .collect();
+        let many: &'static [ShotSession] = Box::leak(many.into_boxed_slice());
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = sidebar_workspace(many, None, many.len() - 1, &[], window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let check = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            // A second frame: the first laid the rows out, this one scrolls to the active one.
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+            let ws = slotted(&slot);
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let offset = f32::from(ws.sidebar.scroll.offset().y);
+                assert!(
+                    offset < 0.0,
+                    "sidebar-scroll-{slug}: scrolled to the active row"
+                );
+                let rows = ws.sidebar.scroll.children_count();
+                let on_screen = ws.visible_statuses().len();
+                assert!(
+                    on_screen < rows,
+                    "sidebar-scroll-{slug}: {on_screen} of {rows} rows count as on screen"
+                );
+            });
+        };
+        let tall = size(px(960.0), px(520.0));
+        let path = shoot_with("sidebar-scroll", slug, &theme, tall, build, check);
+        println!("ui-shots: {}", path.display());
+    }
 }
