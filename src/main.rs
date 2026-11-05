@@ -8,6 +8,8 @@ mod api_events;
 mod api_server;
 mod appearance;
 mod browser;
+#[allow(dead_code)] // used by the browser (Task 3) and the socket, CLI and MCP tools (Task 5)
+mod browser_js;
 #[allow(dead_code)] // used by the browser tool and CLI from M10c Task 4/5
 mod browser_url;
 mod cli;
