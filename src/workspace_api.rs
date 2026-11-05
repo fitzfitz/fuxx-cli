@@ -286,7 +286,7 @@ impl Workspace {
             }
             "session.send" => {
                 let text = required_str(p, "text")?;
-                let i = self.live_target(p, "target")?;
+                let i = self.input_target(p, "target")?;
                 let mut bytes = text.as_bytes().to_vec();
                 if bool_param(p, "enter")? {
                     bytes.push(b'\r');
@@ -295,7 +295,7 @@ impl Workspace {
                 Ok(json!({}))
             }
             "session.key" => {
-                let i = self.live_target(p, "target")?;
+                let i = self.input_target(p, "target")?;
                 let app_cursor = self.sessions.items()[i].view.read(cx).app_cursor();
                 let bytes = key_sequence(p.get("keys"), app_cursor)?;
                 self.type_into(i, &bytes, cx);
@@ -303,7 +303,7 @@ impl Workspace {
             }
             "session.paste" => {
                 let text = required_str(p, "text")?;
-                let i = self.live_target(p, "target")?;
+                let i = self.input_target(p, "target")?;
                 let view = self.sessions.items()[i].view.clone();
                 view.update(cx, |view, cx| view.paste(text, cx));
                 Ok(json!({}))
@@ -330,7 +330,7 @@ impl Workspace {
             "session.answer" => {
                 let text = required_str(p, "text")?;
                 let force = bool_param(p, "force")?;
-                let i = self.live_target(p, "target")?;
+                let i = self.input_target(p, "target")?;
                 let session = &self.sessions.items()[i];
                 if session.status != Status::Waiting && !force {
                     return Err(not_waiting(session.id, session.status));
@@ -432,6 +432,15 @@ impl Workspace {
         let i = self.target_index(p, key)?;
         let session = &self.sessions.items()[i];
         refuse_lost(session.id, session.lost)?;
+        Ok(i)
+    }
+
+    /// `live_target` for typing into it: a held (disconnected) SSH session refuses too, since
+    /// there is no program to take it.
+    fn input_target(&self, p: &Value, key: &str) -> Result<usize, ApiError> {
+        let i = self.live_target(p, key)?;
+        let session = &self.sessions.items()[i];
+        refuse_disconnected(session.id, session.disconnected.is_some())?;
         Ok(i)
     }
 
@@ -710,6 +719,7 @@ impl Workspace {
                 project,
                 preset,
                 daemon_id: None,
+                ssh: None,
             },
             run_preset: true,
         };
@@ -988,6 +998,16 @@ fn refuse_lost(id: u64, lost: bool) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Input to a held SSH session (M10b): nothing would take it until it reconnects.
+fn refuse_disconnected(id: u64, disconnected: bool) -> Result<(), ApiError> {
+    if disconnected {
+        return Err(ApiError::refused(format!(
+            "s{id}: disconnected \u{2014} reconnect first"
+        )));
+    }
+    Ok(())
+}
+
 fn not_waiting(id: u64, status: Status) -> ApiError {
     ApiError::refused(format!("s{id} is not waiting (it is {})", status.as_str()))
 }
@@ -1109,6 +1129,14 @@ mod tests {
         let e = refuse_lost(4, true).unwrap_err();
         assert_eq!(e.code, "unavailable");
         assert!(e.message.contains("s4"), "{}", e.message);
+    }
+
+    #[test]
+    fn input_to_a_disconnected_ssh_session_is_refused() {
+        assert_eq!(refuse_disconnected(4, false), Ok(()));
+        let e = refuse_disconnected(4, true).unwrap_err();
+        assert_eq!(e.code, "refused");
+        assert_eq!(e.message, "s4: disconnected \u{2014} reconnect first");
     }
 
     #[test]

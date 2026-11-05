@@ -525,6 +525,14 @@ impl TerminalCore {
         }
     }
 
+    /// Parse `text` into the screen as if the program had printed it; nothing reaches the
+    /// program (an SSH session's reconnect line, M10b). The caller redraws.
+    pub fn show_local(&self, text: &str) {
+        let mut guard = self.shared.lock();
+        let Shared { term, processor } = &mut *guard;
+        processor.advance(term, text.as_bytes());
+    }
+
     /// User input: snap the view back to the live bottom, drop any selection, then send the
     /// bytes. Query replies use `write` instead so they never move the view.
     pub fn input(&self, bytes: &[u8]) {
@@ -977,6 +985,26 @@ mod tests {
     }
 
     #[test]
+    fn show_local_writes_to_the_screen_only() {
+        // The child prints the first line it reads: had the text reached it, that would be it.
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("stty -echo; echo ready; IFS= read -r l; printf 'got[%s]' \"$l\"; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("ready")));
+        core.show_local("\r\nDisconnected from devbox\r\n");
+        assert!(screen_text(&core).contains("Disconnected from devbox"));
+        core.input(b"typed\r");
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("got[")));
+        let text = screen_text(&core);
+        assert!(text.contains("got[typed]"), "{text}");
+    }
+
+    #[test]
     fn a_plain_shell_exit_has_its_code() {
         // The login shell (no program), `/bin/sh` through the env, not a process-wide variable.
         let env = pty::ShellEnv {
@@ -1366,7 +1394,9 @@ mod daemon_tests {
 
     #[test]
     fn a_daemon_session_s_exit_code_reaches_the_replica() {
-        let (_d, path) = daemon("t-exitcode");
+        // Not reaped: a session that ends before the replica attaches is still there to say so.
+        let path = temp_sock("t-exitcode");
+        let _d = crate::daemon::start_unreaped(&path).unwrap();
         let client = DaemonClient::connect(&path).unwrap();
         let (tx, mut rx) = unbounded();
         let program = ["/bin/sh", "-c", "sleep 0.3; exit 255"];

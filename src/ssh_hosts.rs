@@ -124,6 +124,11 @@ pub struct Recent {
     pub used_at: u64,
 }
 
+/// The recent-hosts file (next to the sessions file).
+pub fn recent_path(home: &Path) -> PathBuf {
+    home.join("Library/Application Support/fuxx/ssh-recent.json")
+}
+
 /// The recent hosts, newest first. A missing or broken file reads as empty.
 pub fn load_recent(path: &Path) -> Vec<Recent> {
     std::fs::read_to_string(path)
@@ -192,12 +197,11 @@ pub(crate) fn run_capped(
     use std::io::Read;
     use std::process::Stdio;
 
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let mut child = spawn_retrying(command)?;
     let mut stdout = child.stdout.take()?;
     // Read on a thread so a full pipe can't stall the child while we watch the clock.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -222,6 +226,22 @@ pub(crate) fn run_capped(
     };
     let text = rx.recv_timeout(Duration::from_secs(1)).ok()?;
     Some((status, text))
+}
+
+/// `command.spawn()`, tried again a few times on ETXTBSY ("text file busy"): a program file
+/// still open for writing somewhere (e.g. just written by a thread that forked meanwhile) can't
+/// be run for a moment.
+fn spawn_retrying(command: &mut std::process::Command) -> Option<std::process::Child> {
+    const ETXTBSY: i32 = 26;
+    for _ in 0..5 {
+        match command.spawn() {
+            Err(err) if err.raw_os_error() == Some(ETXTBSY) => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            spawned => return spawned.ok(),
+        }
+    }
+    command.spawn().ok()
 }
 
 #[cfg(test)]

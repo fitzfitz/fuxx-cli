@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{Context, EntityId, Window, prelude::*};
 
@@ -14,14 +14,18 @@ use crate::adopt::{self, LiveInfo, Placement, Probe, Slot};
 use crate::appearance::Appearance;
 use crate::daemon;
 use crate::daemon_client::{self, DaemonClient};
+use crate::groups;
 use crate::mux_proto::{self, Create, Progress, SetMeta};
 use crate::restore::{RestoreMode, SavedState, VERSION};
 use crate::session_list::SessionList;
+use crate::ssh_target::SshTarget;
 use crate::status::Status;
 use crate::terminal::PumpQueue;
 use crate::terminal_view::TerminalView;
 use crate::theme::Theme;
-use crate::workspace::{Session, Workspace, created, home_dir, read_saved};
+use crate::workspace::{
+    Session, Workspace, created, home_dir, read_saved, ssh_program, ssh_refusal,
+};
 
 /// The sidebar notice when persistence is off but `live` sessions still run in a background
 /// service.
@@ -217,29 +221,47 @@ impl Workspace {
             else {
                 return;
             };
-            // In order, one at a time, as the sessions were saved.
+            // In order, one at a time, as the sessions were saved. An SSH one reads its ssh
+            // settings first, off the UI thread (M10b).
             let mut ids = Vec::with_capacity(creates.len());
+            let mut refused = None;
             for create in creates {
                 ids.push(match create {
-                    Some(create) => created(client.create_in_background(create).await),
+                    Some((mut create, ssh)) => {
+                        let is_ssh = ssh.is_some();
+                        if let Some(target) = ssh {
+                            let program =
+                                cx.background_spawn(async move { ssh_program(&target, None) });
+                            create.program = Some(program.await);
+                        }
+                        let answer = client.create_in_background(create).await;
+                        if is_ssh && refused.is_none() {
+                            refused = ssh_refusal(&answer);
+                        }
+                        created(answer)
+                    }
                     None => None,
                 });
             }
             this.update_in(cx, |this, window, cx| {
-                this.adopt(&client, placement, &ids, window, cx)
+                this.adopt(&client, placement, &ids, window, cx);
+                if let Some(why) = refused {
+                    this.ssh_failed(&why, cx);
+                }
             })
             .ok();
         })
         .detach();
     }
 
-    /// Where every session goes, and per slot the `Create` of one to start again.
+    /// Where every session goes, and per slot the `Create` of one to start again (with its
+    /// SSH target: its program is filled in once read).
     fn placement(
         &mut self,
         client: &DaemonClient,
         listed: std::io::Result<Vec<mux_proto::SessionInfo>>,
         cx: &Context<Self>,
-    ) -> (Placement, Vec<Option<Create>>) {
+    ) -> (Placement, Vec<Option<(Create, Option<SshTarget>)>>) {
         if let Err(err) = &listed {
             eprintln!(
                 "[fuxx] background service: could not list its sessions ({err}); not reopening them, and keeping the sessions file for the next launch"
@@ -252,6 +274,7 @@ impl Workspace {
             version: VERSION,
             active: None,
             collapsed: Vec::new(),
+            collapsed_hosts: Vec::new(),
             sessions: Vec::new(),
             layouts: Vec::new(),
             daemon_instance: None,
@@ -261,7 +284,9 @@ impl Workspace {
             .slots
             .iter()
             .map(|slot| match slot {
-                Slot::Restore(launch) => Some(self.create_for(launch)),
+                Slot::Restore(launch) => {
+                    Some((self.create_for(launch, None), launch.saved.ssh.clone()))
+                }
                 Slot::Live(_) => None,
             })
             .collect();
@@ -331,7 +356,7 @@ impl Workspace {
             .iter()
             .map(|t| t.map(&|i| entities[i]))
             .collect();
-        self.collapsed = placement.collapsed;
+        self.collapsed = groups::collapsed_keys(&placement.collapsed, &placement.collapsed_hosts);
         // The normal route, so the active session's group opens (and its layout attaches as it
         // is drawn).
         self.sessions.select(placement.active);
@@ -366,6 +391,10 @@ impl Workspace {
             note,
             progress,
             lost: false,
+            ssh: saved.ssh,
+            disconnected: None,
+            retries: 0,
+            opened_at: Instant::now(),
             _subscription: subscription,
         }
     }
@@ -434,7 +463,11 @@ impl Workspace {
             return;
         }
         let n = match self.service {
-            Service::On(_) => self.sessions.items().iter().filter(|s| !s.lost).count(),
+            // A held SSH session's session has ended.
+            Service::On(_) => {
+                let running = |s: &&Session| !s.lost && s.disconnected.is_none();
+                self.sessions.items().iter().filter(running).count()
+            }
             _ => 0,
         };
         if n != self.quit_count {
@@ -887,6 +920,7 @@ mod tests {
             version: VERSION,
             active: Some(0),
             collapsed: Vec::new(),
+            collapsed_hosts: Vec::new(),
             sessions: vec![s("held", Some(held)), s("gone", Some(held + 1))],
             layouts: vec![Node::Leaf(0), Node::Leaf(1)],
             daemon_instance: client.instance(),

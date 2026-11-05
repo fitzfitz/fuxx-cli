@@ -65,6 +65,7 @@ pub fn parse_effective(ssh_g_output: &str) -> Effective {
 }
 
 /// Hosts that are git remotes, not machines to open a terminal on. They stay out of the picker.
+#[cfg_attr(not(test), allow(dead_code))] // the host picker (M10b Task 6)
 pub fn is_git_host(e: &Effective) -> bool {
     const GIT_HOSTNAMES: [&str; 5] = [
         "github.com",

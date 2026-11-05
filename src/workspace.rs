@@ -5,6 +5,10 @@
 //! With persistence on (M10a), the background service runs the sessions: ids come from it,
 //! opening creates there, closing ends there, and quitting only detaches. A lost connection is
 //! not an exit: the sessions stay, marked, and a line says so.
+//!
+//! An SSH session (M10b) runs `ssh` itself as the pane's program and is grouped by its host.
+//! When ssh says the connection failed (exit 255) the pane holds its screen with a reconnect
+//! line; Enter (or, with tmux, a timer) reconnects it in place.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -13,6 +17,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
@@ -26,7 +31,7 @@ use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::daemon_client::{self, DaemonClient};
-use crate::groups::{self, Row};
+use crate::groups::{self, GroupKey, Row};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
@@ -37,10 +42,12 @@ use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
 use crate::split_tree::{self, Axis, Dir, Node, Rect};
+use crate::ssh_target::{self, Effective, SshTarget};
 use crate::status::Status;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
+use crate::{ssh_control, ssh_hosts};
 
 actions!(
     workspace,
@@ -85,6 +92,13 @@ actions!(
 
 const SIDEBAR_WIDTH: f32 = 220.0;
 
+/// At most this long each for `ssh -G` and the shared-connection check before an SSH session
+/// opens.
+const SSH_CHECK: Duration = Duration::from_secs(2);
+
+/// An SSH connection that lasted this long starts the automatic reconnect waits over.
+const RETRIES_FORGOTTEN: Duration = Duration::from_secs(60);
+
 pub struct Session {
     /// Scripting id: shown to scripts as `s<id>`.
     pub id: u64,
@@ -104,7 +118,42 @@ pub struct Session {
     /// The background service's connection was lost: the view shows the last screen it had
     /// and nothing reaches the session.
     pub lost: bool,
+    /// The host an SSH session connects to (M10b); none for a local one.
+    pub ssh: Option<SshTarget>,
+    /// SSH: the connection failed and the pane is held for a reconnect.
+    pub(crate) disconnected: Option<Disconnected>,
+    /// SSH: automatic reconnects in a row so far (each waits longer).
+    pub(crate) retries: u32,
+    /// When this session (this connection, for SSH) opened.
+    pub(crate) opened_at: Instant,
     pub(crate) _subscription: Subscription,
+}
+
+/// A held SSH session (M10b): its screen stays, with the reconnect line.
+pub(crate) struct Disconnected {
+    /// With tmux, the automatic reconnect; dropped (the pane closed, or it reconnected),
+    /// it never fires.
+    _timer: Option<Task<()>>,
+    /// A reconnect is under way (so Enter and the timer don't both start one).
+    reconnecting: bool,
+}
+
+/// Where an SSH session opens: a layout of its own, a pane beside (Row) or under (Column)
+/// session `of`, or in place of session `index` (a reconnect: same pane, name and group).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    New,
+    Split { of: usize, axis: Axis },
+    Replace(usize),
+}
+
+/// Where a new session's pane goes, by view (so it holds while the list changes): a layout of
+/// its own, split from a pane, or in that pane's place.
+#[derive(Clone, Copy)]
+enum At {
+    New,
+    Split(Axis, EntityId),
+    Replace(EntityId),
 }
 
 /// Runs once a session has opened (with its id) or failed to (`None`).
@@ -112,6 +161,14 @@ pub(crate) type Opened =
     Box<dyn FnOnce(&mut Workspace, Option<u64>, &mut Window, &mut Context<Workspace>)>;
 
 impl Session {
+    /// Its sidebar group: its host (SSH), else its folder.
+    pub fn group(&self) -> Option<GroupKey> {
+        groups::key(
+            self.ssh.as_ref().map(|t| t.host.as_str()),
+            self.project.as_deref(),
+        )
+    }
+
     /// Your name, else the program's own title, else the preset's name, else 🖕.
     pub fn label(&self) -> SharedString {
         groups::auto_name(
@@ -127,7 +184,7 @@ impl Session {
 /// name.
 struct DraggedSession {
     view: EntityId,
-    project: Option<PathBuf>,
+    group: Option<GroupKey>,
     label: SharedString,
 }
 
@@ -159,8 +216,8 @@ pub struct Workspace {
     pane_area: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The line being dragged: a pane of its layout (by view) and the path to its split.
     pub(crate) dragging: Option<(EntityId, Vec<bool>)>,
-    /// The projects whose groups are closed in the sidebar.
-    pub(crate) collapsed: Vec<PathBuf>,
+    /// The groups closed in the sidebar.
+    pub(crate) collapsed: Vec<GroupKey>,
     /// The rename box, and the session (by its view) it renames.
     pub(crate) renaming: Option<(EntityId, Entity<NameInput>)>,
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
@@ -299,11 +356,46 @@ impl Workspace {
             self.open_first(window, cx);
             return held;
         };
-        for launch in launches {
-            self.open_session(launch, None, window, cx);
-        }
-        self.restored(state, window, cx);
+        self.open_restored(launches, state, window, cx);
         held
+    }
+
+    /// Open the saved sessions in order, then put their layouts back (`restored`). SSH ones
+    /// first read their ssh settings off the UI thread, so then all of it happens once that's
+    /// done.
+    fn open_restored(
+        &mut self,
+        launches: Vec<Launch>,
+        state: SavedState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let targets: Vec<Option<SshTarget>> =
+            launches.iter().map(|l| l.saved.ssh.clone()).collect();
+        if targets.iter().all(Option::is_none) {
+            for launch in launches {
+                self.open_session(launch, None, window, cx);
+            }
+            self.restored(state, window, cx);
+            return;
+        }
+        let programs = cx.background_spawn(async move {
+            targets
+                .iter()
+                .map(|t| t.as_ref().map(|t| ssh_program(t, None)))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let programs = programs.await;
+            this.update_in(cx, |this, window, cx| {
+                for (launch, program) in launches.into_iter().zip(programs) {
+                    this.open_now(launch, At::New, program, None, window, cx);
+                }
+                this.restored(state, window, cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// `saved`'s launches per the `session-restore` mode; `None` means start one plain session.
@@ -330,7 +422,7 @@ impl Workspace {
             return;
         }
         self.restore_layouts(state.layouts, state.sessions.len());
-        self.collapsed = state.collapsed;
+        self.collapsed = groups::collapsed_keys(&state.collapsed, &state.collapsed_hosts);
         let last = self.sessions.items().len() - 1;
         let active = state.active.unwrap_or(0).min(last);
         // The normal route, so the active session's group opens.
@@ -343,7 +435,7 @@ impl Workspace {
     pub(crate) fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let done: Opened = Box::new(|this, _, _, cx| this.finish_restoring(cx));
         // Part of the restore, so not refused as other opens are meanwhile.
-        self.open_now(Launch::default(), None, Some(done), window, cx);
+        self.open_now(Launch::default(), At::New, None, Some(done), window, cx);
     }
 
     /// Saving starts, and the Quit item says how many sessions keep running.
@@ -397,10 +489,19 @@ impl Workspace {
             return;
         }
         let Some(home) = home_dir() else { return };
+        let mut collapsed = Vec::new();
+        let mut collapsed_hosts = Vec::new();
+        for key in &self.collapsed {
+            match key {
+                GroupKey::Folder(dir) => collapsed.push(dir.clone()),
+                GroupKey::Host(host) => collapsed_hosts.push(host.clone()),
+            }
+        }
         let state = SavedState {
             version: restore::VERSION,
             active: self.sessions.active_index(),
-            collapsed: self.collapsed.clone(),
+            collapsed,
+            collapsed_hosts,
             layouts: self.saved_layouts(),
             daemon_instance: self.service.instance().filter(|_| self.daemon_backed()),
             sessions: self
@@ -412,6 +513,7 @@ impl Workspace {
                     project: s.project.clone(),
                     preset: s.preset.clone(),
                     daemon_id: self.daemon_backed().then_some(s.id),
+                    ssh: s.ssh.clone(),
                 })
                 .collect(),
         };
@@ -451,23 +553,30 @@ impl Workspace {
             }
             return;
         }
-        self.open_now(launch, split, then, window, cx);
+        // The pane it splits is the one active now, not when the service answers.
+        let at = match split.zip(self.sessions.active()) {
+            Some((axis, active)) => At::Split(axis, active.view.entity_id()),
+            None => At::New,
+        };
+        self.open_now(launch, at, None, then, window, cx);
     }
 
-    /// `open_session_then` without the refusal (the restore's own opens).
+    /// `open_session_then` without the refusal (the restore's own opens), placed `at`.
+    /// `program`: run it instead of a login shell (an SSH session's `ssh`).
     fn open_now(
         &mut self,
         launch: Launch,
-        split: Option<Axis>,
+        at: At,
+        program: Option<Vec<String>>,
         then: Option<Opened>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let opened = match &self.service {
-            Service::Off => self.open_local(launch, split, window, cx),
+            Service::Off => self.open_local(launch, at, program, window, cx),
             Service::On(client) => {
                 let client = client.clone();
-                self.open_in_daemon(client, launch, split, then, window, cx);
+                self.open_in_daemon(client, launch, at, program, then, window, cx);
                 return;
             }
             Service::Starting => {
@@ -488,7 +597,8 @@ impl Workspace {
     fn open_local(
         &mut self,
         launch: Launch,
-        split: Option<Axis>,
+        at: At,
+        program: Option<Vec<String>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<u64> {
@@ -502,8 +612,14 @@ impl Workspace {
             exe_dir().as_deref(),
             std::env::var_os("PATH").as_deref(),
         );
-        let spawned =
-            TerminalView::spawn(window, cx, None, cwd.as_deref(), startup.as_deref(), &env);
+        let spawned = TerminalView::spawn(
+            window,
+            cx,
+            program,
+            cwd.as_deref(),
+            startup.as_deref(),
+            &env,
+        );
         let view = match spawned {
             Ok(view) => view,
             Err(err) => {
@@ -511,9 +627,9 @@ impl Workspace {
                 return None;
             }
         };
-        let split_at = split.zip(self.sessions.active().map(|s| s.view.entity_id()));
-        self.insert_session(session_id, view, saved, split_at, window, cx);
-        Some(session_id)
+        // Not placed (a reconnect whose pane closed meanwhile): dropping the view ends it.
+        self.insert_session(session_id, view, saved, at, window, cx)
+            .then_some(session_id)
     }
 
     /// A session the background service runs: created there off the UI thread, then shown.
@@ -521,21 +637,25 @@ impl Workspace {
         &mut self,
         client: Arc<DaemonClient>,
         launch: Launch,
-        split: Option<Axis>,
+        at: At,
+        program: Option<Vec<String>>,
         then: Option<Opened>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let create = self.create_for(&launch);
-        // The pane it splits is the one active now, not when the service answers.
-        let split_at = split.zip(self.sessions.active().map(|s| s.view.entity_id()));
+        let ssh = program.is_some();
+        let create = self.create_for(&launch, program);
         let pending = client.create_in_background(create);
         cx.spawn_in(window, async move |this, cx| {
-            let id = created(pending.await);
+            let answer = pending.await;
+            let refused = ssh.then(|| ssh_refusal(&answer)).flatten();
+            let id = created(answer);
             this.update_in(cx, |this, window, cx| {
-                let id = id.and_then(|id| {
-                    this.attach_session(&client, id, launch.saved, split_at, window, cx)
-                });
+                if let Some(why) = refused {
+                    this.ssh_failed(&why, cx);
+                }
+                let id = id
+                    .and_then(|id| this.attach_session(&client, id, launch.saved, at, window, cx));
                 if let Some(then) = then {
                     then(this, id, window, cx);
                 }
@@ -546,8 +666,9 @@ impl Workspace {
     }
 
     /// The `Create` for `launch`: the scripting variables as `open_local` gives them, except
-    /// `FUXX_SESSION`, which the service sets (it knows the id).
-    pub(crate) fn create_for(&self, launch: &Launch) -> Create {
+    /// `FUXX_SESSION`, which the service sets (it knows the id). `program`: run instead of a
+    /// login shell.
+    pub(crate) fn create_for(&self, launch: &Launch, program: Option<Vec<String>>) -> Create {
         let (cwd, startup) = start_in(&launch.saved, launch.run_preset);
         let env = scripting_env(
             self.socket.as_deref(),
@@ -555,12 +676,15 @@ impl Workspace {
             exe_dir().as_deref(),
             std::env::var_os("PATH").as_deref(),
         );
-        daemon_create(
-            cwd.as_deref(),
-            startup.as_deref(),
-            daemon_client::create_env(&env),
-            &launch.saved,
-        )
+        Create {
+            program,
+            ..daemon_create(
+                cwd.as_deref(),
+                startup.as_deref(),
+                daemon_client::create_env(&env),
+                &launch.saved,
+            )
+        }
     }
 
     /// Show background-service session `id` (as `open_session` places one); its id. If it
@@ -570,36 +694,44 @@ impl Workspace {
         client: &Arc<DaemonClient>,
         id: u64,
         saved: SavedSession,
-        split_at: Option<(Axis, EntityId)>,
+        at: At,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<u64> {
-        match TerminalView::attach_daemon(window, cx, client.clone(), id) {
-            Ok(view) => {
-                self.insert_session(id, view, saved, split_at, window, cx);
-                Some(id)
-            }
+        let placed = match TerminalView::attach_daemon(window, cx, client.clone(), id) {
+            Ok(view) => self.insert_session(id, view, saved, at, window, cx),
             Err(err) => {
                 eprintln!("[fuxx] session: could not show s{id}: {err}");
-                let client = client.clone();
-                cx.background_spawn(async move { client.close(id) })
-                    .detach();
-                None
+                false
             }
+        };
+        if !placed {
+            let client = client.clone();
+            cx.background_spawn(async move { client.close(id) })
+                .detach();
         }
+        placed.then_some(id)
     }
 
-    /// Put a new session's view in the sidebar (next to its group) and the layouts (its own, or
-    /// split from `split_at`'s pane), and make it active.
+    /// Put a new session's view in the sidebar (next to its group) and the layouts (its own,
+    /// split from a pane, or in a pane's place), and make it active. False if the pane it was
+    /// to replace is gone.
     fn insert_session(
         &mut self,
         session_id: u64,
         view: Entity<TerminalView>,
         saved: SavedSession,
-        split_at: Option<(Axis, EntityId)>,
+        at: At,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        let split_at = match at {
+            At::Replace(old) => {
+                return self.replace_session(old, session_id, view, saved, window, cx);
+            }
+            At::Split(axis, pane) => Some((axis, pane)),
+            At::New => None,
+        };
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
         let id = view.entity_id();
         let split_done = split_at.is_some_and(|(axis, active)| {
@@ -611,7 +743,12 @@ impl Workspace {
         if !split_done {
             self.layouts.push(Node::Leaf(id));
         }
-        let index = groups::insert_index(&self.projects(), saved.project.as_deref());
+        let keys = self.groups();
+        let key = groups::key(
+            saved.ssh.as_ref().map(|t| t.host.as_str()),
+            saved.project.as_deref(),
+        );
+        let index = groups::insert_index(&key_refs(&keys), key.as_ref());
         let index = self.sessions.insert(
             index,
             Session {
@@ -625,20 +762,78 @@ impl Workspace {
                 note: None,
                 progress: None,
                 lost: false,
+                ssh: saved.ssh,
+                disconnected: None,
+                retries: 0,
+                opened_at: Instant::now(),
                 _subscription: subscription,
             },
         );
         self.emit(&Event::Opened, Some(index));
         self.activate(window, cx);
+        true
     }
 
-    /// Each session's project, in sidebar order.
-    fn projects(&self) -> Vec<Option<&Path>> {
-        self.sessions
-            .items()
-            .iter()
-            .map(|s| s.project.as_deref())
-            .collect()
+    /// A reconnected SSH session takes the place of the held one (by view `old`): its row, its
+    /// pane in the layout, its name, note and progress. Scripts see the old one close and the
+    /// new one open in the same row. False if `old` is gone (its pane was closed meanwhile).
+    fn replace_session(
+        &mut self,
+        old: EntityId,
+        session_id: u64,
+        view: Entity<TerminalView>,
+        saved: SavedSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self.sessions.position(|s| s.view.entity_id() == old) else {
+            return false;
+        };
+        let old_id = self.sessions.items()[index].id;
+        self.emit(&Event::Closed, Some(index));
+        self.check_waits(&[old_id], cx);
+        let new = view.entity_id();
+        let swap = |v: EntityId| if v == old { new } else { v };
+        self.layouts = self.layouts.iter().map(|t| t.map(&swap)).collect();
+        if self.renaming.as_ref().is_some_and(|(v, _)| *v == old) {
+            self.renaming = None;
+        }
+        if self.dragging.as_ref().is_some_and(|(v, _)| *v == old) {
+            self.dragging = None;
+        }
+        let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
+        let Some(session) = self.sessions.get_mut(index) else {
+            return false;
+        };
+        // Dropping the held session's view (and with it its timer).
+        *session = Session {
+            id: session_id,
+            view,
+            status: Status::Idle,
+            title: None,
+            name: saved.name,
+            project: saved.project,
+            preset: saved.preset,
+            note: session.note.take(),
+            progress: session.progress.take(),
+            lost: false,
+            ssh: saved.ssh,
+            disconnected: None,
+            retries: session.retries,
+            opened_at: Instant::now(),
+            _subscription: subscription,
+        };
+        self.emit(&Event::Opened, Some(index));
+        // The background service's new session hasn't had the note and progress.
+        self.push_meta(index, cx);
+        // The new view took the focus as it was made: back to the active pane.
+        self.activate(window, cx);
+        true
+    }
+
+    /// Each session's group, in sidebar order.
+    fn groups(&self) -> Vec<Option<GroupKey>> {
+        self.sessions.items().iter().map(Session::group).collect()
     }
 
     /// The active session's folder, so a new session joins its group.
@@ -646,7 +841,96 @@ impl Workspace {
         self.sessions.active().and_then(|s| s.project.clone())
     }
 
+    /// Open an SSH session to `target` (M10b) at `place`. The host is checked first; then, off
+    /// the UI thread, its ssh settings are read, the shared connection is checked and the host
+    /// is recorded as recent; then the pane runs `ssh` itself (no project; grouped by host). A
+    /// bad host, or a session the background service refuses, is said in the sidebar notice.
+    pub(crate) fn open_ssh(
+        &mut self,
+        target: SshTarget,
+        place: Place,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_ssh_then(target, place, None, window, cx);
+    }
+
+    /// `open_ssh`, then `then` with the new session's id (`None`: it didn't start).
+    pub(crate) fn open_ssh_then(
+        &mut self,
+        target: SshTarget,
+        place: Place,
+        then: Option<Opened>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let not_opened = |this: &mut Self, then: Option<Opened>, window: &mut Window, cx| {
+            if let Some(then) = then {
+                then(this, None, window, cx);
+            }
+        };
+        let target = match ssh_target::validate_host(&target.host) {
+            Ok(host) => SshTarget { host, ..target },
+            Err(why) => {
+                self.ssh_failed(&why, cx);
+                return not_opened(self, then, window, cx);
+            }
+        };
+        let view_of = |i: usize| self.sessions.items().get(i).map(|s| s.view.entity_id());
+        let (at, name) = match place {
+            Place::New => (At::New, None),
+            Place::Split { of, axis } => {
+                (view_of(of).map_or(At::New, |v| At::Split(axis, v)), None)
+            }
+            Place::Replace(index) => match self.sessions.items().get(index) {
+                Some(old) => (At::Replace(old.view.entity_id()), old.name.clone()),
+                None => return not_opened(self, then, window, cx),
+            },
+        };
+        if let Some(why) = open_refusal(&self.service, self.restoring) {
+            eprintln!("[fuxx] session: not started, {why}");
+            return not_opened(self, then, window, cx);
+        }
+        let launch = Launch {
+            saved: SavedSession {
+                name,
+                ssh: Some(target.clone()),
+                ..Default::default()
+            },
+            run_preset: false,
+        };
+        let recent = home_dir().map(|home| ssh_hosts::recent_path(&home));
+        let program = cx.background_spawn(async move { ssh_program(&target, recent.as_deref()) });
+        cx.spawn_in(window, async move |this, cx| {
+            let program = program.await;
+            this.update_in(cx, |this, window, cx| {
+                this.open_now(launch, at, Some(program), then, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// An SSH session couldn't open (`why`): logged, and said at the foot of the sidebar.
+    pub(crate) fn ssh_failed(&mut self, why: &str, cx: &mut Context<Self>) {
+        eprintln!("[fuxx] ssh: session not started: {why}");
+        self.notice = Some(format!("SSH session not started: {why}").into());
+        cx.notify();
+    }
+
+    /// The active session's SSH target and index, if it is an SSH session.
+    fn active_ssh(&self) -> Option<(usize, SshTarget)> {
+        let index = self.sessions.active_index()?;
+        let target = self.sessions.items()[index].ssh.clone()?;
+        Some((index, target))
+    }
+
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Another session to the same host, with the same option.
+        if let Some((_, target)) = self.active_ssh() {
+            self.open_ssh(target, Place::New, window, cx);
+            return;
+        }
         let saved = SavedSession {
             project: self.active_project(),
             ..Default::default()
@@ -686,7 +970,27 @@ impl Workspace {
         .detach();
     }
 
-    /// A plain session in `project`'s group (the group header's +).
+    /// The group header's +: a plain session in a folder's group, or another session to a
+    /// host (with the tmux option of the group's first session to it).
+    fn add_to_group(&mut self, key: &GroupKey, window: &mut Window, cx: &mut Context<Self>) {
+        match key {
+            GroupKey::Folder(project) => self.open_in(project.clone(), window, cx),
+            GroupKey::Host(host) => {
+                let target = self
+                    .sessions
+                    .items()
+                    .iter()
+                    .find_map(|s| s.ssh.clone().filter(|t| t.host == *host))
+                    .unwrap_or_else(|| SshTarget {
+                        host: host.clone(),
+                        tmux: false,
+                    });
+                self.open_ssh(target, Place::New, window, cx);
+            }
+        }
+    }
+
+    /// A plain session in `project`'s group.
     fn open_in(&mut self, project: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let launch = Launch {
             saved: SavedSession {
@@ -698,8 +1002,13 @@ impl Workspace {
         self.open_session(launch, None, window, cx);
     }
 
-    /// A plain session in the active session's group, as a new pane beside or under it.
+    /// A plain session in the active session's group, as a new pane beside or under it; or
+    /// with an SSH session active, another session to its host.
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((of, target)) = self.active_ssh() {
+            self.open_ssh(target, Place::Split { of, axis }, window, cx);
+            return;
+        }
         let saved = SavedSession {
             project: self.active_project(),
             ..Default::default()
@@ -745,37 +1054,12 @@ impl Workspace {
         else {
             return;
         };
-        let is_active = self.sessions.active_index() == Some(index);
         match event {
+            // A held pane's ring stays done.
             TerminalEvent::StatusChanged(new) => {
-                let window_active = self.window_active;
-                let Some(session) = self.sessions.get_mut(index) else {
-                    return;
-                };
-                let old = session.status;
-                session.status = *new;
-                let label = session.label();
-                if old != *new {
-                    let change = Event::StatusChanged {
-                        from: old,
-                        to: *new,
-                    };
-                    self.emit(&change, Some(index));
+                if self.sessions.items()[index].disconnected.is_none() {
+                    self.set_status(index, *new, cx);
                 }
-                if notifier::should_notify(old, *new, is_active, window_active) {
-                    if let Some(body) = notifier::message(*new) {
-                        let summary = format!("fuxx — {label}");
-                        let posted = Event::Notification {
-                            title: &summary,
-                            body,
-                        };
-                        self.emit(&posted, Some(index));
-                        cx.background_spawn(async move { notifier::fire(&summary, body) })
-                            .detach();
-                    }
-                }
-                self.check_waits(&[], cx);
-                cx.notify();
             }
             TerminalEvent::TitleChanged(title) => {
                 let changed = self
@@ -794,21 +1078,145 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            // Ended by itself (or by a close already under way): nothing more to end.
-            TerminalEvent::Exited { .. } => self.remove_at(index, None, window, cx),
+            TerminalEvent::Exited { code } => {
+                let session = &self.sessions.items()[index];
+                if session.disconnected.is_some() {
+                    return; // already held
+                }
+                match on_exit(session.ssh.as_ref(), *code) {
+                    // Ended by itself (or by a close already under way): nothing more to end.
+                    ExitAction::Close => self.remove_at(index, None, window, cx),
+                    ExitAction::Hold => self.hold(index, window, cx),
+                }
+            }
+            TerminalEvent::Reconnect => self.reconnect_ssh(index, false, window, cx),
             TerminalEvent::DaemonLost => self.daemon_lost(index, window, cx),
         }
+    }
+
+    /// Session `index`'s status is now `new`: scripts hear of a change, and a notification
+    /// follows the M4 rules (not while you look at it).
+    fn set_status(&mut self, index: usize, new: Status, cx: &mut Context<Self>) {
+        let is_active = self.sessions.active_index() == Some(index);
+        let window_active = self.window_active;
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
+        let old = session.status;
+        session.status = new;
+        let label = session.label();
+        if old != new {
+            let change = Event::StatusChanged { from: old, to: new };
+            self.emit(&change, Some(index));
+        }
+        if notifier::should_notify(old, new, is_active, window_active) {
+            if let Some(body) = notifier::message(new) {
+                let summary = format!("fuxx — {label}");
+                let posted = Event::Notification {
+                    title: &summary,
+                    body,
+                };
+                self.emit(&posted, Some(index));
+                cx.background_spawn(async move { notifier::fire(&summary, body) })
+                    .detach();
+            }
+        }
+        self.check_waits(&[], cx);
+        cx.notify();
+    }
+
+    /// SSH session `index`'s connection failed (ssh exited 255): it stays, with its screen and
+    /// the reconnect line, and its ring shows done. With tmux it reconnects by itself after a
+    /// wait that grows with each try in a row (the remote programs are there to come back to).
+    fn hold(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
+        let Some(target) = session.ssh.clone() else {
+            return;
+        };
+        // A connection that held a while starts the waits over.
+        if session.opened_at.elapsed() >= RETRIES_FORGOTTEN {
+            session.retries = 0;
+        }
+        let wait = target.tmux.then(|| reconnect_delay(session.retries));
+        let view = session.view.entity_id();
+        let timer = wait.map(|wait| {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                this.update_in(cx, |this, window, cx| {
+                    if let Some(i) = this.sessions.position(|s| s.view.entity_id() == view) {
+                        this.reconnect_ssh(i, true, window, cx);
+                    }
+                })
+                .ok();
+            })
+        });
+        session.disconnected = Some(Disconnected {
+            _timer: timer,
+            reconnecting: false,
+        });
+        eprintln!(
+            "[fuxx] ssh: s{} disconnected from {}",
+            session.id, target.host
+        );
+        let banner = disconnect_banner(&target.host, wait.map(|w| w.as_secs()));
+        session.view.update(cx, |view, cx| view.hold(&banner, cx));
+        self.set_status(index, Status::Done, cx);
+        // Its background-service session has ended: one fewer keeps running.
+        self.sync_quit_title(cx);
+    }
+
+    /// Reconnect held SSH session `index` in place (Enter, or the tmux timer when `auto`):
+    /// same pane, name, group, host and option, on a fresh screen. If it can't start, the
+    /// pane stays held for another Enter.
+    fn reconnect_ssh(
+        &mut self,
+        index: usize,
+        auto: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
+        let Some(target) = session.ssh.clone() else {
+            return;
+        };
+        let Some(held) = session.disconnected.as_mut().filter(|d| !d.reconnecting) else {
+            return;
+        };
+        held.reconnecting = true;
+        session.retries = if auto {
+            session.retries.saturating_add(1)
+        } else {
+            0
+        };
+        let view = session.view.entity_id();
+        let failed: Opened = Box::new(move |this, id, _, _| {
+            if id.is_none()
+                && let Some(i) = this.sessions.position(|s| s.view.entity_id() == view)
+                && let Some(held) = this
+                    .sessions
+                    .get_mut(i)
+                    .and_then(|s| s.disconnected.as_mut())
+            {
+                held.reconnecting = false;
+            }
+        });
+        self.open_ssh_then(target, Place::Replace(index), Some(failed), window, cx);
     }
 
     /// Close session `index` (cmd-w, the API): end it, then take it away. A background-service
     /// session is ended there; a Local one by dropping its view.
     pub(crate) fn close_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         // A lost one: no live service has it, and a new one may reuse its number.
+        // A held SSH one: its session already ended.
         let ending = self
             .sessions
             .items()
             .get(index)
-            .filter(|s| !s.lost)
+            .filter(|s| !s.lost && s.disconnected.is_none())
             .and_then(|s| {
                 let view = s.view.read(cx);
                 view.close();
@@ -865,9 +1273,8 @@ impl Workspace {
             return;
         }
         // A group whose last session closed is gone; forget that it was closed.
-        let sessions = self.sessions.items();
-        self.collapsed
-            .retain(|c| sessions.iter().any(|s| s.project.as_ref() == Some(c)));
+        let keys = self.groups();
+        self.collapsed.retain(|c| keys.contains(&Some(c.clone())));
         if let Some(i) = next.and_then(|n| self.sessions.position(|s| s.view.entity_id() == n)) {
             self.sessions.select(i);
         }
@@ -971,8 +1378,8 @@ impl Workspace {
     /// After the active session changed (by any route): open its group and focus it.
     pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.note_focus();
-        if let Some(project) = self.sessions.active().and_then(|s| s.project.clone()) {
-            self.collapsed.retain(|c| *c != project);
+        if let Some(key) = self.sessions.active().and_then(Session::group) {
+            self.collapsed.retain(|c| *c != key);
         }
         // A divider drag belongs to the layout it started in; drop it if another is shown now.
         if let Some((pane, _)) = &self.dragging
@@ -986,12 +1393,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn toggle_group(&mut self, project: &Path, cx: &mut Context<Self>) {
-        match self.collapsed.iter().position(|c| c == project) {
+    fn toggle_group(&mut self, key: &GroupKey, cx: &mut Context<Self>) {
+        match self.collapsed.iter().position(|c| c == key) {
             Some(i) => {
                 self.collapsed.remove(i);
             }
-            None => self.collapsed.push(project.to_path_buf()),
+            None => self.collapsed.push(key.clone()),
         }
         self.save();
         cx.notify();
@@ -1004,8 +1411,8 @@ impl Workspace {
         };
         let view = session.view.entity_id();
         let text = session.label().to_string();
-        if let Some(project) = session.project.clone() {
-            self.collapsed.retain(|c| *c != project);
+        if let Some(key) = session.group() {
+            self.collapsed.retain(|c| *c != key);
         }
         let input = cx.new(|cx| NameInput::new(text, window, cx));
         cx.subscribe_in(&input, window, Self::on_name_event)
@@ -1054,7 +1461,9 @@ impl Workspace {
         let (Some(from), Some(to)) = (find(dragged), find(target)) else {
             return;
         };
-        if groups::same_group(&self.projects(), from, to) && self.sessions.move_item(from, to) {
+        if groups::same_group(&key_refs(&self.groups()), from, to)
+            && self.sessions.move_item(from, to)
+        {
             self.save();
             cx.notify();
         }
@@ -1072,7 +1481,9 @@ impl Workspace {
         }) else {
             return;
         };
-        if groups::same_group(&self.projects(), from, to) && self.sessions.move_item(from, to) {
+        if groups::same_group(&key_refs(&self.groups()), from, to)
+            && self.sessions.move_item(from, to)
+        {
             self.save();
             cx.notify();
         }
@@ -1162,19 +1573,20 @@ impl Workspace {
     }
 
     fn render_sidebar(&self, ui: UiColors, cx: &mut Context<Self>) -> impl IntoElement {
-        let projects = self.projects();
-        let all: Vec<&Path> = projects.iter().flatten().copied().collect();
-        let rows: Vec<AnyElement> = groups::rows(&projects, &self.collapsed)
+        let keys = self.groups();
+        let keys = key_refs(&keys);
+        let all: Vec<&GroupKey> = keys.iter().flatten().copied().collect();
+        let rows: Vec<AnyElement> = groups::rows(&keys, &self.collapsed)
             .into_iter()
             .map(|row| match row {
                 Row::Header {
-                    project,
+                    key,
                     first,
                     len,
                     collapsed,
                 } => {
-                    let label = groups::group_label(&project, &all);
-                    self.render_header(project, label, first..first + len, collapsed, ui, cx)
+                    let label = groups::group_label(&key, &all);
+                    self.render_header(key, label, first..first + len, collapsed, ui, cx)
                         .into_any_element()
                 }
                 Row::Session { index, grouped } => self
@@ -1214,10 +1626,10 @@ impl Workspace {
             })
     }
 
-    /// A project's header: arrow, name, the group's most urgent ring, and a + for a new session.
+    /// A group's header: arrow, name, the group's most urgent ring, and a + for a new session.
     fn render_header(
         &self,
-        project: PathBuf,
+        key: GroupKey,
         label: String,
         sessions: std::ops::Range<usize>,
         collapsed: bool,
@@ -1229,9 +1641,9 @@ impl Workspace {
                 .iter()
                 .map(|s| s.status),
         );
-        let add = project.clone();
+        let add = key.clone();
         div()
-            .id(("group", group_key(&project)))
+            .id(("group", group_id(&key)))
             .flex()
             .flex_row()
             .items_center()
@@ -1243,9 +1655,7 @@ impl Workspace {
             .text_color(hsla(ui.text_dim))
             .hover(|style| style.bg(hsla(ui.row_hover)))
             .cursor_pointer()
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&project, cx)),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&key, cx)))
             .child(if collapsed { "\u{25b8}" } else { "\u{25be}" })
             .child(div().flex_1().overflow_hidden().child(label))
             .child(ring(status, ui))
@@ -1258,7 +1668,7 @@ impl Workspace {
                     .child("+")
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation(); // not also a click on the header
-                        this.open_in(add.clone(), window, cx)
+                        this.add_to_group(&add, window, cx)
                     })),
             )
     }
@@ -1282,12 +1692,12 @@ impl Workspace {
             .as_ref()
             .filter(|(v, _)| *v == view)
             .map(|(_, input)| input.clone());
+        let group = session.group();
         let dragged = DraggedSession {
             view,
-            project: session.project.clone(),
+            group: group.clone(),
             label: session.label(),
         };
-        let project = session.project.clone();
         let name = format!("{}  {}", index + 1, session.label());
         let sub = if session.lost {
             Some("not live".to_string())
@@ -1327,7 +1737,7 @@ impl Workspace {
             .can_drop(move |dragged, _, _| {
                 dragged
                     .downcast_ref::<DraggedSession>()
-                    .is_some_and(|d| d.project == project)
+                    .is_some_and(|d| d.group == group)
             })
             .drag_over::<DraggedSession>(move |style, _, _, _| style.bg(hsla(ui.row_active)))
             .on_drop(cx.listener(move |this, dragged: &DraggedSession, _, cx| {
@@ -1390,10 +1800,15 @@ fn sub_line(progress: Option<&(u8, Option<String>)>, note: Option<&str>) -> Opti
 }
 
 /// A header's element id: stable while its sessions are reordered or closed.
-fn group_key(project: &Path) -> u64 {
+fn group_id(key: &GroupKey) -> u64 {
     let mut hasher = DefaultHasher::new();
-    project.hash(&mut hasher);
+    key.hash(&mut hasher);
     hasher.finish()
+}
+
+/// `groups()` as the `groups` functions take it.
+fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
+    keys.iter().map(Option::as_ref).collect()
 }
 
 /// The status ring: hollow = idle, yellow = working, red = needs you, green = done (the
@@ -1612,6 +2027,82 @@ pub(crate) fn created(
     }
 }
 
+/// What a session's program ending does to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitAction {
+    /// It is taken away, as always.
+    Close,
+    /// An SSH session whose connection failed: the pane stays for a reconnect.
+    Hold,
+}
+
+/// `Hold` only for an SSH session whose ssh exited 255 ("connection failed"); a logout, the
+/// remote shell's own code, or an unknown one closes it as any session.
+pub fn on_exit(ssh: Option<&SshTarget>, code: Option<u32>) -> ExitAction {
+    if ssh.is_some() && code == Some(255) {
+        ExitAction::Hold
+    } else {
+        ExitAction::Close
+    }
+}
+
+/// The wait before automatic reconnect `attempt` (0-based, tmux sessions): 3 s, doubling
+/// each time, at most 60 s.
+pub fn reconnect_delay(attempt: u32) -> Duration {
+    Duration::from_secs((3u64 << attempt.min(5)).min(60))
+}
+
+/// The line a held SSH session shows, on a line of its own; `next`: the seconds until the
+/// automatic reconnect (tmux). `host` passed `validate_host`, so it holds no control text.
+pub fn disconnect_banner(host: &str, next: Option<u64>) -> String {
+    let line = match next {
+        Some(secs) => format!("Disconnected from {host} — reconnecting in {secs}s, or press Enter"),
+        None => format!("Disconnected from {host} — press Enter to reconnect"),
+    };
+    format!("\r\n{line}\r\n")
+}
+
+/// The argv an SSH session runs: connection reuse and keepalive only where the host's
+/// `ssh -G` shows them unset, and the shared connection checked first when fuxx's own is
+/// used. With `recent`, the host is recorded in that recent-hosts file. Blocks (ssh runs),
+/// so off the UI thread.
+pub(crate) fn ssh_program(target: &SshTarget, recent: Option<&Path>) -> Vec<String> {
+    // Without ssh's answer nothing is known to be unset: ssh runs as your config has it.
+    let effective = ssh_hosts::resolve(&target.host, SSH_CHECK).unwrap_or(Effective {
+        has_control_master: true,
+        has_keepalive: true,
+        ..Effective::default()
+    });
+    let control = if effective.has_control_master {
+        None
+    } else {
+        ssh_control::control_dir()
+    };
+    if let Some(dir) = &control {
+        ssh_control::ensure_healthy(&target.host, dir, SSH_CHECK);
+    }
+    if let Some(path) = recent {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if let Err(err) = ssh_hosts::record_recent(path, target, now) {
+            eprintln!("[fuxx] ssh: could not save {}: {err}", path.display());
+        }
+    }
+    ssh_target::ssh_argv(target, &target.host, &effective, control.as_deref())
+}
+
+/// Why the background service didn't create an SSH session (e.g. a version-1 service, which
+/// can't run a program directly), for the sidebar notice; `None` if it did or didn't answer.
+pub(crate) fn ssh_refusal(
+    answer: &Result<std::io::Result<u64>, futures::channel::oneshot::Canceled>,
+) -> Option<String> {
+    match answer {
+        Ok(Err(err)) => Some(err.to_string()),
+        _ => None,
+    }
+}
+
 /// The sessions file, if there is a valid one (logged when it can't be read or isn't valid).
 pub(crate) fn read_saved() -> Option<SavedState> {
     let path = restore::state_path(&home_dir()?);
@@ -1646,14 +2137,19 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_create, scripting_env, sub_line};
+    use super::{
+        ExitAction, daemon_create, disconnect_banner, on_exit, reconnect_delay, scripting_env,
+        sub_line,
+    };
     use crate::presets::Preset;
     use crate::pty::apply_env;
     use crate::restore::SavedSession;
+    use crate::ssh_target::SshTarget;
     use portable_pty::CommandBuilder;
     use std::collections::BTreeMap;
     use std::ffi::OsStr;
     use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn scripting_variables_follow_whether_this_fuxx_serves_the_socket() {
@@ -1719,6 +2215,7 @@ mod tests {
                 command: "claude --resume".into(),
             }),
             daemon_id: None,
+            ssh: None,
         };
         let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
         let c = daemon_create(
@@ -1758,6 +2255,42 @@ mod tests {
         assert_eq!(
             sub_line(Some(&bar(Some("l"))), Some("n")),
             Some("l · n".into())
+        );
+    }
+
+    #[test]
+    fn on_exit_holds_only_ssh_255() {
+        let ssh = SshTarget {
+            host: "devbox".into(),
+            tmux: false,
+        };
+        // ssh's "connection failed" code: the pane stays.
+        assert_eq!(on_exit(Some(&ssh), Some(255)), ExitAction::Hold);
+        // A normal logout, the remote shell's own code, or one not known: closed as today.
+        for code in [Some(0), Some(1), Some(130), None] {
+            assert_eq!(on_exit(Some(&ssh), code), ExitAction::Close, "{code:?}");
+        }
+        // A local session that exits 255 closes as always.
+        assert_eq!(on_exit(None, Some(255)), ExitAction::Close);
+        assert_eq!(on_exit(None, Some(0)), ExitAction::Close);
+    }
+
+    #[test]
+    fn reconnect_delays() {
+        let secs: Vec<u64> = (0..8).map(|n| reconnect_delay(n).as_secs()).collect();
+        assert_eq!(secs, [3, 6, 12, 24, 48, 60, 60, 60]);
+        assert_eq!(reconnect_delay(u32::MAX), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn banner_texts() {
+        assert_eq!(
+            disconnect_banner("devbox", None),
+            "\r\nDisconnected from devbox \u{2014} press Enter to reconnect\r\n"
+        );
+        assert_eq!(
+            disconnect_banner("me@devbox", Some(12)),
+            "\r\nDisconnected from me@devbox \u{2014} reconnecting in 12s, or press Enter\r\n"
         );
     }
 }

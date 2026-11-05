@@ -466,6 +466,19 @@ pub fn start(path: &Path, idle_exit: Duration) -> io::Result<Running> {
     )
 }
 
+/// `start` that keeps ended sessions listed, so a test that attaches just as a session ends
+/// still finds it (tests in other modules; `Tuning` is private).
+#[cfg(test)]
+pub(crate) fn start_unreaped(path: &Path) -> io::Result<Running> {
+    start_with(
+        path,
+        Tuning {
+            reap: false,
+            ..Tuning::default()
+        },
+    )
+}
+
 /// The daemon's timings; tests shorten them.
 struct Tuning {
     idle_exit: Duration,
