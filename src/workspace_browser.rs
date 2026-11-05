@@ -247,12 +247,14 @@ impl Render for AddressBox {
 
 impl Workspace {
     /// Open `url` in session `index`'s browser, making the browser first if it has none, and
-    /// bring it to the front. A refused address (see `normalize_url`) is the error; a page that
+    /// bring it to the front: `take_keyboard` (the person's own open) also makes it the key
+    /// window, an agent's open leaves the typing where it is. A refused address (see `normalize_url`) is the error; a page that
     /// fails to load shows in the browser (and in its `state`).
     pub(crate) fn browser_open(
         &mut self,
         index: usize,
         url: &str,
+        take_keyboard: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let url = normalize_url(url)?;
@@ -268,7 +270,7 @@ impl Workspace {
         }
         if let Some(browser) = self.browsers.get(id) {
             browser.load(&url);
-            browser.bring_to_front();
+            browser.bring_to_front(take_keyboard);
         }
         Ok(())
     }
@@ -353,7 +355,7 @@ impl Workspace {
         }
         if let AddressBoxEvent::Open(text) = event
             && let Some(index) = self.sessions.active_index()
-            && let Err(why) = self.browser_open(index, text, cx)
+            && let Err(why) = self.browser_open(index, text, true, cx)
         {
             address.update(cx, |address, cx| address.show_error(why, cx));
             return;
@@ -548,7 +550,7 @@ impl Workspace {
         let session = self.sessions.items()[index].id;
         match &command {
             BrowserCommand::Open { url } => {
-                self.browser_open(index, url, cx)
+                self.browser_open(index, url, false, cx)
                     .map_err(ApiError::bad_request)?;
             }
             BrowserCommand::Url => {
