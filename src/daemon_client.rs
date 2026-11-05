@@ -11,8 +11,10 @@
 //!   while it is full (the daemon pushes back on input a child doesn't read).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::ffi::c_int;
+use std::ffi::{CString, OsStr, OsString, c_char, c_int, c_void};
+use std::fs;
 use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +23,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::daemon;
-use crate::detach_probe;
 use crate::mux_proto::{
     self, Create, Decoder, Frame, Hello, HelloOk, PROTO_MAX, PROTO_MIN, Role, SessionInfo, SetMeta,
 };
@@ -31,10 +32,6 @@ use crate::theme::Theme;
 
 /// How long `connect_or_spawn` keeps trying after starting the daemon.
 pub const SPAWN_WAIT: Duration = Duration::from_secs(2);
-
-/// Whether the daemon is started with the private "disclaim responsibility" spawn attribute.
-/// M10a Task 0's probe decides; plain `setsid` until then (ledger ruling).
-const DISCLAIM: bool = false;
 
 /// How long the daemon has to answer `Hello`.
 const HANDSHAKE: Duration = Duration::from_secs(5);
@@ -570,11 +567,7 @@ fn route(routes: &Mutex<Routes>, frame: Frame) {
 /// it when it exits so it never lingers as a zombie of this process. The flag turns true then.
 fn spawn(exe: &Path, socket: &Path, log: &Path) -> io::Result<Arc<AtomicBool>> {
     let env = [("FUXX_DAEMON_SOCKET", socket.as_os_str())];
-    let (pid, note) = detach_probe::spawn_detached(exe, &["daemon", "run"], log, &env, DISCLAIM)
-        .map_err(io::Error::other)?;
-    if let Some(note) = note {
-        log!("{note}");
-    }
+    let pid = spawn_detached(exe, &["daemon", "run"], log, &env).map_err(io::Error::other)?;
     log!("started the fuxx daemon (pid {pid})");
     let exited = Arc::new(AtomicBool::new(false));
     let reaped = exited.clone();
@@ -591,9 +584,118 @@ fn spawn(exe: &Path, socket: &Path, log: &Path) -> io::Result<Arc<AtomicBool>> {
     Ok(exited)
 }
 
-// libSystem.
+/// `POSIX_SPAWN_SETSID` (sys/spawn.h in the macOS SDK).
+const POSIX_SPAWN_SETSID: i16 = 0x0400;
+/// `POSIX_SPAWN_CLOEXEC_DEFAULT` (Apple): only the file actions' descriptors are inherited.
+const POSIX_SPAWN_CLOEXEC_DEFAULT: i16 = 0x4000;
+const O_RDONLY: c_int = 0x0;
+const O_WRONLY: c_int = 0x1;
+const O_APPEND: c_int = 0x8;
+const O_CREAT: c_int = 0x200;
+
+/// Start `exe args…` detached: in its own session (`POSIX_SPAWN_SETSID`), stdin from
+/// `/dev/null`, stdout and stderr appended to `log` (its folder is created), every other file
+/// descriptor closed (`POSIX_SPAWN_CLOEXEC_DEFAULT`), and fuxx's environment with `env`
+/// overriding. Returns the pid. The caller reaps it.
+fn spawn_detached(
+    exe: &Path,
+    args: &[&str],
+    log: &Path,
+    env: &[(&str, &OsStr)],
+) -> Result<c_int, String> {
+    if let Some(folder) = log.parent() {
+        fs::create_dir_all(folder).map_err(|e| format!("create log folder: {e}"))?;
+    }
+    let c = |s: &[u8]| CString::new(s).map_err(|e| e.to_string());
+    let exe_c = c(exe.as_os_str().as_bytes())?;
+    let log_c = c(log.as_os_str().as_bytes())?;
+    let null_c = c(b"/dev/null")?;
+    let args_c = args
+        .iter()
+        .map(|a| c(a.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut argv: Vec<*mut c_char> = vec![exe_c.as_ptr() as *mut c_char];
+    argv.extend(args_c.iter().map(|a| a.as_ptr() as *mut c_char));
+    argv.push(std::ptr::null_mut());
+    let mut vars: Vec<(OsString, OsString)> = std::env::vars_os()
+        .filter(|(key, _)| !env.iter().any(|(k, _)| OsStr::new(k) == key))
+        .collect();
+    vars.extend(
+        env.iter()
+            .map(|(k, v)| (OsString::from(k), v.to_os_string())),
+    );
+    let env_c = vars
+        .iter()
+        .map(|(k, v)| c(&[k.as_bytes(), b"=", v.as_bytes()].concat()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut envp: Vec<*const c_char> = env_c.iter().map(|e| e.as_ptr()).collect();
+    envp.push(std::ptr::null());
+
+    let mut pid: c_int = 0;
+    // SAFETY: the CStrings, argv and envp outlive the posix_spawn call; argv and envp are
+    // null-terminated; the attr and file-actions objects are initialised before use and
+    // destroyed exactly once.
+    let rc = unsafe {
+        let mut attr: *mut c_void = std::ptr::null_mut();
+        let mut fa: *mut c_void = std::ptr::null_mut();
+        posix_spawnattr_init(&mut attr);
+        posix_spawn_file_actions_init(&mut fa);
+        posix_spawnattr_setflags(&mut attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT);
+        posix_spawn_file_actions_addopen(&mut fa, 0, null_c.as_ptr(), O_RDONLY, 0);
+        posix_spawn_file_actions_addopen(
+            &mut fa,
+            1,
+            log_c.as_ptr(),
+            O_WRONLY | O_CREAT | O_APPEND,
+            0o644,
+        );
+        posix_spawn_file_actions_adddup2(&mut fa, 1, 2);
+        let rc = posix_spawn(
+            &mut pid,
+            exe_c.as_ptr(),
+            &fa,
+            &attr,
+            argv.as_ptr(),
+            envp.as_ptr(),
+        );
+        posix_spawn_file_actions_destroy(&mut fa);
+        posix_spawnattr_destroy(&mut attr);
+        rc
+    };
+    if rc != 0 {
+        return Err(format!(
+            "posix_spawn failed: {}",
+            io::Error::from_raw_os_error(rc)
+        ));
+    }
+    Ok(pid)
+}
+
+// libSystem. On macOS both `posix_spawn_file_actions_t` and `posix_spawnattr_t` are opaque
+// pointers.
 unsafe extern "C" {
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+    fn posix_spawn(
+        pid: *mut c_int,
+        path: *const c_char,
+        file_actions: *const *mut c_void,
+        attr: *const *mut c_void,
+        argv: *const *mut c_char,
+        envp: *const *const c_char,
+    ) -> c_int;
+    fn posix_spawn_file_actions_init(fa: *mut *mut c_void) -> c_int;
+    fn posix_spawn_file_actions_destroy(fa: *mut *mut c_void) -> c_int;
+    fn posix_spawn_file_actions_addopen(
+        fa: *mut *mut c_void,
+        fd: c_int,
+        path: *const c_char,
+        oflag: c_int,
+        mode: u16,
+    ) -> c_int;
+    fn posix_spawn_file_actions_adddup2(fa: *mut *mut c_void, fd: c_int, newfd: c_int) -> c_int;
+    fn posix_spawnattr_init(attr: *mut *mut c_void) -> c_int;
+    fn posix_spawnattr_destroy(attr: *mut *mut c_void) -> c_int;
+    fn posix_spawnattr_setflags(attr: *mut *mut c_void, flags: i16) -> c_int;
 }
 
 /// The environment for a new daemon session: ours with `shell` applied (the daemon never uses
