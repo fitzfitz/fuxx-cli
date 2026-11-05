@@ -16,9 +16,11 @@ use gpui::{
 
 use crate::appearance::Appearance;
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::overlay_panel;
 use crate::ssh_hosts::{self, Recent};
 use crate::ssh_target::{self, Effective, SshTarget};
 use crate::terminal_view::hsla;
+use crate::ui_tokens::text;
 
 // Bound in main.rs with the "HostPicker" key context; Enter and Escape are the box's own.
 actions!(
@@ -270,9 +272,9 @@ impl Render for HostPicker {
                     .gap_2()
                     .h(px(ROW_HEIGHT))
                     .px_2()
-                    .rounded_md()
+                    .rounded(px(6.0))
                     .when(i == self.selected, |r| r.bg(hsla(ui.row_active)))
-                    .hover(|s| s.bg(hsla(ui.row_hover)))
+                    .hover(|s| s.bg(hsla(ui.panel_hover)))
                     .cursor_pointer()
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| this.open(i, false, cx)),
@@ -287,7 +289,12 @@ impl Render for HostPicker {
                             .child(label),
                     )
                     .when_some(tag, |r, tag| {
-                        r.child(div().text_xs().text_color(hsla(ui.text_dim)).child(tag))
+                        r.child(
+                            div()
+                                .text_size(px(text::META))
+                                .text_color(hsla(ui.text_dim))
+                                .child(tag),
+                        )
                     })
             })
             .collect();
@@ -310,25 +317,8 @@ impl Render for HostPicker {
                 .into_any_element()
         };
 
-        // The box, with the placeholder laid over it while it is empty (the caret stays at
-        // its start, as in any macOS field).
         let empty = self.input.read(cx).text().is_empty();
-        let field = div()
-            .relative()
-            .flex()
-            .child(self.input.clone())
-            .when(empty, |field| {
-                field.child(
-                    div()
-                        .absolute()
-                        // Inside the box's 1 px border and 4 px padding, and clear of the
-                        // caret at the start.
-                        .top(px(1.0))
-                        .left(px(7.0))
-                        .text_color(hsla(ui.text_dim))
-                        .child(PLACEHOLDER),
-                )
-            });
+        let field = overlay_panel::filter_box(&ui, &self.input, empty, PLACEHOLDER);
 
         let tmux = tmux_for(self.rows.get(self.selected), self.tmux);
         let checkbox = div()
@@ -340,7 +330,7 @@ impl Render for HostPicker {
             .rounded_sm()
             .border_1()
             .border_color(hsla(if tmux { ui.text } else { ui.text_dim }))
-            .text_xs()
+            .text_size(px(text::META))
             .when(tmux, |b| b.child("\u{2713}"));
         let option = div()
             .id("tmux-option")
@@ -350,14 +340,14 @@ impl Render for HostPicker {
             .gap_2()
             .px_2()
             .py_1()
-            .rounded_md()
-            .hover(|s| s.bg(hsla(ui.row_hover)))
+            .rounded(px(6.0))
+            .hover(|s| s.bg(hsla(ui.panel_hover)))
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tmux(cx)))
             .child(checkbox)
             .child("Keep running on the host (tmux)");
 
-        div()
+        overlay_panel::shell(&ui, PANEL_WIDTH)
             .key_context("HostPicker")
             .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.select_by(-1, cx)))
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.select_by(1, cx)))
@@ -370,19 +360,6 @@ impl Render for HostPicker {
             .on_mouse_down_out(
                 cx.listener(|_, _: &MouseDownEvent, _, cx| cx.emit(HostPickerEvent::Cancel)),
             )
-            .flex()
-            .flex_col()
-            .w(px(PANEL_WIDTH))
-            .max_w_full()
-            .p_2()
-            .gap_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(hsla(ui.sidebar_border))
-            .bg(hsla(ui.sidebar_background))
-            .shadow_lg()
-            .text_sm()
-            .text_color(hsla(ui.text))
             .child(field)
             .child(list)
             .child(
@@ -391,12 +368,12 @@ impl Render for HostPicker {
                     .flex_col()
                     .pt_1()
                     .border_t_1()
-                    .border_color(hsla(ui.sidebar_border))
+                    .border_color(hsla(ui.panel_border))
                     .child(option)
                     .child(
                         div()
                             .px_2()
-                            .text_xs()
+                            .text_size(px(text::META))
                             .text_color(hsla(ui.text_dim))
                             .child(HINT),
                     ),

@@ -212,6 +212,7 @@ const SCENES: &[(&str, fn())] = &[
     ("splits", split_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
+    ("panels", panel_scenes),
     ("preferences", preferences_scenes),
 ];
 
@@ -1713,6 +1714,74 @@ fn overlays() {
         }
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
+}
+
+/// The host picker and the address box over the same workspace as the switcher shots, in both
+/// themes (`host-picker-*`, `address-box-*`), to compare with `switcher-*`: one panel look.
+/// The picker is given made-up recent hosts and no config hosts, so no `ssh -G` runs and
+/// `~/.ssh` is not read. Panics unless the box opened is the one asked for.
+fn panel_scenes() {
+    use crate::ssh_hosts::Recent;
+    use crate::ssh_target::SshTarget;
+    use gpui::Focusable;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let host = |host: &str, tmux, used_at| Recent {
+        target: SshTarget {
+            host: host.into(),
+            tmux,
+            tmux_name: None,
+        },
+        used_at,
+    };
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for scene in ["host-picker", "address-box"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| switcher_workspace(window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let recent = vec![
+                    host("build-box", true, 3),
+                    host("deploy@staging.example.com", false, 2),
+                    host("pi", false, 1),
+                ];
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| match scene {
+                        "host-picker" => {
+                            let picker = cx.new(|cx| {
+                                crate::host_picker::HostPicker::new(recent, vec![], window, cx)
+                            });
+                            picker.focus_handle(cx).focus(window, cx);
+                            ws.host_picker = Some(picker);
+                            cx.notify();
+                        }
+                        _ => ws.open_address_box(window, cx),
+                    })
+                })
+                .expect("open it");
+                cx.run_until_parked();
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let open = match scene {
+                        "host-picker" => ws.host_picker.is_some(),
+                        _ => ws.address_box.is_some(),
+                    };
+                    assert!(open, "{scene}-{slug}: the box is open");
+                });
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            println!("ui-shots: {}", path.display());
+        }
+    }
 }
 
 /// The Preferences window at its computed size: in both themes with the defaults

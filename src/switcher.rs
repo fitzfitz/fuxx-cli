@@ -10,20 +10,19 @@ use std::cmp::Ordering;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, Hsla, MouseDownEvent, ScrollHandle, Subscription, Window, actions, div, point,
-    prelude::*, px,
+    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    MouseDownEvent, ScrollHandle, Subscription, Window, actions, div, prelude::*, px,
 };
 
 use crate::appearance::Appearance;
 use crate::groups::{self, GroupKey};
 use crate::host_picker::move_selection;
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::overlay_panel;
 use crate::sidebar::{MARK_SLOT, mark_size, mark_slot, tabular};
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
-use crate::theme::mix;
 use crate::ui_tokens::size::{SIDEBAR_ROW, WAITING_ROW};
 use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
@@ -259,7 +258,7 @@ impl Switcher {
         let entry = &self.entries[i];
         let chosen = at == self.selected;
         let fill = if chosen { ui.row_active } else { ui.panel };
-        let hover = mix(ui.panel, ui.text, 0.08);
+        let hover = ui.panel_hover;
         let waiting = entry.status == Status::Waiting;
         let age = (entry.status != Status::Idle)
             .then(|| status::age_label(now.saturating_duration_since(entry.since)));
@@ -371,29 +370,10 @@ impl Render for Switcher {
                 .into_any_element()
         };
 
-        // The box, with the placeholder laid over it while it is empty (as the host picker's).
         let empty = self.input.read(cx).text().is_empty();
-        let field = div()
-            .relative()
-            .flex()
-            // A little in from the panel's edge.
-            .m(px(2.0))
-            .text_size(px(text::NAME))
-            .child(self.input.clone())
-            .when(empty, |field| {
-                field.child(
-                    div()
-                        .absolute()
-                        // Inside the box's 1 px border and 4 px padding, and clear of the
-                        // caret at the start.
-                        .top(px(1.0))
-                        .left(px(7.0))
-                        .text_color(hsla(ui.text_dim))
-                        .child(PLACEHOLDER),
-                )
-            });
+        let field = overlay_panel::filter_box(&ui, &self.input, empty, PLACEHOLDER);
 
-        div()
+        overlay_panel::shell(&ui, PANEL_WIDTH)
             .key_context("Switcher")
             .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.select_by(-1, cx)))
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.select_by(1, cx)))
@@ -402,27 +382,6 @@ impl Render for Switcher {
             .on_mouse_down_out(
                 cx.listener(|_, _: &MouseDownEvent, _, cx| cx.emit(SwitcherEvent::Cancel)),
             )
-            .flex()
-            .flex_col()
-            .w(px(PANEL_WIDTH))
-            .max_w_full()
-            .p(px(6.0))
-            .gap(px(6.0))
-            .rounded(px(10.0))
-            .bg(hsla(ui.panel))
-            .border_1()
-            .border_color(hsla(ui.panel_border))
-            .shadow(vec![BoxShadow {
-                color: Hsla {
-                    a: 0.3,
-                    ..hsla(ui.shadow)
-                },
-                offset: point(px(0.0), px(8.0)),
-                blur_radius: px(24.0),
-                spread_radius: px(0.0),
-                inset: false,
-            }])
-            .text_color(hsla(ui.text))
             .child(field)
             .child(list)
             .child(

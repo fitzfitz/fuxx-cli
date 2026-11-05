@@ -26,7 +26,9 @@ use crate::browser::{Browser, CLOSED, PageState, didnt_answer, within};
 use crate::browser_js::{self, Snapshot};
 use crate::browser_url::normalize_url;
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::overlay_panel;
 use crate::terminal_view::hsla;
+use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 use crate::workspace_api::{now_ms, opt_str, required_str};
 
@@ -198,51 +200,22 @@ impl AddressBox {
 impl Render for AddressBox {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        // The box, with the placeholder laid over it while it is empty (as the host picker's).
         let empty = self.input.read(cx).text().is_empty();
-        let field = div()
-            .relative()
-            .flex()
-            .child(self.input.clone())
-            .when(empty, |field| {
-                field.child(
-                    div()
-                        .absolute()
-                        // Inside the box's 1 px border and 4 px padding, and clear of the
-                        // caret at the start.
-                        .top(px(1.0))
-                        .left(px(7.0))
-                        .text_color(hsla(ui.text_dim))
-                        .child(PLACEHOLDER),
-                )
-            });
+        let field = overlay_panel::filter_box(&ui, &self.input, empty, PLACEHOLDER);
         let line = match &self.error {
             // The waiting ring's colour: the theme's red.
             Some(why) => div().text_color(hsla(ui.ring_waiting)).child(why.clone()),
             None => div().text_color(hsla(ui.text_dim)).child(HINT),
         };
-        div()
+        overlay_panel::shell(&ui, PANEL_WIDTH)
             .key_context("AddressBox")
             // The terminal under the panel gets neither its clicks nor its hover.
             .occlude()
             .on_mouse_down_out(
                 cx.listener(|_, _: &MouseDownEvent, _, cx| cx.emit(AddressBoxEvent::Cancel)),
             )
-            .flex()
-            .flex_col()
-            .w(px(PANEL_WIDTH))
-            .max_w_full()
-            .p_2()
-            .gap_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(hsla(ui.sidebar_border))
-            .bg(hsla(ui.sidebar_background))
-            .shadow_lg()
-            .text_sm()
-            .text_color(hsla(ui.text))
             .child(field)
-            .child(line.px_1().text_xs())
+            .child(line.px_1().text_size(px(text::META)))
     }
 }
 
