@@ -2,8 +2,11 @@
 //!
 //! Pure functions, no GPUI types, so they are unit-tested. The window feeds its state in.
 
+use alacritty_terminal::vte::ansi::Rgb;
+
 use crate::fonts;
-use crate::theme::BUILTIN_THEMES;
+use crate::settings::Entry;
+use crate::theme::{self, BUILTIN_THEMES, Theme};
 
 /// First list entry: leave the setting out of the file and use the built-in default.
 pub const DEFAULT_CHOICE: &str = "Default";
@@ -103,6 +106,41 @@ pub fn persistence_values(on: bool) -> Vec<String> {
     if on { vec!["on".to_string()] } else { vec![] }
 }
 
+/// `animations` values to write: nothing when on (the default, so no line), `off` otherwise.
+pub fn animations_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
+/// The theme a list choice stands for, on its own (without the user's other colour lines):
+/// the defaults for `Default`, otherwise the named theme read with `read_theme`.
+pub fn choice_theme(name: &str, read_theme: &dyn Fn(&str) -> Option<String>) -> Theme {
+    if name == DEFAULT_CHOICE {
+        return Theme::default();
+    }
+    let entry = Entry {
+        key: "theme".into(),
+        value: name.into(),
+    };
+    // A plain name reads the same in dark and light mode.
+    theme::resolve(&[entry], true, read_theme)
+}
+
+/// A theme row's swatch: the background, the foreground, then palette 1 to 6 (red, green,
+/// yellow, blue, magenta, cyan).
+pub fn swatch(theme: &Theme) -> [Rgb; 8] {
+    let p = &theme.palette;
+    [
+        theme.background,
+        theme.foreground,
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+        p[6],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +215,56 @@ mod tests {
         assert!(!ligatures_on(&f) && ligatures_on(&[]));
         assert_eq!(feature_lines(&f, true), vec!["ss01=1"]);
         assert_eq!(feature_lines(&f, false), vec!["ss01=1", "-calt"]);
+    }
+
+    #[test]
+    fn animations_values() {
+        // On is the default: no line. Off is written out.
+        assert!(super::animations_values(true).is_empty());
+        assert_eq!(super::animations_values(false), vec!["off".to_string()]);
+    }
+
+    #[test]
+    fn swatch_colours_come_from_the_theme() {
+        let rgb = |hex: u32| Rgb {
+            r: (hex >> 16) as u8,
+            g: (hex >> 8) as u8,
+            b: hex as u8,
+        };
+        let read = |name: &str| theme::builtin_theme(name).map(str::to_string);
+        // Nord's own file: background, foreground, then palette 1-6.
+        assert_eq!(
+            swatch(&choice_theme("Nord", &read)),
+            [
+                rgb(0x2e3440),
+                rgb(0xd8dee9),
+                rgb(0xbf616a),
+                rgb(0xa3be8c),
+                rgb(0xebcb8b),
+                rgb(0x81a1c1),
+                rgb(0xb48ead),
+                rgb(0x88c0d0),
+            ]
+        );
+        // `Default` is the built-in defaults; a user theme is read like a built-in one.
+        let plain = Theme::default();
+        let mut expected = [
+            plain.background,
+            plain.foreground,
+            plain.palette[1],
+            plain.palette[2],
+            plain.palette[3],
+            plain.palette[4],
+            plain.palette[5],
+            plain.palette[6],
+        ];
+        assert_eq!(swatch(&choice_theme(DEFAULT_CHOICE, &read)), expected);
+        let mine = |name: &str| {
+            (name == "Mine").then(|| "background = #102030\npalette = 3=#405060\n".to_string())
+        };
+        expected[0] = rgb(0x102030);
+        expected[4] = rgb(0x405060);
+        assert_eq!(swatch(&choice_theme("Mine", &mine)), expected);
     }
 
     #[test]

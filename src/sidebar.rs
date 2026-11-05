@@ -376,7 +376,7 @@ pub(crate) fn tabular() -> FontFeatures {
 }
 
 /// Every letter as a small capital (the system font has them): headers read as headers.
-fn small_caps() -> FontFeatures {
+pub(crate) fn small_caps() -> FontFeatures {
     FontFeatures(Arc::new(vec![("smcp".into(), 1), ("c2sc".into(), 1)]))
 }
 

@@ -856,6 +856,34 @@ impl CellMetrics {
     }
 }
 
+/// Paint `text`, as a program would print it, over `bounds` the way a pane draws its screen: the
+/// configured font and size, the pane's padding, and `theme`'s colours. The Preferences preview.
+pub fn paint_fixed_screen(
+    text: &str,
+    theme: &Theme,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let metrics = CellMetrics::measure(cx.global::<Appearance>(), window);
+    let grid = GridLayout::fit(
+        inset(bounds, false),
+        metrics.cell_width,
+        metrics.line_height,
+    );
+    let snap = grid::fixed_screen(text, grid.dims, theme);
+    paint_grid(
+        snap,
+        theme,
+        &metrics,
+        bounds,
+        grid.origin,
+        false,
+        window,
+        cx,
+    );
+}
+
 pub fn hsla(c: Rgb) -> Hsla {
     Rgba {
         r: c.r as f32 / 255.0,

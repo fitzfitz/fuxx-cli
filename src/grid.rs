@@ -4,14 +4,15 @@
 //! Everything here is plain data (no GPUI), so the tricky parts of rendering are unit-tested.
 //! The GPUI view only paints what these functions return.
 
-use alacritty_terminal::event::EventListener;
+use alacritty_terminal::event::{EventListener, VoidListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
-use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::vte::ansi::{CursorShape, Processor, Rgb, StdSyncHandler};
 
 use crate::colors;
+use crate::terminal::TermDims;
 use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -232,6 +233,33 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
     }
 }
 
+/// A screen showing `text` as a program would print it to a `dims` terminal, for previews.
+/// Lines too long for it are cut at its edge, not wrapped; once it is full it scrolls, as a
+/// terminal does.
+pub fn fixed_screen(text: &str, dims: TermDims, theme: &Theme) -> GridSnapshot {
+    // Printed on a wide screen and then cropped, so a cut line just stops (with auto-wrap off,
+    // a terminal would overprint its last column with the rest of the line).
+    let wide = TermDims {
+        cols: dims.cols.max(FIXED_SCREEN_COLS),
+        rows: dims.rows,
+    };
+    let mut term = Term::new(Config::default(), &wide, VoidListener);
+    let mut processor: Processor<StdSyncHandler> = Processor::new();
+    // Auto-wrap off (DECAWM) for lines wider still.
+    processor.advance(&mut term, b"\x1b[?7l");
+    processor.advance(&mut term, text.as_bytes());
+    let mut snap = snapshot(&term, theme);
+    for line in &mut snap.lines {
+        line.truncate(dims.cols);
+    }
+    snap.cols = dims.cols;
+    snap.cursor = snap.cursor.filter(|c| c.col < dims.cols);
+    snap
+}
+
+/// How wide `fixed_screen` prints before cropping.
+const FIXED_SCREEN_COLS: usize = 200;
+
 /// A horizontal span of cells sharing a non-default background color.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BgRect {
@@ -342,13 +370,9 @@ pub fn underline_cells(snap: &mut GridSnapshot, start: Point, end: Point, displa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::TermDims;
-    use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Scroll;
     use alacritty_terminal::index::Side;
     use alacritty_terminal::selection::{Selection, SelectionType};
-    use alacritty_terminal::term::Config;
-    use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
     fn term_with(bytes: &[u8]) -> Term<VoidListener> {
         let mut term = Term::new(
@@ -368,6 +392,20 @@ mod tests {
     fn feed(term: &mut Term<VoidListener>, text: &str) {
         let mut processor: Processor<StdSyncHandler> = Processor::new();
         processor.advance(term, text.as_bytes());
+    }
+
+    #[test]
+    fn fixed_screen_cuts_long_lines_and_uses_the_theme() {
+        let theme = Theme::default();
+        let text = "\x1b[31mred\x1b[0m and a line far too long\r\nnext";
+        let snap = fixed_screen(text, TermDims { cols: 8, rows: 3 }, &theme);
+        let row = |r: usize| snap.lines[r].iter().map(|c| c.ch).collect::<String>();
+        // Cut at the edge, not wrapped onto the next row.
+        assert_eq!(row(0), "red and ");
+        assert_eq!(row(1), "next    ");
+        // Colours are the theme's: SGR 31 is palette 1.
+        assert_eq!(snap.lines[0][0].fg, theme.palette[1]);
+        assert_eq!(snap.lines[0][4].fg, theme.foreground);
     }
 
     #[test]
