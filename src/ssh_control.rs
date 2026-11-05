@@ -107,7 +107,7 @@ fn remove_dead_sockets(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
     use std::time::Instant;
 
