@@ -366,6 +366,8 @@ impl Workspace {
             id: session_id,
             view,
             status: Status::Idle,
+            status_since: Instant::now(),
+            question: None,
             title: None,
             name: saved.name,
             project: saved.project,

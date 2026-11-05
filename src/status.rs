@@ -61,8 +61,46 @@ pub const WAITING_PATTERNS: &[&str] = &[
 ];
 
 pub fn looks_like_waiting(screen_tail: &str) -> bool {
-    let tail = screen_tail.to_lowercase();
-    WAITING_PATTERNS.iter().any(|p| tail.contains(p))
+    waiting_match(screen_tail).is_some()
+}
+
+/// The last line of `screen_tail` holding a waiting pattern (the newest question on screen).
+fn waiting_match(screen_tail: &str) -> Option<&str> {
+    screen_tail.lines().rev().find(|line| {
+        let line = line.to_lowercase();
+        WAITING_PATTERNS.iter().any(|p| line.contains(p))
+    })
+}
+
+/// The longest question line kept; the renderer ellipsises it to fit.
+const QUESTION_MAX_CHARS: usize = 120;
+
+/// Words that mark a prompt for a secret; its line is never shown in the sidebar.
+const SECRET_WORDS: &[&str] = &["password", "passphrase", "token"];
+
+/// The screen line that made a session look Waiting, for the sidebar's question: trimmed,
+/// without control characters, at most 120 chars. A prompt for a secret gives none.
+pub fn waiting_line(tail: &str) -> Option<String> {
+    let line = crate::cli::plain_text(waiting_match(tail)?);
+    let line = line.trim();
+    let lower = line.to_lowercase();
+    if SECRET_WORDS.iter().any(|w| lower.contains(w)) {
+        return None;
+    }
+    Some(line.chars().take(QUESTION_MAX_CHARS).collect())
+}
+
+/// How long ago, for a sidebar row: "12s", "4m", "2h", "3d" (rounded down).
+// The sidebar rows (M11 task 5) are its first caller.
+#[allow(dead_code)]
+pub fn age_label(d: Duration) -> String {
+    let secs = d.as_secs();
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m", secs / 60),
+        3600..86400 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86400),
+    }
 }
 
 pub struct StatusTracker {
@@ -180,6 +218,49 @@ mod tests {
         let mut t = StatusTracker::new();
         t.on_input(t0);
         t
+    }
+
+    #[test]
+    fn waiting_line_returns_the_matching_line() {
+        let tail = "building…\n  Do you want to overwrite foo.txt? (y/n)  \nmore";
+        assert_eq!(
+            waiting_line(tail).as_deref(),
+            Some("Do you want to overwrite foo.txt? (y/n)")
+        );
+        assert_eq!(waiting_line("all quiet\nnothing here"), None);
+        // Control characters go; the line is capped at 120 chars.
+        assert_eq!(
+            waiting_line("\x1b]0;x\x07Proceed? [y/n]\x1b[2J").as_deref(),
+            Some("]0;xProceed? [y/n][2J")
+        );
+        let long = format!("{} (y/n)", "a".repeat(200));
+        assert_eq!(waiting_line(&long).unwrap().chars().count(), 120);
+    }
+
+    #[test]
+    fn secret_prompts_give_no_line() {
+        for tail in [
+            "Enter your Password (y/n)",
+            "Passphrase for key: do you want to continue",
+            "paste the API TOKEN? [y/n]",
+        ] {
+            assert_eq!(waiting_line(tail), None, "{tail}");
+        }
+    }
+
+    #[test]
+    fn age_labels() {
+        let s = Duration::from_secs;
+        assert_eq!(age_label(s(0)), "0s");
+        assert_eq!(age_label(s(12)), "12s");
+        assert_eq!(age_label(s(59)), "59s");
+        assert_eq!(age_label(s(60)), "1m");
+        assert_eq!(age_label(s(4 * 60 + 59)), "4m");
+        assert_eq!(age_label(s(59 * 60 + 59)), "59m");
+        assert_eq!(age_label(s(3600)), "1h");
+        assert_eq!(age_label(s(2 * 3600 + 1799)), "2h");
+        assert_eq!(age_label(s(24 * 3600)), "1d");
+        assert_eq!(age_label(s(3 * 86400 + 5)), "3d");
     }
 
     #[test]
