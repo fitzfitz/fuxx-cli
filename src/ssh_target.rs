@@ -76,7 +76,7 @@ pub fn is_git_host(e: &Effective) -> bool {
     e.user.as_deref() == Some("git")
         || e.hostname
             .as_deref()
-            .is_some_and(|h| GIT_HOSTNAMES.contains(&h))
+            .is_some_and(|h| GIT_HOSTNAMES.iter().any(|g| g.eq_ignore_ascii_case(h)))
 }
 
 /// A tmux-safe session name: only `[A-Za-z0-9_-]`, at most 32 characters, `session` if empty.
@@ -194,6 +194,7 @@ mod tests {
         let github = parse_effective("user alice\nhostname github.com\n");
         assert!(is_git_host(&git_user));
         assert!(is_git_host(&github));
+        assert!(is_git_host(&parse_effective("hostname GitHub.com\n")));
         assert!(!is_git_host(&parse_effective(PLAIN)));
     }
 
