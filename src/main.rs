@@ -57,8 +57,8 @@ use std::path::{Path, PathBuf};
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, Bounds, Global, KeyBinding, Menu, MenuItem, QuitMode, TitlebarOptions, WindowBounds,
-    WindowOptions, actions, prelude::*, px, size,
+    App, Bounds, Global, KeyBinding, Menu, MenuItem, OsAction, QuitMode, TitlebarOptions,
+    WindowBounds, WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_platform::application;
 use serde_json::{Value, json};
@@ -78,6 +78,25 @@ use workspace::{
 };
 
 actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions]);
+
+// The Edit menu's Cut and Select All. Nothing in fuxx handles them: their items work only
+// through their macOS selectors (`cut:`, `selectAll:`), which a browser's web view answers.
+actions!(edit, [Cut, SelectAll]);
+
+/// The Edit menu: Cut, Copy, Paste and Select All, each also its standard macOS selector, sent
+/// to the key window's first responder. In a browser window, the web view takes them. In
+/// fuxx's window, GPUI handles the keys first (the terminal's ⌘C and ⌘V, as before), and the
+/// items do what their GPUI action does there: Copy and Paste the terminal's, the others
+/// nothing. Undo and Redo aren't here: GPUI sends them to itself, never to the web view, so
+/// the browser window takes ⌘Z and ⇧⌘Z itself.
+fn edit_menu() -> Menu {
+    Menu::new("Edit").items([
+        MenuItem::os_action("Cut", Cut, OsAction::Cut),
+        MenuItem::os_action("Copy", Copy, OsAction::Copy),
+        MenuItem::os_action("Paste", Paste, OsAction::Paste),
+        MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+    ])
+}
 
 /// The File-menu item for preset `n` (0-based), bound to its `LaunchPresetN`.
 fn preset_item(n: usize, name: &str) -> Option<MenuItem> {
@@ -135,6 +154,7 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
             MenuItem::separator(),
             MenuItem::action("Preferences\u{2026}", OpenPreferences),
         ]),
+        edit_menu(),
         Menu::new("Pane").items([
             MenuItem::action("Split Right", SplitRight),
             MenuItem::action("Split Down", SplitDown),
@@ -392,7 +412,11 @@ fn main() {
                 KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
                 // The browser's address box: its box is a NameInput too; an address is pasted.
                 KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
-                // There's no Edit menu to supply "Emoji & Symbols", so bind its shortcut here.
+                // Only so the Edit menu shows ⌘X and ⌘A: no element in fuxx has this context, so
+                // these keys never reach the actions (see `edit_menu`).
+                KeyBinding::new("cmd-x", Cut, Some("EditMenuOnly")),
+                KeyBinding::new("cmd-a", SelectAll, Some("EditMenuOnly")),
+                // The Edit menu doesn't supply "Emoji & Symbols", so bind its shortcut here.
                 KeyBinding::new(
                     "ctrl-cmd-space",
                     name_input::ShowCharacterPalette,
@@ -472,7 +496,43 @@ fn quit_title(keep_running: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::quit_title;
+    use gpui::{MenuItem, OsAction};
+
+    use super::{edit_menu, quit_title};
+    use crate::terminal_view::{Copy, Paste};
+
+    #[test]
+    fn the_edit_menu_hands_its_items_to_the_os() {
+        let menu = edit_menu();
+        assert_eq!(menu.name.as_ref(), "Edit");
+        let items: Vec<_> = menu
+            .items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Action {
+                    name,
+                    action,
+                    os_action,
+                    ..
+                } => (name.to_string(), action.boxed_clone(), *os_action),
+                _ => panic!("only actions"),
+            })
+            .collect();
+        let names: Vec<&str> = items.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, ["Cut", "Copy", "Paste", "Select All"]);
+        let os: Vec<Option<OsAction>> = items.iter().map(|(_, _, o)| *o).collect();
+        assert!(
+            os == [
+                Some(OsAction::Cut),
+                Some(OsAction::Copy),
+                Some(OsAction::Paste),
+                Some(OsAction::SelectAll)
+            ]
+        );
+        // The terminal's own ⌘C and ⌘V stay what they were.
+        assert!(items[1].1.partial_eq(&Copy));
+        assert!(items[2].1.partial_eq(&Paste));
+    }
 
     #[test]
     fn the_quit_item_says_how_many_sessions_keep_running() {

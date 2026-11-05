@@ -340,6 +340,8 @@ impl Workspace {
             || old_session.view.focus_handle(cx).is_focused(window);
         self.emit(&Event::Closed, Some(index));
         self.check_waits(&[old_id], cx);
+        // The browser follows the session, as its row and name do.
+        self.browsers.rekey(old_id, session_id);
         let new = view.entity_id();
         let swap = |v: EntityId| if v == old { new } else { v };
         self.layouts = self.layouts.iter().map(|t| t.map(&swap)).collect();
