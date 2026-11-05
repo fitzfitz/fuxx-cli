@@ -3,7 +3,8 @@
 //! `DaemonClient::connect_or_spawn` connects to `fuxxd.sock`, starting `fuxx daemon run`
 //! detached when nothing answers. Once connected:
 //! - one reader thread decodes frames. Session frames (`Snapshot`, `Output`, `Resized`,
-//!   `Status`, `Title`, `Bell`, `Exited`, `Resync`) go to that session's stream (`attach`).
+//!   `Status`, `Title`, `Bell`, `ExitCode`, `Exited`, `Resync`) go to that session's stream
+//!   (`attach`).
 //!   Replies (`Sessions`, `Created`, `Text`, `Error`) go to the waiting request: the daemon
 //!   answers in the order it was asked, so requests queue in send order. The reader never
 //!   waits on anything but the socket;
@@ -24,7 +25,8 @@ use std::time::{Duration, Instant};
 
 use crate::daemon;
 use crate::mux_proto::{
-    self, Create, Decoder, Frame, Hello, HelloOk, PROTO_MAX, PROTO_MIN, Role, SessionInfo, SetMeta,
+    self, Create, Decoder, Frame, Hello, HelloOk, PROTO_MAX, PROTO_MIN, PROTO_PROGRAMS, Role,
+    SessionInfo, SetMeta,
 };
 use crate::pty::ShellEnv;
 use crate::terminal::{CellPx, TermDims};
@@ -51,6 +53,9 @@ const RETRY: Duration = Duration::from_millis(25);
 const SPAWNS: usize = 3;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Why a session with a `program` (SSH) can't start on a version-1 daemon.
+const NEEDS_PROTO_2: &str = "restart the background service to use SSH sessions (fuxx daemon stop)";
 
 macro_rules! log {
     ($($arg:tt)*) => {
@@ -216,6 +221,11 @@ impl DaemonClient {
         }))
     }
 
+    /// The protocol version agreed with the daemon.
+    pub fn proto(&self) -> u32 {
+        self.hello.proto
+    }
+
     /// The daemon's process id.
     pub fn pid(&self) -> u32 {
         self.hello.pid
@@ -259,8 +269,12 @@ impl DaemonClient {
     }
 
     /// Start a session; its id. Waits for the daemon: not on the UI thread
-    /// (`create_in_background`).
+    /// (`create_in_background`). A `program` needs protocol 2: a version-1 daemon would ignore
+    /// it and start a login shell instead, so it is refused here.
     pub fn create(&self, create: Create) -> io::Result<u64> {
+        if create.program.is_some() && self.proto() < PROTO_PROGRAMS {
+            return Err(io::Error::new(ErrorKind::Unsupported, NEEDS_PROTO_2));
+        }
         match self.request(&Frame::Create(create), Expect::Created)? {
             Frame::Created { id } => Ok(id),
             other => Err(unexpected(&other)),
@@ -525,6 +539,7 @@ fn session_of(frame: &Frame) -> Option<u64> {
         | Frame::Status { id, .. }
         | Frame::Title { id, .. }
         | Frame::Bell { id }
+        | Frame::ExitCode { id, .. }
         | Frame::Exited { id }
         | Frame::Resync { id } => Some(*id),
         _ => None,
@@ -787,6 +802,7 @@ pub(crate) mod tests {
             name: None,
             project: None,
             preset: None,
+            program: None,
         }
     }
 
@@ -930,6 +946,55 @@ pub(crate) mod tests {
             text.contains("7..=9") && text.contains("fuxx daemon stop"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn proto_1_daemon_refuses_a_program() {
+        let (_d, current) = daemon("proto2");
+        assert_eq!(DaemonClient::connect(&current).unwrap().proto(), PROTO_MAX);
+        // A version-1 daemon: says HelloOk with proto 1, then holds the connection.
+        let path = temp_sock("proto1");
+        let listener = UnixListener::bind(&path).unwrap();
+        let fake = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let mut decoder = Decoder::new();
+            while decoder.next().is_none() {
+                let n = s.read(&mut buf).unwrap();
+                decoder.push(&buf[..n]);
+            }
+            let ok = Frame::HelloOk(HelloOk {
+                proto: 1,
+                daemon_version: "0.1".into(),
+                pid: 1,
+                instance: None,
+            });
+            s.write_all(&encode(&ok)).unwrap();
+            // Whatever comes, until the client hangs up.
+            let _ = s.read_to_end(&mut Vec::new());
+        });
+        let client = DaemonClient::connect(&path).unwrap();
+        assert_eq!(client.proto(), 1);
+        let ssh = Create {
+            program: Some(vec!["ssh".into(), "host".into()]),
+            ..sh_create(40, 5)
+        };
+        let err = client.create(ssh.clone()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "restart the background service to use SSH sessions (fuxx daemon stop)"
+        );
+        let err = futures::executor::block_on(client.create_in_background(ssh))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "restart the background service to use SSH sessions (fuxx daemon stop)"
+        );
+        // Refused here, before anything was sent: the connection is as it was.
+        assert!(!client.is_closed());
+        drop(client);
+        fake.join().unwrap();
     }
 
     #[test]

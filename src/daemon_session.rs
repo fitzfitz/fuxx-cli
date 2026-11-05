@@ -8,7 +8,7 @@
 //! - `attach`: encode a snapshot at the current `seq` and register the subscriber.
 //!
 //! So a snapshot at seq N plus the frames from N+1 rebuild the Term with no gap or overlap.
-//! `Status`, `Title`, `Bell` and `Exited` go into the same queues, unnumbered.
+//! `Status`, `Title`, `Bell`, `ExitCode` and `Exited` go into the same queues, unnumbered.
 //!
 //! Query replies (DA, DSR/CPR, OSC 4/10/11/12 colours, `CSI 14 t`) are answered here, with no
 //! client needed: colours from the last `set_theme` (the default theme until then), the text
@@ -195,10 +195,12 @@ pub struct CreateSpec {
 
 impl From<mux_proto::Create> for CreateSpec {
     fn from(c: mux_proto::Create) -> Self {
+        // A `Create`'s `startup` is for the login shell: with a program it is ignored.
+        let startup = c.startup.filter(|_| c.program.is_none());
         CreateSpec {
-            program: None,
+            program: c.program,
             cwd: c.cwd.map(PathBuf::from),
-            startup: c.startup,
+            startup,
             env: c.env,
             dims: TermDims {
                 cols: c.dims.cols.into(),
@@ -226,7 +228,7 @@ impl CreateSpec {
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
-        // As `pty::shell_command`: our TERM, whatever the GUI was started from.
+        // As `pty::command`: our TERM, whatever the GUI was started from.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         match (&self.cwd, self.env.get("HOME")) {
@@ -421,6 +423,8 @@ struct State {
     cell: CellPx,
     meta: Meta,
     alive: bool,
+    /// The child's exit code, once it has exited by itself and it could be read.
+    exit_code: Option<u32>,
     /// Unix seconds.
     created_at: u64,
     /// `None` once closed; dropping it kills the child.
@@ -525,6 +529,16 @@ impl State {
         }
     }
 
+    /// The child closed the PTY: its `ExitCode`, then `Exited`. Nothing if already closed.
+    fn child_exited(&mut self, code: Option<u32>) {
+        if self.alive {
+            self.exit_code = code;
+            let frame = Frame::ExitCode { id: self.id, code };
+            self.broadcast(frame);
+            self.mark_exited();
+        }
+    }
+
     /// Not alive any more, and `Exited` sent: once, whether the child exited or was closed.
     fn mark_exited(&mut self) {
         if self.alive {
@@ -564,6 +578,7 @@ impl DaemonSession {
         }
         let dims = clamp(spec.dims);
         let (pty, reader, writer) = Pty::spawn(spec.command(), dims).map_err(io::Error::other)?;
+        let exit = pty.exit_waiter();
         if spec.cell != CellPx::default() {
             let _ = pty.resize(dims, spec.cell);
         }
@@ -594,6 +609,7 @@ impl DaemonSession {
                 progress: None,
             },
             alive: true,
+            exit_code: None,
             created_at,
             pty: Some(pty),
             to_child: Some(to_child),
@@ -619,13 +635,22 @@ impl DaemonSession {
                     .lock()
                     .output(bytes, notifications, Instant::now());
             },
-            move || eof_state.lock().mark_exited(),
+            // The wait is outside the lock: nothing else waits on it.
+            move || {
+                let code = exit.exit_code();
+                eof_state.lock().child_exited(code);
+            },
         )?;
         Ok(Self { id, state, backlog })
     }
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// The child's exit code: `None` while it runs, if it was closed, or if it couldn't be read.
+    pub fn exit_code(&self) -> Option<u32> {
+        self.state.lock().exit_code
     }
 
     /// Snapshot the Term and subscribe `sub`, under one lock: the snapshot is at `seq` N and
@@ -1062,6 +1087,7 @@ mod tests {
             name: Some("n".into()),
             project: Some("p".into()),
             preset: Some("agent".into()),
+            program: None,
         });
         assert_eq!(spec.program, None);
         assert_eq!(spec.cwd, Some(PathBuf::from("/tmp")));
@@ -1085,6 +1111,28 @@ mod tests {
             (spec.name, spec.project, spec.preset),
             (Some("n".into()), Some("p".into()), Some("agent".into()))
         );
+    }
+
+    #[test]
+    fn a_create_with_a_program_keeps_it_and_drops_startup() {
+        let create = mux_proto::Create {
+            cwd: None,
+            startup: Some("claude".into()),
+            env: BTreeMap::new(),
+            dims: Dims { cols: 80, rows: 24 },
+            cell_px: mux_proto::CellPx { w: 8, h: 17 },
+            name: None,
+            project: None,
+            preset: None,
+            program: Some(vec!["ssh".into(), "host".into()]),
+        };
+        let spec = CreateSpec::from(create);
+        assert_eq!(spec.program, Some(vec!["ssh".into(), "host".into()]));
+        assert_eq!(
+            spec.startup, None,
+            "typed into ssh it would reach the remote"
+        );
+        assert_eq!(spec.command().get_argv(), &["ssh", "host"]);
     }
 
     #[test]

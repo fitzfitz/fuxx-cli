@@ -502,7 +502,9 @@ impl Workspace {
             exe_dir().as_deref(),
             std::env::var_os("PATH").as_deref(),
         );
-        let view = match TerminalView::spawn(window, cx, cwd.as_deref(), startup.as_deref(), &env) {
+        let spawned =
+            TerminalView::spawn(window, cx, None, cwd.as_deref(), startup.as_deref(), &env);
+        let view = match spawned {
             Ok(view) => view,
             Err(err) => {
                 eprintln!("fuxx: could not start a shell: {err}");
@@ -793,7 +795,7 @@ impl Workspace {
                 cx.notify();
             }
             // Ended by itself (or by a close already under way): nothing more to end.
-            TerminalEvent::Exited => self.remove_at(index, None, window, cx),
+            TerminalEvent::Exited { .. } => self.remove_at(index, None, window, cx),
             TerminalEvent::DaemonLost => self.daemon_lost(index, window, cx),
         }
     }
@@ -1560,6 +1562,7 @@ fn daemon_create(
         name: saved.name.clone(),
         project: saved.project.as_ref().map(|p| p.display().to_string()),
         preset: saved.preset.as_ref().map(|p| p.name.clone()),
+        program: None,
     }
 }
 
