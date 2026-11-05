@@ -175,11 +175,24 @@ pub fn resolve(host: &str, timeout: Duration) -> Option<Effective> {
 /// Run `program -G -- host` and parse what it prints. `None` if it can't start, exits
 /// non-zero, or is still running after `timeout` (it is killed then).
 pub fn resolve_with(program: &OsStr, host: &str, timeout: Duration) -> Option<Effective> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
+    let mut command = std::process::Command::new(program);
+    command.args(["-G", "--", host]);
+    let (status, text) = run_capped(&mut command, timeout)?;
+    status
+        .success()
+        .then(|| crate::ssh_target::parse_effective(&text))
+}
 
-    let mut child = Command::new(program)
-        .args(["-G", "--", host])
+/// Run `command` with no stdin and its stderr dropped, and collect its stdout. `None` if it
+/// can't start or is still running after `timeout` (it is killed and reaped then).
+pub(crate) fn run_capped(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> Option<(std::process::ExitStatus, String)> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -207,11 +220,8 @@ pub fn resolve_with(program: &OsStr, host: &str, timeout: Duration) -> Option<Ef
             }
         }
     };
-    if !status.success() {
-        return None;
-    }
     let text = rx.recv_timeout(Duration::from_secs(1)).ok()?;
-    Some(crate::ssh_target::parse_effective(&text))
+    Some((status, text))
 }
 
 #[cfg(test)]
