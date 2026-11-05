@@ -211,6 +211,7 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar", sidebar_scenes),
     ("splits", split_scenes),
     ("switcher", switcher_scenes),
+    ("overlays", overlays),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -352,6 +353,7 @@ impl Render for TokenBoard {
             ("sidebar_border", ui.sidebar_border),
             ("divider", ui.divider),
             ("panel_border", ui.panel_border),
+            ("selection", ui.selection),
         ];
         let chips = tokens.map(|(name, color)| {
             // The pair closest to its floor, if this token is drawn on something.
@@ -1642,4 +1644,72 @@ fn switcher_scenes() {
             println!("ui-shots: {}", path.display());
         }
     }
+}
+
+/// One box over the window at a time: opening the rename box, the switcher or the address box
+/// over another closes that one, and the new one keeps the keyboard (the old one's late "lost
+/// focus" must not take it back). Rename -> switcher -> rename -> address box -> switcher, each
+/// checked after frames have run the focus changes. Panics on the first that doesn't hold.
+fn overlays() {
+    use gpui::Focusable;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(sidebar_appearance(theme, cx));
+        let ws = cx.new(|cx| switcher_workspace(window, cx));
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        // Which box is open, and whether it has the keyboard.
+        let open = |cx: &mut VisualTestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                let ws = ws.read(cx);
+                let mut open = vec![];
+                if let Some((_, input)) = &ws.renaming {
+                    open.push(("rename", input.focus_handle(cx).is_focused(window)));
+                }
+                if let Some(s) = &ws.switcher {
+                    open.push(("switcher", s.focus_handle(cx).is_focused(window)));
+                }
+                if let Some(a) = &ws.address_box {
+                    open.push(("address", a.focus_handle(cx).is_focused(window)));
+                }
+                if let Some(p) = &ws.host_picker {
+                    open.push(("picker", p.focus_handle(cx).is_focused(window)));
+                }
+                open
+            })
+            .expect("read the boxes")
+        };
+        for (step, expect) in [
+            ("rename", "rename"),
+            ("switcher", "switcher"),
+            ("rename", "rename"),
+            ("address", "address"),
+            ("switcher", "switcher"),
+        ] {
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| match step {
+                    "rename" => ws.start_rename(3, window, cx),
+                    "address" => ws.open_address_box(window, cx),
+                    _ => ws.open_switcher(window, cx),
+                })
+            })
+            .expect("open it");
+            // Frames, so focus changes (and the boxes' blur events) run.
+            for _ in 0..3 {
+                cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+                    .expect("draw");
+                cx.run_until_parked();
+            }
+            assert_eq!(open(cx), [(expect, true)], "overlays: after opening {step}");
+        }
+    };
+    render_with(&theme, size(px(960.0), px(600.0)), build, act);
 }

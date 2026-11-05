@@ -17,7 +17,7 @@ use crate::split_tree::Axis;
 use crate::ssh_target::{self, Effective, SshTarget};
 use crate::status::Status;
 use crate::terminal_view::TerminalView;
-use crate::workspace::{At, Opened, Session, Workspace, home_dir};
+use crate::workspace::{At, Opened, Overlay, Session, Workspace, home_dir};
 use crate::workspace_daemon::open_refusal;
 use crate::{ssh_control, ssh_hosts};
 
@@ -476,6 +476,7 @@ impl Workspace {
             ),
             None => (Vec::new(), Vec::new()),
         };
+        self.close_overlays(Overlay::HostPicker);
         let picker = cx.new(|cx| HostPicker::new(recent, hosts, window, cx));
         cx.subscribe_in(&picker, window, Self::on_host_picker_event)
             .detach();

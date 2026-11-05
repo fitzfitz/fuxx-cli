@@ -321,9 +321,10 @@ impl Render for HostPicker {
                 field.child(
                     div()
                         .absolute()
-                        // Inside the box's 1 px border and 4 px padding.
+                        // Inside the box's 1 px border and 4 px padding, and clear of the
+                        // caret at the start.
                         .top(px(1.0))
-                        .left(px(5.0))
+                        .left(px(7.0))
                         .text_color(hsla(ui.text_dim))
                         .child(PLACEHOLDER),
                 )
