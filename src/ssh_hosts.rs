@@ -18,7 +18,7 @@ const MAX_RECENT: usize = 10;
 
 /// `Host` names from `config`, in file order, following `Include` (relative paths are under
 /// `home/.ssh`, `~` is `home`, `*` globs the file name). Wildcard and negated names are skipped,
-/// duplicates dropped. A missing or unreadable file contributes nothing.
+/// as is a trailing `# comment`, and duplicates dropped. A missing or unreadable file contributes nothing.
 pub fn config_hosts(config: &Path, home: &Path) -> Vec<String> {
     let mut hosts = Vec::new();
     let mut stack = Vec::new();
@@ -50,7 +50,8 @@ fn collect_hosts(
         let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=');
         match keyword.to_ascii_lowercase().as_str() {
             "host" => {
-                for name in rest.split_whitespace() {
+                // A word starting with `#` starts a trailing comment, as ssh reads it.
+                for name in rest.split_whitespace().take_while(|w| !w.starts_with('#')) {
                     let name = name.trim_matches('"');
                     let skip =
                         name.is_empty() || name.starts_with('!') || name.contains(['*', '?']);
@@ -310,6 +311,21 @@ mod tests {
             ]
         );
         assert!(config_hosts(&ssh.join("missing"), &home).is_empty());
+    }
+
+    #[test]
+    fn a_trailing_comment_ends_a_host_line() {
+        let home = temp("comment");
+        let ssh = home.join(".ssh");
+        write(
+            &ssh.join("config"),
+            "Host work # the office box\nHost a#b c #d\n# Host commented-out\n",
+        );
+        // As OpenSSH reads it: a `#` that starts a word starts a comment.
+        assert_eq!(
+            config_hosts(&ssh.join("config"), &home),
+            ["work", "a#b", "c"]
+        );
     }
 
     #[test]
