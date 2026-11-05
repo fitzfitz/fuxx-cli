@@ -74,8 +74,8 @@ pub struct Browser {
 }
 
 impl Browser {
-    /// A new browser window titled `title`, shown in front: 1100 × 800 points, cascaded from the
-    /// key (or else main) window, centred when there is none. Pages get a `window.open` that
+    /// A new browser window titled `title`, not yet shown (see `bring_to_front`): 1100 × 800
+    /// points, cascaded from the key (or else main) window, centred when there is none. Pages get a `window.open` that
     /// loads in this window; cookies and logins live in the one shared, persistent data store;
     /// Safari's Web Inspector can attach where macOS allows it (13.3 and later).
     pub fn open(title: &str, _cx: &mut App) -> Browser {
@@ -101,7 +101,6 @@ impl Browser {
         }
         let browser = Browser::in_window(mtm, window);
         browser.set_title(title);
-        browser.bring_to_front();
         browser
     }
 
@@ -276,8 +275,15 @@ impl Browser {
     }
 
     /// Show the window (again, if the user closed or minimised it) in front of the others.
-    pub fn bring_to_front(&self) {
-        self.window.makeKeyAndOrderFront(None);
+    /// `take_keyboard` makes it the key window (the person asked for it); without, it only comes
+    /// forward, so what they are typing in a terminal keeps going there. Not
+    /// `orderFrontRegardless`: an agent's browser may sit behind other apps rather than jump over
+    /// whatever the person is using.
+    pub fn bring_to_front(&self, take_keyboard: bool) {
+        match front_order(take_keyboard) {
+            FrontOrder::TakeKeyboard => self.window.makeKeyAndOrderFront(None),
+            FrontOrder::KeepKeyboard => self.window.orderFront(None),
+        }
         self.delegate.ivars().closed.set(false);
     }
 
@@ -429,6 +435,21 @@ fn did_not_parse(domain: &str, code: isize, message: Option<&str>) -> bool {
 fn answer<T>(slot: &Slot<T>, answer: Result<T, String>) {
     if let Some(tx) = slot.take() {
         let _ = tx.send(answer);
+    }
+}
+
+/// How `bring_to_front` orders the window.
+#[derive(Debug, PartialEq)]
+enum FrontOrder {
+    TakeKeyboard,
+    KeepKeyboard,
+}
+
+fn front_order(take_keyboard: bool) -> FrontOrder {
+    if take_keyboard {
+        FrontOrder::TakeKeyboard
+    } else {
+        FrontOrder::KeepKeyboard
     }
 }
 
@@ -728,6 +749,12 @@ fn png_bytes(image: &NSImage) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+
+    #[test]
+    fn only_the_person_s_open_takes_the_keyboard() {
+        assert_eq!(front_order(true), FrontOrder::TakeKeyboard);
+        assert_eq!(front_order(false), FrontOrder::KeepKeyboard);
+    }
 
     #[test]
     fn answers_become_values() {
