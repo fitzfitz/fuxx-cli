@@ -53,8 +53,11 @@ pub enum TerminalEvent {
     StatusChanged(Status),
     /// The program set (Some) or reset (None) the title via OSC 0/2.
     TitleChanged(Option<SharedString>),
-    /// The shell exited; the session should close.
-    Exited,
+    /// The program exited (`code`: its exit code, if known); the session should close.
+    Exited {
+        #[allow(dead_code)] // read by the workspace from M10b Task 5 (SSH disconnects)
+        code: Option<u32>,
+    },
     /// Daemon backend: the connection to the daemon is gone. Not an exit: the session may
     /// still run there, so it stays.
     DaemonLost,
@@ -101,12 +104,13 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    /// Start a login shell (in `cwd`, else home) and wrap it in a new view entity (focused).
-    /// `startup` is typed into the shell right after it starts, with Enter; `env` is applied to
-    /// the shell's environment.
+    /// Start `program` (argv, run directly), or a login shell when `None`, in `cwd` (else home),
+    /// and wrap it in a new view entity (focused). `startup` is typed into the shell right after
+    /// it starts, with Enter (ignored with a `program`); `env` is applied to the environment.
     pub fn spawn(
         window: &mut Window,
         cx: &mut App,
+        program: Option<Vec<String>>,
         cwd: Option<&Path>,
         startup: Option<&str>,
         env: &pty::ShellEnv,
@@ -115,12 +119,12 @@ impl TerminalView {
         // 80x24 until the first paint measures the real size and resizes.
         let theme = cx.global::<Appearance>().theme;
         let core = TerminalCore::spawn(
-            pty::shell_command(cwd, env),
+            pty::command(program.as_deref(), cwd, env),
             TermDims { cols: 80, rows: 24 },
             tx,
             theme,
         )?;
-        if let Some(cmd) = startup {
+        if let Some(cmd) = startup.filter(|_| program.is_none()) {
             // The shell reads this as typed-ahead input once it is up.
             core.write(format!("{cmd}\r").as_bytes());
         }
@@ -304,7 +308,7 @@ impl TerminalView {
                 cx.emit(TerminalEvent::TitleChanged(Some(title.into())))
             }
             TermEvent::Term(Event::ResetTitle) => cx.emit(TerminalEvent::TitleChanged(None)),
-            TermEvent::Exited => cx.emit(TerminalEvent::Exited),
+            TermEvent::Exited { code } => cx.emit(TerminalEvent::Exited { code }),
             TermEvent::Status(status) => self.status_changed(status, cx),
             TermEvent::DaemonLost => cx.emit(TerminalEvent::DaemonLost),
             TermEvent::Term(_) => {}

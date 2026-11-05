@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 
 /// Oldest and newest protocol version this build speaks.
 pub const PROTO_MIN: u32 = 1;
-pub const PROTO_MAX: u32 = 1;
+pub const PROTO_MAX: u32 = 2;
+/// The first version with `Create.program` and the `ExitCode` frame.
+pub const PROTO_PROGRAMS: u32 = 2;
 /// Largest accepted `length` field (kind byte plus payload).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
@@ -139,6 +141,10 @@ pub struct Create {
     pub name: Option<String>,
     pub project: Option<String>,
     pub preset: Option<String>,
+    /// The program and its arguments, run directly instead of the login shell (`startup` is
+    /// then ignored). Protocol 2: a version-1 daemon ignores the field and starts the shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -302,6 +308,12 @@ pub enum Frame {
     Bell {
         id: u64,
     },
+    /// Protocol 2: the child's exit code (`None` if it couldn't be read), right before its
+    /// `Exited`. Only on connections that negotiated version 2 or later.
+    ExitCode {
+        id: u64,
+        code: Option<u32>,
+    },
     Exited {
         id: u64,
     },
@@ -353,6 +365,7 @@ mod kind {
     pub const STOP_REPLY: u8 = 0x1C;
     pub const ERROR: u8 = 0x1D;
     pub const WRITE: u8 = 0x1E;
+    pub const EXIT_CODE: u8 = 0x1F;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -368,6 +381,11 @@ struct StatusBody {
 struct TitleBody {
     id: u64,
     title: Option<String>,
+}
+#[derive(Serialize, Deserialize)]
+struct ExitCodeBody {
+    id: u64,
+    code: Option<u32>,
 }
 #[derive(Serialize, Deserialize)]
 struct ThemeBody {
@@ -489,6 +507,13 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
             },
         ),
         Frame::Bell { id } => id_only(kind::BELL, *id),
+        Frame::ExitCode { id, code } => json(
+            kind::EXIT_CODE,
+            &ExitCodeBody {
+                id: *id,
+                code: *code,
+            },
+        ),
         Frame::Exited { id } => id_only(kind::EXITED, *id),
         Frame::Resync { id } => id_only(kind::RESYNC, *id),
         Frame::Text(b) => json(kind::TEXT, b),
@@ -615,6 +640,13 @@ fn decode_frame(k: u8, p: &[u8]) -> Result<Frame, ProtoError> {
         kind::BELL => Frame::Bell {
             id: parse::<IdOnly>(p)?.id,
         },
+        kind::EXIT_CODE => {
+            let b: ExitCodeBody = parse(p)?;
+            Frame::ExitCode {
+                id: b.id,
+                code: b.code,
+            }
+        }
         kind::EXITED => Frame::Exited {
             id: parse::<IdOnly>(p)?.id,
         },
@@ -753,6 +785,7 @@ mod tests {
                 name: Some("a".into()),
                 project: None,
                 preset: Some("claude".into()),
+                program: None,
             }),
             Frame::Attach { id: 7 },
             Frame::Detach { id: 7 },
@@ -1046,6 +1079,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn negotiate_2_and_1_both_work() {
+        assert_eq!((PROTO_MIN, PROTO_MAX), (1, 2));
+        assert_eq!(negotiate(1, 1), Ok(1), "a version-1 peer");
+        assert_eq!(negotiate(1, 2), Ok(2));
+        assert_eq!(negotiate(2, 2), Ok(2));
+        assert_eq!(negotiate(1, 7), Ok(2), "a newer peer");
+        assert!(negotiate(3, 7).is_err());
+    }
+
+    #[test]
+    fn exit_code_frame_round_trips() {
+        for f in [
+            Frame::ExitCode {
+                id: 7,
+                code: Some(255),
+            },
+            Frame::ExitCode { id: 7, code: None },
+            Frame::ExitCode {
+                id: u64::MAX,
+                code: Some(u32::MAX),
+            },
+        ] {
+            let bytes = encode(&f);
+            assert_eq!(bytes[4], kind::EXIT_CODE);
+            assert_eq!(one(&bytes), Ok(f));
+        }
+        // A program goes in a Create only when there is one; one from an older client (no
+        // field) has none.
+        let create = |program: Option<Vec<String>>| Create {
+            cwd: None,
+            startup: None,
+            env: BTreeMap::new(),
+            dims: dims(),
+            cell_px: CellPx { w: 9, h: 18 },
+            name: None,
+            project: None,
+            preset: None,
+            program,
+        };
+        let argv = Some(vec!["ssh".to_string(), "h;b".to_string()]);
+        let with = Frame::Create(create(argv));
+        assert_eq!(one(&encode(&with)), Ok(with));
+        let plain = encode(&Frame::Create(create(None)));
+        assert!(!String::from_utf8_lossy(&plain).contains("program"));
+        let old = br#"{"cwd":null,"startup":null,"env":{},"dims":{"cols":80,"rows":24},"cell_px":{"w":9,"h":18},"name":null,"project":null,"preset":null}"#;
+        assert_eq!(
+            one(&raw(kind::CREATE, old)),
+            Ok(Frame::Create(create(None)))
+        );
+    }
+
     fn raw(k: u8, payload: &[u8]) -> Vec<u8> {
         let mut v = ((payload.len() + 1) as u32).to_be_bytes().to_vec();
         v.push(k);
@@ -1098,6 +1183,7 @@ mod tests {
             name: None,
             project: None,
             preset: None,
+            program: None,
         }));
         assert!(String::from_utf8_lossy(&f).contains(r#""cell_px":{"w":9,"h":18}"#));
     }

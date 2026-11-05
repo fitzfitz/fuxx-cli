@@ -42,7 +42,7 @@ use crate::grid::TextScope;
 use crate::groups;
 use crate::mux_proto::{
     self, DaemonInfo, Decoder, Frame, Hello, HelloOk, IncompatibleInfo, PROTO_MAX, PROTO_MIN,
-    ProtoError, Role, SessionInfo, StopReply,
+    PROTO_PROGRAMS, ProtoError, Role, SessionInfo, StopReply,
 };
 use crate::notifier;
 use crate::private_socket::{self, Slot, SocketGuard};
@@ -696,6 +696,7 @@ fn serve(stream: UnixStream, slot: Slot, shared: Arc<Shared>) {
                 stream,
                 out,
                 role: None,
+                proto: PROTO_MIN,
                 attached: HashMap::new(),
                 inputs: Arc::default(),
             };
@@ -731,10 +732,14 @@ fn write_loop(
 }
 
 /// Move one session's frames to the connection's writer until the session lets go of this
-/// subscriber or the connection is gone. Returns whether `Exited` went out.
-fn forward(frames: &FrameReceiver, out: &Out) -> bool {
+/// subscriber or the connection is gone. Returns whether `Exited` went out. `ExitCode` goes
+/// only to a connection at protocol `PROTO_PROGRAMS` or later (`exit_codes`).
+fn forward(frames: &FrameReceiver, out: &Out, exit_codes: bool) -> bool {
     let mut exited = false;
     while let Ok(frame) = frames.recv() {
+        if !exit_codes && matches!(frame, Frame::ExitCode { .. }) {
+            continue;
+        }
         exited |= matches!(frame, Frame::Exited { .. });
         if !out.send(&frame) {
             break;
@@ -751,6 +756,8 @@ struct Connection {
     out: Out,
     /// Set by `Hello`.
     role: Option<Role>,
+    /// The protocol version agreed in `Hello`.
+    proto: u32,
     /// The forwarding thread per attached session.
     attached: HashMap<u64, (Weak<DaemonSession>, JoinHandle<bool>)>,
     /// The input queue per session this client sent input to (`deliver_input` drains it, and
@@ -979,6 +986,7 @@ impl Connection {
                     return false;
                 }
                 self.role = Some(hello.role);
+                self.proto = proto;
                 if hello.role == Role::Ui {
                     self.shared.ui_clients.fetch_add(1, Ordering::AcqRel);
                     self.shared.resize_owner.store(self.id, Ordering::Release);
@@ -1007,8 +1015,8 @@ impl Connection {
         }
         // Numbered before spawning, so a failed spawn still never reuses its number.
         let id = self.shared.next_id.fetch_add(1, Ordering::AcqRel);
-        // `program: None` is the login shell from the client's env; the env is used as sent,
-        // except `FUXX_SESSION`: only the daemon knows the id.
+        // The `program` as sent, or with none the login shell from the client's env; the env
+        // is used as sent, except `FUXX_SESSION`: only the daemon knows the id.
         let mut spec = CreateSpec::from(create);
         session_env(&mut spec.env, id);
         match DaemonSession::spawn(id, spec) {
@@ -1040,10 +1048,10 @@ impl Connection {
             session.detach(self.id);
             return false;
         }
-        let out = self.out.clone();
+        let (out, exit_codes) = (self.out.clone(), self.exit_codes());
         let thread = std::thread::Builder::new()
             .name("fuxx-daemon-forward".into())
-            .spawn(move || forward(&frames, &out));
+            .spawn(move || forward(&frames, &out, exit_codes));
         match thread {
             Ok(thread) => {
                 self.attached.insert(id, (Arc::downgrade(&session), thread));
@@ -1053,15 +1061,25 @@ impl Connection {
                 return self.error(Some(id), format!("couldn't attach: {e}"));
             }
         }
-        // A child that ended before we subscribed sent its `Exited` to nobody: stop the stream
-        // (it has nothing more to come) and send it, unless the stream just did.
+        // A child that ended before we subscribed sent its `ExitCode` and `Exited` to nobody:
+        // stop the stream (it has nothing more to come) and send them, unless the stream just
+        // did.
         if !session.info().alive {
             let exited = self.detach(id);
             if !exited {
+                let code = session.exit_code();
+                if self.exit_codes() && !self.send(&Frame::ExitCode { id, code }) {
+                    return false;
+                }
                 return self.send(&Frame::Exited { id });
             }
         }
         true
+    }
+
+    /// Whether this client takes `ExitCode` frames (an older one doesn't know the kind).
+    fn exit_codes(&self) -> bool {
+        self.proto >= PROTO_PROGRAMS
     }
 
     /// Stop the session's stream to this client, after what it already queued. Returns
@@ -1507,6 +1525,7 @@ mod tests {
             name: Some(name.into()),
             project: None,
             preset: None,
+            program: None,
         })
     }
 
@@ -1708,6 +1727,88 @@ mod tests {
             .filter(|f| matches!(f, Frame::Exited { .. }))
             .count();
         assert_eq!(exits, 1);
+    }
+
+    /// A client that speaks only protocol 1 (an older fuxx).
+    fn connect_v1(path: &Path) -> Client {
+        let mut c = Client {
+            stream: UnixStream::connect(path).unwrap(),
+            decoder: Decoder::new(),
+        };
+        c.send(&Frame::Hello(Hello {
+            proto_min: 1,
+            proto_max: 1,
+            app_version: "old".into(),
+            role: Role::Script,
+        }))
+        .unwrap();
+        match c.recv(Duration::from_secs(5)).unwrap() {
+            Frame::HelloOk(ok) => assert_eq!(ok.proto, 1),
+            other => panic!("{other:?}"),
+        }
+        c
+    }
+
+    #[test]
+    fn daemon_reports_the_exit_code_before_exited() {
+        let path = temp_sock("exitcode");
+        let _d = start_with(
+            &path,
+            Tuning {
+                reap: false,
+                ..Tuning::default()
+            },
+        )
+        .unwrap();
+        let mut c = connect(&path, Role::Ui);
+        let mut old = connect_v1(&path);
+        let program = ["/bin/sh", "-c", "read x; exit 255"];
+        c.send(&Frame::Create(Create {
+            program: Some(program.iter().map(|w| w.to_string()).collect()),
+            ..match create_frame("p") {
+                Frame::Create(c) => c,
+                _ => unreachable!(),
+            }
+        }))
+        .unwrap();
+        let id = match recv_until(&mut c, |f| matches!(f, Frame::Created { .. })).pop() {
+            Some(Frame::Created { id }) => id,
+            other => panic!("{other:?}"),
+        };
+        for client in [&mut c, &mut old] {
+            client.send(&Frame::Attach { id }).unwrap();
+            recv_until(client, |f| matches!(f, Frame::Snapshot(_)));
+        }
+        c.send(&Frame::Input {
+            id,
+            bytes: b"\r".to_vec(),
+        })
+        .unwrap();
+        let exit = [
+            Frame::ExitCode {
+                id,
+                code: Some(255),
+            },
+            Frame::Exited { id },
+        ];
+        let frames = recv_until(&mut c, |f| matches!(f, Frame::Exited { .. }));
+        assert_eq!(frames[frames.len() - 2..], exit, "{frames:?}");
+        // A version-1 client never sees the new kind.
+        let frames = recv_until(&mut old, |f| matches!(f, Frame::Exited { .. }));
+        assert!(
+            !frames.iter().any(|f| matches!(f, Frame::ExitCode { .. })),
+            "{frames:?}"
+        );
+        // Attaching after the end: the code again, for version 2 only.
+        c.send(&Frame::Attach { id }).unwrap();
+        let frames = recv_until(&mut c, |f| matches!(f, Frame::Exited { .. }));
+        assert_eq!(frames[frames.len() - 2..], exit, "{frames:?}");
+        old.send(&Frame::Attach { id }).unwrap();
+        let frames = recv_until(&mut old, |f| matches!(f, Frame::Exited { .. }));
+        assert!(
+            !frames.iter().any(|f| matches!(f, Frame::ExitCode { .. })),
+            "{frames:?}"
+        );
     }
 
     #[test]

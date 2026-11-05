@@ -95,8 +95,10 @@ pub enum TermEvent {
     /// New output was parsed into the screen: redraw. `notifications` = OSC 9 / 99 / 777
     /// notifications in it.
     Output { notifications: usize },
-    /// The child closed the PTY (shell exited).
-    Exited,
+    /// The child closed the PTY (it exited). `code`: its exit code, `None` when it couldn't be
+    /// read (or a version-1 daemon, which doesn't send it). A child killed by a signal reads as
+    /// 1 (portable-pty's rule).
+    Exited { code: Option<u32> },
     /// Daemon backend: the daemon's status for this session changed.
     Status(Status),
     /// Daemon backend: the connection to the daemon is gone. Not an exit: the session may
@@ -287,6 +289,7 @@ impl TerminalCore {
 
         let reader_shared = shared.clone();
         let eof_events = events.clone();
+        let exit = pty.exit_waiter();
         // alacritty_terminal ignores notification OSCs, so a byte scanner watches the raw stream.
         let mut detector = OscDetector::new();
         pty::spawn_reader(
@@ -301,7 +304,8 @@ impl TerminalCore {
                 let _ = events.unbounded_send(TermEvent::Output { notifications });
             },
             move || {
-                let _ = eof_events.unbounded_send(TermEvent::Exited);
+                let code = exit.exit_code();
+                let _ = eof_events.unbounded_send(TermEvent::Exited { code });
             },
         )
         .map_err(|e| e.to_string())?;
@@ -417,6 +421,7 @@ impl TerminalCore {
             next: None,
             title: None,
             status: None,
+            exit_code: None,
         };
         let feeding = shared.clone();
         std::thread::Builder::new()
@@ -688,6 +693,8 @@ struct Replica {
     next: Option<u64>,
     title: Option<String>,
     status: Option<Status>,
+    /// From `ExitCode`, for the `Exited` that follows.
+    exit_code: Option<u32>,
 }
 
 impl Replica {
@@ -754,8 +761,12 @@ impl Replica {
                 shared.lock().term.resize(wire_dims(r.cols, r.rows));
                 self.emit(TermEvent::Term(Event::Wakeup));
             }
+            // Protocol 2: comes right before `Exited`, even while waiting for a snapshot.
+            Frame::ExitCode { code, .. } => self.exit_code = code,
             Frame::Exited { .. } => {
-                self.emit(TermEvent::Exited);
+                self.emit(TermEvent::Exited {
+                    code: self.exit_code,
+                });
                 return Step::End;
             }
             // Until the snapshot, the rest belongs to the old stream: the snapshot brings the
@@ -906,8 +917,82 @@ mod tests {
             Theme::default(),
         )
         .unwrap();
-        assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Exited)));
+        assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Exited { .. })));
         assert!(screen_text(&core).contains("hello fuxx"));
+    }
+
+    /// The code of the first `Exited`, if one comes within 5 s.
+    fn exit_code(rx: &mut UnboundedReceiver<TermEvent>) -> Option<Option<u32>> {
+        let mut code = None;
+        wait_for(rx, |e| match e {
+            TermEvent::Exited { code: c } => {
+                code = Some(*c);
+                true
+            }
+            _ => false,
+        });
+        code
+    }
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn pty_runs_argv_without_a_shell() {
+        let env = pty::ShellEnv {
+            set: Vec::new(),
+            remove: Vec::new(),
+        };
+        let cmd = pty::command(Some(&argv(&["/bin/sh", "-c", "exit 255"])), None, &env);
+        assert_eq!(
+            cmd.get_env("TERM").and_then(|v| v.to_str()),
+            Some("xterm-256color")
+        );
+        let (tx, mut rx) = unbounded();
+        let _core =
+            TerminalCore::spawn(cmd, TermDims { cols: 40, rows: 5 }, tx, Theme::default()).unwrap();
+        assert_eq!(exit_code(&mut rx), Some(Some(255)));
+        // One argument as given: a shell would have run `a` and `b`.
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            pty::command(Some(&argv(&["/bin/echo", "a;b"])), None, &env),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert_eq!(exit_code(&mut rx), Some(Some(0)));
+        assert!(screen_text(&core).contains("a;b"), "{}", screen_text(&core));
+        // Killed by a signal: portable-pty reports 1.
+        let (tx, mut rx) = unbounded();
+        let _core = TerminalCore::spawn(
+            pty::command(Some(&argv(&["/bin/sh", "-c", "kill -9 $$"])), None, &env),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert_eq!(exit_code(&mut rx), Some(Some(1)));
+    }
+
+    #[test]
+    fn a_plain_shell_exit_has_its_code() {
+        // The login shell (no program), `/bin/sh` through the env, not a process-wide variable.
+        let env = pty::ShellEnv {
+            set: vec![("SHELL".into(), "/bin/sh".into())],
+            remove: Vec::new(),
+        };
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            pty::command(None, None, &env),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        core.write(b"exit 3\r");
+        assert_eq!(exit_code(&mut rx), Some(Some(3)));
     }
 
     #[test]
@@ -937,7 +1022,7 @@ mod tests {
         )
         .unwrap();
         core.write(b"ping\r");
-        assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Exited)));
+        assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Exited { .. })));
         assert!(screen_text(&core).contains("got:ping"));
     }
 
@@ -1280,6 +1365,28 @@ mod daemon_tests {
     }
 
     #[test]
+    fn a_daemon_session_s_exit_code_reaches_the_replica() {
+        let (_d, path) = daemon("t-exitcode");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let program = ["/bin/sh", "-c", "sleep 0.3; exit 255"];
+        let create = mux_proto::Create {
+            program: Some(program.iter().map(|w| w.to_string()).collect()),
+            ..sh_create(40, 5)
+        };
+        let _core = TerminalCore::create_daemon(client, create, tx, Theme::default()).unwrap();
+        let mut code = None;
+        assert!(wait_event(&mut rx, |e| match e {
+            TermEvent::Exited { code: c } => {
+                code = Some(*c);
+                true
+            }
+            _ => false,
+        }));
+        assert_eq!(code, Some(Some(255)));
+    }
+
+    #[test]
     fn typed_echo_shows_on_the_replica() {
         let (_d, path) = daemon("t-echo");
         let client = DaemonClient::connect(&path).unwrap();
@@ -1466,7 +1573,7 @@ mod daemon_tests {
             .iter()
             .map(|e| format!("{e:?}"))
             .collect();
-        assert!(rest.iter().any(|e| e == "Exited"), "{rest:?}");
+        assert!(rest.iter().any(|e| e.starts_with("Exited")), "{rest:?}");
         assert!(!rest.iter().any(replica_queries), "{rest:?}");
     }
 
@@ -1700,7 +1807,7 @@ mod daemon_tests {
         let mut seen = Vec::new();
         assert!(wait_event(&mut rx, |e| {
             seen.push(format!("{e:?}"));
-            matches!(e, TermEvent::Exited)
+            matches!(e, TermEvent::Exited { .. })
         }));
         assert_eq!(screen_lines(&core)[0], "third?");
         let snap = core.snapshot();
@@ -1711,7 +1818,7 @@ mod daemon_tests {
             "Term(ResetTitle)",
             "Term(Title(T2))",
             "Status(Done)",
-            "Exited",
+            "Exited { code: None }",
         ];
         let got: Vec<&String> = seen
             .iter()
@@ -1811,7 +1918,7 @@ mod daemon_tests {
             }),
             "{seen:?}"
         );
-        assert!(!seen.iter().any(|e| e == "Exited"), "{seen:?}");
+        assert!(!seen.iter().any(|e| e.starts_with("Exited")), "{seen:?}");
         // The screen it had stays.
         assert_eq!(screen_lines(&core)[0], "still here");
     }
@@ -1838,7 +1945,10 @@ mod daemon_tests {
                 .unwrap();
         let id = core.daemon_id().unwrap();
         core.close();
-        assert!(wait_event(&mut rx, |e| matches!(e, TermEvent::Exited)));
+        assert!(wait_event(&mut rx, |e| matches!(
+            e,
+            TermEvent::Exited { .. }
+        )));
         assert!(eventually(|| !client
             .list()
             .unwrap()
