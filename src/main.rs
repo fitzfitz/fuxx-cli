@@ -32,8 +32,11 @@ mod private_socket;
 mod pty;
 mod restore;
 mod session_list;
+// Tasks 2-5 build the host list, launch path and UI on this; until then only the tests use it.
 mod settings;
 mod split_tree;
+#[cfg_attr(not(test), allow(dead_code))]
+mod ssh_target;
 mod status;
 mod terminal;
 mod terminal_view;
