@@ -4,24 +4,44 @@
 //! A browser window is titled `<session name> — <page title>`. One 500 ms timer runs while any
 //! browser is open: it keeps the titles up to date (a renamed session, a new page) and forgets
 //! the windows the user closed. Closing a session closes its browser.
+//!
+//! Also the `browser.*` socket methods (`fuxx browser …`, the MCP `browser_*` tools): checked
+//! at once, then answered from a GPUI task once the page has loaded or answered, each wait
+//! with its time limit, so the UI thread never waits for a page.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseDownEvent, Subscription,
-    Window, div, prelude::*, px,
+    App, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    MouseDownEvent, Subscription, WeakEntity, Window, div, prelude::*, px,
 };
+use serde_json::{Value, json};
 
+use crate::api::{self, ApiError, Request};
+use crate::api_server::Conn;
 use crate::appearance::Appearance;
-use crate::browser::Browser;
+use crate::browser::{Browser, CLOSED, PageState, didnt_answer, within};
+use crate::browser_js::{self, Snapshot};
 use crate::browser_url::normalize_url;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::terminal_view::hsla;
 use crate::workspace::Workspace;
+use crate::workspace_api::{now_ms, opt_str, required_str};
 
 /// How often the open browsers' titles are brought up to date and closed windows noticed.
 const BROWSER_TICK: Duration = Duration::from_millis(500);
+
+/// How often `open`, `back`, `reload` and `wait` look at the page.
+const BROWSER_POLL: Duration = Duration::from_millis(200);
+/// How long `open`, `back` and `reload` wait for the page to load.
+const LOAD_LIMIT: Duration = Duration::from_secs(30);
+/// How long a script (`eval`, and fuxx's own) or a screenshot may take.
+const SCRIPT_LIMIT: Duration = Duration::from_secs(10);
+/// `wait`'s limit when none is given, and the longest it takes.
+const WAIT_DEFAULT: Duration = Duration::from_secs(30);
+const WAIT_MAX: Duration = Duration::from_secs(300);
 
 const PANEL_WIDTH: f32 = 480.0;
 const PLACEHOLDER: &str = "Address \u{2014} localhost:3000 or a URL";
@@ -66,6 +86,16 @@ impl<B: BrowserWindow> Browsers<B> {
 
     pub fn get(&self, session: u64) -> Option<&B> {
         self.open.get(&session).map(|(b, _)| b)
+    }
+
+    /// `session`'s browser while its window is open; else the error every browser command
+    /// but `open` answers.
+    pub fn live(&self, session: u64) -> Result<&B, ApiError> {
+        self.get(session).filter(|b| !b.is_closed()).ok_or_else(|| {
+            ApiError::not_found(format!(
+                "no browser for s{session} (fuxx browser open URL first)"
+            ))
+        })
     }
 
     /// Keep `browser` as `session`'s, its window titled `title`.
@@ -334,6 +364,355 @@ impl Workspace {
     }
 }
 
+/// A `browser.*` request, its parameters checked.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BrowserCommand {
+    Open {
+        url: String,
+    },
+    Snapshot,
+    Click {
+        r#ref: String,
+    },
+    Fill {
+        r#ref: String,
+        text: String,
+    },
+    Press {
+        key: String,
+    },
+    Read,
+    Eval {
+        js: String,
+    },
+    /// Until the page shows `text` and has an element matching `selector` (at least one is
+    /// given), for at most `limit`.
+    Wait {
+        text: Option<String>,
+        selector: Option<String>,
+        limit: Duration,
+    },
+    /// To `path`, or a new file in the temp folder.
+    Screenshot {
+        path: Option<PathBuf>,
+    },
+    Url,
+    Back,
+    Reload,
+    Close,
+}
+
+impl BrowserCommand {
+    /// The command `method` asks for, with its parameters from `p`.
+    pub fn parse(method: &str, p: &Value) -> Result<Self, ApiError> {
+        let text = |key: &str| required_str(p, key).map(str::to_string);
+        Ok(match method {
+            "browser.open" => Self::Open { url: text("url")? },
+            "browser.snapshot" => Self::Snapshot,
+            "browser.click" => Self::Click {
+                r#ref: text("ref")?,
+            },
+            "browser.fill" => Self::Fill {
+                r#ref: text("ref")?,
+                text: text("text")?,
+            },
+            "browser.press" => Self::Press { key: text("key")? },
+            "browser.read" => Self::Read,
+            "browser.eval" => Self::Eval { js: text("js")? },
+            "browser.wait" => wait_params(p)?,
+            "browser.screenshot" => Self::Screenshot {
+                path: screenshot_path(p)?,
+            },
+            "browser.url" => Self::Url,
+            "browser.back" => Self::Back,
+            "browser.reload" => Self::Reload,
+            "browser.close" => Self::Close,
+            other => {
+                return Err(ApiError::unknown_method(format!(
+                    "unknown method \"{other}\" (see system.version)"
+                )));
+            }
+        })
+    }
+}
+
+/// `browser.wait`'s `text` and `selector` (empty counts as absent; one is needed) and its
+/// `timeout_ms` (30 s when absent, at most 300 s).
+fn wait_params(p: &Value) -> Result<BrowserCommand, ApiError> {
+    let given = |key: &str| -> Result<Option<String>, ApiError> {
+        Ok(opt_str(p, key)?
+            .filter(|s| !s.is_empty())
+            .map(str::to_string))
+    };
+    let (text, selector) = (given("text")?, given("selector")?);
+    if text.is_none() && selector.is_none() {
+        return Err(ApiError::bad_request("wait needs text or selector"));
+    }
+    let limit = match p.get("timeout_ms") {
+        None | Some(Value::Null) => WAIT_DEFAULT,
+        Some(ms) => ms
+            .as_u64()
+            .map(Duration::from_millis)
+            .ok_or_else(|| {
+                ApiError::bad_request("timeout_ms must be a whole number of milliseconds")
+            })?
+            .min(WAIT_MAX),
+    };
+    Ok(BrowserCommand::Wait {
+        text,
+        selector,
+        limit,
+    })
+}
+
+/// `browser.screenshot`'s `path`: absent or empty is a temp file; else a full path in a
+/// folder that exists (the PNG is written as is, replacing any file there).
+fn screenshot_path(p: &Value) -> Result<Option<PathBuf>, ApiError> {
+    let Some(path) = opt_str(p, "path")?.filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    if path.is_relative() {
+        return Err(ApiError::bad_request(format!(
+            "path must be a full path: {}",
+            path.display()
+        )));
+    }
+    match path.parent() {
+        Some(folder) if folder.is_dir() => Ok(Some(path)),
+        Some(folder) => Err(ApiError::not_found(format!(
+            "no folder {}",
+            folder.display()
+        ))),
+        None => Err(ApiError::bad_request("path must name a file")),
+    }
+}
+
+/// What a click, fill or press script answered: `{ok: true}`, or its error as it is, but an
+/// unknown ref says to take a new snapshot.
+fn action_answer(answer: &Value) -> Result<(), String> {
+    match answer.get("error") {
+        Some(error) => {
+            let error = error
+                .as_str()
+                .map_or_else(|| error.to_string(), str::to_string);
+            if error.starts_with("unknown ref ") {
+                Err(format!("{error} (take a new snapshot)"))
+            } else {
+                Err(error)
+            }
+        }
+        None if answer.get("ok") == Some(&Value::Bool(true)) => Ok(()),
+        None => Err(format!("the page's answer isn't ok or an error: {answer}")),
+    }
+}
+
+/// Once the page has stopped loading: its address and title, or why it failed to load.
+fn settled(state: &PageState) -> Option<Result<Value, ApiError>> {
+    if state.loading {
+        return None;
+    }
+    Some(match &state.error {
+        Some(error) => Err(ApiError::refused(error.clone())),
+        None => Ok(json!({ "url": state.url, "title": state.title })),
+    })
+}
+
+/// A screenshot's file when none is named: `fuxx-browser-s<N>-<unix ms>.png` in `dir`.
+fn screenshot_file(dir: &Path, session: u64, ms: u64) -> PathBuf {
+    dir.join(format!("fuxx-browser-s{session}-{ms}.png"))
+}
+
+/// A page's own error as the reply's: a time limit passed is `timeout`, the rest `refused`.
+fn page_error(message: String) -> ApiError {
+    if message.starts_with("the page didn't answer") {
+        ApiError::timeout(message)
+    } else {
+        ApiError::refused(message)
+    }
+}
+
+impl Workspace {
+    /// A `browser.*` request for the target session (by default the caller's). Bad parameters
+    /// and a session with no browser are answered now, as are `url` and `close`; the rest
+    /// (`None`) reply to `conn` from a GPUI task once the page has loaded or answered.
+    pub(crate) fn browser_request(
+        &mut self,
+        request: &Request,
+        conn: &Conn,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<Value>, ApiError> {
+        let p = &request.params;
+        let command = BrowserCommand::parse(&request.method, p)?;
+        let index = self.target_index(p, "target")?;
+        let session = self.sessions.items()[index].id;
+        match &command {
+            BrowserCommand::Open { url } => {
+                self.browser_open(index, url, cx)
+                    .map_err(ApiError::bad_request)?;
+            }
+            BrowserCommand::Url => {
+                let state = self.browsers.live(session)?.state();
+                return Ok(Some(json!({
+                    "url": state.url,
+                    "title": state.title,
+                    "loading": state.loading,
+                })));
+            }
+            BrowserCommand::Close => {
+                self.browsers.live(session)?;
+                self.browsers.session_closed(session);
+                return Ok(Some(json!({})));
+            }
+            _ => {
+                self.browsers.live(session)?;
+            }
+        }
+        let (conn, id) = (conn.clone(), request.id);
+        cx.spawn(async move |this, cx| {
+            let page = SessionPage {
+                workspace: this,
+                session,
+                executor: cx.background_executor().clone(),
+            };
+            let result = page.run(command, cx).await;
+            conn.send_line(&api::reply(id, result));
+        })
+        .detach();
+        Ok(None)
+    }
+}
+
+/// A session's browser, as a command running in a GPUI task reaches it: one gone meanwhile
+/// (its window or session closed) answers `browser closed`.
+struct SessionPage {
+    workspace: WeakEntity<Workspace>,
+    session: u64,
+    executor: BackgroundExecutor,
+}
+
+impl SessionPage {
+    /// `command`'s reply (`url` and `close` are answered before any task).
+    async fn run(&self, command: BrowserCommand, cx: &mut AsyncApp) -> Result<Value, ApiError> {
+        match command {
+            // `browser_request` has started the load.
+            BrowserCommand::Open { .. } => self.loaded(cx).await,
+            BrowserCommand::Back => {
+                self.with(cx, Browser::back)?;
+                self.loaded(cx).await
+            }
+            BrowserCommand::Reload => {
+                self.with(cx, Browser::reload)?;
+                self.loaded(cx).await
+            }
+            BrowserCommand::Snapshot => {
+                let value = self.script(cx, browser_js::snapshot_js()).await?;
+                let snapshot: Snapshot = serde_json::from_value(value).map_err(|e| {
+                    ApiError::refused(format!("the page's snapshot didn't parse ({e})"))
+                })?;
+                Ok(json!(snapshot))
+            }
+            BrowserCommand::Click { r#ref } => self.act(cx, &browser_js::click_js(&r#ref)).await,
+            BrowserCommand::Fill { r#ref, text } => {
+                self.act(cx, &browser_js::fill_js(&r#ref, &text)).await
+            }
+            BrowserCommand::Press { key } => self.act(cx, &browser_js::press_js(&key)).await,
+            BrowserCommand::Read => {
+                let text = self.script(cx, browser_js::read_js()).await?;
+                Ok(json!({ "text": text }))
+            }
+            BrowserCommand::Eval { js } => {
+                let answer = self.with(cx, |b| b.eval(&js))?;
+                let value = within(answer, SCRIPT_LIMIT, &self.executor)
+                    .await
+                    .map_err(page_error)?;
+                Ok(json!({ "value": value }))
+            }
+            BrowserCommand::Wait {
+                text,
+                selector,
+                limit,
+            } => {
+                let check = browser_js::wait_check_js(text.as_deref(), selector.as_deref());
+                self.shows(cx, &check, limit).await
+            }
+            BrowserCommand::Screenshot { path } => self.screenshot(cx, path).await,
+            BrowserCommand::Url | BrowserCommand::Close => {
+                unreachable!("answered in browser_request")
+            }
+        }
+    }
+
+    /// `f` of the browser, if it is still there.
+    fn with<R>(&self, cx: &AsyncApp, f: impl FnOnce(&Browser) -> R) -> Result<R, ApiError> {
+        self.workspace
+            .read_with(cx, |this, _| this.browsers.get(self.session).map(f))
+            .ok()
+            .flatten()
+            .ok_or_else(|| ApiError::refused(CLOSED))
+    }
+
+    /// One of fuxx's own page scripts' value (run once, never retried), within the script limit.
+    async fn script(&self, cx: &AsyncApp, script: &str) -> Result<Value, ApiError> {
+        let answer = self.with(cx, |b| b.run_script(script))?;
+        within(answer, SCRIPT_LIMIT, &self.executor)
+            .await
+            .map_err(page_error)
+    }
+
+    /// A click, fill or press: `{}` once the page has done it.
+    async fn act(&self, cx: &AsyncApp, script: &str) -> Result<Value, ApiError> {
+        let answer = self.script(cx, script).await?;
+        action_answer(&answer).map_err(ApiError::refused)?;
+        Ok(json!({}))
+    }
+
+    /// The address and title once the page has loaded (looked at every 200 ms, for at most
+    /// 30 s), or why it didn't.
+    async fn loaded(&self, cx: &AsyncApp) -> Result<Value, ApiError> {
+        let deadline = Instant::now() + LOAD_LIMIT;
+        loop {
+            self.executor.timer(BROWSER_POLL).await;
+            if let Some(reply) = settled(&self.with(cx, Browser::state)?) {
+                return reply;
+            }
+            if Instant::now() >= deadline {
+                return Err(ApiError::timeout(didnt_answer(LOAD_LIMIT)));
+            }
+        }
+    }
+
+    /// `{}` once the wait script `check` answers true (asked every 200 ms, for at most
+    /// `limit`); its error (a bad selector) at once.
+    async fn shows(&self, cx: &AsyncApp, check: &str, limit: Duration) -> Result<Value, ApiError> {
+        let deadline = Instant::now() + limit;
+        loop {
+            if self.script(cx, check).await? == json!(true) {
+                return Ok(json!({}));
+            }
+            if Instant::now() >= deadline {
+                return Err(ApiError::timeout("timed out waiting"));
+            }
+            self.executor.timer(BROWSER_POLL).await;
+        }
+    }
+
+    /// A PNG of the page, written to `path` (or a new temp file) off the UI thread; its path.
+    async fn screenshot(&self, cx: &AsyncApp, path: Option<PathBuf>) -> Result<Value, ApiError> {
+        let answer = self.with(cx, Browser::screenshot)?;
+        let png = within(answer, SCRIPT_LIMIT, &self.executor)
+            .await
+            .map_err(page_error)?;
+        let path =
+            path.unwrap_or_else(|| screenshot_file(&std::env::temp_dir(), self.session, now_ms()));
+        let file = path.clone();
+        cx.background_spawn(async move { std::fs::write(file, png) })
+            .await
+            .map_err(|e| ApiError::refused(format!("couldn't write {}: {e}", path.display())))?;
+        Ok(json!({ "path": path.display().to_string() }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
@@ -459,5 +838,222 @@ mod tests {
         browsers.insert(1, new, "new".into());
         assert!(old_dropped.get());
         assert!(browsers.get(1).is_some());
+    }
+
+    #[test]
+    fn a_command_without_a_browser_errors() {
+        let mut browsers: Browsers<Fake> = Browsers::new();
+        let none = browsers.live(3).err().expect("no browser yet");
+        assert_eq!(
+            (none.code, none.message.as_str()),
+            (
+                "not_found",
+                "no browser for s3 (fuxx browser open URL first)"
+            )
+        );
+        let (one, _) = Fake::new();
+        browsers.insert(3, one, "api".into());
+        assert!(browsers.live(3).is_ok());
+        // A window the user closed (not forgotten yet) is no browser either.
+        browsers.get(3).unwrap().closed.set(true);
+        let closed = browsers.live(3).err().expect("its window closed");
+        assert_eq!(
+            closed.message,
+            "no browser for s3 (fuxx browser open URL first)"
+        );
+    }
+
+    fn parse(method: &str, p: Value) -> Result<BrowserCommand, ApiError> {
+        BrowserCommand::parse(method, &p)
+    }
+
+    #[test]
+    fn wait_needs_text_or_selector() {
+        for neither in [
+            json!({}),
+            json!({"text": ""}),
+            json!({"text": null, "selector": ""}),
+            json!({"timeout_ms": 1000}),
+        ] {
+            let e = parse("browser.wait", neither.clone()).unwrap_err();
+            assert_eq!(
+                (e.code, e.message.as_str()),
+                ("bad_request", "wait needs text or selector"),
+                "{neither}"
+            );
+        }
+        let wait = |text: Option<&str>, selector: Option<&str>, secs: u64| BrowserCommand::Wait {
+            text: text.map(str::to_string),
+            selector: selector.map(str::to_string),
+            limit: Duration::from_secs(secs),
+        };
+        assert_eq!(
+            parse("browser.wait", json!({"text": "Hi"})),
+            Ok(wait(Some("Hi"), None, 30))
+        );
+        assert_eq!(
+            parse(
+                "browser.wait",
+                json!({"selector": "#go", "timeout_ms": 5000})
+            ),
+            Ok(wait(None, Some("#go"), 5))
+        );
+        assert_eq!(
+            parse("browser.wait", json!({"text": "a", "selector": "b"})),
+            Ok(wait(Some("a"), Some("b"), 30))
+        );
+        // At most 300 s.
+        assert_eq!(
+            parse("browser.wait", json!({"text": "a", "timeout_ms": 900_000})),
+            Ok(wait(Some("a"), None, 300))
+        );
+        for bad in [json!("5"), json!(-1), json!(1.5)] {
+            let p = json!({"text": "a", "timeout_ms": bad});
+            assert_eq!(parse("browser.wait", p).unwrap_err().code, "bad_request");
+        }
+        assert_eq!(
+            parse("browser.wait", json!({"text": 3})).unwrap_err().code,
+            "bad_request"
+        );
+    }
+
+    #[test]
+    fn browser_methods_take_their_params() {
+        let s = str::to_string;
+        assert_eq!(
+            parse(
+                "browser.open",
+                json!({"url": "localhost:3000", "target": "s2"})
+            ),
+            Ok(BrowserCommand::Open {
+                url: s("localhost:3000")
+            })
+        );
+        assert_eq!(
+            parse("browser.click", json!({"ref": "e3"})),
+            Ok(BrowserCommand::Click { r#ref: s("e3") })
+        );
+        // Empty text clears a field.
+        assert_eq!(
+            parse("browser.fill", json!({"ref": "e5", "text": ""})),
+            Ok(BrowserCommand::Fill {
+                r#ref: s("e5"),
+                text: s("")
+            })
+        );
+        assert_eq!(
+            parse("browser.press", json!({"key": "Enter"})),
+            Ok(BrowserCommand::Press { key: s("Enter") })
+        );
+        assert_eq!(
+            parse("browser.eval", json!({"js": "document.title"})),
+            Ok(BrowserCommand::Eval {
+                js: s("document.title")
+            })
+        );
+        for (method, command) in [
+            ("browser.snapshot", BrowserCommand::Snapshot),
+            ("browser.read", BrowserCommand::Read),
+            ("browser.url", BrowserCommand::Url),
+            ("browser.back", BrowserCommand::Back),
+            ("browser.reload", BrowserCommand::Reload),
+            ("browser.close", BrowserCommand::Close),
+            (
+                "browser.screenshot",
+                BrowserCommand::Screenshot { path: None },
+            ),
+        ] {
+            assert_eq!(parse(method, json!({"caller": 3})), Ok(command), "{method}");
+        }
+        for (method, missing) in [
+            ("browser.open", json!({})),
+            ("browser.click", json!({})),
+            ("browser.fill", json!({"ref": "e5"})),
+            ("browser.fill", json!({"text": "x"})),
+            ("browser.press", json!({})),
+            ("browser.eval", json!({"js": 1})),
+        ] {
+            let e = parse(method, missing.clone()).unwrap_err();
+            assert_eq!(e.code, "bad_request", "{method} {missing}");
+        }
+        let e = parse("browser.forward", json!({})).unwrap_err();
+        assert_eq!(e.code, "unknown_method");
+        assert!(e.message.contains("browser.forward"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_screenshot_goes_where_asked_or_to_a_temp_file() {
+        let tmp = std::env::temp_dir();
+        let shot = tmp.join("shot.png");
+        assert_eq!(
+            parse(
+                "browser.screenshot",
+                json!({"path": shot.display().to_string()})
+            ),
+            Ok(BrowserCommand::Screenshot { path: Some(shot) })
+        );
+        assert_eq!(
+            parse("browser.screenshot", json!({"path": ""})),
+            Ok(BrowserCommand::Screenshot { path: None })
+        );
+        let relative = parse("browser.screenshot", json!({"path": "shot.png"})).unwrap_err();
+        assert_eq!(relative.code, "bad_request");
+        let nowhere = tmp.join("fuxx-no-such-folder-5b1e").join("shot.png");
+        let e = parse(
+            "browser.screenshot",
+            json!({"path": nowhere.display().to_string()}),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "not_found");
+        assert!(
+            e.message.contains("fuxx-no-such-folder-5b1e"),
+            "{}",
+            e.message
+        );
+        assert_eq!(
+            screenshot_file(Path::new("/tmp/x"), 4, 1_700_000_000_123),
+            PathBuf::from("/tmp/x/fuxx-browser-s4-1700000000123.png")
+        );
+    }
+
+    #[test]
+    fn page_actions_answer_ok_or_their_error() {
+        assert_eq!(action_answer(&json!({"ok": true})), Ok(()));
+        assert_eq!(
+            action_answer(&json!({"error": "unknown ref e9"})),
+            Err("unknown ref e9 (take a new snapshot)".to_string())
+        );
+        // Other errors (fill, press) pass through as they are.
+        assert_eq!(
+            action_answer(&json!({"error": "e3 is not a text field"})),
+            Err("e3 is not a text field".to_string())
+        );
+        assert_eq!(
+            action_answer(&json!({"error": "unknown key \"F13\" (use Enter, …)"})),
+            Err("unknown key \"F13\" (use Enter, …)".to_string())
+        );
+        assert!(action_answer(&json!(null)).is_err());
+        assert!(action_answer(&json!({"ok": false})).is_err());
+    }
+
+    #[test]
+    fn a_page_settles_once_it_stops_loading() {
+        let state = |loading: bool, error: Option<&str>| PageState {
+            url: "http://localhost:3000/".into(),
+            title: "App".into(),
+            loading,
+            error: error.map(str::to_string),
+        };
+        assert_eq!(settled(&state(true, None)), None);
+        assert_eq!(
+            settled(&state(false, None)),
+            Some(Ok(json!({"url": "http://localhost:3000/", "title": "App"})))
+        );
+        let failed = "the page failed to load: Could not connect to the server.";
+        let e = settled(&state(false, Some(failed))).unwrap().unwrap_err();
+        assert_eq!((e.code, e.message.as_str()), ("refused", failed));
+        // Timeouts are `timeout` (exit 124); other page errors are refusals.
+        assert_eq!(page_error(didnt_answer(SCRIPT_LIMIT)).code, "timeout");
+        assert_eq!(page_error("the script failed: x".into()).code, "refused");
     }
 }

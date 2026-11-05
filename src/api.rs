@@ -33,6 +33,23 @@ pub const METHODS: &[&str] = &[
     "events.subscribe",
 ];
 
+/// The agent browser's methods (M10c), answered by the window (`system.version` lists both).
+pub const BROWSER_METHODS: &[&str] = &[
+    "browser.open",
+    "browser.snapshot",
+    "browser.click",
+    "browser.fill",
+    "browser.press",
+    "browser.read",
+    "browser.eval",
+    "browser.wait",
+    "browser.screenshot",
+    "browser.url",
+    "browser.back",
+    "browser.reload",
+    "browser.close",
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]

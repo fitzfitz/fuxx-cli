@@ -233,6 +233,13 @@ impl Workspace {
                 Ok(()) => Reply::Later,
                 Err(e) => Reply::Now(Err(e)),
             },
+            method if method.starts_with("browser.") => {
+                match self.browser_request(request, conn, cx) {
+                    Ok(Some(result)) => Reply::Now(Ok(result)),
+                    Ok(None) => Reply::Later,
+                    Err(e) => Reply::Now(Err(e)),
+                }
+            }
             "events.subscribe" => {
                 // Added now and acknowledged right after, on this same UI-thread turn, so no
                 // event can come before the acknowledgement.
@@ -258,7 +265,7 @@ impl Workspace {
             "system.ping" => Ok(json!({ "pong": true })),
             "system.version" => Ok(json!({
                 "version": env!("CARGO_PKG_VERSION"),
-                "methods": api::METHODS,
+                "methods": ([api::METHODS, api::BROWSER_METHODS].concat()),
             })),
             "session.list" => Ok(self.list()),
             // session.new is answered in `reply_to`.
@@ -449,7 +456,7 @@ impl Workspace {
 
     /// The sidebar index of the session `p[key]` names; no target means the caller, else the
     /// focused session.
-    fn target_index(&self, p: &Value, key: &str) -> Result<usize, ApiError> {
+    pub(crate) fn target_index(&self, p: &Value, key: &str) -> Result<usize, ApiError> {
         let target = opt_str(p, key)?.map(api::parse_target);
         let refs: Vec<SessionRef> = self
             .sessions
@@ -860,7 +867,7 @@ fn caller_param(p: &Value) -> Result<Option<u64>, ApiError> {
 }
 
 /// `p[key]` as text; absent or null is `None`, anything else is a bad request.
-fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, ApiError> {
+pub(crate) fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, ApiError> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
@@ -868,7 +875,7 @@ fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, ApiError> {
     }
 }
 
-fn required_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, ApiError> {
+pub(crate) fn required_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, ApiError> {
     opt_str(p, key)?.ok_or_else(|| ApiError::bad_request(format!("{key} is missing")))
 }
 
@@ -1033,7 +1040,7 @@ fn screen_text(sessions: &[crate::workspace::Session], id: u64, cx: &App) -> Str
 }
 
 /// Now, in unix milliseconds (the events' `ts`).
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
