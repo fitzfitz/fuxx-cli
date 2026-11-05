@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M10b — SSH workspaces** (Phase 3), not planned yet. M10a Persistent Sessions is complete |
-| **Status** | ⬜ M10b not started. M10a ✅ done 2026-11-05 (on-screen checks confirmed by you). |
-| **▶ Next action** | M10b — SSH workspaces (see [[40 - Roadmap]]). |
+| **Current milestone** | **M10b — SSH workspaces** (Phase 3), planned 2026-11-05. M10a Persistent Sessions is complete |
+| **Status** | ⬜ M10b planned (spec + plan written, waiting for your OK). M10a ✅ done 2026-11-05 (on-screen checks confirmed by you). |
+| **▶ Next action** | Your review of [[51 - Milestone 10b - SSH Workspaces]] and [[M10b Plan - SSH Workspaces]], then Task 1. |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-11-05 |
 
@@ -53,6 +53,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M8 | Split panes (nested) — *moved into scope 2026-10-27* | [[M8 Plan - Split Panes]] | ✅ | 7/7 | ⌘D / ⌘⇧D, drag dividers, layouts restored |
 | M9 | Scripting API (socket, `fuxx` command, events, wait, MCP) | [[M9 Plan - Scripting API]] | ✅ | 10/10 | Script and agents drive fuxx; wait/question/answer an agent |
 | M10a | Persistent sessions (background service, reattach) | [[M10a Plan - Persistent Sessions]] | ✅ | 12/12 | Quit → agents keep running → reopen with everything live |
+| M10b | SSH workspaces (local ssh, host picker, reconnect) | [[M10b Plan - SSH Workspaces]] | ⬜ | 0/9 | Pick a host → remote claude rings → drop Wi-Fi → Enter reconnects |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
