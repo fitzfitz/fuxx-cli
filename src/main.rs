@@ -38,6 +38,7 @@ mod reduce_motion;
 mod restore;
 mod session_list;
 mod settings;
+mod sidebar;
 mod split_tree;
 mod ssh_control;
 mod ssh_hosts;

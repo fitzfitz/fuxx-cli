@@ -13,7 +13,6 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -21,10 +20,10 @@ use std::time::Instant;
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Entity,
-    EntityId, Focusable, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathPromptOptions, Pixels, Point, SharedString, StyleRefinement, Subscription, Task, Window,
-    WindowControlArea, actions, canvas, div, prelude::*, px, relative,
+    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
+    SharedString, StyleRefinement, Subscription, Task, Window, WindowControlArea, actions, canvas,
+    div, prelude::*, px,
 };
 
 use crate::adopt::{self, Probe};
@@ -32,7 +31,7 @@ use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::daemon_client::{self, DaemonClient};
-use crate::groups::{self, GroupKey, Row};
+use crate::groups::{self, GroupKey};
 use crate::host_picker::HostPicker;
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
@@ -44,13 +43,13 @@ use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
+use crate::sidebar::{self, SidebarState};
 use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
-use crate::theme::UiColors;
-use crate::ui_tokens::size::{STATUS_MARK, TOP_BAND};
+use crate::ui_tokens::size::TOP_BAND;
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -101,11 +100,9 @@ actions!(
     ]
 );
 
-const SIDEBAR_WIDTH: f32 = 220.0;
-
 /// How long after a session turns Done its mark is drawn as a pop: the pop, plus a margin for the
 /// frame it starts on. After that the mark is drawn plain, so the pop never plays twice.
-const POP_SHOWN: std::time::Duration = std::time::Duration::from_millis(450);
+pub(crate) const POP_SHOWN: std::time::Duration = std::time::Duration::from_millis(450);
 
 pub struct Session {
     /// Scripting id: shown to scripts as `s<id>`.
@@ -176,33 +173,6 @@ impl Session {
             self.preset.as_ref().map(|p| p.name.as_str()),
         )
         .into()
-    }
-}
-
-/// What a sidebar row carries while it's dragged: the session (by its view), its group and its
-/// name.
-struct DraggedSession {
-    view: EntityId,
-    group: Option<GroupKey>,
-    label: SharedString,
-}
-
-/// The little label that follows the pointer during a drag.
-struct DragPreview {
-    label: SharedString,
-}
-
-impl Render for DragPreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = cx.global::<Appearance>().theme.ui();
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_sm()
-            .bg(hsla(ui.row_active))
-            .text_color(hsla(ui.text))
-            .child(self.label.clone())
     }
 }
 
@@ -278,8 +248,9 @@ pub struct Workspace {
     pub(crate) deferred: Vec<crate::workspace_api::Deferred>,
     /// Whether the deferred requests' check is running.
     pub(crate) deferred_ticking: bool,
-    /// The sidebar is hidden (⌘\); the pane area then has the top band itself.
-    pub(crate) sidebar_hidden: bool,
+    /// The sidebar: its width, whether it's hidden (⌘\; the pane area then has the top band
+    /// itself), its scroll, its hint card and menu.
+    pub(crate) sidebar: SidebarState,
     /// The top band was pressed and the mouse hasn't moved since: the next move drags the window.
     band_pressed: bool,
 }
@@ -296,6 +267,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self::blank(scripting, persistent, window, cx);
+        if let Some(saved) = read_saved_quietly() {
+            this.sidebar.load(&saved);
+        }
         // While a quit ends sessions first, the red button waits for it.
         let me = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
@@ -367,7 +341,7 @@ impl Workspace {
             _flush_on_quit: cx.on_app_quit(Self::flush_on_quit),
             deferred: Vec::new(),
             deferred_ticking: false,
-            sidebar_hidden: false,
+            sidebar: SidebarState::new(),
             band_pressed: false,
         }
     }
@@ -565,6 +539,9 @@ impl Workspace {
                     ssh: s.ssh.clone(),
                 })
                 .collect(),
+            sidebar_width: Some(self.sidebar.width),
+            sidebar_hidden: self.sidebar.hidden,
+            hint_dismissed: self.sidebar.hint_dismissed,
         };
         let path = restore::state_path(&home);
         if let Err(err) = settings::write_atomic(&path, &restore::encode(&state)) {
@@ -834,7 +811,7 @@ impl Workspace {
         self.sessions.active().and_then(|s| s.project.clone())
     }
 
-    fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Another session to the same host, with the same option.
         if let Some((_, target)) = self.active_ssh() {
             self.open_ssh(target, Place::New, window, cx);
@@ -856,7 +833,7 @@ impl Workspace {
     }
 
     /// Ask for a folder, then open a session in it. Cancel does nothing.
-    fn new_session_in_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn new_session_in_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -881,7 +858,12 @@ impl Workspace {
 
     /// The group header's +: a plain session in a folder's group, or another session to a
     /// host (with the tmux option of the group's first session to it).
-    fn add_to_group(&mut self, key: &GroupKey, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_to_group(
+        &mut self,
+        key: &GroupKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match key {
             GroupKey::Folder(project) => self.open_in(project.clone(), window, cx),
             GroupKey::Host(host) => {
@@ -931,7 +913,7 @@ impl Workspace {
     }
 
     /// Preset `n` (0-based) of the settings, in the active session's group; absent is ignored.
-    fn launch_preset(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn launch_preset(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(preset) = cx.global::<Appearance>().presets.get(n).cloned() else {
             return;
         };
@@ -1236,6 +1218,7 @@ impl Workspace {
     /// `activate` without moving the focus (an SSH session reconnected by its timer, M10b).
     pub(crate) fn note_active(&mut self, cx: &mut Context<Self>) {
         self.note_focus();
+        self.sidebar.reveal_active = true;
         if let Some(key) = self.sessions.active().and_then(Session::group) {
             self.collapsed.retain(|c| *c != key);
         }
@@ -1250,19 +1233,13 @@ impl Workspace {
         cx.notify();
     }
 
-    fn toggle_group(&mut self, key: &GroupKey, cx: &mut Context<Self>) {
-        match self.collapsed.iter().position(|c| c == key) {
-            Some(i) => {
-                self.collapsed.remove(i);
-            }
-            None => self.collapsed.push(key.clone()),
-        }
-        self.save();
-        cx.notify();
-    }
-
     /// Open the rename box on session `index` (opening its group) and focus it.
-    fn start_rename(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start_rename(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.sessions.items().get(index) else {
             return;
         };
@@ -1312,17 +1289,26 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Drop `dragged` on `target`'s row: it takes that place, inside the same group only.
-    fn drop_session(&mut self, dragged: EntityId, target: EntityId, cx: &mut Context<Self>) {
+    /// Drop `dragged` on `target`'s row: it goes where the insertion line was (above or below
+    /// that row), inside the same group only. With no line there, it stays.
+    pub(crate) fn drop_session(
+        &mut self,
+        dragged: EntityId,
+        target: EntityId,
+        cx: &mut Context<Self>,
+    ) {
+        let below = self.sidebar.drop_at.take().filter(|(v, _)| *v == target);
+        cx.notify(); // the line goes
         let find = |id: EntityId| self.sessions.position(|s| s.view.entity_id() == id);
-        let (Some(from), Some(to)) = (find(dragged), find(target)) else {
+        let (Some(from), Some(to), Some((_, below))) = (find(dragged), find(target), below) else {
             return;
         };
         if groups::same_group(&key_refs(&self.groups()), from, to)
-            && self.sessions.move_item(from, to)
+            && self
+                .sessions
+                .move_item(from, sidebar::drop_index(from, to, below))
         {
             self.save();
-            cx.notify();
         }
     }
 
@@ -1451,7 +1437,7 @@ impl Workspace {
     /// The window's top band, the traffic lights' place: pressing it and moving drags the
     /// window, and a double-click does what the macOS setting "Double-click a window's title bar
     /// to" says. None in full screen, which has no traffic lights.
-    fn render_top_band(
+    pub(crate) fn render_top_band(
         &self,
         id: &'static str,
         window: &Window,
@@ -1496,40 +1482,12 @@ impl Workspace {
     /// ⌘\: hide or show the sidebar. Hiding it during a rename gives the keyboard back to the
     /// terminal, which ends the rename (as clicking away from it does).
     fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sidebar_hidden = !self.sidebar_hidden;
-        if self.sidebar_hidden && self.renaming.is_some() {
+        self.sidebar.hidden = !self.sidebar.hidden;
+        if self.sidebar.hidden && self.renaming.is_some() {
             self.focus_active(window, cx);
         }
+        self.save();
         cx.notify();
-    }
-
-    /// The statuses whose marks are on screen: each sidebar row's (a group header shows its
-    /// sessions' most urgent); none with the sidebar hidden.
-    fn visible_statuses(&self) -> Vec<Status> {
-        if self.sidebar_hidden {
-            return Vec::new();
-        }
-        let items = self.sessions.items();
-        let keys = self.groups();
-        groups::rows(&key_refs(&keys), &self.collapsed)
-            .into_iter()
-            .map(|row| match row {
-                Row::Header { first, len, .. } => {
-                    groups::rolled_up(items[first..first + len].iter().map(|s| s.status))
-                }
-                Row::Session { index, .. } => items[index].status,
-            })
-            .collect()
-    }
-
-    /// Whether session `index`'s row is on screen: the sidebar is shown and its group is open.
-    fn row_on_screen(&self, index: usize) -> bool {
-        !self.sidebar_hidden
-            && self
-                .sessions
-                .items()
-                .get(index)
-                .is_some_and(|s| s.group().is_none_or(|key| !self.collapsed.contains(&key)))
     }
 
     /// Whether the marks' ticker should run now (`status_mark::should_tick`). Without the
@@ -1570,287 +1528,6 @@ impl Workspace {
         })
         .detach();
     }
-
-    /// A session row's mark; a Done one that just arrived pops (keyed by its pop, so it plays
-    /// once; after it, the mark is drawn plain).
-    fn session_mark(&self, session: &Session, ui: UiColors) -> AnyElement {
-        let size = px(STATUS_MARK);
-        let popping = session
-            .pop
-            .filter(|(_, at)| session.status == Status::Done && at.elapsed() < POP_SHOWN);
-        match popping {
-            Some((pop, _)) => {
-                let phase = self.phase;
-                div()
-                    .flex_none()
-                    .size(size)
-                    .with_animation(
-                        ("pop", pop),
-                        Animation::new(status_mark::POP),
-                        move |slot, t| {
-                            slot.child(status_mark::mark(Status::Done, &ui, phase, Some(t), size))
-                        },
-                    )
-                    .into_any_element()
-            }
-            None => {
-                status_mark::mark(session.status, &ui, self.phase, None, size).into_any_element()
-            }
-        }
-    }
-
-    /// The sidebar: the top band (under the traffic lights), then the sessions.
-    fn render_sidebar(
-        &self,
-        ui: UiColors,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let keys = self.groups();
-        let keys = key_refs(&keys);
-        let all: Vec<&GroupKey> = keys.iter().flatten().copied().collect();
-        let rows: Vec<AnyElement> = groups::rows(&keys, &self.collapsed)
-            .into_iter()
-            .map(|row| match row {
-                Row::Header {
-                    key,
-                    first,
-                    len,
-                    collapsed,
-                } => {
-                    let label = groups::group_label(&key, &all);
-                    self.render_header(key, label, first..first + len, collapsed, ui, cx)
-                        .into_any_element()
-                }
-                Row::Session { index, grouped } => self
-                    .render_session_row(index, grouped, ui, cx)
-                    .into_any_element(),
-            })
-            .collect();
-        let band = self.render_top_band("sidebar-band", window, cx);
-        let sessions = div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .p_1()
-            .gap_1()
-            .children(rows)
-            .when_some(self.notice.clone(), |sessions, notice| {
-                sessions.child(
-                    div()
-                        .mt_auto()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .text_xs()
-                        .bg(hsla(ui.row_active))
-                        .text_color(hsla(ui.text))
-                        .child(notice),
-                )
-            });
-        div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(SIDEBAR_WIDTH))
-            .h_full()
-            .bg(hsla(ui.sidebar_background))
-            .border_r_1()
-            .border_color(hsla(ui.sidebar_border))
-            // A click in the sidebar gives focus back to the terminal, which cancels a rename
-            // (the rename box keeps its own clicks).
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_active(window, cx)),
-            )
-            .children(band)
-            .child(sessions)
-    }
-
-    /// A group's header: arrow, name, the group's most urgent ring, and a + for a new session.
-    fn render_header(
-        &self,
-        key: GroupKey,
-        label: String,
-        sessions: std::ops::Range<usize>,
-        collapsed: bool,
-        ui: UiColors,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let status = groups::rolled_up(
-            self.sessions.items()[sessions.clone()]
-                .iter()
-                .map(|s| s.status),
-        );
-        let add = key.clone();
-        div()
-            .id(("group", group_id(&key)))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_sm()
-            .text_color(hsla(ui.text_dim))
-            .hover(|style| style.bg(hsla(ui.row_hover)))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&key, cx)))
-            .child(if collapsed { "\u{25b8}" } else { "\u{25be}" })
-            .child(div().flex_1().overflow_hidden().child(label))
-            .child(status_mark::mark(
-                status,
-                &ui,
-                self.phase,
-                None,
-                px(STATUS_MARK),
-            ))
-            .child(
-                div()
-                    .id("group-add")
-                    .px_1()
-                    .rounded_sm()
-                    .hover(|style| style.bg(hsla(ui.row_active)).text_color(hsla(ui.text)))
-                    .child("+")
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation(); // not also a click on the header
-                        this.add_to_group(&add, window, cx)
-                    })),
-            )
-    }
-
-    /// A session: ring, number and name (or the rename box). Click selects, double-click
-    /// renames; it can be dragged onto another row of its group.
-    fn render_session_row(
-        &self,
-        index: usize,
-        grouped: bool,
-        ui: UiColors,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let session = &self.sessions.items()[index];
-        let is_active = self.sessions.active_index() == Some(index);
-        let view = session.view.entity_id();
-        // In the layout on screen, but not the focused pane: a faint highlight.
-        let on_screen = !is_active && self.shown_layout().is_some_and(|t| t.contains(view));
-        let rename_box = self
-            .renaming
-            .as_ref()
-            .filter(|(v, _)| *v == view)
-            .map(|(_, input)| input.clone());
-        let group = session.group();
-        let dragged = DraggedSession {
-            view,
-            group: group.clone(),
-            label: session.label(),
-        };
-        let name = format!("{}  {}", index + 1, session.label());
-        let sub = if session.lost {
-            Some("not live".to_string())
-        } else {
-            sub_line(session.progress.as_ref(), session.note.as_deref())
-        };
-        let percent = session.progress.as_ref().map(|(p, _)| *p);
-        div()
-            .id(("session", view))
-            .relative()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .when(grouped, |row| row.ml_4())
-            .rounded_md()
-            .text_sm()
-            .text_color(hsla(if is_active { ui.text } else { ui.text_dim }))
-            .when(is_active, |row| row.bg(hsla(ui.row_active)))
-            .when(on_screen, |row| row.bg(hsla(ui.row_hover)))
-            .hover(|style| style.bg(hsla(ui.row_hover)))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                this.select(index, window, cx);
-                if event.click_count() == 2 {
-                    this.start_rename(index, window, cx);
-                }
-            }))
-            .on_drag(dragged, |dragged, _, _, cx| {
-                cx.new(|_| DragPreview {
-                    label: dragged.label.clone(),
-                })
-            })
-            // Only rows of the dragged session's group accept it (and tint); the drop re-checks.
-            .can_drop(move |dragged, _, _| {
-                dragged
-                    .downcast_ref::<DraggedSession>()
-                    .is_some_and(|d| d.group == group)
-            })
-            .drag_over::<DraggedSession>(move |style, _, _, _| style.bg(hsla(ui.row_active)))
-            .on_drop(cx.listener(move |this, dragged: &DraggedSession, _, cx| {
-                this.drop_session(dragged.view, view, cx)
-            }))
-            .child(self.session_mark(session, ui))
-            .map(|row| match rename_box {
-                Some(input) => row.child(format!("{}", index + 1)).child(input),
-                None => match sub {
-                    None => row.child(name),
-                    // The note or label sits under the name; both are cut with "…".
-                    Some(sub) => row.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(name),
-                            )
-                            .child(
-                                div()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_xs()
-                                    .text_color(hsla(ui.text_dim))
-                                    .child(sub),
-                            ),
-                    ),
-                },
-            })
-            // The progress bar: along the bottom edge, as wide as the percent.
-            .when_some(percent, |row, percent| {
-                row.child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left_0()
-                        .h(px(2.0))
-                        .w(relative(f32::from(percent) / 100.0))
-                        .bg(hsla(ui.ring_working)),
-                )
-            })
-    }
-}
-
-/// The line under a session's name: `label · note`, or whichever of them there is.
-fn sub_line(progress: Option<&(u8, Option<String>)>, note: Option<&str>) -> Option<String> {
-    let label = progress.and_then(|(_, label)| label.as_deref());
-    match (label, note) {
-        (Some(l), Some(n)) => Some(format!("{l} · {n}")),
-        (Some(t), None) | (None, Some(t)) => Some(t.to_string()),
-        (None, None) => None,
-    }
-}
-
-/// A header's element id: stable while its sessions are reordered or closed.
-fn group_id(key: &GroupKey) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    hasher.finish()
 }
 
 /// `groups()` as the `groups` functions take it.
@@ -1861,6 +1538,7 @@ fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tick_marks(cx);
+        self.refresh_ages(self.marks_ticking, cx);
         let title = self
             .sessions
             .active()
@@ -1877,10 +1555,11 @@ impl Render for Workspace {
             divider: hsla(ui.sidebar_border),
         };
         // The top band is the sidebar's top; with the sidebar hidden, the pane area's.
-        let sidebar =
-            (!self.sidebar_hidden).then(|| self.render_sidebar(ui, window, cx).into_any_element());
+        let sidebar = (!self.sidebar.hidden).then(|| self.render_sidebar(ui, window, cx));
+        let new_menu = self.render_new_menu(ui, cx);
         let pane_band = self
-            .sidebar_hidden
+            .sidebar
+            .hidden
             .then(|| self.render_top_band("pane-band", window, cx))
             .flatten();
 
@@ -1990,6 +1669,8 @@ impl Render for Workspace {
             .when_some(self.address_box.clone(), |root, address| {
                 root.child(top_panel(address))
             })
+            // The sidebar's "+ New" menu, over everything, with its click-away backdrop.
+            .children(new_menu)
     }
 }
 
@@ -2211,6 +1892,12 @@ pub(crate) fn read_saved() -> Option<SavedState> {
     }
 }
 
+/// The sessions file, if there is a valid one, without a word otherwise (the restore says it).
+fn read_saved_quietly() -> Option<SavedState> {
+    let text = std::fs::read_to_string(restore::state_path(&home_dir()?)).ok()?;
+    restore::decode(&text)
+}
+
 /// `$HOME`; unset or empty counts as absent.
 pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
@@ -2220,7 +1907,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_create, scripting_env, session_env, sub_line};
+    use super::{daemon_create, scripting_env, session_env};
     use crate::presets::Preset;
     use crate::pty::apply_env;
     use crate::restore::SavedSession;
@@ -2357,19 +2044,6 @@ mod tests {
                 plain.preset
             ),
             (None, None, None, None, None)
-        );
-    }
-
-    #[test]
-    fn the_line_under_the_name_joins_label_and_note() {
-        let bar = |l: Option<&str>| (40, l.map(String::from));
-        assert_eq!(sub_line(None, None), None);
-        assert_eq!(sub_line(Some(&bar(None)), None), None);
-        assert_eq!(sub_line(None, Some("n")), Some("n".into()));
-        assert_eq!(sub_line(Some(&bar(Some("l"))), None), Some("l".into()));
-        assert_eq!(
-            sub_line(Some(&bar(Some("l"))), Some("n")),
-            Some("l · n".into())
         );
     }
 }

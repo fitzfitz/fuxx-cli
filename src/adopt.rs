@@ -369,6 +369,7 @@ mod tests {
             sessions,
             layouts,
             daemon_instance: Some(INSTANCE),
+            ..SavedState::default()
         }
     }
     fn split(axis: Axis, first: Node<usize>, second: Node<usize>) -> Node<usize> {

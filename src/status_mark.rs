@@ -17,6 +17,7 @@
 use std::f32::consts::TAU;
 use std::time::Duration;
 
+use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     App, Bounds, FillOptions, FillRule, Hsla, IntoElement, PathBuilder, PathStyle, Pixels, Point,
     Window, canvas, point, prelude::*, px,
@@ -94,10 +95,23 @@ pub fn mark(
     popping: Option<f32>,
     size: Pixels,
 ) -> impl IntoElement {
+    mark_on(status, ui, phase, popping, size, ui.sidebar_background)
+}
+
+/// `mark` on a surface of colour `fill` (a filled or tinted row): Done's check is cut out of
+/// its dot in that colour, so it reads as a hole whatever the row is.
+pub fn mark_on(
+    status: Status,
+    ui: &UiColors,
+    phase: f32,
+    popping: Option<f32>,
+    size: Pixels,
+    fill: Rgb,
+) -> impl IntoElement {
     let ui = *ui;
     canvas(
         |_, _, _| (),
-        move |bounds, _, window, cx| paint(status, ui, phase, popping, bounds, window, cx),
+        move |bounds, _, window, cx| paint(status, ui, phase, popping, fill, bounds, window, cx),
     )
     .flex_none()
     .size(size)
@@ -114,11 +128,13 @@ const DONE_DOT: f32 = 5.0;
 /// Fine flattening: the marks are tiny, so the default 0.1 px tolerance shows facets.
 const TOLERANCE: f32 = 0.01;
 
+#[allow(clippy::too_many_arguments)]
 fn paint(
     status: Status,
     ui: UiColors,
     phase: f32,
     popping: Option<f32>,
+    fill: Rgb,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -167,7 +183,7 @@ fn paint(
             };
             let u = unit * scale;
             draw(window, disc(c, DONE_DOT * u), hsla(ui.ring_done));
-            draw(window, check(c, u), hsla(ui.sidebar_background));
+            draw(window, check(c, u), hsla(fill));
         }
     }
 
