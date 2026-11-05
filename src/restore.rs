@@ -300,6 +300,7 @@ mod tests {
         SshTarget {
             host: "devbox".into(),
             tmux,
+            tmux_name: tmux.then(|| "devbox-0a0b0c".into()),
         }
     }
 

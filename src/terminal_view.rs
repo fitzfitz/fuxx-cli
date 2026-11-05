@@ -205,11 +205,11 @@ impl TerminalView {
         self.core.daemon_id().is_none() && !self.disconnected
     }
 
-    /// Hold the pane after an SSH disconnect: show `banner` under the last screen (it reaches
-    /// no program) and from now on drop input; Enter emits `Reconnect`.
-    pub fn hold(&mut self, banner: &str, cx: &mut Context<Self>) {
+    /// Hold the pane after an SSH disconnect: write `text` (the screen reset and reconnect
+    /// line) into the screen only, and from now on drop input; Enter emits `Reconnect`.
+    pub fn hold(&mut self, text: &str, cx: &mut Context<Self>) {
         self.disconnected = true;
-        self.core.show_local(banner);
+        self.core.show_local(text);
         cx.notify();
     }
 
