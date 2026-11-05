@@ -20,3 +20,11 @@ futures = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
 # JSON for the restore file. Already in Cargo.lock via GPUI.
 serde_json = "1.0.150"
+# The agent browser (M10c): a WKWebView in its own NSWindow, driven through objc2. Default
+# features off: they pull in every WebKit class plus crates fuxx doesn't otherwise have.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKNavigation", "WKSnapshotConfiguration", "WKWebView", "WKWebViewConfiguration"] }
+# The objc2 runtime, AppKit, Foundation and blocks under it, at the versions GPUI already locks.
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSBitmapImageRep", "NSGraphics", "NSImage", "NSImageRep", "NSResponder", "NSRunningApplication", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSString"] }
+block2 = "0.6.2"
