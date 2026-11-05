@@ -13,11 +13,11 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSControl, NSControlTextEditingDelegate,
-    NSImage, NSResponder, NSTextField, NSTextFieldBezelStyle, NSTextFieldDelegate, NSTextView,
-    NSTitlePosition, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem,
-    NSToolbarItemVisibilityPriorityHigh, NSView, NSWindow, NSWindowTitleVisibility,
-    NSWindowToolbarStyle,
+    NSApplication, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSControl,
+    NSControlTextEditingDelegate, NSImage, NSResponder, NSTextField, NSTextFieldBezelStyle,
+    NSTextFieldDelegate, NSTextView, NSTitlePosition, NSToolbar, NSToolbarDelegate,
+    NSToolbarDisplayMode, NSToolbarItem, NSToolbarItemVisibilityPriorityHigh, NSView, NSWindow,
+    NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use objc2_web_kit::WKWebView;
@@ -187,9 +187,9 @@ define_class!(
             &self,
             _toolbar: &NSToolbar,
             identifier: &NSString,
-            _will_be_inserted: bool,
+            will_be_inserted: bool,
         ) -> Option<Retained<NSToolbarItem>> {
-            self.make_item(&identifier.to_string())
+            self.make_item(&identifier.to_string(), will_be_inserted)
         }
 
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
@@ -373,11 +373,13 @@ impl TopBar {
         }
     }
 
-    /// Bring the buttons, the field and the loading line up to date with the page.
+    /// Bring the buttons, the field and the loading line up to date with the page, and the
+    /// page's light or dark with macOS's.
     pub(super) fn refresh(&self) {
         let Some(view) = self.ivars().view.load() else {
             return;
         };
+        self.follow_system_appearance(&view);
         // SAFETY: main thread; plain property reads.
         let (url, loading, progress, can_back, can_forward) = unsafe {
             (
@@ -448,6 +450,26 @@ impl TopBar {
         }
     }
 
+    /// The page keeps macOS's light or dark (its `prefers-color-scheme`, what agents see), not
+    /// the bar's: the web view's own appearance overrides the window's. macOS's is the app's
+    /// effective appearance (neither GPUI nor fuxx sets the app's own). Followed on each
+    /// `refresh`, which the browser check runs at least every 500 ms while a browser is open: a
+    /// property read, with no observer to keep and let go of.
+    fn follow_system_appearance(&self, view: &WKWebView) {
+        let app = NSApplication::sharedApplication(self.mtm());
+        // SAFETY: AppKit's own appearance names.
+        let names = unsafe { [NSAppearanceNameAqua, NSAppearanceNameDarkAqua] };
+        let Some(system) = app
+            .effectiveAppearance()
+            .bestMatchFromAppearancesWithNames(&NSArray::from_slice(&names))
+        else {
+            return;
+        };
+        if view.appearance().map(|a| a.name()).as_deref() != Some(&*system) {
+            view.setAppearance(NSAppearance::appearanceNamed(&system).as_deref());
+        }
+    }
+
     /// Let go of the toolbar, the field and the buttons before the `Browser` goes (they hold the
     /// bar weakly, and may outlive it).
     pub(super) fn detach(&self, window: &NSWindow) {
@@ -467,8 +489,10 @@ impl TopBar {
         window.setToolbar(None);
     }
 
-    /// A new toolbar item for `identifier` (the toolbar asks for each one it shows).
-    fn make_item(&self, identifier: &str) -> Option<Retained<NSToolbarItem>> {
+    /// A new toolbar item for `identifier` (the toolbar asks for each one it shows). Only one
+    /// `going_in` (to be put in the bar) is the bar's: it holds the field, is kept for `refresh`
+    /// and acts. Another (a customisation palette's copy) only looks the same.
+    fn make_item(&self, identifier: &str, going_in: bool) -> Option<Retained<NSToolbarItem>> {
         let mtm = self.mtm();
         let item =
             NSToolbarItem::initWithItemIdentifier(mtm.alloc(), &NSString::from_str(identifier));
@@ -490,13 +514,14 @@ impl TopBar {
             ),
             RELOAD => {
                 let (symbol, label, tip) = reload_face(ReloadButton::Reload);
-                state.reload_shows.set(Some(ReloadButton::Reload));
                 (symbol, label, tip, sel!(reloadOrStop:), &state.reload)
             }
             ADDRESS => {
                 item.setLabel(&NSString::from_str("Address"));
-                item.setView(Some(&state.field));
-                item.setVisibilityPriority(NSToolbarItemVisibilityPriorityHigh);
+                if going_in {
+                    item.setView(Some(&state.field));
+                    item.setVisibilityPriority(NSToolbarItemVisibilityPriorityHigh);
+                }
                 return Some(item);
             }
             _ => return None,
@@ -510,6 +535,12 @@ impl TopBar {
         // The bar says when a button works (`refresh`), not AppKit's validation.
         item.setAutovalidates(false);
         item.setEnabled(false);
+        if !going_in {
+            return Some(item);
+        }
+        if identifier == RELOAD {
+            state.reload_shows.set(Some(ReloadButton::Reload));
+        }
         let target: &AnyObject = self.as_ref();
         // SAFETY: main thread; the item holds its target weakly, and `detach` clears it.
         unsafe {

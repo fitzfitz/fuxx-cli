@@ -22,7 +22,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSBitmapImageFileType,
     NSBitmapImageRep, NSEvent, NSEventModifierFlags, NSImage, NSResponder, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask,
+    NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSDate, NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
@@ -330,6 +330,13 @@ impl Browser {
             FrontOrder::KeepKeyboard => self.window.orderFront(None),
         }
         self.delegate.ivars().closed.set(false);
+    }
+
+    /// Whether any of the window can be seen on screen (not hidden, minimised or covered).
+    pub fn can_be_seen(&self) -> bool {
+        self.window
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible)
     }
 
     /// Whether the user has closed the window (the browser itself still works until dropped).

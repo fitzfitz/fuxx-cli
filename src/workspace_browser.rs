@@ -75,9 +75,12 @@ pub fn bar_look(theme: &Theme, address_bar: bool) -> BarLook {
     }
 }
 
-/// The wait before the next browser check: shorter while a page loads.
-fn tick_interval(loading: bool) -> Duration {
-    if loading {
+/// The wait before the next browser check, from each browser's (loading, window can be seen):
+/// shorter only while a page loads in a window someone can see (a hidden one's loading line
+/// needn't move, and the check costs battery).
+fn tick_interval(browsers: impl IntoIterator<Item = (bool, bool)>) -> Duration {
+    let mut browsers = browsers.into_iter();
+    if browsers.any(|(loading, seen)| loading && seen) {
         BROWSER_TICK_LOADING
     } else {
         BROWSER_TICK
@@ -310,8 +313,8 @@ impl Workspace {
     }
 
     /// Bring the browsers' titles and top bars up to date and drop those the user closed (or
-    /// whose session has gone). Whether a page is loading in any of them.
-    fn check_browsers(&mut self) -> bool {
+    /// whose session has gone). The wait before the next check (see `tick_interval`).
+    fn check_browsers(&mut self) -> Duration {
         let sessions = self.sessions.items();
         self.browsers
             .forget_closed(|id| sessions.iter().any(|s| s.id == id));
@@ -323,12 +326,12 @@ impl Workspace {
                 .unwrap_or_default();
             browser_title(&label, Some(&browser.state().title))
         });
-        let mut loading = false;
+        let mut seen = vec![];
         for browser in self.browsers.iter() {
             browser.refresh_bar();
-            loading |= browser.state().loading;
+            seen.push((browser.state().loading, browser.can_be_seen()));
         }
-        loading
+        tick_interval(seen)
     }
 
     /// Start the browser check (every 500 ms, 100 ms while a page loads) unless it's running;
@@ -344,9 +347,9 @@ impl Workspace {
                 cx.background_executor().timer(wait).await;
                 let next = this
                     .update(cx, |this, _| {
-                        let loading = this.check_browsers();
+                        let next = this.check_browsers();
                         this.browsers_ticking = !this.browsers.is_empty();
-                        this.browsers_ticking.then(|| tick_interval(loading))
+                        this.browsers_ticking.then_some(next)
                     })
                     .ok()
                     .flatten();
@@ -1146,8 +1149,16 @@ mod tests {
 
     #[test]
     fn the_check_runs_faster_while_a_page_loads() {
-        assert_eq!(tick_interval(false), BROWSER_TICK);
-        assert_eq!(tick_interval(true), BROWSER_TICK_LOADING);
+        assert_eq!(tick_interval([]), BROWSER_TICK);
+        assert_eq!(tick_interval([(false, true)]), BROWSER_TICK);
+        assert_eq!(tick_interval([(true, true)]), BROWSER_TICK_LOADING);
+        // Loading in a window no one can see (hidden, minimised, covered): the slow check.
+        assert_eq!(tick_interval([(true, false)]), BROWSER_TICK);
+        assert_eq!(tick_interval([(true, false), (false, true)]), BROWSER_TICK);
+        assert_eq!(
+            tick_interval([(true, false), (true, true)]),
+            BROWSER_TICK_LOADING
+        );
         assert!(BROWSER_TICK_LOADING < BROWSER_TICK);
     }
 }
