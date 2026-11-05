@@ -215,6 +215,8 @@ pub struct Workspace {
     pub(crate) browsers_ticking: bool,
     /// The browser's address box, while it is open (M10c).
     pub(crate) address_box: Option<Entity<AddressBox>>,
+    /// `browser-keep-data` as last seen, so turning it off can be told from it staying off.
+    pub(crate) browser_keep_data: bool,
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
     /// events are sent).
     pub(crate) restoring: bool,
@@ -238,7 +240,8 @@ pub struct Workspace {
     /// The active session as of the last `focus.changed`.
     pub(crate) focused: Option<u64>,
     _activation: Subscription,
-    /// Repaints the sidebar when the appearance changes.
+    /// Repaints the sidebar when the appearance changes (and deletes the browser's saved data
+    /// when `browser-keep-data` is turned off).
     _appearance: Subscription,
     /// Repaint (and re-check the marks' ticker) when macOS Reduce motion changes, or the window
     /// is hidden or shown.
@@ -315,7 +318,10 @@ impl Workspace {
             this.window_active = window.is_window_active();
             cx.notify();
         });
-        let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
+        let appearance = cx.observe_global::<Appearance>(|this, cx| {
+            this.browser_settings_changed(cx);
+            cx.notify();
+        });
         let reduce_motion = cx.observe_global::<SystemReduceMotion>(|_, cx| cx.notify());
         let window_visible = cx.observe_global::<WindowVisible>(|_, cx| cx.notify());
         let (socket, requests) = scripting.unzip();
@@ -332,6 +338,7 @@ impl Workspace {
             browsers: Browsers::new(),
             browsers_ticking: false,
             address_box: None,
+            browser_keep_data: cx.global::<Appearance>().browser_keep_data,
             restoring: true,
             hold_saving: false,
             next_id: 1,

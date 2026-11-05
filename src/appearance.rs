@@ -35,6 +35,12 @@ pub struct Appearance {
     /// `animations = on|off`: the status marks' motion (default on). macOS Reduce motion stops
     /// it too (see `reduce_motion`).
     pub animations: bool,
+    /// `browser-address-bar = on|off`: the browser windows' address field (default on).
+    #[allow(dead_code)] // read by the browser's top bar (follow-up Task 2)
+    pub browser_address_bar: bool,
+    /// `browser-keep-data = on|off`: browser windows opened from now on keep cookies, logins and
+    /// site data on disk between runs (default off: each run starts from nothing).
+    pub browser_keep_data: bool,
 }
 
 impl Global for Appearance {}
@@ -95,6 +101,32 @@ fn animations_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
         }
     }
     (on, warnings)
+}
+
+/// The last valid `key` entry wins (`on` / `off`, any case); an empty value resets to `default`.
+/// Returns the setting and a warning per invalid value (the previous value stays).
+fn switch_from_entries(entries: &[Entry], key: &str, default: bool) -> (bool, Vec<String>) {
+    let mut on = default;
+    let mut warnings = Vec::new();
+    for entry in entries.iter().filter(|e| e.key == key) {
+        match entry.value.trim().to_lowercase().as_str() {
+            "" => on = default,
+            "on" => on = true,
+            "off" => on = false,
+            _ => warnings.push(format!("{key} \"{}\": expected on or off", entry.value)),
+        }
+    }
+    (on, warnings)
+}
+
+/// `browser-address-bar`, on by default (see `switch_from_entries`).
+fn browser_address_bar_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "browser-address-bar", true)
+}
+
+/// `browser-keep-data`, off by default (see `switch_from_entries`).
+fn browser_keep_data_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "browser-keep-data", false)
 }
 
 /// Read fuxx's settings file and build the appearance. Never fails: anything missing or
@@ -169,12 +201,16 @@ pub fn load(cx: &App) -> Appearance {
     let (scripting, scripting_warnings) = scripting_from_entries(&entries);
     let (persistent, persistent_warnings) = persistent_from_entries(&entries);
     let (animations, animations_warnings) = animations_from_entries(&entries);
+    let (browser_address_bar, address_bar_warnings) = browser_address_bar_from_entries(&entries);
+    let (browser_keep_data, keep_data_warnings) = browser_keep_data_from_entries(&entries);
     for warning in preset_warnings
         .iter()
         .chain(&restore_warnings)
         .chain(&scripting_warnings)
         .chain(&persistent_warnings)
         .chain(&animations_warnings)
+        .chain(&address_bar_warnings)
+        .chain(&keep_data_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
     }
@@ -192,6 +228,8 @@ pub fn load(cx: &App) -> Appearance {
         scripting,
         persistent,
         animations,
+        browser_address_bar,
+        browser_keep_data,
     }
 }
 
@@ -270,5 +308,72 @@ mod tests {
         assert_eq!(animations_from_entries(&[a("off"), a("")]), (true, vec![]));
         // Other keys are ignored.
         assert_eq!(animations_from_entries(&[s("off")]), (true, vec![]));
+    }
+
+    fn entry(key: &str, value: &str) -> Entry {
+        Entry {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn browser_address_bar_setting_defaults_on_and_warns_on_junk() {
+        let bar = |v: &str| entry("browser-address-bar", v);
+        assert_eq!(browser_address_bar_from_entries(&[]), (true, vec![]));
+        assert_eq!(
+            browser_address_bar_from_entries(&[bar(" OFF ")]),
+            (false, vec![])
+        );
+        assert_eq!(
+            browser_address_bar_from_entries(&[bar("off"), bar("On")]),
+            (true, vec![])
+        );
+        let (on, warnings) = browser_address_bar_from_entries(&[bar("off"), bar("hidden")]);
+        assert!(!on); // the bad value leaves the previous one in place
+        assert_eq!(
+            warnings,
+            vec!["browser-address-bar \"hidden\": expected on or off".to_string()]
+        );
+        // An empty value resets to the default (on).
+        assert_eq!(
+            browser_address_bar_from_entries(&[bar("off"), bar("")]),
+            (true, vec![])
+        );
+        // Other keys are ignored.
+        assert_eq!(
+            browser_address_bar_from_entries(&[entry("browser-keep-data", "off")]),
+            (true, vec![])
+        );
+    }
+
+    #[test]
+    fn browser_keep_data_setting_defaults_off_and_warns_on_junk() {
+        let keep = |v: &str| entry("browser-keep-data", v);
+        assert_eq!(browser_keep_data_from_entries(&[]), (false, vec![]));
+        assert_eq!(
+            browser_keep_data_from_entries(&[keep(" ON ")]),
+            (true, vec![])
+        );
+        assert_eq!(
+            browser_keep_data_from_entries(&[keep("on"), keep("Off")]),
+            (false, vec![])
+        );
+        let (on, warnings) = browser_keep_data_from_entries(&[keep("on"), keep("forever")]);
+        assert!(on); // the bad value leaves the previous one in place
+        assert_eq!(
+            warnings,
+            vec!["browser-keep-data \"forever\": expected on or off".to_string()]
+        );
+        // An empty value resets to the default (off).
+        assert_eq!(
+            browser_keep_data_from_entries(&[keep("on"), keep("")]),
+            (false, vec![])
+        );
+        // Other keys are ignored.
+        assert_eq!(
+            browser_keep_data_from_entries(&[entry("browser-address-bar", "on")]),
+            (false, vec![])
+        );
     }
 }

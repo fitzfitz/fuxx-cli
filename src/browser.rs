@@ -7,7 +7,7 @@
 //!
 //! The hidden `fuxx __browser-probe` self-test lives in `probe`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
@@ -23,8 +23,8 @@ use objc2_app_kit::{
     NSEventModifierFlags, NSImage, NSResponder, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
+    NSDate, NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
+    NSSize, NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
 };
 use objc2_web_kit::{
     WKErrorCode, WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate,
@@ -76,9 +76,10 @@ pub struct Browser {
 impl Browser {
     /// A new browser window titled `title`, not yet shown (see `bring_to_front`): 1100 × 800
     /// points, cascaded from the key (or else main) window, centred when there is none. Pages get a `window.open` that
-    /// loads in this window; cookies and logins live in the one shared, persistent data store;
+    /// loads in this window; cookies and logins live in the data store `keep_data` picks (see
+    /// `data_store`), for as long as the window lives;
     /// Safari's Web Inspector can attach where macOS allows it (13.3 and later).
-    pub fn open(title: &str, _cx: &mut App) -> Browser {
+    pub fn open(title: &str, keep_data: bool, _cx: &mut App) -> Browser {
         let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
         let window = new_window(
             mtm,
@@ -99,24 +100,28 @@ impl Browser {
             }
             None => window.center(),
         }
-        let browser = Browser::in_window(mtm, window);
+        let browser = Browser::in_window(mtm, window, keep_data);
         browser.set_title(title);
         browser
     }
 
     /// A browser in a borderless window that is never shown (the probe's).
-    fn offscreen(mtm: MainThreadMarker) -> Browser {
-        Browser::in_window(mtm, new_window(mtm, NSWindowStyleMask::Borderless))
+    fn offscreen(mtm: MainThreadMarker, keep_data: bool) -> Browser {
+        Browser::in_window(
+            mtm,
+            new_window(mtm, NSWindowStyleMask::Borderless),
+            keep_data,
+        )
     }
 
-    /// Fill `window` with a new web view and take both on.
-    fn in_window(mtm: MainThreadMarker, window: Retained<NSWindow>) -> Browser {
+    /// Fill `window` with a new web view on the data store `keep_data` picks, and take both on.
+    fn in_window(mtm: MainThreadMarker, window: Retained<NSWindow>, keep_data: bool) -> Browser {
         let delegate = BrowserDelegate::new(mtm);
         // SAFETY: main thread; plain WebKit set-up with valid arguments. The delegate is kept
         // alive by the `Browser`, which clears both delegate links before it goes.
         let view = unsafe {
             let config = WKWebViewConfiguration::new(mtm);
-            config.setWebsiteDataStore(&WKWebsiteDataStore::defaultDataStore(mtm));
+            config.setWebsiteDataStore(&data_store(keep_data, mtm));
             let shim = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
                 mtm.alloc(),
                 &NSString::from_str(browser_js::window_open_shim()),
@@ -325,6 +330,48 @@ impl Drop for Browser {
         }
         self.window.setDelegate(None);
         self.window.close();
+    }
+}
+
+thread_local! {
+    /// The run's one in-memory data store (`browser-keep-data = off`), made on first use. Only
+    /// the main thread ever fills it.
+    static RUN_STORE: OnceCell<Retained<WKWebsiteDataStore>> = const { OnceCell::new() };
+}
+
+/// The data store a new browser window uses. `keep` (`browser-keep-data = on`): WebKit's default
+/// store, saved on disk, so cookies and logins come back next run. Otherwise the run's one
+/// in-memory store, shared by every window opened while the setting is off: nothing is written
+/// to disk, and it all goes when fuxx quits.
+fn data_store(keep: bool, mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
+    // SAFETY: main thread (the marker); plain WebKit class methods.
+    unsafe {
+        if keep {
+            WKWebsiteDataStore::defaultDataStore(mtm)
+        } else {
+            RUN_STORE.with(|store| {
+                store
+                    .get_or_init(|| WKWebsiteDataStore::nonPersistentDataStore(mtm))
+                    .clone()
+            })
+        }
+    }
+}
+
+/// Delete everything the default (saved) data store holds, of every kind: cookies, logins, site
+/// storage, caches (`browser-keep-data` turned from on to off). Returns at once; WebKit deletes
+/// in the background and the log says when it is done.
+pub fn forget_saved_data(mtm: MainThreadMarker) {
+    let done = RcBlock::new(|| eprintln!("[fuxx] browser: saved data deleted"));
+    // SAFETY: main thread (the marker); WebKit copies the block and calls it once, on the main
+    // thread.
+    unsafe {
+        WKWebsiteDataStore::defaultDataStore(mtm)
+            .removeDataOfTypes_modifiedSince_completionHandler(
+                &WKWebsiteDataStore::allWebsiteDataTypes(mtm),
+                &NSDate::distantPast(),
+                &done,
+            );
     }
 }
 

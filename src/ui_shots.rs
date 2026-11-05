@@ -749,6 +749,8 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         scripting: false,
         persistent: false,
         animations: true,
+        browser_address_bar: true,
+        browser_keep_data: false,
     }
 }
 
