@@ -166,6 +166,11 @@ fn schema(name: &str) -> Value {
                 },
                 "of": text("With split: the session to split (id, #N or name). Default: the \
                     session this MCP server runs in."),
+                "ssh_host": text("Open an SSH session to this host (as ssh reads it: user@host \
+                    or an alias from ~/.ssh/config) instead of a local shell. Not with \
+                    folder, preset or run."),
+                "tmux": switch("With ssh_host: run it inside tmux on the host, so it \
+                    survives a dropped connection."),
                 "background": switch("Keep focus where it is instead of showing the new \
                     session."),
             }),
@@ -325,6 +330,29 @@ fn request_for(tool: &Tool, args: Option<&Value>) -> Result<Request, String> {
         for key in properties.keys() {
             if let Some(v) = args.get(key) {
                 params.insert(key.clone(), v.clone());
+            }
+        }
+    }
+    if tool.name == "new_session" {
+        let tmux = params.remove("tmux");
+        match params.remove("ssh_host") {
+            None | Some(Value::Null) => {
+                if tmux
+                    .as_ref()
+                    .is_some_and(|t| t != &Value::Bool(false) && !t.is_null())
+                {
+                    return Err("tmux needs ssh_host".into());
+                }
+            }
+            Some(host) => {
+                if let Some(key) = ["folder", "preset", "run"]
+                    .into_iter()
+                    .find(|k| params.get(*k).is_some_and(|v| !v.is_null()))
+                {
+                    return Err(format!("ssh_host and {key} can't be combined"));
+                }
+                let tmux = tmux.unwrap_or(Value::Bool(false));
+                params.insert("ssh".into(), json!({ "host": host, "tmux": tmux }));
             }
         }
     }
@@ -843,6 +871,51 @@ mod tests {
             .unwrap();
             assert_eq!(got.as_deref(), Some(method), "{name}");
         }
+    }
+
+    #[test]
+    fn mcp_new_session_maps_ssh() {
+        let mut seen = Vec::new();
+        let mut fake = |req: Request| -> Result<serde_json::Value, ApiError> {
+            seen.push(req);
+            Ok(serde_json::json!({"id": "s5"}))
+        };
+        let args = |a: serde_json::Value| {
+            rpc(
+                1,
+                "tools/call",
+                serde_json::json!({"name": "new_session", "arguments": a}),
+            )
+        };
+        handle(
+            &args(serde_json::json!({"ssh_host": "me@dev", "tmux": true, "name": "box"})),
+            &mut fake,
+        )
+        .unwrap();
+        handle(&args(serde_json::json!({"ssh_host": "dev"})), &mut fake).unwrap();
+        handle(&args(serde_json::json!({"name": "plain"})), &mut fake).unwrap();
+        let clash = handle(
+            &args(serde_json::json!({"ssh_host": "dev", "folder": "/x"})),
+            &mut fake,
+        )
+        .unwrap();
+        let tmux_alone = handle(&args(serde_json::json!({"tmux": true})), &mut fake).unwrap();
+        assert_eq!(
+            seen[0].params,
+            serde_json::json!({"name": "box", "ssh": {"host": "me@dev", "tmux": true}})
+        );
+        assert_eq!(
+            seen[1].params,
+            serde_json::json!({"ssh": {"host": "dev", "tmux": false}})
+        );
+        assert_eq!(seen[2].params, serde_json::json!({"name": "plain"}));
+        assert_eq!(seen.len(), 3);
+        for r in [clash, tmux_alone] {
+            assert_eq!(r["result"]["isError"], true, "{r}");
+        }
+        let props = &schema("new_session")["inputSchema"]["properties"];
+        assert_eq!(props["ssh_host"]["type"], "string");
+        assert_eq!(props["tmux"]["type"], "boolean");
     }
 
     #[test]

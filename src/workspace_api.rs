@@ -24,9 +24,11 @@ use crate::notifier;
 use crate::presets::Preset;
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
+use crate::ssh_target::{SshTarget, validate_host};
 use crate::status::Status;
 use crate::workspace::{Opened, Workspace};
 use crate::workspace_daemon::{open_refusal, wait_ended};
+use crate::workspace_ssh::Place;
 
 /// How many non-blank lines `session.question` returns.
 const QUESTION_LINES: usize = 12;
@@ -421,6 +423,7 @@ impl Workspace {
                     note: s.note.as_deref(),
                     progress: s.progress.as_ref(),
                     live: !s.lost,
+                    ssh: s.ssh.as_ref().map(|t| t.host.as_str()),
                 })
             })
             .collect();
@@ -678,6 +681,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Result<(), ApiError> {
         let p = &request.params;
+        let ssh = ssh_param(p)?;
+        if ssh.is_some() {
+            for key in ["folder", "preset", "run"] {
+                if opt_str(p, key)?.is_some_and(|v| !v.is_empty()) {
+                    return Err(ApiError::bad_request(format!(
+                        "ssh and {key} can't be combined"
+                    )));
+                }
+            }
+        }
         let preset = match opt_str(p, "preset")? {
             Some(name) => Some(find_preset(&cx.global::<Appearance>().presets, name)?),
             None => None,
@@ -709,6 +722,25 @@ impl Workspace {
         }
         // By id: the new session's row can push the previous one down.
         let previous = self.sessions.active().map(|s| s.id);
+        if let Some(target) = ssh {
+            let place = match (split, of) {
+                (Some(axis), Some(of)) => Place::Split { of, axis },
+                _ => Place::New,
+            };
+            let (conn, request_id) = (conn.clone(), request.id);
+            let opened: Opened = Box::new(move |this, id, window, cx| {
+                let result = this.api_opened(id, previous, None, background, window, cx);
+                if result.is_ok()
+                    && let (Some(id), Some(name)) = (id, name)
+                    && let Some(i) = this.sessions.position(|s| s.id == id)
+                {
+                    this.rename_at(i, &name, window, cx);
+                }
+                conn.send_line(&api::reply(request_id, result));
+            });
+            self.open_ssh_then(target, place, Some(opened), window, cx);
+            return Ok(());
+        }
         // The split path splits the active session, so `of` becomes it first.
         if let Some(i) = of {
             self.sessions.select(i);
@@ -776,10 +808,27 @@ struct ListEntry<'a> {
     progress: Option<&'a (u8, Option<String>)>,
     /// False once the background service was lost: the session no longer updates.
     live: bool,
+    /// The host of an SSH session.
+    ssh: Option<&'a str>,
+}
+
+/// The `ssh` param of `session.new` (`{ host, tmux }`): absent is a plain session.
+fn ssh_param(p: &Value) -> Result<Option<SshTarget>, ApiError> {
+    let ssh = match p.get("ssh") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(ssh @ Value::Object(_)) => ssh,
+        Some(_) => return Err(ApiError::bad_request("ssh must be an object")),
+    };
+    let host = validate_host(required_str(ssh, "host")?).map_err(ApiError::bad_request)?;
+    Ok(Some(SshTarget {
+        host,
+        tmux: bool_param(ssh, "tmux")?,
+        tmux_name: None,
+    }))
 }
 
 fn list_entry(e: &ListEntry) -> Value {
-    json!({
+    let mut entry = json!({
         "id": format!("s{}", e.id),
         "number": e.number,
         "name": e.name,
@@ -792,7 +841,11 @@ fn list_entry(e: &ListEntry) -> Value {
         "note": e.note,
         "progress": e.progress.map(|(percent, label)| json!({ "percent": percent, "label": label })),
         "live": e.live,
-    })
+    });
+    if let Some(host) = e.ssh {
+        entry["ssh"] = json!(host);
+    }
+    entry
 }
 
 /// The calling session from `caller`: the number of `FUXX_SESSION`'s `s<N>`, or absent.
@@ -1063,6 +1116,7 @@ mod tests {
             note: Some("tests"),
             progress: Some(&(40, Some("build".into()))),
             live: true,
+            ssh: None,
         };
         let v = list_entry(&e);
         assert_eq!(
@@ -1107,6 +1161,58 @@ mod tests {
     }
 
     #[test]
+    fn api_new_ssh_validates_host() {
+        assert_eq!(ssh_param(&json!({})), Ok(None));
+        assert_eq!(ssh_param(&json!({"ssh": null})), Ok(None));
+        let t = ssh_param(&json!({"ssh": {"host": " me@dev ", "tmux": true}}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (t.host.as_str(), t.tmux, t.tmux_name),
+            ("me@dev", true, None)
+        );
+        let t = ssh_param(&json!({"ssh": {"host": "dev"}}))
+            .unwrap()
+            .unwrap();
+        assert!(!t.tmux);
+        for bad in ["", "-oProxyCommand=x", "a b"] {
+            let e = ssh_param(&json!({"ssh": {"host": bad}})).unwrap_err();
+            assert_eq!(e.code, "bad_request", "{bad}");
+            assert_eq!(e.message, validate_host(bad).unwrap_err(), "{bad}");
+        }
+        for odd in [
+            json!({"ssh": "dev"}),
+            json!({"ssh": {}}),
+            json!({"ssh": {"host": 3}}),
+            json!({"ssh": {"host": "d", "tmux": "yes"}}),
+        ] {
+            assert_eq!(ssh_param(&odd).unwrap_err().code, "bad_request", "{odd}");
+        }
+    }
+
+    #[test]
+    fn list_shows_ssh_host_only_for_ssh() {
+        let mut e = ListEntry {
+            id: 4,
+            number: 2,
+            name: "api",
+            title: None,
+            status: Status::Idle,
+            project: None,
+            preset: None,
+            focused: false,
+            on_screen: false,
+            note: None,
+            progress: None,
+            live: true,
+            ssh: None,
+        };
+        assert!(list_entry(&e).get("ssh").is_none());
+        e.ssh = Some("me@dev");
+        assert_eq!(list_entry(&e)["ssh"], json!("me@dev"));
+    }
+
+    #[test]
     fn a_lost_session_is_listed_as_not_live_and_refuses_input() {
         let e = ListEntry {
             id: 4,
@@ -1121,6 +1227,7 @@ mod tests {
             note: None,
             progress: None,
             live: false,
+            ssh: None,
         };
         let v = list_entry(&e);
         assert_eq!(v["live"], json!(false));
