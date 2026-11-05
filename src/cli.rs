@@ -16,8 +16,6 @@ pub enum Cli {
     Mcp,
     /// Print this usage text.
     Help(String),
-    /// M10a Task 0 spike (hidden, throwaway): the detached-process probe, or its child.
-    Probe { child: bool, disclaim: bool },
     /// `fuxx daemon ...`: the background service that keeps sessions (M10a).
     Daemon(DaemonCommand),
     /// Send one request. `stream`: read lines until the reply line or the end (`events`, `wait`).
@@ -224,19 +222,6 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
         "help" | "--help" | "-h" => return Ok(Cli::Help(USAGE.to_string())),
         "mcp" => return Ok(Cli::Mcp),
         "daemon" => return parse_daemon(&rest[1..], leading_json > 0).map(Cli::Daemon),
-        // M10a Task 0 spike: hidden, not in USAGE.
-        "__detach-probe" | "__detach-probe-child" => {
-            let child = first == "__detach-probe-child";
-            let flag = if child { "--disclaimed" } else { "--disclaim" };
-            let tail = &rest[1..];
-            if tail.iter().any(|a| a != flag && !(child && a == "--plain")) {
-                return Err(format!("fuxx: usage: {first} [{flag}]"));
-            }
-            return Ok(Cli::Probe {
-                child,
-                disclaim: tail.iter().any(|a| a == flag),
-            });
-        }
         _ => {}
     }
     let Some(&(cmd, method)) = COMMANDS.iter().find(|(c, _)| *c == first.as_str()) else {
@@ -646,40 +631,6 @@ mod tests {
         assert!(matches!(p(&[]), Ok(Cli::Gui)));
         assert!(matches!(p(&["-psn_0_123"]), Ok(Cli::Gui)));
         assert!(matches!(p(&["mcp"]), Ok(Cli::Mcp)));
-    }
-
-    #[test]
-    fn the_hidden_probe_commands_parse_and_stay_out_of_help() {
-        assert!(matches!(
-            p(&["__detach-probe"]),
-            Ok(Cli::Probe {
-                child: false,
-                disclaim: false
-            })
-        ));
-        assert!(matches!(
-            p(&["__detach-probe", "--disclaim"]),
-            Ok(Cli::Probe {
-                child: false,
-                disclaim: true
-            })
-        ));
-        assert!(matches!(
-            p(&["__detach-probe-child", "--disclaimed"]),
-            Ok(Cli::Probe {
-                child: true,
-                disclaim: true
-            })
-        ));
-        assert!(matches!(
-            p(&["__detach-probe-child", "--plain"]),
-            Ok(Cli::Probe {
-                child: true,
-                disclaim: false
-            })
-        ));
-        assert!(p(&["__detach-probe", "--bogus"]).is_err());
-        assert!(!USAGE.contains("__detach"));
     }
 
     #[test]

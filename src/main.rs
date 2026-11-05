@@ -12,7 +12,6 @@ mod colors;
 mod daemon;
 mod daemon_client;
 mod daemon_session;
-mod detach_probe;
 mod detector;
 mod fonts;
 mod grid;
@@ -301,11 +300,6 @@ fn main() {
             print!("{usage}");
             std::process::exit(0);
         }
-        Ok(Cli::Probe { child, disclaim }) => std::process::exit(if child {
-            detach_probe::run_child(disclaim)
-        } else {
-            detach_probe::run_parent(disclaim)
-        }),
         Ok(Cli::Mcp) => std::process::exit(mcp::run(client_socket(), caller)),
         Ok(Cli::Daemon(command)) => std::process::exit(run_daemon(command)),
         Ok(Cli::Call {
