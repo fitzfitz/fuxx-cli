@@ -302,6 +302,29 @@ start was 243). 0 warnings and `cargo fmt --check` clean throughout.
 - A reattached screen does not restore scroll region, tab stops or character sets. Notifications show as "Script Editor" until M12.
 - Upgrading fuxx doesn't carry sessions into a new background service if the protocol changes.
 
+## Deferred minors
+
+Every small finding the per-task and final reviews left for later, copied from the build ledger. None blocks M10a.
+
+- **Task 2:** Decoder buf keeps capacity after a large frame (≤16 MiB per connection).
+- **Task 3:** scanner misses 8-bit ST (0x9C) ending DCS passthrough (a DCS payload containing U+201C) → duplicate text on a replica attaching in that window; UTF-8 tracking looser than from_utf8 (surrogates/overlongs split at a read boundary); 4 KiB tail reset mid-sequence (e.g. a >4 KiB OSC 52 copy) → garbage on the replica until redraw — cheap improvement: keep the introducer; input_backlog can stay >0 after a writer error (break then drain race).
+- **Task 4:** a reader paused for backpressure cannot see its own disconnect/Close/Detach while the child never drains (thread lingers; bounded ~1 MiB; another client can Close) — fix: break the wait when the connection is closed; spawn-then-refuse window for a Create racing exit (child spawned then killed, never visible); a panic in session.close() during Stop leaves closing set without quit.
+- **Task 5:** id-less Error could be mistaken for a pending Create reply (unreachable today); a daemon at its connection cap triggers futile respawns (log noise); client per-session channels unbounded (slow replica grows memory instead of resync); timing-based status test; spawn setup ignores posix_spawn* return codes; refresh_status blocking List on the replica thread.
+- **Task 5:** a reader blocked in push (one stuck 16 MiB queue) cannot see EOF; real per-session cap ≈ 16 MiB + one frame; a newer GUI vs an older running daemon on proto 1 silently drops Write (dev builds only; restart the daemon); DaemonClient::request holds the requests lock across a blocking send (no UI caller); an old replica gets Exited when a second attach replaces its route.
+- **Task 6:** GPUI keeps old menu actions on every set_menus (~45 boxed actions per count change); new sessions refused for ~1 s while connecting at startup.
+- **Task 6:** 2 s last-close cap is soft (List timeout up to 10 s; UI not blocked); same-pid reconnect can be fooled by pid reuse (needs a start nonce in HelloOk); GPUI menu action leak.
+- **Task 7:** Status/Exited for an adopted-but-unattached session arrive only after its (≤ seconds) background attach; collapsed entries for gone projects kept (as M7); a timing-based negative test.
+- **Task 8:** probe swallows connect/list errors silently; no test running the probe against a temp daemon.
+- **Task 9:** a hung-but-connected GUI suppresses daemon notifications (document, not fix); a change seen while the GUI was attached but not yet acted on at GUI quit is recorded silently (rare loss, never a duplicate); one thread + osascript per notification, no rate limit; info() read twice per tick; tick-loop first-sighting/seen logic has no test.
+- **Final:** ⌥⌘Q during startup ends only shown sessions; ⌘Q mid-reopen can leave unsaved restarted sessions (newcomers next launch).
+- **Final:** `fuxx daemon stop --force` with the window open can mark sessions lost instead of closed (Exited frames lost at shutdown).
+- **Final:** stale #[allow(dead_code)] "used by Task N" attributes; 3 dead methods.
+- **Final:** daemon keeps the GUI's working directory (no chdir "/").
+- **Final:** off-mode session.list now carries "live": true (additive; list-shape test edited) — accepted change, record in docs.
+- **Final:** ~~spawn_detached lives in the spike module~~ — done in 48b1def (moved into daemon_client.rs; probe removed).
+- **Final:** daemon dies between Hello and List → empty window, no notice.
+- **Final:** if the active saved session was left to the service, the restored window activates the first session instead.
+
 ## Related
 
 - [[50 - Milestone 10a - Persistent Sessions]] · [[Input - M10 Feasibility Study]] · [[40 - Roadmap]] · [[00 - Plan Tracker (Start Here)]]
