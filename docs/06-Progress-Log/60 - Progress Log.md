@@ -14,13 +14,36 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M10c — agent browser 🟨 built and reviewed, on-screen check pending (M10b the same); M11 — UI/UX uplift is next (planned 2026-11-06). M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11 — UI/UX uplift 🟨 built and reviewed, on-screen check pending (M10b and M10c the same, all batched); after your check: merge, then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-06 — Milestone 11 built: UI/UX uplift (on-screen check pending)
+- **Did:** Same arrangement as M10b and M10c: built and reviewed, **not** marked done until you run the on-screen
+  checks (batched with M10b and M10c). Built [[M11 Plan - UI-UX Uplift]] (10 of 11 tasks; the eleventh is your check),
+  with off-screen screenshots in a dark and a light theme looked at for every UI task: an integrated titlebar and
+  padding; design tokens with a contrast floor (light themes too); a sidebar with a question line under a waiting row,
+  ages, headers, scrolling, resizing and a hint card; shaped status marks (ring, spinning arc, pulsing dot, dot with
+  a check) with an Animations switch and macOS Reduce motion; pane headers and quiet dividers; ⇧⌘U and ⌘P; a rename
+  that selects the old name; Preferences with swatches and a live preview. Reviews found real problems: the spinner
+  kept waking while the window was hidden and every tick repainted the terminals (fixed: marks stop when the window
+  can't be seen, terminal views are cached); ⌘P over a rename closed itself; the notification body repeated its
+  summary; the Preferences preview was cut off at 16 pt. The final review said Ready to merge, then a polish pass
+  fixed hover text contrast, the host picker's and address box's look, and ⌘= ⌘− ⌘0 in a browser window. 546 tests.
+  The 21-item on-screen list is in [[53 - Milestone 11 - UI-UX Uplift]]; the minor findings left on purpose are in
+  the plan. Visible change to know: notification titles are now `#3 api — Needs your input`, with the question (or
+  "Worked for 3m") as the body, and `fuxx events` carries the same text.
+- **Learned:** GPUI's off-screen renderer (behind the `ui-shots` feature) lets reviewers see every scene without a
+  display, but AppKit needs the main thread, so the scenes run from a hidden `__ui-shots` entry rather than from
+  tests. A 10 fps ticker is cheap only if it stops when nothing visible moves and doesn't repaint the terminals.
+  Contrast has to be checked on every surface that is actually drawn, hover fills included. GPUI has no letter
+  spacing at this rev, so headers use small caps.
+- **Blocked:** On your batched on-screen check for M10b, M10c and M11. Branch `m11-ui-ux` is not merged (it stacks on
+  M10c, which stacks on M10b). After the check: merge M10b, M10c and M11 into `master`, then M12.
 
 ### 2026-11-06 — Milestone 10c built: agent browser (on-screen check pending)
 - **Did:** Same arrangement as M10b: built and reviewed, **not** marked done until you run the on-screen checks

@@ -62,13 +62,10 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 > A new **M11 — UI/UX uplift** comes before shipping. The signed `.app` moved from M11 to **M12**, and Homebrew
 > from M12 to **M13**. Older notes and log entries written before this date use the old numbers.
 
-- **M11 — UI/UX uplift** (▶ next, planned 2026-11-06: [[M11 Plan - UI-UX Uplift]], spec [[53 - Milestone 11 - UI-UX Uplift]]) *(added 2026-10-27 on request)*: polish how fuxx looks and feels before the first signed
-  release. What's in it is decided together when we reach it (brainstorm first); nothing is assumed yet.
-  Input: [[M11 Input - UI-UX Review]] (honest review + ranked plan, 2026-10-27). Already requested: **animations
-  can be turned on/off** (`animations = on|off` + a Preferences switch; with them off, statuses keep distinct still
-  shapes). Open: the default, and whether macOS Reduce motion / Low Power Mode pause them. Kept after M9 and M10
-  on purpose (your call, 2026-10-27): those may change the layout, so polish comes last.
-- **M12 — Ship as a real `.app`:** take M4b's bundle and sign/notarize it → fixes the notification identity (vs "Script Editor"), and **clicking a notification switches to that session** (moved from M4 by D5, 2026-10-26). Universal (Apple Silicon + Intel) per **D7**, decided 2026-10-26.
+- **M11 — UI/UX uplift** — 🟨 built and reviewed 2026-11-06, on-screen check pending (batched with M10b and M10c): [[M11 Plan - UI-UX Uplift]], spec [[53 - Milestone 11 - UI-UX Uplift]] *(added 2026-10-27 on request)*. Integrated titlebar and padding, a sidebar that reads at a glance (question under a waiting row), shaped status marks with motion you can turn off (Animations setting + macOS Reduce motion), split pane headers, ⇧⌘U and ⌘P, redesigned Preferences, light themes with a contrast floor.
+  Input: [[M11 Input - UI-UX Review]] (honest review + ranked plan, 2026-10-27). Kept after M9 and M10 on purpose (your call, 2026-10-27): those may change the layout, so polish comes last.
+  **After your batched on-screen check** (M10b, M10c, M11): merge M10b / M10c / M11 into `master`, then M12.
+- **M12 — Ship as a real `.app`:** (▶ next after the merge; not planned yet) take M4b's bundle and sign/notarize it → fixes the notification identity (vs "Script Editor"), and **clicking a notification switches to that session** (moved from M4 by D5, 2026-10-26). Universal (Apple Silicon + Intel) per **D7**, decided 2026-10-26.
 - **M13 — Homebrew cask** for install. (Later: Windows support.)
 
 ---

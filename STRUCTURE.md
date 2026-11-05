@@ -110,6 +110,16 @@ src/
 │   └── browser/probe.rs  M10c · hidden `fuxx __browser-probe` self-test: a real off-screen web view, end to end
 ├── workspace_browser.rs  M10c · the session ↔ browser map, ⇧⌘B address box, `browser.*` socket methods
 │
+│   UI uplift (M11)
+├── ui_tokens.rs          M11 · sizes, text scale and the WCAG contrast maths behind UiColors (pure)
+├── ui_shots.rs           M11 · off-screen screenshots (feature `ui-shots`): `cargo run --features ui-shots -- __ui-shots`
+├── status_mark.rs        M11 · the drawn status marks (ring, arc, pulsing dot, check), pop curve, ticker rule
+├── reduce_motion.rs      M11 · macOS "Reduce motion": read at start, refreshed by its change notification
+├── sidebar.rs            M11 · the sidebar: row model, rows, headers, scroll, resize, footer, hint card, drag
+├── pane_header.rs        M11 · the 22 px header over each pane of a split
+├── switcher.rs           M11 · the ⌘P session switcher; urgency order and ⇧⌘U's next-needing-you
+├── overlay_panel.rs      M11 · the shared panel and filter box (switcher, host picker, address box)
+│
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
 ├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row

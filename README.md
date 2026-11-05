@@ -37,6 +37,17 @@ refs (`e3`) that `click` and `fill` take. Only `http://` and `https://` addresse
 `http://` added). Logins are kept between runs, and Safari's Web Inspector can attach (Develop menu). Browsers close
 with their session and aren't restored after quitting. Built and reviewed, not yet tried on screen.
 
+## What's new in the look
+
+The window is now the app: no grey titlebar, padding around the terminal, and colours that hold up in light
+themes too. Each session shows a shaped status mark: a hollow ring (idle), a spinning arc (working), a pulsing dot
+(waiting) and a dot with a check that pops once (done). A waiting session also shows the question it's asking under
+its name. New shortcuts: **⇧⌘U** jumps to the session that needs you, **⌘P** switches sessions (most urgent first),
+**⌘\** hides the sidebar, **⌘=** / **⌘−** / **⌘0** change the font size. Split panes get a small header each.
+Preferences has theme swatches, a live preview and **Animations** On/Off (`animations = off` in the config; macOS
+"Reduce motion" is respected too). Screenshots of every screen, in a dark and a light theme, come from
+`cargo run --features ui-shots -- __ui-shots` (PNGs in `target/ui-shots/`). Built and reviewed, not yet tried on screen.
+
 ## Scripting fuxx
 
 Inside any fuxx session, the `fuxx` command talks to the running app (outside, put the binary on your `PATH`):
