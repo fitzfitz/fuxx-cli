@@ -371,7 +371,7 @@ impl Render for DragPreview {
 }
 
 /// Tabular figures, so numbers and times line up.
-fn tabular() -> FontFeatures {
+pub(crate) fn tabular() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }
 
@@ -389,7 +389,7 @@ fn mark_size(status: Status) -> f32 {
     }
 }
 
-fn mark_slot(mark: impl IntoElement) -> Div {
+pub(crate) fn mark_slot(mark: impl IntoElement) -> Div {
     div()
         .flex_none()
         .size(px(MARK_SLOT))
@@ -474,14 +474,19 @@ impl Workspace {
     }
 
     /// The marks on screen: each row in the scrolled view (a closed group's header shows its
-    /// sessions' most urgent); none with the sidebar hidden.
+    /// sessions' most urgent; none with the sidebar hidden), and each pane header.
     pub(crate) fn visible_statuses(&self) -> Vec<Status> {
+        let headers = self
+            .header_sessions()
+            .into_iter()
+            .map(|i| self.sessions.items()[i].status);
         self.rows_in_view(Instant::now())
             .into_iter()
             .filter_map(|row| match row {
                 SidebarRow::Header(h) => h.mark,
                 SidebarRow::Session(s) => Some(s.status),
             })
+            .chain(headers)
             .collect()
     }
 
@@ -515,14 +520,22 @@ impl Workspace {
         let next = if ticking || !seen {
             None
         } else {
-            self.rows_in_view(now)
-                .iter()
+            let rows = self
+                .rows_in_view(now)
+                .into_iter()
                 .filter_map(|row| match row {
-                    SidebarRow::Session(s) if s.age.is_some() => {
-                        let since = self.sessions.items()[s.index].status_since;
-                        Some(next_age_change(now.saturating_duration_since(since)))
-                    }
+                    SidebarRow::Session(s) if s.age.is_some() => Some(s.index),
                     _ => None,
+                });
+            // Pane headers show an age too (every status but Idle).
+            let headers = self
+                .header_sessions()
+                .into_iter()
+                .filter(|&i| self.sessions.items()[i].status != Status::Idle);
+            rows.chain(headers)
+                .map(|i| {
+                    let since = self.sessions.items()[i].status_since;
+                    next_age_change(now.saturating_duration_since(since))
                 })
                 .min()
         };
@@ -581,6 +594,8 @@ impl Workspace {
             .pb(px(8.0))
             .overflow_y_scroll()
             .track_scroll(&self.sidebar.scroll)
+            // Scrolling changes which marks are on screen, so the ticker re-checks (`render`).
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
             .children(elements);
         let notice = self.notice.clone().map(|notice| {
             div()
@@ -808,7 +823,7 @@ impl Workspace {
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(mark_slot(self.session_mark(session, ui, surface)))
+            .child(mark_slot(self.session_mark("row", session, ui, surface)))
             .child(number(row.number(), ui))
             .child(name)
             .when_some(row.age.clone(), |line, age| {
@@ -969,9 +984,16 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A session row's mark on its row's `fill`; a Done one that just arrived pops (keyed by
-    /// its pop, so it plays once; after it, the mark is drawn plain).
-    fn session_mark(&self, session: &Session, ui: UiColors, fill: Rgb) -> AnyElement {
+    /// A session's mark on its surface's `fill` (a row, or a pane's header: `place` keeps their
+    /// animations apart); a Done one that just arrived pops (keyed by its pop, so it plays once;
+    /// after it, the mark is drawn plain).
+    pub(crate) fn session_mark(
+        &self,
+        place: &'static str,
+        session: &Session,
+        ui: UiColors,
+        fill: Rgb,
+    ) -> AnyElement {
         let size = px(mark_size(session.status));
         let popping = session
             .pop
@@ -983,7 +1005,7 @@ impl Workspace {
                     .flex_none()
                     .size(size)
                     .with_animation(
-                        ("pop", pop),
+                        (place, pop),
                         Animation::new(status_mark::POP),
                         move |slot, t| {
                             slot.child(status_mark::mark_on(

@@ -28,6 +28,7 @@ mod mouse;
 mod mux_proto;
 mod name_input;
 mod notifier;
+mod pane_header;
 mod panes;
 mod preferences;
 mod prefs;
