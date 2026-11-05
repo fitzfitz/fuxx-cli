@@ -28,6 +28,15 @@ on the host. Tick "Keep running on the host (tmux)" to run inside tmux there, wh
 network drop; otherwise Enter reconnects. From a script: `fuxx new --ssh HOST [--tmux]`. If you used the background
 service before this version, restart it once with `fuxx daemon stop`. Built and reviewed, not yet tried on screen.
 
+## Agent browser
+
+Press ⇧⌘B (File → Open Browser…) to open a browser window for the active session. It is a plain WebKit view (no
+tabs), and agents drive it: `fuxx browser open|snapshot|click|fill|press|read|eval|wait|screenshot|url|back|reload|close`,
+or the matching `browser_*` tools through `fuxx mcp`. `snapshot` lists the page's links, buttons and fields with
+refs (`e3`) that `click` and `fill` take. Only `http://` and `https://` addresses are opened (`localhost:3000` gets
+`http://` added). Logins are kept between runs, and Safari's Web Inspector can attach (Develop menu). Browsers close
+with their session and aren't restored after quitting. Built and reviewed, not yet tried on screen.
+
 ## Scripting fuxx
 
 Inside any fuxx session, the `fuxx` command talks to the running app (outside, put the binary on your `PATH`):

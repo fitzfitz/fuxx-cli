@@ -14,13 +14,30 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M10b — SSH workspaces 🟨 built and reviewed, on-screen check pending; M10c next (not planned yet). M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M10c — agent browser 🟨 built and reviewed, on-screen check pending (M10b the same); M11 — UI/UX uplift is next (planned 2026-11-06). M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-06 — Milestone 10c built: agent browser (on-screen check pending)
+- **Did:** Same arrangement as M10b: built and reviewed, **not** marked done until you run the on-screen checks
+  (batched with M10b and M11). Built [[M10c Plan - Agent Browser]] (7 of 8 tasks; the eighth is your check): a WebKit
+  window per session, opened with ⇧⌘B or `fuxx browser open`, and driven by `fuxx browser
+  open|snapshot|click|fill|press|read|eval|wait|screenshot|url|back|reload|close` and 13 matching MCP tools. Every
+  task was reviewed. Reviews found real gaps: the browser dropped on an SSH reconnect, and the spec's ⌘C/⌘V/⌘A/⌘Z/⌘W
+  did not reach the browser (so fuxx got an Edit menu). The whole-branch review found an agent's `open` took your
+  keyboard, and page text could reach your terminal as escape sequences (retitle a session, fire a notification);
+  both fixed and re-reviewed. 501 tests; a hidden `fuxx __browser-probe` drives a real off-screen web view end to end
+  and is kept for future GPUI/WebKit updates. The 22-item on-screen list is in [[52 - Milestone 10c - Agent Browser]];
+  the minor findings left on purpose are in the plan.
+- **Learned:** A WebKit view can live in its own `NSWindow` inside a GPUI app with no GPUI cooperation, but GPUI owns
+  the menu bar, so editing keys and ⌘W only reach the page through an Edit menu and a small window subclass; with the
+  browser in front, fuxx's other menu shortcuts do nothing. Pages with a strict CSP block `eval`, so agent code runs as
+  an expression first. Text from a page must be stripped of control characters before it reaches a terminal.
+- **Blocked:** Nothing. Branch `m10c-agent-browser` is not merged (it stacks on M10b); M11 is next.
 
 ### 2026-11-06 — Milestone 10b built: SSH workspaces (on-screen check pending)
 - **Did:** You asked me to run M10b, then M10c, then M11 on my own, with all the on-screen checks saved for the

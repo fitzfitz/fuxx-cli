@@ -1,20 +1,20 @@
 ---
 tags: [development, plan, milestone]
 milestone: M10c
-status: planned
+status: built
 updated: 2026-11-06
 ---
 
 # M10c Plan — Agent Browser (a scriptable browser window per session)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 | At a glance | |
 |---|---|
 | **Milestone note** | [[52 - Milestone 10c - Agent Browser]] (the spec) · design evidence: [[Input - M10 Feasibility Study]] §4 (option c + automation API) |
-| **Status** | ⬜ Planned (2026-11-06) |
-| **Tasks done** | 0 / 7 |
-| **▶ Pick up here** | Task 0 |
+| **Status** | 🟨 Built and reviewed (2026-11-06); on-screen check pending |
+| **Tasks done** | 7 / 8 (Task 6 is your on-screen check, batched with M10b and M11) |
+| **▶ Pick up here** | Task 6, when you run the batched checks ([[52 - Milestone 10c - Agent Browser]], "On-screen checklist") |
 | **Decisions used** | Yours: for agents to automate (2026-10-27); autonomous run (2026-11-05). Everything else is the AI's call. |
 | **Needs your eyes** | 👀 Task 6 (batched with M10b and M11) |
 
@@ -73,34 +73,34 @@ Those four become direct dependencies at the versions already locked. No other n
 - Create: `src/browser_url.rs`, `src/browser_js.rs`, `src/browser.rs`, `src/workspace_browser.rs`.
 - Modify: `Cargo.toml`, `src/main.rs`, `src/cli.rs`, `src/workspace.rs`, `src/workspace_api.rs`, `src/mcp.rs`.
 
-### Task 0: Spike — WebKit from fuxx's process (hidden probe) — ⬜
+### Task 0: Spike — WebKit from fuxx's process (hidden probe) — ✅
 
 **Files:** `Cargo.toml`, `src/browser.rs` (first cut), `src/main.rs`, `src/cli.rs` (hidden `__browser-probe`).
 
-- [ ] Add the crates per Tech Stack. Look up the exact `objc2-web-kit 0.3.2` feature names and APIs on docs.rs (Context7
+- [x] Add the crates per Tech Stack. Look up the exact `objc2-web-kit 0.3.2` feature names and APIs on docs.rs (Context7
   has no entry); record them in the report.
-- [ ] `fuxx __browser-probe` starts a GPUI application with no fuxx window, makes an off-screen 800 × 600 `NSWindow`
+- [x] `fuxx __browser-probe` starts a GPUI application with no fuxx window, makes an off-screen 800 × 600 `NSWindow`
   with a `WKWebView`, loads a built-in test page with `loadHTMLString` (a heading, a link, a text field, a button that
   changes the heading), then: evaluates `document.title`; fills and clicks via JS; reads the heading; takes a snapshot
   to PNG in a temp dir; prints one JSON report line (`{"eval":…, "clicked":…, "png_bytes":N, "ms":…}`) and exits 0.
   Hard exit after 15 s with code 2. Hidden from `fuxx help`.
-- [ ] Agents may run this probe (it opens no visible window and exits by itself); it is the only GUI process they run.
-- [ ] Test: `the_browser_probe_parses_and_stays_out_of_help`. Run the probe; paste its output in the report.
-- [ ] Commit `spike(m10c): WebKit probe — load, script and capture a web view from fuxx`.
+- [x] Agents may run this probe (it opens no visible window and exits by itself); it is the only GUI process they run.
+- [x] Test: `the_browser_probe_parses_and_stays_out_of_help`. Run the probe; paste its output in the report.
+- [x] Commit `spike(m10c): WebKit probe — load, script and capture a web view from fuxx`.
 
-### Task 1: Addresses — ⬜
+### Task 1: Addresses — ✅
 
 **Files:** Create `src/browser_url.rs`.
 
 - `pub fn normalize_url(input: &str) -> Result<String, String>` per Global Constraints (trim; keep an explicit
   `http(s)://`; add a scheme to a bare host[:port][/path]; refuse other schemes and empty input; refuse whitespace or
   control characters inside).
-- [ ] Tests: `localhost_and_ips_get_http` (`localhost:3000`, `127.0.0.1:8080/x`, `[::1]:5173`, `app.localhost`),
+- [x] Tests: `localhost_and_ips_get_http` (`localhost:3000`, `127.0.0.1:8080/x`, `[::1]:5173`, `app.localhost`),
   `other_hosts_get_https` (`example.com`, `docs.rs/objc2`), `explicit_schemes_are_kept`, `other_schemes_are_refused`
   (`javascript:alert(1)`, `file:///etc/passwd`, `data:text/html,x`, `ftp://h`, `about:config`), `blank_and_spaces_are_refused`.
-- [ ] RED → implement → GREEN; full suite; commit `feat(m10c): browser addresses are http(s) only`.
+- [x] RED → implement → GREEN; full suite; commit `feat(m10c): browser addresses are http(s) only`.
 
-### Task 2: The page-side scripts — ⬜
+### Task 2: The page-side scripts — ✅
 
 **Files:** Create `src/browser_js.rs`.
 
@@ -118,12 +118,12 @@ Those four become direct dependencies at the versions already locked. No other n
 - `pub struct Snapshot { pub url: String, pub title: String, pub nodes: Vec<Node> }`, `pub struct Node { role, name,
   r#ref: Option<String>, value: Option<String>, level: Option<u8> }` (serde); `pub fn render_outline(s: &Snapshot) ->
   String` — one line per node, indented by heading level, controls as `[eN] role "name"` (+ `= "value"`).
-- [ ] Tests: `arguments_are_embedded_as_json` (hostile strings `"`, `\`, newline, `</script>`, `'); alert(1); ('` appear
+- [x] Tests: `arguments_are_embedded_as_json` (hostile strings `"`, `\`, newline, `</script>`, `'); alert(1); ('` appear
   only inside a JSON string literal of the produced script), `snapshot_json_parses` (a recorded sample),
   `outline_renders_refs_and_headings`, `node_and_text_caps` (render truncation).
-- [ ] RED → implement → GREEN; full suite; commit `feat(m10c): page scripts for snapshot, click, fill, press, read and wait`.
+- [x] RED → implement → GREEN; full suite; commit `feat(m10c): page scripts for snapshot, click, fill, press, read and wait`.
 
-### Task 3: The browser window — ⬜
+### Task 3: The browser window — ✅
 
 **Files:** `src/browser.rs` (finish), `src/main.rs`/`src/cli.rs` (extend the probe).
 
@@ -137,13 +137,13 @@ Those four become direct dependencies at the versions already locked. No other n
   `pub fn is_closed(&self) -> bool` (the user closed the window).
 - Load errors: detect with `state()` polling (no navigation delegate in M10c; AI's call): `loading` false and URL still
   `about:blank` after a load request → `the page failed to load: <url>`.
-- [ ] The probe now runs every operation through `Browser` (load an HTML string page; eval; fill/click via `browser_js`;
+- [x] The probe now runs every operation through `Browser` (load an HTML string page; eval; fill/click via `browser_js`;
   `snapshot_js` parsed into `Snapshot`; screenshot; `back`; a script that never returns hits the caller's timeout;
   close mid-eval → the receiver errors, no crash) and prints one JSON report.
-- [ ] Unit tests where pure; the probe output pasted in the report is this task's evidence.
-- [ ] Commit `feat(m10c): a WebKit browser window, scripted through channels`.
+- [x] Unit tests where pure; the probe output pasted in the report is this task's evidence.
+- [x] Commit `feat(m10c): a WebKit browser window, scripted through channels`.
 
-### Task 4: Browsers in the workspace — ⬜
+### Task 4: Browsers in the workspace — ✅
 
 **Files:** Create `src/workspace_browser.rs`; modify `workspace.rs`, `main.rs`.
 
@@ -157,9 +157,9 @@ Those four become direct dependencies at the versions already locked. No other n
   an invalid address shows the error in the box.
 - Pure, tested: `pub fn browser_title(session: &str, page: Option<&str>) -> String`; the map's remove-on-close logic as
   a small struct with a test (`closing_a_session_drops_its_browser`, `a_user_closed_window_is_forgotten`).
-- [ ] RED → implement → GREEN; full suite; commit `feat(m10c): a browser per session, File → Open Browser (⇧⌘B)`.
+- [x] RED → implement → GREEN; full suite; commit `feat(m10c): a browser per session, File → Open Browser (⇧⌘B)`.
 
-### Task 5: `fuxx browser …` and the MCP tools — ⬜
+### Task 5: `fuxx browser …` and the MCP tools — ✅
 
 **Files:** `workspace_api.rs`, `cli.rs`, `mcp.rs` (+ `workspace_browser.rs`).
 
@@ -176,32 +176,64 @@ Those four become direct dependencies at the versions already locked. No other n
 - MCP tools: `browser_open`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_press`, `browser_read`,
   `browser_eval`, `browser_wait`, `browser_screenshot`, `browser_url`, `browser_back`, `browser_reload`, `browser_close`,
   each with a one-line description and JSON schema in the existing style.
-- [ ] Tests: `browser_commands_parse`, `browser_requests_map_to_methods` (CLI → method/params),
+- [x] Tests: `browser_commands_parse`, `browser_requests_map_to_methods` (CLI → method/params),
   `mcp_browser_tools_map`, `wait_needs_text_or_selector`, `a_command_without_a_browser_errors` (API with no browser:
   exact text), `timeouts_answer_with_the_exact_text` (a stub eval that never answers).
-- [ ] RED → implement → GREEN; full suite; commit `feat(m10c): fuxx browser commands and MCP tools`.
+- [x] RED → implement → GREEN; full suite; commit `feat(m10c): fuxx browser commands and MCP tools`.
 
-### Task 6: On screen — 👀 ⬜ (batched with M10b and M11)
+### Task 6: On screen — 👀 pending (batched with M10b and M11)
 
 The spec's success check, plus: ⇧⌘B address box (valid / invalid address); title follows the page; ⌘C/⌘V/⌘A in a
 page's text field; closing the browser window leaves the session; closing the session closes the browser; a second
 session's browser is separate; Safari → Develop → fuxx lists the page; logins survive a restart of fuxx.
 
-### Task 7: Update the docs — ⬜
+### Task 7: Update the docs — ✅
 
-- [ ] Note 52 (built; on-screen pending); this plan + verification log + deferred minors; roadmap; tracker; Progress Log;
+- [x] Note 52 (built; on-screen pending); this plan + verification log + deferred minors; roadmap; tracker; Progress Log;
   STRUCTURE.md (new files); README ("Agent browser" section); the probe documented as a hidden self-test kept for future
   GPUI/WebKit bumps.
 
 ## Verification log
 
-_(filled in as tasks complete)_
+Every task was built test-first (RED shown before GREEN) and reviewed by a fresh reviewer; test counts are the full
+`cargo test` total after the task. The branch started from 457 tests (M10b). `cargo fmt --check` clean.
+
+| Task | Commits | Tests | Review |
+|---|---|---|---|
+| 0 spike (probe) | `ad26086..e5767f7` | 457 | Approved, clean. Probe: `{"eval":"fuxx probe","clicked":"Hi, probe","png_bytes":16280,"ms":207}`. |
+| 1 addresses | `e5767f7..785f9c6` (+ `fde2ba0`, the M10b hung-master test flake fix) | 463 | Approved, clean. |
+| 2 page scripts | `785f9c6..c8f7426` | 468 | Approved, clean. Scripts also run in Chromium via Playwright. |
+| 3 browser window | `c8f7426..5157012` | 474 | Needs fixes (stale load error after a page-initiated navigation; a retry could run a click or fill twice; two minors). Fix round `6bff632` (probe moved to `src/browser/probe.rs`), `5b4d6d5`; 475 tests, probe x3; scoped re-review: 4 addressed, 0 open. |
+| 4 browsers in the workspace | `5b4d6d5..9150805` | 484 | Needs fixes (an SSH reconnect closed the browser; plus Edit menu, ⌘W and ⌘Z in the browser, which the spec promised). Fix round `288267b`; 487 tests; scoped re-review: 2 addressed, 0 open. |
+| 5 `fuxx browser` and MCP | `288267b..6f82aa6` (`042c928` ⌘W/⌘Z by key position on any layout) | 499 | Approved, clean. |
+| Final review | `793dd76..6f82aa6` | 499 | Ready after fixes (0 Critical, 1 Important, 7 Minor): an agent's `browser open` took the keyboard from whatever you were typing. A second finding, page text reaching the terminal with raw escape sequences, was re-graded Important. |
+| Final fixes | `548ca8a` (control characters stripped from page text), `ce7ec97` (agent open uses `orderFront`) | 501 | Both shown failing first. Scoped re-review: all addressed. Probe ok. |
+| 6 On screen | | | Pending: batched with M10b and M11. |
+| 7 Docs | the docs commit | 501 | This commit. |
+
+Rulings taken along the way are summarised in the milestone note, "Decisions made along the way".
+
+## Deferred minors
+
+Minor review findings left on purpose. Copied here from the (git-ignored) working ledger so they are not lost.
+Items marked "(fixed later)" were fixed in a later round and are kept for the record.
+
+- **Task 0:** probe PNG path fixed per run; Dock icon may flash for milliseconds before the Accessory policy applies; the watchdog exits from a non-main thread; eval accepts only string results (fixed later: Task 3 returns any JSON value, Ruling J).
+- **Task 1:** `http://a@evil` keeps its credentials (in the spec); the hung-master flake fix is not reproducible, so watch full-suite runs. (the empty-port, `/`-before-`://` and named-risk cases were folded into Task 4, Ruling K)
+- **Task 2:** page-side JS has no committed automated test beyond the probe; duplicated or recycled DOM nodes can carry a ref (inherent; tool docs should say "take a new snapshot after the page changes"); U+2028/2029 escaping and the `press` own-property check were fixed in Task 3 (Ruling L).
+- **Task 3:** a CSP hint is added to any EvalError; `within` prints "0 s" for sub-second limits; Retina scale unverified (the probe ran at 1.0); a bad address during another in-flight load shows no error until loading stops; eval double-run only if WebKit reports a SyntaxError after code ran (theoretical).
+- **Task 4:** a user-closed window stays in the map for up to 500 ms (stale prefill); `normalize_url` accepts hostless `http://?x`; one-frame redraw miss when dropping a key browser window; other fuxx menu shortcuts (⌘T and so on) do nothing while the browser is key (corrected at the final review: GPUI sends menu actions to no window; it was first noted as acting on fuxx's window); the undo fallback relies on the window's responder chain (on-screen check).
+- **Task 5:** `wait` can overrun its limit by up to one script limit (10 s) on a hung page; `back` with no history, or `reload` not yet started, returns success after 200 ms (unmeasured, on-screen check); `press`, `open`, `back` and `reload` tool docs lack the "new snapshot" hint; the dispatch path of the no-browser error is untested (GUI).
+- **Final:** `open about:blank` reports a failed load; eval of declarations doesn't persist and a Promise comes back as `{}`; screenshots are PNG-encoded on the UI thread; commands in flight during an SSH reconnect answer "browser closed"; `wait` may give up early on a script error during navigation; `press` Enter-to-submit is not in the probe; the async command paths are not unit-tested.
+- **Final (after the fix pass):** `fuxx read` / `question` print the session's own escape codes raw (not page-derived); parse errors and help text are unstripped; `orderFront` on a minimised browser window is unverified (on-screen check).
 
 ## Known limitations
 
-- No navigation delegate in M10c: load failures are noticed by polling page state.
 - Pop-ups load in the same window; no tabs, downloads or uploads.
 - Browsers aren't restored after quitting; with the window closed, browser commands aren't available.
+- With the browser window in front, fuxx's menu shortcuts do nothing.
+- Load failures are reported from a WebKit navigation delegate (the plan first said polling; the delegate was added in Task 3 because polling misses failures while a page is already showing).
+- The hidden `fuxx __browser-probe` self-test is kept for future GPUI or WebKit updates.
 
 ## Related
 
