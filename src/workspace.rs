@@ -36,7 +36,8 @@ use crate::host_picker::HostPicker;
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
-use crate::panes::{self, PaneColors, Panes, SelectPane, StartDrag};
+use crate::pane_header;
+use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
 use crate::pty::ShellEnv;
 use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
@@ -49,7 +50,8 @@ use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
-use crate::ui_tokens::size::TOP_BAND;
+use crate::theme::UiColors;
+use crate::ui_tokens::size::{TOP_BAND, UNFOCUSED_VEIL};
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -185,6 +187,8 @@ pub struct Workspace {
     pane_area: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The line being dragged: a pane of its layout (by view) and the path to its split.
     pub(crate) dragging: Option<(EntityId, Vec<bool>)>,
+    /// The divider the pointer is over, like `dragging`: its layout's pane and its split's path.
+    divider_hover: Option<(EntityId, Vec<bool>)>,
     /// The groups closed in the sidebar.
     pub(crate) collapsed: Vec<GroupKey>,
     /// The rename box, and the session (by its view) it renames.
@@ -306,6 +310,7 @@ impl Workspace {
             layouts: Vec::new(),
             pane_area: Rc::new(Cell::new(None)),
             dragging: None,
+            divider_hover: None,
             collapsed: Vec::new(),
             renaming: None,
             host_picker: None,
@@ -1202,6 +1207,26 @@ impl Workspace {
         }
     }
 
+    /// The pointer entered (`over`) or left the line of the split at `path` in the layout on
+    /// screen: it is drawn as the accent line while the pointer is on it.
+    fn hover_divider(&mut self, path: Vec<bool>, over: bool, cx: &mut Context<Self>) {
+        let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) else {
+            return;
+        };
+        let now = Some((active, path));
+        let next = if over {
+            now
+        } else if self.divider_hover == now {
+            None
+        } else {
+            return; // already moved on to another line
+        };
+        if self.divider_hover != next {
+            self.divider_hover = next;
+            cx.notify();
+        }
+    }
+
     fn end_drag(&mut self, cx: &mut Context<Self>) {
         if self.dragging.take().is_some() {
             self.save(); // once per drag, not on every move
@@ -1339,7 +1364,12 @@ impl Workspace {
     }
 
     /// The layout holding the active session, its unfocused panes dimmed.
-    fn render_panes(&self, colors: PaneColors, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_panes(
+        &self,
+        colors: PaneColors,
+        ui: UiColors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let active = self.sessions.active()?.view.entity_id();
         let tree = self.shown_layout()?;
         let find = |id: EntityId| {
@@ -1383,11 +1413,24 @@ impl Workspace {
         let start_drag: StartDrag = Rc::new(move |path, _, cx| {
             this.update(cx, |this, cx| this.start_drag(path, cx)).ok();
         });
+        let this = cx.entity().downgrade();
+        let hover: HoverDivider = Rc::new(move |path, over, _, cx| {
+            this.update(cx, |this, cx| this.hover_divider(path, over, cx))
+                .ok();
+        });
+        // Each pane's header, when the layout is split (it sits outside the cached terminal).
+        let headers = pane_header::shows(tree.leaves().len());
+        let header = |id: EntityId| headers.then(|| self.pane_header(id, ui)).flatten();
+        // A hover or drag belongs to the layout it started in.
         let panes = Panes {
             active,
             view: &view,
+            header: &header,
             select,
             start_drag,
+            hover,
+            hovered: held_in(&self.divider_hover, tree),
+            dragging: held_in(&self.dragging, tree),
             colors,
         };
         Some(panes::render_layout(tree, &panes))
@@ -1483,6 +1526,8 @@ impl Workspace {
     /// terminal, which ends the rename (as clicking away from it does).
     fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar.hidden = !self.sidebar.hidden;
+        // The "+ New" menu hangs off the sidebar's footer; hidden, it can't stay open.
+        self.sidebar.new_menu = false;
         if self.sidebar.hidden && self.renaming.is_some() {
             self.focus_active(window, cx);
         }
@@ -1530,6 +1575,16 @@ impl Workspace {
     }
 }
 
+/// The split path of a hover or drag (`held`) if it is in the layout `tree`.
+fn held_in<'a>(
+    held: &'a Option<(EntityId, Vec<bool>)>,
+    tree: &Node<EntityId>,
+) -> Option<&'a [bool]> {
+    held.as_ref()
+        .filter(|(pane, _)| tree.contains(*pane))
+        .map(|(_, path)| path.as_slice())
+}
+
 /// `groups()` as the `groups` functions take it.
 fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
     keys.iter().map(Option::as_ref).collect()
@@ -1549,10 +1604,11 @@ impl Render for Workspace {
         let ui = theme.ui();
         let colors = PaneColors {
             dim: Hsla {
-                a: 0.3,
+                a: UNFOCUSED_VEIL,
                 ..hsla(theme.background)
             },
-            divider: hsla(ui.sidebar_border),
+            divider: hsla(ui.divider),
+            accent: hsla(ui.accent),
         };
         // The top band is the sidebar's top; with the sidebar hidden, the pane area's.
         let sidebar = (!self.sidebar.hidden).then(|| self.render_sidebar(ui, window, cx));
@@ -1658,7 +1714,7 @@ impl Render for Workspace {
                             .w_full()
                             .overflow_hidden()
                             .child(self.render_pane_area(cx))
-                            .children(self.render_panes(colors, cx)),
+                            .children(self.render_panes(colors, ui, cx)),
                     ),
             )
             // The host picker and the address box: over everything, centred near the top of

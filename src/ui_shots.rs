@@ -209,6 +209,7 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar-marks", sidebar_marks),
     ("cached-panes", cached_panes),
     ("sidebar", sidebar_scenes),
+    ("splits", split_scenes),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -816,14 +817,22 @@ fn check_window(
     } else {
         ui_tokens::size::TERMINAL_PADDING
     };
-    let top = if hidden {
+    let band = if hidden {
         ui_tokens::size::TOP_BAND
     } else {
         0.0
     };
-    // The right pane's right and top padding, and (hidden) the band above it.
+    // A split's panes have a header (not terminal background) above their terminal's padding.
+    let header = ui_tokens::size::PANE_HEADER;
+    let top = if split { band + header } else { band };
+    // The right pane's right and top padding (skipping its header), and (hidden) the band above.
+    let in_header = |y: f32| split && y >= band && y < band + header;
     let mut y = 0.0;
     while y < h {
+        if in_header(y) {
+            y += 1.0;
+            continue;
+        }
         for dx in 0..pad_x as usize {
             assert!(
                 is_bg(w - 1.0 - dx as f32, y),
@@ -836,6 +845,9 @@ fn check_window(
     let mut x = w * 0.75;
     while x < w {
         for dy in 0..(top + pad_y) as usize {
+            if in_header(dy as f32) {
+                continue;
+            }
             assert!(is_bg(x, dy as f32), "{scene}-{slug}: top padding at x {x}");
         }
         x += 1.0;
@@ -1370,5 +1382,162 @@ fn sidebar_scenes() {
         let tall = size(px(960.0), px(520.0));
         let path = shoot_with("sidebar-scroll", slug, &theme, tall, build, check);
         println!("ui-shots: {}", path.display());
+    }
+}
+
+/// Three panes of the active session: api (left), claude (top right, waiting) and codex (bottom
+/// right, working), split as a right split then a down split. `focus` is the focused one.
+fn split_workspace(focus: usize, window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
+    use std::time::{Duration, Instant};
+
+    let panes = [
+        (shot("api", API, Status::Idle, 0, SHELL_TEXT), None),
+        (
+            shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
+            Some(Axis::Row),
+        ),
+        (
+            shot("codex", API, Status::Working, 32, AGENT_TEXT),
+            Some(Axis::Column),
+        ),
+    ];
+    let mut ws = Workspace::for_shots(window, cx);
+    for (s, axis) in &panes {
+        let project = std::path::Path::new(s.project);
+        ws.open_shot_session(s.name, project, s.text, *axis, window, cx);
+    }
+    for (i, (s, _)) in panes.iter().enumerate() {
+        ws.set_status(i, s.status, false, cx);
+        let session = ws.sessions.get_mut(i).expect("just opened");
+        session.status_since = Instant::now() - Duration::from_secs(s.age);
+        session.pop = None;
+    }
+    ws.select(focus, window, cx);
+    ws.sidebar.hint_dismissed = true;
+    ws
+}
+
+/// The window pixel at (`x`, `y`) points.
+fn pixel_at(shot: &Shot, dims: Size<Pixels>, x: f32, y: f32) -> [u8; 3] {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (x, y) = ((x * scale) as usize, (y * scale) as usize);
+    let i = (y * shot.width as usize + x) * 4;
+    [shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]]
+}
+
+/// How many device pixels along the row at `y` points, between `x0` and `x1` points, are `c`.
+fn count_along(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    y: f32,
+    x0: f32,
+    x1: f32,
+) -> usize {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let near = |p: [u8; 3]| {
+        p.iter()
+            .zip([c.r, c.g, c.b])
+            .all(|(a, b)| a.abs_diff(b) <= 3)
+    };
+    let (a, b) = ((x0 * scale) as usize, (x1 * scale) as usize);
+    (a..b)
+        .filter(|&dx| near(pixel_at(shot, dims, dx as f32 / scale, y)))
+        .count()
+}
+
+/// A 3-pane split in both themes, from a real `Workspace`:
+/// - `splits`: api focused (accent line under its header), claude waiting (tinted header),
+///   codex working; dividers quiet.
+/// - `splits-waiting`: the waiting pane focused (tint and accent together).
+/// - `splits-hover`: the pointer over the vertical divider (2 px accent).
+/// - `splits-drag`: that divider dragged left (accent, the panes follow).
+///
+/// Panics unless each shows 3 headers, their fills and the focus line are the right colours,
+/// and the divider is the plain colour except when hovered or dragged.
+fn split_scenes() {
+    use gpui::{Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for scene in ["splits", "splits-waiting", "splits-hover", "splits-drag"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let focus = if scene == "splits-waiting" { 1 } else { 0 };
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| split_workspace(focus, window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let at = |ratio: f32| 240.0 + (960.0 - 240.0) * ratio - ratio;
+            let acting = slot.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let headers = cx.read(|cx| slotted(&acting).read(cx).header_sessions().len());
+                assert_eq!(headers, 3, "{scene}-{slug}: a header per pane");
+                let none = Modifiers::none();
+                let left = MouseButton::Left;
+                let on = point(px(at(0.5) + 0.5), px(300.0));
+                match scene {
+                    "splits-hover" => cx.simulate_mouse_move(window, on, None, none),
+                    "splits-drag" => {
+                        cx.simulate_mouse_down(window, on, left, none);
+                        cx.simulate_mouse_move(window, on - point(px(40.0), px(0.0)), left, none);
+                        cx.simulate_mouse_move(window, on - point(px(72.0), px(0.0)), left, none);
+                    }
+                    _ => {}
+                }
+                // Not kept past the window: a handle left over is reported as a leak.
+                acting.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            let shot = render_with(&theme, dims, build, act);
+            let n = format!("{scene}-{slug}");
+            // Header fills, away from the text: api (left), claude (top right).
+            let (left_header, right_header) = ((400.0, 11.0), (900.0, 11.0));
+            let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+                p.iter()
+                    .zip([c.r, c.g, c.b])
+                    .all(|(a, b)| a.abs_diff(b) <= 3)
+            };
+            let px_at = |(x, y): (f32, f32)| pixel_at(&shot, dims, x, y);
+            assert!(
+                is(px_at(left_header), ui.sidebar_background),
+                "{n}: plain header"
+            );
+            assert!(
+                is(px_at(right_header), ui.waiting_tint),
+                "{n}: waiting tint"
+            );
+            // The focus line: under the focused pane's header only.
+            let (line_left, line_right) = (px_at((400.0, 21.0)), px_at((900.0, 21.0)));
+            assert_eq!(
+                is(line_left, ui.accent),
+                focus == 0,
+                "{n}: focus line, left"
+            );
+            assert_eq!(
+                is(line_right, ui.accent),
+                focus == 1,
+                "{n}: focus line, right"
+            );
+            // The vertical divider, 1 px; the accent 2 px, only when hovered or dragged.
+            let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
+            let (x0, x1) = (at(ratio) - 4.0, at(ratio) + 5.0);
+            let scale = shot.width as f32 / 960.0;
+            let accent = count_along(&shot, dims, ui.accent, 300.0, x0, x1);
+            let plain = count_along(&shot, dims, ui.divider, 300.0, x0, x1);
+            if matches!(scene, "splits-hover" | "splits-drag") {
+                assert_eq!(accent, (2.0 * scale) as usize, "{n}: 2 px accent divider");
+            } else {
+                assert_eq!(accent, 0, "{n}: no accent on a quiet divider");
+                assert_eq!(plain, scale as usize, "{n}: 1 px plain divider");
+            }
+            println!("ui-shots: {}", path.display());
+        }
     }
 }
