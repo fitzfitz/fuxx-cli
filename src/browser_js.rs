@@ -95,6 +95,24 @@ pub fn window_open_shim() -> &'static str {
     WINDOW_OPEN_SHIM
 }
 
+/// Run `code` as one JavaScript expression and answer with the text `{"ok": <its value>}`
+/// (`undefined` as `null`) or `{"error": "<what it threw>"}`, so a thrown exception is an
+/// answer, not a silence. Trailing semicolons are dropped. The code is the script's own text
+/// here (it is code to run, not data), which is what lets it run on pages whose
+/// Content-Security-Policy forbids `eval`; statements don't parse this way, so the whole
+/// script fails and the caller tries `eval_statements_js`.
+pub fn eval_expression_js(code: &str) -> String {
+    let code = code.trim_end_matches(|c: char| c == ';' || c.is_whitespace());
+    format!("({ANSWER_FN})(() => (\n{code}\n))")
+}
+
+/// `eval_expression_js` for statements (as typed into a console; the value is the last
+/// statement's): the code goes in as a JSON literal and runs through an indirect `eval`, which
+/// a page may forbid.
+pub fn eval_statements_js(code: &str) -> String {
+    call(ANSWER_FN, &[format!("() => (0, eval)({})", literal(code))])
+}
+
 /// The snapshot as text for an agent: a `title:` and a `url:` line, then one line per node.
 /// Controls read `[eN] role "name" = "value"`, headings `heading "name" [level=N]`; a heading
 /// is indented by its level and the nodes under it one step further. Every line is one line
@@ -161,9 +179,13 @@ fn quoted(text: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// A JSON literal for `value`: the only way agent text gets into a script.
+/// A JSON literal for `value`: the only way agent text gets into a script. Line and paragraph
+/// separators (valid in JSON, line ends in JavaScript before ES2019) are escaped too.
 fn literal<T: Serialize + ?Sized>(value: &T) -> String {
-    serde_json::to_string(value).expect("strings and nulls always serialize")
+    serde_json::to_string(value)
+        .expect("strings and nulls always serialize")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
 /// `(function)(arg, …)`: a fixed function applied to JSON-literal arguments.
@@ -430,7 +452,9 @@ const PRESS_FN: &str = r#"(key) => {
   const NAMED = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, ArrowLeft: 37, ArrowUp: 38,
     ArrowRight: 39, ArrowDown: 40 };
   const isChar = Array.from(key).length === 1;
-  if (!(key in NAMED) && !isChar) {
+  // Own keys only: `constructor` or `toString` is not a key.
+  const named = Object.prototype.hasOwnProperty.call(NAMED, key);
+  if (!named && !isChar) {
     return { error: 'unknown key ' + JSON.stringify(key) +
       ' (use Enter, Tab, Escape, Backspace, an arrow key or one character)' };
   }
@@ -526,6 +550,25 @@ const WAIT_FN: &str = r#"(text, selector) => {
   return true;
 }"#;
 
+/// Answers for the eval scripts: `run`'s value or what it threw, as JSON text that always parses
+/// (a lone surrogate, which `JSON.stringify` writes as a `\udXXX` escape JSON parsers refuse,
+/// becomes U+FFFD).
+const ANSWER_FN: &str = r#"(run) => {
+  let answer;
+  try {
+    const value = run();
+    answer = JSON.stringify({ ok: value === undefined ? null : value });
+  } catch (e) {
+    let message;
+    try { message = String(e); } catch (_) { message = 'an exception that has no text'; }
+    answer = JSON.stringify({ error: message });
+  }
+  answer = answer.replace(/\\\\|\\ud[89a-f][0-9a-f]{2}/g, (m) => m === '\\\\' ? m : '\\ufffd');
+  return typeof answer.toWellFormed === 'function' ? answer.toWellFormed()
+    : answer.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
+      (c) => c.length === 2 ? c : '\uFFFD');
+}"#;
+
 const WINDOW_OPEN_SHIM: &str = r#"(() => {
   window.open = function (url) {
     const text = url === undefined || url === null ? '' : String(url);
@@ -561,14 +604,17 @@ mod tests {
         let benign = make("FUXX_ARG_MARKER");
         assert_eq!(benign.matches(&marker).count(), 1, "{benign}");
         let (before, after) = benign.split_once(&marker).unwrap();
-        let hostile_literal = serde_json::to_string(arg).unwrap();
+        let hostile_literal = literal(arg);
+        let script = make(arg);
         assert_eq!(
-            make(arg),
+            script,
             format!("{before}{hostile_literal}{after}"),
             "{arg:?}"
         );
         let back: String = serde_json::from_str(&hostile_literal).unwrap();
         assert_eq!(back, arg);
+        // Line and paragraph separators end a line in older JavaScript: never raw in a script.
+        assert!(!script.contains(['\u{2028}', '\u{2029}']), "{arg:?}");
     }
 
     #[test]
@@ -580,6 +626,7 @@ mod tests {
             assert_embedded_as_json(press_js, arg);
             assert_embedded_as_json(|t| wait_check_js(Some(t), None), arg);
             assert_embedded_as_json(|s| wait_check_js(None, Some(s)), arg);
+            assert_embedded_as_json(eval_statements_js, arg);
         }
         // A missing argument is a JSON `null`.
         assert!(wait_check_js(None, Some("#x")).contains("(null, \"#x\")"));
@@ -596,6 +643,8 @@ mod tests {
             read_js().to_string(),
             wait_check_js(Some("x"), None),
             window_open_shim().to_string(),
+            eval_expression_js("document.title"),
+            eval_statements_js("const a = 1; a"),
         ];
         for script in scripts {
             assert!(script.starts_with('('), "{script}");
@@ -604,6 +653,33 @@ mod tests {
         assert!(snapshot_js().contains("data-fuxx-ref"));
         assert!(click_js("e1").contains("data-fuxx-ref"));
         assert!(fill_js("e1", "x").contains("data-fuxx-ref"));
+    }
+
+    #[test]
+    fn an_expression_runs_as_written() {
+        // On its own line (so a trailing `//` comment can't swallow the close), with the
+        // trailing semicolons an agent may type dropped.
+        let script = eval_expression_js("  document.title ;; \n");
+        assert!(
+            script.ends_with("(() => (\n  document.title\n))"),
+            "{script}"
+        );
+        let commented = eval_expression_js("x // the answer");
+        assert!(
+            commented.ends_with("(() => (\nx // the answer\n))"),
+            "{commented}"
+        );
+        // Both forms answer through the same wrapper.
+        let wrapper = &script[..script.rfind("(() => (").unwrap()];
+        assert!(eval_statements_js("x").starts_with(wrapper));
+        assert!(eval_statements_js("x").ends_with(r#"(() => (0, eval)("x"))"#));
+    }
+
+    #[test]
+    fn separators_are_escaped_in_literals() {
+        assert_eq!(literal("a\u{2028}b\u{2029}c"), r#""a\u2028b\u2029c""#);
+        assert_eq!(literal(&Some("\u{2028}")), r#""\u2028""#);
+        assert_eq!(literal(&None::<&str>), "null");
     }
 
     /// Recorded from `snapshot_js` in Chromium on a test page (a header, a sign-in form, hidden
