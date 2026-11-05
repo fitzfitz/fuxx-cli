@@ -216,6 +216,26 @@ in a folder with a page that has a form) and a second session.
 5. From `claude` with `fuxx mcp` connected, ask it to open the page and check a heading: it does, through the tools.
 6. ⌘W on the session closes its browser too.
 
+
+## Amendment (2026-11-06, your request): a modern top bar, an address bar, and a keep-data setting
+
+Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]. This replaces "no address bar" and "logins
+and cookies kept between runs" above.
+
+- **Top bar:** macOS's own compact toolbar (as Safari): traffic lights inline, back / forward / reload buttons, a
+  rounded address field that shows the current page and opens what you type (Enter; the same http/https check agents
+  use; Escape puts the current address back; ⌘L focuses it), and a thin loading line. Light or dark follows the fuxx
+  theme.
+- **Preferences → Browser → Show address bar** (On by default). Off: the bar keeps back / forward / reload and the
+  page title; only the address field goes. Applies to open browser windows at once.
+- **Preferences → Browser → Keep history and data** (Off by default — your choice).
+  - Off: each fuxx run starts from zero. Cookies, logins, site storage and cache live in memory only, shared by all
+    browser windows in that run, and vanish when fuxx quits.
+  - On: they're saved and come back next run.
+  - Turning it from On to Off **deletes** what was saved (your choice). The change applies to browser windows opened
+    after it; windows already open keep the store they started with until closed (AI's call).
+  - "History" means each window's back/forward list and what sites store; fuxx keeps no separate list of visited pages.
+
 ## Related
 
 - [[40 - Roadmap]] · [[Input - M10 Feasibility Study]] · [[49 - Milestone 9 - Scripting API]] ·

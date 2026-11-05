@@ -239,6 +239,19 @@ Run these together with the M10b and M10c checks.
 5. A split shows pane headers with the focused one marked.
 6. Preferences shows theme swatches and a live preview.
 
+
+## Amendment (2026-11-06, your request): Preferences as vertical tabs
+
+Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]. Replaces the one-page Preferences above.
+
+- A list of sections down the left, like VS Code's settings; only the selected section's settings show on the right.
+- Sections (your choice): **General**, **Appearance**, **Sessions**, **Browser**.
+  - General: Animations, and "Show the tips card again" (AI's call: the only app-wide settings that exist today).
+  - Appearance: Theme (with swatches), Font, Size, Ligatures, and the live preview.
+  - Sessions: Restore sessions, Keep running after quit.
+  - Browser: Show address bar, Keep history and data.
+- The window keeps one size for all sections; it opens on the section you used last in this run (General first).
+
 ## Related
 
 - [[40 - Roadmap]] · [[M11 Input - UI-UX Review]] · [[46b - Milestone 6b - Settings Window]] ·
