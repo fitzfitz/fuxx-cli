@@ -227,13 +227,19 @@ fn run_command(command: &str, mut request: api::Request, json: bool, stream: boo
         }
         request.params["text"] = json!(text);
     }
-    // The app doesn't know this shell's folder, so a relative `--folder` is resolved here.
-    if command == "new"
-        && let Some(folder) = request.params["folder"].as_str()
-        && Path::new(folder).is_relative()
+    // The app doesn't know this shell's folder, so a relative `--folder` (or screenshot path)
+    // is resolved here.
+    let path_key = match command {
+        "new" => Some("folder"),
+        "browser screenshot" => Some("path"),
+        _ => None,
+    };
+    if let Some(key) = path_key
+        && let Some(path) = request.params[key].as_str()
+        && Path::new(path).is_relative()
         && let Ok(cwd) = std::env::current_dir()
     {
-        request.params["folder"] = json!(cwd.join(folder).display().to_string());
+        request.params[key] = json!(cwd.join(path).display().to_string());
     }
     let Some(path) = client_socket() else {
         return fail(

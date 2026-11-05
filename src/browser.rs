@@ -41,8 +41,9 @@ pub use probe::run_probe;
 
 /// A browser window's content size, in points.
 const WINDOW_SIZE: NSSize = NSSize::new(1100.0, 800.0);
-/// What a pending script or screenshot answers when its browser closes first.
-const CLOSED: &str = "browser closed";
+/// What a pending script or screenshot answers when its browser closes first (and what a
+/// command answers when its browser is gone before it could finish).
+pub(crate) const CLOSED: &str = "browser closed";
 /// Added to the error when a page refuses `eval` (statements need it; one expression doesn't).
 const EVAL_REFUSED_HINT: &str =
     "this page allows only an expression here: wrap statements in (() => { … })()";
@@ -346,12 +347,26 @@ pub async fn within<T>(
     limit: Duration,
     executor: &BackgroundExecutor,
 ) -> Result<T, String> {
-    match future::select(answer, executor.timer(limit)).await {
+    answer_before(answer, executor.timer(limit), limit).await
+}
+
+/// `within`, with the timer that ends the wait passed in (`limit` is what it stands for).
+async fn answer_before<T>(
+    answer: oneshot::Receiver<Result<T, String>>,
+    timer: impl Future<Output = ()> + Unpin,
+    limit: Duration,
+) -> Result<T, String> {
+    match future::select(answer, timer).await {
         Either::Left((Ok(answer), _)) => answer,
         // WebKit dropped the request without answering: its web view is gone.
         Either::Left((Err(_), _)) => Err(CLOSED.to_string()),
-        Either::Right(_) => Err(format!("the page didn't answer in {} s", limit.as_secs())),
+        Either::Right(_) => Err(didnt_answer(limit)),
     }
+}
+
+/// The error for a page that took longer than `limit`.
+pub fn didnt_answer(limit: Duration) -> String {
+    format!("the page didn't answer in {} s", limit.as_secs())
 }
 
 /// Run `script` (an eval script) in `view`; its answer goes to `slot`.
@@ -839,6 +854,42 @@ mod tests {
         assert_eq!(shortcut_letter(Some("ж"), 0x29), None);
         assert_eq!(shortcut_letter(None, KEY_W), Some('w'));
         assert_eq!(shortcut_letter(Some(""), KEY_Z), Some('z'));
+    }
+
+    #[test]
+    fn timeouts_answer_with_the_exact_text() {
+        use futures::executor::block_on;
+        // A script WebKit never answers (its sender is kept, never used) and a limit that has
+        // passed.
+        let (_never, answer) = oneshot::channel::<Result<Value, String>>();
+        let late = block_on(answer_before(
+            answer,
+            future::ready(()),
+            Duration::from_secs(10),
+        ));
+        assert_eq!(late, Err("the page didn't answer in 10 s".to_string()));
+        assert_eq!(
+            didnt_answer(Duration::from_secs(30)),
+            "the page didn't answer in 30 s"
+        );
+        // An answer that came first wins, even when the limit has passed too.
+        let (tx, answer) = oneshot::channel();
+        tx.send(Ok(json!(1))).unwrap();
+        let first = block_on(answer_before(
+            answer,
+            future::ready(()),
+            Duration::from_secs(10),
+        ));
+        assert_eq!(first, Ok(json!(1)));
+        // The request dropped unanswered: the browser is gone.
+        let (tx, answer) = oneshot::channel::<Result<Value, String>>();
+        drop(tx);
+        let gone = block_on(answer_before(
+            answer,
+            future::pending(),
+            Duration::from_secs(10),
+        ));
+        assert_eq!(gone, Err(CLOSED.to_string()));
     }
 
     #[test]

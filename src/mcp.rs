@@ -120,6 +120,71 @@ const TOOLS: &[Tool] = &[
         method: "notify",
         command: "notify",
     },
+    Tool {
+        name: "browser_open",
+        method: "browser.open",
+        command: "browser open",
+    },
+    Tool {
+        name: "browser_snapshot",
+        method: "browser.snapshot",
+        command: "browser snapshot",
+    },
+    Tool {
+        name: "browser_click",
+        method: "browser.click",
+        command: "browser click",
+    },
+    Tool {
+        name: "browser_fill",
+        method: "browser.fill",
+        command: "browser fill",
+    },
+    Tool {
+        name: "browser_press",
+        method: "browser.press",
+        command: "browser press",
+    },
+    Tool {
+        name: "browser_read",
+        method: "browser.read",
+        command: "browser read",
+    },
+    Tool {
+        name: "browser_eval",
+        method: "browser.eval",
+        command: "browser eval",
+    },
+    Tool {
+        name: "browser_wait",
+        method: "browser.wait",
+        command: "browser wait",
+    },
+    Tool {
+        name: "browser_screenshot",
+        method: "browser.screenshot",
+        command: "browser screenshot",
+    },
+    Tool {
+        name: "browser_url",
+        method: "browser.url",
+        command: "browser url",
+    },
+    Tool {
+        name: "browser_back",
+        method: "browser.back",
+        command: "browser back",
+    },
+    Tool {
+        name: "browser_reload",
+        method: "browser.reload",
+        command: "browser reload",
+    },
+    Tool {
+        name: "browser_close",
+        method: "browser.close",
+        command: "browser close",
+    },
 ];
 
 fn target() -> Value {
@@ -307,6 +372,102 @@ fn schema(name: &str) -> Value {
             }),
             &["body"],
         ),
+        "browser_open" => (
+            "Open the session's browser window (made if needed) at a URL and wait until the page \
+             has loaded (30 s limit); returns its address and title. http and https only: a bare \
+             localhost:3000 or IP gets http://, another bare host https://.",
+            json!({
+                "target": target(),
+                "url": text("The address, e.g. localhost:3000 or https://example.com/docs."),
+            }),
+            &["url"],
+        ),
+        "browser_snapshot" => (
+            "An outline of the page in the session's browser: headings, text, links, buttons and \
+             fields, each control with a ref like e12 for browser_click and browser_fill. Refs \
+             last until the page changes: take a new snapshot after the page changes.",
+            json!({ "target": target() }),
+            &[],
+        ),
+        "browser_click" => (
+            "Click the element with this ref (from the latest browser_snapshot); take a new \
+             snapshot after the page changes.",
+            json!({ "target": target(), "ref": text("A ref from the latest snapshot, e.g. e12.") }),
+            &["ref"],
+        ),
+        "browser_fill" => (
+            "Put text into the field with this ref (from the latest browser_snapshot) and tell \
+             the page it changed; for a select, pick the option with that value or label; take \
+             a new snapshot after the page changes.",
+            json!({
+                "target": target(),
+                "ref": text("A ref from the latest snapshot, e.g. e5."),
+                "text": text("The text (empty clears the field)."),
+            }),
+            &["ref", "text"],
+        ),
+        "browser_press" => (
+            "Press a key in the page's focused element: Enter (submits a field's form), Tab, \
+             Escape, Backspace, ArrowUp, ArrowDown, ArrowLeft, ArrowRight or one character.",
+            json!({ "target": target(), "key": text("The key, e.g. Enter.") }),
+            &["key"],
+        ),
+        "browser_read" => (
+            "The visible text of the page in the session's browser.",
+            json!({ "target": target() }),
+            &[],
+        ),
+        "browser_eval" => (
+            "Run JavaScript in the page and return its value as JSON (10 s limit): one \
+             expression, or statements (the last one's value) where the page allows eval.",
+            json!({ "target": target(), "js": text("The JavaScript, e.g. document.title.") }),
+            &["js"],
+        ),
+        "browser_wait" => (
+            "Wait until the page shows some text and/or has an element matching a CSS selector \
+             (give one or both); fails if the timeout passes first.",
+            json!({
+                "target": target(),
+                "text": text("Text the page's visible text must contain."),
+                "selector": text("A CSS selector an element must match, e.g. #results."),
+                "timeout": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Seconds to wait before giving up (default 30, max 300).",
+                },
+            }),
+            &[],
+        ),
+        "browser_screenshot" => (
+            "Save a PNG of the visible page in the session's browser; returns the file's path.",
+            json!({
+                "target": target(),
+                "path": text("Absolute path of the PNG to write, in a folder that exists. \
+                    Default: a new file in the temp folder."),
+            }),
+            &[],
+        ),
+        "browser_url" => (
+            "The address and title of the page in the session's browser, and whether it is \
+             still loading.",
+            json!({ "target": target() }),
+            &[],
+        ),
+        "browser_back" => (
+            "Go back a page in the session's browser and wait until it has loaded.",
+            json!({ "target": target() }),
+            &[],
+        ),
+        "browser_reload" => (
+            "Reload the page in the session's browser and wait until it has loaded.",
+            json!({ "target": target() }),
+            &[],
+        ),
+        "browser_close" => (
+            "Close the session's browser window.",
+            json!({ "target": target() }),
+            &[],
+        ),
         other => unreachable!("no tool {other}"),
     };
     json!({
@@ -317,7 +478,8 @@ fn schema(name: &str) -> Value {
 }
 
 /// The protocol request for a tool's `arguments`. Only the arguments its schema lists are
-/// passed on; `wait`'s `timeout` (seconds) becomes `timeout_ms`, with a default.
+/// passed on; `wait`'s `timeout` (seconds) becomes `timeout_ms`, with a default, and so does
+/// `browser_wait`'s (fuxx's default).
 fn request_for(tool: &Tool, args: Option<&Value>) -> Result<Request, String> {
     let empty = Map::new();
     let args = match args {
@@ -355,6 +517,16 @@ fn request_for(tool: &Tool, args: Option<&Value>) -> Result<Request, String> {
                 params.insert("ssh".into(), json!({ "host": host, "tmux": tmux }));
             }
         }
+    }
+    // Left out, the browser's own default (30 s) applies.
+    if tool.name == "browser_wait"
+        && let Some(secs) = params.remove("timeout").filter(|t| !t.is_null())
+    {
+        let secs = secs
+            .as_f64()
+            .filter(|s| s.is_finite() && *s >= 0.0)
+            .ok_or("timeout must be a number of seconds")?;
+        params.insert("timeout_ms".into(), json!((secs * 1000.0).round() as u64));
     }
     if tool.name == "wait" {
         let secs = match params.remove("timeout") {
@@ -672,7 +844,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(names.len(), 14);
+        assert_eq!(names.len(), 27);
         assert!(names.contains(&"answer".to_string()) && names.contains(&"wait".to_string()));
     }
 
@@ -871,6 +1043,157 @@ mod tests {
             .unwrap();
             assert_eq!(got.as_deref(), Some(method), "{name}");
         }
+    }
+
+    #[test]
+    fn mcp_browser_tools_map() {
+        let mut never = |_: Request| -> Result<serde_json::Value, ApiError> { panic!("no call") };
+        let tools = handle(&rpc(1, "tools/list", serde_json::json!({})), &mut never).unwrap();
+        let listed: Vec<String> = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        let call = |name: &str, args: serde_json::Value, reply: serde_json::Value| {
+            let mut seen = None;
+            let mut fake = |req: Request| -> Result<serde_json::Value, ApiError> {
+                seen = Some(req);
+                Ok(reply.clone())
+            };
+            let r = handle(
+                &rpc(
+                    1,
+                    "tools/call",
+                    serde_json::json!({ "name": name, "arguments": args }),
+                ),
+                &mut fake,
+            )
+            .unwrap();
+            (seen, r["result"].clone())
+        };
+        let page = serde_json::json!({"url": "http://localhost:3000/", "title": "App"});
+        let cases = [
+            (
+                "browser_open",
+                serde_json::json!({"url": "localhost:3000", "target": "s2"}),
+                "browser.open",
+            ),
+            (
+                "browser_snapshot",
+                serde_json::json!({}),
+                "browser.snapshot",
+            ),
+            (
+                "browser_click",
+                serde_json::json!({"ref": "e3"}),
+                "browser.click",
+            ),
+            (
+                "browser_fill",
+                serde_json::json!({"ref": "e5", "text": "hi"}),
+                "browser.fill",
+            ),
+            (
+                "browser_press",
+                serde_json::json!({"key": "Enter"}),
+                "browser.press",
+            ),
+            ("browser_read", serde_json::json!({}), "browser.read"),
+            (
+                "browser_eval",
+                serde_json::json!({"js": "1 + 1"}),
+                "browser.eval",
+            ),
+            (
+                "browser_wait",
+                serde_json::json!({"text": "Hi", "selector": "#go"}),
+                "browser.wait",
+            ),
+            (
+                "browser_screenshot",
+                serde_json::json!({"path": "/tmp/s.png"}),
+                "browser.screenshot",
+            ),
+            ("browser_url", serde_json::json!({}), "browser.url"),
+            ("browser_back", serde_json::json!({}), "browser.back"),
+            ("browser_reload", serde_json::json!({}), "browser.reload"),
+            ("browser_close", serde_json::json!({}), "browser.close"),
+        ];
+        assert_eq!(cases.len(), 13);
+        for (name, args, method) in cases {
+            assert!(listed.contains(&name.to_string()), "{name} isn't listed");
+            let tool = schema(name);
+            let description = tool["description"].as_str().unwrap();
+            assert!(
+                !description.is_empty() && !description.contains('\n'),
+                "{name}"
+            );
+            let (seen, result) = call(name, args.clone(), serde_json::json!({}));
+            let seen = seen.unwrap_or_else(|| panic!("{name} sent nothing"));
+            assert_eq!(seen.method, method, "{name}");
+            assert_eq!(seen.params, args, "{name}");
+            assert_eq!(result["isError"], false, "{name}");
+            // Every browser tool can name the session whose browser it drives.
+            assert_eq!(
+                tool["inputSchema"]["properties"]["target"]["type"], "string",
+                "{name}"
+            );
+        }
+        let required = |name: &str| schema(name)["inputSchema"]["required"].clone();
+        assert_eq!(required("browser_open"), serde_json::json!(["url"]));
+        assert_eq!(required("browser_fill"), serde_json::json!(["ref", "text"]));
+        assert_eq!(required("browser_eval"), serde_json::json!(["js"]));
+        // Refs go stale: the tools that use them say so.
+        for name in ["browser_snapshot", "browser_click", "browser_fill"] {
+            let d = schema(name)["description"].as_str().unwrap().to_string();
+            assert!(
+                d.contains("take a new snapshot after the page changes"),
+                "{name}: {d}"
+            );
+        }
+        // wait's timeout is in seconds, like the session wait's; absent leaves fuxx's 30 s.
+        let (seen, _) = call(
+            "browser_wait",
+            serde_json::json!({"text": "Hi", "timeout": 2.5}),
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            seen.unwrap().params,
+            serde_json::json!({"text": "Hi", "timeout_ms": 2500})
+        );
+        let (seen, bad) = call(
+            "browser_wait",
+            serde_json::json!({"text": "Hi", "timeout": "soon"}),
+            serde_json::json!({}),
+        );
+        assert!(seen.is_none());
+        assert_eq!(bad["isError"], true);
+        // Replies read as the CLI prints them.
+        let (_, opened) = call(
+            "browser_open",
+            serde_json::json!({"url": "x"}),
+            page.clone(),
+        );
+        assert_eq!(
+            opened["content"][0]["text"],
+            "url: http://localhost:3000/\ntitle: App"
+        );
+        let (_, clicked) = call(
+            "browser_click",
+            serde_json::json!({"ref": "e1"}),
+            serde_json::json!({}),
+        );
+        assert_eq!(clicked["content"][0]["text"], "ok");
+        let snapshot = serde_json::json!({"url": "u", "title": "t", "nodes": [{"role": "button", "name": "Go", "ref": "e1"}]});
+        let (_, outline) = call("browser_snapshot", serde_json::json!({}), snapshot);
+        assert!(
+            outline["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("[e1] button \"Go\""),
+            "{outline}"
+        );
     }
 
     #[test]

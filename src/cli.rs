@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{Map, Value, json};
 
 use crate::api::{Request, key_bytes};
+use crate::browser_js::render_outline;
 
 /// What the command line asks for.
 #[derive(Debug)]
@@ -71,6 +72,17 @@ usage: fuxx [command]   (no command opens the app)
   notify [--title T] BODY              a macOS notification
   equalize [TARGET]                    even out the panes of a layout
   presets                              list agent presets
+  browser open URL                     open the session's browser at URL (waits for the page)
+  browser snapshot                     the page's outline; its controls get refs like e12
+  browser click REF | fill REF TEXT | press KEY
+                                       act on the page (refs from the latest snapshot)
+  browser read | url                   the page's visible text | its address and title
+  browser eval JS                      run JavaScript in the page; prints the result as JSON
+  browser wait (--text T | --selector S) [--timeout SECS]
+                                       until the page shows it (default 30 s, max 300)
+  browser screenshot [PATH]            save a PNG of the page (default: a temp file); prints the path
+  browser back | reload | close        go back, reload, or close the browser window
+       Every browser command takes --session TARGET (default: your session).
   ping                                 check that fuxx is reachable
   version                              print the version and the methods
   mcp                                  run as an MCP server on stdio
@@ -108,9 +120,29 @@ const COMMANDS: &[(&str, &str)] = &[
     ("version", "system.version"),
 ];
 
+/// `fuxx browser <word>` → (command, protocol method). The command (with its `browser `) is
+/// what `render` and the flags go by.
+const BROWSER_COMMANDS: &[(&str, &str)] = &[
+    ("browser open", "browser.open"),
+    ("browser snapshot", "browser.snapshot"),
+    ("browser click", "browser.click"),
+    ("browser fill", "browser.fill"),
+    ("browser press", "browser.press"),
+    ("browser read", "browser.read"),
+    ("browser eval", "browser.eval"),
+    ("browser wait", "browser.wait"),
+    ("browser screenshot", "browser.screenshot"),
+    ("browser url", "browser.url"),
+    ("browser back", "browser.back"),
+    ("browser reload", "browser.reload"),
+    ("browser close", "browser.close"),
+];
+
 /// The flags a command accepts: (takes a value, switches).
 fn flag_spec(cmd: &str) -> (&'static [&'static str], &'static [&'static str]) {
     match cmd {
+        "browser wait" => (&["session", "text", "selector", "timeout"], &[]),
+        browser if browser.starts_with("browser ") => (&["session"], &[]),
         "new" => (
             &["folder", "preset", "run", "name", "split", "of", "ssh"],
             &["background", "tmux"],
@@ -205,6 +237,99 @@ fn parse_daemon(args: &[String], json: bool) -> Result<DaemonCommand, String> {
     })
 }
 
+/// `--timeout SECS` → milliseconds.
+fn timeout_ms(cmd: &str, secs: &str) -> Result<u64, String> {
+    let secs: f64 = secs
+        .parse()
+        .ok()
+        .filter(|s: &f64| s.is_finite() && *s >= 0.0)
+        .ok_or_else(|| usage_err(cmd, "--timeout needs a number of seconds"))?;
+    Ok((secs * 1000.0).round() as u64)
+}
+
+/// `fuxx browser <command> [ARGS] [--session TARGET] [--json]` (`args` after `browser`; a
+/// `--json` given before `browser` is in it too).
+fn parse_browser(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
+    let Some(word) = args.iter().position(|a| a != "--json") else {
+        return Err(usage_err(
+            "browser",
+            "needs a command: open, snapshot, click, fill, press, read, eval, wait, \
+             screenshot, url, back, reload or close",
+        ));
+    };
+    let Some(&(cmd, method)) = BROWSER_COMMANDS
+        .iter()
+        .find(|(c, _)| c.strip_prefix("browser ") == Some(args[word].as_str()))
+    else {
+        return Err(format!(
+            "fuxx browser: unknown command: {} (see `fuxx help`)",
+            args[word]
+        ));
+    };
+    let mut tail = args[..word].to_vec();
+    tail.extend_from_slice(&args[word + 1..]);
+    let a = Args::split(cmd, &tail)?;
+    let pos = &a.pos;
+    let mut params = Map::new();
+    // The positionals `names` stand for, in order: exactly that many.
+    let mut take = |names: &[&str], keys: &[&str]| -> Result<(), String> {
+        if pos.len() != names.len() {
+            return Err(usage_err(
+                cmd,
+                &if names.is_empty() {
+                    "takes no arguments".to_string()
+                } else {
+                    format!("expects {}", names.join(" "))
+                },
+            ));
+        }
+        for (key, value) in keys.iter().zip(pos) {
+            params.insert(key.to_string(), json!(value));
+        }
+        Ok(())
+    };
+    match cmd {
+        "browser open" => take(&["URL"], &["url"])?,
+        "browser click" => take(&["REF"], &["ref"])?,
+        "browser fill" => take(&["REF", "TEXT"], &["ref", "text"])?,
+        "browser press" => take(&["KEY"], &["key"])?,
+        "browser eval" => take(&["JS"], &["js"])?,
+        "browser screenshot" if pos.len() <= 1 => take(&vec!["PATH"; pos.len()], &["path"])?,
+        "browser screenshot" => return Err(usage_err(cmd, "expects at most a PATH")),
+        "browser wait" => {
+            take(&[], &[])?;
+            if a.val("text").is_none() && a.val("selector").is_none() {
+                return Err(usage_err(cmd, "needs --text or --selector"));
+            }
+            for key in ["text", "selector"] {
+                if let Some(v) = a.val(key) {
+                    params.insert(key.into(), json!(v));
+                }
+            }
+            if let Some(t) = a.val("timeout") {
+                params.insert("timeout_ms".into(), json!(timeout_ms(cmd, t)?));
+            }
+        }
+        _ => take(&[], &[])?,
+    }
+    if let Some(target) = a.val("session") {
+        params.insert("target".into(), json!(target));
+    }
+    if let Some(c) = caller {
+        params.insert("caller".into(), json!(c));
+    }
+    Ok(Cli::Call {
+        command: cmd,
+        request: Request {
+            id: None,
+            method: method.to_string(),
+            params: Value::Object(params),
+        },
+        json: a.on("json"),
+        stream: false,
+    })
+}
+
 /// Parse the command line (without argv[0]). `caller` is the session in `FUXX_SESSION`.
 /// Only no arguments (or macOS's `-psn_…` launch argument) opens the app; anything else that
 /// isn't a command is an error, so a typo never opens a window.
@@ -226,6 +351,7 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
         "help" | "--help" | "-h" => return Ok(Cli::Help(USAGE.to_string())),
         "mcp" => return Ok(Cli::Mcp),
         "daemon" => return parse_daemon(&rest[1..], leading_json > 0).map(Cli::Daemon),
+        "browser" => return parse_browser(&[&args[..leading_json], &rest[1..]].concat(), caller),
         // M10c self-test: hidden, not in USAGE.
         "__browser-probe" => {
             return if leading_json == 0 && rest.len() == 1 {
@@ -358,12 +484,7 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
                 }
             }
             if let Some(t) = a.val("timeout") {
-                let secs: f64 = t
-                    .parse()
-                    .ok()
-                    .filter(|s: &f64| s.is_finite() && *s >= 0.0)
-                    .ok_or_else(|| usage_err(cmd, "--timeout needs a number of seconds"))?;
-                params.insert("timeout_ms".into(), json!((secs * 1000.0).round() as u64));
+                params.insert("timeout_ms".into(), json!(timeout_ms(cmd, t)?));
             }
         }
         "note" => {
@@ -572,12 +693,35 @@ fn event_line(e: &Value) -> String {
     line
 }
 
+/// A browser's page as `url: …` and `title: …` lines (no title line while it has none), and a
+/// last `loading` line while it is still loading.
+fn page_lines(page: &Value) -> String {
+    let mut lines = vec![format!("url: {}", page["url"].as_str().unwrap_or_default())];
+    if let Some(title) = str_of(page, "title") {
+        lines.push(format!("title: {title}"));
+    }
+    if page["loading"].as_bool() == Some(true) {
+        lines.push("loading".to_string());
+    }
+    lines.join("\n")
+}
+
 /// What to print for a successful reply (no trailing newline; empty means print nothing).
 pub fn render(command: &str, result: &Value, json: bool) -> String {
     if json {
         return result.to_string();
     }
     match command {
+        "browser open" | "browser back" | "browser reload" | "browser url" => page_lines(result),
+        "browser snapshot" => match serde_json::from_value(result.clone()) {
+            Ok(snapshot) => render_outline(&snapshot),
+            Err(_) => result.to_string(),
+        },
+        "browser read" => str_of(result, "text").unwrap_or_default().to_string(),
+        "browser eval" => {
+            serde_json::to_string_pretty(&result["value"]).expect("a JSON value always serializes")
+        }
+        "browser screenshot" => str_of(result, "path").unwrap_or_default().to_string(),
         "ls" => {
             let list = result.get("sessions").unwrap_or(result);
             list.as_array()
@@ -983,6 +1127,204 @@ mod tests {
             (&"s4".into(), &"-1".into())
         );
         assert!(p(&["send", "--resume"]).is_err());
+    }
+
+    #[test]
+    fn browser_commands_parse() {
+        let browser = |args: &[&str]| {
+            let mut all = vec!["browser"];
+            all.extend_from_slice(args);
+            p(&all)
+        };
+        match browser(&["snapshot", "--json"]).unwrap() {
+            Cli::Call {
+                command,
+                json,
+                stream,
+                ..
+            } => assert_eq!((command, json, stream), ("browser snapshot", true, false)),
+            other => panic!("{other:?}"),
+        }
+        let (_, json, _) = call(p(&["--json", "browser", "url"]));
+        assert!(json);
+        // Text that looks like an option goes after --.
+        let (r, _, _) = call(browser(&["fill", "e5", "--", "--x"]));
+        assert_eq!(r.params["text"], "--x");
+        for (args, why) in [
+            (&[][..], "needs a command"),
+            (&["forward"], "unknown command"),
+            (&["open"], "URL"),
+            (&["open", "a", "b"], "URL"),
+            (&["click"], "REF"),
+            (&["fill", "e5"], "REF TEXT"),
+            (&["press"], "KEY"),
+            (&["eval"], "JS"),
+            (&["snapshot", "extra"], "takes no arguments"),
+            (&["close", "s2"], "takes no arguments"),
+            (&["screenshot", "a.png", "b.png"], "PATH"),
+            (&["wait"], "--text or --selector"),
+            (&["wait", "--text", "a", "--timeout", "soon"], "--timeout"),
+            (&["wait", "--text", "a", "--timeout", "-1"], "--timeout"),
+            (&["open", "x", "--bogus"], "--bogus"),
+            (&["url", "--session"], "--session needs a value"),
+            (&["read", "--text", "a"], "--text"),
+        ] {
+            let e = browser(args).unwrap_err();
+            assert!(e.contains(why), "{args:?}: {e}");
+        }
+        let Ok(Cli::Help(usage)) = p(&["help"]) else {
+            panic!("help didn't parse")
+        };
+        for line in [
+            "browser open URL",
+            "browser snapshot",
+            "click REF",
+            "fill REF TEXT",
+            "press KEY",
+            "browser eval JS",
+            "browser wait (--text T | --selector S) [--timeout SECS]",
+            "browser screenshot [PATH]",
+            "--session TARGET",
+        ] {
+            assert!(usage.contains(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn browser_requests_map_to_methods() {
+        use serde_json::json;
+        let cases: Vec<(Vec<&str>, &str, Value)> = vec![
+            (
+                vec!["open", "localhost:3000"],
+                "browser.open",
+                json!({"url": "localhost:3000", "caller": 3}),
+            ),
+            (
+                vec!["open", "example.com", "--session", "s2"],
+                "browser.open",
+                json!({"url": "example.com", "target": "s2", "caller": 3}),
+            ),
+            (vec!["snapshot"], "browser.snapshot", json!({"caller": 3})),
+            (
+                vec!["click", "e3", "--session=#2"],
+                "browser.click",
+                json!({"ref": "e3", "target": "#2", "caller": 3}),
+            ),
+            (
+                vec!["fill", "e5", "hello world"],
+                "browser.fill",
+                json!({"ref": "e5", "text": "hello world", "caller": 3}),
+            ),
+            (
+                vec!["press", "Enter"],
+                "browser.press",
+                json!({"key": "Enter", "caller": 3}),
+            ),
+            (vec!["read"], "browser.read", json!({"caller": 3})),
+            (
+                vec!["eval", "document.title"],
+                "browser.eval",
+                json!({"js": "document.title", "caller": 3}),
+            ),
+            (
+                vec!["wait", "--text", "Welcome", "--timeout", "2.5"],
+                "browser.wait",
+                json!({"text": "Welcome", "timeout_ms": 2500, "caller": 3}),
+            ),
+            (
+                vec!["wait", "--selector", "#go"],
+                "browser.wait",
+                json!({"selector": "#go", "caller": 3}),
+            ),
+            (
+                vec!["screenshot"],
+                "browser.screenshot",
+                json!({"caller": 3}),
+            ),
+            (
+                vec!["screenshot", "/tmp/page.png"],
+                "browser.screenshot",
+                json!({"path": "/tmp/page.png", "caller": 3}),
+            ),
+            (vec!["url"], "browser.url", json!({"caller": 3})),
+            (vec!["back"], "browser.back", json!({"caller": 3})),
+            (vec!["reload"], "browser.reload", json!({"caller": 3})),
+            (
+                vec!["close", "--session", "api"],
+                "browser.close",
+                json!({"target": "api", "caller": 3}),
+            ),
+        ];
+        for (args, method, want) in cases {
+            let mut all = vec!["browser"];
+            all.extend_from_slice(&args);
+            let (r, json, stream) = call(p(&all));
+            assert_eq!(r.method, method, "{args:?}");
+            assert_eq!(r.params, want, "{args:?}");
+            assert!(!json && !stream, "{args:?}");
+        }
+        // One command per method `system.version` lists.
+        let methods: Vec<&str> = BROWSER_COMMANDS.iter().map(|(_, m)| *m).collect();
+        assert_eq!(methods, crate::api::BROWSER_METHODS);
+    }
+
+    #[test]
+    fn browser_replies_print_as_text() {
+        use serde_json::json;
+        let page = json!({"url": "http://localhost:3000/", "title": "App"});
+        for command in ["browser open", "browser back", "browser reload"] {
+            assert_eq!(
+                render(command, &page, false),
+                "url: http://localhost:3000/\ntitle: App"
+            );
+        }
+        assert_eq!(
+            render(
+                "browser url",
+                &json!({"url": "https://a.b/", "title": "", "loading": true}),
+                false
+            ),
+            "url: https://a.b/\nloading"
+        );
+        let snapshot = json!({
+            "url": "http://localhost:3000/",
+            "title": "App",
+            "nodes": [{"role": "button", "name": "Go", "ref": "e1"}],
+        });
+        let outline =
+            crate::browser_js::render_outline(&serde_json::from_value(snapshot.clone()).unwrap());
+        assert_eq!(render("browser snapshot", &snapshot, false), outline);
+        assert!(outline.contains("[e1] button \"Go\""), "{outline}");
+        assert_eq!(
+            render("browser read", &json!({"text": "Hello\nworld"}), false),
+            "Hello\nworld"
+        );
+        assert_eq!(
+            render("browser eval", &json!({"value": {"a": [1, 2]}}), false),
+            "{\n  \"a\": [\n    1,\n    2\n  ]\n}"
+        );
+        assert_eq!(
+            render("browser eval", &json!({"value": "x"}), false),
+            "\"x\""
+        );
+        assert_eq!(
+            render("browser eval", &json!({"value": null}), false),
+            "null"
+        );
+        assert_eq!(
+            render("browser screenshot", &json!({"path": "/tmp/s.png"}), false),
+            "/tmp/s.png"
+        );
+        for quiet in [
+            "browser click",
+            "browser fill",
+            "browser press",
+            "browser wait",
+            "browser close",
+        ] {
+            assert_eq!(render(quiet, &json!({}), false), "", "{quiet}");
+        }
+        assert_eq!(render("browser url", &page, true), page.to_string());
     }
 
     #[test]
