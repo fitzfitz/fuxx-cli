@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M10b — SSH workspaces** (Phase 3), built and reviewed 2026-11-06. **M10c — Agent browser** is planned and in progress. M10a Persistent Sessions is complete |
-| **Status** | 🟨 M10b built and reviewed (457 tests); on-screen check pending, batched with M10c and M11 (your choice). M10a ✅ done 2026-11-05. |
-| **▶ Next action** | M10c: building [[M10c Plan - Agent Browser]]. Your on-screen checks for M10b ([[51 - Milestone 10b - SSH Workspaces]], "On-screen checklist"), M10c and M11 come last. |
+| **Current milestone** | **M10c — Agent browser** (Phase 3), built and reviewed 2026-11-06, on-screen check pending. M10b is built too, check pending. **M11 — UI/UX uplift** is next. M10a Persistent Sessions is complete |
+| **Status** | 🟨 M10b and M10c built and reviewed (501 tests); on-screen checks pending, batched with M11 (your choice). M10a ✅ done 2026-11-05. |
+| **▶ Next action** | M11: [[M11 Plan - UI-UX Uplift]] (spec [[53 - Milestone 11 - UI-UX Uplift]], planned 2026-11-06). Your on-screen checks for M10b ([[51 - Milestone 10b - SSH Workspaces]]), M10c ([[52 - Milestone 10c - Agent Browser]]) and M11 come last. |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-11-06 |
 
@@ -54,7 +54,8 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M9 | Scripting API (socket, `fuxx` command, events, wait, MCP) | [[M9 Plan - Scripting API]] | ✅ | 10/10 | Script and agents drive fuxx; wait/question/answer an agent |
 | M10a | Persistent sessions (background service, reattach) | [[M10a Plan - Persistent Sessions]] | ✅ | 12/12 | Quit → agents keep running → reopen with everything live |
 | M10b | SSH workspaces (local ssh, host picker, reconnect) | [[M10b Plan - SSH Workspaces]] | 🟨 built, check pending | 8/9 | Pick a host → remote claude rings → drop Wi-Fi → Enter reconnects |
-| M10c | Agent browser (a scriptable browser window per session) | [[M10c Plan - Agent Browser]] | ▶ in progress | 0/7 | An agent opens a page and drives it |
+| M10c | Agent browser (a scriptable browser window per session) | [[M10c Plan - Agent Browser]] | 🟨 built, check pending | 7/8 | An agent opens a page and drives it |
+| M11 | UI/UX uplift (fun, but professional) | [[M11 Plan - UI-UX Uplift]] | ▶ next | — | fuxx looks and feels like a finished tool |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).

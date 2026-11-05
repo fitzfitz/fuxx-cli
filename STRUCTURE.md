@@ -103,6 +103,13 @@ src/
 ├── workspace_ssh.rs      M10b · the workspace's SSH sessions: open, hold on disconnect, reconnect, restore
 ├── host_picker.rs        M10b · the ⇧⌘S host picker: rows, filter, keys, tmux tick box
 │
+│   agent browser (M10c)
+├── browser_url.rs        M10c · browser addresses: http(s) only, scheme added to bare hosts (pure)
+├── browser_js.rs         M10c · page-side scripts (snapshot with refs, click, fill, press, read, wait) and the outline
+├── browser.rs            M10c · one WebKit window per session (objc2): load, eval, screenshot, Edit keys, ⌘W
+│   └── browser/probe.rs  M10c · hidden `fuxx __browser-probe` self-test: a real off-screen web view, end to end
+├── workspace_browser.rs  M10c · the session ↔ browser map, ⇧⌘B address box, `browser.*` socket methods
+│
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
 ├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row

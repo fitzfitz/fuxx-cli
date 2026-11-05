@@ -54,8 +54,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
     the window is closed (your choice). Scripting with the window closed comes later (your choice).
   - [[51 - Milestone 10b - SSH Workspaces]] — 🟨 built and reviewed 2026-11-06, on-screen check pending (batched with M10c and M11): [[M10b Plan - SSH Workspaces]]. A session runs local `ssh` (host picker from `~/.ssh/config`, connection reuse,
     reconnect). A remote fuxx daemon is deferred.
-  - [[52 - Milestone 10c - Agent Browser]] (▶ in progress, planned 2026-11-06: [[M10c Plan - Agent Browser]]; your choice: agents automating it, like cmux; a separate browser window per session, AI's call). Large and uncertain
-    (a native web view over GPUI has real pitfalls); designed separately when we get there.
+  - [[52 - Milestone 10c - Agent Browser]] — 🟨 built and reviewed 2026-11-06, on-screen check pending (batched with M11): [[M10c Plan - Agent Browser]]. Your choice: agents automating it, like cmux; a separate browser window per session (AI's call). A WebKit window per session, driven by `fuxx browser …` and MCP tools.
 
 ## Phase 4 — Polish and distribution
 
@@ -63,7 +62,7 @@ each before the next; record it in [[60 - Progress Log]]. Features referenced he
 > A new **M11 — UI/UX uplift** comes before shipping. The signed `.app` moved from M11 to **M12**, and Homebrew
 > from M12 to **M13**. Older notes and log entries written before this date use the old numbers.
 
-- **M11 — UI/UX uplift** *(added 2026-10-27 on request)*: polish how fuxx looks and feels before the first signed
+- **M11 — UI/UX uplift** (▶ next, planned 2026-11-06: [[M11 Plan - UI-UX Uplift]], spec [[53 - Milestone 11 - UI-UX Uplift]]) *(added 2026-10-27 on request)*: polish how fuxx looks and feels before the first signed
   release. What's in it is decided together when we reach it (brainstorm first); nothing is assumed yet.
   Input: [[M11 Input - UI-UX Review]] (honest review + ranked plan, 2026-10-27). Already requested: **animations
   can be turned on/off** (`animations = on|off` + a Preferences switch; with them off, statuses keep distinct still
