@@ -46,6 +46,7 @@ mod ssh_hosts;
 mod ssh_target;
 mod status;
 mod status_mark;
+mod switcher;
 mod terminal;
 mod terminal_view;
 mod theme;
@@ -80,10 +81,10 @@ use workspace::{
     CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
     LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp, NewSession,
-    NewSessionInFolder, NewSshSession, NextPane, NextSession, OpenBrowser, PrevPane, PrevSession,
-    RenameSession, SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5,
-    SelectSession6, SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight,
-    ToggleSidebar, Workspace,
+    NewSessionInFolder, NewSshSession, NextNeedingYou, NextPane, NextSession, OpenBrowser,
+    OpenSwitcher, PrevPane, PrevSession, RenameSession, SelectSession1, SelectSession2,
+    SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7, SelectSession8,
+    SelectSession9, SplitDown, SplitRight, ToggleSidebar, Workspace,
 };
 
 actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions, Hide]);
@@ -192,6 +193,9 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
             MenuItem::action("Rename Session\u{2026}", RenameSession),
             MenuItem::action("Move Session Up", MoveSessionUp),
             MenuItem::action("Move Session Down", MoveSessionDown),
+            MenuItem::separator(),
+            MenuItem::action("Go to Session\u{2026}", OpenSwitcher),
+            MenuItem::action("Go to What Needs You", NextNeedingYou),
             MenuItem::separator(),
             MenuItem::action("Open Browser\u{2026}", OpenBrowser),
             MenuItem::separator(),
@@ -451,6 +455,8 @@ fn main() {
                 KeyBinding::new("cmd-]", NextPane, None),
                 KeyBinding::new("ctrl-cmd-=", EqualizePanes, None),
                 KeyBinding::new("cmd-\\", ToggleSidebar, None),
+                KeyBinding::new("cmd-shift-u", NextNeedingYou, None),
+                KeyBinding::new("cmd-p", OpenSwitcher, None),
                 // The first binding is the one a menu shows: ⌘=, with ⌘+ (shift-=) as well.
                 KeyBinding::new("cmd-=", Bigger, None),
                 KeyBinding::new("cmd-+", Bigger, None),
@@ -476,6 +482,9 @@ fn main() {
                 KeyBinding::new("down", host_picker::SelectNext, Some("HostPicker")),
                 KeyBinding::new("tab", host_picker::ToggleTmux, Some("HostPicker")),
                 KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
+                // The session switcher: its box is a NameInput too; these keys move through it.
+                KeyBinding::new("up", switcher::SelectPrev, Some("Switcher")),
+                KeyBinding::new("down", switcher::SelectNext, Some("Switcher")),
                 // The browser's address box: its box is a NameInput too; an address is pasted.
                 KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
                 // Only so the Edit menu shows ⌘X and ⌘A: no element in fuxx has this context, so

@@ -228,7 +228,7 @@ const ROW_PAD: f32 = 8.0;
 const ROW_GAP: f32 = 2.0;
 const GROUP_GAP: f32 = 10.0;
 /// The slot a status mark (or a header's chevron) sits in; a waiting mark fills it.
-const MARK_SLOT: f32 = 14.0;
+pub(crate) const MARK_SLOT: f32 = 14.0;
 /// The session number's column, right-aligned, and the space after it.
 const NUMBER_WIDTH: f32 = 16.0;
 const NUMBER_GAP: f32 = 6.0;
@@ -381,7 +381,7 @@ fn small_caps() -> FontFeatures {
 }
 
 /// A waiting mark is drawn bigger than the others.
-fn mark_size(status: Status) -> f32 {
+pub(crate) fn mark_size(status: Status) -> f32 {
     if status == Status::Waiting {
         MARK_SLOT
     } else {
@@ -532,11 +532,18 @@ impl Workspace {
                 .header_sessions()
                 .into_iter()
                 .filter(|&i| self.sessions.items()[i].status != Status::Idle);
-            rows.chain(headers)
-                .map(|i| {
-                    let since = self.sessions.items()[i].status_since;
-                    next_age_change(now.saturating_duration_since(since))
-                })
+            let sinces = rows
+                .chain(headers)
+                .map(|i| self.sessions.items()[i].status_since);
+            // And the switcher's rows, while it's open.
+            let switcher = self
+                .switcher_shown(cx)
+                .into_iter()
+                .filter(|(status, _)| *status != Status::Idle)
+                .map(|(_, since)| since);
+            sinces
+                .chain(switcher)
+                .map(|since| next_age_change(now.saturating_duration_since(since)))
                 .min()
         };
         self.sidebar.age_refresh = next.map(|wait| {
