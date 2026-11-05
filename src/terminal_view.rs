@@ -293,6 +293,11 @@ impl TerminalView {
         self.core.text(scope)
     }
 
+    /// The last `n` non-blank lines of the live screen (what the status heuristics read).
+    pub fn tail_text(&self, n: usize) -> String {
+        self.core.tail_text(n)
+    }
+
     /// Type bytes as if from the keyboard: snaps to the bottom and counts as typing.
     pub fn type_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.input_bytes(bytes, cx);

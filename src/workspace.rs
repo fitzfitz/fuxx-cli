@@ -45,7 +45,7 @@ use crate::session_list::SessionList;
 use crate::settings;
 use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
-use crate::status::Status;
+use crate::status::{self, Status};
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::ui_tokens::size::TOP_BAND;
@@ -106,6 +106,10 @@ pub struct Session {
     pub id: u64,
     pub view: Entity<TerminalView>,
     pub status: Status,
+    /// When `status` last changed (a session adopted or restored starts now).
+    pub status_since: Instant,
+    /// While Waiting: the screen line that asked (`status::waiting_line`); none otherwise.
+    pub question: Option<String>,
     pub title: Option<SharedString>,
     /// The name the user gave it (none: the automatic name).
     pub name: Option<String>,
@@ -771,6 +775,8 @@ impl Workspace {
                 id: session_id,
                 view,
                 status: Status::Idle,
+                status_since: Instant::now(),
+                question: None,
                 title: None,
                 name: saved.name,
                 project: saved.project,
@@ -987,6 +993,15 @@ impl Workspace {
         };
         let old = session.status;
         session.status = new;
+        if old != new {
+            session.status_since = Instant::now();
+        }
+        session.question = match new {
+            Status::Waiting => {
+                status::waiting_line(&session.view.read(cx).tail_text(status::TAIL_LINES))
+            }
+            _ => None,
+        };
         let label = session.label();
         if old != new {
             let change = Event::StatusChanged { from: old, to: new };

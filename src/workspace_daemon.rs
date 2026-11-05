@@ -404,6 +404,8 @@ impl Workspace {
             id,
             view,
             status,
+            status_since: Instant::now(),
+            question: None,
             title: title.map(Into::into),
             name: saved.name,
             project: saved.project,
