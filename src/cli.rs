@@ -458,6 +458,9 @@ fn session_line(s: &Value) -> String {
     for v in [status, str_of(s, "name")].into_iter().flatten() {
         line.push_str(&format!("  {v}"));
     }
+    if let Some(host) = str_of(s, "ssh") {
+        line.push_str(&format!("  [ssh:{host}]"));
+    }
     if let Some(f) = str_of(s, "project") {
         let home = std::env::var("HOME").unwrap_or_default();
         line.push_str(&format!("  [{}]", tildify(f, &home)));
@@ -807,6 +810,26 @@ mod tests {
         }
         let e = p(&["new", "--tmux"]).unwrap_err();
         assert!(e.contains("--tmux needs --ssh"), "{e}");
+    }
+
+    #[test]
+    fn ls_shows_the_host_of_an_ssh_session_only() {
+        use serde_json::json;
+        let line = |v: Value| cli_render_ls(&v);
+        assert_eq!(
+            line(
+                json!({"id": "s4", "number": 2, "status": "idle", "name": "dev", "ssh": "me@dev"})
+            ),
+            "s4  #2  idle  dev  [ssh:me@dev]"
+        );
+        assert_eq!(
+            line(json!({"id": "s4", "number": 2, "status": "idle", "name": "dev"})),
+            "s4  #2  idle  dev"
+        );
+    }
+
+    fn cli_render_ls(v: &Value) -> String {
+        render("ls", &json!([v]), false)
     }
 
     #[test]
