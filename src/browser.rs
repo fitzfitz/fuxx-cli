@@ -439,12 +439,33 @@ fn window_key(key: &str, cmd: bool, shift: bool, alt: bool, ctrl: bool) -> Optio
     }
 }
 
+/// The key codes (U.S. keyboard places) of W and Z (`kVK_ANSI_W`, `kVK_ANSI_Z`).
+const KEY_W: u16 = 0x0D;
+const KEY_Z: u16 = 0x06;
+
+/// The key a shortcut is read as, the way AppKit's menus read it: the key's own character
+/// (`chars`, without modifiers) when the layout types Latin letters, else (another script, or
+/// none) the letter at that place on a U.S. keyboard. So ⌘W is the same key for the browser
+/// window as for the menus on every layout, and never falls through to Close Session.
+fn shortcut_letter(chars: Option<&str>, key_code: u16) -> Option<char> {
+    let mut typed = chars.unwrap_or_default().chars();
+    match (typed.next(), typed.next()) {
+        (Some(c), None) if c.is_ascii() => Some(c.to_ascii_lowercase()),
+        _ => match key_code {
+            KEY_W => Some('w'),
+            KEY_Z => Some('z'),
+            _ => None,
+        },
+    }
+}
+
 /// `window_key` for a key event.
 fn key_of(event: &NSEvent) -> Option<WindowKey> {
     let flags = event.modifierFlags();
-    let key = event.charactersIgnoringModifiers()?.to_string();
+    let chars = event.charactersIgnoringModifiers().map(|c| c.to_string());
+    let key = shortcut_letter(chars.as_deref(), event.keyCode())?;
     window_key(
-        &key,
+        &key.to_string(),
         flags.contains(NSEventModifierFlags::Command),
         flags.contains(NSEventModifierFlags::Shift),
         flags.contains(NSEventModifierFlags::Option),
@@ -800,6 +821,24 @@ mod tests {
         assert_eq!(window_key("w", false, false, false, false), None);
         assert_eq!(window_key("c", true, false, false, false), None);
         assert_eq!(window_key("q", true, false, false, false), None);
+    }
+
+    #[test]
+    fn shortcuts_read_the_key_as_the_menus_do() {
+        // A layout that types Latin letters: the key's own letter, wherever it sits (AZERTY
+        // has W where a U.S. keyboard has Z, and Z where it has W).
+        assert_eq!(shortcut_letter(Some("w"), KEY_W), Some('w'));
+        assert_eq!(shortcut_letter(Some("w"), KEY_Z), Some('w'));
+        assert_eq!(shortcut_letter(Some("z"), KEY_W), Some('z'));
+        assert_eq!(shortcut_letter(Some("Z"), KEY_Z), Some('z'));
+        assert_eq!(shortcut_letter(Some(","), KEY_W), Some(','));
+        // Another script (Russian, Greek…): the letter at that place on a U.S. keyboard, as
+        // the menus fall back to, so ⌘W never reaches fuxx's Close Session.
+        assert_eq!(shortcut_letter(Some("ц"), KEY_W), Some('w'));
+        assert_eq!(shortcut_letter(Some("я"), KEY_Z), Some('z'));
+        assert_eq!(shortcut_letter(Some("ж"), 0x29), None);
+        assert_eq!(shortcut_letter(None, KEY_W), Some('w'));
+        assert_eq!(shortcut_letter(Some(""), KEY_Z), Some('z'));
     }
 
     #[test]
