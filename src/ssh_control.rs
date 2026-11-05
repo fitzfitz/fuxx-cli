@@ -58,7 +58,9 @@ pub fn ensure_healthy(host: &str, dir: &Path, timeout: Duration) {
 
 /// Ask the shared connection for `host` if it is alive (`program -O check`). If not, or it
 /// doesn't answer within `timeout`, tell it to exit and remove any socket file in `dir` that
-/// refuses connections, so ssh starts a fresh one. Blocks, so call it off the UI thread.
+/// refuses connections, so ssh starts a fresh one. One that doesn't answer is hung, and its
+/// socket may still accept (into the kernel's queue), so this host's own socket is removed
+/// too. Blocks, so call it off the UI thread.
 pub fn ensure_healthy_with(program: &OsStr, host: &str, dir: &Path, timeout: Duration) {
     let mut control_path = dir.as_os_str().to_owned();
     control_path.push("/%C");
@@ -70,12 +72,46 @@ pub fn ensure_healthy_with(program: &OsStr, host: &str, dir: &Path, timeout: Dur
             .args(["-O", operation, "--", host]);
         crate::ssh_hosts::run_capped(&mut command, cap)
     };
-    if run("check", timeout).is_some_and(|(status, _)| status.success()) {
+    let check = run("check", timeout);
+    if check.as_ref().is_some_and(|(status, _)| status.success()) {
         return;
     }
     let _ = run("exit", EXIT_CAP);
+    if check.is_none() {
+        // Hung: where its socket is, as ssh expands `%C` for this host.
+        let mut command = Command::new(program);
+        command
+            .arg("-G")
+            .arg("-o")
+            .arg(format!("ControlPath={}", control_path.to_string_lossy()))
+            .args(["--", host]);
+        let socket = crate::ssh_hosts::run_capped(&mut command, RESOLVE_CAP)
+            .filter(|(status, _)| status.success())
+            .and_then(|(_, text)| host_socket(&text, dir));
+        if let Some(socket) = socket
+            && std::fs::symlink_metadata(&socket).is_ok_and(|m| m.file_type().is_socket())
+        {
+            let _ = std::fs::remove_file(&socket);
+        }
+    }
     remove_dead_sockets(dir);
 }
+
+/// The `controlpath` in `ssh -G` output, if it is a file right in `dir` (ours); none for
+/// `none` or anywhere else.
+fn host_socket(text: &str, dir: &Path) -> Option<PathBuf> {
+    let path = text.lines().find_map(|line| {
+        let (key, value) = line.split_once(' ')?;
+        (key == "controlpath").then(|| PathBuf::from(value.trim()))
+    })?;
+    // Not `..` (no file name) nor anywhere else.
+    path.file_name()?;
+    (path.parent() == Some(dir)).then_some(path)
+}
+
+/// How long `ssh -G` gets to name a hung connection's socket (it answered quickly before the
+/// check: `ssh_program` reads the host's settings first).
+const RESOLVE_CAP: Duration = Duration::from_secs(2);
 
 /// How long `-O exit` gets before it is given up on.
 const EXIT_CAP: Duration = Duration::from_secs(1);
@@ -215,6 +251,56 @@ mod tests {
     }
 
     #[test]
+    fn a_hung_master_s_socket_is_removed() {
+        let base = temp("hung-master");
+        let dir = base.join("ctl");
+        std::fs::create_dir(&dir).unwrap();
+        // The hung master's socket still accepts (into its backlog), as does another host's.
+        let mine = dir.join("c9cfb6d4");
+        let _hung = UnixListener::bind(&mine).unwrap();
+        let other = dir.join("0a1b2c3d");
+        let _other = UnixListener::bind(&other).unwrap();
+        let log = base.join("calls");
+        let fake = script(
+            &base,
+            "ssh",
+            &format!(
+                "echo \"$@\" >> '{}'\n\
+                 case \"$*\" in\n\
+                 *'-O check'*) sleep 30;;\n\
+                 *'-G'*) printf 'user me\\ncontrolpath {}\\ncontrolpersist no\\n';;\n\
+                 esac\nexit 0",
+                log.display(),
+                mine.display()
+            ),
+        );
+        ensure_healthy_with(fake.as_os_str(), "devbox", &dir, Duration::from_millis(500));
+        assert!(!mine.exists(), "the hung master's socket is gone");
+        assert!(other.exists(), "another host's stays");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("-O exit -- devbox"), "{calls}");
+        assert!(
+            calls.contains(&format!("-G -o ControlPath={}/%C -- devbox", dir.display())),
+            "{calls}"
+        );
+    }
+
+    #[test]
+    fn the_control_path_is_read_from_ssh_g() {
+        let dir = Path::new("/tmp/fuxx-501");
+        let text = "user me\ncontrolpath /tmp/fuxx-501/c9cf\ncontrolpersist no\n";
+        assert_eq!(
+            host_socket(text, dir),
+            Some(PathBuf::from("/tmp/fuxx-501/c9cf"))
+        );
+        // None set, or one outside our folder: nothing to remove.
+        assert_eq!(host_socket("controlpath none\n", dir), None);
+        assert_eq!(host_socket("controlpath /etc/passwd\n", dir), None);
+        assert_eq!(host_socket("controlpath /tmp/fuxx-501/../x\n", dir), None);
+        assert_eq!(host_socket("user me\n", dir), None);
+    }
+
+    #[test]
     fn a_hung_check_is_capped() {
         let base = temp("hung");
         let dir = base.join("ctl");
@@ -222,7 +308,8 @@ mod tests {
         let fake = script(&base, "ssh", "sleep 30");
         let start = Instant::now();
         ensure_healthy_with(fake.as_os_str(), "devbox", &dir, Duration::from_millis(500));
-        // The check (0.5 s) plus the exit (1 s cap), with some room.
-        assert!(start.elapsed() < Duration::from_millis(3500));
+        // The check (0.5 s), the exit (1 s cap) and, hung, `ssh -G` for its socket (2 s cap),
+        // with some room.
+        assert!(start.elapsed() < Duration::from_millis(5500));
     }
 }
