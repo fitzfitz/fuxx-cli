@@ -19,6 +19,12 @@ unsafe extern "C" {
     fn getuid() -> u32;
 }
 
+/// The user id of this process.
+pub fn current_uid() -> u32 {
+    // SAFETY: getuid takes no arguments and always succeeds.
+    unsafe { getuid() }
+}
+
 /// Create the private folder, clear a stale socket, bind, and make the socket 0600.
 /// `AddrInUse` when something already listens at `path`.
 pub fn bind(path: &Path) -> io::Result<UnixListener> {

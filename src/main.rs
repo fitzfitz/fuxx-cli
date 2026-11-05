@@ -37,6 +37,10 @@ mod split_tree;
 // Tasks 3-5 build the launch path and UI on these; until then only the tests use them.
 #[allow(dead_code)]
 mod ssh_hosts;
+// The launch path (M10b Task 5) calls the shared-connection folder and health check; until
+// then only the tests use them.
+#[allow(dead_code)]
+mod ssh_control;
 #[cfg_attr(not(test), allow(dead_code))]
 mod ssh_target;
 mod status;
