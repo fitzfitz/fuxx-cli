@@ -123,8 +123,8 @@ test, and the check should be repeated after real signing (M12). The throwaway p
 
 ## Deferred
 
-Small things from the per-task and final reviews, none blocking, are kept in the build ledger
-(`.superpowers/sdd/M10a Plan - Persistent Sessions/progress.md`, lines marked "minor (deferred)"). The ones worth
+Small things from the per-task and final reviews, none blocking, are listed in the plan
+(the full list is under "Deferred minors" in [[M10a Plan - Persistent Sessions]]). The ones worth
 knowing: ⌥⌘Q pressed during startup ends only the sessions already shown; `fuxx daemon stop --force` with the
 window open can mark sessions "lost" instead of "closed"; a service that dies right after connecting leaves an
 empty window with no notice; the service keeps the window's working folder; `fuxx ls` in off mode now also prints
