@@ -181,6 +181,7 @@ const SCENES: &[(&str, fn())] = &[
     ("window", window_scenes),
     ("marks", marks),
     ("sidebar-marks", sidebar_marks),
+    ("cached-panes", cached_panes),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -998,4 +999,61 @@ fn sidebar_marks() {
         let path = shoot("sidebar-marks", slug, &theme, dims, build);
         println!("ui-shots: {}", path.display());
     }
+}
+
+/// Terminal panes are cached: a workspace redraw (the marks' ticker, a sidebar change) doesn't
+/// repaint a terminal, while the terminal's own notify does. Writes to a terminal's screen
+/// without telling it, redraws after a workspace notify and checks the frame is unchanged; then
+/// has the terminal notify and checks the new text shows. No PNG.
+fn cached_panes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let theme = shot_theme("Catppuccin Mocha");
+    let dims = size(px(640.0), px(400.0));
+    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    let slot = Rc::new(RefCell::new(None));
+    let window = {
+        let slot = slot.clone();
+        cx.open_offscreen_window(dims, move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                let project = std::path::Path::new("/Users/me/code/api");
+                ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                ws
+            });
+            *slot.borrow_mut() = Some(ws.clone());
+            cx.new(|_| Root {
+                theme,
+                scene: ws.into(),
+            })
+        })
+        .expect("open an off-screen window")
+    };
+    cx.run_until_parked();
+    let frame = |cx: &mut gpui::VisualTestAppContext| -> Vec<u8> {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .expect("draw");
+        cx.capture_screenshot(window.into())
+            .expect("capture the window")
+            .into_raw()
+    };
+    frame(&mut cx);
+    let before = frame(&mut cx);
+    let ws = slot.borrow().clone().expect("the workspace");
+    let view = cx.read(|cx| ws.read(cx).sessions.items()[0].view.clone());
+
+    cx.read(|cx| view.read(cx).show_text("\r\nnot told yet"));
+    cx.update(|cx| ws.update(cx, |_, cx| cx.notify()));
+    assert!(
+        frame(&mut cx) == before,
+        "cached-panes: a workspace redraw repainted the terminal"
+    );
+    cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+    assert!(
+        frame(&mut cx) != before,
+        "cached-panes: the terminal's own notify didn't repaint it"
+    );
 }

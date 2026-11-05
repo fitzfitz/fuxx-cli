@@ -5,12 +5,11 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Entity, EntityId, Hsla, MouseButton, MouseDownEvent, Window, div, prelude::*,
-    px, relative,
+    AnyElement, App, EntityId, Hsla, MouseButton, MouseDownEvent, Window, div, prelude::*, px,
+    relative,
 };
 
 use crate::split_tree::{Axis, Node};
-use crate::terminal_view::TerminalView;
 
 /// Called with a pane's session (by its view) when the pane is clicked.
 pub type SelectPane = Rc<dyn Fn(EntityId, &mut Window, &mut App)>;
@@ -33,8 +32,8 @@ pub struct PaneColors {
 pub struct Panes<'a> {
     /// The focused pane.
     pub active: EntityId,
-    /// Finds each pane's terminal.
-    pub view: &'a dyn Fn(EntityId) -> Option<Entity<TerminalView>>,
+    /// Each pane's terminal, as the element to draw (the workspace decides how it's embedded).
+    pub view: &'a dyn Fn(EntityId) -> Option<AnyElement>,
     pub select: SelectPane,
     pub start_drag: StartDrag,
     pub colors: PaneColors,

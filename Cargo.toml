@@ -26,7 +26,7 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std"
 # The objc2 runtime, AppKit, Foundation and blocks under it, at the versions GPUI already locks.
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSBitmapImageRep", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSResponder", "NSRunningApplication", "NSView", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSNotification", "NSString", "NSURL", "NSURLError", "NSURLRequest"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSURL", "NSURLError", "NSURLRequest"] }
 block2 = "0.6.2"
 
 [features]

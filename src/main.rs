@@ -518,6 +518,7 @@ fn main() {
             set_menus(cx, persistent.then_some(0));
 
             let bounds = Bounds::centered(None, size(px(1280.0), px(800.0)), cx);
+            let windows_before = reduce_motion::window_numbers();
             let (light_x, light_y) = TRAFFIC_LIGHTS;
             let main_window = cx
                 .open_window(
@@ -538,6 +539,8 @@ fn main() {
                     },
                 )
                 .expect("failed to open the window");
+            // The marks stop animating while this window can't be seen.
+            reduce_motion::watch_window(&windows_before, cx);
             // With persistence on, quitting (here, or by closing the window) only detaches: the
             // background service keeps the sessions running. Not while a quit that ends
             // sessions first is under way: that one finishes.
