@@ -1,4 +1,4 @@
-//! The root view: a sidebar listing every session (with its status ring) and the layout of
+//! The root view: a sidebar listing every session (with its status mark) and the layout of
 //! panes holding the active session. Owns session lifecycle, switching, splits, and background
 //! notifications.
 //!
@@ -21,10 +21,10 @@ use std::time::Instant;
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
-    SharedString, Subscription, Task, Window, WindowControlArea, actions, canvas, div, prelude::*,
-    px, relative,
+    Animation, AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Entity,
+    EntityId, Focusable, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PathPromptOptions, Pixels, Point, SharedString, Subscription, Task, Window, WindowControlArea,
+    actions, canvas, div, prelude::*, px, relative,
 };
 
 use crate::adopt::{self, Probe};
@@ -40,15 +40,17 @@ use crate::notifier;
 use crate::panes::{self, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
 use crate::pty::ShellEnv;
+use crate::reduce_motion::SystemReduceMotion;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
 use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
+use crate::status_mark;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
-use crate::ui_tokens::size::TOP_BAND;
+use crate::ui_tokens::size::{STATUS_MARK, TOP_BAND};
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -101,6 +103,10 @@ actions!(
 
 const SIDEBAR_WIDTH: f32 = 220.0;
 
+/// How long after a session turns Done its mark is drawn as a pop: the pop, plus a margin for the
+/// frame it starts on. After that the mark is drawn plain, so the pop never plays twice.
+const POP_SHOWN: std::time::Duration = std::time::Duration::from_millis(450);
+
 pub struct Session {
     /// Scripting id: shown to scripts as `s<id>`.
     pub id: u64,
@@ -108,6 +114,9 @@ pub struct Session {
     pub status: Status,
     /// When `status` last changed (a session adopted or restored starts now).
     pub status_since: Instant,
+    /// Its mark's Done pop: a number no other pop has (the animation's key) and when it began.
+    /// Set when the session turns Done with its row on screen; it plays once.
+    pub(crate) pop: Option<(u64, Instant)>,
     /// While Waiting: the screen line that asked (`status::waiting_line`); none otherwise.
     pub question: Option<String>,
     pub title: Option<SharedString>,
@@ -243,6 +252,14 @@ pub struct Workspace {
     _activation: Subscription,
     /// Repaints the sidebar when the appearance changes.
     _appearance: Subscription,
+    /// Repaints (and re-checks the marks' ticker) when macOS Reduce motion changes.
+    _reduce_motion: Subscription,
+    /// The status marks' shared clock (see `status_mark`), advanced by their ticker.
+    pub(crate) phase: f32,
+    /// Whether the marks' 100 ms ticker is running (only while a mark on screen moves).
+    marks_ticking: bool,
+    /// The last Done pop's number.
+    pops: u64,
     /// Persistence asked for at startup (`persistent-sessions = on`).
     pub(crate) persistent: bool,
     pub(crate) service: Service,
@@ -305,6 +322,7 @@ impl Workspace {
             cx.notify();
         });
         let appearance = cx.observe_global::<Appearance>(|_, cx| cx.notify());
+        let reduce_motion = cx.observe_global::<SystemReduceMotion>(|_, cx| cx.notify());
         let (socket, requests) = scripting.unzip();
         Self {
             sessions: SessionList::new(),
@@ -329,6 +347,10 @@ impl Workspace {
             focused: None,
             _activation: activation,
             _appearance: appearance,
+            _reduce_motion: reduce_motion,
+            phase: 0.0,
+            marks_ticking: false,
+            pops: 0,
             persistent,
             service: if persistent {
                 Service::Starting
@@ -776,6 +798,7 @@ impl Workspace {
                 view,
                 status: Status::Idle,
                 status_since: Instant::now(),
+                pop: None,
                 question: None,
                 title: None,
                 name: saved.name,
@@ -988,6 +1011,7 @@ impl Workspace {
     ) {
         let is_active = self.sessions.active_index() == Some(index);
         let window_active = self.window_active;
+        let pops = !self.restoring && self.row_on_screen(index);
         let Some(session) = self.sessions.get_mut(index) else {
             return;
         };
@@ -995,6 +1019,13 @@ impl Workspace {
         session.status = new;
         if old != new {
             session.status_since = Instant::now();
+        }
+        // Done pops once, as it arrives, if you can see it.
+        if new != Status::Done {
+            session.pop = None;
+        } else if old != Status::Done && pops {
+            self.pops += 1;
+            session.pop = Some((self.pops, Instant::now()));
         }
         session.question = match new {
             Status::Waiting => {
@@ -1452,6 +1483,100 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The statuses whose marks are on screen: each sidebar row's (a group header shows its
+    /// sessions' most urgent); none with the sidebar hidden.
+    fn visible_statuses(&self) -> Vec<Status> {
+        if self.sidebar_hidden {
+            return Vec::new();
+        }
+        let items = self.sessions.items();
+        let keys = self.groups();
+        groups::rows(&key_refs(&keys), &self.collapsed)
+            .into_iter()
+            .map(|row| match row {
+                Row::Header { first, len, .. } => {
+                    groups::rolled_up(items[first..first + len].iter().map(|s| s.status))
+                }
+                Row::Session { index, .. } => items[index].status,
+            })
+            .collect()
+    }
+
+    /// Whether session `index`'s row is on screen: the sidebar is shown and its group is open.
+    fn row_on_screen(&self, index: usize) -> bool {
+        !self.sidebar_hidden
+            && self
+                .sessions
+                .items()
+                .get(index)
+                .is_some_and(|s| s.group().is_none_or(|key| !self.collapsed.contains(&key)))
+    }
+
+    /// Whether the marks' ticker should run now (`status_mark::should_tick`).
+    fn marks_move(&self, cx: &App) -> bool {
+        let animations = cx.global::<Appearance>().animations;
+        let reduce = cx.try_global::<SystemReduceMotion>().is_some_and(|r| r.0);
+        status_mark::should_tick(animations, reduce, &self.visible_statuses())
+    }
+
+    /// Start the marks' 100 ms ticker unless it's running or nothing on screen moves; it stops,
+    /// without a redraw, once nothing does. `render` calls it, so everything that redraws the
+    /// sidebar (a status, a group closed, the sidebar hidden, the `animations` setting, Reduce
+    /// motion) re-checks it.
+    fn tick_marks(&mut self, cx: &mut Context<Self>) {
+        if self.marks_ticking || !self.marks_move(cx) {
+            return;
+        }
+        self.marks_ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(status_mark::TICK).await;
+                let moving = this
+                    .update(cx, |this, cx| {
+                        this.marks_ticking = this.marks_move(cx);
+                        if this.marks_ticking {
+                            this.phase = status_mark::advance(this.phase);
+                            cx.notify();
+                        }
+                        this.marks_ticking
+                    })
+                    .unwrap_or(false);
+                if !moving {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// A session row's mark; a Done one that just arrived pops (keyed by its pop, so it plays
+    /// once; after it, the mark is drawn plain).
+    fn session_mark(&self, session: &Session, ui: UiColors) -> AnyElement {
+        let size = px(STATUS_MARK);
+        let popping = session
+            .pop
+            .filter(|(_, at)| session.status == Status::Done && at.elapsed() < POP_SHOWN);
+        match popping {
+            Some((pop, _)) => {
+                let phase = self.phase;
+                div()
+                    .flex_none()
+                    .size(size)
+                    .with_animation(
+                        ("pop", pop),
+                        Animation::new(status_mark::POP),
+                        move |slot, t| {
+                            slot.child(status_mark::mark(Status::Done, &ui, phase, Some(t), size))
+                        },
+                    )
+                    .into_any_element()
+            }
+            None => {
+                status_mark::mark(session.status, &ui, self.phase, None, size).into_any_element()
+            }
+        }
+    }
+
     /// The sidebar: the top band (under the traffic lights), then the sessions.
     fn render_sidebar(
         &self,
@@ -1552,7 +1677,13 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&key, cx)))
             .child(if collapsed { "\u{25b8}" } else { "\u{25be}" })
             .child(div().flex_1().overflow_hidden().child(label))
-            .child(ring(status, ui))
+            .child(status_mark::mark(
+                status,
+                &ui,
+                self.phase,
+                None,
+                px(STATUS_MARK),
+            ))
             .child(
                 div()
                     .id("group-add")
@@ -1637,7 +1768,7 @@ impl Workspace {
             .on_drop(cx.listener(move |this, dragged: &DraggedSession, _, cx| {
                 this.drop_session(dragged.view, view, cx)
             }))
-            .child(ring(session.status, ui))
+            .child(self.session_mark(session, ui))
             .map(|row| match rename_box {
                 Some(input) => row.child(format!("{}", index + 1)).child(input),
                 None => match sub {
@@ -1705,20 +1836,9 @@ fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
     keys.iter().map(Option::as_ref).collect()
 }
 
-/// The status ring: hollow = idle, yellow = working, red = needs you, green = done (the
-/// theme's palette colors).
-fn ring(status: Status, ui: UiColors) -> impl IntoElement {
-    let dot = div().flex_none().size(px(10.0)).rounded_full();
-    match status {
-        Status::Idle => dot.border_1().border_color(hsla(ui.ring_idle)),
-        Status::Working => dot.bg(hsla(ui.ring_working)),
-        Status::Waiting => dot.bg(hsla(ui.ring_waiting)),
-        Status::Done => dot.bg(hsla(ui.ring_done)),
-    }
-}
-
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.tick_marks(cx);
         let title = self
             .sessions
             .active()

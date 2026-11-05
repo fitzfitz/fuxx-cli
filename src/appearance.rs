@@ -32,6 +32,9 @@ pub struct Appearance {
     /// `persistent-sessions = on|off`: sessions run in the background service and survive
     /// quitting (default off). Read at startup; changing it takes effect the next launch.
     pub persistent: bool,
+    /// `animations = on|off`: the status marks' motion (default on). macOS Reduce motion stops
+    /// it too (see `reduce_motion`).
+    pub animations: bool,
 }
 
 impl Global for Appearance {}
@@ -69,6 +72,24 @@ fn persistent_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
             "on" => on = true,
             _ => warnings.push(format!(
                 "persistent-sessions \"{}\": expected on or off",
+                entry.value
+            )),
+        }
+    }
+    (on, warnings)
+}
+
+/// The last valid `animations` entry wins (`on` / `off`, any case); an empty value resets to on.
+/// Returns the setting and a warning per invalid value (the previous value stays).
+fn animations_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    let mut on = true;
+    let mut warnings = Vec::new();
+    for entry in entries.iter().filter(|e| e.key == "animations") {
+        match entry.value.trim().to_lowercase().as_str() {
+            "" | "on" => on = true,
+            "off" => on = false,
+            _ => warnings.push(format!(
+                "animations \"{}\": expected on or off",
                 entry.value
             )),
         }
@@ -147,11 +168,13 @@ pub fn load(cx: &App) -> Appearance {
     let (restore, restore_warnings) = RestoreMode::from_entries(&entries);
     let (scripting, scripting_warnings) = scripting_from_entries(&entries);
     let (persistent, persistent_warnings) = persistent_from_entries(&entries);
+    let (animations, animations_warnings) = animations_from_entries(&entries);
     for warning in preset_warnings
         .iter()
         .chain(&restore_warnings)
         .chain(&scripting_warnings)
         .chain(&persistent_warnings)
+        .chain(&animations_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
     }
@@ -168,6 +191,7 @@ pub fn load(cx: &App) -> Appearance {
         restore,
         scripting,
         persistent,
+        animations,
     }
 }
 
@@ -221,5 +245,30 @@ mod tests {
         assert_eq!(persistent_from_entries(&[p("on"), p("")]), (false, vec![]));
         // Other keys are ignored.
         assert_eq!(persistent_from_entries(&[s("on")]), (false, vec![]));
+    }
+
+    fn a(value: &str) -> Entry {
+        Entry {
+            key: "animations".into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn animations_setting_parses() {
+        assert_eq!(animations_from_entries(&[]), (true, vec![]));
+        assert_eq!(animations_from_entries(&[a(" OFF ")]), (false, vec![]));
+        assert_eq!(
+            animations_from_entries(&[a("off"), a("On")]),
+            (true, vec![])
+        );
+        let (on, warnings) = animations_from_entries(&[a("off"), a("sometimes")]);
+        assert!(!on); // the bad value leaves the previous one in place
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("sometimes") && warnings[0].contains("animations"));
+        // An empty value resets to the default (on).
+        assert_eq!(animations_from_entries(&[a("off"), a("")]), (true, vec![]));
+        // Other keys are ignored.
+        assert_eq!(animations_from_entries(&[s("off")]), (true, vec![]));
     }
 }

@@ -367,6 +367,7 @@ impl Workspace {
             view,
             status: Status::Idle,
             status_since: Instant::now(),
+            pop: None,
             question: None,
             title: None,
             name: saved.name,
