@@ -693,12 +693,24 @@ fn event_line(e: &Value) -> String {
     line
 }
 
+/// `text` without terminal control sequences, for printing page-derived text: every control
+/// character goes (C0 including ESC, DEL, and C1 such as U+009B) except `\n` and `\t`, so a page
+/// can't retitle a session, raise a notification or clear the screen through what we print.
+pub fn plain_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
 /// A browser's page as `url: …` and `title: …` lines (no title line while it has none), and a
 /// last `loading` line while it is still loading.
 fn page_lines(page: &Value) -> String {
-    let mut lines = vec![format!("url: {}", page["url"].as_str().unwrap_or_default())];
+    let mut lines = vec![format!(
+        "url: {}",
+        plain_text(page["url"].as_str().unwrap_or_default())
+    )];
     if let Some(title) = str_of(page, "title") {
-        lines.push(format!("title: {title}"));
+        lines.push(format!("title: {}", plain_text(title)));
     }
     if page["loading"].as_bool() == Some(true) {
         lines.push("loading".to_string());
@@ -714,13 +726,14 @@ pub fn render(command: &str, result: &Value, json: bool) -> String {
     match command {
         "browser open" | "browser back" | "browser reload" | "browser url" => page_lines(result),
         "browser snapshot" => match serde_json::from_value(result.clone()) {
-            Ok(snapshot) => render_outline(&snapshot),
+            Ok(snapshot) => plain_text(&render_outline(&snapshot)),
             Err(_) => result.to_string(),
         },
-        "browser read" => str_of(result, "text").unwrap_or_default().to_string(),
-        "browser eval" => {
-            serde_json::to_string_pretty(&result["value"]).expect("a JSON value always serializes")
-        }
+        "browser read" => plain_text(str_of(result, "text").unwrap_or_default()),
+        "browser eval" => plain_text(
+            &serde_json::to_string_pretty(&result["value"])
+                .expect("a JSON value always serializes"),
+        ),
         "browser screenshot" => str_of(result, "path").unwrap_or_default().to_string(),
         "ls" => {
             let list = result.get("sessions").unwrap_or(result);
@@ -1266,6 +1279,35 @@ mod tests {
         // One command per method `system.version` lists.
         let methods: Vec<&str> = BROWSER_COMMANDS.iter().map(|(_, m)| *m).collect();
         assert_eq!(methods, crate::api::BROWSER_METHODS);
+    }
+
+    #[test]
+    fn page_text_prints_without_control_sequences() {
+        use serde_json::json;
+        let hostile = "a\x1b]0;pwned\x07b\x1b[2Jc\x1b]9;rung\x07d\u{9b}31me\x7ff\tg\nh";
+        assert_eq!(plain_text(hostile), "a]0;pwnedb[2Jc]9;rungd31mef\tg\nh");
+        assert_eq!(plain_text("naïve — 日本"), "naïve — 日本");
+        let page = json!({"url": hostile, "title": hostile});
+        for command in ["browser open", "browser url"] {
+            let out = render(command, &page, false);
+            assert!(
+                !out.contains(['\x1b', '\x07', '\u{9b}', '\x7f']),
+                "{command}"
+            );
+        }
+        let read = render("browser read", &json!({"text": hostile}), false);
+        assert_eq!(read, plain_text(hostile));
+        let eval = render("browser eval", &json!({"value": hostile}), false);
+        assert!(!eval.contains(['\x1b', '\x07', '\u{9b}', '\x7f']), "{eval}");
+        let snap = json!({"url": hostile, "title": hostile,
+            "nodes": [{"role": "button", "name": hostile, "ref": "e1"}]});
+        let out = render("browser snapshot", &snap, false);
+        assert!(!out.contains(['\x1b', '\x07', '\u{9b}', '\x7f']), "{out}");
+        // JSON stays exact.
+        assert_eq!(
+            render("browser read", &json!({"text": hostile}), true),
+            json!({"text": hostile}).to_string()
+        );
     }
 
     #[test]

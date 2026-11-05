@@ -180,7 +180,7 @@ fn home_dir() -> Option<PathBuf> {
 
 /// Print an error the way every `fuxx` command does and return its exit code.
 fn fail(message: &str, code: i32) -> i32 {
-    eprintln!("fuxx: {message}");
+    eprintln!("fuxx: {}", cli::plain_text(message));
     code
 }
 
