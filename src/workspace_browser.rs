@@ -95,6 +95,13 @@ impl<B: BrowserWindow> Browsers<B> {
         }
     }
 
+    /// Session `old` goes on as `new` (an SSH reconnect): its browser goes with it.
+    pub fn rekey(&mut self, old: u64, new: u64) {
+        if let Some(open) = self.open.remove(&old) {
+            self.open.insert(new, open);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.open.is_empty()
     }
@@ -424,6 +431,23 @@ mod tests {
         );
         browsers.retitle(|session, _| format!("s{session} \u{2014} Docs"));
         assert_eq!(*browsers.get(1).unwrap().title.borrow(), "s1 \u{2014} Docs");
+    }
+
+    #[test]
+    fn a_reconnected_session_keeps_its_browser() {
+        let mut browsers = Browsers::new();
+        let (one, one_dropped) = Fake::new();
+        browsers.insert(1, one, "box".into());
+        browsers.rekey(1, 5);
+        assert!(!one_dropped.get(), "the window stays open");
+        assert!(browsers.get(1).is_none());
+        assert!(browsers.get(5).is_some());
+        // Still known by its new id to the sweep.
+        browsers.forget_closed(|session| session == 5);
+        assert!(browsers.get(5).is_some());
+        // A session without a browser: nothing happens.
+        browsers.rekey(2, 6);
+        assert!(browsers.get(6).is_none());
     }
 
     #[test]

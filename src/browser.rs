@@ -19,8 +19,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSBitmapImageFileType, NSBitmapImageRep, NSEvent,
+    NSEventModifierFlags, NSImage, NSResponder, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -417,21 +417,108 @@ fn answer<T>(slot: &Slot<T>, answer: Result<T, String>) {
     }
 }
 
+/// A shortcut the browser window answers itself.
+#[derive(Debug, PartialEq)]
+enum WindowKey {
+    Close,
+    Undo,
+    Redo,
+}
+
+/// The browser window's own shortcuts: ⌘W, ⌘Z and ⇧⌘Z. `key` is the key pressed without
+/// modifiers other than shift (⇧⌘Z gives `Z`).
+fn window_key(key: &str, cmd: bool, shift: bool, alt: bool, ctrl: bool) -> Option<WindowKey> {
+    if !cmd || alt || ctrl {
+        return None;
+    }
+    match (key.to_ascii_lowercase().as_str(), shift) {
+        ("w", false) => Some(WindowKey::Close),
+        ("z", false) => Some(WindowKey::Undo),
+        ("z", true) => Some(WindowKey::Redo),
+        _ => None,
+    }
+}
+
+/// `window_key` for a key event.
+fn key_of(event: &NSEvent) -> Option<WindowKey> {
+    let flags = event.modifierFlags();
+    let key = event.charactersIgnoringModifiers()?.to_string();
+    window_key(
+        &key,
+        flags.contains(NSEventModifierFlags::Command),
+        flags.contains(NSEventModifierFlags::Shift),
+        flags.contains(NSEventModifierFlags::Option),
+        flags.contains(NSEventModifierFlags::Control),
+    )
+}
+
 /// A titled-or-not window of the browser's size that AppKit doesn't release on close.
+/// It answers its own shortcuts (see `ShortcutWindow`).
 fn new_window(mtm: MainThreadMarker, style: NSWindowStyleMask) -> Retained<NSWindow> {
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), WINDOW_SIZE);
-    // SAFETY: main thread; a plain initialiser with valid arguments. The window is owned by
-    // `Retained`, not by AppKit's close-releases-it rule.
-    unsafe {
-        let window = NSWindow::initWithContentRect_styleMask_backing_defer(
-            mtm.alloc(),
-            frame,
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        );
-        window.setReleasedWhenClosed(false);
-        window
+    let this = ShortcutWindow::alloc(mtm).set_ivars(());
+    // SAFETY: main thread; NSWindow's own initialiser, with valid arguments. The window is
+    // owned by `Retained`, not by AppKit's close-releases-it rule.
+    let window: Retained<ShortcutWindow> = unsafe {
+        msg_send![
+            super(this),
+            initWithContentRect: frame,
+            styleMask: style,
+            backing: NSBackingStoreType::Buffered,
+            defer: false,
+        ]
+    };
+    // SAFETY: as above; AppKit keeps the window until `Retained` lets it go.
+    unsafe { window.setReleasedWhenClosed(false) };
+    Retained::into_super(window)
+}
+
+define_class!(
+    // SAFETY: NSWindow may be subclassed; `ShortcutWindow` has no ivars and no `Drop`.
+    #[unsafe(super(NSWindow, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    struct ShortcutWindow;
+
+    impl ShortcutWindow {
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            self.key_equivalent(event)
+        }
+    }
+);
+
+impl ShortcutWindow {
+    /// fuxx's menu items answer only fuxx's own window, so this window takes ⌘W itself (before
+    /// the page sees it: closing is the window's, as in Safari), and ⌘Z / ⇧⌘Z once the page has
+    /// passed on them (WebKit sends a key the page didn't handle round again). Undo goes to the
+    /// window's undo manager. Cut, copy, paste and select all come from fuxx's Edit menu, as the
+    /// standard selectors.
+    fn key_equivalent(&self, event: &NSEvent) -> bool {
+        let key = key_of(event);
+        if key == Some(WindowKey::Close) {
+            self.close();
+            return true;
+        }
+        // SAFETY: NSWindow's own `performKeyEquivalent:`, with the event it was given.
+        let handled: bool = unsafe { msg_send![super(self), performKeyEquivalent: event] };
+        if handled {
+            return true;
+        }
+        let action = match key {
+            Some(WindowKey::Undo) => sel!(undo:),
+            Some(WindowKey::Redo) => sel!(redo:),
+            _ => return false,
+        };
+        // Up the window's own responder chain only (the page's view, the window, which keeps
+        // the undo manager): never to the app, whose delegate is GPUI's.
+        let sender: &AnyObject = self.as_ref();
+        // SAFETY: main thread; standard actions that take any sender.
+        unsafe {
+            match self.firstResponder() {
+                Some(first) => first.tryToPerform_with(action, Some(sender)),
+                None => self.tryToPerform_with(action, Some(sender)),
+            }
+        }
     }
 }
 
@@ -682,6 +769,37 @@ mod tests {
         assert!(!did_not_parse("WKErrorDomain", 1, syntax));
         assert!(!did_not_parse("WKErrorDomain", 5, syntax));
         assert!(!did_not_parse("NSURLErrorDomain", exception, syntax));
+    }
+
+    #[test]
+    fn the_browser_window_s_own_shortcuts() {
+        assert_eq!(
+            window_key("w", true, false, false, false),
+            Some(WindowKey::Close)
+        );
+        assert_eq!(
+            window_key("W", true, false, false, false),
+            Some(WindowKey::Close)
+        );
+        assert_eq!(
+            window_key("z", true, false, false, false),
+            Some(WindowKey::Undo)
+        );
+        assert_eq!(
+            window_key("Z", true, true, false, false),
+            Some(WindowKey::Redo)
+        );
+        assert_eq!(
+            window_key("z", true, true, false, false),
+            Some(WindowKey::Redo)
+        );
+        // Not with another modifier, nor without ⌘; other keys go on to the page and menus.
+        assert_eq!(window_key("w", true, true, false, false), None);
+        assert_eq!(window_key("w", true, false, true, false), None);
+        assert_eq!(window_key("z", true, false, false, true), None);
+        assert_eq!(window_key("w", false, false, false, false), None);
+        assert_eq!(window_key("c", true, false, false, false), None);
+        assert_eq!(window_key("q", true, false, false, false), None);
     }
 
     #[test]

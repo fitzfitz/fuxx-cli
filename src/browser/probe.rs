@@ -8,8 +8,14 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{App, AsyncApp, BackgroundExecutor};
-use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::{MainThreadMarker, msg_send, sel};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags, NSEventType,
+    NSWindow,
+};
+use objc2_foundation::{NSPoint, NSString};
 use serde_json::{Value, json};
 
 use super::{Browser, CLOSED, EVAL_REFUSED_HINT, PageState, WINDOW_SIZE, png_size, within};
@@ -359,6 +365,39 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         &locked_statements,
     )?;
 
+    // The Edit menu's selectors reach the web view, and select all selects the page.
+    let selectors = [sel!(cut:), sel!(copy:), sel!(paste:), sel!(selectAll:)];
+    let missing: Vec<&str> = selectors
+        .iter()
+        .filter(|s| !b.view.respondsToSelector(**s))
+        .map(|s| s.name().to_str().unwrap_or("?"))
+        .collect();
+    check(missing.is_empty(), "edit selectors", &missing)?;
+    // SAFETY: main thread; `selectAll:` takes any sender.
+    let _: () = unsafe { msg_send![&*b.view, selectAll: None::<&AnyObject>] };
+    let selected = settle_value(&b, &ex, "String(getSelection())", |v| {
+        v.as_str().is_some_and(|t| t.contains("Locked page"))
+    })
+    .await?;
+    // ⌘Z and ⇧⌘Z end at the window, which takes `undo:` and `redo:` (not at the app).
+    let undo = b.window.respondsToSelector(sel!(undo:)) && b.window.respondsToSelector(sel!(redo:));
+    check(undo, "an undo responder", &undo)?;
+    // The window's own ⌘W closes it; other shortcuts aren't the window's.
+    let keyed = Browser::offscreen(mtm);
+    let quit = keyed
+        .window
+        .performKeyEquivalent(&*command_key(&keyed.window, "q")?);
+    check(!quit && !keyed.is_closed(), "⌘Q is not the window's", &quit)?;
+    let closed_by_key = keyed
+        .window
+        .performKeyEquivalent(&*command_key(&keyed.window, "w")?);
+    check(
+        closed_by_key && keyed.is_closed(),
+        "⌘W closes the window",
+        &closed_by_key,
+    )?;
+    keyed.close();
+
     // The title, and the user closing the window: noticed, and the browser still answers.
     b.set_title("probe — page two");
     let window_title = b.window.title().to_string();
@@ -434,6 +473,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
             "iife": locked_iife,
             "statements": locked_statements.unwrap_err(),
         },
+        "edit": { "selected": selected, "undo_responder": undo, "cmd_w_closes": closed_by_key, "cmd_q_passes": !quit },
         "window_title": window_title,
         "user_closed": { "is_closed": true, "still_answers": after_close },
         "timeout": hang.unwrap_err(),
@@ -449,6 +489,44 @@ fn check(ok: bool, what: &str, got: &impl Debug) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{what}: got {got:?}"))
+    }
+}
+
+/// A ⌘-`key` key-down event for `window`.
+fn command_key(window: &NSWindow, key: &str) -> Result<Retained<NSEvent>, String> {
+    let key = NSString::from_str(key);
+    NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+        NSEventType::KeyDown,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags::Command,
+        0.0,
+        window.windowNumber(),
+        None,
+        &key,
+        &key,
+        false,
+        0,
+    )
+    .ok_or_else(|| "no key event".to_string())
+}
+
+/// `js`'s value once `done` says so (polled), within the settle limit.
+async fn settle_value(
+    b: &Browser,
+    ex: &BackgroundExecutor,
+    js: &str,
+    done: impl Fn(&Value) -> bool,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + SETTLE_LIMIT;
+    loop {
+        let value = ask(b, ex, js).await?;
+        if done(&value) {
+            return Ok(value);
+        }
+        if Instant::now() > deadline {
+            return Err(format!("{js}: still {value}"));
+        }
+        ex.timer(LOAD_POLL).await;
     }
 }
 
