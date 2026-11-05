@@ -20,6 +20,8 @@ use gpui_platform::current_platform;
 use crate::appearance::Appearance;
 use crate::restore::RestoreMode;
 use crate::split_tree::Axis;
+use crate::status::Status;
+use crate::status_mark::{self, BREATHS_PER_BEAT, TURNS_PER_BEAT};
 use crate::terminal_view::hsla;
 use crate::theme::{self, Theme, UiColors};
 use crate::ui_tokens::{self, contrast};
@@ -177,6 +179,8 @@ const SCENES: &[(&str, fn())] = &[
     ("smoke", smoke),
     ("tokens", tokens),
     ("window", window_scenes),
+    ("marks", marks),
+    ("sidebar-marks", sidebar_marks),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -710,6 +714,7 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         restore: RestoreMode::default(),
         scripting: false,
         persistent: false,
+        animations: true,
     }
 }
 
@@ -806,5 +811,191 @@ fn check_window(
             assert!(is_bg(x, dy as f32), "{scene}-{slug}: top padding at x {x}");
         }
         x += 1.0;
+    }
+}
+
+/// Mark board layout, in points: margin, label column, header row and each (square) cell.
+const BOARD_MARGIN: f32 = 16.0;
+const BOARD_LABEL: f32 = 88.0;
+const BOARD_HEADER: f32 = 40.0;
+const BOARD_CELL: f32 = 48.0;
+/// Where in its own cycle (a turn, a breath, the pop) each column is.
+const BOARD_PHASES: [f32; 3] = [0.0, 0.33, 0.66];
+/// The board's rows: (label, status, whether it's the pop).
+const BOARD_ROWS: [(&str, Status, bool); 5] = [
+    ("idle", Status::Idle, false),
+    ("working", Status::Working, false),
+    ("waiting", Status::Waiting, false),
+    ("done", Status::Done, false),
+    ("done pop", Status::Done, true),
+];
+
+/// Every status mark at three points of its cycle, at 12 px (1×) and 24 px (2×), on the sidebar:
+/// `marks-<theme>` with motion on and `marks-still-<theme>` with it off. Panics unless the moving
+/// marks (Working, Waiting, the pop) differ between columns with motion on and are identical
+/// with it off.
+fn marks() {
+    let dims = size(
+        px(2.0 * BOARD_MARGIN + BOARD_LABEL + 6.0 * BOARD_CELL),
+        px(2.0 * BOARD_MARGIN + BOARD_HEADER + 5.0 * BOARD_CELL),
+    );
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for still in [false, true] {
+            let scene = if still { "marks-still" } else { "marks" };
+            let build = move |_: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_reduce_motion(still);
+                let mono = mono_font(cx);
+                cx.new(|_| MarkBoard {
+                    ui: theme.ui(),
+                    mono,
+                })
+                .into()
+            };
+            let path = shoot(scene, slug, &theme, dims, build);
+            let shot = render(&theme, dims, build);
+            check_marks(&shot, dims, still, &format!("{scene}-{slug}"));
+            println!("ui-shots: {}", path.display());
+        }
+    }
+}
+
+/// Panics unless each moving row's 1× and 2× cells change across the columns exactly when
+/// motion is on.
+fn check_marks(shot: &Shot, dims: Size<Pixels>, still: bool, name: &str) {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let cell = |row: usize, col: usize| -> Vec<u8> {
+        let x0 = ((BOARD_MARGIN + BOARD_LABEL + col as f32 * BOARD_CELL) * scale) as usize;
+        let y0 = ((BOARD_MARGIN + BOARD_HEADER + row as f32 * BOARD_CELL) * scale) as usize;
+        let side = (BOARD_CELL * scale) as usize;
+        let mut out = Vec::new();
+        for y in y0..y0 + side {
+            let i = (y * shot.width as usize + x0) * 4;
+            out.extend_from_slice(&shot.rgba[i..i + side * 4]);
+        }
+        out
+    };
+    for (row, (label, status, pop)) in BOARD_ROWS.iter().enumerate() {
+        let moves = *pop || matches!(status, Status::Working | Status::Waiting);
+        for first in [0, 3] {
+            let a = cell(row, first);
+            assert!(
+                a.chunks(4).any(|p| p != &a[..4]),
+                "{name}: {label} is blank"
+            );
+            let differs = cell(row, first + 1) != a || cell(row, first + 2) != a;
+            assert_eq!(
+                differs,
+                moves && !still,
+                "{name}: {label} columns {first}.."
+            );
+        }
+    }
+}
+
+struct MarkBoard {
+    ui: UiColors,
+    mono: Font,
+}
+
+impl Render for MarkBoard {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let ui = self.ui;
+        let text = |t: String| {
+            div()
+                .font(self.mono.clone())
+                .text_size(px(11.0))
+                .text_color(hsla(ui.text_dim))
+                .child(t)
+        };
+        // A line naming each size (12 px is 1×, 24 px what it is on a 2× screen), then the phases.
+        let sizes = div()
+            .flex()
+            .h(px(BOARD_HEADER / 2.0))
+            .child(div().w(px(BOARD_LABEL)))
+            .children(["12 px (1×)", "24 px (2×)"].map(|t| {
+                div()
+                    .w(px(3.0 * BOARD_CELL))
+                    .flex()
+                    .justify_center()
+                    .child(text(t.to_string()))
+            }));
+        let phases = div()
+            .flex()
+            .h(px(BOARD_HEADER / 2.0))
+            .child(div().w(px(BOARD_LABEL)).child(text("phase".to_string())))
+            .children((0..2).flat_map(|_| {
+                BOARD_PHASES.map(|p| {
+                    div()
+                        .w(px(BOARD_CELL))
+                        .flex()
+                        .justify_center()
+                        .child(text(format!("{p:.2}")))
+                })
+            }));
+        let rows = BOARD_ROWS.map(|(label, status, pop)| {
+            let cells = [12.0, 24.0].into_iter().flat_map(move |side| {
+                BOARD_PHASES.map(move |own| {
+                    // The shared clock at which this mark is `own` of the way through its cycle.
+                    let phase = match status {
+                        Status::Working => own / TURNS_PER_BEAT,
+                        Status::Waiting => own / BREATHS_PER_BEAT,
+                        _ => 0.0,
+                    };
+                    let popping = pop.then_some(own);
+                    div()
+                        .size(px(BOARD_CELL))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(status_mark::mark(status, &ui, phase, popping, px(side)))
+                })
+            });
+            div()
+                .flex()
+                .items_center()
+                .h(px(BOARD_CELL))
+                .child(div().w(px(BOARD_LABEL)).child(text(label.to_string())))
+                .children(cells)
+        });
+        div()
+            .size_full()
+            .p(px(BOARD_MARGIN))
+            .bg(hsla(ui.sidebar_background))
+            .child(sizes)
+            .child(phases)
+            .children(rows)
+    }
+}
+
+/// The real sidebar with the new marks: sessions in every status across two groups.
+fn sidebar_marks() {
+    let dims = size(px(480.0), px(320.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                let api = std::path::Path::new("/Users/me/code/api");
+                let web = std::path::Path::new("/Users/me/code/web");
+                let sessions = [
+                    ("claude", api, Status::Working),
+                    ("codex", api, Status::Waiting),
+                    ("tests", api, Status::Done),
+                    ("shell", api, Status::Idle),
+                    ("agent", web, Status::Working),
+                    ("server", web, Status::Idle),
+                ];
+                for (i, (name, project, status)) in sessions.into_iter().enumerate() {
+                    ws.open_shot_session(name, project, SHELL_TEXT, None, window, cx);
+                    ws.sessions.get_mut(i).expect("just opened").status = status;
+                }
+                ws
+            })
+            .into()
+        };
+        let path = shoot("sidebar-marks", slug, &theme, dims, build);
+        println!("ui-shots: {}", path.display());
     }
 }

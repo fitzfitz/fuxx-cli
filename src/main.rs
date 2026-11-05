@@ -34,6 +34,7 @@ mod prefs;
 mod presets;
 mod private_socket;
 mod pty;
+mod reduce_motion;
 mod restore;
 mod session_list;
 mod settings;
@@ -42,6 +43,7 @@ mod ssh_control;
 mod ssh_hosts;
 mod ssh_target;
 mod status;
+mod status_mark;
 mod terminal;
 mod terminal_view;
 mod theme;
@@ -489,6 +491,8 @@ fn main() {
             // agent submenu is built from its presets, and `persistent-sessions` decides who
             // runs the sessions.
             cx.set_global(appearance::load(cx));
+            // Motion follows the `animations` setting and macOS Reduce motion from here on.
+            reduce_motion::watch(cx);
             let persistent = cx.global::<appearance::Appearance>().persistent;
             if persistent {
                 cx.bind_keys([KeyBinding::new("alt-cmd-q", QuitAndEndSessions, None)]);
