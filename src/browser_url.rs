@@ -19,7 +19,10 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
     if input.eq_ignore_ascii_case("about:blank") {
         return Ok("about:blank".to_string());
     }
-    if let Some((scheme, rest)) = input.split_once("://") {
+    // Only a leading `scheme://` is one: a `://` after a `/`, `?` or `#` is in the path.
+    if let Some((scheme, rest)) = input.split_once("://")
+        && !scheme.contains(['/', '?', '#'])
+    {
         let scheme = scheme.to_ascii_lowercase();
         return if (scheme == "http" || scheme == "https") && !rest.is_empty() {
             Ok(format!("{scheme}://{rest}"))
@@ -28,14 +31,18 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
         };
     }
     // No `://`: a scheme-like prefix (`javascript:`, `about:`, `data:`) is refused, but
-    // `host:port` is a bare host. A scheme is letters, digits, `+`, `-`, `.` and not a port.
+    // `host:port` is a bare host. A port is digits, at least one: `javascript:` alone is no
+    // host with an empty port.
     let authority = input.split(['/', '?', '#']).next().unwrap_or("");
     if let Some((before, after)) = authority.split_once(':')
         && !before.is_empty()
         && !before.starts_with('[')
-        && !after.chars().all(|c| c.is_ascii_digit())
+        && (after.is_empty() || !after.chars().all(|c| c.is_ascii_digit()))
     {
         return Err(ONLY_HTTP.to_string());
+    }
+    if authority.is_empty() {
+        return Err("an address needs a host".to_string());
     }
     let scheme = if is_local(host_of(authority)) {
         "http"
@@ -140,6 +147,66 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_scheme_with_nothing_after_it_is_refused() {
+        // Read as a bare host, these would be `https://javascript:` and so on.
+        for bad in ["javascript:", "about:", "data:", "http:/x", "localhost:"] {
+            assert_eq!(
+                normalize_url(bad).unwrap_err(),
+                "only http and https addresses can be opened",
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_leading_scheme_counts_as_one() {
+        // A `://` in the path or query isn't the address's scheme.
+        assert_eq!(
+            normalize_url("example.com/go?to=http://x").unwrap(),
+            "https://example.com/go?to=http://x"
+        );
+        assert_eq!(
+            normalize_url("localhost:3000/#/http://x").unwrap(),
+            "http://localhost:3000/#/http://x"
+        );
+        // Nor does it smuggle another scheme through.
+        assert_eq!(
+            normalize_url("javascript:/x?http://y").unwrap_err(),
+            "only http and https addresses can be opened"
+        );
+    }
+
+    #[test]
+    fn the_named_risks() {
+        for bad in [
+            "JaVaScRiPt:alert(1)",
+            "JAVASCRIPT://x",
+            "https:\\\\x",
+            "http:/x",
+        ] {
+            assert_eq!(
+                normalize_url(bad).unwrap_err(),
+                "only http and https addresses can be opened",
+                "{bad}"
+            );
+        }
+        // No host at all.
+        assert_eq!(
+            normalize_url("//host").unwrap_err(),
+            "an address needs a host"
+        );
+        assert_eq!(normalize_url("/x").unwrap_err(), "an address needs a host");
+        // A leading tab is trimmed like a space: what follows decides.
+        assert_eq!(normalize_url("\thttps://a.b").unwrap(), "https://a.b");
+        assert_eq!(
+            normalize_url("\tjavascript:alert(1)").unwrap_err(),
+            "only http and https addresses can be opened"
+        );
+        // Credentials stay (the spec keeps them); WebKit shows the real host, `evil`.
+        assert_eq!(normalize_url("http://a@evil").unwrap(), "http://a@evil");
     }
 
     #[test]
