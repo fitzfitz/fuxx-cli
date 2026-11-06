@@ -1,20 +1,20 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11c
-status: planned
+status: built
 updated: 2026-11-06
 ---
 
 # M11c Plan — Native notifications
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 | At a glance | |
 |---|---|
 | **Milestone note** | [[55 - Milestone 11c - Native Notifications]] (the spec) |
-| **Status** | ⬜ Planned 2026-11-06 |
-| **Tasks done** | 3 / 7 (Tasks 0–2); Task 3b added (your request) |
-| **▶ Pick up here** | Task 3 (building), then Task 3b: the default name ╭∩╮ |
+| **Status** | 🟨 Built and reviewed 2026-11-06 (742 tests); on-screen check pending |
+| **Tasks done** | 6 / 7 (Tasks 0, 1, 2, 3, 3b, 5); Task 4 is your check |
+| **▶ Pick up here** | Task 4: your on-screen check — the list is in [[55 - Milestone 11c - Native Notifications]], "On-screen checklist (pending)" |
 | **Decisions used** | Yours (2026-11-06): extend M11 with native notifications; go. Everything else: AI's call, in note 55 "Settled before planning". |
 | **Needs your eyes** | 👀 Task 0 (clicks) and Task 4 (on screen) |
 
@@ -84,7 +84,7 @@ A throwaway probe on a throwaway branch (as the first test), run by the controll
   **Ruling: both routes** — Task 2 handles any click the window gets (incl. at launch); Task 3 makes the service pass
   its clicks on.
 
-### Task 1: Native banners with fallback — ⬜
+### Task 1: Native banners with fallback — ✅
 
 **Files:**
 - Create: `src/native_notify.rs`
@@ -103,19 +103,19 @@ A throwaway probe on a throwaway branch (as the first test), run by the controll
   `Some(Allowed)`); `pub fn fire(summary: &str, body: &str, terminal: Option<u64>)` — same blocking, best-effort
   contract as today; a `Native` post error → the `osascript` banner.
 
-- [ ] **Step 1: failing tests** — `is_bundled_id` (`Some(BUNDLE_ID)` true; `None`, `Some("com.apple.ScriptEditor2")`,
+- [x] **Step 1: failing tests** — `is_bundled_id` (`Some(BUNDLE_ID)` true; `None`, `Some("com.apple.ScriptEditor2")`,
   `Some("")` false); `route` (bundled × each `Permission` × `None`: only bundled + Allowed → `Native`);
   `request_id` / `terminal_of` round-trip (`Some(3)`, n 7 → `"fuxx-s3-7"` → `Some(3)`; `None` → `"fuxx-7"` → `None`;
   `"fuxx-sx-1"`, `"other"`, `""` → `None`).
-- [ ] **Step 2: run** `cargo test --bin fuxx native_notify` and `cargo test --bin fuxx notifier` → FAIL (not defined).
-- [ ] **Step 3: implement** `native_notify.rs` (title and body only; completion handlers waited for on a channel with
+- [x] **Step 2: run** `cargo test --bin fuxx native_notify` and `cargo test --bin fuxx notifier` → FAIL (not defined).
+- [x] **Step 3: implement** `native_notify.rs` (title and body only; completion handlers waited for on a channel with
   a 2 s timeout) and `notifier::fire(.., terminal)`; callers pass the terminal: workspace.rs the session's id,
   workspace_api.rs the entry's `terminal` (the caller filtered to open ones), daemon.rs `session.id()`.
-- [ ] **Step 4: run** `cargo test` → all pass (incl. `daemon_should_notify`'s tests unchanged);
+- [x] **Step 4: run** `cargo test` → all pass (incl. `daemon_should_notify`'s tests unchanged);
   `cargo clippy --all-targets` and with `--features ui-shots`: no new warnings; `cargo fmt --check`.
-- [ ] **Step 5: commit** `feat(m11c): native banners from the app bundle, osascript fallback`.
+- [x] **Step 5: commit** `feat(m11c): native banners from the app bundle, osascript fallback`.
 
-### Task 2: Clicks show the terminal — ⬜
+### Task 2: Clicks show the terminal — ✅
 
 **Files:**
 - Modify: `src/native_notify.rs` (the delegate), `src/main.rs` (install at launch, GUI path only), `src/workspace.rs`
@@ -132,17 +132,17 @@ A throwaway probe on a throwaway branch (as the first test), run by the controll
 - A click: `cx.activate(true)`; then `Some(sN)` → `jump_to_notification(sN)`; `None` (a script's banner from outside
   fuxx's terminals) → fuxx only comes forward.
 
-- [ ] **Step 1: failing tests** — `PendingShow`: click while not restoring → shown now; click while restoring → held,
+- [x] **Step 1: failing tests** — `PendingShow`: click while not restoring → shown now; click while restoring → held,
   `restored()` returns it once, then `None`; two clicks while restoring → the later one. ui-shot `banner-click`: two
   workspaces, the second's second tab is a known `sN`; a click for it selects that workspace, pane and tab and gives it
   the keyboard; a click for an `sN` that's closed changes nothing.
-- [ ] **Step 2: run** the tests and `cargo run --features ui-shots -- __ui-shots banner` → FAIL.
-- [ ] **Step 3: implement**; the click reaches the `Workspace` through a channel polled by a GPUI task (the scripting
+- [x] **Step 2: run** the tests and `cargo run --features ui-shots -- __ui-shots banner` → FAIL.
+- [x] **Step 3: implement**; the click reaches the `Workspace` through a channel polled by a GPUI task (the scripting
   socket's pattern in `main.rs`).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, full `__ui-shots` → all ok.
-- [ ] **Step 5: commit** `feat(m11c): a banner click shows its terminal`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, full `__ui-shots` → all ok.
+- [x] **Step 5: commit** `feat(m11c): a banner click shows its terminal`.
 
-### Task 3: Background-service banners — ⬜ (both routes, from Task 0)
+### Task 3: Background-service banners — ✅ (both routes, from Task 0)
 
 **Files:** Modify `src/daemon.rs` (delegate, pending show, main-thread wait), `src/mux_proto.rs` (`Frame::Show`),
 `src/workspace_daemon.rs` (apply a `Show`), `src/native_notify.rs` (a delegate usable without the app), `Cargo.toml`
@@ -156,12 +156,12 @@ A throwaway probe on a throwaway branch (as the first test), run by the controll
   `join`, `daemon.rs:~436`): wait in slices of the main `NSRunLoop` (≤ 0.25 s) until the tick thread has finished, so
   the delegate's main-queue callbacks run (Task 0's probe got clicks only while pumping it).
 - The window applies a `Show` through `PendingShow` (Task 2), so a `Show` during the restore lands after it.
-- [ ] Tests: `Frame::Show` round-trip; the service's pending-show rule (pure: attached → send now; none → hold, later
+- [x] Tests: `Frame::Show` round-trip; the service's pending-show rule (pure: attached → send now; none → hold, later
   click replaces, `Hello` takes it once); the window applying a `Show` via `PendingShow`; the existing daemon tests
   (stop, idle exit, reap) still pass with the run-loop wait. `cargo test`, clippy, fmt, full `__ui-shots`.
-- [ ] Commit `feat(m11c): background banners land on their terminal`.
+- [x] Commit `feat(m11c): background banners land on their terminal`.
 
-### Task 3b: The default name becomes ╭∩╮ — ⬜ (added 2026-11-06, your request)
+### Task 3b: The default name becomes ╭∩╮ — ✅ (added 2026-11-06, your request)
 
 Your words: "Change the new tab, new workspace title from the emoji to ╭∩╮".
 
@@ -172,16 +172,16 @@ Your words: "Change the new tab, new workspace title from the emoji to ╭∩╮
   data that merely uses 🖕 as a typed name. Names you gave stay; unnamed tabs and workspaces (restored ones too) show
   ╭∩╮, since the default is applied when shown, not stored.
 - Comments naming the default (`workspace.rs` "else 🖕", "often 🖕") follow the new value.
-- [ ] Tests: `groups` `auto_name(None, None, None) == "╭∩╮"`; the daemon's `notification_summary` default test →
+- [x] Tests: `groups` `auto_name(None, None, None) == "╭∩╮"`; the daemon's `notification_summary` default test →
   `"fuxx — ╭∩╮"`; a ui-shot of a new workspace's row and tab showing ╭∩╮ readably (Mocha + Latte); `cargo test`,
   clippy, fmt, full `__ui-shots`.
-- [ ] Commit `feat(m11c): new tabs and workspaces are named ╭∩╮`.
+- [x] Commit `feat(m11c): new tabs and workspaces are named ╭∩╮`.
 
-### Task 4: On screen — 👀 (you)
+### Task 4: On screen — 👀 pending (you)
 
 The note's success check plus Review Focus 1–3, as a numbered list in note 55 ("On-screen checklist").
 
-### Task 5: Docs — ⬜
+### Task 5: Docs — ✅
 
 Note 55 (what was built, rulings, checklist), roadmap, Plan Tracker, Progress Log, STRUCTURE.md (`native_notify.rs`),
 the M4 note's D5 line, and the memory `macos-notify-rust-broken` if the tests taught more.
@@ -190,6 +190,24 @@ the M4 note's D5 line, and the memory `macos-notify-rust-broken` if the tests ta
 
 | Task | Commits | Tests | Review |
 |---|---|---|---|
+| 0 Click test | spike 368e8c7 (deleted) | you clicked 3 cases | — (result in note 55, item 1) |
+| 1 Native banners | b1c3a40..ca12043 | 726 | Approved (sonnet), 4 Minor |
+| 2 Clicks show the terminal | ca12043..f1dbfa7 | 729; banner-click ui-shot | Approved (opus), 4 Minor |
+| 3 Background-service banners | c39f778..70346c4 | 737 | Approved (opus), 5 Minor |
+| 3b Default name ╭∩╮ | 70346c4..d141ca9 | 737; default-name ui-shot | Approved (sonnet), 2 Minor |
+| Final whole-branch | 3b80a8d..f855088 | 742; 29 ui-shots scenes | With fixes (opus): 2 Important (banner ids repeated across runs → a click on an old banner showed an unrelated terminal; a new banner could replace an old one), 5 Minor → one fix pass (opus) → re-review 6/6 addressed (sonnet) |
+
+## Deferred minors
+
+- A post that times out at 2 s and is delivered later can still show both banners (rare; withdrawn first).
+- A banner posted while the background service is still starting carries no terminal: its click only brings fuxx
+  forward.
+- A held click (background service) never expires; a Show to a window that is closing is dropped.
+- Cosmetic: a duplicate log line; `run_loop_slice`'s doc; the ids' parser accepts a leading `+`; the banner-click
+  scene's closed-tab id; the ╭∩╮ glyph is checked by eye.
+
+Rulings: in the M11c section of the ledger-derived list in [[55 - Milestone 11c - Native Notifications]] ("What was
+built").
 
 ## Related
 

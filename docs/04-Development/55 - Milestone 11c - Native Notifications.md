@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: planned
+status: built
 ---
 
 # 55 - Milestone 11c - Native Notifications
 
-**Status:: ⬜ Planned 2026-11-06 (your go).**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11c Plan - Native Notifications]]
+**Status:: 🟨 Built and reviewed 2026-11-06; on-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11c Plan - Native Notifications]]
 **Moved from M12:** "notifications named fuxx" and "clicking a notification switches to that session" (D5, 2026-10-26),
 because the test below showed neither needs the paid Apple signature.
 
@@ -86,6 +86,31 @@ workspace, with fuxx in the background, and with the window closed and the servi
 `tccutil reset All io.github.fitzfitz.fuxx`, AI's suggestion): the question appears at launch; "Don't Allow" → the
 old banners still come; allowing it later in System Settings → fuxx banners from then on. `cargo run` still notifies
 (old banners).
+
+## What was built
+
+- **`native_notify.rs`**: fuxx's banners through Apple's UserNotifications framework, only from the app bundle
+  (`io.github.fitzfitz.fuxx`); permission asked once at launch (alerts only, never waited for); each banner's id names
+  its terminal and the run that numbered it; the click delegate (one object, any thread) for the window and the
+  background service.
+- **`notifier::fire`** decides per banner: fuxx's own when macOS allows it, otherwise (or if posting fails or takes over
+  2 s) today's `osascript` banner — exactly one either way. Its three callers pass the terminal.
+- **Clicks in the window** go through `PendingShow`: shown at once, or held until a restore finishes (a click that
+  opened fuxx), then `jump_to_notification`. A click from an earlier run only brings fuxx forward.
+- **Clicks in the background service** (no window open): it holds the terminal, opens fuxx as a backup to macOS doing
+  so, and sends the window a new `Show` message right after it connects. Its main thread now runs the macOS event loop
+  in short slices so it can hear clicks. Older windows and services ignore the new message.
+- **Default name ╭∩╮** for new tabs and workspaces (Task 3b, your request).
+
+### Rulings you should confirm
+
+1. Permission is asked at launch, not at the first notification (the background service can't ask).
+2. When macOS refuses fuxx's banner for any reason, you get the old "Script Editor" banner — never silence.
+3. No sound, as before.
+4. A banner click doesn't change the 🔔 list's unread count.
+5. A click on a banner from before a restart (or from a background service that has since restarted) only brings
+   fuxx forward — the terminal numbers start again, so it can't know which terminal that was.
+6. The browser bar keeps its 🖕 mark; only tab and workspace names became ╭∩╮.
 
 ## On-screen checklist (pending)
 

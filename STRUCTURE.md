@@ -70,7 +70,7 @@ src/
 ├── workspace.rs          M3 · root view: sidebar, active pane, session lifecycle, actions
 │                         M4 · per-session status rings, window focus, notifications
 │                         M7 · groups, rename, drag/move, presets, save/restore   M8 · split layouts
-├── groups.rs             M7 · names (🖕 default), group labels/rows, rolled-up ring, ordering rules
+├── groups.rs             M7 · names (╭∩╮ default, M11c), group labels/rows, rolled-up ring, ordering rules
 ├── name_input.rs         M7 · the rename text box (emoji / IME input)
 ├── presets.rs            M7 · agent presets (claude / opencode / codex + agent-preset lines)
 ├── restore.rs            M7 · session-restore setting, sessions.json format   M8 · layouts
@@ -141,7 +141,8 @@ src/
 ├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row   Follow-up · vertical section tabs
 │
 │   notifications
-└── notifier.rs           M4 · osascript notifications, escaping, focus-aware rule
+├── native_notify.rs      M11c · fuxx's own banners (UserNotifications, app bundle only), banner ids (terminal + run), the click delegate, PendingShow
+└── notifier.rs           M4 · picks fuxx's banner or the osascript one (M11c), escaping, focus-aware rule
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
