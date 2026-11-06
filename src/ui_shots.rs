@@ -209,6 +209,7 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar-marks", sidebar_marks),
     ("cached-panes", cached_panes),
     ("sidebar", sidebar_scenes),
+    ("sidebar-button", sidebar_button_scenes),
     ("splits", split_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
@@ -1892,5 +1893,92 @@ fn preferences_scenes() {
             "{scene}: the preview's agent box isn't in the theme's magenta"
         );
         println!("ui-shots: {}", path.display());
+    }
+}
+
+/// The sidebar button in the top band, as small windows of the top left corner, in both themes:
+/// `sidebar-button-shown`, `-hidden`, `-hover` (the pointer over it) and `-sliding` (a hide
+/// 60 ms in, the sidebar partly out and over the pane column).
+///
+/// Panics unless the icon is drawn in the same place shown and hidden, the hover paints the
+/// hit area, and mid-slide the sidebar has left the middle of the window (it is only partly out).
+fn sidebar_button_scenes() {
+    use crate::sidebar_toggle::{Slide, button_origin};
+    use gpui::Modifiers;
+    use std::time::{Duration, Instant};
+
+    let dims = size(px(360.0), px(100.0));
+    let (bx, by) = button_origin(false);
+    // The hit area's left margin (inside it, outside the icon), and the icon's left edge.
+    let (margin, edge) = (point(bx + 1.5, by + 12.0), point(bx + 4.75, by + 12.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let mut shots = Vec::new();
+        for scene in ["shown", "hidden", "hover", "sliding"] {
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = sidebar_workspace(&EIGHT, None, 0, &[], window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    ws.sidebar.hidden = scene == "hidden" || scene == "sliding";
+                    if scene == "sliding" {
+                        ws.slide = Some(Slide {
+                            showing: false,
+                            since: Instant::now() - Duration::from_millis(60),
+                        });
+                    }
+                    ws
+                });
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                if scene == "hover" {
+                    let at = point(px(bx + 12.0), px(by + 12.0));
+                    cx.simulate_mouse_move(window, at, None, Modifiers::none());
+                }
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+            let path = dir.join(format!("sidebar-button-{scene}-{slug}.png"));
+            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            println!("ui-shots: {}", path.display());
+            shots.push((scene, shot));
+        }
+        let at = |scene: &str, p: gpui::Point<f32>| {
+            let (_, shot) = shots.iter().find(|(s, _)| *s == scene).expect("shot");
+            pixel_at(shot, dims, p.x, p.y)
+        };
+        let bg = |rgb: alacritty_terminal::vte::ansi::Rgb| [rgb.r, rgb.g, rgb.b];
+        // Same place in both states: the icon's left edge is not the band's background.
+        assert_ne!(
+            at("shown", edge),
+            bg(ui.sidebar_background),
+            "{slug}: icon shown"
+        );
+        assert_ne!(
+            at("hidden", edge),
+            bg(theme.background),
+            "{slug}: icon hidden"
+        );
+        // Hover: the hit area is panel_hover, not the sidebar's colour.
+        assert_eq!(
+            at("shown", margin),
+            bg(ui.sidebar_background),
+            "{slug}: not hovered"
+        );
+        assert_eq!(at("hover", margin), bg(ui.panel_hover), "{slug}: hovered");
+        let (inside, beyond) = (point(30.0, 80.0), point(150.0, 80.0));
+        assert_eq!(
+            at("sliding", beyond),
+            bg(theme.background),
+            "{slug}: slid out"
+        );
+        assert_ne!(
+            at("sliding", inside),
+            bg(theme.background),
+            "{slug}: still partly in"
+        );
     }
 }

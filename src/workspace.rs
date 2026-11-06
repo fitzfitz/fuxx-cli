@@ -45,6 +45,7 @@ use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
 use crate::sidebar::{self, SidebarState};
+use crate::sidebar_toggle::{self, Slide};
 use crate::split_tree::{self, Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
@@ -274,6 +275,8 @@ pub struct Workspace {
     pub(crate) sidebar: SidebarState,
     /// The top band was pressed and the mouse hasn't moved since: the next move drags the window.
     band_pressed: bool,
+    /// The sidebar sliding in or out (`sidebar_toggle`); none when it isn't moving.
+    pub(crate) slide: Option<Slide>,
 }
 
 impl Workspace {
@@ -370,6 +373,7 @@ impl Workspace {
             deferred_ticking: false,
             sidebar: SidebarState::new(),
             band_pressed: false,
+            slide: None,
         }
     }
 
@@ -1547,7 +1551,8 @@ impl Workspace {
 
     /// The window's top band, the traffic lights' place: pressing it and moving drags the
     /// window, and a double-click does what the macOS setting "Double-click a window's title bar
-    /// to" says. None in full screen, which has no traffic lights.
+    /// to" says. In full screen, which has no traffic lights, it is an empty strip that holds
+    /// the sidebar button, and moves nothing.
     pub(crate) fn render_top_band(
         &self,
         id: &'static str,
@@ -1555,7 +1560,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         if window.is_fullscreen() {
-            return None;
+            return Some(
+                div()
+                    .id(id)
+                    .flex_none()
+                    .w_full()
+                    .h(px(TOP_BAND))
+                    .into_any_element(),
+            );
         }
         // As Zed's own title bar does: the move starts on the first mouse move after a press,
         // so a plain click (or double-click) stays a click.
@@ -1592,8 +1604,13 @@ impl Workspace {
 
     /// ⌘\: hide or show the sidebar. Hiding it during a rename gives the keyboard back to the
     /// terminal, which ends the rename (as clicking away from it does).
-    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar.hidden = !self.sidebar.hidden;
+        // With motion on, the sidebar slides; `render` runs the frames.
+        self.slide = (!cx.reduce_motion()).then(|| Slide {
+            showing: !self.sidebar.hidden,
+            since: Instant::now(),
+        });
         // The "+ New" menu hangs off the sidebar's footer; hidden, it can't stay open.
         self.sidebar.new_menu = false;
         if self.sidebar.hidden && self.renaming.is_some() {
@@ -1685,8 +1702,38 @@ impl Render for Workspace {
             divider: hsla(ui.divider),
             accent: hsla(ui.accent),
         };
-        // The top band is the sidebar's top; with the sidebar hidden, the pane area's.
-        let sidebar = (!self.sidebar.hidden).then(|| self.render_sidebar(ui, window, cx));
+        // The slide in progress: how much of the sidebar shows. It ends on the first frame past
+        // its time; until then every frame asks for the next.
+        self.slide = self
+            .slide
+            .filter(|s| s.since.elapsed() < sidebar_toggle::SLIDE);
+        let slide = self
+            .slide
+            .map(|s| sidebar_toggle::shown_fraction(s.since.elapsed(), s.showing));
+        if slide.is_some() {
+            window.request_animation_frame();
+        }
+        // The top band is the sidebar's top; with the sidebar hidden, the pane area's. Sliding,
+        // the sidebar is laid over the pane column (which already has its final width, so the
+        // terminals re-fit once), not beside it.
+        let sidebar_node =
+            (!self.sidebar.hidden || slide.is_some()).then(|| self.render_sidebar(ui, window, cx));
+        let sidebar_width = self.sidebar.width;
+        let (sidebar, sliding_sidebar) = match (sidebar_node, slide) {
+            (Some(node), Some(shown)) => (
+                None,
+                Some(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(px(-(1.0 - shown) * sidebar_width))
+                        .h_full()
+                        .child(node),
+                ),
+            ),
+            (node, _) => (node, None),
+        };
+        let button = self.render_sidebar_button(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
         self.refresh_switcher(cx);
         let pane_band = self
@@ -1786,6 +1833,9 @@ impl Render for Workspace {
                     .flex_col()
                     .flex_1()
                     .h_full()
+                    .when(slide.is_some() && !self.sidebar.hidden, |column| {
+                        column.ml(px(sidebar_width))
+                    })
                     .children(pane_band)
                     .child(
                         div()
@@ -1797,6 +1847,8 @@ impl Render for Workspace {
                             .children(self.render_panes(colors, ui, cx)),
                     ),
             )
+            .children(sliding_sidebar)
+            .child(button)
             // The host picker, the switcher and the address box: over everything, centred near
             // the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {

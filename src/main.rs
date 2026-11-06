@@ -41,6 +41,7 @@ mod restore;
 mod session_list;
 mod settings;
 mod sidebar;
+mod sidebar_toggle;
 mod split_tree;
 mod ssh_control;
 mod ssh_hosts;
