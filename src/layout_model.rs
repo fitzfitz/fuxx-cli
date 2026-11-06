@@ -284,7 +284,6 @@ impl Model {
     }
 
     /// A new tab at the end of `pane`'s bar; it gets the focus. None as for `split`.
-    #[allow(dead_code)] // for `fuxx new --tab` (this task's next step)
     pub fn add_tab(&mut self, pane: PaneId, kind: TabKind) -> Option<Opened> {
         let w = self.index_of_pane(pane)?;
         if self.shown_elsewhere(&kind, None) {

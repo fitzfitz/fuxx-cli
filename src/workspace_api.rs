@@ -420,9 +420,12 @@ impl Workspace {
             .enumerate()
             .map(|(i, s)| {
                 let label = s.label();
+                let (workspace, pane) = self.place_of(i);
                 list_entry(&ListEntry {
                     id: s.id,
                     number: i + 1,
+                    workspace,
+                    pane,
                     name: &label,
                     title: s.title.as_deref(),
                     status: s.status,
@@ -442,6 +445,22 @@ impl Workspace {
             })
             .collect();
         Value::Array(entries)
+    }
+
+    /// Session `index`'s workspace's place in the sidebar and its pane's place in that
+    /// workspace's reading order, each from 1 (0: not shown, never by the model's rules).
+    fn place_of(&self, index: usize) -> (usize, usize) {
+        let Some(ws) = self.workspace_of(index) else {
+            return (0, 0);
+        };
+        let pane = self.pane_of(index).and_then(|pane| {
+            let leaves = self.model.workspace(ws)?.layout.leaves();
+            leaves.iter().position(|&p| p == pane)
+        });
+        (
+            self.workspace_number(ws).unwrap_or(0),
+            pane.map_or(0, |at| at + 1),
+        )
     }
 
     /// `target_index` for input, questions and waits: a lost session refuses them.
@@ -686,7 +705,8 @@ impl Workspace {
         .detach();
     }
 
-    /// `session.new`: a session like ⌘T / a preset, or with `split` a pane like ⌘D beside `of`.
+    /// `session.new`: a session like ⌘T / a preset (a workspace of its own), or with `split` a
+    /// pane like ⌘D beside `of`, or with `tab` a tab in `of`'s pane (M11b).
     /// A bad request is an error now; otherwise the reply goes to `conn` once the session is
     /// open (at once without the background service).
     fn api_new(
@@ -712,6 +732,7 @@ impl Workspace {
             None => None,
         };
         let split = opt_str(p, "split")?.map(split_axis).transpose()?;
+        let place = new_place(split, bool_param(p, "tab")?, opt_str(p, "of")?.is_some())?;
         let folder = opt_str(p, "folder")?.map(PathBuf::from);
         if let Some(dir) = &folder {
             check_folder(dir)?;
@@ -723,12 +744,9 @@ impl Workspace {
         let name = opt_str(p, "name")?
             .filter(|n| !n.is_empty())
             .map(str::to_string);
-        let of = match split {
-            Some(_) => Some(self.target_index(p, "of")?),
-            None if opt_str(p, "of")?.is_some() => {
-                return Err(ApiError::bad_request("of needs split"));
-            }
-            None => None,
+        let of = match place {
+            NewPlace::Split(_) | NewPlace::Tab => Some(self.target_index(p, "of")?),
+            NewPlace::Workspace => None,
         };
         let project = folder
             .or_else(|| of.and_then(|i| self.sessions.items()[i].project.clone()))
@@ -739,8 +757,9 @@ impl Workspace {
         // By id: the new session's row can push the previous one down.
         let previous = self.sessions.active().map(|s| s.id);
         if let Some(target) = ssh {
-            let place = match (split, of) {
-                (Some(axis), Some(of)) => Place::Split { of, axis },
+            let place = match (place, of) {
+                (NewPlace::Split(axis), Some(of)) => Place::Split { of, axis },
+                (NewPlace::Tab, Some(of)) => Place::Tab { of },
                 _ => Place::New,
             };
             let (conn, request_id) = (conn.clone(), request.id);
@@ -757,8 +776,9 @@ impl Workspace {
             self.open_ssh_then(target, place, Some(opened), window, cx);
             return Ok(());
         }
-        let at = match (split, of.and_then(|i| self.pane_of(i))) {
-            (Some(axis), Some(pane)) => At::Split(axis, pane),
+        let at = match (place, of.and_then(|i| self.pane_of(i))) {
+            (NewPlace::Split(axis), Some(pane)) => At::Split(axis, pane),
+            (NewPlace::Tab, Some(pane)) => At::Tab(pane),
             _ => At::New,
         };
         let launch = Launch {
@@ -811,6 +831,10 @@ impl Workspace {
 struct ListEntry<'a> {
     id: u64,
     number: usize,
+    /// Its workspace's place in the sidebar, from 1 (M11b).
+    workspace: usize,
+    /// Its pane's place in the workspace's reading order, from 1 (M11b).
+    pane: usize,
     name: &'a str,
     title: Option<&'a str>,
     status: Status,
@@ -826,6 +850,27 @@ struct ListEntry<'a> {
     ssh: Option<&'a str>,
     /// Its tab colour, by name (M11); left out when none.
     color: Option<TabColor>,
+}
+
+/// Where `session.new` opens a session (`new_place`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NewPlace {
+    Workspace,
+    Split(Axis),
+    Tab,
+}
+
+/// Where `session.new` opens a session, from its `split`, `tab` and whether it names `of`: a
+/// workspace of its own (⌘T), a pane beside `of` (⌘D), or a tab in `of`'s pane (M11b). `of`
+/// without the target's caller or focused default needs one of them; both can't be.
+fn new_place(split: Option<Axis>, tab: bool, of: bool) -> Result<NewPlace, ApiError> {
+    match (split, tab) {
+        (Some(_), true) => Err(ApiError::bad_request("split and tab can't be combined")),
+        (Some(axis), false) => Ok(NewPlace::Split(axis)),
+        (None, true) => Ok(NewPlace::Tab),
+        (None, false) if of => Err(ApiError::bad_request("of needs split or tab")),
+        (None, false) => Ok(NewPlace::Workspace),
+    }
 }
 
 /// The `ssh` param of `session.new` (`{ host, tmux }`): absent is a plain session.
@@ -857,6 +902,10 @@ fn list_entry(e: &ListEntry) -> Value {
         "note": e.note,
         "progress": e.progress.map(|(percent, label)| json!({ "percent": percent, "label": label })),
         "live": e.live,
+        "workspace": e.workspace,
+        "pane": e.pane,
+        // Every session is a terminal; browser tabs aren't sessions.
+        "kind": "terminal",
     });
     if let Some(host) = e.ssh {
         entry["ssh"] = json!(host);
@@ -1125,6 +1174,8 @@ mod tests {
         let e = ListEntry {
             id: 4,
             number: 2,
+            workspace: 1,
+            pane: 2,
             name: "api",
             title: Some("claude"),
             status: Status::Waiting,
@@ -1145,7 +1196,7 @@ mod tests {
                 "id": "s4", "number": 2, "name": "api", "title": "claude", "status": "waiting",
                 "project": "/x/api", "preset": "claude", "focused": true, "on_screen": true,
                 "note": "tests", "progress": {"percent": 40, "label": "build"},
-                "live": true,
+                "live": true, "workspace": 1, "pane": 2, "kind": "terminal",
             })
         );
         assert_eq!(
@@ -1183,6 +1234,8 @@ mod tests {
     #[test]
     fn list_entry_names_its_tab_color_only_when_set() {
         let e = ListEntry {
+            workspace: 1,
+            pane: 1,
             id: 4,
             number: 2,
             name: "api",
@@ -1236,6 +1289,8 @@ mod tests {
     #[test]
     fn list_shows_ssh_host_only_for_ssh() {
         let mut e = ListEntry {
+            workspace: 1,
+            pane: 1,
             id: 4,
             number: 2,
             name: "api",
@@ -1259,6 +1314,8 @@ mod tests {
     #[test]
     fn a_lost_session_is_listed_as_not_live_and_refuses_input() {
         let e = ListEntry {
+            workspace: 1,
+            pane: 1,
             id: 4,
             number: 2,
             name: "api",
@@ -1494,5 +1551,30 @@ mod tests {
                 .code,
             "not_found"
         );
+    }
+
+    #[test]
+    fn a_new_session_goes_in_a_workspace_a_pane_or_a_tab() {
+        use super::{NewPlace, new_place};
+        // As before: a workspace of its own, or a split (with or without of).
+        assert_eq!(new_place(None, false, false), Ok(NewPlace::Workspace));
+        assert_eq!(
+            new_place(Some(Axis::Row), false, true),
+            Ok(NewPlace::Split(Axis::Row))
+        );
+        assert_eq!(
+            new_place(Some(Axis::Column), false, false),
+            Ok(NewPlace::Split(Axis::Column))
+        );
+        // New: a tab in of's pane (or the caller's / focused one's).
+        assert_eq!(new_place(None, true, true), Ok(NewPlace::Tab));
+        assert_eq!(new_place(None, true, false), Ok(NewPlace::Tab));
+        // Not both; and of needs one of them.
+        let err = |r: Result<NewPlace, ApiError>| r.unwrap_err().message;
+        assert_eq!(
+            err(new_place(Some(Axis::Row), true, false)),
+            "split and tab can't be combined"
+        );
+        assert_eq!(err(new_place(None, false, true)), "of needs split or tab");
     }
 }

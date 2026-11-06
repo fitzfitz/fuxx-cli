@@ -226,11 +226,13 @@ fn schema(name: &str) -> Value {
                 "split": {
                     "type": "string",
                     "enum": ["right", "down"],
-                    "description": "Open it as a split pane beside a session. It is still a \
-                        new session, with its own sidebar row.",
+                    "description": "Open it as a split pane beside a session, in the same \
+                        workspace (sidebar row). It is still a new session, with its own id.",
                 },
-                "of": text("With split: the session to split (id, #N or name). Default: the \
-                    session this MCP server runs in."),
+                "tab": switch("Open it as a new tab in the pane of a session (not with \
+                    split). It is still a new session, with its own id."),
+                "of": text("With split or tab: the session whose pane to split or add a tab \
+                    to (id, #N or name). Default: the session this MCP server runs in."),
                 "ssh_host": text("Open an SSH session to this host (as ssh reads it: user@host \
                     or an alias from ~/.ssh/config) instead of a local shell. Not with \
                     folder, preset or run."),
@@ -1217,6 +1219,11 @@ mod tests {
         .unwrap();
         handle(&args(serde_json::json!({"ssh_host": "dev"})), &mut fake).unwrap();
         handle(&args(serde_json::json!({"name": "plain"})), &mut fake).unwrap();
+        handle(
+            &args(serde_json::json!({"tab": true, "of": "s2"})),
+            &mut fake,
+        )
+        .unwrap();
         let clash = handle(
             &args(serde_json::json!({"ssh_host": "dev", "folder": "/x"})),
             &mut fake,
@@ -1232,7 +1239,8 @@ mod tests {
             serde_json::json!({"ssh": {"host": "dev", "tmux": false}})
         );
         assert_eq!(seen[2].params, serde_json::json!({"name": "plain"}));
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[3].params, serde_json::json!({"tab": true, "of": "s2"}));
+        assert_eq!(seen.len(), 4);
         for r in [clash, tmux_alone] {
             assert_eq!(r["result"]["isError"], true, "{r}");
         }
@@ -1306,8 +1314,13 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert!(split.contains("its own sidebar row"), "{split}");
+        assert!(split.contains("same workspace"), "{split}");
         assert!(!split.contains("instead of"), "{split}");
+        let tab = schema("new_session")["inputSchema"]["properties"]["tab"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(tab.contains("tab in the pane"), "{tab}");
         let list = description("list_sessions");
         assert!(list.contains("* marks the focused session"), "{list}");
     }
