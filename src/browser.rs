@@ -17,7 +17,7 @@ use block2::RcBlock;
 use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use futures::future::{self, Either};
-use gpui::{App, BackgroundExecutor};
+use gpui::BackgroundExecutor;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -361,21 +361,10 @@ pub struct Browser {
 }
 
 impl Browser {
-    /// A new browser window titled `title`, not yet shown (see `bring_to_front`): 1100 × 800
-    /// points, cascaded from the key (or else main) window, centred when there is none. Pages get a `window.open` that
-    /// loads in this window; cookies and logins live in the data store `keep_data` picks (see
-    /// `data_store`), for as long as the window lives; its top bar looks as `look` says.
-    /// Safari's Web Inspector can attach where macOS allows it (13.3 and later).
-    #[allow(dead_code)] // the agent windows' own opening; agents use browser tabs now (M11b)
-    pub fn open(title: &str, keep_data: bool, look: &BarLook, _cx: &mut App) -> Browser {
-        let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
-        let page = new_page(mtm, keep_data);
-        Browser::adopt(page, title, look, mtm)
-    }
-
     /// A browser window titled `title` around `page` (a browser tab's, popped out of its pane:
-    /// the page, its history and what it is doing come with it), placed as `open` places one,
-    /// not yet shown.
+    /// the page, its history and what it is doing come with it), not yet shown (see
+    /// `bring_to_front`): 1100 × 800 points, cascaded from the key (or else main) window, centred
+    /// when there is none; its top bar looks as `look` says.
     pub(crate) fn adopt(page: Page, title: &str, look: &BarLook, mtm: MainThreadMarker) -> Browser {
         let window = new_window(
             mtm,

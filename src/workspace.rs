@@ -1136,7 +1136,7 @@ impl Workspace {
             .unwrap_or_else(|| sidebar::BROWSER_NAME.into())
     }
 
-    /// A workspace's place in the sidebar, from 1 (what ⌘N and the window title show).
+    /// A workspace's place in the sidebar, from 1 (what ⌘1–⌘9 and the window title show).
     pub(crate) fn workspace_number(&self, ws: WorkspaceId) -> Option<usize> {
         self.model
             .display_order()
@@ -1401,7 +1401,7 @@ impl Workspace {
                 notifier::message(new).zip(notifier::body(new, question.as_deref(), worked))
             {
                 // The group says more than the name (often 🖕) among many workspaces; the number
-                // is its workspace's (what ⌘N takes you to).
+                // is its workspace's (what ⌘1–⌘9 take you to).
                 let ws = self.workspace_of(index);
                 let who = ws
                     .and_then(|ws| self.group_label(ws))
