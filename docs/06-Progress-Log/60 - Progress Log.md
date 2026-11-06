@@ -22,6 +22,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-06 — M11c built: native notifications (on-screen check pending)
+- **Did:** Your request to "extend M11" with the notification part of M12. A first test on your Mac showed the ad-hoc
+  signed `fuxx.app` can post banners titled fuxx and get the click back — no paid Apple account needed. A second
+  (Task 0) showed where a click goes: to an open fuxx window; with none, to the background service (macOS opens fuxx
+  itself); with neither, to the fuxx macOS opens. Built on branch `m11c-native-notifications`: banners from fuxx with
+  the old `osascript` banner as fallback (never silent), a click shows the terminal that raised it (also from a
+  closed window via the background service), and — your request — new tabs and workspaces are named ╭∩╮. The final
+  review caught that banner ids repeated across runs, so a click on an old banner could show an unrelated terminal;
+  fixed (an id names the run that numbered its terminal). 742 tests pass; app rebuilt at `target/dist/fuxx.app`.
+  Your other session's logo commits ride on the same branch, as you asked. M11d (Help menu) requested next.
+- **Next:** your M11c on-screen check (15 items in note 55), then merge on your word.
+- **Open:** banners show a blank icon until fuxx has an app icon.
+
 ### 2026-11-06 — M11b Task 6c: footer icons bigger, matching, symmetric (on-screen check pending)
 - **Did:** From your screenshot: the sidebar footer's +, 🔔 and gear were different sizes (11, 13 and 9 px; the gear was
   a text character) and the + sat 12 px from the left while the gear sat 14 px from the right. Now all three are 16 px
