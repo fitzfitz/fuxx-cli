@@ -49,6 +49,8 @@ where each workspace is (git branch and folder) and which one needs you.
 - **Drag tabs anywhere** (yours, 2026-11-06): reorder within a pane, drop into another pane's tab bar, or drop onto a
   sidebar workspace to move the tab there. A pane or workspace left empty closes.
 - **The empty part of a tab bar at the window's top drags the window** (yours, 2026-11-06); double-click zooms.
+- **⌘T opens a new terminal tab in the focused pane; ⌘N makes a new workspace** (yours, 2026-11-06; replaces "⌘T =
+  new workspace" above).
 - **Resizing doesn't make a terminal look busy** (your bug report, 2026-11-06): a shell redrawing its prompt after a
   resize no longer counts as work.
 

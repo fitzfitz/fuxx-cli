@@ -140,6 +140,15 @@ the model, not rewritten. A spike proves the in-pane web view first.
 - [ ] Tests: the pure "is this bar at the window top" rule over layouts (single pane, side-by-side, stacked, nested);
   on-screen check added to Task 8.
 
+### Task 4d: ⌘T = new tab, ⌘N = new workspace — ⬜ (added 2026-11-06, your request)
+
+- **⌘T** opens a new terminal tab in the focused pane (as the tab bar's new-terminal button does), also when the
+  focused tab is a browser tab; with no workspace open it makes a new workspace. **⌘N** (unbound until now) makes a new
+  workspace (what ⌘T did). Menus show both ("New Workspace ⌘N", "New Tab ⌘T"); the sidebar footer's "+ New", the
+  title-area +, hints, tooltips and Help text follow; Preferences / scripting unchanged.
+- [ ] Tests: the binding table (⌘T → new tab action, ⌘N → new workspace action); new tab lands in the focused pane after
+  its active tab and is selected; ⌘T with no workspace makes one; menu titles.
+
 ### Task 5: Sidebar rows, pinning, git branch — ⬜
 
 - Rich rows, accent-filled selection, 📌 pinned section + Pin/Unpin in the menu, Needs-input pill; `git_branch.rs`
