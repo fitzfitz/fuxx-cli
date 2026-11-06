@@ -13,7 +13,8 @@ use gpui::{
     Point, PromptLevel, Window, actions, anchored, canvas, div, point, prelude::*, px,
 };
 
-use crate::layout_model::{TabId, WorkspaceId};
+use crate::groups::GroupKey;
+use crate::layout_model::{self, TabId, WorkspaceId};
 use crate::overlay_panel;
 use crate::status::Status;
 use crate::tab_color::TabColor;
@@ -190,9 +191,26 @@ impl Workspace {
             TabAction::ShowAll => self.open_switcher(window, cx),
             TabAction::Rename => self.start_rename(ws, window, cx),
             TabAction::Pin(pinned) => {
-                // Pinned ones lead the sidebar (out of their groups); unpinned, it's back in its
-                // place. The terminals follow the new order (`sync`).
-                if self.model.set_pinned(ws, pinned) {
+                // Pinned ones lead the sidebar (out of their groups); unpinned, it goes back to
+                // the end of its group. The terminals follow the new order (`sync`).
+                let groups: Vec<(WorkspaceId, Option<GroupKey>)> = self
+                    .model
+                    .workspaces()
+                    .iter()
+                    .map(|w| (w.id, self.workspace_group(w.id)))
+                    .collect();
+                let group = |w: &layout_model::Workspace| {
+                    groups
+                        .iter()
+                        .find(|(id, _)| *id == w.id)
+                        .and_then(|(_, key)| key.clone())
+                };
+                let changed = if pinned {
+                    self.model.set_pinned(ws, true)
+                } else {
+                    self.model.unpin(ws, group)
+                };
+                if changed {
                     self.sync();
                     self.save();
                 }

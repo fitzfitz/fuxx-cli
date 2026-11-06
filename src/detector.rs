@@ -101,6 +101,14 @@ impl OscDetector {
 const OSC_7: &[u8] = b"\x1b]7;";
 const CWD_LIMIT: usize = 4096;
 
+/// A working-folder report: the machine it's on (as the shell named it; empty when it didn't)
+/// and the folder there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CwdReport {
+    pub host: String,
+    pub path: PathBuf,
+}
+
 /// Finds the working-folder reports (OSC 7) in a terminal's raw output, across reads.
 pub struct CwdReports {
     intro: Intro,
@@ -120,7 +128,7 @@ impl CwdReports {
     }
 
     /// The last folder reported in full in `bytes`, if any.
-    pub fn feed(&mut self, bytes: &[u8]) -> Option<PathBuf> {
+    pub fn feed(&mut self, bytes: &[u8]) -> Option<CwdReport> {
         let mut found = None;
         for &b in bytes {
             if let Some(mut report) = self.report.take() {
@@ -150,12 +158,15 @@ impl CwdReports {
     }
 }
 
-/// An OSC 7 report's folder: `file://host/path` (percent-encoded) gives `/path`. Anything
-/// else (another scheme, no path, bad encoding) gives none.
-pub fn cwd_from_report(report: &[u8]) -> Option<PathBuf> {
+/// An OSC 7 report read: `file://host/path` (percent-encoded) gives `host` and `/path`.
+/// Anything else (another scheme, no path, bad encoding, control characters in the path) gives
+/// none.
+pub fn cwd_from_report(report: &[u8]) -> Option<CwdReport> {
     let rest = report.strip_prefix(b"file://")?;
     // Past the host, the path.
-    let path = &rest[rest.iter().position(|&b| b == b'/')?..];
+    let slash = rest.iter().position(|&b| b == b'/')?;
+    let host = String::from_utf8_lossy(&rest[..slash]).into_owned();
+    let path = &rest[slash..];
     let mut out = Vec::with_capacity(path.len());
     let mut bytes = path.iter();
     while let Some(&b) = bytes.next() {
@@ -166,7 +177,19 @@ pub fn cwd_from_report(report: &[u8]) -> Option<PathBuf> {
         let hex = |b: Option<&u8>| (*b? as char).to_digit(16);
         out.push((hex(bytes.next())? * 16 + hex(bytes.next())?) as u8);
     }
-    Some(PathBuf::from(OsStr::from_bytes(&out)))
+    // A folder with control characters (a newline, ESC, a bidi override) isn't printed.
+    let shown = String::from_utf8_lossy(&out);
+    if shown.chars().any(|c| {
+        c.is_control()
+            || ('\u{202a}'..='\u{202e}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c)
+    }) {
+        return None;
+    }
+    Some(CwdReport {
+        host,
+        path: PathBuf::from(OsStr::from_bytes(&out)),
+    })
 }
 
 #[cfg(test)]
@@ -259,8 +282,14 @@ mod tests {
     fn a_reported_folder_is_read_whichever_way_it_ends() {
         let mut c = CwdReports::new();
         let bel = c.feed(b"$ cd api\r\n\x1b]7;file://mac.local/Users/me/code/api\x07$ ");
-        assert_eq!(bel, Some(PathBuf::from("/Users/me/code/api")));
-        let st = c.feed(b"\x1b]7;file://mac.local/tmp\x1b\\");
+        assert_eq!(
+            bel,
+            Some(CwdReport {
+                host: "mac.local".into(),
+                path: "/Users/me/code/api".into()
+            })
+        );
+        let st = c.feed(b"\x1b]7;file://mac.local/tmp\x1b\\").map(|r| r.path);
         assert_eq!(st, Some(PathBuf::from("/tmp")));
         assert_eq!(c.feed(b"plain output\n"), None);
     }
@@ -270,8 +299,10 @@ mod tests {
         let mut c = CwdReports::new();
         assert_eq!(c.feed(b"\x1b]7;file://h/Us"), None);
         assert_eq!(c.feed(b"ers/me\x1b"), None);
-        assert_eq!(c.feed(b"\\"), Some(PathBuf::from("/Users/me")));
-        let two = c.feed(b"\x1b]7;file://h/a\x07\x1b]7;file://h/b\x07");
+        assert_eq!(c.feed(b"\\").map(|r| r.path), Some("/Users/me".into()));
+        let two = c
+            .feed(b"\x1b]7;file://h/a\x07\x1b]7;file://h/b\x07")
+            .map(|r| r.path);
         assert_eq!(two, Some(PathBuf::from("/b")));
     }
 
@@ -288,14 +319,14 @@ mod tests {
         long.push(0x07);
         assert_eq!(c.feed(&long), None);
         assert_eq!(
-            c.feed(b"\x1b]7;file://h/ok\x07"),
+            c.feed(b"\x1b]7;file://h/ok\x07").map(|r| r.path),
             Some(PathBuf::from("/ok"))
         );
     }
 
     #[test]
     fn a_report_url_gives_its_decoded_path() {
-        let path = |s: &str| cwd_from_report(s.as_bytes());
+        let path = |s: &str| cwd_from_report(s.as_bytes()).map(|r| r.path);
         assert_eq!(path("file://mac/Users/me"), Some("/Users/me".into()));
         // No host.
         assert_eq!(path("file:///Users/me"), Some("/Users/me".into()));
@@ -309,5 +340,18 @@ mod tests {
         assert_eq!(path("file://mac/a%2"), None);
         assert_eq!(path("file://mac/a%zz"), None);
         assert_eq!(path(""), None);
+        // Control characters (a newline, ESC, a right-to-left override) are no folder a row
+        // should print.
+        assert_eq!(path("file://mac/a%0Ab"), None);
+        assert_eq!(path("file://mac/a%1B[31m"), None);
+        assert_eq!(path("file://mac/a%E2%80%AEb"), None);
+    }
+
+    #[test]
+    fn a_report_keeps_the_host_it_names() {
+        let host = |s: &str| cwd_from_report(s.as_bytes()).map(|r| r.host);
+        assert_eq!(host("file://Mac.local/Users/me"), Some("Mac.local".into()));
+        assert_eq!(host("file://devbox/home/me"), Some("devbox".into()));
+        assert_eq!(host("file:///Users/me"), Some(String::new()));
     }
 }

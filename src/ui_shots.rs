@@ -1427,10 +1427,11 @@ const ROWS: [ShotSession; 6] = [
 
 /// The M11b sidebar rows, from real workspaces in both themes, at 240 px (`sidebar-rows`) and
 /// 180 px (`sidebar-rows-narrow`): deploy and claude pinned (📌, above every group header),
-/// claude waiting with its 🔔 "Needs input" pill and question; each row's `branch • ~/folder`;
+/// claude waiting with its 🔔 "Needs input" pill and question (the pill alone at 180 px); notes
+/// in no group, a gap under the pinned rows; each row's `branch • ~/folder`;
 /// payments selected (filled with the accent, its text and mark in `on_accent`), its long branch
-/// cut at its end and its long folder at its start; the long name cut; notes in /tmp (no `~`,
-/// not in a repo: no branch).
+/// cut first, then its long folder at its start (keeping `payments`); the long name cut; notes
+/// in /tmp (no `~`, not in a repo: no branch).
 ///
 /// Panics unless the pinned rows lead, the rows carry their branch and folder, and the
 /// selected row is filled with the accent with something on it in `on_accent`.
@@ -1459,6 +1460,13 @@ fn sidebar_row_scenes() {
                         let pinned = ws.workspace_of(i).expect("its workspace");
                         ws.model.set_pinned(pinned, true);
                     }
+                    // notes in no group (its folder as found, not where it started): it leads
+                    // the unpinned rows, a gap under the pinned ones.
+                    let notes = ws.sessions.get_mut(5).expect("notes");
+                    notes.project = None;
+                    let id = notes.id;
+                    let found = Some(SCRATCH.into());
+                    ws.places.set_folder(id, found, Instant::now());
                     ws.sync();
                     for (folder, branch) in [
                         (INFRA, "main"),
@@ -1509,14 +1517,13 @@ fn sidebar_row_scenes() {
                         [
                             row("deploy", true, Some("main"), Some("~/code/infra")),
                             row("claude", true, Some("feature/rows"), Some("~/code/api")),
+                            row("notes", false, None, Some("/tmp/scratch")),
                             header("[api]"),
                             row("codex", false, Some("feature/rows"), Some("~/code/api")),
                             header("[payments]"),
                             row("payments", false, Some(LONG_BRANCH), Some(long_folder)),
                             header("[web]"),
                             row(ROWS[4].name, false, Some("main"), Some("~/code/web")),
-                            header("[scratch]"),
-                            row("notes", false, None, Some("/tmp/scratch")),
                         ],
                         "{n}"
                     );
@@ -1524,7 +1531,11 @@ fn sidebar_row_scenes() {
                         .iter()
                         .position(|r| matches!(r, SidebarRow::Workspace(w) if w.active))
                         .expect("a selected row");
-                    assert_eq!(active, 5, "{n}: payments is selected");
+                    assert_eq!(active, 6, "{n}: payments is selected");
+                    // A group's gap between the pinned rows and notes.
+                    let bounds = |i: usize| ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
+                    let gap = f32::from(bounds(2).top() - bounds(1).bottom());
+                    assert_eq!(gap, 10.0, "{n}: the gap under the pinned rows");
                     let b = ws.sidebar.scroll.bounds_for_item(active).expect("laid out");
                     found.set(Some((
                         f32::from(b.left()),
@@ -2732,18 +2743,21 @@ fn switcher_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> Works
 ///   agent, the done ones, the working ones, the idle ones);
 /// - `switcher-filter`: "build" typed, which finds web's build session by name and build-box's
 ///   two by group;
-/// - `rename`: the rename box just opened on shell, its old name selected.
+/// - `rename`: the rename box just opened on shell (the selected row, filled with the accent),
+///   its old name selected; `rename-typed`: "api-2" typed over it.
 ///
-/// Panics unless the rows are in that order, the filter leaves three, and the rename box has
-/// the old name.
+/// Panics unless the rows are in that order, the filter leaves three, the rename box has the
+/// old (or typed) name, and the box's text is drawn in `text` (it reads on the box, whatever the
+/// row under it is filled with).
 fn switcher_scenes() {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
-        for scene in ["switcher", "switcher-filter", "rename"] {
+        let ui = theme.ui();
+        for scene in ["switcher", "switcher-filter", "rename", "rename-typed"] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -2752,18 +2766,27 @@ fn switcher_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
+            // The renamed row's bounds: left, right, top.
+            let renamed = Rc::new(Cell::new(None));
+            let found = renamed.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
+                let renaming = scene.starts_with("rename");
                 cx.update_window(window, |_, window, cx| {
-                    ws.update(cx, |ws, cx| match scene {
-                        "rename" => ws.start_rename(ws.model.display_order()[3], window, cx),
-                        _ => ws.open_switcher(window, cx),
+                    ws.update(cx, |ws, cx| {
+                        if renaming {
+                            ws.start_rename(ws.model.display_order()[3], window, cx)
+                        } else {
+                            ws.open_switcher(window, cx)
+                        }
                     })
                 })
                 .expect("open it");
                 cx.run_until_parked();
-                if scene == "switcher-filter" {
-                    cx.simulate_input(window, "build");
+                match scene {
+                    "switcher-filter" => cx.simulate_input(window, "build"),
+                    "rename-typed" => cx.simulate_input(window, "api-2"),
+                    _ => {}
                 }
                 let shown = |cx: &mut VisualTestAppContext| {
                     cx.read(|cx| {
@@ -2788,12 +2811,36 @@ fn switcher_scenes() {
                     _ => cx.read(|cx| {
                         let ws = ws.read(cx);
                         let (_, input) = ws.renaming.as_ref().expect("the rename box is open");
-                        assert_eq!(input.read(cx).text(), "shell", "{scene}-{slug}");
+                        let typed = if scene == "rename" { "shell" } else { "api-2" };
+                        assert_eq!(input.read(cx).text(), typed, "{scene}-{slug}");
+                        // shell's row: under api's header, after claude, codex and tests.
+                        let b = ws.sidebar.scroll.bounds_for_item(4).expect("laid out");
+                        found.set(Some((
+                            f32::from(b.left()),
+                            f32::from(b.right()),
+                            f32::from(b.top()),
+                        )));
                     }),
                 }
+                // Not kept past the window: a handle left over is reported as a leak.
+                slot.borrow_mut().take();
             };
-            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
+            if scene.starts_with("rename") {
+                let shot = render_with(&theme, dims, build, act);
+                let (left, right, top) = renamed.get().expect("the renamed row");
+                // The box, right of the mark, along the name line.
+                let x0 = left + 8.0 + 14.0 + 8.0;
+                let ink: usize = (0..30)
+                    .map(|n| top + 4.0 + n as f32 * 0.5)
+                    .map(|y| count_along(&shot, dims, ui.text, y, x0, right - 40.0))
+                    .sum();
+                assert!(
+                    ink >= 20,
+                    "{scene}-{slug}: the box's text is in `text` ({ink} pixels)"
+                );
+            }
         }
     }
 }

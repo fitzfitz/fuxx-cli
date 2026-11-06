@@ -22,8 +22,8 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     Animation, AnimationExt, AnyElement, BoxShadow, ClickEvent, Context, DispatchPhase, Div,
     DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, ScrollHandle, SharedString, Task, Window, canvas, div, point,
-    prelude::*, px, relative,
+    MouseUpEvent, PathBuilder, ScrollHandle, SharedString, Task, TextStyle, TruncateFrom, Window,
+    canvas, div, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -230,6 +230,91 @@ pub fn home_relative(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
+/// The place line, `branch • folder`, fitted to its room (`fits` says whether a line does).
+/// As it is when it fits; else the branch loses its end first (down to `BRANCH_KEEP`
+/// characters), then the folder its start, down to its own name; past that the line is cut at
+/// its end as drawn.
+pub fn fit_place(
+    branch: Option<&str>,
+    folder: Option<&str>,
+    fits: impl Fn(&str) -> bool,
+) -> String {
+    let line = |b: Option<&str>, f: Option<&str>| {
+        [b, f]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(PLACE_SEP)
+    };
+    let fits = |b: Option<&str>, f: Option<&str>| fits(&line(b, f));
+    if fits(branch, folder) {
+        return line(branch, folder);
+    }
+    // The longest `cut(n)` (n from `least` up to `most`) that fits, if any: shorter ones are
+    // narrower, so a binary search finds it.
+    let longest = |least: usize, most: usize, ok: &dyn Fn(usize) -> bool| {
+        let (mut lo, mut hi) = (least, most);
+        if !ok(lo) {
+            return None;
+        }
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if ok(mid) { lo = mid } else { hi = mid - 1 }
+        }
+        Some(lo)
+    };
+    // The branch: its first n characters and an ellipsis.
+    let branch_len = branch.map_or(0, |b| b.chars().count());
+    let cut_branch = |n: usize| {
+        branch.map(|b| match b.chars().count() > n {
+            true => format!("{}…", b.chars().take(n).collect::<String>()),
+            false => b.to_string(),
+        })
+    };
+    if branch_len > BRANCH_KEEP {
+        let ok = |n: usize| fits(cut_branch(n).as_deref(), folder);
+        if let Some(n) = longest(BRANCH_KEEP, branch_len - 1, &ok) {
+            return line(cut_branch(n).as_deref(), folder);
+        }
+    }
+    let branch = cut_branch(BRANCH_KEEP);
+    // The folder: an ellipsis and its last n characters, never fewer than its own name's.
+    let Some(folder) = folder else {
+        return line(branch.as_deref(), None);
+    };
+    let folder_len = folder.chars().count();
+    let name_len = folder
+        .rsplit('/')
+        .next()
+        .map_or(0, |n| n.chars().count())
+        .max(1);
+    let cut_folder = |n: usize| {
+        let tail: String = folder.chars().skip(folder_len - n).collect();
+        format!("…{tail}")
+    };
+    if folder_len <= name_len {
+        return line(branch.as_deref(), Some(folder));
+    }
+    let ok = |n: usize| fits(branch.as_deref(), Some(&cut_folder(n)));
+    let n = longest(name_len, folder_len - 1, &ok).unwrap_or(name_len);
+    line(branch.as_deref(), Some(&cut_folder(n)))
+}
+
+/// Whether a waiting row `row_width` wide has room for its question beside the pill (else the
+/// pill shows alone: the question is in ⌘P and the notification).
+pub fn shows_question(row_width: f32) -> bool {
+    row_width >= QUESTION_MIN_ROW
+}
+
+/// Whether `row` gets a group's gap above it: the first unpinned row after the pinned ones
+/// (a header has its own).
+pub fn gap_before(previous: Option<&SidebarRow>, row: &SidebarRow) -> bool {
+    matches!(
+        (previous, row),
+        (Some(SidebarRow::Workspace(p)), SidebarRow::Workspace(r)) if p.pinned && !r.pinned
+    )
+}
+
 /// An SSH workspace's place: its host, and the folder there once its shell has said (no git
 /// branch: the folder is on another machine).
 pub fn remote_place(host: &str, folder: Option<&Path>) -> String {
@@ -338,6 +423,12 @@ const AGE_MIN_ROW: f32 = 220.0;
 /// The tab colour dot, and the space before it and before the shortcut.
 const COLOR_DOT: f32 = 8.0;
 const META_GAP: f32 = 6.0;
+/// Between a row's branch and folder.
+const PLACE_SEP: &str = " • ";
+/// A long branch keeps this many characters before the folder gives way.
+const BRANCH_KEEP: usize = 8;
+/// A waiting row narrower than this leaves the question out (the pill alone).
+const QUESTION_MIN_ROW: f32 = 200.0;
 /// A pinned row's mark, right of its name.
 const PIN: &str = "📌";
 /// The "Needs input" pill: its height and words.
@@ -439,6 +530,8 @@ pub(crate) struct DraggedWorkspace {
 /// The row that follows the pointer during a drag: the row itself, lifted.
 struct DragPreview {
     label: SharedString,
+    /// Its place line, if it has one (the preview is as tall as the row's two lines).
+    place: Option<SharedString>,
     status: Status,
     width: f32,
 }
@@ -446,20 +539,10 @@ struct DragPreview {
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        div()
+        let name_line = div()
             .flex()
             .items_center()
-            .w(px(self.width - 2.0 * ROW_INSET))
-            .h(px(SIDEBAR_ROW))
-            .px(px(ROW_PAD))
-            .rounded(px(6.0))
-            .opacity(0.95)
-            .shadow_md()
-            .bg(hsla(ui.row_active))
-            .border_1()
-            .border_color(hsla(ui.panel_border))
-            .text_size(px(text::NAME))
-            .text_color(hsla(ui.text))
+            .h(px(NAME_LINE))
             .child(mark_slot(status_mark::mark_on(
                 self.status,
                 &ui,
@@ -476,7 +559,40 @@ impl Render for DragPreview {
                     .truncate()
                     .font_weight(FontWeight::BOLD)
                     .child(self.label.clone()),
-            )
+            );
+        let place = self.place.clone().map(|place| {
+            div()
+                .h(px(SUB_LINE))
+                .pl(px(MARK_SLOT + SLOT_GAP))
+                .text_size(px(text::META))
+                .line_height(px(SUB_LINE))
+                .text_color(hsla(ui.text_faint))
+                .truncate()
+                .child(place)
+        });
+        let height = SIDEBAR_ROW
+            + if place.is_some() {
+                WAITING_ROW - SIDEBAR_ROW
+            } else {
+                0.0
+            };
+        div()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .w(px(self.width - 2.0 * ROW_INSET))
+            .h(px(height))
+            .px(px(ROW_PAD))
+            .rounded(px(6.0))
+            .opacity(0.95)
+            .shadow_md()
+            .bg(hsla(ui.row_active))
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .text_size(px(text::NAME))
+            .text_color(hsla(ui.text))
+            .child(name_line)
+            .children(place)
     }
 }
 
@@ -793,7 +909,10 @@ impl Workspace {
             .enumerate()
             .map(|(i, row)| match row {
                 SidebarRow::Header(h) => self.render_header(h, i == 0, ui, cx),
-                SidebarRow::Workspace(s) => self.render_workspace_row(s, ui, cx),
+                SidebarRow::Workspace(s) => {
+                    let gap = gap_before(i.checked_sub(1).map(|p| &rows[p]), row);
+                    self.render_workspace_row(s, gap, ui, cx)
+                }
             })
             .collect();
         let band = self.render_top_band("sidebar-band", window, cx);
@@ -974,6 +1093,7 @@ impl Workspace {
     fn render_workspace_row(
         &self,
         row: &WorkspaceRow,
+        gap: bool,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1090,35 +1210,26 @@ impl Workspace {
                 .text_size(px(text::META))
                 .line_height(px(SUB_LINE))
         };
+        // Short of room, the branch loses its end, then the folder its start (its own name
+        // stays): `fit_place`, measured as drawn.
+        let row_width = self.sidebar.width - 2.0 * ROW_INSET;
         let place = (row.branch.is_some() || row.folder.is_some()).then(|| {
-            let both = row.branch.is_some() && row.folder.is_some();
+            let room = row_width - 2.0 * ROW_PAD - MARK_SLOT - SLOT_GAP;
+            let wrapper = std::cell::RefCell::new(
+                cx.text_system()
+                    .line_wrapper(TextStyle::default().font(), px(text::META)),
+            );
+            // As the drawn line decides whether to cut itself (`truncate`).
+            let fits = |s: &str| {
+                wrapper
+                    .borrow_mut()
+                    .should_truncate_line(s, px(room), "…", TruncateFrom::End)
+                    .is_none()
+            };
+            let line = fit_place(row.branch.as_deref(), row.folder.as_deref(), fits);
             under()
                 .text_color(hsla(on(ui.text_faint)))
-                // Short of room, both give way, the longer more; the branch loses its end, the
-                // folder its start (its own name stays).
-                .when_some(row.branch.clone(), |line, branch| {
-                    line.child(
-                        div()
-                            .flex_shrink_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(branch),
-                    )
-                })
-                .when(both, |line| {
-                    line.child(div().flex_none().px(px(4.0)).child("•"))
-                })
-                .when_some(row.folder.clone(), |line, folder| {
-                    line.child(
-                        div()
-                            .flex_shrink_1()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis_start()
-                            .child(folder),
-                    )
-                })
+                .child(div().flex_1().min_w(px(0.0)).truncate().child(line))
         });
         let status = row.sub.as_ref().map(|sub| {
             let text = |line: String, color: Rgb| {
@@ -1132,7 +1243,9 @@ impl Workspace {
             match sub {
                 Sub::Question(q) => under()
                     .child(needs_input_pill(ui, row.active))
-                    .child(text(q.clone(), ui.text_dim).ml(px(6.0))),
+                    .when(shows_question(row_width), |line| {
+                        line.child(text(q.clone(), ui.text_dim).ml(px(6.0)))
+                    }),
                 Sub::NeedsInput => under().child(needs_input_pill(ui, row.active)),
                 Sub::Note(note) => under().child(text(note.clone(), ui.text_faint)),
             }
@@ -1140,6 +1253,8 @@ impl Workspace {
         let source = self.sidebar.drag_source.clone();
         let preview = DragPreview {
             label: row.label.clone().into(),
+            place: (row.branch.is_some() || row.folder.is_some())
+                .then(|| fit_place(row.branch.as_deref(), row.folder.as_deref(), |_| true).into()),
             status: row.status,
             width: self.sidebar.width,
         };
@@ -1153,6 +1268,8 @@ impl Workspace {
             .flex_col()
             .justify_center()
             .h(px(row_height(row)))
+            // Under the pinned rows, a group's gap sets the rest apart.
+            .when(gap, |row| row.mt(px(GROUP_GAP - ROW_GAP)))
             .mx(px(ROW_INSET))
             .px(px(ROW_PAD))
             .rounded(px(6.0))
@@ -1197,6 +1314,7 @@ impl Workspace {
                     source.set(Some(dragged.workspace));
                     cx.new(|_| DragPreview {
                         label: preview.label.clone(),
+                        place: preview.place.clone(),
                         ..preview
                     })
                 },
@@ -2187,5 +2305,76 @@ mod tests {
         );
         let heights: Vec<f32> = rows.iter().map(|r| row_height(session(r))).collect();
         assert_eq!(heights, [SIDEBAR_ROW, WAITING_ROW, WAITING_ROW, 56.0]);
+    }
+
+    #[test]
+    fn the_place_line_fits_by_cutting_the_branch_then_the_folder_start() {
+        // One unit per character.
+        let fit = |b: Option<&str>, f: Option<&str>, w: f32| {
+            fit_place(b, f, |s: &str| s.chars().count() as f32 <= w)
+        };
+        let (branch, folder) = (Some("feature/payments-retry"), Some("~/code/shop/payments"));
+        // Room for all of it ("feature/payments-retry • ~/code/shop/payments" is 45).
+        assert_eq!(
+            fit(branch, folder, 45.0),
+            "feature/payments-retry • ~/code/shop/payments"
+        );
+        // The branch gives way first, down to 8 characters and an ellipsis.
+        assert_eq!(
+            fit(branch, folder, 35.0),
+            "feature/pay… • ~/code/shop/payments"
+        );
+        assert_eq!(
+            fit(branch, folder, 32.0),
+            "feature/… • ~/code/shop/payments"
+        );
+        // Then the folder loses its start, keeping its own name.
+        assert_eq!(fit(branch, folder, 26.0), "feature/… • …shop/payments");
+        assert_eq!(fit(branch, folder, 21.0), "feature/… • …payments");
+        // Past that, as short as it goes (the drawn line cuts its end).
+        assert_eq!(fit(branch, folder, 10.0), "feature/… • …payments");
+        // A short branch is never cut; a folder alone, a branch alone.
+        assert_eq!(fit(Some("main"), folder, 16.0), "main • …payments");
+        assert_eq!(fit(None, Some("/tmp/scratch"), 30.0), "/tmp/scratch");
+        assert_eq!(
+            fit(None, Some("~/code/shop/payments"), 12.0),
+            "…op/payments"
+        );
+        assert_eq!(fit(Some("main"), None, 2.0), "main");
+        assert_eq!(fit(None, None, 50.0), "");
+        // Characters, not bytes.
+        assert_eq!(
+            fit(Some("café-branché-x"), Some("~/é"), 15.0),
+            "café-bra… • ~/é"
+        );
+    }
+
+    #[test]
+    fn a_narrow_waiting_row_shows_the_pill_alone() {
+        assert!(shows_question(228.0));
+        assert!(shows_question(200.0));
+        assert!(!shows_question(199.0));
+        assert!(!shows_question(168.0)); // the narrowest sidebar's row
+    }
+
+    #[test]
+    fn the_first_unpinned_row_after_the_pinned_ones_has_a_gap() {
+        let now = Instant::now();
+        let mut list = vec![
+            facts("deploy", Status::Idle, now, None),
+            facts("review", Status::Idle, now, None),
+            facts("shell", Status::Idle, now, None),
+            facts("claude", Status::Idle, now, Some(folder("/w/api"))),
+        ];
+        list[0].pinned = true;
+        list[1].pinned = true;
+        let rows = rows(&numbered(list), &[], None, &[], now);
+        let gaps: Vec<bool> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| gap_before(i.checked_sub(1).map(|p| &rows[p]), r))
+            .collect();
+        // deploy, review | shell (gap), [api] (its own), claude.
+        assert_eq!(gaps, [false, false, true, false, false]);
     }
 }

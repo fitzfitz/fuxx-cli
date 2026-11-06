@@ -324,12 +324,15 @@ impl Render for NameInput {
         div()
             .flex_1()
             .overflow_hidden()
+            // Its own text colour with its own fill: the row under it may be filled with
+            // anything (the selected row's accent, with its ink).
             .when(!self.bare, |d| {
                 d.px_1()
                     .rounded_sm()
                     .border_1()
                     .border_color(hsla(edge))
                     .bg(hsla(ui.sidebar_background))
+                    .text_color(hsla(ui.text))
             })
             .key_context("NameInput")
             .track_focus(&self.focus_handle)

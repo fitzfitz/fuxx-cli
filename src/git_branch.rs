@@ -31,6 +31,36 @@ pub const REFRESH: Duration = Duration::from_secs(5);
 /// How long git may take before it is killed (and the branch left unknown).
 pub const GIT_CAP: Duration = Duration::from_secs(2);
 
+/// How often a frame may check the rows on screen for a lookup that's due (`Places::check_due`).
+pub const CHECK: Duration = Duration::from_secs(1);
+
+/// Whether a folder report naming `host` is about this Mac (named `hostname`): no host,
+/// `localhost`, or this Mac's name, whatever the case and with or without `.local`.
+pub fn is_this_mac(host: &str, hostname: Option<&str>) -> bool {
+    let name = |h: &str| {
+        let h = h.trim_end_matches('.').to_ascii_lowercase();
+        h.strip_suffix(".local").map(str::to_string).unwrap_or(h)
+    };
+    let host = name(host);
+    host.is_empty() || host == "localhost" || hostname.is_some_and(|me| name(me) == host)
+}
+
+unsafe extern "C" {
+    fn gethostname(name: *mut std::ffi::c_char, len: usize) -> c_int;
+}
+
+/// This Mac's name, as the shells see it.
+pub fn this_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is as long as said; the name comes back NUL-terminated (or cut).
+    if unsafe { gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..len]).into_owned();
+    (!name.is_empty()).then_some(name)
+}
+
 /// What `git rev-parse --abbrev-ref HEAD` printed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Head {
@@ -252,15 +282,31 @@ pub struct Places {
     pub frozen: bool,
     /// Your home folder, which rows show as `~`.
     pub home: Option<PathBuf>,
+    /// This Mac's name (`gethostname`): a local terminal's folder report counts only when it's
+    /// about this Mac (`is_this_mac`).
+    pub hostname: Option<String>,
+    /// When the rows are next checked from a frame (`check_due`).
+    next_check: Option<Instant>,
 }
 
 impl Places {
     /// With `home` shown as `~`.
-    pub fn new(home: Option<PathBuf>) -> Self {
+    pub fn new(home: Option<PathBuf>, hostname: Option<String>) -> Self {
         Self {
             home,
+            hostname,
             ..Self::default()
         }
+    }
+
+    /// Whether a frame checks the rows `now` (at most once every `CHECK`): each check builds
+    /// the rows, so a frame between checks doesn't.
+    pub fn check_due(&mut self, now: Instant) -> bool {
+        if self.next_check.is_some_and(|next| now < next) {
+            return false;
+        }
+        self.next_check = Some(now + CHECK);
+        true
     }
 
     /// Terminal `id`'s working folder as last found.
@@ -311,9 +357,16 @@ impl Places {
         }
     }
 
-    /// Forget terminals that are gone (by their ids still open).
+    /// Forget terminals that are gone (by their ids still open), and the branches of folders
+    /// no terminal is in any more.
     pub fn retain(&mut self, open: impl Fn(u64) -> bool) {
         self.folders.retain(|id, _| open(*id));
+        let held: Vec<&PathBuf> = self
+            .folders
+            .values()
+            .filter_map(|(f, _)| f.as_ref())
+            .collect();
+        self.branches.retain(|folder, _| held.contains(&folder));
     }
 }
 
@@ -359,6 +412,12 @@ impl Workspace {
             let (id, ssh) = (session.id, session.ssh.is_some());
             if self.places.folder_due(id, now) {
                 let (reported, pid) = session.view.read(cx).working_folder();
+                // A local terminal's report counts only when it's about this Mac (not a shell
+                // reached over ssh from it): else the kernel's answer.
+                let hostname = self.places.hostname.as_deref();
+                let reported = reported
+                    .filter(|r| ssh || is_this_mac(&r.host, hostname))
+                    .map(|r| r.path);
                 let folder = if ssh {
                     reported
                 } else {
@@ -605,5 +664,50 @@ mod tests {
         p.frozen = true;
         assert!(p.ask_branch(api, later + REFRESH).is_none());
         assert!(!p.folder_due(1, later + REFRESH));
+    }
+
+    #[test]
+    fn a_folder_report_counts_only_from_this_mac() {
+        let me = Some("Fitz-MacBook.local");
+        // No host, or localhost.
+        assert!(is_this_mac("", me));
+        assert!(is_this_mac("localhost", me));
+        assert!(is_this_mac("LocalHost", None));
+        // This Mac's name, whatever the case, with or without `.local` (either side).
+        assert!(is_this_mac("Fitz-MacBook.local", me));
+        assert!(is_this_mac("fitz-macbook", me));
+        assert!(is_this_mac("FITZ-MACBOOK.LOCAL", Some("Fitz-MacBook")));
+        assert!(is_this_mac("fitz-macbook.local.", me));
+        // Another machine (an ssh from a local terminal), or a name we can't check.
+        assert!(!is_this_mac("devbox", me));
+        assert!(!is_this_mac("fitz-macbook.example.com", me));
+        assert!(!is_this_mac("devbox", None));
+        // The real name matches itself.
+        let here = this_hostname().expect("this Mac has a name");
+        assert!(is_this_mac(&here, Some(&here)));
+    }
+
+    #[test]
+    fn frames_check_the_rows_at_most_once_a_second() {
+        let mut p = Places::default();
+        let t0 = Instant::now();
+        assert!(p.check_due(t0));
+        assert!(!p.check_due(t0));
+        assert!(!p.check_due(t0 + CHECK - Duration::from_millis(1)));
+        assert!(p.check_due(t0 + CHECK));
+    }
+
+    #[test]
+    fn branches_of_folders_no_terminal_is_in_are_forgotten() {
+        let mut p = Places::default();
+        let t0 = Instant::now();
+        p.set_folder(1, Some("/w/api".into()), t0);
+        p.set_folder(2, Some("/w/web".into()), t0);
+        p.set_branch(Path::new("/w/api"), Some("main".into()));
+        p.set_branch(Path::new("/w/web"), Some("dev".into()));
+        p.retain(|id| id == 1);
+        assert_eq!(p.branch(Path::new("/w/api")), Some("main"));
+        assert_eq!(p.branch(Path::new("/w/web")), None);
+        assert_eq!(p.folder(2), None);
     }
 }
