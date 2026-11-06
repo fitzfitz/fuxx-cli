@@ -7,6 +7,10 @@
 //! overlays: the page hides while they are open. Enter opens the chosen row, else what was typed
 //! (an address by the http/https rule, or a search), and the page takes the keyboard.
 //!
+//! While the tab has fuxx's focus (its page has the keyboard, or the tab or its field has it),
+//! ⌘R, ⌘[ / ⌘] and ⌘= / ⌘- / ⌘0 are the page's (`page_bindings`): reload, back / forward, and
+//! its zoom (`zoomed`, kept by the web view for the run). Everywhere else they stay fuxx's.
+//!
 //! `browser_tab_title` and `BarState` are the pure part; the rest draws and acts.
 
 use std::cell::Cell;
@@ -17,8 +21,8 @@ use futures::StreamExt;
 use futures::channel::mpsc::{self, UnboundedSender};
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, Pixels, SharedString, Subscription, Task, Window,
-    actions, anchored, canvas, deferred, div, point, prelude::*, px,
+    Focusable, KeyBinding, MouseButton, MouseDownEvent, Pixels, SharedString, Subscription, Task,
+    Window, actions, anchored, canvas, deferred, div, point, prelude::*, px,
 };
 use objc2::MainThreadMarker;
 
@@ -38,6 +42,12 @@ use crate::ui_tokens::text;
 
 // Bound in main.rs: ⌘L in a browser tab; ↑ / ↓ in its address field.
 actions!(browser_tab, [FocusAddress, SuggestPrev, SuggestNext]);
+
+// A browser tab's page keys (`page_bindings`): reload, back, forward, and the page's zoom.
+actions!(
+    browser_tab,
+    [Reload, GoBack, GoForward, ZoomIn, ZoomOut, ResetZoom]
+);
 
 /// The bar's height, its buttons, the field's height and its rounding.
 pub const BAR: f32 = 34.0;
@@ -76,6 +86,70 @@ pub fn browser_tab_title(url: &str, title: &str) -> String {
 /// can't be used has no contrast floor; a usable one keeps well over the marks' 3:1.
 pub fn button_colors(ui: &UiColors) -> (Rgb, Rgb) {
     (ui.text, crate::theme::mix(ui.text_faint, ui.panel, 0.5))
+}
+
+/// While a browser tab has fuxx's focus (its page has the keyboard, or the tab, or its address
+/// field): ⌘R, ⌘[ / ⌘], ⌘= (and ⌘+) / ⌘- / ⌘0 act on its page. Elsewhere they are fuxx's
+/// (rename, previous / next pane, the terminal font size).
+///
+/// They are bound for the tab and again for the field's box: GPUI runs the binding found in the
+/// deepest key context first, and the box's (`NameInput`) is deeper than the tab's, as deep as a
+/// context-free binding of fuxx's. Bound after those (`main`), so they win the tie.
+pub fn page_bindings() -> Vec<KeyBinding> {
+    ["BrowserTab", "BrowserTab > NameInput"]
+        .into_iter()
+        .flat_map(|context| {
+            let context = Some(context);
+            [
+                KeyBinding::new("cmd-r", Reload, context),
+                KeyBinding::new("cmd-[", GoBack, context),
+                KeyBinding::new("cmd-]", GoForward, context),
+                KeyBinding::new("cmd-=", ZoomIn, context),
+                KeyBinding::new("cmd-+", ZoomIn, context),
+                KeyBinding::new("cmd--", ZoomOut, context),
+                KeyBinding::new("cmd-0", ResetZoom, context),
+            ]
+        })
+        .collect()
+}
+
+/// The page zoom steps (Safari's), smallest to largest: ⌘= / ⌘- move between them and stop at
+/// the ends.
+pub const ZOOM_STEPS: [f64; 13] = [
+    0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
+];
+
+/// Which way ⌘= / ⌘- / ⌘0 take a page's zoom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Zoom {
+    In,
+    Out,
+    Reset,
+}
+
+/// How far from a step a zoom may be and still be that step (WebKit hands back its own rounding).
+const ZOOM_SLACK: f64 = 0.001;
+
+/// A page's zoom after `zoom` from `current`: the next step up or down (from between two steps,
+/// the next one that way), never past the ends; actual size for `Reset`, or when `current` is
+/// no zoom at all.
+pub fn zoomed(current: f64, zoom: Zoom) -> f64 {
+    let (smallest, largest) = (ZOOM_STEPS[0], ZOOM_STEPS[ZOOM_STEPS.len() - 1]);
+    if !current.is_finite() {
+        return 1.0;
+    }
+    match zoom {
+        Zoom::Reset => 1.0,
+        Zoom::In => ZOOM_STEPS
+            .into_iter()
+            .find(|step| *step > current + ZOOM_SLACK)
+            .unwrap_or(largest),
+        Zoom::Out => ZOOM_STEPS
+            .into_iter()
+            .rev()
+            .find(|step| *step < current - ZOOM_SLACK)
+            .unwrap_or(smallest),
+    }
 }
 
 /// What the bar shows of the page.
@@ -277,6 +351,33 @@ impl BrowserTab {
             }
         }
         self.refresh(cx);
+    }
+
+    /// ⌘R, ⌘[ or ⌘] (`page_bindings`): what the bar's reload, back or forward button does, when
+    /// that button could be used; nothing otherwise. From the address field, the field closes
+    /// first, as a click on the button closes it.
+    fn go_by_key(
+        &mut self,
+        action: fn(&Page),
+        usable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !usable || self.page().is_none() {
+            return;
+        }
+        if self.editing.is_some() {
+            self.stop_editing(cx);
+            self.focus.focus(window, cx);
+        }
+        self.go(action, true, cx);
+    }
+
+    /// ⌘= / ⌘- / ⌘0: the page's zoom, a step at a time (`zoomed`).
+    fn zoom(&self, zoom: Zoom) {
+        if let Some(page) = self.page() {
+            page.set_zoom(zoomed(page.zoom(), zoom));
+        }
     }
 
     /// The bar follows the page. Changed: the workspace hears of it.
@@ -870,6 +971,21 @@ impl Render for BrowserTab {
             .on_action(
                 cx.listener(|this, _: &FocusAddress, window, cx| this.start_editing(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &Reload, window, cx| {
+                let usable = !this.shown.url.is_empty();
+                this.go_by_key(Page::reload, usable, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GoBack, window, cx| {
+                let usable = this.shown.can_back;
+                this.go_by_key(Page::back, usable, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GoForward, window, cx| {
+                let usable = this.shown.can_forward;
+                this.go_by_key(Page::forward, usable, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, _| this.zoom(Zoom::In)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, _| this.zoom(Zoom::Out)))
+            .on_action(cx.listener(|this, _: &ResetZoom, _, _| this.zoom(Zoom::Reset)))
             .child(bar)
             .child(page)
             .children(popover)
@@ -900,6 +1016,45 @@ mod tests {
             assert!(c_on >= MARK_MIN, "{name}: usable {c_on}");
             assert!(c_on >= 1.8 * c_off, "{name}: usable {c_on} vs not {c_off}");
         }
+    }
+
+    #[test]
+    fn zoom_moves_one_step_and_stops_at_the_ends() {
+        assert_eq!(zoomed(1.0, Zoom::In), 1.1);
+        assert_eq!(zoomed(1.0, Zoom::Out), 0.9);
+        assert_eq!(zoomed(0.75, Zoom::Out), 0.67);
+        assert_eq!(zoomed(2.5, Zoom::Reset), 1.0);
+        assert_eq!(zoomed(0.5, Zoom::Reset), 1.0);
+        // The ends: no further.
+        assert_eq!(zoomed(3.0, Zoom::In), 3.0);
+        assert_eq!(zoomed(0.5, Zoom::Out), 0.5);
+        // ⌘= from the smallest visits every step, in order, then stays on the largest.
+        let mut at = 0.5;
+        let mut seen = vec![at];
+        for _ in 0..ZOOM_STEPS.len() {
+            at = zoomed(at, Zoom::In);
+            seen.push(at);
+        }
+        assert_eq!(seen[..ZOOM_STEPS.len()], ZOOM_STEPS);
+        assert_eq!(seen[ZOOM_STEPS.len()], 3.0);
+    }
+
+    #[test]
+    fn a_zoom_between_steps_or_outside_them_comes_to_a_step() {
+        // WebKit hands back its own rounding of a step: still that step.
+        assert_eq!(zoomed(1.100_000_023_841_858, Zoom::In), 1.25);
+        assert_eq!(zoomed(0.899_999_976_158_142, Zoom::Out), 0.8);
+        // Between steps: the next step that way.
+        assert_eq!(zoomed(1.05, Zoom::In), 1.1);
+        assert_eq!(zoomed(1.05, Zoom::Out), 1.0);
+        // Outside them: clamped to the ends.
+        assert_eq!(zoomed(5.0, Zoom::In), 3.0);
+        assert_eq!(zoomed(5.0, Zoom::Out), 3.0);
+        assert_eq!(zoomed(0.1, Zoom::Out), 0.5);
+        assert_eq!(zoomed(0.1, Zoom::In), 0.5);
+        // Nonsense: back to actual size.
+        assert_eq!(zoomed(f64::NAN, Zoom::In), 1.0);
+        assert_eq!(zoomed(0.0, Zoom::Out), 0.5);
     }
 
     #[test]
