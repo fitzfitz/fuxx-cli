@@ -1068,6 +1068,53 @@ mod tests {
     }
 
     #[test]
+    fn with_no_terminal_back_a_pages_workspace_still_comes_back() {
+        // "notes" (a terminal no longer running) was focused; "docs" holds a page.
+        let mut saved = with_tabs();
+        saved.sessions.truncate(1);
+        saved.sessions[0] = s("notes", None);
+        saved.workspaces = vec![
+            saved.workspaces[1].clone(),
+            SavedWorkspace {
+                name: Some("docs".into()),
+                color: None,
+                pinned: false,
+                layout: Node::Leaf(SavedPane {
+                    tabs: vec![SavedTab::Browser {
+                        url: Some("https://docs.rs/gpui".into()),
+                    }],
+                    active: 0,
+                }),
+                focused: 0,
+            },
+        ];
+        if let Node::Leaf(pane) = &mut saved.workspaces[0].layout {
+            pane.tabs = vec![SavedTab::Terminal { session: 0 }];
+        }
+        saved.active_workspace = Some(0);
+        let page = TabKind::Browser {
+            url: Some("https://docs.rs/gpui".into()),
+        };
+        // Restore off, nothing live: no terminal at all, the page's workspace still shows.
+        let p = place_all(&saved, &[], RestoreMode::Off);
+        assert!(p.slots.is_empty());
+        let m = model(&saved, &p);
+        m.check().unwrap();
+        assert_eq!(shape(&m), [vec![Vec::<u64>::new()]]);
+        assert_eq!(m.tab(m.focused_tab().unwrap()).unwrap().kind, page);
+        assert!(
+            crate::restore::shows_anything(&m, false),
+            "no plain session instead"
+        );
+        // One still running that the file doesn't know: it gets the focus, as in M10a.
+        let p = place_all(&saved, &[live(9)], RestoreMode::Off);
+        let m = model(&saved, &p);
+        m.check().unwrap();
+        assert_eq!(shape(&m), [vec![vec![]], vec![vec![9]]]);
+        assert_eq!(focused(&m), Some(9));
+    }
+
+    #[test]
     fn without_the_service_held_sessions_leave_their_tabs_and_the_rest_renumber() {
         let found = Probe::Found {
             instance: Some(INSTANCE),
