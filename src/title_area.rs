@@ -33,6 +33,7 @@ use crate::sidebar::{FOOTER, MARK_SLOT, ROW_INSET, mark_size, mark_slot, tabular
 use crate::sidebar_toggle::{self, HIT};
 use crate::status::{self, Status};
 use crate::status_mark;
+use crate::tab_bar::{Glyph, footer_glyph};
 use crate::tab_menu::Dismiss;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
@@ -41,8 +42,10 @@ use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 
 /// The footer's buttons (the +, the 🔔, the gear): each one's side, and the space between them.
-pub(crate) const FOOTER_BUTTON: f32 = 24.0;
+pub(crate) const FOOTER_BUTTON: f32 = 28.0;
 pub(crate) const FOOTER_GAP: f32 = 4.0;
+/// The sidebar's right edge (its border): the footer's buttons sit inside it.
+const SIDEBAR_EDGE: f32 = 1.0;
 /// The space between the sidebar button and the workspace's name, and the least room the name is
 /// drawn in (less would show little more than an ellipsis).
 const NAME_GAP: f32 = 12.0;
@@ -55,7 +58,7 @@ pub(crate) const DOT_INSET: f32 = 1.5;
 /// footer it opens, how far from the window's edges it keeps, and the most its list may take
 /// (the rest scrolls).
 const POPOVER_WIDTH: f32 = 340.0;
-const POPOVER_MIN: f32 = 228.0;
+const POPOVER_MIN: f32 = 227.0;
 const POPOVER_DROP: f32 = 4.0;
 const EDGE_MARGIN: f32 = 8.0;
 const LIST_MAX: f32 = 420.0;
@@ -72,27 +75,28 @@ const ENTRY_GAP: f32 = 2.0;
 const ENTRY: f32 = ENTRY_PAD + LINE + SUB + ENTRY_PAD;
 /// A script's notification's mark (it has no status).
 const SCRIPT_DOT: f32 = 6.0;
-/// The footer's 🔔 button's hover group, and the 🔔's box (drawn as an outline, `bell_icon`).
+/// The footer's 🔔 button's hover group, and the footer icons' box and line width (the same for
+/// the +, the 🔔 and the gear).
 pub(crate) const BELL_GROUP: &str = "notifications-button";
-const BELL: f32 = 14.0;
-/// The + drawn as two strokes, like the sidebar button's outline.
-const PLUS: f32 = 11.0;
+pub(crate) const PREFERENCES_GROUP: &str = "sidebar-preferences";
+const ICON: f32 = 16.0;
 const STROKE: f32 = 1.5;
 
 /// The popover's height around its list: its edge, padding, header and the gap under it.
 const PANEL_CHROME: f32 = 2.0 + 2.0 * PADDING + HEADER + PADDING;
 
 /// The left edges, in the sidebar `width` wide, of the footer's buttons: the + at the footer's
-/// left inset, the gear at the right, the 🔔 beside it.
+/// left inset, the gear at the right (the same distance from the sidebar's edge, inside its
+/// border), the 🔔 beside it.
 pub(crate) fn footer_buttons(width: f32) -> [f32; 3] {
-    let gear = width - ROW_INSET - FOOTER_BUTTON;
+    let gear = width - SIDEBAR_EDGE - ROW_INSET - FOOTER_BUTTON;
     [ROW_INSET, gear - FOOTER_GAP - FOOTER_BUTTON, gear]
 }
 
 /// The popover's width over a sidebar `sidebar_width` wide: the footer's, inside its insets,
 /// from `POPOVER_MIN` to `POPOVER_WIDTH`.
 pub(crate) fn popover_width(sidebar_width: f32) -> f32 {
-    (sidebar_width - 2.0 * ROW_INSET).clamp(POPOVER_MIN, POPOVER_WIDTH)
+    (sidebar_width - SIDEBAR_EDGE - 2.0 * ROW_INSET).clamp(POPOVER_MIN, POPOVER_WIDTH)
 }
 
 /// The popover's bottom left corner in the window, just above the footer. It hangs from the
@@ -435,48 +439,26 @@ fn status_mark(status: Status, ui: UiColors) -> AnyElement {
     status_mark::mark_on(status, &ui, 0.0, None, px(mark_size(status)), ui.panel).into_any_element()
 }
 
-/// The 🔔 as an outline in the sidebar button's stroke: a dome open at the bottom, its rim and
-/// clapper, in the dim text colour, the full one on hover (or while `lit`: its popover is open).
-pub(crate) fn bell_icon(ui: UiColors, lit: bool) -> Div {
-    const GROUP: &str = BELL_GROUP;
-    let full = hsla(ui.text);
-    let dim = if lit { full } else { hsla(ui.text_dim) };
-    let mut dome = div()
-        .absolute()
-        .left(px(2.5))
-        .top(px(1.0))
-        .w(px(BELL - 5.0))
-        .h(px(9.5))
-        .rounded_t(px((BELL - 5.0) / 2.0))
-        .border_color(dim)
-        .group_hover(GROUP, move |s| s.border_color(full));
-    dome.style().border_widths.top = Some(px(STROKE).into());
-    dome.style().border_widths.left = Some(px(STROKE).into());
-    dome.style().border_widths.right = Some(px(STROKE).into());
-    let fill = || {
-        div()
-            .absolute()
-            .bg(dim)
-            .group_hover(GROUP, move |s| s.bg(full))
-    };
-    let rim = fill()
-        .left(px(0.5))
-        .top(px(9.5))
-        .w(px(BELL - 1.0))
-        .h(px(STROKE))
-        .rounded(px(STROKE / 2.0));
-    let clapper = fill()
-        .left(px((BELL - 3.0) / 2.0))
-        .top(px(11.5))
-        .w(px(3.0))
-        .h(px(2.0))
-        .rounded_b(px(1.5));
+/// One of the footer's icons (`kind`: the +, the 🔔 or the gear), a line icon in the tab bars'
+/// way: the dim text colour, the full one on hover of `group` (or while `lit`: its menu or
+/// popover is open). A drawn path can't take a hover colour, so a dim copy and a full one are
+/// stacked and the group shows one.
+pub(crate) fn footer_icon(kind: Glyph, ui: UiColors, group: &'static str, lit: bool) -> Div {
+    let dim = if lit { ui.text } else { ui.text_dim };
     div()
         .relative()
-        .size(px(BELL))
-        .child(dome)
-        .child(rim)
-        .child(clapper)
+        .size(px(ICON))
+        .child(
+            footer_glyph(kind, dim, ICON, STROKE)
+                .absolute()
+                .group_hover(group, |s| s.invisible()),
+        )
+        .child(
+            footer_glyph(kind, ui.text, ICON, STROKE)
+                .absolute()
+                .invisible()
+                .group_hover(group, |s| s.visible()),
+        )
 }
 
 /// The unseen dot for the 🔔's top right, ringed in the sidebar's colour.
@@ -492,22 +474,6 @@ pub(crate) fn unseen_dot(ui: UiColors) -> Div {
         .bg(hsla(ui.accent))
 }
 
-/// The +: two strokes in the dim text colour, the full one on hover of `group` (or while `lit`).
-pub(crate) fn plus_icon(ui: UiColors, group: &'static str, lit: bool) -> Div {
-    let stroke = || {
-        div()
-            .absolute()
-            .bg(hsla(if lit { ui.text } else { ui.text_dim }))
-            .group_hover(group, move |s| s.bg(hsla(ui.text)))
-    };
-    let at = (PLUS - STROKE) / 2.0;
-    div()
-        .relative()
-        .size(px(PLUS))
-        .child(stroke().left_0().top(px(at)).w(px(PLUS)).h(px(STROKE)))
-        .child(stroke().top_0().left(px(at)).h(px(PLUS)).w(px(STROKE)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,13 +483,18 @@ mod tests {
 
     #[test]
     fn the_footers_three_buttons_fit_the_narrowest_sidebar_and_keep_apart() {
-        for width in [SIDEBAR_MIN_WIDTH, 260.0, SIDEBAR_MAX_WIDTH] {
+        for width in [SIDEBAR_MIN_WIDTH, 240.0, 260.0, 340.0, SIDEBAR_MAX_WIDTH] {
             let [plus, bell, gear] = footer_buttons(width);
             assert_eq!(plus, ROW_INSET, "the + at the footer's left inset");
             assert_eq!(
-                gear + FOOTER_BUTTON + ROW_INSET,
+                gear + FOOTER_BUTTON + ROW_INSET + SIDEBAR_EDGE,
                 width,
-                "the gear at the right"
+                "the gear at the right, inside the sidebar's edge"
+            );
+            assert_eq!(
+                plus,
+                width - SIDEBAR_EDGE - (gear + FOOTER_BUTTON),
+                "width {width}: the + and the gear mirror each other"
             );
             assert_eq!(
                 bell + FOOTER_BUTTON + FOOTER_GAP,
@@ -535,6 +506,8 @@ mod tests {
                 "width {width}: no overlap"
             );
         }
+        assert_eq!(FOOTER_BUTTON, 28.0);
+        assert_eq!(FOOTER_GAP, 4.0);
     }
 
     #[test]
@@ -557,7 +530,7 @@ mod tests {
                 x <= bell && bell + FOOTER_BUTTON <= right,
                 "width {width}: over the bell"
             );
-            if width - 2.0 * ROW_INSET >= POPOVER_MIN {
+            if width - SIDEBAR_EDGE - 2.0 * ROW_INSET >= POPOVER_MIN {
                 // Its right edge is the gear's, and it stays over the sidebar.
                 assert_eq!(
                     right,
@@ -573,7 +546,7 @@ mod tests {
         // At the default width it fills the sidebar inside the footer's insets.
         assert_eq!(
             popover_width(SIDEBAR_DEFAULT_WIDTH),
-            SIDEBAR_DEFAULT_WIDTH - 2.0 * ROW_INSET
+            SIDEBAR_DEFAULT_WIDTH - SIDEBAR_EDGE - 2.0 * ROW_INSET
         );
     }
 

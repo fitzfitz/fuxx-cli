@@ -37,12 +37,15 @@ use crate::restore::SavedState;
 use crate::sidebar_toggle::Tip;
 use crate::status::{self, Status};
 use crate::status_mark;
+use crate::tab_bar::Glyph;
 use crate::tab_bar::{DraggedTab, hold_closed_hand};
 use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::title_area::{BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, bell_icon, plus_icon, unseen_dot};
+use crate::title_area::{
+    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, PREFERENCES_GROUP, footer_icon, unseen_dot,
+};
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
     SIDEBAR_ROW, STATUS_MARK, WAITING_ROW,
@@ -1705,9 +1708,8 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .w(px(FOOTER_BUTTON))
-                .h(px(24.0))
+                .h(px(FOOTER_BUTTON))
                 .rounded(px(6.0))
-                .text_color(hsla(ui.text_dim))
                 .cursor_pointer()
                 .hover(|style| style.bg(hsla(ui.row_hover)).text_color(hsla(ui.text)))
         };
@@ -1724,7 +1726,7 @@ impl Workspace {
                 button("sidebar-new")
                     .group("sidebar-new")
                     .when(open, |b| b.bg(hsla(ui.row_hover)))
-                    .child(plus_icon(ui, "sidebar-new", open))
+                    .child(footer_icon(Glyph::Plus, ui, "sidebar-new", open))
                     .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("New\u{2026}".into())).into() })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.sidebar.new_menu = !this.sidebar.new_menu;
@@ -1737,7 +1739,7 @@ impl Workspace {
                     .group(BELL_GROUP)
                     .relative()
                     .when(popover, |b| b.bg(hsla(ui.row_hover)))
-                    .child(bell_icon(ui, popover))
+                    .child(footer_icon(Glyph::Bell, ui, BELL_GROUP, popover))
                     .when(unseen, |b| b.child(unseen_dot(ui)))
                     .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Notifications".into())).into() })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -1746,8 +1748,8 @@ impl Workspace {
             )
             .child(
                 button("sidebar-preferences")
-                    .text_size(px(15.0))
-                    .child("\u{2699}\u{fe0e}")
+                    .group(PREFERENCES_GROUP)
+                    .child(footer_icon(Glyph::Gear, ui, PREFERENCES_GROUP, false))
                     .on_click(|_: &ClickEvent, _, cx| preferences::open_or_activate(cx)),
             )
             .into_any_element()

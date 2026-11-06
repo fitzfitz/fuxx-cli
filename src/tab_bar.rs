@@ -904,6 +904,11 @@ pub(crate) enum Glyph {
     Stop,
     /// A magnifying glass.
     Search,
+    /// The sidebar footer's three (drawn in a 16 px box, `footer_glyph`): a plus, a bell (a
+    /// dome open at the bottom, its rim and clapper) and a gear (a ring with teeth around a hub).
+    Plus,
+    Bell,
+    Gear,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -913,7 +918,17 @@ pub(crate) fn glyph(kind: Glyph, color: Rgb) -> Div {
 
 /// `glyph` with lines `stroke` px wide (in the 12 px box).
 pub(crate) fn glyph_with(kind: Glyph, color: Rgb, stroke: f32) -> Div {
-    div().flex_none().size(px(ICON)).child(
+    glyph_sized(kind, color, stroke, ICON)
+}
+
+/// `kind` in `color`, in a `size` px box, the line `stroke` px wide at that size.
+pub(crate) fn footer_glyph(kind: Glyph, color: Rgb, size: f32, stroke: f32) -> Div {
+    glyph_sized(kind, color, stroke * ICON / size, size)
+}
+
+/// `glyph_with` in a `size` px box (the 12-unit drawing scaled up to it).
+fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
+    div().flex_none().size(px(size)).child(
         canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
@@ -1000,6 +1015,57 @@ pub(crate) fn glyph_with(kind: Glyph, color: Rgb, stroke: f32) -> Div {
                         handle.move_to(p(7.6, 7.6));
                         handle.line_to(p(10.8, 10.8));
                         paths.push(handle);
+                    }
+                    Glyph::Plus => {
+                        for (a, b) in [((0.5, 6.0), (11.5, 6.0)), ((6.0, 0.5), (6.0, 11.5))] {
+                            let mut line = stroke();
+                            line.move_to(p(a.0, a.1));
+                            line.line_to(p(b.0, b.1));
+                            paths.push(line);
+                        }
+                    }
+                    Glyph::Bell => {
+                        // The dome and its sides, then the rim across their feet, the clapper
+                        // under it.
+                        let (c, r, foot) = ((6.0, 4.5), 3.8, 9.3);
+                        let mut body = stroke();
+                        body.move_to(p(c.0 - r, foot));
+                        body.line_to(p(c.0 - r, c.1));
+                        let radii = point(px(r * u), px(r * u));
+                        body.arc_to(radii, px(0.0), false, true, p(c.0 + r, c.1));
+                        body.line_to(p(c.0 + r, foot));
+                        paths.push(body);
+                        let mut rim = stroke();
+                        rim.move_to(p(0.9, foot));
+                        rim.line_to(p(11.1, foot));
+                        paths.push(rim);
+                        let mut clapper = stroke();
+                        clapper.move_to(p(4.8, 11.2));
+                        clapper.line_to(p(7.2, 11.2));
+                        paths.push(clapper);
+                    }
+                    Glyph::Gear => {
+                        let c = (6.0, 6.0);
+                        let circle = |r: f32| {
+                            let mut e = stroke();
+                            let radii = point(px(r * u), px(r * u));
+                            e.move_to(p(c.0, c.1 - r));
+                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
+                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
+                            e.close();
+                            e
+                        };
+                        // The ring, the hub, and eight teeth between them and out past the ring.
+                        paths.push(circle(3.7));
+                        paths.push(circle(1.5));
+                        for k in 0..8 {
+                            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                            let (dx, dy) = (a.cos(), a.sin());
+                            let mut tooth = stroke();
+                            tooth.move_to(p(c.0 + dx * 3.7, c.1 + dy * 3.7));
+                            tooth.line_to(p(c.0 + dx * 5.5, c.1 + dy * 5.5));
+                            paths.push(tooth);
+                        }
                     }
                     Glyph::SplitRight | Glyph::SplitDown => {
                         let mut frame = stroke();

@@ -4090,6 +4090,7 @@ fn title_area_scenes() {
             "title-hover",
             "title-unseen",
             "title-footer-narrow",
+            "title-bare-narrow",
             "title-hidden",
             "title-narrow",
             "title-popover",
@@ -4103,13 +4104,16 @@ fn title_area_scenes() {
                 "title-popover-narrow" => size(px(360.0), px(480.0)),
                 _ => size(px(760.0), px(200.0)),
             };
-            let sidebar_width = if matches!(scene, "title-footer-narrow" | "title-popover-narrow") {
+            let sidebar_width = if matches!(
+                scene,
+                "title-footer-narrow" | "title-bare-narrow" | "title-popover-narrow"
+            ) {
                 SIDEBAR_MIN_WIDTH
             } else {
                 SIDEBAR_DEFAULT_WIDTH
             };
             let (height, width) = (f32::from(dims.height), f32::from(dims.width));
-            let [plus_x, bell_x, _] = footer_buttons(sidebar_width);
+            let [plus_x, bell_x, gear_x] = footer_buttons(sidebar_width);
             // The footer's buttons sit centred in the footer under its 1 px edge.
             let centre_y = height - FOOTER + 1.0 + (FOOTER - 1.0) / 2.0;
             let slot: Slot = Rc::new(RefCell::new(None));
@@ -4123,7 +4127,7 @@ fn title_area_scenes() {
                     if scene != "title-popover-empty" {
                         shot_notifications(&mut ws);
                     }
-                    if matches!(scene, "title-band" | "title-hover") {
+                    if matches!(scene, "title-band" | "title-hover" | "title-bare-narrow") {
                         ws.notifications.mark_seen();
                     }
                     if scene == "title-narrow" {
@@ -4178,9 +4182,62 @@ fn title_area_scenes() {
             );
             if !hidden {
                 match scene {
-                    "title-band" => {
+                    "title-band" | "title-bare-narrow" => {
                         assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
                         assert!(bell_has(ui.text_dim), "{n}: the bell, dim");
+                        // Each icon's drawn ink (pixels at least half-way from the footer's
+                        // colour to the dim text colour): 14-16 px tall, the three centred on
+                        // one line, and the + as far from the sidebar's left edge as the gear
+                        // is from its right edge (inside the border).
+                        let foot = bg(ui.sidebar_background);
+                        let full = {
+                            let d = bg(ui.text_dim);
+                            (0..3)
+                                .map(|k| (i32::from(d[k]) - i32::from(foot[k])).pow(2))
+                                .sum::<i32>()
+                        };
+                        let ink_box = |x0: f32| -> (f32, f32, f32, f32) {
+                            let (mut x_lo, mut x_hi) = (f32::MAX, f32::MIN);
+                            let (mut y_lo, mut y_hi) = (f32::MAX, f32::MIN);
+                            for dy in 0..FOOTER_BUTTON as usize {
+                                for dx in 0..FOOTER_BUTTON as usize {
+                                    let (x, y) = (
+                                        x0 + dx as f32,
+                                        centre_y - FOOTER_BUTTON / 2.0 + dy as f32,
+                                    );
+                                    let p = at(x, y);
+                                    let d: i32 = (0..3)
+                                        .map(|k| (i32::from(p[k]) - i32::from(foot[k])).pow(2))
+                                        .sum();
+                                    if d * 4 >= full {
+                                        (x_lo, x_hi) = (x_lo.min(x), x_hi.max(x + 1.0));
+                                        (y_lo, y_hi) = (y_lo.min(y), y_hi.max(y + 1.0));
+                                    }
+                                }
+                            }
+                            (x_lo, x_hi, y_lo, y_hi)
+                        };
+                        let boxes = [ink_box(plus_x), ink_box(bell_x), ink_box(gear_x)];
+                        println!("ui-shots: {n}: footer ink boxes (x0, x1, y0, y1) {boxes:?}");
+                        for (name, b) in ["+", "bell", "gear"].iter().zip(boxes) {
+                            let tall = b.3 - b.2;
+                            assert!(
+                                (14.0..=16.0).contains(&tall),
+                                "{n}: the {name} is {tall} px tall"
+                            );
+                        }
+                        let mids = boxes.map(|b| (b.2 + b.3) / 2.0);
+                        for m in mids {
+                            assert!(
+                                (m - mids[0]).abs() <= 0.5,
+                                "{n}: the icons' centres agree: {mids:?}"
+                            );
+                        }
+                        let (left, right) = (boxes[0].0, sidebar_width - 1.0 - boxes[2].1);
+                        assert!(
+                            (left - right).abs() <= 1.0,
+                            "{n}: the + is {left} from the left, the gear {right} from the right"
+                        );
                     }
                     "title-hover" => {
                         assert!(bell_has(ui.text), "{n}: the bell, hovered");
@@ -4241,9 +4298,10 @@ fn title_area_scenes() {
                 // right edge is inside the sidebar.
                 let inked = |x0: f32| -> usize {
                     let mut inked = 0;
-                    for dy in 0..24 {
-                        for dx in 0..24 {
-                            let (x, y) = (x0 + dx as f32, centre_y - 12.0 + dy as f32);
+                    for dy in 0..FOOTER_BUTTON as usize {
+                        for dx in 0..FOOTER_BUTTON as usize {
+                            let (x, y) =
+                                (x0 + dx as f32, centre_y - FOOTER_BUTTON / 2.0 + dy as f32);
                             inked += usize::from(at(x, y) != bg(ui.sidebar_background));
                         }
                     }
@@ -4267,7 +4325,10 @@ fn title_area_scenes() {
                 bg(ui.sidebar_background)
             };
             let inset = name_inset(false);
-            if !matches!(scene, "title-footer-narrow" | "title-popover-narrow") {
+            if !matches!(
+                scene,
+                "title-footer-narrow" | "title-bare-narrow" | "title-popover-narrow"
+            ) {
                 let stop = if hidden {
                     inset - 2.0
                 } else {
