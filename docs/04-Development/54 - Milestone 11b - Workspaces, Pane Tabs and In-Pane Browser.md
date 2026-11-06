@@ -122,6 +122,8 @@ All of these are already listed under "Panes and their tabs" above; here is wher
 - **Page shortcuts** (Task 4e): ⌘R, ⌘[ / ⌘], ⌘= / ⌘- / ⌘0 act on the page.
 - **Drag tabs anywhere** (Task 7): reorder, into another pane, or onto a sidebar workspace row.
 - **🔔 and + in the sidebar footer** (Task 6b): the title area keeps only the sidebar button.
+- **Footer icons bigger and symmetric** (Task 6c, your screenshot): the +, 🔔 and gear are matching 16 px line icons
+  (the gear drawn, not a text character), at one height; the + sits as far from the left edge as the gear from the right.
 - **Drags feel like picking the tab up** (Task 7b): a closed hand while dragging; the copy stays where you grabbed it;
   no insertion line — the other tabs (or rows, within their run) slide aside over 0.15 s to open a gap where it will
   land; the gap goes to whichever slot is nearest the copy, so a small wobble moves nothing.
@@ -281,6 +283,9 @@ Not run yet. Batched with M10b, M10c, M11 and the follow-up (your choice). Items
     the switcher opens and its first click works.
 47. The band keeps the sidebar button and nothing else: drag the window by the band where the 🔔 and + used to be, in
     full screen too.
+47a. The footer: +, 🔔 and gear are the same size and style, at the same height; the + is as far from the sidebar's
+    left edge as the gear is from its right edge. Hover each: it lights. Open the + menu and the 🔔 list: each stays lit
+    while open. The unread dot sits on the bell's top right. Try a narrow and a wide sidebar, dark and light theme.
 48. Hide the sidebar (⌘\): the 🔔 hides with it; an open popover closes and typing returns to the terminal. The
     workspace name shows centred in the band above the panes; narrow the window and it cuts with "…" and vanishes when
     there is no room. In full screen the buttons move to the left edge and the name stays centred. With the sidebar
