@@ -256,3 +256,13 @@ Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]. Replaces
 
 - [[40 - Roadmap]] · [[M11 Input - UI-UX Review]] · [[46b - Milestone 6b - Settings Window]] ·
   [[47 - Milestone 7 - Session Ergonomics]] · [[48 - Milestone 8 - Split Panes]]
+
+## Amendment (2026-11-06, your requests): sidebar button and tab-like rows
+
+Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] (Tasks 3b, 3c).
+
+- A sidebar button beside the window buttons hides/shows the sidebar (same as ⌘\); the sidebar slides with motion on.
+- Rows behave like tabs: × on hover, middle-click closes, right-click menu (Close Tab, Close Other Tabs, Close Tabs to
+  the Right, Show All Tabs, Rename Tab…, Tab Color), bulk closes always ask first. The number column goes; the right
+  side shows a colour dot and "⌘N" (your sample). "Move Tab to New Window" waits for multi-window support.
+

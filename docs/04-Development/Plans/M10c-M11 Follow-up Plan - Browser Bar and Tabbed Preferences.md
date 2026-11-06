@@ -13,7 +13,7 @@ updated: 2026-11-06
 |---|---|
 | **Spec** | The 2026-11-06 amendments in [[52 - Milestone 10c - Agent Browser]] and [[53 - Milestone 11 - UI-UX Uplift]] |
 | **Status** | ⬜ Planned (2026-11-06) |
-| **Tasks done** | 1 / 6 |
+| **Tasks done** | 3 / 8 |
 | **Decisions used** | Yours (2026-11-06): build now, before the merge; the address bar has its own setting; bar off keeps the buttons; keep-data Off by default and turning it off deletes saved data; Preferences sections General / Appearance / Sessions / Browser. |
 | **Needs your eyes** | 👀 Task 4 (batched with M10b, M10c, M11) |
 
@@ -102,6 +102,37 @@ the registry source).
   section's form; window size = the largest section's; ui-shots per section in Mocha and Latte.
 - Move every existing control without changing what it writes; add the two Browser switches and the General button.
 - [ ] Tests: `sections_list_every_control_once`, `browser_values`, `window_fits_the_largest_section`; screenshots looked at.
+
+### Task 3b: Sidebar button beside the window buttons — ⬜ (added 2026-11-06, your request)
+
+- A sidebar-outline icon (16 px, drawn with paths, `text_dim`; hover → `text` on a rounded `panel_hover`) in the top
+  band just right of the traffic lights (x ≈ 80, vertically centred on them; x = 13 in full screen), in the same spot
+  whether the sidebar is shown or hidden. Click = the ⌘\ toggle (never starts a window drag); tooltip
+  "Hide sidebar (⌘\)" / "Show sidebar (⌘\)".
+- With motion on, the sidebar's width eases out/in over ~160 ms (ease-out); with Animations off or Reduce motion,
+  instant. The terminal re-fits once at the end (no PTY resize storm during the slide).
+- [ ] Tests: the icon's position rule (normal / full screen), the width curve; ui-shots: band with the sidebar shown
+  and hidden, hover, Mocha + Latte.
+
+### Task 3c: Sidebar rows as tabs — close, middle-click, right-click menu, tab colour — ⬜ (added 2026-11-06, your request)
+
+- Row look (your sample): on hover the status mark's spot shows a × (click = close, like ⌘W); the name; on the right a
+  colour dot (when a colour is set) and the shortcut "⌘1"…"⌘9" for the first nine sessions (no number column on the
+  left any more). The age moves to the row's second line beside the question/note when space is short (AI's call:
+  keep it right of the name when the row is ≥ 220 px wide, else drop it).
+- Middle-click a row = close it.
+- Right-click a row = a context menu (an overlay in the M11 panel style, one overlay at a time): Close Tab; Close
+  Other Tabs; Close Tabs to the Right (= the rows below it); Show All Tabs (opens the ⌘P switcher); separator; Rename
+  Tab…; Tab Color: a "none" swatch + 11 colour swatches (blue, purple, magenta, red, pink, orange, yellow, green, teal,
+  cyan, grey — AI's call on the exact palette, contrast ≥ 3:1 on the sidebar). "Move Tab to New Window" is left out
+  (your choice; multi-window is a later milestone).
+- Bulk closes always ask first (your choice): a native confirm "Close N sessions?" (+ "M agents are still working or
+  waiting." when any are), Close / Cancel.
+- Tab colour is saved with the session (`SavedSession.color`, additive) and restored; also shown as the dot in the
+  ⌘P switcher row and on the pane header. Scripting: `session.list` gains `color` when set (AI's call).
+- [ ] Tests: the menu's actions on a pure session list (close others / to the right / which indices), colour
+  round-trip + old files load, the shortcut label for rows 1–9 and none after; ui-shots: rows with colours and ⌘N,
+  hover with ×, the context menu, Mocha + Latte.
 
 ### Task 4: On screen — 👀 ⬜ (batched)
 
