@@ -13,8 +13,8 @@ updated: 2026-11-06
 |---|---|
 | **Milestone note** | [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] · input: [[M11b Input - Workspaces, Pane Tabs and In-Pane Browser]] |
 | **Status** | 🟨 Built and reviewed (2026-11-06); on-screen check pending (723 tests) |
-| **Tasks done** | 15 / 16 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b, 7b and 9); Task 8 is your check |
-| **▶ Pick up here** | Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
+| **Tasks done** | 15 / 17 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b, 7b and 9); Task 6c added (your screenshot); Task 8 is your check |
+| **▶ Pick up here** | Task 6c: footer icons bigger, matching, symmetric (added 2026-11-06). Then Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
 | **Decisions used** | Yours (2026-11-06): the full cmux layout incl. the in-pane browser; row details (branch • folder, Needs-input badge, pinning, accent-filled selection); group headers stay; workspaces only in the sidebar; closing a 2+-terminal workspace asks; "just continue". Everything else: AI's call (spec). |
 | **Needs your eyes** | 👀 Task 8 (batched with M10b, M10c, M11 and the follow-up) |
 
@@ -188,6 +188,24 @@ the model, not rewritten. A spike proves the in-pane web view first.
   hidden too (as the gear is).
 - [x] Tests: footer layout/hit rule (pure where possible); the popover still in `Overlay`; ui-shots of the footer and the
   upward popover in Mocha + Latte; the band without 🔔/+.
+
+### Task 6c: Footer icons — bigger, matching, symmetric — ⬜ (added 2026-11-06, your screenshot: "not aligned symmetrically and the icons are too small")
+
+Measured at Task 6b's build (ui-shots, 240 px sidebar): + is 11 px, 12 px from the left edge; the 🔔 13 × 12 px; the
+gear a text character "⚙︎" (9 × 10 px), 14 px from the right edge; vertical centres 1 px apart.
+
+- The **+**, **🔔** and **gear** are line icons drawn the same way as the tab bars' glyphs (`tab_bar::Glyph`, vector paths;
+  the gear is drawn — a ring with teeth around a hub — no longer a text character), each in a **16 px** box with the
+  same line width, in the dim text colour and the full one on hover or while lit (its menu / popover open), as today.
+- Buttons are **28 × 28 px** (hover fill, rounded 6), centred vertically in the footer. **Symmetric:** the +'s distance
+  from the sidebar's left edge equals the gear's distance from the sidebar's right edge (inside its border); the 🔔
+  sits a 4 px gap left of the gear.
+- The unseen dot sits on the bigger bell's top right; the 🔔 popover and + menu anchors follow the new button places
+  (`footer_buttons`).
+- [ ] Tests: `footer_buttons` (the pure places: + and gear mirror each other at 180 / 240 / 340 px). ui-shots (Mocha +
+  Latte, 180 and 240 px sidebars): each icon's drawn ink is 14–16 px tall; the three vertical centres agree within
+  0.5 px; the + ink's left gap equals the gear ink's right gap within 1 px; hover and lit states still light the icon;
+  the unseen dot on the bell; the popover / menu edges as before.
 
 ### Task 7b: Drags feel like picking the tab up — ✅ (added 2026-11-06, your request; after Task 6b)
 
