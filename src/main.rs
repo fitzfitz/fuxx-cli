@@ -21,6 +21,8 @@ mod grid;
 mod groups;
 mod host_picker;
 mod keys;
+#[allow(dead_code)] // wired into the workspace by M11b Task 2
+mod layout_model;
 mod links;
 mod mcp;
 mod mouse;
