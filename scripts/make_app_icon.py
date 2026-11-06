@@ -5,6 +5,8 @@
   1024 px canvas, exported at every size macOS asks for (16-512 px, each also @2x) through `iconutil`.
 - assets/logo/3d-cyber/fuxx-mark.png: the same logo trimmed and centred with no margin, 64 px, for the popped-out
   browser window's toolbar (compiled into fuxx).
+- assets/logo/3d-cyber/fuxx-app-icon-512.png: the icon as one 512 px picture, for the Dock when fuxx isn't running
+  from the app package (`cargo run`; compiled into fuxx).
 
 Both outputs are committed, so building the app needs neither Python nor Pillow. Run again after the logo changes:
     python3 -I scripts/make_app_icon.py
@@ -22,6 +24,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets/logo/3d-cyber/fuxx-logo-large.png"
 ICNS = ROOT / "packaging/macos/fuxx.icns"
 MARK = ROOT / "assets/logo/3d-cyber/fuxx-mark.png"
+# The icon as one picture, for a build not running from the app package to show in the Dock (compiled into fuxx).
+DOCK = ROOT / "assets/logo/3d-cyber/fuxx-app-icon-512.png"
+DOCK_SIZE = 512
 
 # Apple's macOS icon grid: a 1024 px canvas whose artwork sits in an 824 px body (a 100 px margin all round).
 CANVAS = 1024
@@ -65,7 +70,8 @@ def main():
                 master.resize((px, px), Image.LANCZOS).save(iconset / f"icon_{size}x{size}{suffix}.png")
         subprocess.run(["iconutil", "-c", "icns", "-o", str(ICNS), str(iconset)], check=True)
     place(source, MARK_SIZE, MARK_SIZE).save(MARK)
-    print(f"wrote {ICNS.relative_to(ROOT)} and {MARK.relative_to(ROOT)}")
+    master.resize((DOCK_SIZE, DOCK_SIZE), Image.LANCZOS).save(DOCK)
+    print(f"wrote {ICNS.relative_to(ROOT)}, {MARK.relative_to(ROOT)} and {DOCK.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ mod api;
 mod api_client;
 mod api_events;
 mod api_server;
+mod app_icon;
 mod appearance;
 mod browser;
 mod browser_history;
@@ -573,6 +574,8 @@ fn main() {
             // agent submenu is built from its presets, and `persistent-sessions` decides who
             // runs the sessions.
             cx.set_global(appearance::load(cx));
+            // A `cargo run` build has no app package to take its Dock icon from.
+            app_icon::show_in_dock();
             // Motion follows the `animations` setting and macOS Reduce motion from here on.
             reduce_motion::watch(cx);
             let persistent = cx.global::<appearance::Appearance>().persistent;
