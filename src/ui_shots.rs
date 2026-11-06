@@ -3194,7 +3194,10 @@ fn banner_click_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> W
 ///   change nothing;
 /// - a click for notes while the saved sessions are reopening shows nothing until they have,
 ///   then (as one with no restore running does at once) docs's workspace, its left pane and
-///   notes's tab, with the keyboard.
+///   notes's tab, with the keyboard;
+/// - a click on a background-service banner, which the service passes on as `Show` (fed as
+///   `DaemonClient::shows` hands it over), is handled the same way: held while the saved
+///   sessions reopen (it opened fuxx), then notes is shown.
 ///
 /// Shot once notes is shown (`banner-click-mocha.png`). Panics unless all of that holds.
 fn banner_click() {
@@ -3332,6 +3335,37 @@ fn banner_click() {
         clicks.unbounded_send(Some(notes)).expect("send a click");
         cx.run_until_parked();
         notes_shown(cx, "at once");
+
+        // A `Show` from the background service, while the saved sessions are reopening.
+        let (shows, heard_shows) = futures::channel::mpsc::unbounded();
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.listen_for_shows(heard_shows, window, cx);
+                let api = ws.sessions.position(|x| x.label() == "api").expect("api");
+                ws.select(api, window, cx);
+                ws.restoring = true;
+            })
+        })
+        .expect("back to api, restoring");
+        cx.run_until_parked();
+        assert_eq!(
+            shown(cx, &ws),
+            before,
+            "banner-click: api's workspace again"
+        );
+        shows.unbounded_send(notes).expect("send a Show");
+        cx.run_until_parked();
+        assert_eq!(
+            shown(cx, &ws),
+            before,
+            "banner-click: a Show waits while restoring"
+        );
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.finish_restoring(window, cx))
+        })
+        .expect("finish restoring");
+        cx.run_until_parked();
+        notes_shown(cx, "from the service, after the restore");
         slot.borrow_mut().take();
     };
     let path = shoot_with(

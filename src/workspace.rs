@@ -307,6 +307,8 @@ pub struct Workspace {
     _requests: Option<Task<()>>,
     /// Hears clicks on fuxx's banners (`listen_for_clicks`).
     _clicks: Option<Task<()>>,
+    /// Hears clicks on the background service's banners, which it passes on (`listen_for_shows`).
+    _shows: Option<Task<()>>,
     /// A banner click held while the saved sessions reopen, shown when they have.
     pending_show: PendingShow,
     /// The socket this fuxx serves; none when it isn't serving (scripting off, or another fuxx
@@ -462,6 +464,7 @@ impl Workspace {
             window_active: window.is_window_active(),
             _requests: requests.map(|rx| Self::serve_requests(rx, window, cx)),
             _clicks: None,
+            _shows: None,
             pending_show: PendingShow::default(),
             socket,
             subscribers: Vec::new(),
@@ -668,11 +671,33 @@ impl Workspace {
     /// it existed are waiting in `clicks`).
     pub(crate) fn listen_for_clicks(
         &mut self,
-        mut clicks: UnboundedReceiver<Option<u64>>,
+        clicks: UnboundedReceiver<Option<u64>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self._clicks = Some(cx.spawn_in(window, async move |this, cx| {
+        self._clicks = Some(Self::hear(clicks, window, cx));
+    }
+
+    /// Hear the clicks on the background service's banners that it passes on (`Show`, from
+    /// `DaemonClient::shows`), each the session to show, for as long as the workspace lives or
+    /// the connection lasts. They are handled as clicks on the window's own banners, so one
+    /// that comes while the saved sessions reopen (it opened fuxx) is shown once they have.
+    pub(crate) fn listen_for_shows(
+        &mut self,
+        shows: UnboundedReceiver<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._shows = Some(Self::hear(shows.map(Some), window, cx));
+    }
+
+    /// Hand each click from `clicks` to `banner_clicked`, until it ends or the workspace goes.
+    fn hear(
+        mut clicks: impl futures::Stream<Item = Option<u64>> + Unpin + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn_in(window, async move |this, cx| {
             while let Some(terminal) = clicks.next().await {
                 let heard = this.update_in(cx, |this, window, cx| {
                     this.banner_clicked(terminal, window, cx)
@@ -681,7 +706,7 @@ impl Workspace {
                     break;
                 }
             }
-        }));
+        })
     }
 
     /// A click on one of fuxx's banners: fuxx comes forward and terminal `sN` (if the banner

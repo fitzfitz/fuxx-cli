@@ -6,8 +6,9 @@
 //!   `Status`, `Title`, `Bell`, `ExitCode`, `Exited`, `Resync`) go to that session's stream
 //!   (`attach`).
 //!   Replies (`Sessions`, `Created`, `Text`, `Error`) go to the waiting request: the daemon
-//!   answers in the order it was asked, so requests queue in send order. The reader never
-//!   waits on anything but the socket;
+//!   answers in the order it was asked, so requests queue in send order. `Show` (a click on
+//!   one of the service's banners, M11c) goes to `shows`. The reader never waits on anything
+//!   but the socket;
 //! - one writer thread drains a bounded queue of encoded frames onto the socket. Senders wait
 //!   while it is full (the daemon pushes back on input a child doesn't read).
 
@@ -22,6 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
+
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::daemon;
 use crate::mux_proto::{
@@ -138,8 +141,22 @@ struct Routes {
     next_token: u64,
     /// Requests waiting for a reply, in the order they were sent.
     pending: VecDeque<Pending>,
+    /// Where `Show` frames go.
+    shows: Shows,
     /// The connection is gone: nothing more will be routed.
     closed: bool,
+}
+
+/// Where `Show` frames go: kept (only the latest) until something listens (`shows`), then to it.
+enum Shows {
+    Kept(Option<u64>),
+    To(UnboundedSender<u64>),
+}
+
+impl Default for Shows {
+    fn default() -> Self {
+        Shows::Kept(None)
+    }
 }
 
 /// The GUI's connection to the daemon. Share it (`Arc`); dropping the last one closes it
@@ -239,6 +256,24 @@ impl DaemonClient {
     /// The daemon's random instance id (`None` from an older daemon).
     pub fn instance(&self) -> Option<u64> {
         self.hello.instance
+    }
+
+    /// The sessions to show for clicks on the service's banners (`Show`, M11c), each the
+    /// session's id. One that came before this was called (as right after `Hello`, for a click
+    /// that opened fuxx) comes first; only the latest such one is kept. A later call takes them
+    /// over and the earlier stream ends; it also ends with the connection.
+    pub fn shows(&self) -> UnboundedReceiver<u64> {
+        let (to, shows) = unbounded();
+        let mut routes = lock(&self.routes);
+        if let Shows::Kept(Some(id)) = routes.shows {
+            let _ = to.unbounded_send(id);
+        }
+        routes.shows = if routes.closed {
+            Shows::Kept(None)
+        } else {
+            Shows::To(to)
+        };
+        shows
     }
 
     /// Every session the daemon has.
@@ -526,6 +561,7 @@ fn read_loop(stream: &UnixStream, mut decoder: Decoder, routes: &Mutex<Routes>) 
     routes.closed = true;
     routes.sessions.clear();
     routes.pending.clear();
+    routes.shows = Shows::Kept(None);
     drop(routes);
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
@@ -572,6 +608,15 @@ fn route(routes: &Mutex<Routes>, frame: Frame) {
             } else {
                 log!("a reply nobody asked for: {frame:?}");
             }
+        }
+        Frame::Show { id } => {
+            if let Shows::To(to) = &routes.shows
+                && to.unbounded_send(id).is_ok()
+            {
+                return;
+            }
+            // Nothing listens (yet): keep it for `shows`.
+            routes.shows = Shows::Kept(Some(id));
         }
         // `DaemonInfo`, `StopReply` (never asked here), and kinds from a newer daemon.
         _ => {}
@@ -754,6 +799,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::daemon::{self, Running};
     use crate::mux_proto::{CellPx as WireCell, Decoder, Dims, encode};
+    use futures::channel::mpsc::TryRecvError;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
@@ -1129,6 +1175,61 @@ pub(crate) mod tests {
         let names: Vec<&str> = env.keys().map(String::as_str).collect();
         assert_eq!(names, ["FUXX_TEST_SET", "PATH"]);
         assert_eq!(env["PATH"], "/login/bin");
+    }
+
+    /// The next `Show` from `shows`, waiting up to 5 s; `None` if none comes.
+    fn next_show(shows: &mut UnboundedReceiver<u64>) -> Option<u64> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match shows.try_recv() {
+                Ok(show) => return Some(show),
+                Err(TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Whether `shows` has ended, waiting up to 5 s.
+    fn ended(shows: &mut UnboundedReceiver<u64>) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match shows.try_recv() {
+                Err(TryRecvError::Closed) => return true,
+                _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+                _ => return false,
+            }
+        }
+    }
+
+    #[test]
+    fn a_show_from_the_service_waits_for_its_listener_and_the_latest_is_kept() {
+        let (d, path) = daemon("shows");
+        // Clicked with no window attached: the service sends it right after the next Hello,
+        // before anything here listens.
+        d.click_banner(Some(4));
+        let client = DaemonClient::connect(&path).unwrap();
+        // Arrived (a reply sent after it has come) before anything listens.
+        client.list().unwrap();
+        let mut shows = client.shows();
+        assert_eq!(next_show(&mut shows), Some(4));
+        // While listening, each comes at once.
+        d.click_banner(Some(6));
+        assert_eq!(next_show(&mut shows), Some(6));
+        // Not listening (a new listener replaces the old one, whose stream ends): only the
+        // latest is kept for the next listener.
+        drop(shows);
+        d.click_banner(Some(1));
+        d.click_banner(Some(2));
+        client.list().unwrap();
+        let mut shows = client.shows();
+        assert_eq!(next_show(&mut shows), Some(2));
+        let mut newer = client.shows();
+        assert!(ended(&mut shows), "the replaced stream ends");
+        // The connection gone, the stream ends.
+        drop(d);
+        assert!(ended(&mut newer), "the stream ends with the connection");
     }
 
     #[test]

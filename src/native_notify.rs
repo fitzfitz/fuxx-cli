@@ -3,7 +3,7 @@
 //! framework throws, so nothing here touches it unless `is_bundled()`.
 
 use std::cell::RefCell;
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::time::Duration;
 
 use block2::{DynBlock, RcBlock};
@@ -132,15 +132,15 @@ pub fn terminal_of(request_id: &str) -> Option<u64> {
     terminal.parse().ok()
 }
 
-/// What a click does, and the delegate that reports it (macOS keeps only a weak reference to
-/// the delegate, so it is kept here). Set once by `install`, on the main thread.
-struct Clicks {
-    on_click: Box<dyn Fn(Option<u64>)>,
-    _delegate: Retained<ClickDelegate>,
-}
+/// What a click does. Set once, by `hear_clicks`; callable from any thread, so a click is heard
+/// whichever thread macOS reports it on (the window's or the background service's).
+type OnClick = Box<dyn Fn(Option<u64>) + Send + Sync>;
+static ON_CLICK: OnceLock<OnClick> = OnceLock::new();
 
 thread_local! {
-    static CLICKS: RefCell<Option<Clicks>> = const { RefCell::new(None) };
+    /// The delegate, kept on the main thread where `hear_clicks` made it: macOS holds only a
+    /// weak reference to it.
+    static DELEGATE: RefCell<Option<Retained<ClickDelegate>>> = const { RefCell::new(None) };
 }
 
 define_class!(
@@ -174,16 +174,9 @@ define_class!(
             handler: &DynBlock<dyn Fn()>,
         ) {
             let id = response.notification().request().identifier().to_string();
-            let terminal = terminal_of(&id);
-            // macOS calls this on the main thread, where `install` left the callback.
-            let heard = CLICKS.with_borrow(|clicks| {
-                clicks
-                    .as_ref()
-                    .map(|clicks| (clicks.on_click)(terminal))
-                    .is_some()
-            });
-            if !heard {
-                eprintln!("[fuxx] notifications: a click on {id} arrived off the main thread");
+            match ON_CLICK.get() {
+                Some(on_click) => on_click(terminal_of(&id)),
+                None => eprintln!("[fuxx] notifications: a click on {id} with nobody to hear it"),
             }
             handler.call(());
         }
@@ -191,27 +184,33 @@ define_class!(
 );
 
 /// Hear clicks on fuxx's banners (the window's side, at launch, before the app runs so a click
-/// that opened fuxx is not missed): a click calls `on_click` on the main thread with the
-/// terminal (`sN`) the banner is about, `None` for one about no terminal. Banners also show
-/// while fuxx is the active app. Then asks macOS, once, for permission to show alerts (no
-/// sound), without waiting for the answer. Only from the app bundle (and the main thread);
-/// otherwise nothing happens.
-pub fn install(on_click: impl Fn(Option<u64>) + 'static) {
-    if MainThreadMarker::new().is_none() || !is_bundled() {
-        return;
+/// that opened fuxx is not missed): `hear_clicks`, then asks macOS, once, for permission to
+/// show alerts (no sound), without waiting for the answer. Only from the app bundle (and the
+/// main thread); otherwise nothing happens.
+pub fn install(on_click: impl Fn(Option<u64>) + Send + Sync + 'static) {
+    if hear_clicks(on_click) {
+        ask_permission(&UNUserNotificationCenter::currentNotificationCenter());
     }
-    if CLICKS.with_borrow(Option::is_some) {
-        return;
+}
+
+/// Hear clicks on the banners this process posts: a click calls `on_click` with the terminal
+/// (`sN`) the banner is about, `None` for one about no terminal. Banners also show while fuxx is
+/// the active app. macOS reports clicks on the main thread while its run loop runs (the app's,
+/// or the background service's `daemon::Running::wait`). Once per process, only from the app
+/// bundle and on the main thread; false (and nothing happens) otherwise.
+pub fn hear_clicks(on_click: impl Fn(Option<u64>) + Send + Sync + 'static) -> bool {
+    if MainThreadMarker::new().is_none() || !is_bundled() {
+        return false;
+    }
+    if ON_CLICK.set(Box::new(on_click)).is_err() {
+        return false;
     }
     // SAFETY: `new` on an NSObject subclass with no ivars returns a fresh, initialised object.
     let delegate: Retained<ClickDelegate> = unsafe { msg_send![ClickDelegate::class(), new] };
     let center = UNUserNotificationCenter::currentNotificationCenter();
     center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    CLICKS.set(Some(Clicks {
-        on_click: Box::new(on_click),
-        _delegate: delegate,
-    }));
-    ask_permission(&center);
+    DELEGATE.set(Some(delegate));
+    true
 }
 
 /// Ask macOS for permission to show alerts (no sound). Not waited for: the answer only matters
