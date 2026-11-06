@@ -53,8 +53,11 @@ pane and tab.
    service** gets it and macOS opens fuxx by itself; with neither, macOS opens fuxx and **the new fuxx** gets it. So
    both handle clicks: the window directly (also at launch), the service by passing the terminal to the window once it
    connects.
-2. **"That terminal" is its session id** — the `sN` that `fuxx ls` shows, which the background service keeps across
-   window reattaches (M10a). The banner carries it; the window finds the tab holding `sN` in its layout.
+2. **"That terminal" is its session id plus the run that numbered it** — the `sN` that `fuxx ls` shows, and which
+   run of fuxx (or of the background service) gave it that number. Numbers start again at `s1` in a new run, and
+   macOS keeps banners in Notification Center across runs, so a click on a banner from an earlier run just brings fuxx
+   forward instead of showing today's unrelated `sN` (corrected after the final review; the first version assumed
+   `sN` never repeats). The same run part keeps every banner's id unique, so a new banner never replaces an old one.
 3. **A click before the layout exists** (fuxx opened by the click) is held as one pending target and shown once
    reattaching and restoring have finished; a later click replaces it. The same path serves a click while fuxx runs.
 4. **"Running from the app bundle"** means the main bundle's identifier is `io.github.fitzfitz.fuxx`; anything else
