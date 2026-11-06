@@ -220,6 +220,7 @@ const SCENES: &[(&str, fn())] = &[
     ("browser-tab", browser_tab_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
+    ("default-name", default_name),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("panels", panel_scenes),
@@ -623,7 +624,7 @@ fn sidebar_mock(ui: UiColors, mono: &Font) -> Div {
             false,
             mark(ui.ring_idle, true),
             "5",
-            "🖕",
+            "╭∩╮",
             "2h",
             None,
         ))
@@ -3165,6 +3166,52 @@ fn api_background() {
         slot.borrow_mut().take();
     };
     render_with(&theme, size(px(960.0), px(560.0)), build, act);
+}
+
+/// A new workspace, which has no name of yours (M11c Task 3b): its sidebar row and its tab show
+/// the default, `groups::DEFAULT_NAME`. Shot in both themes (`default-name-*.png`) to see that
+/// the glyphs draw (no missing-glyph boxes); panics unless the label is the default.
+fn default_name() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws.open_unnamed_shot_session(std::path::Path::new(API), SHELL_TEXT, window, cx);
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let acting = slot.clone();
+        let act = move |cx: &mut VisualTestAppContext, _window: AnyWindowHandle| {
+            let ws = slotted(&acting);
+            let label = cx.read(|cx| ws.read(cx).sessions.items()[0].label());
+            assert_eq!(
+                label.as_ref(),
+                crate::groups::DEFAULT_NAME,
+                "default-name: a new terminal shows the default"
+            );
+            drop(ws);
+            acting.borrow_mut().take();
+        };
+        let path = shoot_with(
+            "default-name",
+            slug,
+            &theme,
+            size(px(960.0), px(360.0)),
+            build,
+            act,
+        );
+        println!("{}", path.display());
+    }
 }
 
 /// Two workspaces for `banner_click`: api's, and docs's split in two: docs and notes in the left

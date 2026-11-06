@@ -4,7 +4,7 @@ use crate::status::Status;
 use std::path::{Path, PathBuf};
 
 /// The name a session shows when nothing better is known.
-pub const DEFAULT_NAME: &str = "🖕";
+pub const DEFAULT_NAME: &str = "╭∩╮";
 
 /// First of user name, terminal title, preset name that is not blank (trimmed), else the default.
 pub fn auto_name(user: Option<&str>, title: Option<&str>, preset: Option<&str>) -> String {
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(auto_name(Some("api"), Some("vim"), Some("claude")), "api");
         assert_eq!(auto_name(Some("  "), Some(" vim "), Some("claude")), "vim");
         assert_eq!(auto_name(None, None, Some("claude")), "claude");
-        assert_eq!(auto_name(None, None, None), "🖕");
+        assert_eq!(auto_name(None, None, None), "╭∩╮");
     }
 
     fn folder(path: &str) -> GroupKey {
