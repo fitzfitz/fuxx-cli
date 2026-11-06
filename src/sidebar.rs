@@ -20,13 +20,14 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    Animation, AnimationExt, AnyElement, AnyView, Bounds, BoxShadow, ClickEvent, Context,
+    Animation, AnimationExt, AnyElement, AnyView, App, Bounds, BoxShadow, ClickEvent, Context,
     DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, TextStyle,
     TruncateFrom, Window, canvas, div, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
+use crate::drag_gap::{self, Slid};
 use crate::groups::{self, GroupKey, Row};
 use crate::layout_model::{Model, TabDrop, TabKind, WorkspaceId};
 use crate::preferences;
@@ -36,7 +37,7 @@ use crate::restore::SavedState;
 use crate::sidebar_toggle::Tip;
 use crate::status::{self, Status};
 use crate::status_mark;
-use crate::tab_bar::DraggedTab;
+use crate::tab_bar::{DraggedTab, hold_closed_hand};
 use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
@@ -375,12 +376,41 @@ pub fn clamp_width(width: Option<f32>) -> f32 {
     }
 }
 
-/// Where a row dragged from `from` and dropped on `target`'s upper (or with `below`, lower)
-/// half lands, as `Model::move_workspace_display` takes it.
-pub fn drop_index(from: usize, target: usize, below: bool) -> usize {
-    // The place before which it goes, then one less if taking it out shifted that place.
-    let before = target + usize::from(below);
-    if from < before { before - 1 } else { before }
+/// How far each item of the sidebar list is drawn from its place while the row at `own` is
+/// dragged within its run (`run`: whether each item is a row of it): a gap as tall as the row,
+/// `height`, and the gap after it, opens at slot `slot` among the run's other rows (none: at its
+/// own place); rows outside the run (and headers) stay.
+pub fn row_offsets(run: &[bool], own: usize, slot: Option<usize>, height: f32) -> Vec<f32> {
+    let members: Vec<usize> = (0..run.len()).filter(|&i| run[i]).collect();
+    let mut offsets = vec![0.0; run.len()];
+    let Some(at) = members.iter().position(|&i| i == own) else {
+        return offsets;
+    };
+    let gap = slot.unwrap_or(at);
+    let moved = drag_gap::gap_offsets(members.len(), Some(at), Some(gap), height + ROW_GAP);
+    for (i, offset) in members.into_iter().zip(moved) {
+        offsets[i] = offset;
+    }
+    offsets
+}
+
+/// The slot a row dragged within its run lands in, from its copy's `centre` and the run's rows'
+/// `(top, bottom)` as laid out (scrolled), its own at `own`, `size` the room it takes (its height
+/// and the gap after it); none while its centre is off the run by more than half of it (a drop
+/// there would put it back).
+pub fn row_slot(centre: f32, spans: &[(f32, f32)], own: usize, size: f32) -> Option<usize> {
+    let (first, last) = (spans.first()?, spans.last()?);
+    let reach = size / 2.0;
+    (first.0 - reach..=last.1 + reach)
+        .contains(&centre)
+        .then(|| drag_gap::landing_slot(centre, spans, Some(own), size))
+}
+
+/// Where a row dropped at `slot` of its run goes, as `Model::move_workspace_display` takes it:
+/// `in_run` says whether each workspace in display order is of the run (one stretch of it).
+pub fn run_drop_index(in_run: &[bool], slot: usize) -> Option<usize> {
+    let start = in_run.iter().position(|&r| r)?;
+    Some(start + slot)
 }
 
 /// How long until an age label (`status::age_label`) of `age` next changes.
@@ -469,11 +499,13 @@ pub(crate) struct SidebarState {
     pub new_menu: bool,
     /// A row's tab menu is open (right-click).
     pub tab_menu: Option<TabMenu>,
-    /// While a row is dragged: the row the pointer is over, and whether it's in its lower
-    /// half. Only where the drop would move it.
-    pub drop_at: Option<(WorkspaceId, bool)>,
-    /// The row being dragged, noted as its drag starts.
-    pub drag_source: Rc<Cell<Option<WorkspaceId>>>,
+    /// While a row is dragged: the slot of its run it would land in (`row_slot`). Only where
+    /// the drop would move it; none: its gap is at its own place.
+    pub drop_slot: Option<usize>,
+    /// The row being dragged and where it was taken, noted as its drag starts.
+    pub drag_source: Rc<Cell<Option<RowGrab>>>,
+    /// The workspace each item of the list shows, as last drawn (none: a group's header).
+    listed: Vec<Option<WorkspaceId>>,
     /// The group last opened or closed, and that toggle's number: its chevron turns.
     pub turned: Option<(GroupKey, u64)>,
     turns: u64,
@@ -492,8 +524,9 @@ impl SidebarState {
             resizing: false,
             new_menu: false,
             tab_menu: None,
-            drop_at: None,
+            drop_slot: None,
             drag_source: Rc::new(Cell::new(None)),
+            listed: Vec::new(),
             turned: None,
             turns: 0,
             age_refresh: None,
@@ -535,6 +568,14 @@ impl SidebarState {
 pub(crate) struct DraggedWorkspace {
     workspace: WorkspaceId,
     run: (bool, Option<GroupKey>),
+}
+
+/// A row's drag as it started: the workspace, and how far below the row's top the pointer took
+/// it (GPUI's cursor offset).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RowGrab {
+    pub workspace: WorkspaceId,
+    pub at: f32,
 }
 
 /// The row that follows the pointer during a drag: the row itself, lifted.
@@ -914,14 +955,30 @@ impl Workspace {
                 }
             }
         }
+        self.sidebar.listed = rows
+            .iter()
+            .map(|row| match row {
+                SidebarRow::Workspace(s) => Some(s.workspace),
+                SidebarRow::Header(_) => None,
+            })
+            .collect();
+        let targets = self.row_drag_offsets(&rows, cx);
+        let (now, animate) = (Instant::now(), !cx.reduce_motion());
         let elements: Vec<AnyElement> = rows
             .iter()
+            .zip(targets)
             .enumerate()
-            .map(|(i, row)| match row {
+            .map(|(i, (row, target))| match row {
                 SidebarRow::Header(h) => self.render_header(h, i == 0, ui, cx),
                 SidebarRow::Workspace(s) => {
                     let gap = gap_before(i.checked_sub(1).map(|p| &rows[p]), row);
-                    self.render_workspace_row(s, gap, ui, cx)
+                    let offset = self.drag_slides.borrow_mut().offset(
+                        Slid::Row(s.workspace),
+                        target,
+                        now,
+                        animate,
+                    );
+                    self.render_workspace_row(s, gap, offset, ui, cx)
                 }
             })
             .collect();
@@ -938,6 +995,16 @@ impl Workspace {
             .track_scroll(&self.sidebar.scroll)
             // Scrolling changes which marks are on screen, so the ticker re-checks (`render`).
             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            // A dragged row moves within its run: its gap follows it over the list, and a drop
+            // anywhere on the list puts it there.
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
+                    this.drag_row_over_list(event, cx)
+                }),
+            )
+            .on_drop(cx.listener(|this, dragged: &DraggedWorkspace, _, cx| {
+                this.drop_workspace(dragged.workspace, cx)
+            }))
             .children(elements);
         let notice = self.notice.clone().map(|notice| {
             div()
@@ -1104,6 +1171,7 @@ impl Workspace {
         &self,
         row: &WorkspaceRow,
         gap: bool,
+        offset: f32,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1134,20 +1202,13 @@ impl Workspace {
             .filter(|(r, _)| *r == Renaming::Workspace(ws))
             .map(|(_, input)| input.clone());
         let run = self.sidebar_run(ws);
-        // While a row is dragged: it's dimmed; rows of another run (group, or the pinned ones)
-        // refuse it.
-        let dragged = self
+        // While it's dragged, its place shows empty: its copy is it.
+        let lifted = self
             .sidebar
             .drag_source
             .get()
-            .filter(|_| cx.has_active_drag());
-        let lifted = dragged == Some(ws);
-        let refused = dragged.is_some_and(|d| self.sidebar_run(d) != run);
-        let insertion = self
-            .sidebar
-            .drop_at
-            .filter(|(w, _)| dragged.is_some() && *w == ws)
-            .map(|(_, below)| below);
+            .filter(|_| cx.has_active_drag())
+            .is_some_and(|grab| grab.workspace == ws);
         // A pane tab dragged over it: dropping moves the tab into this workspace.
         let tab_target =
             self.dragged_tab(cx).is_some() && self.tab_drop == Some(TabDrop::Workspace(ws));
@@ -1271,19 +1332,16 @@ impl Workspace {
             status: row.status,
             width: self.sidebar.width,
         };
-        let accepts = run.clone();
-        div()
+        let row_el = div()
             .id(("workspace", ws.0 as usize))
             .group(ROW_GROUP)
-            .flex_none()
-            .relative()
+            .absolute()
+            .top(px(offset))
+            .left_0()
+            .size_full()
             .flex()
             .flex_col()
             .justify_center()
-            .h(px(row_height(row)))
-            // Under the pinned rows, a group's gap sets the rest apart.
-            .when(gap, |row| row.mt(px(GROUP_GAP - ROW_GAP)))
-            .mx(px(ROW_INSET))
             .px(px(ROW_PAD))
             .rounded(px(6.0))
             .text_size(px(text::NAME))
@@ -1292,14 +1350,9 @@ impl Workspace {
             .when_some(hover, |row, hover| {
                 row.hover(move |style| style.bg(hsla(hover)))
             })
-            .when(lifted, |row| row.opacity(0.4))
-            .map(|row| {
-                if refused {
-                    row.cursor_not_allowed()
-                } else {
-                    row.cursor_pointer()
-                }
-            })
+            .when(lifted, |row| row.opacity(0.0))
+            // During any drag the closed hand shows instead (`hold_closed_hand`).
+            .cursor_pointer()
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.select_workspace(ws, window, cx);
                 if event.click_count() == 2 {
@@ -1323,9 +1376,13 @@ impl Workspace {
                     workspace: ws,
                     run: run.clone(),
                 },
-                move |dragged, _, _, cx| {
-                    source.set(Some(dragged.workspace));
+                move |dragged, at, window, cx| {
+                    source.set(Some(RowGrab {
+                        workspace: dragged.workspace,
+                        at: f32::from(at.y),
+                    }));
                     tab_source.set(None); // not a tab's drag any more
+                    hold_closed_hand(window, cx);
                     cx.new(|_| DragPreview {
                         label: preview.label.clone(),
                         place: preview.place.clone(),
@@ -1333,22 +1390,8 @@ impl Workspace {
                     })
                 },
             )
-            // Only rows of the dragged workspace's run accept it; the drop re-checks. Every row
-            // accepts a pane tab (moved into its workspace, not a reorder).
-            .can_drop(
-                move |dragged, _, _| match dragged.downcast_ref::<DraggedWorkspace>() {
-                    Some(d) => d.run == accepts,
-                    None => dragged.is::<DraggedTab>(),
-                },
-            )
-            .on_drag_move(cx.listener(
-                move |this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
-                    this.drag_over_row(ws, event, cx)
-                },
-            ))
-            .on_drop(cx.listener(move |this, dragged: &DraggedWorkspace, _, cx| {
-                this.drop_workspace(dragged.workspace, ws, cx)
-            }))
+            // Every row takes a pane tab (moved into its workspace, not a reorder); a dragged row
+            // is the list's (`drag_row_over_list`).
             .on_drag_move(
                 cx.listener(move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
                     this.drag_tab_over_row(ws, event, cx)
@@ -1379,23 +1422,6 @@ impl Workspace {
                         ),
                 )
             })
-            // Where a dragged row would land: a line in the gap above or below this one (beside
-            // the selected row, in the text colour: an accent line would merge with its fill).
-            .when_some(insertion, |row_el, below| {
-                let color = if row.active { ui.text } else { ui.accent };
-                let line = div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .h(px(DIVIDER_ACTIVE))
-                    .rounded(px(1.0))
-                    .bg(hsla(color));
-                row_el.child(if below {
-                    line.bottom(px(-ROW_GAP))
-                } else {
-                    line.top(px(-ROW_GAP))
-                })
-            })
             // A pane tab over it: lit as on hover (GPUI draws no hover during a drag) and ringed
             // in the accent (on the selected row, filled with it, in `on_accent`).
             .when(tab_target, |row_el| {
@@ -1410,8 +1436,44 @@ impl Workspace {
                         .border(px(DIVIDER_ACTIVE))
                         .border_color(hsla(ring)),
                 )
-            })
+            });
+        // Its place in the list: the room the list gives it, where the row is drawn from.
+        div()
+            .flex_none()
+            .relative()
+            .h(px(row_height(row)))
+            // Under the pinned rows, a group's gap sets the rest apart.
+            .when(gap, |place| place.mt(px(GROUP_GAP - ROW_GAP)))
+            .mx(px(ROW_INSET))
+            .child(row_el)
             .into_any_element()
+    }
+
+    /// While a row is dragged: how far each item of the list `rows` is drawn from its place
+    /// (`row_offsets`), its gap at the slot it would land in, or at its own place.
+    fn row_drag_offsets(&self, rows: &[SidebarRow], cx: &App) -> Vec<f32> {
+        let grab = self
+            .sidebar
+            .drag_source
+            .get()
+            .filter(|_| cx.has_active_drag());
+        let dragged = grab.and_then(|grab| {
+            rows.iter().enumerate().find_map(|(i, row)| match row {
+                SidebarRow::Workspace(s) if s.workspace == grab.workspace => Some((i, s)),
+                _ => None,
+            })
+        });
+        let Some((own, dragged)) = dragged else {
+            return vec![0.0; rows.len()];
+        };
+        let run = self.sidebar_run(dragged.workspace);
+        let in_run: Vec<bool> = rows
+            .iter()
+            .map(|row| {
+                matches!(row, SidebarRow::Workspace(s) if self.sidebar_run(s.workspace) == run)
+            })
+            .collect();
+        row_offsets(&in_run, own, self.sidebar.drop_slot, row_height(dragged))
     }
 
     /// A session's mark on its surface's `fill` (a row, or a pane tab: `place` keeps their
@@ -1514,31 +1576,43 @@ impl Workspace {
             .child(close)
     }
 
-    /// The pointer moved during a row drag: if it's over this row (`ws`) and dropping there
-    /// would move the dragged one, the insertion line goes above or below it.
-    fn drag_over_row(
+    /// The pointer moved during a row drag: while it's over the list and the row's copy is over
+    /// its run, it lands at the slot the copy's centre is at among the run's other rows as laid
+    /// out with it taken out (`row_slot`); elsewhere, its gap goes back to its own place.
+    fn drag_row_over_list(
         &mut self,
-        ws: WorkspaceId,
         event: &DragMoveEvent<DraggedWorkspace>,
         cx: &mut Context<Self>,
     ) {
-        let over = self.sidebar.pointer_on_row(&event.event, event.bounds);
-        if !over && self.sidebar.drop_at.is_none_or(|(w, _)| w != ws) {
-            return; // not this row's business
-        }
         let dragged = event.drag(cx);
-        let (dragged, run) = (dragged.workspace, dragged.run.clone());
-        let order = self.model.display_order();
-        let find = |id: WorkspaceId| order.iter().position(|&w| w == id);
-        let next = match (over, find(dragged), find(ws)) {
-            (true, Some(from), Some(to)) if self.sidebar_run(ws) == run => {
-                let below = event.event.position.y > event.bounds.center().y;
-                (drop_index(from, to, below) != from).then_some((ws, below))
-            }
-            _ => None,
-        };
-        if self.sidebar.drop_at != next {
-            self.sidebar.drop_at = next;
+        let (ws, run) = (dragged.workspace, dragged.run.clone());
+        let grab = self.sidebar.drag_source.get().filter(|g| g.workspace == ws);
+        let pointer = event.event.position;
+        let next = grab
+            .filter(|_| self.sidebar.scroll.bounds().contains(&pointer))
+            .and_then(|grab| {
+                let scroll = &self.sidebar.scroll;
+                let dy = f32::from(scroll.offset().y);
+                let (mut own, mut spans) = (None, Vec::new());
+                for (i, item) in self.sidebar.listed.iter().enumerate() {
+                    let Some(w) = *item else { continue };
+                    if self.sidebar_run(w) != run {
+                        continue;
+                    }
+                    let b = scroll.bounds_for_item(i)?;
+                    if w == ws {
+                        own = Some(spans.len());
+                    }
+                    spans.push((f32::from(b.top()) + dy, f32::from(b.bottom()) + dy));
+                }
+                let own = own?;
+                let height = spans[own].1 - spans[own].0;
+                let centre = f32::from(pointer.y) - grab.at + height / 2.0;
+                let slot = row_slot(centre, &spans, own, height + ROW_GAP)?;
+                (slot != own).then_some(slot)
+            });
+        if self.sidebar.drop_slot != next {
+            self.sidebar.drop_slot = next;
             cx.notify();
         }
     }
@@ -2147,18 +2221,88 @@ mod tests {
     }
 
     #[test]
-    fn drop_lands_where_the_line_is() {
-        // Rows 0..5. Dragging 1 down: onto 3's upper half lands between 2 and 3.
-        assert_eq!(drop_index(1, 3, false), 2);
-        assert_eq!(drop_index(1, 3, true), 3);
-        // Dragging 3 up: onto 1's upper half lands before 1; its lower half after it.
-        assert_eq!(drop_index(3, 1, false), 1);
-        assert_eq!(drop_index(3, 1, true), 2);
-        // Onto itself, or the line right next to it: stays.
-        assert_eq!(drop_index(2, 2, false), 2);
-        assert_eq!(drop_index(2, 2, true), 2);
-        assert_eq!(drop_index(2, 1, true), 2);
-        assert_eq!(drop_index(2, 3, false), 2);
+    fn a_dragged_row_opens_a_gap_in_its_run_only() {
+        // A header, then a run of four rows (the second, 57 px tall, dragged), then another
+        // header and a row of another run.
+        let run = [false, true, true, true, true, false, false];
+        let shift = 57.0 + ROW_GAP;
+        // At its own place (or no slot yet): nothing moves.
+        assert_eq!(row_offsets(&run, 2, Some(1), 57.0), [0.0; 7]);
+        assert_eq!(row_offsets(&run, 2, None, 57.0), [0.0; 7]);
+        // To the top of the run: the row above slides down by its height and the gap.
+        assert_eq!(
+            row_offsets(&run, 2, Some(0), 57.0),
+            [0.0, shift, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        // To the end: the two below slide up; the header and the other run stay.
+        assert_eq!(
+            row_offsets(&run, 2, Some(3), 57.0),
+            [0.0, 0.0, 0.0, -shift, -shift, 0.0, 0.0]
+        );
+        // A shorter row opens a shorter gap: its own height, not its neighbours'.
+        let short = 36.0 + ROW_GAP;
+        assert_eq!(
+            row_offsets(&run, 2, Some(2), 36.0),
+            [0.0, 0.0, 0.0, -short, 0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn a_dragged_row_lands_by_its_copy_s_centre_within_its_run() {
+        // Three 40 px rows 2 px apart from y = 100; the middle one (42 px with its gap) dragged:
+        // closed up, the others' centres are 120 and (the third, moved up) 162.
+        let rows = [(100.0, 140.0), (142.0, 182.0), (184.0, 224.0)];
+        let size = 42.0;
+        assert_eq!(row_slot(110.0, &rows, 1, size), Some(0));
+        assert_eq!(row_slot(130.0, &rows, 1, size), Some(1));
+        // The third counts where it would be with the dragged one out (162), not at 204.
+        assert_eq!(row_slot(161.0, &rows, 1, size), Some(1));
+        assert_eq!(row_slot(163.0, &rows, 1, size), Some(2));
+        // Half the row's room past the run's ends still counts; further off, nowhere.
+        assert_eq!(row_slot(100.0 - 20.0, &rows, 1, size), Some(0));
+        assert_eq!(row_slot(224.0 + 20.0, &rows, 1, size), Some(2));
+        assert_eq!(row_slot(100.0 - 22.0, &rows, 1, size), None);
+        assert_eq!(row_slot(224.0 + 22.0, &rows, 1, size), None);
+        assert_eq!(row_slot(f32::NAN, &rows, 1, size), None);
+        assert_eq!(row_slot(120.0, &[], 0, size), None);
+    }
+
+    #[test]
+    fn a_dropped_row_goes_exactly_where_its_gap_was() {
+        use crate::layout_model::TabKind;
+        // Two pinned workspaces, then four unpinned: every unpinned one to every slot of its run.
+        let mut m = Model::new();
+        let ids: Vec<WorkspaceId> = (0..6)
+            .map(|i| {
+                m.new_workspace(i, TabKind::Terminal(i as u64 + 1))
+                    .unwrap()
+                    .workspace
+            })
+            .collect();
+        for id in &ids[..2] {
+            m.set_pinned(*id, true);
+        }
+        let order = m.display_order();
+        let in_run: Vec<bool> = order.iter().map(|id| !ids[..2].contains(id)).collect();
+        let run: Vec<WorkspaceId> = order[2..].to_vec();
+        for (at, &dragged) in run.iter().enumerate() {
+            for slot in 0..run.len() {
+                let mut moved = m.clone();
+                let to = run_drop_index(&in_run, slot).unwrap();
+                assert!(moved.move_workspace_display(dragged, to) || slot == at);
+                let after = moved.display_order();
+                assert_eq!(after[..2], order[..2], "{at} to {slot}: the pinned stay");
+                assert_eq!(after[2 + slot], dragged, "{at} to {slot}");
+                let others = |o: &[WorkspaceId]| -> Vec<WorkspaceId> {
+                    o.iter().copied().filter(|w| *w != dragged).collect()
+                };
+                assert_eq!(others(&after), others(&order), "{at} to {slot}");
+            }
+        }
+        // The pinned run: from its start.
+        let pinned: Vec<bool> = in_run.iter().map(|r| !r).collect();
+        assert_eq!(run_drop_index(&pinned, 1), Some(1));
+        assert_eq!(run_drop_index(&[false, false], 0), None);
     }
 
     #[test]

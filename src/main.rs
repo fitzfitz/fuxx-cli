@@ -18,6 +18,7 @@ mod daemon;
 mod daemon_client;
 mod daemon_session;
 mod detector;
+mod drag_gap;
 mod fonts;
 mod git_branch;
 mod grid;
