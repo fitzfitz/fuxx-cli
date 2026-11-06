@@ -87,6 +87,43 @@ workspace, with fuxx in the background, and with the window closed and the servi
 old banners still come; allowing it later in System Settings → fuxx banners from then on. `cargo run` still notifies
 (old banners).
 
+## On-screen checklist (pending)
+
+Use `target/dist/fuxx.app` (rebuilt for this check). Banners appear only for a terminal you're **not** looking at, so
+start an agent (or `sleep 5; echo done`-style work) in one tab and switch to another tab or app while it runs.
+
+**Banners from fuxx**
+1. First launch after this update: macOS asks whether fuxx may send notifications. Allow. (If it doesn't ask, fuxx
+   was allowed in the earlier test — fine.)
+2. A finished agent's banner is titled **fuxx** (no "Script Editor"), with the workspace name and "Worked for …"; a
+   waiting agent's shows its question. No sound.
+3. `fuxx notify --title hello world` from a terminal (switch away first): a fuxx banner; clicking it shows that
+   terminal.
+4. System Settings → Notifications lists **fuxx**.
+
+**Clicking a banner**
+5. Agent finishes in another tab of the same workspace → click its banner: that tab is shown with the keyboard.
+6. …in another workspace → click: that workspace, pane and tab are shown.
+7. …with fuxx in the background (another app in front) → click: fuxx comes forward on that tab.
+8. Close the agent's tab, then click its (older) banner in Notification Center: fuxx comes forward, nothing else
+   changes.
+9. Quit fuxx, open it again, click a banner left over from before the restart (Notification Center): fuxx comes
+   forward **without switching tabs** (the old `sN` belongs to the previous run).
+
+**Window closed, background service on** (Preferences → "Keep running after quit" On, then relaunch fuxx)
+10. Start an agent, close the window (⌘Q keeps sessions running), wait for its banner: titled fuxx.
+11. Click it: fuxx opens, restores, and lands on that agent's tab.
+12. Same, but click the banner while fuxx is still opening: it still lands on that tab once the layout is back.
+
+**Never silent**
+13. Reset the permission: `tccutil reset All io.github.fitzfitz.fuxx`, relaunch fuxx, choose **Don't Allow**: banners
+    still come, the old way ("Script Editor"). Then allow fuxx in System Settings: fuxx banners from then on.
+14. A `cargo run` build still notifies (old banners).
+
+**The default name (Task 3b)**
+15. A new workspace and a new tab are named **╭∩╮** (sidebar row, tab, window title, ⌘P, `fuxx ls`); it reads well
+    in a dark and a light theme. Names you gave stay as they were.
+
 ## Related
 
 [[40 - Roadmap]] · [[44 - Milestone 4 - Notification Rings]] (D5) · [[50 - Milestone 10a - Persistent Sessions]] ·
