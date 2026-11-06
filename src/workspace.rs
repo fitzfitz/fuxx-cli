@@ -1,6 +1,7 @@
-//! The root view: a sidebar listing every session (with its status mark) and the layout of
-//! panes holding the active session. Owns session lifecycle, switching, splits, and background
-//! notifications.
+//! The root view: a sidebar listing every workspace (with its most urgent terminal's status
+//! mark) and the focused workspace's layout of panes, each showing its active tab (M11b; the
+//! rules are `layout_model`'s). Owns session lifecycle, switching, splits, and background
+//! notifications. A session is one terminal (`sN`); every session is shown by exactly one tab.
 //!
 //! With persistence on (M10a), the background service runs the sessions: ids come from it,
 //! opening creates there, closing ends there, and quitting only detaches. A lost connection is
@@ -33,6 +34,7 @@ use crate::appearance::Appearance;
 use crate::daemon_client::{self, DaemonClient};
 use crate::groups::{self, GroupKey};
 use crate::host_picker::HostPicker;
+use crate::layout_model::{self, Model, PaneId, TabKind, WorkspaceId};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
@@ -46,12 +48,11 @@ use crate::session_list::SessionList;
 use crate::settings;
 use crate::sidebar::{self, SidebarState};
 use crate::sidebar_toggle::{self, Slide};
-use crate::split_tree::{self, Axis, Dir, Node, Rect};
+use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::switcher::Switcher;
-use crate::tab_color::TabColor;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{TOP_BAND, UNFOCUSED_VEIL};
@@ -139,8 +140,6 @@ pub struct Session {
     pub lost: bool,
     /// The host an SSH session connects to (M10b); none for a local one.
     pub ssh: Option<SshTarget>,
-    /// The colour given it from its row's menu (M11), shown as a dot; saved.
-    pub color: Option<TabColor>,
     /// SSH: the connection failed and the pane is held for a reconnect.
     pub(crate) disconnected: Option<Disconnected>,
     /// SSH: automatic reconnects in a row so far (each waits longer).
@@ -162,12 +161,12 @@ pub(crate) enum Overlay {
     TabMenu,
 }
 
-/// Where a new session's pane goes, by view (so it holds while the list changes): a layout of
-/// its own, split from a pane, or in that pane's place.
+/// Where a new session goes: a workspace of its own, a new pane split from a pane, or in the
+/// place of a session (by its view: an SSH reconnect).
 #[derive(Clone, Copy)]
 pub(crate) enum At {
     New,
-    Split(Axis, EntityId),
+    Split(Axis, PaneId),
     Replace(EntityId),
 }
 
@@ -196,20 +195,21 @@ impl Session {
 }
 
 pub struct Workspace {
+    /// The terminals, in sidebar order (workspaces in display order, then each one's terminals
+    /// in reading order: `sync`); the active one is the focused tab's.
     pub(crate) sessions: SessionList<Session>,
-    /// The split layouts, by each session's view. Every session is in exactly one; a session
-    /// never split is a layout of its own.
-    pub(crate) layouts: Vec<Node<EntityId>>,
+    /// The workspaces, their panes and tabs (M11b). Every session is shown by exactly one tab.
+    pub(crate) model: Model,
     /// Where the layout on screen is drawn, in window pixels; written each frame by a canvas.
     pane_area: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// The line being dragged: a pane of its layout (by view) and the path to its split.
-    pub(crate) dragging: Option<(EntityId, Vec<bool>)>,
-    /// The divider the pointer is over, like `dragging`: its layout's pane and its split's path.
-    divider_hover: Option<(EntityId, Vec<bool>)>,
+    /// The line being dragged: its workspace and the path to its split.
+    pub(crate) dragging: Option<(WorkspaceId, Vec<bool>)>,
+    /// The divider the pointer is over, like `dragging`.
+    divider_hover: Option<(WorkspaceId, Vec<bool>)>,
     /// The groups closed in the sidebar.
     pub(crate) collapsed: Vec<GroupKey>,
-    /// The rename box, and the session (by its view) it renames.
-    pub(crate) renaming: Option<(EntityId, Entity<NameInput>)>,
+    /// The rename box, and the workspace it renames.
+    pub(crate) renaming: Option<(WorkspaceId, Entity<NameInput>)>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
     /// The ⌘P session switcher, while it is open (M11).
@@ -340,7 +340,7 @@ impl Workspace {
         let (socket, requests) = scripting.unzip();
         Self {
             sessions: SessionList::new(),
-            layouts: Vec::new(),
+            model: Model::new(),
             pane_area: Rc::new(Cell::new(None)),
             dragging: None,
             divider_hover: None,
@@ -420,12 +420,12 @@ impl Workspace {
         held
     }
 
-    /// Open the saved sessions in order, then put their layouts back (`restored`). SSH ones
-    /// first read their ssh settings off the UI thread, so then all of it happens once that's
-    /// done.
+    /// Open the saved sessions in order (each with its place in the file's `sessions`), then
+    /// put their workspaces back (`restored`). SSH ones first read their ssh settings off the
+    /// UI thread, so then all of it happens once that's done.
     fn open_restored(
         &mut self,
-        launches: Vec<Launch>,
+        launches: Vec<(usize, Launch)>,
         state: SavedState,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -436,12 +436,29 @@ impl Workspace {
             self.ssh_failed(&why, cx);
         }
         let targets: Vec<Option<SshTarget>> =
-            launches.iter().map(|l| l.saved.ssh.clone()).collect();
-        if targets.iter().all(Option::is_none) {
-            for launch in launches {
-                self.open_session(launch, None, window, cx);
+            launches.iter().map(|(_, l)| l.saved.ssh.clone()).collect();
+        let open_all = move |this: &mut Self,
+                             programs: Vec<Option<Vec<String>>>,
+                             window: &mut Window,
+                             cx: &mut Context<Self>| {
+            // Without the background service (the only way here) each opens at once, so its
+            // terminal is known when `open_now` returns.
+            let terminals = Rc::new(std::cell::RefCell::new(vec![None; state.sessions.len()]));
+            for ((i, launch), program) in launches.into_iter().zip(programs) {
+                let terminals = terminals.clone();
+                let opened: Opened = Box::new(move |_, id, _, _| {
+                    if let Some(slot) = terminals.borrow_mut().get_mut(i) {
+                        *slot = id;
+                    }
+                });
+                this.open_now(launch, At::New, program, Some(opened), window, cx);
             }
-            self.restored(state, window, cx);
+            let terminals = terminals.take();
+            this.restored(state, &terminals, window, cx);
+        };
+        if targets.iter().all(Option::is_none) {
+            let programs = vec![None; targets.len()];
+            open_all(self, programs, window, cx);
             return;
         }
         let programs = cx.background_spawn(async move {
@@ -452,48 +469,76 @@ impl Workspace {
         });
         cx.spawn_in(window, async move |this, cx| {
             let programs = programs.await;
-            this.update_in(cx, |this, window, cx| {
-                for (launch, program) in launches.into_iter().zip(programs) {
-                    this.open_now(launch, At::New, program, None, window, cx);
-                }
-                this.restored(state, window, cx);
-            })
-            .ok();
+            this.update_in(cx, |this, window, cx| open_all(this, programs, window, cx))
+                .ok();
         })
         .detach();
     }
 
-    /// `saved`'s launches per the `session-restore` mode; `None` means start one plain session.
+    /// `saved`'s launches per the `session-restore` mode, each with its place in the file's
+    /// `sessions`; `None` means start one plain session.
     fn saved_launches(
         &self,
         saved: Option<SavedState>,
         cx: &Context<Self>,
-    ) -> Option<(SavedState, Vec<Launch>)> {
+    ) -> Option<(SavedState, Vec<(usize, Launch)>)> {
         let mode = cx.global::<Appearance>().restore;
         if mode == RestoreMode::Off {
             return None;
         }
         let state = saved.filter(|s| !s.sessions.is_empty())?;
-        let launches = restore::launches(&state, mode, &cx.global::<Appearance>().presets);
+        // Not off: one per saved session, in order.
+        let launches = restore::launches(&state, mode, &cx.global::<Appearance>().presets)
+            .into_iter()
+            .enumerate()
+            .collect();
         Some((state, launches))
     }
 
-    /// After the saved sessions were opened: their layouts, groups and active session; or one
-    /// plain session when none could start.
-    fn restored(&mut self, state: SavedState, window: &mut Window, cx: &mut Context<Self>) {
+    /// After the saved sessions were opened (`terminals`: per saved session, the terminal it
+    /// opened as): their workspaces, groups and focus; or one plain session when none could
+    /// start.
+    fn restored(
+        &mut self,
+        state: SavedState,
+        terminals: &[Option<u64>],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.sessions.is_empty() {
             eprintln!("[fuxx] restore: no saved session could start, opening a new one");
             self.open_first(window, cx);
             return;
         }
-        self.restore_layouts(state.layouts, state.sessions.len());
+        if terminals.iter().any(Option::is_none) {
+            eprintln!(
+                "[fuxx] restore: a session didn't start; its neighbours take its place in its workspace"
+            );
+        }
+        self.set_model(Model::from_state(&state, terminals));
         self.collapsed = groups::collapsed_keys(&state.collapsed, &state.collapsed_hosts);
-        let last = self.sessions.items().len() - 1;
-        let active = state.active.unwrap_or(0).min(last);
-        // The normal route, so the active session's group opens.
-        self.sessions.select(active);
+        // The normal route, so the focused workspace's group opens.
         self.activate(window, cx);
         self.finish_restoring(cx);
+    }
+
+    /// Take `model` (a restore's): every session it doesn't show (never, by how it is built)
+    /// gets a workspace of its own, so none runs unseen.
+    pub(crate) fn set_model(&mut self, model: Model) {
+        self.model = model;
+        for id in self
+            .sessions
+            .items()
+            .iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+        {
+            if self.model.terminal_tab(id).is_none() {
+                let at = self.model.workspaces().len();
+                self.model.new_workspace(at, TabKind::Terminal(id));
+            }
+        }
+        self.sync();
     }
 
     /// One plain session, then saving starts.
@@ -508,39 +553,6 @@ impl Workspace {
         self.restoring = false;
         self.save();
         self.sync_quit_title(cx);
-    }
-
-    /// The layouts as session indices, for the file. A tree with a pane that isn't a session
-    /// (never, by the layout invariant) is left out rather than saved wrong.
-    fn saved_layouts(&self) -> Vec<Node<usize>> {
-        let index_of = |id: EntityId| self.sessions.position(|s| s.view.entity_id() == id);
-        self.layouts
-            .iter()
-            .filter(|t| t.leaves().into_iter().all(|id| index_of(id).is_some()))
-            .map(|t| t.map(&|id| index_of(id).unwrap_or(0)))
-            .collect()
-    }
-
-    /// Put the saved split layouts back on the restored sessions. Saved indices follow the saved
-    /// order, so if a session didn't start they no longer line up and every session stays alone.
-    fn restore_layouts(&mut self, saved: Vec<Node<usize>>, saved_count: usize) {
-        let views: Vec<EntityId> = self
-            .sessions
-            .items()
-            .iter()
-            .map(|s| s.view.entity_id())
-            .collect();
-        if views.len() != saved_count {
-            eprintln!("[fuxx] restore: a session didn't start, so split layouts weren't restored");
-            return;
-        }
-        let (trees, changed) = split_tree::sanitize(saved, views.len());
-        if changed {
-            eprintln!(
-                "[fuxx] restore: some split layouts didn't match the saved sessions; those sessions open on their own"
-            );
-        }
-        self.layouts = trees.iter().map(|t| t.map(&|i| views[i])).collect();
     }
 
     /// Whether the background service runs the sessions (their ids are its).
@@ -562,12 +574,15 @@ impl Workspace {
                 GroupKey::Host(host) => collapsed_hosts.push(host.clone()),
             }
         }
+        let (workspaces, active_workspace) = self.model.to_saved(|id| self.index_of(id));
         let state = SavedState {
             version: restore::VERSION,
             active: self.sessions.active_index(),
             collapsed,
             collapsed_hosts,
-            layouts: self.saved_layouts(),
+            layouts: Vec::new(),
+            workspaces,
+            active_workspace,
             daemon_instance: self.service.instance().filter(|_| self.daemon_backed()),
             sessions: self
                 .sessions
@@ -579,7 +594,8 @@ impl Workspace {
                     preset: s.preset.clone(),
                     daemon_id: self.daemon_backed().then_some(s.id),
                     ssh: s.ssh.clone(),
-                    color: s.color,
+                    // Colours are the workspaces' now (M11b).
+                    color: None,
                 })
                 .collect(),
             sidebar_width: Some(self.sidebar.width),
@@ -593,8 +609,8 @@ impl Workspace {
         }
     }
 
-    /// Open a session for `launch` next to its group and make it active: a layout of its own, or
-    /// with `split`, a new pane beside (Row) or under (Column) the active one.
+    /// Open a session for `launch` and make it active: a workspace of its own (next to its
+    /// group), or with `split`, a new pane beside (Row) or under (Column) the focused one.
     pub(crate) fn open_session(
         &mut self,
         launch: Launch,
@@ -602,16 +618,22 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_session_then(launch, split, None, window, cx);
+        // The pane it splits is the one focused now, not when the service answers.
+        let at = match split.zip(self.model.focused_pane()) {
+            Some((axis, pane)) => At::Split(axis, pane),
+            None => At::New,
+        };
+        self.open_session_then(launch, at, None, window, cx);
     }
 
-    /// `open_session`, then `then` with the new session's id (`None`: it didn't start). With the
-    /// background service that is once the service has created it; otherwise right away.
-    /// Refused (`open_refusal`) while the service is starting, lost, or reopening sessions.
+    /// Open a session for `launch` `at` a place, then `then` with the new session's id (`None`:
+    /// it didn't start). With the background service that is once the service has created it;
+    /// otherwise right away. Refused (`open_refusal`) while the service is starting, lost, or
+    /// reopening sessions.
     pub(crate) fn open_session_then(
         &mut self,
         launch: Launch,
-        split: Option<Axis>,
+        at: At,
         then: Option<Opened>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -623,11 +645,6 @@ impl Workspace {
             }
             return;
         }
-        // The pane it splits is the one active now, not when the service answers.
-        let at = match split.zip(self.sessions.active()) {
-            Some((axis, active)) => At::Split(axis, active.view.entity_id()),
-            None => At::New,
-        };
         self.open_now(launch, at, None, then, window, cx);
     }
 
@@ -780,9 +797,10 @@ impl Workspace {
         placed.then_some(id)
     }
 
-    /// Put a new session's view in the sidebar (next to its group) and the layouts (its own,
-    /// split from a pane, or in a pane's place), and make it active. False if the pane it was
-    /// to replace is gone.
+    /// Put a new session's view in a tab: of a workspace of its own (next to its group), of a
+    /// pane split from a pane, at the end of a pane's tabs, or in a session's place; and make it
+    /// active. A pane gone meanwhile: a workspace of its own. False if the session it was to
+    /// replace is gone.
     fn insert_session(
         &mut self,
         session_id: u64,
@@ -792,34 +810,32 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let split_at = match at {
+        let kind = TabKind::Terminal(session_id);
+        let placed = match at {
             At::Replace(old) => {
                 return self.replace_session(old, session_id, view, saved, window, cx);
             }
-            At::Split(axis, pane) => Some((axis, pane)),
+            At::Split(axis, pane) => self.model.split(pane, axis, kind.clone()),
             At::New => None,
         };
-        let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
-        let id = view.entity_id();
-        let split_done = split_at.is_some_and(|(axis, active)| {
-            self.layouts
-                .iter_mut()
-                .find(|t| t.contains(active))
-                .is_some_and(|t| t.split(active, id, axis))
-        });
-        if !split_done {
-            self.layouts.push(Node::Leaf(id));
+        if placed.is_none() {
+            let keys = self.sidebar_groups();
+            let key = groups::key(
+                saved.ssh.as_ref().map(|t| t.host.as_str()),
+                saved.project.as_deref(),
+            );
+            let at = groups::insert_index(&key_refs(&keys), key.as_ref());
+            if self.model.new_workspace(at, kind).is_none() {
+                eprintln!("[fuxx] session: s{session_id} is already shown");
+                return false;
+            }
         }
         // A split puts a new divider at the hovered path's place, with no enter event.
         self.divider_hover = None;
-        let keys = self.groups();
-        let key = groups::key(
-            saved.ssh.as_ref().map(|t| t.host.as_str()),
-            saved.project.as_deref(),
-        );
-        let index = groups::insert_index(&key_refs(&keys), key.as_ref());
-        let index = self.sessions.insert(
-            index,
+        let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
+        let end = self.sessions.items().len();
+        self.sessions.insert(
+            end,
             Session {
                 id: session_id,
                 view,
@@ -835,7 +851,6 @@ impl Workspace {
                 progress: None,
                 lost: false,
                 ssh: saved.ssh,
-                color: saved.color,
                 disconnected: None,
                 retries: 0,
                 opened_at: Instant::now(),
@@ -843,22 +858,166 @@ impl Workspace {
                 _subscription: subscription,
             },
         );
-        self.emit(&Event::Opened, Some(index));
+        self.sync();
+        self.emit(&Event::Opened, self.index_of(session_id));
         self.activate(window, cx);
         true
     }
 
-    /// Each session's group, in sidebar order.
-    pub(crate) fn groups(&self) -> Vec<Option<GroupKey>> {
-        self.sessions.items().iter().map(Session::group).collect()
+    /// After the model changed: the workspaces' groups kept together (the sidebar draws each
+    /// under one header), the sessions in sidebar order, and the focused tab's the active one.
+    pub(crate) fn sync(&mut self) {
+        let sessions = self.sessions.items();
+        let group_of = |id: u64| {
+            sessions
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(Session::group)
+        };
+        let model = &self.model;
+        let first = |w: &layout_model::Workspace| model.terminals(w.id).first().copied();
+        let groups: Vec<(WorkspaceId, Option<GroupKey>)> = model
+            .workspaces()
+            .iter()
+            .map(|w| (w.id, first(w).and_then(group_of)))
+            .collect();
+        let group = |w: &layout_model::Workspace| {
+            groups
+                .iter()
+                .find(|(id, _)| *id == w.id)
+                .and_then(|(_, key)| key.clone())
+        };
+        self.model.group_together(group);
+        let order: Vec<u64> = self
+            .model
+            .display_order()
+            .into_iter()
+            .flat_map(|w| self.model.terminals(w))
+            .collect();
+        self.sessions.sort_by_key(|s| {
+            order
+                .iter()
+                .position(|&id| id == s.id)
+                .unwrap_or(usize::MAX)
+        });
+        if let Some(i) = self.focused_terminal().and_then(|id| self.index_of(id)) {
+            self.sessions.select(i);
+        }
+        // Every op keeps the model's rules; a break is a bug, said where it can be found.
+        if let Err(broken) = self.model.check() {
+            eprintln!("[fuxx] layout: {broken}");
+        }
     }
 
-    /// Session `index`'s group as the sidebar labels it; none when it has no group.
-    pub(crate) fn group_label(&self, index: usize) -> Option<String> {
-        let keys = self.groups();
-        let key = keys.get(index)?.as_ref()?;
+    /// The terminal the focused tab shows.
+    pub(crate) fn focused_terminal(&self) -> Option<u64> {
+        self.terminal_of(self.model.focused_tab()?)
+    }
+
+    /// The terminal a tab shows (none for a browser tab).
+    pub(crate) fn terminal_of(&self, tab: layout_model::TabId) -> Option<u64> {
+        match self.model.tab(tab)?.kind {
+            TabKind::Terminal(id) => Some(id),
+            TabKind::Browser { .. } => None,
+        }
+    }
+
+    /// Session `sN`'s place in the list.
+    pub(crate) fn index_of(&self, id: u64) -> Option<usize> {
+        self.sessions.position(|s| s.id == id)
+    }
+
+    /// The pane showing session `index`.
+    pub(crate) fn pane_of(&self, index: usize) -> Option<PaneId> {
+        let tab = self
+            .model
+            .terminal_tab(self.sessions.items().get(index)?.id)?;
+        self.model.locate(tab).map(|(_, pane)| pane)
+    }
+
+    /// The workspace showing session `index`.
+    pub(crate) fn workspace_of(&self, index: usize) -> Option<WorkspaceId> {
+        let tab = self
+            .model
+            .terminal_tab(self.sessions.items().get(index)?.id)?;
+        self.model.locate(tab).map(|(ws, _)| ws)
+    }
+
+    /// The session pane `pane` shows (its active tab's terminal).
+    pub(crate) fn pane_session(&self, pane: PaneId) -> Option<&Session> {
+        let id = self.terminal_of(self.model.pane(pane)?.active)?;
+        self.sessions.items().iter().find(|s| s.id == id)
+    }
+
+    /// A workspace's sidebar group: its first terminal's (its host, else its folder).
+    pub(crate) fn workspace_group(&self, ws: WorkspaceId) -> Option<GroupKey> {
+        let first = *self.model.terminals(ws).first()?;
+        self.sessions
+            .items()
+            .iter()
+            .find(|s| s.id == first)
+            .and_then(Session::group)
+    }
+
+    /// Each workspace's group, in sidebar order (pinned ones not moved up).
+    pub(crate) fn sidebar_groups(&self) -> Vec<Option<GroupKey>> {
+        self.model
+            .workspaces()
+            .iter()
+            .map(|w| self.workspace_group(w.id))
+            .collect()
+    }
+
+    /// Each workspace's group, in display order (as the sidebar lists them).
+    pub(crate) fn display_groups(&self) -> Vec<Option<GroupKey>> {
+        self.model
+            .display_order()
+            .into_iter()
+            .map(|ws| self.workspace_group(ws))
+            .collect()
+    }
+
+    /// A workspace's group as the sidebar labels it; none when it has no group.
+    pub(crate) fn group_label(&self, ws: WorkspaceId) -> Option<String> {
+        let key = self.workspace_group(ws)?;
+        let keys = self.sidebar_groups();
         let all: Vec<&GroupKey> = keys.iter().flatten().collect();
-        Some(groups::group_label(key, &all))
+        Some(groups::group_label(&key, &all))
+    }
+
+    /// A workspace's name: yours, else its focused pane's terminal's.
+    pub(crate) fn workspace_label(&self, ws: WorkspaceId) -> SharedString {
+        let Some(w) = self.model.workspace(ws) else {
+            return groups::DEFAULT_NAME.into();
+        };
+        if let Some(name) = w.name.as_deref().filter(|n| !n.trim().is_empty()) {
+            return name.to_string().into();
+        }
+        self.pane_session(w.focused)
+            .map(Session::label)
+            .unwrap_or_else(|| groups::DEFAULT_NAME.into())
+    }
+
+    /// A workspace's place in the sidebar, from 1 (what ⌘N and the window title show).
+    pub(crate) fn workspace_number(&self, ws: WorkspaceId) -> Option<usize> {
+        self.model
+            .display_order()
+            .iter()
+            .position(|&w| w == ws)
+            .map(|at| at + 1)
+    }
+
+    /// The session a workspace's ring is (`Model::rollup`): its most urgent terminal's index.
+    pub(crate) fn rollup_session(&self, ws: WorkspaceId) -> Option<usize> {
+        let items = self.sessions.items();
+        let status = |id: u64| {
+            items
+                .iter()
+                .find(|s| s.id == id)
+                .map_or(Status::Idle, |s| s.status)
+        };
+        let (id, _) = self.model.rollup(ws, status)?;
+        self.index_of(id)
     }
 
     /// The active session's folder, so a new session joins its group.
@@ -1086,9 +1245,14 @@ impl Workspace {
             if let Some((message, body)) =
                 notifier::message(new).zip(notifier::body(new, question.as_deref(), worked))
             {
-                // The group says more than the name (often 🖕) among many sessions.
-                let who = self.group_label(index).unwrap_or_else(|| label.to_string());
-                let summary = notification_summary(index + 1, &who, message);
+                // The group says more than the name (often 🖕) among many workspaces; the number
+                // is its workspace's (what ⌘N takes you to).
+                let ws = self.workspace_of(index);
+                let who = ws
+                    .and_then(|ws| self.group_label(ws))
+                    .unwrap_or_else(|| label.to_string());
+                let number = ws.and_then(|ws| self.workspace_number(ws)).unwrap_or(0);
+                let summary = notification_summary(number, &who, message);
                 let posted = Event::Notification {
                     title: &summary,
                     body: &body,
@@ -1129,37 +1293,21 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((id, session_id)) = self
-            .sessions
-            .items()
-            .get(index)
-            .map(|s| (s.view.entity_id(), s.id))
-        else {
+        let Some(session_id) = self.sessions.items().get(index).map(|s| s.id) else {
             return;
         };
         // While its row number and name still stand.
         self.emit(&Event::Closed, Some(index));
-        // Its tab menu goes with it (the focus moves on below).
-        if self.sidebar.tab_menu.as_ref().is_some_and(|m| m.view == id) {
-            self.sidebar.tab_menu = None;
-        }
         self.browsers.session_closed(session_id);
         // Waits get a last look at its screen and status (PASS printed just before the shell
         // exited still counts), then exit / change waits are met.
         let mut replied = self.check_waits(&[session_id], cx);
-        let was_active = self.sessions.active_index() == Some(index);
         self.dragging = None; // the layout changes under a drag
         self.divider_hover = None; // and a divider may be gone, with no leave event
-        // The pane's neighbour takes its space, and the focus if it had it.
-        let mut next = None;
-        if let Some(pos) = self.layouts.iter().position(|t| t.contains(id)) {
-            let tree = self.layouts.remove(pos);
-            if was_active {
-                next = tree.heir(id);
-            }
-            if let Some(rest) = tree.remove(id) {
-                self.layouts.insert(pos, rest);
-            }
+        // Its tab goes: the pane's next tab shows, or the pane's neighbour takes its space (and
+        // the focus if it had it), or the workspace goes (the next one gets the focus).
+        if let Some(tab) = self.model.terminal_tab(session_id) {
+            self.model.close_tab(tab);
         }
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child
         // (Local), or detaches (background service; `close_at` already ended it there).
@@ -1173,67 +1321,135 @@ impl Workspace {
             self.quit_after_flush(replied, ending, window, cx);
             return;
         }
-        // A group whose last session closed is gone; forget that it was closed.
-        let keys = self.groups();
-        self.collapsed.retain(|c| keys.contains(&Some(c.clone())));
-        if let Some(i) = next.and_then(|n| self.sessions.position(|s| s.view.entity_id() == n)) {
-            self.sessions.select(i);
+        // A workspace whose last session closed is gone: its menu, rename box and the group
+        // it alone was in (forget that it was closed).
+        if let Some(menu) = &self.sidebar.tab_menu
+            && self.model.workspace(menu.workspace).is_none()
+        {
+            self.sidebar.tab_menu = None;
         }
+        if let Some((ws, _)) = &self.renaming
+            && self.model.workspace(*ws).is_none()
+        {
+            self.renaming = None;
+        }
+        self.sync();
+        let keys = self.sidebar_groups();
+        self.collapsed.retain(|c| keys.contains(&Some(c.clone())));
         self.activate(window, cx);
     }
 
+    /// Show session `index` (its tab, pane and workspace) and make it the active one.
     pub(crate) fn select(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sessions.select(index) {
+        let Some(tab) = self
+            .sessions
+            .items()
+            .get(index)
+            .and_then(|s| self.model.terminal_tab(s.id))
+        else {
+            return;
+        };
+        if self.model.select_tab(tab) {
+            self.sync();
             self.activate(window, cx);
         }
     }
 
-    /// A click in a pane, or a move to it: make its session the active one (if it isn't already).
-    fn select_view(&mut self, view: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.sessions.position(|s| s.view.entity_id() == view) else {
+    /// Show a workspace, on the pane it last had focused (⌘1–⌘9, its sidebar row).
+    pub(crate) fn select_workspace(
+        &mut self,
+        ws: WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model.focus_workspace(ws) {
+            self.sync();
+            self.activate(window, cx);
+        }
+    }
+
+    /// ⌘`digit`: the workspace in that place in the sidebar.
+    fn select_shortcut(&mut self, digit: u8, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ws) = self.model.by_shortcut(digit) {
+            self.select_workspace(ws, window, cx);
+        }
+    }
+
+    /// ⇧⌘] / ⇧⌘[: the next (or previous) workspace in the sidebar, wrapping.
+    fn cycle_workspace(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let order = self.model.display_order();
+        let Some(at) = self
+            .model
+            .focused_workspace()
+            .and_then(|f| order.iter().position(|&w| w == f))
+        else {
             return;
         };
-        if self.sessions.active_index() != Some(index) {
-            self.select(index, window, cx);
+        let n = order.len();
+        let next = if forward {
+            (at + 1) % n
         } else {
-            // A click on the active pane (or its header) takes the keyboard back from a
+            (at + n - 1) % n
+        };
+        self.select_workspace(order[next], window, cx);
+    }
+
+    /// A click in a pane, or a move to it: give it the focus (if it hasn't already).
+    fn select_pane(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.focused_pane() != Some(pane) {
+            if self.model.focus_pane(pane) {
+                self.sync();
+                self.activate(window, cx);
+            }
+        } else {
+            // A click on the focused pane (or its header) takes the keyboard back from a
             // rename, address or picker box.
             self.focus_active(window, cx);
         }
     }
 
-    /// The layout holding the active session (the one on screen).
-    pub(crate) fn shown_layout(&self) -> Option<&Node<EntityId>> {
-        let active = self.sessions.active()?.view.entity_id();
-        self.layouts.iter().find(|t| t.contains(active))
+    /// The layout of the focused workspace (the one on screen).
+    pub(crate) fn shown_layout(&self) -> Option<&Node<PaneId>> {
+        let ws = self.model.focused_workspace()?;
+        self.model.workspace(ws).map(|w| &w.layout)
+    }
+
+    /// The terminals on screen: each pane's shown one in the focused workspace.
+    pub(crate) fn on_screen(&self) -> Vec<u64> {
+        let Some(tree) = self.shown_layout() else {
+            return Vec::new();
+        };
+        tree.leaves()
+            .into_iter()
+            .filter_map(|p| self.pane_session(p).map(|s| s.id))
+            .collect()
     }
 
     /// Move the focus to the pane `pick` finds from the focused one, in the layout on screen.
     fn focus_pane(
         &mut self,
-        pick: impl FnOnce(&Node<EntityId>, EntityId) -> Option<EntityId>,
+        pick: impl FnOnce(&Node<PaneId>, PaneId) -> Option<PaneId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) else {
+        let Some(focused) = self.model.focused_pane() else {
             return;
         };
-        if let Some(next) = self.shown_layout().and_then(|t| pick(t, active)) {
-            self.select_view(next, window, cx);
+        if let Some(next) = self.shown_layout().and_then(|t| pick(t, focused)) {
+            self.select_pane(next, window, cx);
         }
     }
 
     /// Give every pane of the layout on screen an equal share.
     fn equalize_panes(&mut self, cx: &mut Context<Self>) {
-        if let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) {
-            self.equalize_layout(active, cx);
+        if let Some(ws) = self.model.focused_workspace() {
+            self.equalize_layout(ws, cx);
         }
     }
 
-    /// Give every pane of the layout holding `pane` an equal share.
-    pub(crate) fn equalize_layout(&mut self, pane: EntityId, cx: &mut Context<Self>) {
-        if let Some(tree) = self.layouts.iter_mut().find(|t| t.contains(pane)) {
-            tree.equalize();
+    /// Give every pane of a workspace an equal share.
+    pub(crate) fn equalize_layout(&mut self, ws: WorkspaceId, cx: &mut Context<Self>) {
+        if self.model.equalize(ws) {
             self.save();
             cx.notify();
         }
@@ -1241,18 +1457,18 @@ impl Workspace {
 
     /// A line of the layout on screen was pressed: follow the mouse until it's released.
     fn start_drag(&mut self, path: Vec<bool>, cx: &mut Context<Self>) {
-        if let Some(active) = self.sessions.active() {
-            self.dragging = Some((active.view.entity_id(), path));
+        if let Some(ws) = self.model.focused_workspace() {
+            self.dragging = Some((ws, path));
             cx.notify(); // the next frame listens for the moves
         }
     }
 
     /// The dragged line follows the mouse: its split's ratio is where `position` falls in it.
     fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let (Some((pane, path)), Some(bounds)) = (&self.dragging, self.pane_area.get()) else {
+        let (Some((ws, path)), Some(bounds)) = (&self.dragging, self.pane_area.get()) else {
             return;
         };
-        let Some(tree) = self.layouts.iter_mut().find(|t| t.contains(*pane)) else {
+        let Some(tree) = self.model.workspace(*ws).map(|w| &w.layout) else {
             return;
         };
         let area = Rect {
@@ -1268,7 +1484,8 @@ impl Workspace {
             Axis::Row => (f32::from(position.x) - split.x) / split.w,
             Axis::Column => (f32::from(position.y) - split.y) / split.h,
         };
-        if tree.set_ratio(path, ratio) {
+        let (ws, path) = (*ws, path.clone());
+        if self.model.set_ratio(ws, &path, ratio) {
             cx.notify();
         }
     }
@@ -1276,10 +1493,10 @@ impl Workspace {
     /// The pointer entered (`over`) or left the line of the split at `path` in the layout on
     /// screen: it is drawn as the accent line while the pointer is on it.
     fn hover_divider(&mut self, path: Vec<bool>, over: bool, cx: &mut Context<Self>) {
-        let Some(active) = self.sessions.active().map(|s| s.view.entity_id()) else {
+        let Some(ws) = self.model.focused_workspace() else {
             return;
         };
-        let now = Some((active, path));
+        let now = Some((ws, path));
         let next = if over {
             now
         } else if self.divider_hover == now {
@@ -1312,12 +1529,16 @@ impl Workspace {
     pub(crate) fn note_active(&mut self, cx: &mut Context<Self>) {
         self.note_focus();
         self.sidebar.reveal_active = true;
-        if let Some(key) = self.sessions.active().and_then(Session::group) {
+        if let Some(key) = self
+            .model
+            .focused_workspace()
+            .and_then(|ws| self.workspace_group(ws))
+        {
             self.collapsed.retain(|c| *c != key);
         }
-        // A divider drag belongs to the layout it started in; drop it if another is shown now.
-        if let Some((pane, _)) = &self.dragging
-            && !self.shown_layout().is_some_and(|t| t.contains(*pane))
+        // A divider drag belongs to the workspace it started in; drop it if another is shown.
+        if let Some((ws, _)) = &self.dragging
+            && self.model.focused_workspace() != Some(*ws)
         {
             self.dragging = None;
         }
@@ -1347,19 +1568,18 @@ impl Workspace {
         }
     }
 
-    /// Open the rename box on session `index` (opening its group) and focus it.
+    /// Open the rename box on a workspace's row (opening its group) and focus it.
     pub(crate) fn start_rename(
         &mut self,
-        index: usize,
+        ws: WorkspaceId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.sessions.items().get(index) else {
+        if self.model.workspace(ws).is_none() {
             return;
-        };
-        let view = session.view.entity_id();
-        let text = session.label().to_string();
-        if let Some(key) = session.group() {
+        }
+        let text = self.workspace_label(ws).to_string();
+        if let Some(key) = self.workspace_group(ws) {
             self.collapsed.retain(|c| *c != key);
         }
         self.close_overlays(Overlay::Rename);
@@ -1372,7 +1592,7 @@ impl Workspace {
         cx.subscribe_in(&input, window, Self::on_name_event)
             .detach();
         input.focus_handle(cx).focus(window, cx);
-        self.renaming = Some((view, input));
+        self.renaming = Some((ws, input));
         self.save(); // opening the group may have changed what's collapsed
         cx.notify();
     }
@@ -1385,23 +1605,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // A box already closed (or replaced) can still report losing focus: ignore it.
-        let Some((view, _)) = self.renaming.as_ref().filter(|(_, i)| i == input) else {
+        let Some((ws, _)) = self.renaming.as_ref().filter(|(_, i)| i == input) else {
             return;
         };
-        let view = *view;
+        let ws = *ws;
         self.renaming = None;
         if let NameInputEvent::Confirm(text) = event
-            && let Some(i) = self.sessions.position(|s| s.view.entity_id() == view)
-            && let Some(session) = self.sessions.get_mut(i)
+            && let Some(named) = self.model.workspace(ws).map(|w| w.name.is_some())
         {
-            // Enter on an untouched automatic name keeps it automatic (it still follows the title).
-            if session.name.is_some() || *text != session.label().as_ref() {
+            // Enter on an untouched automatic name keeps it automatic (it still follows the
+            // focused terminal's title).
+            if named || *text != self.workspace_label(ws).as_ref() {
                 let name = (!text.is_empty()).then(|| text.clone());
-                if session.name != name {
-                    session.name = name;
-                    self.emit_renamed(i);
-                    self.push_meta(i, cx);
-                }
+                self.model.set_name(ws, name);
             }
             self.save();
         }
@@ -1411,30 +1627,37 @@ impl Workspace {
 
     /// Drop `dragged` on `target`'s row: it goes where the insertion line was (above or below
     /// that row), inside the same group only. With no line there, it stays.
-    pub(crate) fn drop_session(
+    pub(crate) fn drop_workspace(
         &mut self,
-        dragged: EntityId,
-        target: EntityId,
+        dragged: WorkspaceId,
+        target: WorkspaceId,
         cx: &mut Context<Self>,
     ) {
-        let below = self.sidebar.drop_at.take().filter(|(v, _)| *v == target);
+        let below = self.sidebar.drop_at.take().filter(|(w, _)| *w == target);
         cx.notify(); // the line goes
-        let find = |id: EntityId| self.sessions.position(|s| s.view.entity_id() == id);
+        let order = self.model.display_order();
+        let find = |id: WorkspaceId| order.iter().position(|&w| w == id);
         let (Some(from), Some(to), Some((_, below))) = (find(dragged), find(target), below) else {
             return;
         };
-        if groups::same_group(&key_refs(&self.groups()), from, to)
+        if groups::same_group(&key_refs(&self.display_groups()), from, to)
             && self
-                .sessions
-                .move_item(from, sidebar::drop_index(from, to, below))
+                .model
+                .move_workspace_display(dragged, sidebar::drop_index(from, to, below))
         {
+            self.sync();
             self.save();
         }
     }
 
-    /// Swap the active session with its neighbour above (or below), inside its group only.
+    /// Swap the focused workspace with its neighbour above (or below), inside its group only.
     fn move_active(&mut self, up: bool, cx: &mut Context<Self>) {
-        let Some(from) = self.sessions.active_index() else {
+        let order = self.model.display_order();
+        let Some(from) = self
+            .model
+            .focused_workspace()
+            .and_then(|f| order.iter().position(|&w| w == f))
+        else {
             return;
         };
         let Some(to) = (if up {
@@ -1444,9 +1667,10 @@ impl Workspace {
         }) else {
             return;
         };
-        if groups::same_group(&key_refs(&self.groups()), from, to)
-            && self.sessions.move_item(from, to)
+        if groups::same_group(&key_refs(&self.display_groups()), from, to)
+            && self.model.move_workspace_display(order[from], to)
         {
+            self.sync();
             self.save();
             cx.notify();
         }
@@ -1458,22 +1682,18 @@ impl Workspace {
         }
     }
 
-    /// The layout holding the active session, its unfocused panes dimmed.
+    /// The focused workspace's layout, each pane showing its active tab, the unfocused panes
+    /// dimmed.
     fn render_panes(
         &self,
         colors: PaneColors,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let active = self.sessions.active()?.view.entity_id();
+        let active = self.model.focused_pane()?;
+        let ws = self.model.focused_workspace()?;
         let tree = self.shown_layout()?;
-        let find = |id: EntityId| {
-            self.sessions
-                .items()
-                .iter()
-                .find(|s| s.view.entity_id() == id)
-                .map(|s| s.view.clone())
-        };
+        let find = |pane: PaneId| self.pane_session(pane).map(|s| s.view.clone());
         // Shown, so an adopted session fetches its screen now (once; reopening, M10a). Panes
         // in a split take less padding.
         let split = matches!(tree, Node::Split { .. });
@@ -1489,7 +1709,7 @@ impl Workspace {
         // Cached: a terminal repaints only when it says it changed (or its bounds do), not each
         // time the workspace redraws (the marks' ticker, the sidebar). One whose padding just
         // changed is drawn afresh this frame: it can't notify itself mid-frame.
-        let view = |id: EntityId| {
+        let view = |id: PaneId| {
             find(id).map(|view| {
                 if resplit.contains(&id) {
                     view.into_any_element()
@@ -1501,7 +1721,7 @@ impl Workspace {
         };
         let this = cx.entity().downgrade();
         let select: SelectPane = Rc::new(move |id, window, cx| {
-            this.update(cx, |this, cx| this.select_view(id, window, cx))
+            this.update(cx, |this, cx| this.select_pane(id, window, cx))
                 .ok();
         });
         let this = cx.entity().downgrade();
@@ -1515,8 +1735,8 @@ impl Workspace {
         });
         // Each pane's header, when the layout is split (it sits outside the cached terminal).
         let headers = pane_header::shows(tree.leaves().len());
-        let header = |id: EntityId| headers.then(|| self.pane_header(id, ui)).flatten();
-        // A hover or drag belongs to the layout it started in.
+        let header = |id: PaneId| headers.then(|| self.pane_header(id, ui)).flatten();
+        // A hover or drag belongs to the workspace it started in.
         let panes = Panes {
             active,
             view: &view,
@@ -1524,8 +1744,8 @@ impl Workspace {
             select,
             start_drag,
             hover,
-            hovered: held_in(&self.divider_hover, tree),
-            dragging: held_in(&self.dragging, tree),
+            hovered: held_in(&self.divider_hover, ws),
+            dragging: held_in(&self.dragging, ws),
             colors,
         };
         Some(panes::render_layout(tree, &panes))
@@ -1691,13 +1911,10 @@ impl Workspace {
     }
 }
 
-/// The split path of a hover or drag (`held`) if it is in the layout `tree`.
-fn held_in<'a>(
-    held: &'a Option<(EntityId, Vec<bool>)>,
-    tree: &Node<EntityId>,
-) -> Option<&'a [bool]> {
+/// The split path of a hover or drag (`held`) if it is in workspace `ws`.
+fn held_in(held: &Option<(WorkspaceId, Vec<bool>)>, ws: WorkspaceId) -> Option<&[bool]> {
     held.as_ref()
-        .filter(|(pane, _)| tree.contains(*pane))
+        .filter(|(w, _)| *w == ws)
         .map(|(_, path)| path.as_slice())
 }
 
@@ -1711,9 +1928,14 @@ impl Render for Workspace {
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
         let title = self
-            .sessions
-            .active_index()
-            .map(|i| window_title(i + 1, &self.sessions.items()[i].label()))
+            .model
+            .focused_workspace()
+            .and_then(|ws| {
+                Some(window_title(
+                    self.workspace_number(ws)?,
+                    &self.workspace_label(ws),
+                ))
+            })
             .unwrap_or_else(|| "fuxx".into());
         window.set_window_title(&title);
         let theme = cx.global::<Appearance>().theme;
@@ -1789,16 +2011,14 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &NextSession, window, cx| {
-                this.sessions.select_next();
-                this.activate(window, cx);
+                this.cycle_workspace(true, window, cx)
             }))
             .on_action(cx.listener(|this, _: &PrevSession, window, cx| {
-                this.sessions.select_prev();
-                this.activate(window, cx);
+                this.cycle_workspace(false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &RenameSession, window, cx| {
-                if let Some(i) = this.sessions.active_index() {
-                    this.start_rename(i, window, cx);
+                if let Some(ws) = this.model.focused_workspace() {
+                    this.start_rename(ws, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &MoveSessionUp, _, cx| this.move_active(true, cx)))
@@ -1829,15 +2049,33 @@ impl Render for Workspace {
                 cx.listener(|this, _: &NextNeedingYou, w, cx| this.jump_to_needing_you(w, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenSwitcher, w, cx| this.open_switcher(w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession1, w, cx| this.select(0, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession2, w, cx| this.select(1, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession3, w, cx| this.select(2, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession4, w, cx| this.select(3, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession5, w, cx| this.select(4, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession6, w, cx| this.select(5, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession7, w, cx| this.select(6, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession8, w, cx| this.select(7, w, cx)))
-            .on_action(cx.listener(|this, _: &SelectSession9, w, cx| this.select(8, w, cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectSession1, w, cx| this.select_shortcut(1, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession2, w, cx| this.select_shortcut(2, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession3, w, cx| this.select_shortcut(3, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession4, w, cx| this.select_shortcut(4, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession5, w, cx| this.select_shortcut(5, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession6, w, cx| this.select_shortcut(6, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession7, w, cx| this.select_shortcut(7, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession8, w, cx| this.select_shortcut(8, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectSession9, w, cx| this.select_shortcut(9, w, cx)),
+            )
             .on_action(cx.listener(|this, _: &LaunchPreset1, w, cx| this.launch_preset(0, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset2, w, cx| this.launch_preset(1, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset3, w, cx| this.launch_preset(2, w, cx)))
@@ -1848,7 +2086,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &LaunchPreset8, w, cx| this.launch_preset(7, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset9, w, cx| this.launch_preset(8, w, cx)))
             .when_some(sidebar, |root, sidebar| root.child(sidebar))
-            // Only the active session's layout is rendered; other sessions keep running (their
+            // Only the focused workspace's layout is rendered; other sessions keep running (their
             // reader threads and tickers live in their views, which the list keeps alive).
             .child(
                 div()
@@ -1921,8 +2159,8 @@ impl Workspace {
         let view = TerminalView::spawn(cx, Some(vec!["/bin/cat".into()]), None, None, &quiet)
             .expect("start cat");
         view.read(cx).show_text(text);
-        let at = match (split, self.sessions.active()) {
-            (Some(axis), Some(active)) => At::Split(axis, active.view.entity_id()),
+        let at = match (split, self.model.focused_pane()) {
+            (Some(axis), Some(pane)) => At::Split(axis, pane),
             _ => At::New,
         };
         let saved = SavedSession {
@@ -1936,13 +2174,13 @@ impl Workspace {
     }
 }
 
-/// A notification's title: `#<n> <who> — <message>`, `who` being the session's group (else its
-/// name).
+/// A notification's title: `#<n> <who> — <message>`, `n` being the session's workspace's place
+/// in the sidebar and `who` its group (else the session's name).
 pub(crate) fn notification_summary(number: usize, who: &str, message: &str) -> String {
     format!("#{number} {who} — {message}")
 }
 
-/// The window's title for the active session: `fuxx — #<n> <name>`.
+/// The window's title for the focused workspace: `fuxx — #<n> <name>`.
 pub(crate) fn window_title(number: usize, name: &str) -> String {
     format!("fuxx — #{number} {name}")
 }

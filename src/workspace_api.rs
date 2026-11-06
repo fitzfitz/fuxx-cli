@@ -27,7 +27,7 @@ use crate::split_tree::Axis;
 use crate::ssh_target::{SshTarget, validate_host};
 use crate::status::Status;
 use crate::tab_color::TabColor;
-use crate::workspace::{Opened, Workspace};
+use crate::workspace::{At, Opened, Workspace};
 use crate::workspace_daemon::{open_refusal, wait_ended};
 use crate::workspace_ssh::Place;
 
@@ -281,8 +281,9 @@ impl Workspace {
             }
             "session.focus" => {
                 let i = self.target_index(p, "target")?;
-                // Even when it's already active: the point is to show it, so fuxx comes forward.
-                self.sessions.select(i);
+                // Even when it's already active: the point is to show it (its workspace, pane
+                // and tab), so fuxx comes forward.
+                self.select(i, window, cx);
                 self.activate(window, cx);
                 window.activate_window();
                 cx.activate(true);
@@ -291,7 +292,7 @@ impl Workspace {
             "session.rename" => {
                 let name = required_str(p, "name")?;
                 let i = self.target_index(p, "target")?;
-                self.rename_at(i, name, window, cx);
+                self.rename_at(i, name, cx);
                 Ok(json!({}))
             }
             "session.send" => {
@@ -351,8 +352,9 @@ impl Workspace {
             }
             "pane.equalize" => {
                 let i = self.target_index(p, "target")?;
-                let pane = self.sessions.items()[i].view.entity_id();
-                self.equalize_layout(pane, cx);
+                if let Some(ws) = self.workspace_of(i) {
+                    self.equalize_layout(ws, cx);
+                }
                 Ok(json!({}))
             }
             "preset.list" => {
@@ -410,7 +412,7 @@ impl Workspace {
     /// Every session in sidebar order, as `session.list` reports it.
     fn list(&self) -> Value {
         let active = self.sessions.active_index();
-        let shown = self.shown_layout();
+        let shown = self.on_screen();
         let entries: Vec<Value> = self
             .sessions
             .items()
@@ -427,12 +429,15 @@ impl Workspace {
                     project: s.project.as_deref(),
                     preset: s.preset.as_ref().map(|p| p.name.as_str()),
                     focused: active == Some(i),
-                    on_screen: shown.is_some_and(|t| t.contains(s.view.entity_id())),
+                    on_screen: shown.contains(&s.id),
                     note: s.note.as_deref(),
                     progress: s.progress.as_ref(),
                     live: !s.lost,
                     ssh: s.ssh.as_ref().map(|t| t.host.as_str()),
-                    color: s.color,
+                    color: self
+                        .workspace_of(i)
+                        .and_then(|ws| self.model.workspace(ws))
+                        .and_then(|w| w.color),
                 })
             })
             .collect();
@@ -494,20 +499,15 @@ impl Workspace {
         view.update(cx, |view, cx| view.type_bytes(bytes, cx));
     }
 
-    /// Like the rename box's Enter, but exact: empty goes back to the automatic name. A rename
-    /// box open on the same session is closed.
-    fn rename_at(&mut self, index: usize, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// Name session `index` exactly: empty goes back to the automatic name. (The rename box
+    /// names workspaces; a script names terminals.)
+    fn rename_at(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
         };
         let old = session.name.clone();
         session.name = (!name.is_empty()).then(|| name.to_string());
         let renamed = session.name != old;
-        let view = session.view.entity_id();
-        if self.renaming.as_ref().is_some_and(|(v, _)| *v == view) {
-            self.renaming = None;
-            self.focus_active(window, cx);
-        }
         if renamed {
             self.emit_renamed(index);
             self.push_meta(index, cx);
@@ -750,17 +750,17 @@ impl Workspace {
                     && let (Some(id), Some(name)) = (id, name)
                     && let Some(i) = this.sessions.position(|s| s.id == id)
                 {
-                    this.rename_at(i, &name, window, cx);
+                    this.rename_at(i, &name, cx);
                 }
                 conn.send_line(&api::reply(request_id, result));
             });
             self.open_ssh_then(target, place, Some(opened), window, cx);
             return Ok(());
         }
-        // The split path splits the active session, so `of` becomes it first.
-        if let Some(i) = of {
-            self.sessions.select(i);
-        }
+        let at = match (split, of.and_then(|i| self.pane_of(i))) {
+            (Some(axis), Some(pane)) => At::Split(axis, pane),
+            _ => At::New,
+        };
         let launch = Launch {
             saved: SavedSession {
                 name,
@@ -777,7 +777,7 @@ impl Workspace {
             let result = this.api_opened(id, previous, run, background, window, cx);
             conn.send_line(&api::reply(request_id, result));
         });
-        self.open_session_then(launch, split, Some(opened), window, cx);
+        self.open_session_then(launch, at, Some(opened), window, cx);
         Ok(())
     }
 
@@ -794,10 +794,7 @@ impl Workspace {
     ) -> Result<Value, ApiError> {
         let index_of = |this: &Self, id: u64| this.sessions.position(|s| s.id == id);
         let Some((id, index)) = id.and_then(|id| Some((id, index_of(self, id)?))) else {
-            // Nothing opened (logged); undo the selection of `of`.
-            if let Some(i) = previous.and_then(|p| index_of(self, p)) {
-                self.sessions.select(i);
-            }
+            // Nothing opened (logged).
             return Err(ApiError::refused("could not start a shell"));
         };
         if let Some(run) = run {

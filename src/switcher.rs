@@ -1,8 +1,8 @@
-//! M11: getting around. ⇧⌘U takes you to the session that has waited longest for you (each press
-//! the next one); ⌘P opens the session switcher, a panel near the top of the window: a filter
-//! box over every session, most urgent first, each row with its mark, number, name (and its tab
-//! colour's dot), group and age, and a waiting one's question under it. Enter goes to the chosen
-//! session.
+//! M11: getting around. ⇧⌘U takes you to the terminal that has waited longest for you (each
+//! press the next one: its workspace, its pane, its tab); ⌘P opens the switcher, a panel near
+//! the top of the window: a filter box over every workspace (M11b), most urgent first, each row
+//! with its most urgent terminal's mark, its number, name (and its colour's dot), group and age,
+//! and a waiting one's question under it. Enter goes to that terminal's pane.
 //!
 //! The box is the sidebar's rename box (`NameInput`), as in the host picker: its Enter goes to
 //! the selected row, its Escape (or losing focus) closes the switcher.
@@ -47,13 +47,13 @@ const GROUP_MAX_WIDTH: f32 = 160.0;
 /// The question line starts under the name.
 const QUESTION_INDENT: f32 = MARK_SLOT + MARK_GAP + NUMBER_WIDTH + NUMBER_GAP;
 
-const PLACEHOLDER: &str = "Go to a session \u{2014} number, name, group or question";
+const PLACEHOLDER: &str = "Go to a workspace \u{2014} number, name, group or question";
 const HINT: &str = "Enter go \u{b7} \u{2191}\u{2193} choose \u{b7} Esc close \u{b7} \u{21e7}\u{2318}U next that needs you";
 
-/// What the switcher shows of one session, in session order (its number is its place + 1).
+/// What the switcher shows of one workspace, in sidebar order (its number is its place + 1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
-    /// The session's id (`s<id>`): which session a row is, while the list changes.
+    /// Its most urgent terminal's id (`s<id>`): where a row goes, while the list changes.
     pub id: u64,
     pub label: String,
     /// Its group as the sidebar labels it; none when ungrouped.
@@ -404,22 +404,27 @@ impl Render for Switcher {
 }
 
 impl Workspace {
-    /// Every session as the switcher shows it, in session order.
+    /// Every workspace as the switcher shows it, in sidebar order: its name, group and colour,
+    /// and the rest from its most urgent terminal.
     fn switcher_entries(&self) -> Vec<Entry> {
-        let keys = self.groups();
+        let keys = self.sidebar_groups();
         let all: Vec<&GroupKey> = keys.iter().flatten().collect();
-        self.sessions
-            .items()
-            .iter()
-            .zip(&keys)
-            .map(|(s, key)| Entry {
-                id: s.id,
-                label: s.label().to_string(),
-                group: key.as_ref().map(|k| groups::group_label(k, &all)),
-                status: s.status,
-                since: s.status_since,
-                question: s.question.clone(),
-                color: s.color,
+        self.model
+            .display_order()
+            .into_iter()
+            .filter_map(|ws| {
+                let s = &self.sessions.items()[self.rollup_session(ws)?];
+                Some(Entry {
+                    id: s.id,
+                    label: self.workspace_label(ws).to_string(),
+                    group: self
+                        .workspace_group(ws)
+                        .map(|k| groups::group_label(&k, &all)),
+                    status: s.status,
+                    since: s.status_since,
+                    question: s.question.clone(),
+                    color: self.model.workspace(ws).and_then(|w| w.color),
+                })
             })
             .collect()
     }
@@ -440,8 +445,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The switcher chose a session (it becomes the active one) or was closed; either way it
-    /// goes and the typing returns to the terminal.
+    /// The switcher chose a workspace (its most urgent terminal becomes the active one: its
+    /// pane and tab are shown) or was closed; either way it goes and the typing returns to the
+    /// terminal.
     fn on_switcher_event(
         &mut self,
         switcher: &Entity<Switcher>,
@@ -479,8 +485,9 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    /// ⇧⌘U: go to the session that has waited longest for you, the next one on each press
-    /// (`next_needing_you`). When nothing needs you, nothing happens.
+    /// ⇧⌘U: go to the terminal that has waited longest for you (its workspace, pane and tab),
+    /// the next one on each press (`next_needing_you`). When nothing needs you, nothing
+    /// happens.
     pub(crate) fn jump_to_needing_you(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let facts: Vec<(Status, Instant)> = self
             .sessions

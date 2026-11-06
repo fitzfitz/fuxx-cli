@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::layout_model::{self, SavedWorkspace};
 use crate::presets::Preset;
 use crate::settings::Entry;
 use crate::split_tree::Node;
@@ -60,8 +61,9 @@ impl RestoreMode {
     }
 }
 
-/// The file format version; a file with any other version is ignored.
-pub const VERSION: u32 = 1;
+/// The file format version written: 2 holds workspaces (M11b). Version 1 files (sessions and
+/// their split layouts) still load; any other version is ignored.
+pub const VERSION: u32 = layout_model::SAVED_VERSION;
 
 /// One session as saved: enough to reopen it.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -100,9 +102,17 @@ pub struct SavedState {
     pub collapsed_hosts: Vec<String>,
     #[serde(default)]
     pub sessions: Vec<SavedSession>,
-    /// One split layout per session (leaves are pane indices); empty means all single panes.
-    #[serde(default)]
+    /// Version 1: one split layout per session (leaves are session indices); empty means all
+    /// single panes. Version 2 keeps `workspaces` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layouts: Vec<Node<usize>>,
+    /// Version 2 (M11b): the sidebar's workspaces, their panes and tabs (a terminal tab names its
+    /// session by its index in `sessions`).
+    #[serde(default)]
+    pub workspaces: Vec<SavedWorkspace>,
+    /// The focused workspace, by its index in `workspaces`.
+    #[serde(default)]
+    pub active_workspace: Option<usize>,
     /// The background service the sessions' `daemon_id`s belong to (its random instance id):
     /// ids from another one mean nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,6 +142,8 @@ impl Default for SavedState {
             collapsed_hosts: Vec::new(),
             sessions: Vec::new(),
             layouts: Vec::new(),
+            workspaces: Vec::new(),
+            active_workspace: None,
             daemon_instance: None,
             sidebar_width: None,
             sidebar_hidden: false,
@@ -148,11 +160,11 @@ pub fn encode(state: &SavedState) -> String {
     text
 }
 
-/// `None` for bad JSON or a different `version`.
+/// `None` for bad JSON or a version this fuxx doesn't read (1 and 2 it does).
 pub fn decode(text: &str) -> Option<SavedState> {
     serde_json::from_str::<SavedState>(text)
         .ok()
-        .filter(|s| s.version == VERSION)
+        .filter(|s| (1..=VERSION).contains(&s.version))
 }
 
 pub fn state_path(home: &Path) -> PathBuf {
@@ -199,6 +211,7 @@ pub fn launch(saved: &SavedSession, mode: RestoreMode, presets: &[Preset]) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout_model::{SavedPane, SavedTab, SavedWorkspace};
     use crate::presets::builtins;
     use crate::split_tree::Axis;
     use crate::ssh_target::SshTarget;
@@ -209,9 +222,10 @@ mod tests {
             value: value.into(),
         }
     }
+    /// A version-1 file (sessions and their layouts).
     fn sample() -> SavedState {
         SavedState {
-            version: VERSION,
+            version: 1,
             active: Some(1),
             collapsed: vec![PathBuf::from("/w/api")],
             collapsed_hosts: Vec::new(),
@@ -280,7 +294,41 @@ mod tests {
     fn decode_rejects_garbage_and_other_versions() {
         assert_eq!(decode(""), None);
         assert_eq!(decode("{\"version\": 1, \"sessions\": [tru"), None);
-        assert_eq!(decode("{\"version\": 2}"), None);
+        assert_eq!(decode("{\"version\": 3}"), None);
+        assert_eq!(decode("{\"version\": 0}"), None);
+    }
+
+    #[test]
+    fn files_hold_workspaces_now_and_older_ones_still_load() {
+        assert_eq!(VERSION, 2);
+        assert_eq!(SavedState::default().version, 2);
+        // Version 2: workspaces, panes and tabs, and which workspace is focused.
+        let state = SavedState {
+            workspaces: vec![SavedWorkspace {
+                name: Some("api".into()),
+                color: Some(TabColor::Teal),
+                pinned: true,
+                layout: Node::Leaf(SavedPane {
+                    tabs: vec![SavedTab::Terminal { session: 1 }],
+                    active: 0,
+                }),
+                focused: 0,
+            }],
+            active_workspace: Some(0),
+            layouts: Vec::new(),
+            version: VERSION,
+            ..sample()
+        };
+        let text = encode(&state);
+        assert_eq!(decode(&text), Some(state));
+        assert!(text.contains("\"version\": 2"), "{text}");
+        // A version-2 file has no old layouts.
+        assert!(!text.contains("\"layouts\""), "{text}");
+        // Version 1 still loads, with no workspaces (its layouts are read instead).
+        let old = decode(r#"{"version": 1, "sessions": [{}], "layouts": [{"leaf": 0}]}"#).unwrap();
+        assert_eq!(old.version, 1);
+        assert!(old.workspaces.is_empty() && old.active_workspace.is_none());
+        assert_eq!(old.layouts, vec![Node::Leaf(0)]);
     }
 
     #[test]

@@ -1,21 +1,21 @@
-//! Drawing a split layout: nested flex rows/columns of terminals (each under its header, when it
-//! has one) with a 1 px line between panes, the unfocused ones dimmed, each line with a grab
-//! strip for resizing that lights it up as a 2 px accent line while hovered or dragged.
-//! Stateless; the tree, the sessions, the hover and the drag live in the workspace.
+//! Drawing a split layout: nested flex rows/columns of panes (each its shown tab under its
+//! header, when it has one) with a 1 px line between panes, the unfocused ones dimmed, each line
+//! with a grab strip for resizing that lights it up as a 2 px accent line while hovered or
+//! dragged. Stateless; the tree, the tabs, the hover and the drag live in the workspace.
 
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, EntityId, Hsla, MouseButton, MouseDownEvent, Window, div, prelude::*, px,
-    relative,
+    AnyElement, App, Hsla, MouseButton, MouseDownEvent, Window, div, prelude::*, px, relative,
 };
 
+use crate::layout_model::PaneId;
 use crate::pane_header;
 use crate::split_tree::{Axis, Node};
 use crate::ui_tokens::size::DIVIDER_ACTIVE;
 
-/// Called with a pane's session (by its view) when the pane is clicked.
-pub type SelectPane = Rc<dyn Fn(EntityId, &mut Window, &mut App)>;
+/// Called with a pane when it is clicked.
+pub type SelectPane = Rc<dyn Fn(PaneId, &mut Window, &mut App)>;
 
 /// Called with a split's path (from the root; `true` = second child) when its line is pressed.
 pub type StartDrag = Rc<dyn Fn(Vec<bool>, &mut Window, &mut App)>;
@@ -39,11 +39,11 @@ pub struct PaneColors {
 /// What every pane of one layout is drawn with.
 pub struct Panes<'a> {
     /// The focused pane.
-    pub active: EntityId,
-    /// Each pane's terminal, as the element to draw (the workspace decides how it's embedded).
-    pub view: &'a dyn Fn(EntityId) -> Option<AnyElement>,
-    /// Each pane's header, above its terminal (none for a layout that isn't split).
-    pub header: &'a dyn Fn(EntityId) -> Option<AnyElement>,
+    pub active: PaneId,
+    /// Each pane's shown tab, as the element to draw (the workspace decides how it's embedded).
+    pub view: &'a dyn Fn(PaneId) -> Option<AnyElement>,
+    /// Each pane's header, above its tab (none for a layout that isn't split).
+    pub header: &'a dyn Fn(PaneId) -> Option<AnyElement>,
     pub select: SelectPane,
     pub start_drag: StartDrag,
     pub hover: HoverDivider,
@@ -61,12 +61,12 @@ fn path_key(path: &[bool]) -> usize {
 }
 
 /// `tree` filling its parent.
-pub fn render_layout(tree: &Node<EntityId>, panes: &Panes) -> AnyElement {
+pub fn render_layout(tree: &Node<PaneId>, panes: &Panes) -> AnyElement {
     render_node(tree, Vec::new(), panes)
 }
 
 /// `node`, reached from the root by `path`.
-fn render_node(node: &Node<EntityId>, path: Vec<bool>, panes: &Panes) -> AnyElement {
+fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElement {
     match node {
         Node::Leaf(id) => {
             let id = *id;
@@ -116,7 +116,7 @@ fn render_node(node: &Node<EntityId>, path: Vec<bool>, panes: &Panes) -> AnyElem
                 p
             };
             // Each side takes its share; they may shrink (in proportion) to make room for the line.
-            let side = |node: &Node<EntityId>, share: f32, to_second: bool| {
+            let side = |node: &Node<PaneId>, share: f32, to_second: bool| {
                 div()
                     .flex_basis(relative(share))
                     .flex_grow_0()
