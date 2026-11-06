@@ -57,11 +57,13 @@ pub(crate) struct Disconnected {
 }
 
 /// Where an SSH session opens: a workspace of its own, a pane beside (Row) or under (Column)
-/// session `of`'s, or in place of session `index` (a reconnect: same tab, name and group).
+/// session `of`'s, a tab in session `of`'s pane, or in place of session `index` (a reconnect:
+/// same tab, name and group).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
     New,
     Split { of: usize, axis: Axis },
+    Tab { of: usize },
     Replace(usize),
 }
 
@@ -429,6 +431,7 @@ impl Workspace {
                 self.pane_of(of).map_or(At::New, |p| At::Split(axis, p)),
                 None,
             ),
+            Place::Tab { of } => (self.pane_of(of).map_or(At::New, At::Tab), None),
             Place::Replace(index) => match self.sessions.items().get(index) {
                 Some(old) => (At::Replace(old.view.entity_id()), old.name.clone()),
                 None => return not_opened(self, then, window, cx),

@@ -161,12 +161,13 @@ pub(crate) enum Overlay {
     TabMenu,
 }
 
-/// Where a new session goes: a workspace of its own, a new pane split from a pane, or in the
-/// place of a session (by its view: an SSH reconnect).
+/// Where a new session goes: a workspace of its own, a new pane split from a pane, a new tab
+/// at the end of a pane's, or in the place of a session (by its view: an SSH reconnect).
 #[derive(Clone, Copy)]
 pub(crate) enum At {
     New,
     Split(Axis, PaneId),
+    Tab(PaneId),
     Replace(EntityId),
 }
 
@@ -816,6 +817,7 @@ impl Workspace {
                 return self.replace_session(old, session_id, view, saved, window, cx);
             }
             At::Split(axis, pane) => self.model.split(pane, axis, kind.clone()),
+            At::Tab(pane) => self.model.add_tab(pane, kind.clone()),
             At::New => None,
         };
         if placed.is_none() {

@@ -49,9 +49,11 @@ usage: fuxx [command]   (no command opens the app)
 
   ls                                   list sessions (#N* focused, #N+ on screen)
   new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME]
-      [--split right|down [--of TARGET]] [--background]   open a session; prints its id
-  new --ssh HOST [--tmux] [--name NAME] [--split right|down [--of TARGET]] [--background]
-                                       open an SSH session (not with --folder, --preset or --run)
+      [--split right|down | --tab [--of TARGET]] [--background]
+                                       open a session in a workspace of its own (--split: a pane
+                                       beside TARGET's, --tab: a tab in it); prints its id
+  new --ssh HOST [--tmux] [--name NAME] [--split right|down | --tab [--of TARGET]]
+      [--background]                   open an SSH session (not with --folder, --preset or --run)
   close [TARGET]                       close a session
   focus [TARGET]                       show and focus a session
   rename [TARGET] NAME                 rename (\"\" restores the automatic name)
@@ -147,7 +149,7 @@ fn flag_spec(cmd: &str) -> (&'static [&'static str], &'static [&'static str]) {
         browser if browser.starts_with("browser ") => (&["session"], &[]),
         "new" => (
             &["folder", "preset", "run", "name", "split", "of", "ssh"],
-            &["background", "tmux"],
+            &["background", "tmux", "tab"],
         ),
         "send" => (&[], &["enter"]),
         "read" => (&["lines"], &["all"]),
@@ -421,8 +423,11 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
             {
                 return Err(usage_err(cmd, "--split must be right or down"));
             }
-            if a.val("of").is_some() && split.is_none() {
-                return Err(usage_err(cmd, "--of needs --split"));
+            if split.is_some() && a.on("tab") {
+                return Err(usage_err(cmd, "--split and --tab can't be combined"));
+            }
+            if a.val("of").is_some() && split.is_none() && !a.on("tab") {
+                return Err(usage_err(cmd, "--of needs --split or --tab"));
             }
             if let Some(host) = a.val("ssh") {
                 if let Some(clash) = ["folder", "preset", "run"]
@@ -441,6 +446,7 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
             for k in ["folder", "preset", "run", "name", "split", "of"] {
                 params.insert(k.into(), a.val(k).map_or(Value::Null, |v| json!(v)));
             }
+            params.insert("tab".into(), json!(a.on("tab")));
             params.insert("background".into(), json!(a.on("background")));
         }
         "rename" => {
@@ -979,6 +985,24 @@ mod tests {
     }
 
     #[test]
+    fn new_tab_opens_in_a_terminal_s_pane() {
+        let (r, _, _) = call(p(&["new", "--tab", "--of", "s2"]));
+        assert_eq!(r.method, "session.new");
+        assert_eq!(
+            (&r.params["tab"], &r.params["of"], &r.params["split"]),
+            (&true.into(), &"s2".into(), &Value::Null)
+        );
+        // Without --of: the caller's pane (or the focused one).
+        let (r, _, _) = call(p(&["new", "--tab"]));
+        assert_eq!(r.params["tab"], true);
+        assert!(p(&["new", "--tab", "--split", "right"]).is_err());
+        assert!(p(&["new", "--of", "s2"]).is_err());
+        // Plain: no tab.
+        let (r, _, _) = call(p(&["new"]));
+        assert_eq!(r.params["tab"], false);
+    }
+
+    #[test]
     fn new_ssh_parses_and_conflicts() {
         let (r, _, _) = call(p(&["new", "--ssh", "dev", "--tmux", "--name", "box"]));
         assert_eq!(r.method, "session.new");
@@ -1405,7 +1429,7 @@ mod tests {
                     "--of", "s2",
                 ],
                 "session.new",
-                json!({"folder": "D", "preset": null, "run": "CMD", "name": "N", "split": "down", "of": "s2", "background": false, "caller": 3}),
+                json!({"folder": "D", "preset": null, "run": "CMD", "name": "N", "split": "down", "of": "s2", "tab": false, "background": false, "caller": 3}),
             ),
             (
                 vec!["read", "--lines", "5"],
