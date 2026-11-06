@@ -444,7 +444,7 @@ impl Workspace {
             sidebar: SidebarState::new(),
             band_pressed: false,
             slide: None,
-            places: Places::new(home_dir()),
+            places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             places_ticking: false,
         }
     }
@@ -2149,9 +2149,12 @@ impl Render for Workspace {
         self.ensure_browser_tabs(window, cx);
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
-        // Before the rows are drawn, so a folder found now shows in this frame.
-        self.refresh_places(cx);
-        self.tick_places(cx);
+        // Before the rows are drawn, so a folder found now shows in this frame; at most once a
+        // second (each check builds the rows).
+        if self.places.check_due(Instant::now()) {
+            self.refresh_places(cx);
+            self.tick_places(cx);
+        }
         let title = self
             .model
             .focused_workspace()

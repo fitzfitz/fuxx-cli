@@ -9,7 +9,6 @@
 //!   never waits on the socket. The daemon answers terminal queries and works out status, title
 //!   and exit; the replica's own query, title and bell events are dropped.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -27,7 +26,7 @@ use portable_pty::CommandBuilder;
 
 use crate::colors;
 use crate::daemon_client::{DaemonClient, SessionStream};
-use crate::detector::{CwdReports, OscDetector};
+use crate::detector::{CwdReport, CwdReports, OscDetector};
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
 use crate::mux_proto::{Frame, SetMeta};
@@ -272,9 +271,9 @@ pub struct TerminalCore {
     links: Arc<Mutex<LinkFinder>>,
     /// Shared by every clone, so a theme change reaches them all.
     theme: Arc<Mutex<Theme>>,
-    /// The working folder the program last reported (OSC 7), kept by the thread that reads
-    /// its output.
-    cwd: Arc<Mutex<Option<PathBuf>>>,
+    /// The working folder the program last reported (OSC 7) and the host it named, kept by
+    /// the thread that reads its output.
+    cwd: Arc<Mutex<Option<CwdReport>>>,
 }
 
 impl TerminalCore {
@@ -554,7 +553,7 @@ impl TerminalCore {
     }
 
     /// The working folder the program last reported (OSC 7), if it ever did.
-    pub fn reported_cwd(&self) -> Option<PathBuf> {
+    pub fn reported_cwd(&self) -> Option<CwdReport> {
         self.cwd.lock().unwrap().clone()
     }
 
@@ -757,7 +756,7 @@ struct Replica {
     exit_code: Option<u32>,
     /// The working-folder reports in the session's output (a snapshot has none), and the last.
     reports: CwdReports,
-    cwd: Arc<Mutex<Option<PathBuf>>>,
+    cwd: Arc<Mutex<Option<CwdReport>>>,
 }
 
 impl Replica {

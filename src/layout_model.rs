@@ -231,13 +231,6 @@ impl Model {
         pinned.chain(rest).map(|w| w.id).collect()
     }
 
-    /// Its ⌘N digit: 1–9 for the first nine in display order.
-    #[allow(dead_code)] // for the rich rows (M11b Task 5)
-    pub fn shortcut(&self, workspace: WorkspaceId) -> Option<u8> {
-        let at = self.display_order().iter().position(|&w| w == workspace)?;
-        (at < 9).then(|| at as u8 + 1)
-    }
-
     /// The workspace ⌘`digit` selects.
     pub fn by_shortcut(&self, digit: u8) -> Option<WorkspaceId> {
         if !(1..=9).contains(&digit) {
@@ -471,6 +464,38 @@ impl Model {
         self.workspace_mut(workspace)
             .map(|w| w.pinned = pinned)
             .is_some()
+    }
+
+    /// Unpin a workspace and put it back with its group (by `group`; the ungrouped ones are one
+    /// too): right after the last unpinned workspace of that group, so the groups' order stays;
+    /// with none, where it is.
+    /// False when there is no such workspace.
+    pub fn unpin<K: PartialEq>(
+        &mut self,
+        workspace: WorkspaceId,
+        group: impl Fn(&Workspace) -> Option<K>,
+    ) -> bool {
+        let Some(w) = self.workspace(workspace) else {
+            return false;
+        };
+        let key = group(w);
+        let last = self
+            .workspaces
+            .iter()
+            .rposition(|w| w.id != workspace && !w.pinned && group(w) == key);
+        self.set_pinned(workspace, false);
+        let Some(last) = last else {
+            return true;
+        };
+        let from = self.workspaces.iter().position(|w| w.id == workspace);
+        // Right after it: one place less when it came from before it.
+        let to = if from.is_some_and(|f| f < last) {
+            last
+        } else {
+            last + 1
+        };
+        self.move_workspace(workspace, to);
+        true
     }
 
     /// A divider drag: see `Node::set_ratio`.
@@ -1538,19 +1563,16 @@ mod tests {
         let ids: Vec<WorkspaceId> = (0..11)
             .map(|i| m.new_workspace(i, term(i as u64 + 1)).unwrap().workspace)
             .collect();
-        assert_eq!(m.shortcut(ids[0]), Some(1));
-        assert_eq!(m.shortcut(ids[8]), Some(9));
-        assert_eq!(m.shortcut(ids[9]), None);
+        assert_eq!(m.by_shortcut(1), Some(ids[0]));
+        assert_eq!(m.by_shortcut(9), Some(ids[8]));
+        // ids[9] and on have none.
         m.set_pinned(ids[10], true);
-        assert_eq!(m.shortcut(ids[10]), Some(1));
-        assert_eq!(m.shortcut(ids[0]), Some(2));
-        assert_eq!(m.shortcut(ids[8]), None);
         assert_eq!(m.by_shortcut(1), Some(ids[10]));
+        assert_eq!(m.by_shortcut(2), Some(ids[0]));
         assert_eq!(m.by_shortcut(9), Some(ids[7]));
         assert_eq!(m.by_shortcut(0), None);
         assert_eq!(m.by_shortcut(10), None);
         assert_eq!(Model::new().by_shortcut(1), None);
-        assert_eq!(m.shortcut(WorkspaceId(999)), None);
     }
 
     #[test]
@@ -2255,6 +2277,31 @@ mod tests {
         assert_eq!(m.display_order(), [ids[3], ids[1], ids[4], ids[0], ids[2]]);
         // Unpinning still puts one back where it was in the sidebar order.
         m.set_pinned(ids[1], false);
+        ok(&m);
+    }
+
+    #[test]
+    fn unpinning_puts_a_workspace_back_with_its_group_and_keeps_the_groups_order() {
+        let mut m = Model::new();
+        // A (pinned, G), B (H), D (G): the groups show H then G.
+        let ids: Vec<WorkspaceId> = (0..3)
+            .map(|i| m.new_workspace(i as usize, term(i)).unwrap().workspace)
+            .collect();
+        let (a, b, d) = (ids[0], ids[1], ids[2]);
+        m.set_pinned(a, true);
+        let group = |w: &Workspace| ["G", "H", "G"].get(m_terminal(w) as usize).copied();
+        m.group_together(group);
+        assert!(m.unpin(a, group));
+        // After D, the last of G: H still before G once grouped.
+        m.group_together(group);
+        let order: Vec<WorkspaceId> = m.workspaces().iter().map(|w| w.id).collect();
+        assert_eq!(order, [b, d, a]);
+        assert!(!m.workspace(a).unwrap().pinned);
+        // A group of its own: it stays where it is.
+        m.set_pinned(b, true);
+        assert!(m.unpin(b, group));
+        assert_eq!(m.workspaces()[0].id, b);
+        assert!(!m.unpin(WorkspaceId(999), group));
         ok(&m);
     }
 

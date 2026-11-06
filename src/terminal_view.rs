@@ -294,7 +294,7 @@ impl TerminalView {
 
     /// Where the program works: the folder it last reported (OSC 7), and its process id (a
     /// local terminal's; see `TerminalCore`).
-    pub fn working_folder(&self) -> (Option<std::path::PathBuf>, Option<u32>) {
+    pub fn working_folder(&self) -> (Option<crate::detector::CwdReport>, Option<u32>) {
         (self.core.reported_cwd(), self.core.pid())
     }
 
