@@ -28,6 +28,8 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSAccessibility", "NSActionCell", "NSAppearance", "NSApplication", "NSAttributedString", "NSBitmapImageRep", "NSBox", "NSCell", "NSColor", "NSControl", "NSEvent", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSImageView", "NSLayoutAnchor", "NSLayoutConstraint", "NSResponder", "NSRunningApplication", "NSStringDrawing", "NSText", "NSTextField", "NSTextFieldCell", "NSTextView", "NSToolbar", "NSToolbarItem", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSData", "NSDate", "NSDictionary", "NSError", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSURL", "NSURLError", "NSURLRequest", "NSUserDefaults"] }
 block2 = "0.6.2"
+# Apple's UserNotifications framework: native banners from the app bundle (M11c).
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 [features]
 # Off-screen screenshots of UI scenes (M11): `cargo run --features ui-shots -- __ui-shots [filter]`.

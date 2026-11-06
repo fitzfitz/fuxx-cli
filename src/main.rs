@@ -32,6 +32,7 @@ mod mouse;
 #[allow(dead_code)] // used by the daemon and client from M10a Task 3/4
 mod mux_proto;
 mod name_input;
+mod native_notify;
 mod notification_list;
 mod notifier;
 mod overlay_panel;
