@@ -13,8 +13,8 @@ updated: 2026-11-06
 |---|---|
 | **Milestone note** | [[55 - Milestone 11c - Native Notifications]] (the spec) |
 | **Status** | ⬜ Planned 2026-11-06 |
-| **Tasks done** | 0 / 6 |
-| **▶ Pick up here** | Task 0: the click test (needs you to click a few banners) |
+| **Tasks done** | 1 / 6 (Task 0) |
+| **▶ Pick up here** | Task 1: native banners with fallback |
 | **Decisions used** | Yours (2026-11-06): extend M11 with native notifications; go. Everything else: AI's call, in note 55 "Settled before planning". |
 | **Needs your eyes** | 👀 Task 0 (clicks) and Task 4 (on screen) |
 
@@ -63,7 +63,7 @@ reaches the window is decided by Task 0's test.
 
 ---
 
-### Task 0: The click test — where does a background banner's click go? — ⬜ (needs you)
+### Task 0: The click test — where does a background banner's click go? — ✅ (you clicked, 2026-11-06)
 
 A throwaway probe on a throwaway branch (as the first test), run by the controller with you. Not merged.
 
@@ -78,6 +78,11 @@ A throwaway probe on a throwaway branch (as the first test), run by the controll
 - **Outcome → ruling in the ledger, choosing Task 3's route:** **Route W** (the window side gets it, or macOS opens
   fuxx and hands it the click) or **Route S** (the service gets it: the service must pass it on).
 - Delete the branch afterwards; record the result in note 55 ("Settled before planning", item 1).
+- **Result:** (1) no window, service alive → the **service** gets the click, and macOS opens fuxx itself (that new fuxx
+  gets no click), seen twice; (2) a window running → the **window** gets the click, even on the service's banner;
+  (3) the poster gone → macOS opens fuxx and **the new fuxx** gets the click (delegate set before the app runs).
+  **Ruling: both routes** — Task 2 handles any click the window gets (incl. at launch); Task 3 makes the service pass
+  its clicks on.
 
 ### Task 1: Native banners with fallback — ⬜
 
@@ -137,17 +142,23 @@ A throwaway probe on a throwaway branch (as the first test), run by the controll
 - [ ] **Step 4: run** `cargo test`, clippy (both), fmt, full `__ui-shots` → all ok.
 - [ ] **Step 5: commit** `feat(m11c): a banner click shows its terminal`.
 
-### Task 3: Background-service banners — ⬜ (shape set by Task 0)
+### Task 3: Background-service banners — ⬜ (both routes, from Task 0)
 
-- **Route W:** nothing new in the service; the cold start: fuxx opened by a click gets it through `install` before
-  restoring (Task 2's `PendingShow` holds it). Test: a ui-shot where the click arrives during the restore and lands
-  after it.
-- **Route S:** the service sets its own delegate (in `daemon.rs`, bundled only) and, on a click, sends the attached
-  window a new `Frame::Show { id: u64 }` (`mux_proto.rs`); with no window attached it keeps the id as its one pending
-  show (a later click replaces it), opens `fuxx.app` (`open -b io.github.fitzfitz.fuxx`) and sends the `Show` right
-  after the window's `Hello`. Tests: the frame's round-trip; the service's pending-show rule (pure); the window applies
-  a `Show` through `PendingShow`.
-- [ ] Tests as above for the chosen route; `cargo test`, clippy, fmt, full `__ui-shots`.
+**Files:** Modify `src/daemon.rs` (delegate, pending show, main-thread wait), `src/mux_proto.rs` (`Frame::Show`),
+`src/workspace_daemon.rs` (apply a `Show`), `src/native_notify.rs` (a delegate usable without the app), `Cargo.toml`
+(`objc2-foundation` feature `NSRunLoop`).
+
+- The service (bundled only) sets its own notification delegate. A click → `terminal_of(id)`; with a window attached,
+  send it `Frame::Show { id: u64 }`; with none, keep it as the one pending show (a later click replaces it), run
+  `open -b io.github.fitzfitz.fuxx` (macOS usually opens fuxx already; this is a harmless backup) and send the `Show`
+  right after the next window's `Hello`.
+- **The service's main thread must run the main run loop** while it waits for the tick thread (today it blocks in a
+  `join`, `daemon.rs:~436`): wait in slices of the main `NSRunLoop` (≤ 0.25 s) until the tick thread has finished, so
+  the delegate's main-queue callbacks run (Task 0's probe got clicks only while pumping it).
+- The window applies a `Show` through `PendingShow` (Task 2), so a `Show` during the restore lands after it.
+- [ ] Tests: `Frame::Show` round-trip; the service's pending-show rule (pure: attached → send now; none → hold, later
+  click replaces, `Hello` takes it once); the window applying a `Show` via `PendingShow`; the existing daemon tests
+  (stop, idle exit, reap) still pass with the run-loop wait. `cargo test`, clippy, fmt, full `__ui-shots`.
 - [ ] Commit `feat(m11c): background banners land on their terminal`.
 
 ### Task 4: On screen — 👀 (you)
