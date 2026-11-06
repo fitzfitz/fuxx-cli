@@ -99,6 +99,18 @@ pub(crate) fn nothing_left(terminals: usize, workspaces: usize, popped_open: usi
     terminals == 0 && workspaces == 0 && popped_open == 0
 }
 
+/// Whether closing `closed` popped-out windows (the user closed them) leaves nothing (see
+/// `nothing_left`), so fuxx quits now: the last tab popped out, then its window closed. With
+/// none closed, an empty window stays (the first run's, before any workspace).
+pub(crate) fn quits_after_closing(
+    closed: usize,
+    terminals: usize,
+    workspaces: usize,
+    popped_open: usize,
+) -> bool {
+    closed > 0 && nothing_left(terminals, workspaces, popped_open)
+}
+
 /// Whether the saved browser data should be deleted now: `browser-keep-data` is off, a page was
 /// made with it on at some time (`flag`, kept in the sessions file) and no page made with it on
 /// is still open (a browser tab or window; it keeps writing to the saved store until it closes).
@@ -200,9 +212,11 @@ impl<B: BrowserWindow> Browsers<B> {
         self.open.insert(id, (browser, title));
     }
 
-    /// Drop the browsers whose window the user closed.
-    pub fn forget_closed(&mut self) {
+    /// Drop the browsers whose window the user closed; how many.
+    pub fn forget_closed(&mut self) -> usize {
+        let before = self.open.len();
         self.open.retain(|_, (browser, _)| !browser.is_closed());
+        before - self.open.len()
     }
 
     /// Give each window the title `title_for` its browser, when that changed.
@@ -633,9 +647,19 @@ impl Workspace {
     }
 
     /// Bring the popped-out windows' titles and top bars up to date and drop those the user
-    /// closed. The wait before the next check (see `tick_interval`).
-    fn check_browsers(&mut self, cx: &mut Context<Self>) -> Duration {
-        self.browsers.forget_closed();
+    /// closed; if that leaves nothing (`quits_after_closing`), fuxx's window closes and fuxx
+    /// quits. The wait before the next check (see `tick_interval`).
+    fn check_browsers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Duration {
+        let closed = self.browsers.forget_closed();
+        if quits_after_closing(
+            closed,
+            self.sessions.items().len(),
+            self.model.workspaces().len(),
+            self.browsers.iter().count(),
+        ) {
+            let conns = self.subscribers.clone();
+            self.quit_after_flush(conns, None, window, cx);
+        }
         self.browsers
             .retitle(|browser| popped_title(&browser.state().title));
         let mut seen = vec![];
@@ -650,18 +674,18 @@ impl Workspace {
 
     /// Start the windows' check (every 500 ms, 100 ms while a page loads) unless it's running;
     /// it stops once no window is open.
-    fn tick_browsers(&mut self, cx: &mut Context<Self>) {
+    fn tick_browsers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.browsers_ticking || self.browsers.is_empty() {
             return;
         }
         self.browsers_ticking = true;
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let mut wait = BROWSER_TICK_LOADING;
             loop {
                 cx.background_executor().timer(wait).await;
                 let next = this
-                    .update(cx, |this, cx| {
-                        let next = this.check_browsers(cx);
+                    .update_in(cx, |this, window, cx| {
+                        let next = this.check_browsers(window, cx);
                         this.browsers_ticking = !this.browsers.is_empty();
                         this.browsers_ticking.then_some(next)
                     })
@@ -700,7 +724,7 @@ impl Workspace {
             let id = self.next_popped;
             self.next_popped += 1;
             self.browsers.insert(id, browser, title);
-            self.tick_browsers(cx);
+            self.tick_browsers(window, cx);
         }
         self.close_tab(tab, window, cx);
     }
@@ -1205,8 +1229,9 @@ mod tests {
         let (two, two_dropped) = Fake::new();
         browsers.insert(1, one, "one".into());
         browsers.insert(2, two, "two".into());
+        assert_eq!(browsers.forget_closed(), 0);
         browsers.get(1).unwrap().closed.set(true);
-        browsers.forget_closed();
+        assert_eq!(browsers.forget_closed(), 1);
         assert!(one_dropped.get() && browsers.get(1).is_none());
         assert!(!two_dropped.get() && browsers.get(2).is_some());
     }
@@ -1506,6 +1531,20 @@ mod tests {
         // The last tab popped out: its window keeps fuxx running.
         assert!(!nothing_left(0, 0, 1));
         assert!(!nothing_left(0, 0, 2));
+    }
+
+    #[test]
+    fn closing_the_last_popped_out_window_with_nothing_else_left_quits() {
+        // The last tab popped out, then its window closed.
+        assert!(quits_after_closing(1, 0, 0, 0));
+        assert!(quits_after_closing(2, 0, 0, 0));
+        // Another popped-out window is still open.
+        assert!(!quits_after_closing(1, 0, 0, 1));
+        // A workspace (browser tabs only) or a terminal is left.
+        assert!(!quits_after_closing(1, 0, 1, 0));
+        assert!(!quits_after_closing(1, 1, 1, 0));
+        // No window closed: the empty first-run window stays.
+        assert!(!quits_after_closing(0, 0, 0, 0));
     }
 
     #[test]
