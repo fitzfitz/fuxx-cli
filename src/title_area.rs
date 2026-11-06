@@ -9,8 +9,10 @@
 //! already names the workspace, so no band is added to say it again and the terminals keep that
 //! height. The band's one button is the sidebar's (`sidebar_toggle`).
 //!
-//! The popover is one of the overlays (one open at a time): it opens upward from the 🔔, holds
-//! the keyboard so Escape closes it, and a click anywhere else closes it too. Clicking an entry
+//! The popover is one of the overlays (one open at a time): it opens upward from the 🔔, over
+//! the sidebar with its right edge the gear's, and the 🔔 stays lit on its fill while it shows
+//! (as the + with its menu). It holds the keyboard so Escape closes it, and a click anywhere
+//! else, or a shortcut that moves the keyboard (`close_menus`), closes it too. Clicking an entry
 //! whose terminal is still open shows that terminal (its workspace, pane and tab) as ⇧⌘U does;
 //! a closed one's entry is greyed and does nothing. The dot follows the list, which changes
 //! only when a notification is raised or the popover opens: no timer.
@@ -49,9 +51,11 @@ const NAME_MIN: f32 = 60.0;
 /// from the 🔔 (inside `DOT`).
 pub(crate) const DOT: f32 = 10.0;
 pub(crate) const DOT_INSET: f32 = 1.5;
-/// The popover: its width, how far above the footer it opens, how far from the window's edges
-/// it keeps, and the most its list may take (the rest scrolls).
+/// The popover: its widest and narrowest (the room in the default sidebar), how far above the
+/// footer it opens, how far from the window's edges it keeps, and the most its list may take
+/// (the rest scrolls).
 const POPOVER_WIDTH: f32 = 340.0;
+const POPOVER_MIN: f32 = 228.0;
 const POPOVER_DROP: f32 = 4.0;
 const EDGE_MARGIN: f32 = 8.0;
 const LIST_MAX: f32 = 420.0;
@@ -85,10 +89,20 @@ pub(crate) fn footer_buttons(width: f32) -> [f32; 3] {
     [ROW_INSET, gear - FOOTER_GAP - FOOTER_BUTTON, gear]
 }
 
-/// The popover's bottom left corner in the window: over the 🔔, just above the footer.
+/// The popover's width over a sidebar `sidebar_width` wide: the footer's, inside its insets,
+/// from `POPOVER_MIN` to `POPOVER_WIDTH`.
+pub(crate) fn popover_width(sidebar_width: f32) -> f32 {
+    (sidebar_width - 2.0 * ROW_INSET).clamp(POPOVER_MIN, POPOVER_WIDTH)
+}
+
+/// The popover's bottom left corner in the window, just above the footer. It hangs from the
+/// footer's right-hand buttons (the 🔔 and the gear): its right edge is the gear's, so it sits
+/// over the sidebar, unless that is too narrow for it; then it starts at the footer's left
+/// inset, as the + menu does.
 pub(crate) fn popover_anchor(sidebar_width: f32, viewport_height: f32) -> (f32, f32) {
-    let bell = footer_buttons(sidebar_width)[1];
-    (bell, viewport_height - FOOTER - POPOVER_DROP)
+    let right = footer_buttons(sidebar_width)[2] + FOOTER_BUTTON;
+    let left = (right - popover_width(sidebar_width)).max(ROW_INSET);
+    (left, viewport_height - FOOTER - POPOVER_DROP)
 }
 
 /// The most the list may take in a window `viewport_height` high: up to `LIST_MAX`, and short
@@ -223,7 +237,7 @@ impl Workspace {
                 .children(rows)
                 .into_any_element()
         };
-        let panel = overlay_panel::shell(&ui, POPOVER_WIDTH)
+        let panel = overlay_panel::shell(&ui, popover_width(self.sidebar.width))
             .p(px(PADDING))
             .gap(px(PADDING))
             .track_focus(focus)
@@ -422,10 +436,11 @@ fn status_mark(status: Status, ui: UiColors) -> AnyElement {
 }
 
 /// The 🔔 as an outline in the sidebar button's stroke: a dome open at the bottom, its rim and
-/// clapper, in the dim text colour, the full one on hover.
-pub(crate) fn bell_icon(ui: UiColors) -> Div {
+/// clapper, in the dim text colour, the full one on hover (or while `lit`: its popover is open).
+pub(crate) fn bell_icon(ui: UiColors, lit: bool) -> Div {
     const GROUP: &str = BELL_GROUP;
-    let (dim, full) = (hsla(ui.text_dim), hsla(ui.text));
+    let full = hsla(ui.text);
+    let dim = if lit { full } else { hsla(ui.text_dim) };
     let mut dome = div()
         .absolute()
         .left(px(2.5))
@@ -523,10 +538,49 @@ mod tests {
     }
 
     #[test]
-    fn the_popover_opens_upward_from_the_bell_clear_of_the_band() {
+    fn the_popover_hangs_from_the_footers_right_buttons_over_the_sidebar() {
+        use crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH;
+        for width in [
+            SIDEBAR_MIN_WIDTH,
+            SIDEBAR_DEFAULT_WIDTH,
+            260.0,
+            SIDEBAR_MAX_WIDTH,
+        ] {
+            let (x, _) = popover_anchor(width, 600.0);
+            let (w, right) = (popover_width(width), x + popover_width(width));
+            let [_, bell, gear] = footer_buttons(width);
+            assert!(
+                (POPOVER_MIN..=POPOVER_WIDTH).contains(&w),
+                "width {width}: {w} wide"
+            );
+            assert!(
+                x <= bell && bell + FOOTER_BUTTON <= right,
+                "width {width}: over the bell"
+            );
+            if width - 2.0 * ROW_INSET >= POPOVER_MIN {
+                // Its right edge is the gear's, and it stays over the sidebar.
+                assert_eq!(
+                    right,
+                    gear + FOOTER_BUTTON,
+                    "width {width}: the gear's edge"
+                );
+                assert!(x >= ROW_INSET, "width {width}: inside the sidebar");
+            } else {
+                // Narrower than the panel's least: from the footer's left inset, as the + menu.
+                assert_eq!((x, w), (ROW_INSET, POPOVER_MIN), "width {width}");
+            }
+        }
+        // At the default width it fills the sidebar inside the footer's insets.
+        assert_eq!(
+            popover_width(SIDEBAR_DEFAULT_WIDTH),
+            SIDEBAR_DEFAULT_WIDTH - 2.0 * ROW_INSET
+        );
+    }
+
+    #[test]
+    fn the_popover_opens_upward_from_the_footer_clear_of_the_band() {
         for height in [300.0, 480.0, 600.0, 1000.0] {
-            let (x, y) = popover_anchor(260.0, height);
-            assert_eq!(x, footer_buttons(260.0)[1], "over the bell");
+            let (_, y) = popover_anchor(260.0, height);
             assert_eq!(y, height - FOOTER - POPOVER_DROP, "just above the footer");
             // The fullest list: its panel (header, padding and edge included) stays under
             // the top band, where the traffic lights are.

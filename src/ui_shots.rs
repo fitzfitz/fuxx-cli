@@ -3844,7 +3844,10 @@ fn shot_notifications(ws: &mut Workspace) {
 fn title_area_scenes() {
     use crate::sidebar_toggle::{HIT, button_origin};
     use crate::tab_menu::Dismiss;
-    use crate::title_area::{DOT, DOT_INSET, FOOTER_BUTTON, entry_top, footer_buttons, name_inset};
+    use crate::title_area::{
+        DOT, DOT_INSET, FOOTER_BUTTON, entry_top, footer_buttons, name_inset, popover_anchor,
+        popover_width,
+    };
     use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH};
     use gpui::{Focusable, KeyBinding, Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -3868,14 +3871,16 @@ fn title_area_scenes() {
             "title-narrow",
             "title-popover",
             "title-popover-empty",
+            "title-popover-narrow",
         ] {
             let dims = match scene {
                 "title-narrow" => size(px(560.0), px(200.0)),
                 "title-footer-narrow" => size(px(360.0), px(200.0)),
                 "title-popover" | "title-popover-empty" => size(px(960.0), px(480.0)),
+                "title-popover-narrow" => size(px(360.0), px(480.0)),
                 _ => size(px(760.0), px(200.0)),
             };
-            let sidebar_width = if scene == "title-footer-narrow" {
+            let sidebar_width = if matches!(scene, "title-footer-narrow" | "title-popover-narrow") {
                 SIDEBAR_MIN_WIDTH
             } else {
                 SIDEBAR_DEFAULT_WIDTH
@@ -3963,6 +3968,52 @@ fn title_area_scenes() {
                     }
                     _ => {}
                 }
+                if scene.starts_with("title-popover") {
+                    // The 🔔 shows its popover is open: lit, on the hover fill (as the + with
+                    // its menu). The popover's shadow falls on the footer, so colours are
+                    // compared, not matched: the bell's most inked pixel (furthest from its
+                    // button's fill) is nearer `text` than `text_dim`, and the button's fill
+                    // is off the footer beside it as `row_hover` is off the sidebar's colour.
+                    let dist = |a: [u8; 3], b: [u8; 3]| -> i32 {
+                        a.iter()
+                            .zip(b)
+                            .map(|(&x, y)| (i32::from(x) - i32::from(y)).pow(2))
+                            .sum()
+                    };
+                    let fill = at(bell_x + 3.0, centre_y);
+                    let ink = (0..28)
+                        .map(|k| at(bell_x + FOOTER_BUTTON / 2.0, centre_y - 14.0 + k as f32))
+                        .max_by_key(|&p| dist(p, fill))
+                        .expect("the bell's column");
+                    assert!(
+                        dist(ink, bg(ui.text)) < dist(ink, bg(ui.text_dim)),
+                        "{n}: the bell, lit while open ({ink:?})"
+                    );
+                    let beside = at(bell_x + FOOTER_BUTTON + 2.0, centre_y);
+                    let lum = |c: [u8; 3]| c.iter().map(|&v| i32::from(v)).sum::<i32>();
+                    let want = lum(bg(ui.row_hover)) - lum(bg(ui.sidebar_background));
+                    let got = lum(fill) - lum(beside);
+                    assert!(
+                        got.signum() == want.signum() && got.abs() >= want.abs() / 2,
+                        "{n}: the bell's button filled ({fill:?} beside {beside:?})"
+                    );
+                    // The popover hangs from the footer's right buttons: its right edge is the
+                    // gear's, over the sidebar (at the narrowest, from the footer's left inset).
+                    let (left, bottom) = popover_anchor(sidebar_width, height);
+                    let right = left + popover_width(sidebar_width);
+                    let y = bottom - 20.0;
+                    assert_eq!(at(left + 3.0, y), bg(ui.panel), "{n}: the popover's left");
+                    assert_eq!(at(right - 3.0, y), bg(ui.panel), "{n}: the popover's right");
+                    assert_ne!(at(right + 3.0, y), bg(ui.panel), "{n}: nothing past it");
+                    if scene != "title-popover-narrow" {
+                        assert_eq!(
+                            right,
+                            footer_buttons(sidebar_width)[2] + FOOTER_BUTTON,
+                            "{n}: at the gear's right edge"
+                        );
+                        assert!(right < sidebar_width, "{n}: inside the sidebar");
+                    }
+                }
                 // The + is drawn in the footer's left (ink in its box), the gear's box at the
                 // right edge is inside the sidebar.
                 let inked = |x0: f32| -> usize {
@@ -3993,7 +4044,7 @@ fn title_area_scenes() {
                 bg(ui.sidebar_background)
             };
             let inset = name_inset(false);
-            if scene != "title-footer-narrow" {
+            if !matches!(scene, "title-footer-narrow" | "title-popover-narrow") {
                 let stop = if hidden {
                     inset - 2.0
                 } else {
@@ -4101,9 +4152,10 @@ fn title_area_scenes() {
         cx.simulate_click(window, point(px(800.0), px(40.0)), none);
         assert!(!open(cx), "title-area: a click outside closes it");
         // The closed terminal's entry (the fourth) does nothing; agent's (the first) jumps.
+        let popover_left = popover_anchor(SIDEBAR_DEFAULT_WIDTH, height).0;
         let entry = |i: usize| {
             point(
-                px(bell_x + 60.0),
+                px(popover_left + 60.0),
                 px(entry_top(i, 6, SIDEBAR_DEFAULT_WIDTH, height) + 20.0),
             )
         };
@@ -4134,7 +4186,7 @@ fn title_area_scenes() {
         let fill = pixel_at(
             &shot,
             size(px(width), px(height)),
-            bell_x + 12.0,
+            popover_left + 12.0,
             entry_top(0, 6, SIDEBAR_DEFAULT_WIDTH, height) + 2.0,
         );
         assert_eq!(

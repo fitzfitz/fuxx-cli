@@ -1635,6 +1635,7 @@ impl Workspace {
     /// run's notifications, with a dot while some are unseen) beside a gear for Preferences.
     fn render_footer(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let open = self.sidebar.new_menu;
+        let popover = self.notifications_popover.is_some();
         let unseen = self.notifications.unseen() > 0;
         let button = |id: &'static str| {
             div()
@@ -1674,7 +1675,8 @@ impl Workspace {
                 button("sidebar-notifications")
                     .group(BELL_GROUP)
                     .relative()
-                    .child(bell_icon(ui))
+                    .when(popover, |b| b.bg(hsla(ui.row_hover)))
+                    .child(bell_icon(ui, popover))
                     .when(unseen, |b| b.child(unseen_dot(ui)))
                     .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Notifications".into())).into() })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
