@@ -13,7 +13,7 @@ updated: 2026-11-06
 |---|---|
 | **Spec** | The 2026-11-06 amendments in [[52 - Milestone 10c - Agent Browser]] and [[53 - Milestone 11 - UI-UX Uplift]] |
 | **Status** | ⬜ Planned (2026-11-06) |
-| **Tasks done** | 3 / 8 |
+| **Tasks done** | 4 / 9 |
 | **Decisions used** | Yours (2026-11-06): build now, before the merge; the address bar has its own setting; bar off keeps the buttons; keep-data Off by default and turning it off deletes saved data; Preferences sections General / Appearance / Sessions / Browser. |
 | **Needs your eyes** | 👀 Task 4 (batched with M10b, M10c, M11) |
 
@@ -133,6 +133,33 @@ the registry source).
 - [ ] Tests: the menu's actions on a pure session list (close others / to the right / which indices), colour
   round-trip + old files load, the shortcut label for rows 1–9 and none after; ui-shots: rows with colours and ⌘N,
   hover with ×, the context menu, Mocha + Latte.
+
+### Task 3d: Tabs hold terminals — ⬜ (added 2026-11-06, your request)
+
+Today every terminal is its own sidebar row and a split shows several rows side by side. From now on:
+
+- **A tab = a split layout of one or more terminals.** The sidebar lists tabs only (your choice); the right side shows
+  the selected tab's terminals with their pane headers.
+- ⌘T / "+ New" / presets / New SSH Session / `fuxx new` (without `--split`) make a **new tab with one terminal**. ⌘D /
+  ⇧⌘D / `fuxx new --split` add a terminal **to the current tab**. Closing a terminal (⌘W, `exit`, pane close) removes it
+  from its tab; closing a tab's last terminal closes the tab.
+- **Group headers stay** (your choice): a tab belongs to the folder / SSH host of its first terminal; headers collapse
+  and show the rolled-up ring as today.
+- **A tab's ring** = the most urgent of its terminals (Waiting > Done > Working > Idle); its question line = that
+  waiting terminal's question; its age = that terminal's. Its name = the focused terminal's name unless the tab was
+  renamed (Rename Tab… names the tab; the pane rename box still names a terminal) — AI's call.
+- **Closing a whole tab** (×, middle-click, Close Tab): asks first only when it has 2+ terminals ("Close tab with 3
+  terminals?" + "M agents are still working or waiting." when M > 0) — your choice. Close Other Tabs / Close Tabs to
+  the Right keep always asking (Task 3c).
+- ⌘1…⌘9, the "⌘N" hint, drag-to-reorder, Tab Color, the right-click menu and the ⌘P switcher work on **tabs**; ⇧⌘U jumps
+  to the waiting **terminal** (selects its tab, focuses its pane). Notifications name the terminal and its tab.
+- **Saved and restored:** tabs (layout, name, colour) and their terminals; old `sessions.json` files load (each saved
+  layout becomes a tab; any session not in another's layout becomes a one-terminal tab). With the background service
+  (M10a) adopted terminals land back in their tabs.
+- **Scripting:** terminal ids `sN` stay as they are; `session.list` / `fuxx ls` add each terminal's tab (`"tab": N`,
+  the tab's 1-based position) — AI's call; `fuxx new --split … --of sN` adds to that terminal's tab.
+- [ ] Tests on a pure tab model (new / split / close-last / move / rollup / restore of old files / ⌘N mapping); ui-shots:
+  a sidebar of tabs with a 3-terminal tab selected (one waiting), Mocha + Latte.
 
 ### Task 4: On screen — 👀 ⬜ (batched)
 
