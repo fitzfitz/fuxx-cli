@@ -13,7 +13,7 @@ updated: 2026-11-06
 |---|---|
 | **Spec** | The 2026-11-06 amendments in [[52 - Milestone 10c - Agent Browser]] and [[53 - Milestone 11 - UI-UX Uplift]] |
 | **Status** | ⬜ Planned (2026-11-06) |
-| **Tasks done** | 4 / 9 |
+| **Tasks done** | 4 / 8 (3d moved to M11b) |
 | **Decisions used** | Yours (2026-11-06): build now, before the merge; the address bar has its own setting; bar off keeps the buttons; keep-data Off by default and turning it off deletes saved data; Preferences sections General / Appearance / Sessions / Browser. |
 | **Needs your eyes** | 👀 Task 4 (batched with M10b, M10c, M11) |
 
@@ -134,7 +134,9 @@ the registry source).
   round-trip + old files load, the shortcut label for rows 1–9 and none after; ui-shots: rows with colours and ⌘N,
   hover with ×, the context menu, Mocha + Latte.
 
-### Task 3d: Tabs hold terminals — ⬜ (added 2026-11-06, your request)
+### Task 3d: Tabs hold terminals — ➡️ moved to M11b (2026-11-06, your choice: build the full cmux layout as its own milestone; see [[M11b Input - Workspaces, Pane Tabs and In-Pane Browser]])
+
+~~Original task text kept below for the record.~~
 
 Today every terminal is its own sidebar row and a split shows several rows side by side. From now on:
 
