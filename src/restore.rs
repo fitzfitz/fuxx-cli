@@ -116,6 +116,10 @@ pub struct SavedState {
     /// The first-run hint card was closed, for good.
     #[serde(default)]
     pub hint_dismissed: bool,
+    /// A browser window was opened with `browser-keep-data` on, so the saved (on-disk) browser
+    /// data may hold something; cleared once it has been deleted.
+    #[serde(default)]
+    pub browser_data_kept: bool,
 }
 
 impl Default for SavedState {
@@ -132,6 +136,7 @@ impl Default for SavedState {
             sidebar_width: None,
             sidebar_hidden: false,
             hint_dismissed: false,
+            browser_data_kept: false,
         }
     }
 }
@@ -290,6 +295,17 @@ mod tests {
         assert_eq!(old.sessions[0].daemon_id, None);
         // Not written for a session the service doesn't run.
         assert!(!encode(&sample()).contains("\"daemon_id\": null"));
+    }
+
+    #[test]
+    fn browser_data_flag_round_trips_and_old_files_load() {
+        let state = SavedState {
+            browser_data_kept: true,
+            ..sample()
+        };
+        assert_eq!(decode(&encode(&state)), Some(state));
+        let old = decode(r#"{"version":1,"sessions":[{}]}"#).expect("an old file loads");
+        assert!(!old.browser_data_kept);
     }
 
     #[test]

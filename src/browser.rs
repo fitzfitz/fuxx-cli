@@ -81,6 +81,8 @@ pub struct Browser {
     delegate: Retained<BrowserDelegate>,
     /// The top bar (the toolbar and the field hold it weakly, so it lives here too).
     bar: Retained<bar::TopBar>,
+    /// Whether it was opened with `browser-keep-data` on (it uses the saved data store).
+    keep_data: bool,
     /// Scripts and screenshots WebKit hasn't answered yet.
     pending: RefCell<Vec<Weak<dyn Unanswered>>>,
 }
@@ -182,6 +184,7 @@ impl Browser {
             view,
             delegate,
             bar,
+            keep_data,
             pending: RefCell::new(Vec::new()),
         };
         browser.refresh_bar();
@@ -339,6 +342,11 @@ impl Browser {
             .contains(NSWindowOcclusionState::Visible)
     }
 
+    /// Whether it was opened with `browser-keep-data` on, so it uses the saved data store.
+    pub fn keeps_data(&self) -> bool {
+        self.keep_data
+    }
+
     /// Whether the user has closed the window (the browser itself still works until dropped).
     pub fn is_closed(&self) -> bool {
         self.delegate.ivars().closed.get()
@@ -407,10 +415,17 @@ fn data_store(keep: bool, mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore>
 }
 
 /// Delete everything the default (saved) data store holds, of every kind: cookies, logins, site
-/// storage, caches (`browser-keep-data` turned from on to off). Returns at once; WebKit deletes
-/// in the background and the log says when it is done.
-pub fn forget_saved_data(mtm: MainThreadMarker) {
-    let done = RcBlock::new(|| eprintln!("[fuxx] browser: saved data deleted"));
+/// storage, caches. Returns at once; WebKit deletes in the background and the receiver answers
+/// when it is done.
+pub fn forget_saved_data(mtm: MainThreadMarker) -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    let tx = Cell::new(Some(tx));
+    let done = RcBlock::new(move || {
+        eprintln!("[fuxx] browser: saved data deleted");
+        if let Some(tx) = tx.take() {
+            let _ = tx.send(());
+        }
+    });
     // SAFETY: main thread (the marker); WebKit copies the block and calls it once, on the main
     // thread.
     unsafe {
@@ -421,6 +436,7 @@ pub fn forget_saved_data(mtm: MainThreadMarker) {
                 &done,
             );
     }
+    rx
 }
 
 /// Where a script's or screenshot's answer goes: taken by whichever comes first, WebKit's
