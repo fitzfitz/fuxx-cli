@@ -226,6 +226,7 @@ and cookies kept between runs" above.
   rounded address field that shows the current page and opens what you type (Enter; the same http/https check agents
   use; Escape puts the current address back; ⌘L focuses it), and a thin loading line. Light or dark follows the fuxx
   theme.
+- **The fuxx mark:** a small 🖕 to the right of the address bar (your choice of logo, 2026-11-06).
 - **Preferences → Browser → Show address bar** (On by default). Off: the bar keeps back / forward / reload and the
   page title; only the address field goes. Applies to open browser windows at once.
 - **Preferences → Browser → Keep history and data** (Off by default — your choice).
