@@ -191,10 +191,14 @@ cybers. Just update it on master then directly commit on master branch for this 
 - `scripts/make-app-icon.py` regenerates the `.icns` (Pillow, as the logo scripts already need); the `.icns` is
   committed, so building the app needs no Python. `scripts/bundle-mac.sh` copies it to `Contents/Resources/` and
   `Info.plist` names it (`CFBundleIconFile` = `fuxx`).
-- Unchanged: the browser bar's 🖕 mark (not asked); `cargo run` builds keep the generic Dock icon.
-- [ ] Checks: the script's fit rule (pure: bbox → scaled size and offset, centred, ≤ 824) by a small test; the `.icns`
+- **The browser bar's mark** (your "we do it on browser bar as well"): the popped-out browser window's toolbar mark
+  (`browser/bar.rs` `mark_image`, today the 🖕 emoji drawn as text) becomes the 3D Cyber logo — trimmed and centred
+  with no margin (`assets/logo/3d-cyber/fuxx-mark.png`, 64 px, made by the same script), compiled into fuxx and drawn
+  at the toolbar's 18 pt. The in-pane browser bar has no mark (unchanged).
+- Unchanged: `cargo run` builds keep the generic Dock icon.
+- [ ] Checks: the mark's embedded PNG is 64 × 64 (a Rust test); the script's fit rule (pure: bbox → scaled size and offset, centred, ≤ 824) by a small test; the `.icns`
   holds all ten sizes (`iconutil -c iconset` round-trip); a built `fuxx.app` has the file and the plist key;
-  `cargo test` unchanged. On screen (you): the Dock, ⌘Tab, a notification banner and System Settings show the logo.
+  `cargo test` unchanged. On screen (you): the Dock, ⌘Tab, a notification banner, System Settings and a popped-out browser window's toolbar show the logo.
 
 ### Task 4: On screen — 👀 pending (you)
 
