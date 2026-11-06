@@ -71,7 +71,7 @@ where each workspace is (git branch and folder) and which one needs you.
 
 ### Title area
 
-- Right of the traffic lights and the sidebar button: a 🔔 **notifications** button (a list of recent notifications;
+- (Moved by Task 6b, 2026-11-06: the 🔔 sits in the sidebar footer beside the gear; the footer's "+ New" is an icon-only +; no + in the title area.) Right of the traffic lights and the sidebar button: a 🔔 **notifications** button (a list of recent notifications;
   click one to jump to that terminal; a dot when there are unseen ones) and a **+** (new workspace).
 - The content area's top shows the selected workspace's name.
 

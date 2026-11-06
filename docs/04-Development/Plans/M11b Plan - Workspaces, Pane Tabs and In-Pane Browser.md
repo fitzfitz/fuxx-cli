@@ -180,6 +180,15 @@ the model, not rewritten. A spike proves the in-pane web view first.
   nowhere), `move_tab` across panes and workspaces with cascades (model invariants hold), the terminal keeps its `sN`
   and keeps running; ui-shots of the insertion line and a highlighted drop row.
 
+### Task 6b: 🔔 and + in the sidebar footer — ⬜ (added 2026-11-06, your request; after Task 7)
+
+- The 🔔 notifications button moves from the title area to the sidebar footer, beside the Preferences gear; its popover
+  opens upward from there (same list, dot and jump). The footer's "+ New" becomes an icon-only **+** (same menu, a
+  tooltip "New…"). The title-area + is removed; the band keeps the sidebar button. With the sidebar hidden, the 🔔 is
+  hidden too (as the gear is).
+- [ ] Tests: footer layout/hit rule (pure where possible); the popover still in `Overlay`; ui-shots of the footer and the
+  upward popover in Mocha + Latte; the band without 🔔/+.
+
 ### Task 8: On screen — 👀 ⬜ (batched)
 
 The spec's success check plus Review Focus 1–2 by hand.
