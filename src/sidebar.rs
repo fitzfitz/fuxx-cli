@@ -489,6 +489,18 @@ impl Workspace {
         )
     }
 
+    /// The sessions that have a row in the sidebar, in order: all but those folded in a closed
+    /// group (scrolled out of view or not).
+    pub(crate) fn sessions_with_rows(&self) -> Vec<usize> {
+        self.sidebar_rows(Instant::now())
+            .into_iter()
+            .filter_map(|row| match row {
+                SidebarRow::Session(s) => Some(s.index),
+                SidebarRow::Header(_) => None,
+            })
+            .collect()
+    }
+
     /// The marks on screen: each row in the scrolled view (a closed group's header shows its
     /// sessions' most urgent; none with the sidebar hidden), and each pane header.
     pub(crate) fn visible_statuses(&self) -> Vec<Status> {
@@ -774,7 +786,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A session's row: mark (a × in its place on hover, and always on the active row), name
+    /// A session's row: mark (a × in its place on hover), name
     /// (or the rename box), age (when the row is wide enough), on-screen pip, tab colour dot and
     /// ⌘N shortcut; under them a waiting session's question or a script's note; a script's
     /// progress along the bottom. Click selects, double-click renames, the × or a middle-click
@@ -853,7 +865,7 @@ impl Workspace {
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(self.close_slot(view, row.active, session, ui, surface, cx))
+            .child(self.close_slot(view, session, ui, surface, cx))
             .child(
                 div()
                     .flex_1()
@@ -1087,12 +1099,11 @@ impl Workspace {
         }
     }
 
-    /// A row's mark slot: its status mark, or in its place a × that closes the session (like
-    /// ⌘W): on hover, and always on the `active` row.
+    /// A row's mark slot: its status mark, or while the row is hovered a × in its place that
+    /// closes the session (like ⌘W).
     fn close_slot(
         &self,
         view: EntityId,
-        active: bool,
         session: &Session,
         ui: UiColors,
         surface: Rgb,
@@ -1105,13 +1116,7 @@ impl Workspace {
             .items_center()
             .justify_center()
             .child(self.session_mark("row", session, ui, surface))
-            .map(|mark| {
-                if active {
-                    mark.invisible()
-                } else {
-                    mark.group_hover(ROW_GROUP, |s| s.invisible())
-                }
-            });
+            .group_hover(ROW_GROUP, |s| s.invisible());
         let close = div()
             .id(("row-close", view))
             .absolute()
@@ -1126,9 +1131,8 @@ impl Workspace {
             .text_color(hsla(ui.text_dim))
             .hover(move |s| s.bg(hsla(ui.panel_hover)).text_color(hsla(ui.text)))
             .child("×")
-            .when(!active, |close| {
-                close.invisible().group_hover(ROW_GROUP, |s| s.visible())
-            })
+            .invisible()
+            .group_hover(ROW_GROUP, |s| s.visible())
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation(); // not also a click on the row
                 this.close_view(view, window, cx)

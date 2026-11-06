@@ -1399,7 +1399,7 @@ fn sidebar_scenes() {
 /// - `tabs` and `tabs-narrow`: the rows with their colour dots and ⌘N, at 240 and 180 px (no
 ///   ages there).
 /// - `tabs-hover`: the pointer over codex: a × in its mark's place; `tabs-hover-close`: on the
-///   × itself.
+///   × itself; `tabs-hover-active`: over shell, the active row (which shows its mark otherwise).
 /// - `tabs-menu`: codex's tab menu open (right-click), blue ringed.
 /// - `tabs-switcher`: the ⌘P switcher, the dots beside the names, over the split's pane headers
 ///   (tests and shell), which show theirs too.
@@ -1427,6 +1427,7 @@ fn tab_scenes() {
             "tabs-narrow",
             "tabs-hover",
             "tabs-hover-close",
+            "tabs-hover-active",
             "tabs-menu",
             "tabs-switcher",
         ] {
@@ -1465,6 +1466,10 @@ fn tab_scenes() {
                 noted.set(f32::from(row_point(cx, &ws, 2, -7.5).y));
                 match scene {
                     "tabs-hover" => cx.simulate_mouse_move(window, codex, None, none),
+                    "tabs-hover-active" => {
+                        let shell = row_point(cx, &ws, 4, 0.0);
+                        cx.simulate_mouse_move(window, shell, None, none)
+                    }
                     "tabs-hover-close" => {
                         // The mark slot: the row's inset and padding, then half the slot.
                         let at = point(px(6.0 + 8.0 + 7.0), px(noted.get()));
