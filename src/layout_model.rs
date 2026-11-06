@@ -412,7 +412,6 @@ impl Model {
 
     /// ⌃Tab / ⌃⇧Tab: show the next (or previous) tab of the focused pane, wrapping. None when
     /// it has only one.
-    #[allow(dead_code)] // for ⌃Tab (M11b Task 3)
     pub fn cycle_tab(&mut self, forward: bool) -> Option<TabId> {
         let p = self.pane_mut(self.focused_pane()?)?;
         let n = p.tabs.len();

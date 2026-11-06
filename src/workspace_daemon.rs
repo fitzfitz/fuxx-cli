@@ -652,6 +652,7 @@ impl Workspace {
         self.model = Model::new();
         self.collapsed.clear();
         self.renaming = None;
+        self.pane_tab_menu = None;
         self.address_box = None;
         self.browsers = Browsers::new(); // their windows close with their sessions
         self.dragging = None;

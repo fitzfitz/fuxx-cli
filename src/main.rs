@@ -31,7 +31,7 @@ mod name_input;
 mod notifier;
 mod overlay_panel;
 mod pane_browser;
-mod pane_header;
+mod pane_tab_menu;
 mod panes;
 mod preferences;
 mod prefs;
@@ -51,6 +51,7 @@ mod ssh_target;
 mod status;
 mod status_mark;
 mod switcher;
+mod tab_bar;
 mod tab_color;
 mod tab_menu;
 mod terminal;
@@ -87,8 +88,8 @@ use workspace::{
     CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
     LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp, NewSession,
-    NewSessionInFolder, NewSshSession, NextNeedingYou, NextPane, NextSession, OpenBrowser,
-    OpenSwitcher, PrevPane, PrevSession, RenameSession, SelectSession1, SelectSession2,
+    NewSessionInFolder, NewSshSession, NextNeedingYou, NextPane, NextSession, NextTab, OpenBrowser,
+    OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession, SelectSession1, SelectSession2,
     SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7, SelectSession8,
     SelectSession9, SplitDown, SplitRight, ToggleSidebar, Workspace,
 };
@@ -478,6 +479,11 @@ fn main() {
                 KeyBinding::new("cmd-up", ScrollPageUp, Some("Terminal")),
                 KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
                 KeyBinding::new("cmd-down", ScrollPageDown, Some("Terminal")),
+                // ⌃Tab / ⌃⇧Tab: the focused pane's next / previous tab. Taken from the terminal
+                // program (it got nothing for them before: `keys` sends no bytes for ⌃Tab), as
+                // terminals with tabs do.
+                KeyBinding::new("ctrl-tab", NextTab, Some("Terminal")),
+                KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Terminal")),
                 // The sidebar's rename box only; other keys type into it.
                 KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
                 KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),

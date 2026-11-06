@@ -213,6 +213,7 @@ const SCENES: &[(&str, fn())] = &[
     ("tabs", tab_scenes),
     ("splits", split_scenes),
     ("workspaces", workspace_scenes),
+    ("tab-bars", tab_bar_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("panels", panel_scenes),
@@ -832,11 +833,11 @@ fn check_window(
     } else {
         0.0
     };
-    // A split's panes have a header (not terminal background) above their terminal's padding.
-    let header = ui_tokens::size::PANE_HEADER;
-    let top = if split { band + header } else { band };
-    // The right pane's right and top padding (skipping its header), and (hidden) the band above.
-    let in_header = |y: f32| split && y >= band && y < band + header;
+    // Every pane has a tab bar (not terminal background) above its terminal's padding.
+    let header = ui_tokens::size::TAB_BAR;
+    let top = band + header;
+    // The right pane's right and top padding (skipping its tab bar), and (hidden) the band above.
+    let in_header = |y: f32| y >= band && y < band + header;
     let mut y = 0.0;
     while y < h {
         if in_header(y) {
@@ -1242,7 +1243,7 @@ fn row_point(
 /// The sidebar, from real workspaces in both themes:
 /// - `sidebar`: eight sessions in two groups (waiting with a boxed question, working with a
 ///   script's progress, done and idle split together in one workspace (M11b: one row, its two
-///   panes on screen with their headers), a long title, a closed group) and the first-run hint;
+///   panes on screen with their tab bars), a long title, a closed group) and the first-run hint;
 ///   `sidebar-narrow` and `sidebar-wide` at 180 and 400 px.
 /// - `sidebar-hover`: the pointer over the closed group's header (its "+" shows).
 /// - `sidebar-menu`: the "+ New" menu open.
@@ -1293,8 +1294,8 @@ fn sidebar_scenes() {
                     assert_eq!(height(1), 42.0, "{scene}-{slug}: waiting row");
                     assert_eq!(height(3), 28.0, "{scene}-{slug}: the split workspace's row");
                     assert_eq!(ws.sidebar.scroll.children_count(), 6, "{scene}-{slug}");
-                    // The split workspace is on screen: two panes, each with its header.
-                    assert_eq!(ws.header_sessions().len(), 2, "{scene}-{slug}: headers");
+                    // The split workspace is on screen: two panes, each with its tab.
+                    assert_eq!(ws.tab_sessions().len(), 2, "{scene}-{slug}: tabs");
                 });
             };
             let path = shoot_with(scene, slug, &theme, dims, build, check);
@@ -1406,8 +1407,8 @@ fn sidebar_scenes() {
 /// - `tabs-hover`: the pointer over codex: a × in its mark's place; `tabs-hover-close`: on the
 ///   × itself; `tabs-hover-active`: over shell, the active row (which shows its mark otherwise).
 /// - `tabs-menu`: codex's tab menu open (right-click), blue ringed.
-/// - `tabs-switcher`: the ⌘P switcher, the dots beside the names, over the split's pane headers
-///   (tests and shell), which show theirs too.
+/// - `tabs-switcher`: the ⌘P switcher, the dots beside the names, over the split's panes (tests
+///   and shell).
 ///
 /// Panics unless the dots are drawn in their colour on the rows, the menu opens on the row
 /// right-clicked and a click on a swatch sets the colour.
@@ -1683,13 +1684,13 @@ fn count_along(
 }
 
 /// A 3-pane split in both themes, from a real `Workspace`:
-/// - `splits`: api focused (accent line under its header), claude waiting (tinted header),
+/// - `splits`: api focused (accent line along its tab's top), claude waiting (tinted tab),
 ///   codex working; dividers quiet.
 /// - `splits-waiting`: the waiting pane focused (tint and accent together).
 /// - `splits-hover`: the pointer over the vertical divider (2 px accent).
 /// - `splits-drag`: that divider dragged left (accent, the panes follow).
 ///
-/// Panics unless each shows 3 headers, their fills and the focus line are the right colours,
+/// Panics unless each shows 3 tabs, their fills and the focus line are the right colours,
 /// and the divider is the plain colour except when hovered or dragged.
 fn split_scenes() {
     use gpui::{Modifiers, MouseButton};
@@ -1713,8 +1714,8 @@ fn split_scenes() {
             let at = |ratio: f32| 240.0 + (960.0 - 240.0) * ratio - ratio;
             let acting = slot.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-                let headers = cx.read(|cx| slotted(&acting).read(cx).header_sessions().len());
-                assert_eq!(headers, 3, "{scene}-{slug}: a header per pane");
+                let tabs = cx.read(|cx| slotted(&acting).read(cx).tab_sessions().len());
+                assert_eq!(tabs, 3, "{scene}-{slug}: a tab per pane");
                 let none = Modifiers::none();
                 let left = MouseButton::Left;
                 let on = point(px(at(0.5) + 0.5), px(300.0));
@@ -1733,24 +1734,24 @@ fn split_scenes() {
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             let shot = render_with(&theme, dims, build, act);
             let n = format!("{scene}-{slug}");
-            // Header fills, away from the text: api (left), claude (top right).
-            let (left_header, right_header) = ((400.0, 11.0), (900.0, 11.0));
+            // Tab fills, away from the text: api (left), claude (top right), both their pane's
+            // active (and only) tab, 160 px into it (it is 200 wide; × sits at its end).
+            let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
+            let right_tab = at(ratio) + 160.0;
+            let (left_header, right_header) = ((400.0, 13.0), (right_tab, 13.0));
             let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
                 p.iter()
                     .zip([c.r, c.g, c.b])
                     .all(|(a, b)| a.abs_diff(b) <= 3)
             };
             let px_at = |(x, y): (f32, f32)| pixel_at(&shot, dims, x, y);
+            assert!(is(px_at(left_header), ui.panel), "{n}: active tab");
             assert!(
-                is(px_at(left_header), ui.sidebar_background),
-                "{n}: plain header"
+                is(px_at(right_header), ui.waiting_hover),
+                "{n}: active waiting tab's tint"
             );
-            assert!(
-                is(px_at(right_header), ui.waiting_tint),
-                "{n}: waiting tint"
-            );
-            // The focus line: under the focused pane's header only.
-            let (line_left, line_right) = (px_at((400.0, 21.0)), px_at((900.0, 21.0)));
+            // The focus line: along the top of the focused pane's active tab only.
+            let (line_left, line_right) = (px_at((400.0, 1.0)), px_at((right_tab, 1.0)));
             assert_eq!(
                 is(line_left, ui.accent),
                 focus == 0,
@@ -1762,7 +1763,6 @@ fn split_scenes() {
                 "{n}: focus line, right"
             );
             // The vertical divider, 1 px; the accent 2 px, only when hovered or dragged.
-            let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
             let (x0, x1) = (at(ratio) - 4.0, at(ratio) + 5.0);
             let scale = shot.width as f32 / 960.0;
             let accent = count_along(&shot, dims, ui.accent, 300.0, x0, x1);
@@ -1801,7 +1801,7 @@ const WORKSPACES: [(ShotSession, Option<Axis>); 5] = [
 ///   with its most urgent terminal's ring (tests: done) and agent's waiting with its question.
 ///
 /// Panics unless the sidebar has the two headers and three rows (not five), api's row says
-/// tests' status, the waiting row is 42 px, and the three panes each have a header.
+/// tests' status, the waiting row is 42 px, and the three panes each have a tab.
 fn workspace_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1857,12 +1857,369 @@ fn workspace_scenes() {
                     .rollup_session(api)
                     .map(|i| ws.sessions.items()[i].status);
                 assert_eq!(ring, Some(Status::Done), "{n}: api's ring is tests'");
-                assert_eq!(ws.header_sessions().len(), 3, "{n}: three panes");
+                assert_eq!(ws.tab_sessions().len(), 3, "{n}: three panes");
             });
             slot.borrow_mut().take();
         };
         let path = shoot_with("workspaces", slug, &theme, dims, build, check);
         println!("ui-shots: {}", path.display());
+    }
+}
+
+/// A workspace for the tab bar scenes, focused on api. `four`: two panes, the left one with
+/// four tabs (api idle and active, claude waiting, codex working, a browser tab), the right one
+/// with tests (done); else `many` (≥ 1) idle terminals in one pane, the last one shown.
+fn tab_bar_workspace(
+    four: bool,
+    many: usize,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
+    use crate::layout_model::TabKind;
+    use std::time::{Duration, Instant};
+
+    let mut ws = Workspace::for_shots(window, cx);
+    ws.sidebar.hint_dismissed = true;
+    let project = std::path::Path::new(API);
+    if !four {
+        let names = [
+            "api", "claude", "codex", "tests", "docs", "lint", "server", "agent",
+        ];
+        ws.open_shot_session(names[0], project, SHELL_TEXT, None, window, cx);
+        for name in names.iter().cycle().skip(1).take(many - 1) {
+            ws.open_shot_tab(name, project, SHELL_TEXT, window, cx);
+        }
+        return ws;
+    }
+    let tabs = [
+        shot("api", API, Status::Idle, 0, SHELL_TEXT),
+        shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
+        shot("codex", API, Status::Working, 32, AGENT_TEXT),
+    ];
+    ws.open_shot_session(tabs[0].name, project, tabs[0].text, None, window, cx);
+    for s in &tabs[1..] {
+        ws.open_shot_tab(s.name, project, s.text, window, cx);
+    }
+    let pane = ws.model.focused_pane().expect("a pane");
+    ws.model.add_tab(pane, TabKind::Browser { url: None });
+    ws.sync();
+    ws.open_shot_session("tests", project, SHELL_TEXT, Some(Axis::Row), window, cx);
+    let tests = shot("tests", API, Status::Done, 720, "");
+    for s in tabs.iter().chain([&tests]) {
+        let i = ws
+            .sessions
+            .position(|x| x.label() == s.name)
+            .expect("opened");
+        ws.set_status(i, s.status, false, cx);
+        let session = ws.sessions.get_mut(i).expect("opened");
+        session.status_since = Instant::now() - Duration::from_secs(s.age);
+        session.pop = None;
+    }
+    let api = ws.sessions.position(|x| x.label() == "api").expect("api");
+    ws.select(api, window, cx);
+    ws
+}
+
+/// Where tab `i` of `pane`'s bar is drawn, from the bar's own scroll; none before it's laid out.
+fn tab_bounds(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+    pane: crate::layout_model::PaneId,
+    i: usize,
+) -> Option<gpui::Bounds<Pixels>> {
+    cx.read(|cx| {
+        let scrolls = ws.read(cx).tab_scroll.borrow();
+        let (scroll, _) = scrolls.get(&pane)?;
+        let mut b = scroll.bounds_for_item(i)?;
+        b.origin.x += scroll.offset().x;
+        Some(b)
+    })
+}
+
+/// The panes of the focused workspace, in layout order.
+fn shown_panes(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> Vec<crate::layout_model::PaneId> {
+    cx.read(|cx| {
+        ws.read(cx)
+            .shown_layout()
+            .map(|t| t.leaves())
+            .unwrap_or_default()
+    })
+}
+
+/// Pane tab bars (M11b Task 3), from real workspaces in both themes:
+/// - `tab-bars`: two panes; the left (focused) one with api (active, accent line on top), claude
+///   (waiting, tinted), codex (working) and a browser tab ("New tab", globe); the right one with
+///   tests (done), unfocused (active but no accent line). The tabs shrink below 200 px to fit.
+/// - `tab-bars-hover`: the pointer over codex (hover fill, × shown); `tab-bars-button`: over the
+///   left bar's split-right button.
+/// - `tab-bars-menu`: claude's right-click menu (Close Tab, Close Other Tabs in Pane, Rename
+///   Tab…); `tab-bars-rename`: codex double-clicked (shown, its rename box open).
+/// - `tab-bars-single`: one pane, one tab (the bar still shows).
+/// - `tab-bars-narrow`: a narrow window, one pane of seven tabs, the last shown: the tabs stop at
+///   90 px and the row scrolls to the shown one.
+///
+/// Panics unless the tabs have the widths and fills above, the menu and rename box open on the
+/// tabs clicked; and (not shot) unless ⌃Tab / ⌃⇧Tab cycle the focused pane's tabs, a click
+/// shows a tab, × closes one, a middle-click closes one, and the split button splits its pane.
+fn tab_bar_scenes() {
+    use crate::layout_model::TabKind;
+    use crate::workspace::{NextTab, PrevTab, Renaming};
+    use gpui::{KeyBinding, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let wide = size(px(1280.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= 3)
+        };
+        for scene in [
+            "tab-bars",
+            "tab-bars-hover",
+            "tab-bars-button",
+            "tab-bars-menu",
+            "tab-bars-rename",
+        ] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| tab_bar_workspace(true, 0, window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let geometry: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+            let seen = geometry.clone();
+            let acting = slot.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&acting);
+                let n = format!("{scene}-{slug}");
+                let none = Modifiers::none();
+                let panes = shown_panes(cx, &ws);
+                assert_eq!(panes.len(), 2, "{n}: two panes");
+                let tabs: Vec<_> = (0..4)
+                    .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
+                    .collect();
+                // Four tabs in the left bar, equally shrunk, between the bounds.
+                for b in &tabs {
+                    let w = f32::from(b.size.width);
+                    assert!((90.0..200.0).contains(&w), "{n}: tab width {w}");
+                    let first = f32::from(tabs[0].size.width);
+                    assert!((w - first).abs() <= 1.0, "{n}: equal widths ({w}, {first})");
+                    assert_eq!(f32::from(b.size.height), 26.0, "{n}: 26 px bar");
+                }
+                assert_eq!(
+                    cx.read(|cx| ws.read(cx).tab_sessions().len()),
+                    4,
+                    "{n}: four terminal tabs on screen"
+                );
+                *seen.borrow_mut() = tabs.clone();
+                match scene {
+                    "tab-bars-hover" => {
+                        cx.simulate_mouse_move(window, tabs[2].center(), None, none);
+                    }
+                    "tab-bars-button" => {
+                        // The left pane's buttons sit at its right edge (half the 1040 px pane
+                        // area, less half the divider): split right is the third of four.
+                        let right = tabs[0].left() + px(519.5);
+                        let at = point(right - px(4.0 + 20.0 + 2.0 + 10.0), px(13.0));
+                        cx.simulate_mouse_move(window, at, None, none);
+                    }
+                    "tab-bars-menu" => {
+                        cx.simulate_mouse_down(window, tabs[1].center(), MouseButton::Right, none);
+                        let menu = cx.read(|cx| ws.read(cx).pane_tab_menu.as_ref().map(|m| m.tab));
+                        let claude =
+                            cx.read(|cx| ws.read(cx).model.pane(panes[0]).unwrap().tabs[1].id);
+                        assert_eq!(menu, Some(claude), "{n}: the menu opens on claude");
+                    }
+                    "tab-bars-rename" => {
+                        let at = tabs[2].center();
+                        for count in [1, 2] {
+                            cx.simulate_event(
+                                window,
+                                MouseDownEvent {
+                                    position: at,
+                                    modifiers: none,
+                                    button: MouseButton::Left,
+                                    click_count: count,
+                                    first_mouse: false,
+                                },
+                            );
+                            cx.simulate_event(
+                                window,
+                                MouseUpEvent {
+                                    position: at,
+                                    modifiers: none,
+                                    button: MouseButton::Left,
+                                    click_count: count,
+                                },
+                            );
+                        }
+                        cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            let codex = ws.sessions.items().iter().find(|s| s.label() == "codex");
+                            let codex = codex.expect("codex").id;
+                            assert_eq!(ws.focused_terminal(), Some(codex), "{n}: codex shown");
+                            let renaming = ws.renaming.as_ref().map(|(r, _)| *r);
+                            assert_eq!(
+                                renaming,
+                                Some(Renaming::Terminal(codex)),
+                                "{n}: rename box"
+                            );
+                        });
+                    }
+                    _ => {}
+                }
+                acting.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, wide, build.clone(), act.clone());
+            let shot = render_with(&theme, wide, build, act);
+            let n = format!("{scene}-{slug}");
+            let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
+            let tabs = geometry.borrow().clone();
+            let (api, claude) = (tabs[0], tabs[1]);
+            // Away from the text, the icon and the ×: near each tab's right end, low in the bar.
+            let fill_at = |b: gpui::Bounds<Pixels>| (f32::from(b.right()) - 26.0, 20.0);
+            if scene == "tab-bars" {
+                let (x, y) = fill_at(api);
+                assert!(is(px_at(x, y), ui.panel), "{n}: api raised");
+                assert!(is(px_at(x, 1.0), ui.accent), "{n}: api's accent line");
+                let (x, y) = fill_at(claude);
+                assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
+                assert!(!is(px_at(x, 1.0), ui.accent), "{n}: no line on claude");
+                // The right pane's tests: active, raised, but its pane isn't focused.
+                let x = f32::from(api.left()) + 520.0 + 150.0;
+                assert!(is(px_at(x, 20.0), ui.panel), "{n}: tests raised");
+                assert!(is(px_at(x, 1.0), ui.panel), "{n}: no line on tests");
+            }
+            println!("ui-shots: {}", path.display());
+        }
+
+        // One pane, one tab; and a narrow window whose seven tabs scroll.
+        for (scene, many, dims) in [
+            ("tab-bars-single", 1, size(px(960.0), px(400.0))),
+            ("tab-bars-narrow", 7, size(px(720.0), px(400.0))),
+        ] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| tab_bar_workspace(false, many, window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                // A second frame: the first laid the tabs out, this one scrolls to the shown one.
+                cx.update_window(window, |_, window, _| window.refresh())
+                    .expect("refresh");
+                cx.run_until_parked();
+                let ws = slotted(&slot);
+                let n = format!("{scene}-{slug}");
+                let panes = shown_panes(cx, &ws);
+                assert_eq!(panes.len(), 1, "{n}: one pane");
+                let first = tab_bounds(cx, &ws, panes[0], 0).expect("laid out");
+                let offset = cx.read(|cx| {
+                    let scrolls = ws.read(cx).tab_scroll.borrow();
+                    f32::from(scrolls[&panes[0]].0.offset().x)
+                });
+                if many == 1 {
+                    assert_eq!(f32::from(first.size.width), 200.0, "{n}: widest");
+                    assert_eq!(offset, 0.0, "{n}: no scroll");
+                } else {
+                    assert_eq!(f32::from(first.size.width), 90.0, "{n}: narrowest");
+                    assert!(offset < 0.0, "{n}: scrolled to the last tab");
+                    let last = tab_bounds(cx, &ws, panes[0], many - 1).expect("laid out");
+                    assert!(
+                        f32::from(last.right()) <= 720.0 - 94.0 + 1.0,
+                        "{n}: last in view"
+                    );
+                }
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            println!("ui-shots: {}", path.display());
+        }
+
+        // Acting on the bars (not shot): ⌃Tab / ⌃⇧Tab, a click, ×, a middle-click, split.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| tab_bar_workspace(true, 0, window, cx));
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let n = format!("tab-bars-act-{slug}");
+            let none = Modifiers::none();
+            // As main.rs binds them.
+            cx.update(|cx| {
+                cx.bind_keys([
+                    KeyBinding::new("ctrl-tab", NextTab, Some("Terminal")),
+                    KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Terminal")),
+                ])
+            });
+            let shown = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let tab = ws.model.focused_tab().expect("a tab");
+                    match &ws.model.tab(tab).expect("known").kind {
+                        TabKind::Terminal(id) => {
+                            let i = ws.index_of(*id).expect("a session");
+                            ws.sessions.items()[i].label().to_string()
+                        }
+                        TabKind::Browser { .. } => "browser".to_string(),
+                    }
+                })
+            };
+            let panes = shown_panes(cx, &ws);
+            assert_eq!(shown(cx), "api", "{n}");
+            cx.simulate_keystrokes(window, "ctrl-tab");
+            assert_eq!(shown(cx), "claude", "{n}: ⌃Tab");
+            cx.simulate_keystrokes(window, "ctrl-shift-tab ctrl-shift-tab");
+            assert_eq!(shown(cx), "browser", "{n}: ⌃⇧Tab wraps");
+            // The browser tab has no terminal to take the keys: show api by a click.
+            let api = tab_bounds(cx, &ws, panes[0], 0).expect("laid out");
+            cx.simulate_click(window, api.center(), none);
+            assert_eq!(shown(cx), "api", "{n}: a click shows a tab");
+            // The right pane's tests, clicked: it and its pane take the focus.
+            let tests = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
+            cx.simulate_click(window, tests.center(), none);
+            assert_eq!(shown(cx), "tests", "{n}: a click in the other pane");
+            let count = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| ws.read(cx).model.pane(panes[0]).map_or(0, |p| p.tabs.len()))
+            };
+            // The browser tab's ×: on hover at its right end.
+            let browser = tab_bounds(cx, &ws, panes[0], 3).expect("laid out");
+            let close = point(browser.right() - px(4.0 + 8.0), browser.center().y);
+            cx.simulate_mouse_move(window, close, None, none);
+            cx.simulate_click(window, close, none);
+            assert_eq!(count(cx), 3, "{n}: × closed the browser tab");
+            // A middle-click on codex ends it.
+            let codex = tab_bounds(cx, &ws, panes[0], 2).expect("laid out");
+            cx.simulate_mouse_down(window, codex.center(), MouseButton::Middle, none);
+            cx.simulate_mouse_up(window, codex.center(), MouseButton::Middle, none);
+            assert_eq!(count(cx), 2, "{n}: middle-click closed codex");
+            let codex_gone = cx.read(|cx| ws.read(cx).sessions.position(|s| s.label() == "codex"));
+            assert_eq!(codex_gone, None, "{n}: codex ended");
+            // The left bar's split right: a third pane, focused, with one terminal tab.
+            let right = api.left() + px(519.5);
+            let split = point(right - px(4.0 + 20.0 + 2.0 + 10.0), px(13.0));
+            cx.simulate_click(window, split, none);
+            let panes_now = shown_panes(cx, &ws);
+            assert_eq!(panes_now.len(), 3, "{n}: split right made a pane");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, wide, build, act);
+        println!("ui-shots: tab-bars-act-{slug} ok");
     }
 }
 

@@ -11,8 +11,8 @@
 //! When ssh says the connection failed (exit 255) the pane holds its screen with a reconnect
 //! line; Enter (or, with tmux, a timer) reconnects it in place.
 
-use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -23,8 +23,8 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
-    SharedString, StyleRefinement, Subscription, Task, Window, WindowControlArea, actions, canvas,
-    div, prelude::*, px,
+    ScrollHandle, SharedString, StyleRefinement, Subscription, Task, Window, WindowControlArea,
+    actions, canvas, div, prelude::*, px,
 };
 
 use crate::adopt::{self, Probe};
@@ -34,11 +34,11 @@ use crate::appearance::Appearance;
 use crate::daemon_client::{self, DaemonClient};
 use crate::groups::{self, GroupKey};
 use crate::host_picker::HostPicker;
-use crate::layout_model::{self, Model, PaneId, TabKind, WorkspaceId};
+use crate::layout_model::{self, Model, PaneId, TabId, TabKind, WorkspaceId};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notifier;
-use crate::pane_header;
+use crate::pane_tab_menu::PaneTabMenu;
 use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
 use crate::pty::ShellEnv;
@@ -105,6 +105,8 @@ actions!(
         ToggleSidebar,
         NextNeedingYou,
         OpenSwitcher,
+        NextTab,
+        PrevTab,
     ]
 );
 
@@ -159,6 +161,14 @@ pub(crate) enum Overlay {
     AddressBox,
     Switcher,
     TabMenu,
+    PaneTabMenu,
+}
+
+/// What the rename box names: a workspace (its sidebar row) or a terminal (its pane tab).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Renaming {
+    Workspace(WorkspaceId),
+    Terminal(u64),
 }
 
 /// Where a new session goes: a workspace of its own, a new pane split from a pane, a new tab
@@ -209,8 +219,13 @@ pub struct Workspace {
     divider_hover: Option<(WorkspaceId, Vec<bool>)>,
     /// The groups closed in the sidebar.
     pub(crate) collapsed: Vec<GroupKey>,
-    /// The rename box, and the workspace it renames.
-    pub(crate) renaming: Option<(WorkspaceId, Entity<NameInput>)>,
+    /// The rename box, and what it renames.
+    pub(crate) renaming: Option<(Renaming, Entity<NameInput>)>,
+    /// A pane tab's right-click menu, while it is open.
+    pub(crate) pane_tab_menu: Option<PaneTabMenu>,
+    /// Each pane's tab row: its scroll, and the tab last scrolled into view (a pane whose shown
+    /// tab changes scrolls to it). Panes gone are dropped as the bars are drawn.
+    pub(crate) tab_scroll: RefCell<HashMap<PaneId, (ScrollHandle, TabId)>>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
     /// The ⌘P session switcher, while it is open (M11).
@@ -347,6 +362,8 @@ impl Workspace {
             divider_hover: None,
             collapsed: Vec::new(),
             renaming: None,
+            pane_tab_menu: None,
+            tab_scroll: RefCell::new(HashMap::new()),
             host_picker: None,
             switcher: None,
             browsers: Browsers::new(),
@@ -1122,7 +1139,7 @@ impl Workspace {
 
     /// A plain session in the active session's group, as a new pane beside or under it; or
     /// with an SSH session active, another session to its host.
-    fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((of, target)) = self.active_ssh() {
             self.open_ssh(target, Place::Split { of, axis }, window, cx);
             return;
@@ -1340,10 +1357,19 @@ impl Workspace {
         {
             self.sidebar.tab_menu = None;
         }
-        if let Some((ws, _)) = &self.renaming
-            && self.model.workspace(*ws).is_none()
-        {
+        let renamed_gone = match self.renaming.as_ref().map(|(r, _)| *r) {
+            Some(Renaming::Workspace(ws)) => self.model.workspace(ws).is_none(),
+            Some(Renaming::Terminal(id)) => id == session_id,
+            None => false,
+        };
+        if renamed_gone {
             self.renaming = None;
+        }
+        // And a tab menu on its tab.
+        if let Some(menu) = &self.pane_tab_menu
+            && self.model.tab(menu.tab).is_none()
+        {
+            self.pane_tab_menu = None;
         }
         self.sync();
         let keys = self.sidebar_groups();
@@ -1414,8 +1440,8 @@ impl Workspace {
                 self.activate(window, cx);
             }
         } else {
-            // A click on the focused pane (or its header) takes the keyboard back from a
-            // rename, address or picker box.
+            // A click on the focused pane takes the keyboard back from a rename, address or
+            // picker box.
             self.focus_active(window, cx);
         }
     }
@@ -1533,6 +1559,7 @@ impl Workspace {
     pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The keyboard goes to a terminal, so a tab menu (which holds it) closes.
         self.sidebar.tab_menu = None;
+        self.pane_tab_menu = None;
         self.note_active(cx);
         self.focus_active(window, cx);
     }
@@ -1578,6 +1605,9 @@ impl Workspace {
         if keep != Overlay::TabMenu {
             self.sidebar.tab_menu = None;
         }
+        if keep != Overlay::PaneTabMenu {
+            self.pane_tab_menu = None;
+        }
     }
 
     /// Open the rename box on a workspace's row (opening its group) and focus it.
@@ -1604,8 +1634,35 @@ impl Workspace {
         cx.subscribe_in(&input, window, Self::on_name_event)
             .detach();
         input.focus_handle(cx).focus(window, cx);
-        self.renaming = Some((ws, input));
+        self.renaming = Some((Renaming::Workspace(ws), input));
         self.save(); // opening the group may have changed what's collapsed
+        cx.notify();
+    }
+
+    /// Rename Tab…: the rename box in the place of terminal `id`'s tab title, focused. It names
+    /// the terminal (as `session.rename`), not its workspace.
+    pub(crate) fn start_tab_rename(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = self
+            .index_of(id)
+            .map(|i| self.sessions.items()[i].label().to_string())
+        else {
+            return;
+        };
+        self.close_overlays(Overlay::Rename);
+        let input = cx.new(|cx| {
+            let mut input = NameInput::new(text, window, cx);
+            input.select_all();
+            input
+        });
+        cx.subscribe_in(&input, window, Self::on_name_event)
+            .detach();
+        input.focus_handle(cx).focus(window, cx);
+        self.renaming = Some((Renaming::Terminal(id), input));
         cx.notify();
     }
 
@@ -1617,21 +1674,34 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // A box already closed (or replaced) can still report losing focus: ignore it.
-        let Some((ws, _)) = self.renaming.as_ref().filter(|(_, i)| i == input) else {
+        let Some((renaming, _)) = self.renaming.as_ref().filter(|(_, i)| i == input) else {
             return;
         };
-        let ws = *ws;
+        let renaming = *renaming;
         self.renaming = None;
-        if let NameInputEvent::Confirm(text) = event
-            && let Some(named) = self.model.workspace(ws).map(|w| w.name.is_some())
-        {
-            // Enter on an untouched automatic name keeps it automatic (it still follows the
-            // focused terminal's title).
-            if named || *text != self.workspace_label(ws).as_ref() {
-                let name = (!text.is_empty()).then(|| text.clone());
-                self.model.set_name(ws, name);
+        if let NameInputEvent::Confirm(text) = event {
+            match renaming {
+                Renaming::Workspace(ws) => {
+                    if let Some(named) = self.model.workspace(ws).map(|w| w.name.is_some()) {
+                        // Enter on an untouched automatic name keeps it automatic (it still
+                        // follows the focused terminal's title).
+                        if named || *text != self.workspace_label(ws).as_ref() {
+                            let name = (!text.is_empty()).then(|| text.clone());
+                            self.model.set_name(ws, name);
+                        }
+                        self.save();
+                    }
+                }
+                Renaming::Terminal(id) => {
+                    // As `session.rename`; an untouched automatic name stays automatic too.
+                    if let Some(i) = self.index_of(id) {
+                        let session = &self.sessions.items()[i];
+                        if session.name.is_some() || *text != session.label().as_ref() {
+                            self.rename_at(i, text, cx);
+                        }
+                    }
+                }
             }
-            self.save();
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -1745,14 +1815,23 @@ impl Workspace {
             this.update(cx, |this, cx| this.hover_divider(path, over, cx))
                 .ok();
         });
-        // Each pane's header, when the layout is split (it sits outside the cached terminal).
-        let headers = pane_header::shows(tree.leaves().len());
-        let header = |id: PaneId| headers.then(|| self.pane_header(id, ui)).flatten();
+        // Each pane's tab bar (outside the cached terminal, so a mark or a hover redraws only
+        // the bar), drawn first: it needs the listeners `cx` makes.
+        let bars: RefCell<HashMap<PaneId, AnyElement>> = RefCell::new(
+            tree.leaves()
+                .into_iter()
+                .filter_map(|id| Some((id, self.render_tab_bar(id, ui, cx)?)))
+                .collect(),
+        );
+        self.tab_scroll
+            .borrow_mut()
+            .retain(|pane, _| self.model.pane(*pane).is_some());
+        let bar = |id: PaneId| bars.borrow_mut().remove(&id);
         // A hover or drag belongs to the workspace it started in.
         let panes = Panes {
             active,
             view: &view,
-            header: &header,
+            bar: &bar,
             select,
             start_drag,
             hover,
@@ -1869,7 +1948,8 @@ impl Workspace {
         // they can't stay open.
         self.sidebar.new_menu = false;
         let menu = self.sidebar.tab_menu.take().is_some();
-        if self.sidebar.hidden && (self.renaming.is_some() || menu) {
+        let renaming_row = matches!(self.renaming, Some((Renaming::Workspace(_), _)));
+        if self.sidebar.hidden && (renaming_row || menu) {
             self.focus_active(window, cx);
         }
         self.save();
@@ -1992,6 +2072,7 @@ impl Render for Workspace {
         let button = self.render_sidebar_button(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
         let tab_menu = self.render_tab_menu(ui, cx);
+        let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
         self.refresh_switcher(cx);
         let pane_band = self
             .sidebar
@@ -2061,6 +2142,8 @@ impl Render for Workspace {
                 cx.listener(|this, _: &NextNeedingYou, w, cx| this.jump_to_needing_you(w, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenSwitcher, w, cx| this.open_switcher(w, cx)))
+            .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle_tab(true, w, cx)))
+            .on_action(cx.listener(|this, _: &PrevTab, w, cx| this.cycle_tab(false, w, cx)))
             .on_action(
                 cx.listener(|this, _: &SelectSession1, w, cx| this.select_shortcut(1, w, cx)),
             )
@@ -2105,6 +2188,8 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    // Not wider than its share: a pane's tab row scrolls rather than widen it.
+                    .min_w(px(0.0))
                     .h_full()
                     .when(slide.is_some() && !self.sidebar.hidden, |column| {
                         column.ml(px(sidebar_width))
@@ -2137,6 +2222,7 @@ impl Render for Workspace {
             // click-away backdrops.
             .children(new_menu)
             .children(tab_menu)
+            .children(pane_tab_menu)
     }
 }
 
@@ -2163,6 +2249,35 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let at = match (split, self.model.focused_pane()) {
+            (Some(axis), Some(pane)) => At::Split(axis, pane),
+            _ => At::New,
+        };
+        self.open_shot_at(name, project, text, at, window, cx);
+    }
+
+    /// `open_shot_session` as a new tab at the end of the focused pane's.
+    pub(crate) fn open_shot_tab(
+        &mut self,
+        name: &str,
+        project: &Path,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let at = self.model.focused_pane().map_or(At::New, At::Tab);
+        self.open_shot_at(name, project, text, at, window, cx);
+    }
+
+    fn open_shot_at(
+        &mut self,
+        name: &str,
+        project: &Path,
+        text: &str,
+        at: At,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let quiet = ShellEnv {
             base: None,
             set: Vec::new(),
@@ -2171,10 +2286,6 @@ impl Workspace {
         let view = TerminalView::spawn(cx, Some(vec!["/bin/cat".into()]), None, None, &quiet)
             .expect("start cat");
         view.read(cx).show_text(text);
-        let at = match (split, self.model.focused_pane()) {
-            (Some(axis), Some(pane)) => At::Split(axis, pane),
-            _ => At::New,
-        };
         let saved = SavedSession {
             name: Some(name.into()),
             project: Some(project.into()),

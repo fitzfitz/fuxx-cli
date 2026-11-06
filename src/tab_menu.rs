@@ -111,7 +111,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 /// The sheet's line about the busy agents, when there are any.
-fn busy_line(busy: usize) -> Option<String> {
+pub(crate) fn busy_line(busy: usize) -> Option<String> {
     (busy > 0).then(|| {
         let who = plural(busy, "agent is", "agents are");
         format!("{busy} {who} still working or waiting.")
