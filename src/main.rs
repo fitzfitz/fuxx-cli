@@ -19,6 +19,7 @@ mod daemon_client;
 mod daemon_session;
 mod detector;
 mod fonts;
+mod git_branch;
 mod grid;
 mod groups;
 mod host_picker;

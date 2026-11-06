@@ -9,6 +9,7 @@
 //!   never waits on the socket. The daemon answers terminal queries and works out status, title
 //!   and exit; the replica's own query, title and bell events are dropped.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,7 @@ use portable_pty::CommandBuilder;
 
 use crate::colors;
 use crate::daemon_client::{DaemonClient, SessionStream};
-use crate::detector::OscDetector;
+use crate::detector::{CwdReports, OscDetector};
 use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
 use crate::mux_proto::{Frame, SetMeta};
@@ -148,6 +149,8 @@ enum Backend {
     /// A PTY child of this process.
     Local {
         pty: Arc<Mutex<Pty>>,
+        /// The child's process id, read once it started.
+        pid: Option<u32>,
         /// Bytes for the child, written by the writer thread so a child that stops reading
         /// can't block the UI.
         input: Sender<Vec<u8>>,
@@ -269,6 +272,9 @@ pub struct TerminalCore {
     links: Arc<Mutex<LinkFinder>>,
     /// Shared by every clone, so a theme change reaches them all.
     theme: Arc<Mutex<Theme>>,
+    /// The working folder the program last reported (OSC 7), kept by the thread that reads
+    /// its output.
+    cwd: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl TerminalCore {
@@ -293,12 +299,19 @@ impl TerminalCore {
         let reader_shared = shared.clone();
         let eof_events = events.clone();
         let exit = pty.exit_waiter();
-        // alacritty_terminal ignores notification OSCs, so a byte scanner watches the raw stream.
+        // alacritty_terminal ignores notification and folder OSCs, so byte scanners watch the
+        // raw stream.
         let mut detector = OscDetector::new();
+        let mut reports = CwdReports::new();
+        let cwd = Arc::new(Mutex::new(None));
+        let reported = cwd.clone();
         pty::spawn_reader(
             reader,
             move |bytes| {
                 let notifications = detector.feed(bytes);
+                if let Some(dir) = reports.feed(bytes) {
+                    *reported.lock().unwrap() = Some(dir);
+                }
                 {
                     let mut guard = reader_shared.lock();
                     let Shared {
@@ -325,12 +338,14 @@ impl TerminalCore {
         Ok(Self {
             shared,
             backend: Backend::Local {
+                pid: pty.pid(),
                 pty: Arc::new(Mutex::new(pty)),
                 input,
             },
             dims: Arc::new(Mutex::new((dims, CellPx::default()))),
             links: Arc::new(Mutex::new(LinkFinder::new())),
             theme: Arc::new(Mutex::new(theme)),
+            cwd,
         })
     }
 
@@ -421,6 +436,7 @@ impl TerminalCore {
         std::thread::Builder::new()
             .name(format!("fuxx-pump-s{id}"))
             .spawn(move || pump(&pending, &queued, &pumping, id, token))?;
+        let cwd = Arc::new(Mutex::new(None));
         let replica = Replica {
             id,
             listener,
@@ -431,6 +447,8 @@ impl TerminalCore {
             title: None,
             status: None,
             exit_code: None,
+            reports: CwdReports::new(),
+            cwd: cwd.clone(),
         };
         let feeding = shared.clone();
         std::thread::Builder::new()
@@ -442,6 +460,7 @@ impl TerminalCore {
             dims: Arc::new(Mutex::new(asked)),
             links: Arc::new(Mutex::new(LinkFinder::new())),
             theme: Arc::new(Mutex::new(theme)),
+            cwd,
         })
     }
 
@@ -531,6 +550,19 @@ impl TerminalCore {
                 let _ = input.send(bytes.to_vec());
             }
             Backend::Daemon(link) => link.send(Command::Write(bytes.to_vec())),
+        }
+    }
+
+    /// The working folder the program last reported (OSC 7), if it ever did.
+    pub fn reported_cwd(&self) -> Option<PathBuf> {
+        self.cwd.lock().unwrap().clone()
+    }
+
+    /// Local: the child's process id. Daemon: none (the background service runs it).
+    pub fn pid(&self) -> Option<u32> {
+        match &self.backend {
+            Backend::Local { pid, .. } => *pid,
+            Backend::Daemon(_) => None,
         }
     }
 
@@ -723,6 +755,9 @@ struct Replica {
     status: Option<Status>,
     /// From `ExitCode`, for the `Exited` that follows.
     exit_code: Option<u32>,
+    /// The working-folder reports in the session's output (a snapshot has none), and the last.
+    reports: CwdReports,
+    cwd: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Replica {
@@ -785,6 +820,9 @@ impl Replica {
                     } = &mut *guard;
                     first_output.get_or_insert_with(Instant::now);
                     processor.advance(term, &bytes);
+                }
+                if let Some(dir) = self.reports.feed(&bytes) {
+                    *self.cwd.lock().unwrap() = Some(dir);
                 }
                 let notifications = usize::try_from(notifications).unwrap_or(usize::MAX);
                 self.emit(TermEvent::Output { notifications });

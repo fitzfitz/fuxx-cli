@@ -209,6 +209,7 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar-marks", sidebar_marks),
     ("cached-panes", cached_panes),
     ("sidebar", sidebar_scenes),
+    ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-button", sidebar_button_scenes),
     ("tabs", tab_scenes),
     ("splits", split_scenes),
@@ -1251,9 +1252,9 @@ fn row_point(
 /// - `sidebar-drag`: a row dragged down its group (lifted copy, dimmed source, insertion line).
 /// - `sidebar-scroll`: 24 sessions, the last one active, so the list scrolls to it.
 ///
-/// Panics unless the question was read off the boxed prompt, a waiting row is 42 px and a
-/// plain one 28 px, the active row is scrolled into view and rows scrolled away don't count
-/// as on screen.
+/// Panics unless the question was read off the boxed prompt, a waiting row is 56 px and a
+/// plain one 42 px (M11b: each has its folder line), the active row is scrolled into view and
+/// rows scrolled away don't count as on screen.
 fn sidebar_scenes() {
     use gpui::{Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -1292,8 +1293,9 @@ fn sidebar_scenes() {
                         let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                         f32::from(b.size.height)
                     };
-                    assert_eq!(height(1), 42.0, "{scene}-{slug}: waiting row");
-                    assert_eq!(height(3), 28.0, "{scene}-{slug}: the split workspace's row");
+                    // Every row has its folder line; the waiting one its status line too.
+                    assert_eq!(height(1), 56.0, "{scene}-{slug}: waiting row");
+                    assert_eq!(height(3), 42.0, "{scene}-{slug}: the split workspace's row");
                     assert_eq!(ws.sidebar.scroll.children_count(), 6, "{scene}-{slug}");
                     // The split workspace is on screen: two panes, each with its tab.
                     assert_eq!(ws.tab_sessions().len(), 2, "{scene}-{slug}: tabs");
@@ -1401,6 +1403,157 @@ fn sidebar_scenes() {
     }
 }
 
+const INFRA: &str = "/Users/me/code/infra";
+const PAYMENTS: &str = "/Users/me/code/a-very-long-project-folder/services/payments";
+const SCRATCH: &str = "/tmp/scratch";
+const LONG_BRANCH: &str = "feature/a-really-long-branch-name-for-the-payments-service";
+
+/// The rows scene's sessions: deploy and claude (waiting) to be pinned; codex in api; payments
+/// (to be selected) with a long folder; a long name in web; notes outside home.
+const ROWS: [ShotSession; 6] = [
+    shot("deploy", INFRA, Status::Idle, 0, SHELL_TEXT),
+    shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
+    shot("codex", API, Status::Working, 32, AGENT_TEXT),
+    shot("payments", PAYMENTS, Status::Idle, 0, SHELL_TEXT),
+    shot(
+        "✳ Refactor the auth middleware to use the new session store",
+        WEB,
+        Status::Done,
+        40,
+        SHELL_TEXT,
+    ),
+    shot("notes", SCRATCH, Status::Idle, 0, SHELL_TEXT),
+];
+
+/// The M11b sidebar rows, from real workspaces in both themes, at 240 px (`sidebar-rows`) and
+/// 180 px (`sidebar-rows-narrow`): deploy and claude pinned (📌, above every group header),
+/// claude waiting with its 🔔 "Needs input" pill and question; each row's `branch • ~/folder`;
+/// payments selected (filled with the accent, its text and mark in `on_accent`), its long branch
+/// cut at its end and its long folder at its start; the long name cut; notes in /tmp (no `~`,
+/// not in a repo: no branch).
+///
+/// Panics unless the pinned rows lead, the rows carry their branch and folder, and the
+/// selected row is filled with the accent with something on it in `on_accent`.
+fn sidebar_row_scenes() {
+    use std::cell::{Cell, RefCell};
+    use std::path::Path;
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    use crate::sidebar::SidebarRow;
+
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for (scene, width) in [("sidebar-rows", 240.0), ("sidebar-rows-narrow", 180.0)] {
+            let dims = size(px(width + 300.0), px(560.0));
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = sidebar_workspace(&ROWS, None, 3, &[], window, cx);
+                    ws.sidebar.width = width;
+                    ws.sidebar.hint_dismissed = true;
+                    for i in [0, 1] {
+                        let pinned = ws.workspace_of(i).expect("its workspace");
+                        ws.model.set_pinned(pinned, true);
+                    }
+                    ws.sync();
+                    for (folder, branch) in [
+                        (INFRA, "main"),
+                        (API, "feature/rows"),
+                        (PAYMENTS, LONG_BRANCH),
+                        (WEB, "main"),
+                    ] {
+                        ws.places.set_branch(Path::new(folder), Some(branch.into()));
+                    }
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            // The selected row's bounds, for the pixel checks.
+            let selected = Rc::new(Cell::new(None));
+            let found = selected.clone();
+            let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let n = format!("{scene}-{slug}");
+                    let rows = ws.rows_in_view(Instant::now());
+                    let shape: Vec<(String, bool, Option<String>, Option<String>)> = rows
+                        .iter()
+                        .map(|r| match r {
+                            SidebarRow::Header(h) => (format!("[{}]", h.label), false, None, None),
+                            SidebarRow::Workspace(w) => (
+                                w.label.clone(),
+                                w.pinned,
+                                w.branch.clone(),
+                                w.folder.clone(),
+                            ),
+                        })
+                        .collect();
+                    let row = |label: &str, pinned, branch: Option<&str>, folder: Option<&str>| {
+                        (
+                            label.to_string(),
+                            pinned,
+                            branch.map(String::from),
+                            folder.map(String::from),
+                        )
+                    };
+                    let header = |label: &str| row(label, false, None, None);
+                    let long_folder = "~/code/a-very-long-project-folder/services/payments";
+                    assert_eq!(
+                        shape,
+                        [
+                            row("deploy", true, Some("main"), Some("~/code/infra")),
+                            row("claude", true, Some("feature/rows"), Some("~/code/api")),
+                            header("[api]"),
+                            row("codex", false, Some("feature/rows"), Some("~/code/api")),
+                            header("[payments]"),
+                            row("payments", false, Some(LONG_BRANCH), Some(long_folder)),
+                            header("[web]"),
+                            row(ROWS[4].name, false, Some("main"), Some("~/code/web")),
+                            header("[scratch]"),
+                            row("notes", false, None, Some("/tmp/scratch")),
+                        ],
+                        "{n}"
+                    );
+                    let active = rows
+                        .iter()
+                        .position(|r| matches!(r, SidebarRow::Workspace(w) if w.active))
+                        .expect("a selected row");
+                    assert_eq!(active, 5, "{n}: payments is selected");
+                    let b = ws.sidebar.scroll.bounds_for_item(active).expect("laid out");
+                    found.set(Some((
+                        f32::from(b.left()),
+                        f32::from(b.right()),
+                        f32::from(b.top()),
+                    )));
+                });
+                // Not kept past the window: a handle left over is reported as a leak.
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let (left, right, top) = selected.get().expect("the selected row's bounds");
+            let n = format!("{scene}-{slug}");
+            // Its fill, in the padding left of its mark.
+            let fill = pixel_at(&shot, dims, left + 3.0, top + 9.0);
+            assert_eq!(
+                fill,
+                [ui.accent.r, ui.accent.g, ui.accent.b],
+                "{n}: accent fill"
+            );
+            // Its name and mark in on_accent.
+            let ink = count_along(&shot, dims, ui.on_accent, top + 9.0, left, right);
+            assert!(ink > 0, "{n}: on_accent on the selected row");
+        }
+    }
+}
+
 /// Sidebar rows as tabs, from real workspaces in both themes (the `sidebar` scene's eight
 /// sessions; claude orange, codex blue, tests green, the long one purple; shell active):
 /// - `tabs` and `tabs-narrow`: the rows with their colour dots and ⌘N, at 240 and 180 px (no
@@ -1463,7 +1616,8 @@ fn tab_scenes() {
                 ws.into()
             };
             let acting = slot.clone();
-            // codex's name line, where its dot is (its row has a note line under it).
+            // codex's name line, where its dot is (its row has its folder and a note line under
+            // it: 56 px, the name line's middle 15 px above the row's).
             let dot_y = Rc::new(std::cell::Cell::new(0.0f32));
             let noted = dot_y.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
@@ -1471,7 +1625,7 @@ fn tab_scenes() {
                 let none = Modifiers::none();
                 // codex is row 2 (under api's header).
                 let codex = row_point(cx, &ws, 2, 0.0);
-                noted.set(f32::from(row_point(cx, &ws, 2, -7.5).y));
+                noted.set(f32::from(row_point(cx, &ws, 2, -15.0).y));
                 match scene {
                     "tabs-hover" => cx.simulate_mouse_move(window, codex, None, none),
                     "tabs-hover-active" => {
@@ -1802,7 +1956,8 @@ const WORKSPACES: [(ShotSession, Option<Axis>); 5] = [
 ///   with its most urgent terminal's ring (tests: done) and agent's waiting with its question.
 ///
 /// Panics unless the sidebar has the two headers and three rows (not five), api's row says
-/// tests' status, the waiting row is 42 px, and the three panes each have a tab.
+/// tests' status, the waiting row is 56 px (api's 42: its folder line), and the three panes
+/// each have a tab.
 fn workspace_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1851,8 +2006,9 @@ fn workspace_scenes() {
                     let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                     f32::from(b.size.height)
                 };
-                assert_eq!(height(2), 42.0, "{n}: agent's waiting row");
-                assert_eq!(height(4), 28.0, "{n}: api's row");
+                // Each with its folder line; the waiting one its status line too.
+                assert_eq!(height(2), 56.0, "{n}: agent's waiting row");
+                assert_eq!(height(4), 42.0, "{n}: api's row");
                 let api = ws.model.focused_workspace().expect("focused");
                 let ring = ws
                     .rollup_session(api)
