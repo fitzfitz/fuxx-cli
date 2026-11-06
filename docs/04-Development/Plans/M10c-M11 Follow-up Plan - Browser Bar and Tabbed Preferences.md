@@ -13,7 +13,7 @@ updated: 2026-11-06
 |---|---|
 | **Spec** | The 2026-11-06 amendments in [[52 - Milestone 10c - Agent Browser]] and [[53 - Milestone 11 - UI-UX Uplift]] |
 | **Status** | ⬜ Planned (2026-11-06) |
-| **Tasks done** | 0 / 5 |
+| **Tasks done** | 1 / 6 |
 | **Decisions used** | Yours (2026-11-06): build now, before the merge; the address bar has its own setting; bar off keeps the buttons; keep-data Off by default and turning it off deletes saved data; Preferences sections General / Appearance / Sessions / Browser. |
 | **Needs your eyes** | 👀 Task 4 (batched with M10b, M10c, M11) |
 
@@ -88,6 +88,13 @@ the registry source).
 - Probe: the toolbar exists with its items; Enter with `127.0.0.1:<port>/x` loads it; `javascript:alert(1)` doesn't;
   back/forward states after two navigations; ⌘W / ⌘Z / font keys behave as before.
 - [ ] Tests on the pure parts (button-state decision, field text) RED → GREEN; probe output in the report.
+
+### Task 2b: The fuxx mark in the bar — ⬜ (added 2026-11-06, your request)
+
+- A small 🖕 mark (fuxx's logo, your choice) as the last toolbar item, to the right of the address field, drawn as a
+  crisp image (emoji rendered at the toolbar's icon size, ~18 pt, vertically centred), not clickable. It stays when the
+  address field is hidden (to the right of the buttons/title). Same in light and dark bars.
+- [ ] Probe: the toolbar's last item is the mark, with or without the address field.
 
 ### Task 3: Preferences as vertical tabs — ⬜
 
