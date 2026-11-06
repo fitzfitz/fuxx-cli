@@ -4175,7 +4175,7 @@ fn title_area_scenes() {
                 let x = bell_x + FOOTER_BUTTON / 2.0;
                 (0..28).any(|k| at(x, centre_y - 14.0 + k as f32) == bg(c))
             };
-            // The dot's middle: the 🔔's top right (its button is 24 px, centred in the footer).
+            // The dot's middle: the 🔔's top right (its FOOTER_BUTTON-wide button, centred in the footer).
             let dot = (
                 bell_x + FOOTER_BUTTON - DOT_INSET - DOT / 2.0,
                 centre_y - FOOTER_BUTTON / 2.0 + DOT_INSET + DOT / 2.0,
