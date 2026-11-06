@@ -29,6 +29,7 @@ mod mux_proto;
 mod name_input;
 mod notifier;
 mod overlay_panel;
+mod pane_browser;
 mod pane_header;
 mod panes;
 mod preferences;
@@ -400,6 +401,7 @@ fn main() {
             std::process::exit(0);
         }
         Ok(Cli::BrowserProbe) => browser::run_probe(),
+        Ok(Cli::PaneBrowserProbe) => pane_browser::run_probe(),
         Ok(Cli::Mcp) => std::process::exit(mcp::run(client_socket(), caller)),
         Ok(Cli::Daemon(command)) => std::process::exit(run_daemon(command)),
         Ok(Cli::Call {

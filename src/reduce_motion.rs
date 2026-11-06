@@ -90,10 +90,7 @@ pub fn window_numbers() -> Vec<isize> {
 /// Keep `WindowVisible` for the window opened since `before` (`window_numbers`). None found
 /// (not expected): the window counts as always visible.
 pub fn watch_window(before: &[isize], cx: &mut App) {
-    let Some(window) = app_windows()
-        .into_iter()
-        .find(|w| !before.contains(&w.windowNumber()))
-    else {
+    let Some(window) = window_opened_since(before) else {
         eprintln!("[fuxx] motion: the main window wasn't found; marks animate even when hidden");
         return;
     };
@@ -111,6 +108,14 @@ pub fn watch_window(before: &[isize], cx: &mut App) {
         visible: is_visible(&window),
         _observer: observer,
     });
+}
+
+/// The first of the app's windows that isn't in `before` (`window_numbers`): the one GPUI just
+/// opened.
+pub fn window_opened_since(before: &[isize]) -> Option<Retained<NSWindow>> {
+    app_windows()
+        .into_iter()
+        .find(|w| !before.contains(&w.windowNumber()))
 }
 
 fn is_visible(window: &NSWindow) -> bool {

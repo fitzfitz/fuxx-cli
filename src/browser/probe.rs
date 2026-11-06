@@ -1113,7 +1113,7 @@ async fn settle(
 
 /// Serve the probe's pages on 127.0.0.1 (one thread per connection, for as long as the probe
 /// runs); the port.
-fn serve_probe_pages() -> Result<u16, String> {
+pub(crate) fn serve_probe_pages() -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("couldn't start the test server: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
