@@ -13,8 +13,8 @@ updated: 2026-11-06
 |---|---|
 | **Milestone note** | [[55 - Milestone 11c - Native Notifications]] (the spec) |
 | **Status** | ⬜ Planned 2026-11-06 |
-| **Tasks done** | 1 / 6 (Task 0) |
-| **▶ Pick up here** | Task 1: native banners with fallback |
+| **Tasks done** | 3 / 7 (Tasks 0–2); Task 3b added (your request) |
+| **▶ Pick up here** | Task 3 (building), then Task 3b: the default name ╭∩╮ |
 | **Decisions used** | Yours (2026-11-06): extend M11 with native notifications; go. Everything else: AI's call, in note 55 "Settled before planning". |
 | **Needs your eyes** | 👀 Task 0 (clicks) and Task 4 (on screen) |
 
@@ -160,6 +160,22 @@ A throwaway probe on a throwaway branch (as the first test), run by the controll
   click replaces, `Hello` takes it once); the window applying a `Show` via `PendingShow`; the existing daemon tests
   (stop, idle exit, reap) still pass with the run-loop wait. `cargo test`, clippy, fmt, full `__ui-shots`.
 - [ ] Commit `feat(m11c): background banners land on their terminal`.
+
+### Task 3b: The default name becomes ╭∩╮ — ⬜ (added 2026-11-06, your request)
+
+Your words: "Change the new tab, new workspace title from the emoji to ╭∩╮".
+
+- `groups::DEFAULT_NAME` (`src/groups.rs:7`) changes from `"🖕"` to `"╭∩╮"` (U+256D U+2229 U+256E). It is the name a
+  terminal tab and its workspace show until you rename them or the program sets a title, so the sidebar row, the tab,
+  the window title, ⌘P, `fuxx ls` and notification titles ("fuxx — ╭∩╮") all follow.
+- Unchanged (AI's call: not a tab or workspace title): the browser bar's 🖕 mark (`browser/bar.rs` `MARK_TEXT`), and test
+  data that merely uses 🖕 as a typed name. Names you gave stay; unnamed tabs and workspaces (restored ones too) show
+  ╭∩╮, since the default is applied when shown, not stored.
+- Comments naming the default (`workspace.rs` "else 🖕", "often 🖕") follow the new value.
+- [ ] Tests: `groups` `auto_name(None, None, None) == "╭∩╮"`; the daemon's `notification_summary` default test →
+  `"fuxx — ╭∩╮"`; a ui-shot of a new workspace's row and tab showing ╭∩╮ readably (Mocha + Latte); `cargo test`,
+  clippy, fmt, full `__ui-shots`.
+- [ ] Commit `feat(m11c): new tabs and workspaces are named ╭∩╮`.
 
 ### Task 4: On screen — 👀 (you)
 
