@@ -218,6 +218,7 @@ const SCENES: &[(&str, fn())] = &[
     ("tab-bars", tab_bar_scenes),
     ("tab-drag", tab_drag_scenes),
     ("browser-tab", browser_tab_scenes),
+    ("api-background", api_background),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("panels", panel_scenes),
@@ -2881,6 +2882,65 @@ fn browser_workspace(loading: bool, window: &mut Window, cx: &mut Context<Worksp
     ws.browser_titles.insert(opened.tab, PAGE_TITLE.into());
     ws.activate(window, cx);
     ws
+}
+
+/// `fuxx new --background` (and the MCP `background`) while a browser tab has the focus: once
+/// the new terminal has opened (taking the focus, as any new session does), the focus goes back
+/// to the browser tab, not to the new shell. Panics unless the browser tab is focused again,
+/// with GPUI's keyboard.
+fn api_background() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(shot_appearance(theme, cx));
+        let ws = cx.new(|cx| browser_workspace(false, window, cx));
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        let page = cx.read(|cx| {
+            let ws = ws.read(cx);
+            assert!(ws.focused_browser_tab().is_some(), "api-background: a page");
+            ws.model.focused_tab()
+        });
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                // What `session.new` remembers, then its session opening (beside the page).
+                let previous = ws.focus_to_give_back();
+                ws.open_shot_tab("helper", std::path::Path::new(API), "", window, cx);
+                let id = ws.sessions.active().map(|s| s.id);
+                assert!(
+                    id.is_some(),
+                    "api-background: the new terminal took the focus"
+                );
+                ws.api_opened(id, previous, None, true, window, cx)
+                    .expect("opened");
+            })
+        })
+        .expect("a background session.new");
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            let ws = ws.read(cx);
+            assert_eq!(
+                ws.model.focused_tab(),
+                page,
+                "api-background: the page has the focus back"
+            );
+            let view = ws.focused_browser_tab().expect("the page's tab");
+            assert!(
+                gpui::Focusable::focus_handle(view.read(cx), cx).contains_focused(window, cx),
+                "api-background: with the keyboard"
+            );
+        })
+        .expect("read the focus");
+        slot.borrow_mut().take();
+    };
+    render_with(&theme, size(px(960.0), px(560.0)), build, act);
 }
 
 /// The pages the suggestions scene remembers.
