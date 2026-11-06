@@ -354,6 +354,12 @@ impl Workspace {
         if self.dragging.as_ref().is_some_and(|(v, _)| *v == old) {
             self.dragging = None;
         }
+        // And its tab menu, if open.
+        if let Some(menu) = self.sidebar.tab_menu.as_mut()
+            && menu.view == old
+        {
+            menu.view = new;
+        }
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
         if take_focus {
             view.focus_handle(cx).focus(window, cx);
@@ -377,6 +383,7 @@ impl Workspace {
             progress: session.progress.take(),
             lost: false,
             ssh: saved.ssh,
+            color: session.color,
             disconnected: None,
             retries: session.retries,
             opened_at: Instant::now(),

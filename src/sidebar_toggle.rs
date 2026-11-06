@@ -31,11 +31,31 @@ const ICON_RADIUS: f32 = 3.0;
 const X_WINDOWED: f32 = 80.0;
 const X_FULL_SCREEN: f32 = 13.0;
 
-/// A slide in progress: towards shown or hidden, since when.
+/// A slide in progress: towards shown or hidden, since when, and from how much shown (a
+/// slide turned back half way starts where the other one had got to).
 #[derive(Clone, Copy)]
 pub struct Slide {
     pub showing: bool,
     pub since: Instant,
+    pub from: f32,
+}
+
+impl Slide {
+    /// A slide towards `showing` starting now, from where `current` (the slide under way, if
+    /// any) has got to: fully in or out when there's none.
+    pub fn start(showing: bool, current: Option<Slide>) -> Self {
+        let from = current.map_or(if showing { 0.0 } else { 1.0 }, |s| s.shown());
+        Slide {
+            showing,
+            since: Instant::now(),
+            from,
+        }
+    }
+
+    /// How much of the sidebar shows now.
+    pub fn shown(&self) -> f32 {
+        shown_fraction(self.since.elapsed(), self.from, self.showing)
+    }
 }
 
 /// The button's top left in the window: x just right of the traffic lights (13 in full screen),
@@ -49,12 +69,13 @@ pub fn button_origin(full_screen: bool) -> (f32, f32) {
     (x, (TOP_BAND - HIT) / 2.0)
 }
 
-/// How much of the sidebar's width is on screen `elapsed` into a slide towards `showing`
-/// (0 to 1), easing out: fast at first, settling at the end.
-pub fn shown_fraction(elapsed: Duration, showing: bool) -> f32 {
+/// How much of the sidebar's width is on screen `elapsed` into a slide from `from` towards
+/// `showing` (0 to 1), easing out: fast at first, settling at the end.
+pub fn shown_fraction(elapsed: Duration, from: f32, showing: bool) -> f32 {
     let t = (elapsed.as_secs_f32() / SLIDE.as_secs_f32()).clamp(0.0, 1.0);
     let eased = 1.0 - (1.0 - t).powi(3);
-    if showing { eased } else { 1.0 - eased }
+    let to = if showing { 1.0 } else { 0.0 };
+    from + (to - from) * eased
 }
 
 /// The tooltip's text for the sidebar being `hidden` or not.
@@ -163,7 +184,10 @@ mod tests {
 
     #[test]
     fn the_slide_eases_out_and_ends_on_the_target() {
-        let at = |ms: u64, showing| shown_fraction(Duration::from_millis(ms), showing);
+        let at = |ms: u64, showing| {
+            let from = if showing { 0.0 } else { 1.0 };
+            shown_fraction(Duration::from_millis(ms), from, showing)
+        };
         assert_eq!(at(0, true), 0.0);
         assert_eq!(at(0, false), 1.0);
         assert_eq!(at(160, true), 1.0);
@@ -174,6 +198,30 @@ mod tests {
         assert!(at(40, true) < at(80, true) && at(80, true) < at(120, true));
         // Showing and hiding mirror each other.
         assert!((at(50, true) + at(50, false) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_slide_turned_back_half_way_starts_where_the_other_had_got_to() {
+        // Hiding, 60 ms in, then shown again: the new slide starts at that fraction, no jump.
+        let hiding = Slide {
+            showing: false,
+            since: Instant::now() - Duration::from_millis(60),
+            from: 1.0,
+        };
+        let now = hiding.shown();
+        assert!(now > 0.0 && now < 1.0, "{now}");
+        let back = Slide::start(true, Some(hiding));
+        assert!((back.from - now).abs() < 0.02, "{} vs {now}", back.from);
+        let at = |ms: u64| shown_fraction(Duration::from_millis(ms), 0.4, true);
+        assert_eq!(at(0), 0.4);
+        assert_eq!(at(160), 1.0);
+        assert!(at(40) > 0.4 && at(40) < at(80) && at(80) < 1.0);
+        // Hiding from part way, too.
+        assert_eq!(shown_fraction(Duration::ZERO, 0.7, false), 0.7);
+        assert_eq!(shown_fraction(Duration::from_millis(160), 0.7, false), 0.0);
+        // No slide under way: from fully out (showing) or fully in (hiding).
+        assert_eq!(Slide::start(true, None).from, 0.0);
+        assert_eq!(Slide::start(false, None).from, 1.0);
     }
 
     #[test]

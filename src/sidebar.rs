@@ -1,8 +1,10 @@
 //! The sidebar (M11): every session as a row that reads at a glance, under its group's header.
 //!
-//! `rows` is the pure view-model: what each row shows (number, name, status and how long it has
-//! been in it, the waiting question, active / on screen), built from facts the Workspace hands
-//! over. The rest of the file draws it.
+//! `rows` is the pure view-model: what each row shows (name, status and how long it has been in
+//! it, the waiting question, active / on screen, its tab colour), built from facts the Workspace
+//! hands over. The rest of the file draws it. Rows behave like tabs: a × on hover in the mark's
+//! place, a middle-click closes, a right-click opens the tab menu (`tab_menu`); on the right, the
+//! tab colour's dot and the ⌘1–⌘9 shortcut.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -27,6 +29,8 @@ use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
 use crate::status::{self, Status};
 use crate::status_mark;
+use crate::tab_color::TabColor;
+use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{
@@ -49,6 +53,7 @@ pub struct SessionFacts<'a> {
     pub note: Option<&'a str>,
     /// The background service's connection was lost (M10a).
     pub lost: bool,
+    pub color: Option<TabColor>,
 }
 
 /// One row of the sidebar.
@@ -74,7 +79,7 @@ pub struct HeaderRow {
 /// A session's row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionRow {
-    /// Its place in the session list; its number is one more.
+    /// Its place in the session list (⌘1–⌘9 select the first nine by it).
     pub index: usize,
     pub label: String,
     pub status: Status,
@@ -90,6 +95,8 @@ pub struct SessionRow {
     pub grouped: bool,
     /// The script-set progress bar's percent.
     pub progress: Option<u8>,
+    /// Its tab colour, drawn as a dot.
+    pub color: Option<TabColor>,
 }
 
 /// The line under a session's name.
@@ -101,12 +108,6 @@ pub enum Sub {
     NeedsInput,
     /// A script's note or progress label, or "not live".
     Note(String),
-}
-
-impl SessionRow {
-    pub fn number(&self) -> usize {
-        self.index + 1
-    }
 }
 
 /// The sidebar's rows: leading ungrouped sessions, then each group under its header (a closed
@@ -154,6 +155,7 @@ pub fn rows(
                     on_screen: !is_active && shown.contains(&index),
                     grouped,
                     progress: s.progress.map(|(p, _)| *p),
+                    color: s.color,
                 })
             }
         })
@@ -183,6 +185,17 @@ fn sub_line(progress: Option<&(u8, Option<String>)>, note: Option<&str>) -> Opti
         (Some(t), None) | (None, Some(t)) => Some(t.to_string()),
         (None, None) => None,
     }
+}
+
+/// The shortcut that selects session `index` (0-based): "⌘1" to "⌘9" for the first nine, none
+/// after.
+pub fn shortcut_label(index: usize) -> Option<String> {
+    (index < 9).then(|| format!("⌘{}", index + 1))
+}
+
+/// Whether a row `row_width` wide has room for the age right of the name (else it's left out).
+pub fn shows_age(row_width: f32) -> bool {
+    row_width >= AGE_MIN_ROW
 }
 
 /// A width the sidebar can take: within 180–400 px (the default for a missing or odd one).
@@ -229,10 +242,7 @@ const ROW_GAP: f32 = 2.0;
 const GROUP_GAP: f32 = 10.0;
 /// The slot a status mark (or a header's chevron) sits in; a waiting mark fills it.
 pub(crate) const MARK_SLOT: f32 = 14.0;
-/// The session number's column, right-aligned, and the space after it.
-const NUMBER_WIDTH: f32 = 16.0;
-const NUMBER_GAP: f32 = 6.0;
-/// The space between the mark and the number, and before the age.
+/// The space between the mark and the name, and before the age.
 const SLOT_GAP: f32 = 8.0;
 /// A row's name line, and the small line under it.
 const NAME_LINE: f32 = 18.0;
@@ -242,6 +252,14 @@ const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
 const FOOTER: f32 = 36.0;
 const RESIZE_STRIP: f32 = 4.0;
+/// A row narrower than this leaves the age out, so the name keeps its room.
+const AGE_MIN_ROW: f32 = 220.0;
+/// The tab colour dot, and the space before it and before the shortcut.
+const COLOR_DOT: f32 = 8.0;
+const META_GAP: f32 = 6.0;
+/// A row's × (a little bigger than the mark slot it sits on), and the rows' hover group.
+const CLOSE_BUTTON: f32 = 16.0;
+const ROW_GROUP: &str = "sidebar-row";
 /// The "+ New" menu's width.
 const MENU_WIDTH: f32 = 230.0;
 /// How long a header's chevron takes to turn.
@@ -267,6 +285,8 @@ pub(crate) struct SidebarState {
     pub resizing: bool,
     /// The footer's "+ New" menu is open.
     pub new_menu: bool,
+    /// A row's tab menu is open (right-click).
+    pub tab_menu: Option<TabMenu>,
     /// While a row is dragged: the row the pointer is over (by view), and whether it's in its
     /// lower half. Only where the drop would move it.
     pub drop_at: Option<(EntityId, bool)>,
@@ -289,6 +309,7 @@ impl SidebarState {
             reveal_active: false,
             resizing: false,
             new_menu: false,
+            tab_menu: None,
             drop_at: None,
             drag_source: Rc::new(Cell::new(None)),
             turned: None,
@@ -328,7 +349,6 @@ pub(crate) struct DraggedSession {
 
 /// The row that follows the pointer during a drag: the row itself, lifted.
 struct DragPreview {
-    number: usize,
     label: SharedString,
     status: Status,
     width: f32,
@@ -359,10 +379,10 @@ impl Render for DragPreview {
                 px(mark_size(self.status)),
                 ui.row_active,
             )))
-            .child(number(self.number, ui))
             .child(
                 div()
                     .flex_1()
+                    .ml(px(SLOT_GAP))
                     .min_w(px(0.0))
                     .truncate()
                     .child(self.label.clone()),
@@ -399,18 +419,13 @@ pub(crate) fn mark_slot(mark: impl IntoElement) -> Div {
         .child(mark)
 }
 
-/// A session's number in its fixed, right-aligned column.
-fn number(n: usize, ui: UiColors) -> Div {
+/// A tab colour's dot.
+pub(crate) fn color_dot(color: TabColor, ui: UiColors) -> Div {
     div()
         .flex_none()
-        .w(px(NUMBER_WIDTH))
-        .ml(px(SLOT_GAP))
-        .mr(px(NUMBER_GAP))
-        .text_right()
-        .text_size(px(text::META))
-        .font_features(tabular())
-        .text_color(hsla(ui.text_faint))
-        .child(n.to_string())
+        .size(px(COLOR_DOT))
+        .rounded_full()
+        .bg(hsla(ui.tab(color)))
 }
 
 /// A header's chevron, `angle` radians clockwise from pointing right (a quarter turn: down).
@@ -453,6 +468,7 @@ impl Workspace {
                 progress: s.progress.as_ref(),
                 note: s.note.as_deref(),
                 lost: s.lost,
+                color: s.color,
             })
             .collect();
         let shown: Vec<usize> = self
@@ -758,9 +774,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A session's row: mark, number, name (or the rename box), age and on-screen pip; under
-    /// them a waiting session's question or a script's note; a script's progress along the
-    /// bottom. Click selects, double-click renames; it can be dragged within its group.
+    /// A session's row: mark (a × in its place on hover, and always on the active row), name
+    /// (or the rename box), age (when the row is wide enough), on-screen pip, tab colour dot and
+    /// ⌘N shortcut; under them a waiting session's question or a script's note; a script's
+    /// progress along the bottom. Click selects, double-click renames, the × or a middle-click
+    /// closes, a right-click opens the tab menu; it can be dragged within its group.
     fn render_session_row(
         &self,
         row: &SessionRow,
@@ -826,14 +844,25 @@ impl Workspace {
                 .child(row.label.clone())
                 .into_any_element(),
         };
+        // The age only where the name keeps its room.
+        let age = row
+            .age
+            .clone()
+            .filter(|_| shows_age(self.sidebar.width - 2.0 * ROW_INSET));
         let name_line = div()
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(mark_slot(self.session_mark("row", session, ui, surface)))
-            .child(number(row.number(), ui))
-            .child(name)
-            .when_some(row.age.clone(), |line, age| {
+            .child(self.close_slot(view, row.active, session, ui, surface, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .ml(px(SLOT_GAP))
+                    .flex()
+                    .child(name),
+            )
+            .when_some(age, |line, age| {
                 line.child(
                     div()
                         .flex_none()
@@ -853,6 +882,20 @@ impl Workspace {
                         .rounded(px(1.0))
                         .bg(hsla(ui.text_dim)),
                 )
+            })
+            .when_some(row.color, |line, color| {
+                line.child(color_dot(color, ui).ml(px(META_GAP)))
+            })
+            .when_some(shortcut_label(row.index), |line, keys| {
+                line.child(
+                    div()
+                        .flex_none()
+                        .ml(px(META_GAP))
+                        .text_size(px(text::META))
+                        .font_features(tabular())
+                        .text_color(hsla(ui.text_faint))
+                        .child(keys),
+                )
             });
         let sub_line = row.sub.as_ref().map(|sub| {
             let (line, color) = match sub {
@@ -862,7 +905,7 @@ impl Workspace {
             };
             div()
                 .h(px(SUB_LINE))
-                .pl(px(MARK_SLOT + SLOT_GAP + NUMBER_WIDTH + NUMBER_GAP))
+                .pl(px(MARK_SLOT + SLOT_GAP))
                 .text_size(px(text::META))
                 .line_height(px(SUB_LINE))
                 .text_color(hsla(color))
@@ -876,7 +919,6 @@ impl Workspace {
         };
         let source = self.sidebar.drag_source.clone();
         let preview = DragPreview {
-            number: row.number(),
             label: row.label.clone().into(),
             status: row.status,
             width: self.sidebar.width,
@@ -884,6 +926,7 @@ impl Workspace {
         let accepts = group.clone();
         div()
             .id(("session", view))
+            .group(ROW_GROUP)
             .flex_none()
             .relative()
             .flex()
@@ -913,6 +956,18 @@ impl Workspace {
                     this.start_rename(index, window, cx);
                 }
             }))
+            // A middle-click closes it, like its ×; it never selects or drags (both left only).
+            .on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if event.is_middle_click() {
+                    this.close_view(view, window, cx);
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_tab_menu(view, event.position, window, cx)
+                }),
+            )
             .on_drag(
                 DraggedSession {
                     view,
@@ -1030,6 +1085,60 @@ impl Workspace {
             None => status_mark::mark_on(session.status, &ui, self.phase, None, size, fill)
                 .into_any_element(),
         }
+    }
+
+    /// A row's mark slot: its status mark, or in its place a × that closes the session (like
+    /// ⌘W): on hover, and always on the `active` row.
+    fn close_slot(
+        &self,
+        view: EntityId,
+        active: bool,
+        session: &Session,
+        ui: UiColors,
+        surface: Rgb,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mark = div()
+            .absolute()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(self.session_mark("row", session, ui, surface))
+            .map(|mark| {
+                if active {
+                    mark.invisible()
+                } else {
+                    mark.group_hover(ROW_GROUP, |s| s.invisible())
+                }
+            });
+        let close = div()
+            .id(("row-close", view))
+            .absolute()
+            .top(px(-(CLOSE_BUTTON - MARK_SLOT) / 2.0))
+            .left(px(-(CLOSE_BUTTON - MARK_SLOT) / 2.0))
+            .size(px(CLOSE_BUTTON))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.0))
+            .text_size(px(14.0))
+            .text_color(hsla(ui.text_dim))
+            .hover(move |s| s.bg(hsla(ui.panel_hover)).text_color(hsla(ui.text)))
+            .child("×")
+            .when(!active, |close| {
+                close.invisible().group_hover(ROW_GROUP, |s| s.visible())
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                cx.stop_propagation(); // not also a click on the row
+                this.close_view(view, window, cx)
+            }));
+        div()
+            .flex_none()
+            .relative()
+            .size(px(MARK_SLOT))
+            .child(mark)
+            .child(close)
     }
 
     /// The pointer moved during a row drag: if it's over this row (`view`) and dropping there
@@ -1446,6 +1555,7 @@ mod tests {
             progress: None,
             note: None,
             lost: false,
+            color: None,
         }
     }
 
@@ -1481,11 +1591,12 @@ mod tests {
         sessions[1].note = Some("ignored while waiting");
         sessions[2].progress = Some(&bar);
         sessions[2].note = Some("3 of 7");
+        sessions[2].color = Some(TabColor::Teal);
         let rows = rows(&sessions, &[], Some(1), &[1, 3], now);
         assert_eq!(rows.len(), 6, "{rows:?}");
 
         let shell = session(&rows[0]);
-        assert_eq!((shell.number(), shell.label.as_str()), (1, "shell"));
+        assert_eq!((shell.index, shell.label.as_str()), (0, "shell"));
         assert!(!shell.grouped && !shell.active && !shell.on_screen);
         // Idle shows no age; the others how long they've been in their status.
         assert_eq!(shell.age, None);
@@ -1509,6 +1620,7 @@ mod tests {
         assert_eq!(codex.age.as_deref(), Some("32s"));
         assert_eq!(codex.sub, Some(Sub::Note("tests · 3 of 7".into())));
         assert_eq!(codex.progress, Some(40));
+        assert_eq!(codex.color, Some(TabColor::Teal));
         assert!(!codex.on_screen);
 
         let tests = session(&rows[4]);
@@ -1518,7 +1630,8 @@ mod tests {
         // Waiting with no question found: says it needs you.
         let agent = session(&rows[5]);
         assert_eq!(agent.sub, Some(Sub::NeedsInput));
-        assert_eq!(agent.number(), 5);
+        assert_eq!(agent.index, 4);
+        assert_eq!(shell.color, None);
     }
 
     #[test]
@@ -1565,6 +1678,23 @@ mod tests {
             sub_line(Some(&bar(Some("l"))), Some("n")),
             Some("l · n".into())
         );
+    }
+
+    #[test]
+    fn the_first_nine_rows_show_their_shortcut() {
+        assert_eq!(shortcut_label(0).as_deref(), Some("⌘1"));
+        assert_eq!(shortcut_label(4).as_deref(), Some("⌘5"));
+        assert_eq!(shortcut_label(8).as_deref(), Some("⌘9"));
+        assert_eq!(shortcut_label(9), None);
+        assert_eq!(shortcut_label(23), None);
+    }
+
+    #[test]
+    fn the_age_shows_only_on_rows_220_px_or_wider() {
+        assert!(shows_age(220.0));
+        assert!(shows_age(388.0));
+        assert!(!shows_age(219.0));
+        assert!(!shows_age(168.0)); // the narrowest sidebar's row
     }
 
     #[test]

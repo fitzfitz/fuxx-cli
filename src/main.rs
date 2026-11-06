@@ -49,6 +49,8 @@ mod ssh_target;
 mod status;
 mod status_mark;
 mod switcher;
+mod tab_color;
+mod tab_menu;
 mod terminal;
 mod terminal_view;
 mod theme;
@@ -487,6 +489,8 @@ fn main() {
                 // The session switcher: its box is a NameInput too; these keys move through it.
                 KeyBinding::new("up", switcher::SelectPrev, Some("Switcher")),
                 KeyBinding::new("down", switcher::SelectNext, Some("Switcher")),
+                // A sidebar row's tab menu: Escape closes it.
+                KeyBinding::new("escape", tab_menu::Dismiss, Some("TabMenu")),
                 // The browser's address box: its box is a NameInput too; an address is pasted.
                 KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
                 // Only so the Edit menu shows ⌘X and ⌘A: no element in fuxx has this context, so

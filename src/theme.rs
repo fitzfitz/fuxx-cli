@@ -7,6 +7,7 @@
 //! empty value resets a key, and `palette = N=COLOR` takes a decimal or `0x`/`0o`/`0b` index.
 
 use crate::settings::{Entry, parse};
+use crate::tab_color::TabColor;
 use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, contrast, ensure_contrast};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::{Path, PathBuf};
@@ -116,6 +117,15 @@ pub struct UiColors {
     /// Selected text in a box (the rename, filter and address boxes): the accent washed over
     /// the box, as strong as keeps the text readable.
     pub selection: Rgb,
+    /// The tab colours (`TabColor::ALL` order), fitted to stand out on every surface as marks do.
+    pub tab_colors: [Rgb; 11],
+}
+
+impl UiColors {
+    /// Tab colour `c` in this theme.
+    pub fn tab(&self, c: TabColor) -> Rgb {
+        self.tab_colors[c as usize]
+    }
 }
 
 /// `fg` moved along its hue (see `ensure_contrast`) until it reaches `min` on every one of `bgs`.
@@ -222,6 +232,7 @@ impl Theme {
             // Overlays' shadow, drawn with transparency: black on dark, the ink darkened on light.
             shadow: if dark { black } else { mix(fg, black, 0.5) },
             selection,
+            tab_colors: TabColor::ALL.map(|c| mark(c.base())),
         }
     }
 }
@@ -277,8 +288,14 @@ impl Theme {
                 min,
             }
         };
+        // Tab colours are drawn as dots wherever a mark is (rows, switcher, pane headers, menu).
+        let tabs: Vec<(&'static str, Rgb)> = TabColor::ALL.map(|c| (c.name(), ui.tab(c))).into();
         let mut pairs = vec![];
-        for (fgs, min) in [(&text[..], TEXT_MIN), (&marks[..], MARK_MIN)] {
+        for (fgs, min) in [
+            (&text[..], TEXT_MIN),
+            (&marks[..], MARK_MIN),
+            (&tabs[..], MARK_MIN),
+        ] {
             for &fg in fgs {
                 for &bg in &surfaces {
                     pairs.push(pair(fg, bg, min));
