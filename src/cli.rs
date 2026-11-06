@@ -76,7 +76,7 @@ usage: fuxx [command]   (no command opens the app)
   notify [--title T] BODY              a macOS notification
   equalize [TARGET]                    even out the panes of a layout
   presets                              list agent presets
-  browser open URL                     open the session's browser at URL (waits for the page)
+  browser open URL                     open the session's browser tab at URL (waits for the page)
   browser snapshot                     the page's outline; its controls get refs like e12
   browser click REF | fill REF TEXT | press KEY
                                        act on the page (refs from the latest snapshot)
@@ -85,7 +85,7 @@ usage: fuxx [command]   (no command opens the app)
   browser wait (--text T | --selector S) [--timeout SECS]
                                        until the page shows it (default 30 s, max 300)
   browser screenshot [PATH]            save a PNG of the page (default: a temp file); prints the path
-  browser back | reload | close        go back, reload, or close the browser window
+  browser back | reload | close        go back, reload, or close the browser tab
        Every browser command takes --session TARGET (default: your session).
   ping                                 check that fuxx is reachable
   version                              print the version and the methods
