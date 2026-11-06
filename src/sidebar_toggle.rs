@@ -88,7 +88,7 @@ pub fn tooltip_text(hidden: bool) -> &'static str {
 }
 
 /// The tooltip's view.
-struct Tip(SharedString);
+pub(crate) struct Tip(pub SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

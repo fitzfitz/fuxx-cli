@@ -24,7 +24,8 @@ pub mod size {
     pub const SIDEBAR_ROW: f32 = 28.0;
     pub const WAITING_ROW: f32 = 42.0;
     pub const GROUP_HEADER: f32 = 24.0;
-    pub const PANE_HEADER: f32 = 22.0;
+    /// A pane's tab bar (M11b; it replaced M11's 22 px pane header).
+    pub const TAB_BAR: f32 = 26.0;
     /// The band at the top of the window that the traffic lights sit in (the drag area).
     pub const TOP_BAND: f32 = 38.0;
     /// Where the traffic lights go: (x, y) from the window's top left.

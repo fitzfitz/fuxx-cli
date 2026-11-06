@@ -183,7 +183,7 @@ impl Theme {
         let waiting_tint = mix(sidebar, waiting, if dark { 0.12 } else { 0.08 });
         let done_tint = mix(sidebar, done, if dark { 0.07 } else { 0.05 });
         let waiting_hover = mix(waiting_tint, fg, 0.06);
-        // Every surface something is drawn on: rows, tinted rows, overlays, pane headers.
+        // Every surface something is drawn on: rows, tinted rows, overlays, pane tabs.
         let surfaces = [
             sidebar,
             row_hover,
@@ -254,7 +254,7 @@ impl Theme {
     /// the token swatch board shows. A UI change that draws a token on a new surface adds it here.
     pub fn drawn_pairs(&self) -> Vec<DrawnPair> {
         let ui = self.ui();
-        // Rows, tinted rows, overlays and pane headers (on the terminal background).
+        // Rows, tinted rows, overlays and pane tab bars (on the sidebar colour).
         let surfaces = [
             ("sidebar", ui.sidebar_background),
             ("row_hover", ui.row_hover),
@@ -288,7 +288,7 @@ impl Theme {
                 min,
             }
         };
-        // Tab colours are drawn as dots wherever a mark is (rows, switcher, pane headers, menu).
+        // Tab colours are drawn as dots wherever a mark is (rows, switcher, menu).
         let tabs: Vec<(&'static str, Rgb)> = TabColor::ALL.map(|c| (c.name(), ui.tab(c))).into();
         let mut pairs = vec![];
         for (fgs, min) in [
@@ -316,6 +316,7 @@ impl Theme {
         ));
         let terminal = ("terminal", self.background);
         let lines = [
+            // Also the line between pane tabs (M11b), drawn on the bar's colour only.
             (("sidebar_border", ui.sidebar_border), surfaces[0]),
             (("sidebar_border", ui.sidebar_border), terminal),
             (("divider", ui.divider), terminal),

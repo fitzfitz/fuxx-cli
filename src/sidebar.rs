@@ -24,7 +24,7 @@ use gpui::{
 
 use crate::appearance::Appearance;
 use crate::groups::{self, GroupKey, Row};
-use crate::layout_model::{Model, WorkspaceId};
+use crate::layout_model::{Model, TabKind, WorkspaceId};
 use crate::preferences;
 use crate::presets::MAX_PRESETS;
 use crate::reduce_motion::WindowVisible;
@@ -40,7 +40,7 @@ use crate::ui_tokens::size::{
     SIDEBAR_ROW, STATUS_MARK, WAITING_ROW,
 };
 use crate::ui_tokens::text;
-use crate::workspace::{POP_SHOWN, Session, Workspace};
+use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
 
 /// What the sidebar needs to know of one workspace, in display order: its name, colour and
 /// group, and the rest from the terminal its ring is (its most urgent: `subject`).
@@ -541,10 +541,11 @@ impl Workspace {
     }
 
     /// The marks on screen: each row in the scrolled view (a closed group's header shows its
-    /// sessions' most urgent; none with the sidebar hidden), and each pane header.
+    /// sessions' most urgent; none with the sidebar hidden), and each terminal tab in the panes'
+    /// tab bars.
     pub(crate) fn visible_statuses(&self) -> Vec<Status> {
-        let headers = self
-            .header_sessions()
+        let tabs = self
+            .tab_sessions()
             .into_iter()
             .map(|i| self.sessions.items()[i].status);
         self.rows_in_view(Instant::now())
@@ -553,7 +554,24 @@ impl Workspace {
                 SidebarRow::Header(h) => h.mark,
                 SidebarRow::Workspace(s) => Some(s.status),
             })
-            .chain(headers)
+            .chain(tabs)
+            .collect()
+    }
+
+    /// The sessions whose tabs are on screen: every terminal tab of each pane of the focused
+    /// workspace, in layout then bar order (sessions by place in the list).
+    pub(crate) fn tab_sessions(&self) -> Vec<usize> {
+        let Some(tree) = self.shown_layout() else {
+            return Vec::new();
+        };
+        tree.leaves()
+            .into_iter()
+            .filter_map(|pane| self.model.pane(pane))
+            .flat_map(|p| &p.tabs)
+            .filter_map(|t| match t.kind {
+                TabKind::Terminal(id) => self.index_of(id),
+                TabKind::Browser { .. } => None,
+            })
             .collect()
     }
 
@@ -597,14 +615,8 @@ impl Workspace {
                     SidebarRow::Workspace(s) if s.age.is_some() => s.subject,
                     _ => None,
                 });
-            // Pane headers show an age too (every status but Idle).
-            let headers = self
-                .header_sessions()
-                .into_iter()
-                .filter(|&i| self.sessions.items()[i].status != Status::Idle);
-            let sinces = rows
-                .chain(headers)
-                .map(|i| self.sessions.items()[i].status_since);
+            // (A tab shows its age only in its tooltip, read when it opens.)
+            let sinces = rows.map(|i| self.sessions.items()[i].status_since);
             // And the switcher's rows, while it's open.
             let switcher = self
                 .switcher_shown(cx)
@@ -864,7 +876,7 @@ impl Workspace {
         let rename_box = self
             .renaming
             .as_ref()
-            .filter(|(w, _)| *w == ws)
+            .filter(|(r, _)| *r == Renaming::Workspace(ws))
             .map(|(_, input)| input.clone());
         let group = self.workspace_group(ws);
         // While a row is dragged: it's dimmed; rows of another group refuse it.
@@ -1093,7 +1105,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A session's mark on its surface's `fill` (a row, or a pane's header: `place` keeps their
+    /// A session's mark on its surface's `fill` (a row, or a pane tab: `place` keeps their
     /// animations apart); a Done one that just arrived pops (keyed by its pop, so it plays once;
     /// after it, the mark is drawn plain).
     pub(crate) fn session_mark(

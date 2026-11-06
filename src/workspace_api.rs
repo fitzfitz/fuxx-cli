@@ -520,7 +520,7 @@ impl Workspace {
 
     /// Name session `index` exactly: empty goes back to the automatic name. (The rename box
     /// names workspaces; a script names terminals.)
-    fn rename_at(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
+    pub(crate) fn rename_at(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
         };
