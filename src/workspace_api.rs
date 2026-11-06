@@ -20,6 +20,7 @@ use crate::api_server::{Conn, Incoming};
 use crate::appearance::Appearance;
 use crate::daemon_client::DaemonClient;
 use crate::grid::TextScope;
+use crate::notification_list::Entry;
 use crate::notifier;
 use crate::presets::Preset;
 use crate::restore::{Launch, SavedSession};
@@ -369,6 +370,7 @@ impl Workspace {
             "notify" => {
                 let body = required_str(p, "body")?.to_string();
                 let title = opt_str(p, "title")?.unwrap_or("fuxx").to_string();
+                let caller = caller_param(p)?;
                 self.emit(
                     &Event::Notification {
                         title: &title,
@@ -376,6 +378,16 @@ impl Workspace {
                     },
                     None,
                 );
+                // Listed in the 🔔 too, about the terminal it ran in (if it ran in one).
+                let entry = Entry::scripted(
+                    &title,
+                    &body,
+                    caller,
+                    |id| self.index_of(id).is_some(),
+                    Instant::now(),
+                );
+                self.note_notification(entry);
+                cx.notify();
                 cx.background_spawn(async move { notifier::fire(&title, &body) })
                     .detach();
                 Ok(json!({}))

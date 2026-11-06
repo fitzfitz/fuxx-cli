@@ -64,6 +64,10 @@ const SUB: f32 = 15.0;
 const ENTRY_PAD: f32 = 5.0;
 const ENTRY_GAP: f32 = 2.0;
 const ENTRY: f32 = ENTRY_PAD + LINE + SUB + ENTRY_PAD;
+/// A script's notification's mark (it has no status).
+const SCRIPT_DOT: f32 = 6.0;
+/// The 🔔's box (drawn as an outline, `bell_icon`).
+const BELL: f32 = 14.0;
 /// The + drawn as two strokes, like the sidebar button's outline.
 const PLUS: f32 = 11.0;
 const STROKE: f32 = 1.5;
@@ -161,7 +165,7 @@ impl Workspace {
             ui.sidebar_background
         };
         let bell = band_button("notifications-button", bell_origin(full_screen), ui)
-            .child(div().text_size(px(text::NAME)).child("🔔"))
+            .child(bell_icon(ui))
             .when(unseen, |bell| {
                 bell.child(
                     div()
@@ -293,9 +297,10 @@ impl Workspace {
         )
     }
 
-    /// One entry: its mark, its workspace's name and how long ago, and what it said under
-    /// them. One whose terminal has closed is greyed (an idle mark, faint text, "closed") and
-    /// can't be clicked.
+    /// One entry: its mark, its workspace's name (a script's: its title) and how long ago, and
+    /// what it said under them. One whose terminal has closed is greyed (an idle mark, faint
+    /// text, "closed") and can't be clicked; a script's from outside fuxx's terminals has
+    /// nowhere to go, so it can't be clicked either.
     fn render_notification(
         &self,
         i: usize,
@@ -305,26 +310,30 @@ impl Workspace {
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let shown_status = if open { entry.status } else { Status::Idle };
-        let mark = status_mark::mark_on(
-            shown_status,
-            &ui,
-            0.0,
-            None,
-            px(mark_size(shown_status)),
-            ui.panel,
-        );
-        // The name of the workspace its terminal is in now (renamed, or the terminal moved),
-        // while it's open; else as it was.
-        let name = self
-            .index_of(entry.terminal)
+        let closed = entry.terminal.is_some() && !open;
+        let mark = match (entry.status, closed) {
+            (_, true) => status_mark(Status::Idle, ui),
+            (Some(status), false) => status_mark(status, ui),
+            // A script's: a plain dot.
+            (None, false) => div()
+                .size(px(SCRIPT_DOT))
+                .rounded_full()
+                .bg(hsla(ui.text_dim))
+                .into_any_element(),
+        };
+        // A status's: the name of the workspace its terminal is in now (renamed, or the
+        // terminal moved), while it's open; else as it was. A script's: its own title.
+        let name = entry
+            .status
+            .and(entry.terminal)
+            .and_then(|id| self.index_of(id))
             .and_then(|i| self.workspace_of(i))
             .map_or_else(|| entry.title.clone(), |ws| self.workspace_label(ws).into());
         let age = status::age_label(now.saturating_duration_since(entry.at));
-        let age = if open {
-            age
-        } else {
+        let age = if closed {
             format!("closed \u{b7} {age}")
+        } else {
+            age
         };
         let line = div()
             .flex()
@@ -336,8 +345,8 @@ impl Workspace {
                     .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .when(open, |name| name.font_weight(FontWeight::SEMIBOLD))
-                    .text_color(hsla(if open { ui.text } else { ui.text_faint }))
+                    .when(!closed, |name| name.font_weight(FontWeight::SEMIBOLD))
+                    .text_color(hsla(if closed { ui.text_faint } else { ui.text }))
                     .child(name),
             )
             .child(
@@ -354,9 +363,8 @@ impl Workspace {
             .min_w(px(0.0))
             .truncate()
             .text_size(px(text::META))
-            .text_color(hsla(if open { ui.text_dim } else { ui.text_faint }))
+            .text_color(hsla(if closed { ui.text_faint } else { ui.text_dim }))
             .child(entry.message.clone());
-        let terminal = entry.terminal;
         let hover = ui.panel_hover;
         div()
             .id(("notification", i))
@@ -383,7 +391,7 @@ impl Workspace {
                     .child(line)
                     .child(message),
             )
-            .when(open, |row| {
+            .when_some(entry.terminal.filter(|_| open), |row, terminal| {
                 row.cursor_pointer()
                     .hover(move |s| s.bg(hsla(hover)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -433,6 +441,11 @@ impl Workspace {
     }
 }
 
+/// `status`'s mark, still, on the popover.
+fn status_mark(status: Status, ui: UiColors) -> AnyElement {
+    status_mark::mark_on(status, &ui, 0.0, None, px(mark_size(status)), ui.panel).into_any_element()
+}
+
 /// A button in the top band at `origin`: a hover fill, and a press that stays its own (the band
 /// under it would start a window drag).
 fn band_button(id: &'static str, (x, y): (f32, f32), ui: UiColors) -> Stateful<Div> {
@@ -452,6 +465,49 @@ fn band_button(id: &'static str, (x, y): (f32, f32), ui: UiColors) -> Stateful<D
         .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
             cx.stop_propagation()
         })
+}
+
+/// The 🔔 as an outline in the sidebar button's stroke: a dome open at the bottom, its rim and
+/// clapper, in the dim text colour, the full one on hover.
+fn bell_icon(ui: UiColors) -> Div {
+    const GROUP: &str = "notifications-button";
+    let (dim, full) = (hsla(ui.text_dim), hsla(ui.text));
+    let mut dome = div()
+        .absolute()
+        .left(px(2.5))
+        .top(px(1.0))
+        .w(px(BELL - 5.0))
+        .h(px(9.5))
+        .rounded_t(px((BELL - 5.0) / 2.0))
+        .border_color(dim)
+        .group_hover(GROUP, move |s| s.border_color(full));
+    dome.style().border_widths.top = Some(px(STROKE).into());
+    dome.style().border_widths.left = Some(px(STROKE).into());
+    dome.style().border_widths.right = Some(px(STROKE).into());
+    let fill = || {
+        div()
+            .absolute()
+            .bg(dim)
+            .group_hover(GROUP, move |s| s.bg(full))
+    };
+    let rim = fill()
+        .left(px(0.5))
+        .top(px(9.5))
+        .w(px(BELL - 1.0))
+        .h(px(STROKE))
+        .rounded(px(STROKE / 2.0));
+    let clapper = fill()
+        .left(px((BELL - 3.0) / 2.0))
+        .top(px(11.5))
+        .w(px(3.0))
+        .h(px(2.0))
+        .rounded_b(px(1.5));
+    div()
+        .relative()
+        .size(px(BELL))
+        .child(dome)
+        .child(rim)
+        .child(clapper)
 }
 
 /// The +: two strokes in the dim text colour, the full one on hover.

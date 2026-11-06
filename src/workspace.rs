@@ -157,9 +157,25 @@ pub struct Session {
     pub(crate) _subscription: Subscription,
 }
 
-/// The boxes over the window that take the keyboard; only one is open at a time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Overlay {
+/// `Overlay` and `Overlay::ALL` from one list, so no overlay can be left out of `ALL` (the
+/// `overlays` UI scene opens each to check it hides the in-pane pages).
+macro_rules! overlays {
+    ($($variant:ident),* $(,)?) => {
+        /// The boxes over the window that take the keyboard; only one is open at a time.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(crate) enum Overlay {
+            $($variant,)*
+        }
+
+        impl Overlay {
+            /// Every overlay.
+            #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
+            pub(crate) const ALL: &[Overlay] = &[$(Overlay::$variant,)*];
+        }
+    };
+}
+
+overlays!(
     Rename,
     HostPicker,
     AddressBox,
@@ -167,22 +183,7 @@ pub(crate) enum Overlay {
     TabMenu,
     PaneTabMenu,
     Notifications,
-}
-
-impl Overlay {
-    /// Every overlay: a new one goes here too, so the check that each hides the in-pane pages
-    /// (the `overlays` UI scene) opens it.
-    #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
-    pub(crate) const ALL: [Overlay; 7] = [
-        Overlay::Rename,
-        Overlay::HostPicker,
-        Overlay::AddressBox,
-        Overlay::Switcher,
-        Overlay::TabMenu,
-        Overlay::PaneTabMenu,
-        Overlay::Notifications,
-    ];
-}
+);
 
 /// What the rename box names: a workspace (its sidebar row) or a terminal (its pane tab).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1404,13 +1405,13 @@ impl Workspace {
                 };
                 self.emit(&posted, Some(index));
                 self.note_notification(notification_list::Entry {
-                    terminal: self.sessions.items()[index].id,
+                    terminal: Some(self.sessions.items()[index].id),
                     title: ws.map_or_else(
                         || label.to_string(),
                         |ws| self.workspace_label(ws).to_string(),
                     ),
                     message: body.clone(),
-                    status: new,
+                    status: Some(new),
                     at: Instant::now(),
                 });
                 cx.background_spawn(async move { notifier::fire(&summary, &body) })
