@@ -8,6 +8,7 @@
 //! The hidden `fuxx __browser-probe` self-test lives in `probe`.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::ffi::c_void;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
@@ -131,6 +132,20 @@ impl Page {
             }
             view.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        }
+        for key in WATCHED {
+            let key = NSString::from_str(key);
+            // SAFETY: main thread; the delegate outlives the observation (`Drop` removes it
+            // before the delegate can go). No options, no context.
+            let _: () = unsafe {
+                msg_send![
+                    &*view,
+                    addObserver: &*delegate,
+                    forKeyPath: &*key,
+                    options: 0usize,
+                    context: std::ptr::null_mut::<c_void>()
+                ]
+            };
         }
         Page {
             view,
@@ -307,6 +322,13 @@ impl Drop for Page {
             }
         }
         self.delegate.ivars().events.take();
+        for key in WATCHED {
+            let key = NSString::from_str(key);
+            // SAFETY: main thread; the observation `new` added.
+            let _: () = unsafe {
+                msg_send![&*self.view, removeObserver: &*self.delegate, forKeyPath: &*key]
+            };
+        }
         // SAFETY: main thread (a `Page` never leaves it).
         unsafe {
             self.view.stopLoading();
@@ -408,6 +430,11 @@ impl Browser {
         window.setInitialFirstResponder(Some(view));
         window.makeFirstResponder(Some(view));
         window.setDelegate(Some(ProtocolObject::from_ref(&*page.delegate)));
+        // The bar follows each change to the page at once (its timer only catches the rest).
+        page.delegate
+            .ivars()
+            .bar
+            .replace(Some(objc2::rc::Weak::from_retained(&bar)));
         let browser = Browser { window, page, bar };
         browser.refresh_bar();
         browser
@@ -509,11 +536,17 @@ impl Browser {
 impl Drop for Browser {
     fn drop(&mut self) {
         // The page stops (and what waits on it answers) as it drops, after this.
+        self.page.delegate.ivars().bar.take();
         self.bar.detach(&self.window);
         self.window.setDelegate(None);
         self.window.close();
     }
 }
+
+/// What a page's web view is watched for (key-value observing): a change to any of them is a
+/// `PageEvent::Changed`. `pushState`, `#fragment` links and a title set after load change these
+/// with no navigation.
+const WATCHED: [&str; 5] = ["URL", "title", "canGoBack", "canGoForward", "loading"];
 
 /// A page in a plain web view (a browser window's), on the data store `keep_data` picks.
 fn new_page(mtm: MainThreadMarker, keep_data: bool) -> Page {
@@ -890,8 +923,10 @@ impl ShortcutWindow {
 /// What the browser's delegate keeps.
 #[derive(Default)]
 struct DelegateState {
-    /// Told about each navigation (a browser tab's; a window's bar is refreshed by a timer).
+    /// Told about each navigation and each change to the page (a browser tab's).
     events: RefCell<Option<UnboundedSender<PageEvent>>>,
+    /// A browser window's bar, brought up to date on each change to the page.
+    bar: RefCell<Option<objc2::rc::Weak<bar::TopBar>>>,
     /// The window has closed.
     closed: Cell<bool>,
     /// The address the last `load` (or the address field) asked for: a page that never came is
@@ -908,6 +943,24 @@ define_class!(
     #[thread_kind = MainThreadOnly]
     #[ivars = DelegateState]
     struct BrowserDelegate;
+
+    impl BrowserDelegate {
+        // A watched property of the page's web view changed (`WATCHED`).
+        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+        fn observe_value(
+            &self,
+            _key_path: Option<&NSString>,
+            _object: Option<&AnyObject>,
+            _change: Option<&AnyObject>,
+            _context: *mut c_void,
+        ) {
+            self.changed();
+            let bar = self.ivars().bar.borrow().as_ref().and_then(|b| b.load());
+            if let Some(bar) = bar {
+                bar.refresh();
+            }
+        }
+    }
 
     // SAFETY: NSObjectProtocol has no safety requirements.
     unsafe impl NSObjectProtocol for BrowserDelegate {}

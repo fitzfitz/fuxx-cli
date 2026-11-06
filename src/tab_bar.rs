@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, AnyView, ClickEvent, Context, Div, MouseButton, MouseDownEvent, PathBuilder,
-    Pixels, Point, ScrollHandle, SharedString, Window, canvas, div, point, prelude::*, px,
+    AnyElement, AnyView, ClickEvent, Context, Div, Focusable, MouseButton, MouseDownEvent,
+    PathBuilder, Pixels, Point, ScrollHandle, SharedString, Window, canvas, div, point, prelude::*,
+    px,
 };
 
 use crate::layout_model::{Pane, PaneId, TabId, TabKind};
@@ -461,25 +462,51 @@ impl Workspace {
                     self.close_at(i, window, cx);
                 }
             }
-            Some(TabKind::Browser { .. }) => {
-                self.model.close_tab(tab);
-                if let Some(menu) = &self.pane_tab_menu
-                    && menu.tab == tab
-                {
-                    self.pane_tab_menu = None;
-                }
-                self.sync();
-                self.close_browser_pages(cx);
-                self.save();
-                if self.sessions.is_empty() && self.model.workspaces().is_empty() {
-                    let conns = self.subscribers.clone();
-                    self.quit_after_flush(conns, None, window, cx);
-                    return;
-                }
-                self.activate(window, cx);
-            }
+            Some(TabKind::Browser { .. }) => self.close_browser_tab(tab, true, window, cx),
             None => {}
         }
+    }
+
+    /// Close browser tab `tab`: its page leaves the window at once. `by_person`: the person
+    /// closed it (its ×, ⌘W, a menu), and the focused tab takes the keyboard as after any close.
+    /// Otherwise (an agent's `browser.close`) the person's focus, menus and boxes stay as they
+    /// are, unless the keyboard was in the tab that went: then the pane's next tab takes it.
+    pub(crate) fn close_browser_tab(
+        &mut self,
+        tab: TabId,
+        by_person: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let had_keyboard = self
+            .browser_tabs
+            .get(&tab)
+            .is_some_and(|v| v.read(cx).focus_handle(cx).contains_focused(window, cx));
+        if self.model.close_tab(tab).is_none() {
+            return;
+        }
+        if let Some(menu) = &self.pane_tab_menu
+            && menu.tab == tab
+        {
+            self.pane_tab_menu = None;
+        }
+        self.sync();
+        self.close_browser_pages(cx);
+        self.save();
+        if self.all_gone() {
+            let conns = self.subscribers.clone();
+            self.quit_after_flush(conns, None, window, cx);
+            return;
+        }
+        if by_person {
+            self.activate(window, cx);
+            return;
+        }
+        if had_keyboard {
+            self.focus_active(window, cx);
+        }
+        self.note_focus();
+        cx.notify();
     }
 
     /// A bar's "new terminal tab": a plain terminal at the end of `pane`'s tabs, in the group of
@@ -610,6 +637,11 @@ pub(crate) enum Glyph {
 
 /// `kind` in `color`, in a 12 px box.
 pub(crate) fn glyph(kind: Glyph, color: Rgb) -> Div {
+    glyph_with(kind, color, STROKE)
+}
+
+/// `glyph` with lines `stroke` px wide (in the 12 px box).
+pub(crate) fn glyph_with(kind: Glyph, color: Rgb, stroke: f32) -> Div {
     div().flex_none().size(px(ICON)).child(
         canvas(
             |_, _, _| (),
@@ -620,7 +652,7 @@ pub(crate) fn glyph(kind: Glyph, color: Rgb) -> Div {
                 let p =
                     |x: f32, y: f32| -> Point<Pixels> { point(o.x + px(x * u), o.y + px(y * u)) };
                 let mut paths: Vec<PathBuilder> = Vec::new();
-                let stroke = || PathBuilder::stroke(px(STROKE * u));
+                let stroke = || PathBuilder::stroke(px(stroke * u));
                 match kind {
                     Glyph::Terminal => {
                         let mut chevron = stroke();

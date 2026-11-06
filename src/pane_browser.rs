@@ -285,12 +285,13 @@ impl PaneWebView {
     /// The page, out of fuxx's window and no longer talking to GPUI (Pop Out: a browser window
     /// takes it on).
     pub fn into_page(mut self) -> Page {
-        let state = self.view.ivars();
-        state.gpui.take();
-        state.events.take();
+        // The keyboard back to GPUI's view while the link to it is still there.
         if self.has_keyboard() {
             self.give_keyboard_back();
         }
+        let state = self.view.ivars();
+        state.gpui.take();
+        state.events.take();
         self.view.removeFromSuperview();
         let page = self
             .page

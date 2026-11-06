@@ -2327,6 +2327,8 @@ fn browser_tab_scenes() {
             "browser-tab-title",
             "browser-tab-suggestions",
         ] {
+            let typed_at: Rc<std::cell::Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
+            let typed = typed_at.clone();
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -2358,14 +2360,11 @@ fn browser_tab_scenes() {
                     return;
                 }
                 let field = field.expect("the field is drawn");
-                // Under the 26 px tab bar, centred in the 34 px bar (inside its 1 px edge).
-                assert_eq!(
-                    f32::from(field.size.height),
-                    24.0 - 2.0,
-                    "{n}: field height"
-                );
+                typed.set(Some(field));
+                // Under the 26 px tab bar, centred in the 34 px bar.
+                assert_eq!(f32::from(field.size.height), 24.0, "{n}: field height");
                 let top = f32::from(field.top());
-                assert!((30.0..=33.0).contains(&top), "{n}: field top {top}");
+                assert!((29.0..=32.0).contains(&top), "{n}: field top {top}");
                 if scene == "browser-tab-suggestions" {
                     cx.update(|cx| {
                         cx.bind_keys([KeyBinding::new("down", SuggestNext, Some("AddressField"))])
@@ -2379,8 +2378,28 @@ fn browser_tab_scenes() {
                 }
                 slot.borrow_mut().take();
             };
-            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
+            if scene == "browser-tab-suggestions" {
+                // What was typed is drawn in the theme's text colour (not the default black).
+                let shot = render_with(&theme, dims, build, act);
+                let field = typed_at.get().expect("the field was drawn");
+                let text = theme.ui().text;
+                let near = |p: [u8; 3]| {
+                    p.iter()
+                        .zip([text.r, text.g, text.b])
+                        .all(|(a, b)| a.abs_diff(b) <= 60)
+                };
+                let y = f32::from(field.center().y);
+                let x0 = f32::from(field.left());
+                let seen = (0..30).any(|dx| {
+                    (-4..=4).any(|dy| near(pixel_at(&shot, dims, x0 + dx as f32, y + dy as f32)))
+                });
+                assert!(
+                    seen,
+                    "{scene}-{slug}: the typed text is in the theme's text colour"
+                );
+            }
         }
 
         // Acting on a browser tab (not shot).
@@ -2475,6 +2494,34 @@ fn browser_tab_scenes() {
                 ws.switcher.as_ref().map(|s| s.read(cx).shown().count())
             });
             assert_eq!(rows, Some(2), "{n}: both workspaces in ⌘P");
+            // An agent closes its browser tab (api's, not the one shown) while ⌘P is open: the
+            // person's ⌘P stays open, with the keyboard.
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let api = ws.model.workspaces()[0].id;
+                    let tab = ws
+                        .model
+                        .tabs_of(api)
+                        .into_iter()
+                        .find(|t| ws.browser_tabs.contains_key(t))
+                        .expect("api's browser tab");
+                    ws.close_browser_tab(tab, false, window, cx);
+                })
+            })
+            .expect("an agent's close");
+            cx.run_until_parked();
+            let still = cx
+                .update_window(window, |_, window, cx| {
+                    let switcher = ws.read(cx).switcher.clone();
+                    switcher
+                        .map(|s| gpui::Focusable::focus_handle(s.read(cx), cx).is_focused(window))
+                })
+                .expect("read");
+            assert_eq!(
+                still,
+                Some(true),
+                "{n}: an agent's close leaves ⌘P open, with the keyboard"
+            );
             // Pop Out of a tab with no page (off-screen): the tab just closes.
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| {

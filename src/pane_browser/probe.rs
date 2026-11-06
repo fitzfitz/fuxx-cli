@@ -571,6 +571,45 @@ impl Probe {
         }
         let navigation_told = events.iter().any(|e| e == "Changed");
         check(navigation_told, "the page's navigations are told", &events)?;
+        // Same-document changes: `pushState` and a title set after load are no navigations, but
+        // the page still tells (it is watched, not polled).
+        while events_rx.try_recv().is_ok() {}
+        within(
+            self.web
+                .page()
+                .eval("history.pushState({}, '', '/pushed'), location.href"),
+            ANSWER_LIMIT,
+            &ex,
+        )
+        .await?;
+        ex.timer(LOAD_POLL).await;
+        let mut push_told = false;
+        while let Ok(event) = events_rx.try_recv() {
+            push_told |= event == PageEvent::Changed;
+        }
+        let pushed_url = self.web.page().state().url;
+        let (push_back, _) = self.web.page().can_go();
+        within(
+            self.web.page().eval("document.title = 'retitled'"),
+            ANSWER_LIMIT,
+            &ex,
+        )
+        .await?;
+        ex.timer(LOAD_POLL).await;
+        let mut title_told = false;
+        while let Ok(event) = events_rx.try_recv() {
+            title_told |= event == PageEvent::Changed;
+        }
+        let retitled = self.web.page().state().title;
+        check(
+            push_told
+                && pushed_url.ends_with("/pushed")
+                && push_back
+                && title_told
+                && retitled == "retitled",
+            "pushState and a late title are told",
+            &(push_told, &pushed_url, push_back, title_told, &retitled),
+        )?;
         // In a key window AppKit gives a click to the view its hit test finds; this window is
         // never key, so its first click only activates it (as the spike found). Which view gets
         // a click on the page, and that view's `mouseDown:` as AppKit would send it.
@@ -760,6 +799,7 @@ impl Probe {
             },
             "browser_tab": {
                 "navigation_told": navigation_told,
+                "same_document": { "push_state_told": push_told, "url": pushed_url, "can_go_back": push_back, "late_title_told": title_told, "title": retitled },
                 "click": {
                     "by_window_sendevent": clicked_by_window,
                     "hit_view": hit_class,
