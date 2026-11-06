@@ -338,8 +338,19 @@ impl Workspace {
         let Some(index) = self.sessions.position(|s| s.view.entity_id() == old) else {
             return false;
         };
+        let old_id = self.sessions.items()[index].id;
+        // Its tab shows the new terminal (the old one ends as its view is dropped below). With
+        // no tab, or the new one shown already (never, by the model's rules), it isn't placed,
+        // so the caller ends it rather than leave it running unseen.
+        let swapped = self
+            .model
+            .terminal_tab(old_id)
+            .and_then(|tab| self.model.set_kind(tab, TabKind::Terminal(session_id)));
+        if swapped.is_none() {
+            eprintln!("[fuxx] ssh: s{old_id}'s tab couldn't take s{session_id}");
+            return false;
+        }
         let old_session = &self.sessions.items()[index];
-        let old_id = old_session.id;
         // Enter asked for it, or the pane had the focus: the new view takes it. A timer's try
         // leaves it where it is (another pane, the host picker, a rename box).
         let take_focus = old_session.disconnected.as_ref().is_none_or(|d| !d.auto)
@@ -348,10 +359,6 @@ impl Workspace {
         self.check_waits(&[old_id], cx);
         // The browser follows the session, as its row and name do.
         self.browsers.rekey(old_id, session_id);
-        // The tab shows the new terminal; the old one ends as its view is dropped below.
-        if let Some(tab) = self.model.terminal_tab(old_id) {
-            self.model.set_kind(tab, TabKind::Terminal(session_id));
-        }
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
         if take_focus {
             view.focus_handle(cx).focus(window, cx);

@@ -329,19 +329,32 @@ impl Model {
         Some(closed)
     }
 
-    /// Close a workspace and every tab in it; the focus moves as for `close_tab`.
-    #[allow(dead_code)] // the workspace ends its terminals one by one (`close_at`)
-    pub fn close_workspace(&mut self, workspace: WorkspaceId) -> Option<Closed> {
-        let w = self.workspaces.iter().position(|w| w.id == workspace)?;
-        let ws = self.remove_workspace(w);
-        let order = ws.layout.leaves();
-        let mut panes = ws.panes;
-        panes.sort_by_key(|p| order.iter().position(|&id| id == p.id));
-        Some(Closed {
-            panes: panes.iter().map(|p| p.id).collect(),
-            tabs: panes.into_iter().flat_map(|p| p.tabs).collect(),
-            workspaces: vec![workspace],
-        })
+    /// Make the terminal tabs match the terminals that run (`live`), a repair (by the rules
+    /// they always match): a tab whose terminal is gone closes (as `close_tab`), and a live
+    /// terminal no tab shows gets a workspace of its own at the end. What it repaired, for a
+    /// log line; empty when they matched.
+    pub fn reconcile(&mut self, live: &[u64]) -> Vec<String> {
+        let mut repaired = Vec::new();
+        let gone: Vec<(TabId, u64)> = self
+            .panes()
+            .flat_map(|p| &p.tabs)
+            .filter_map(|t| match t.kind {
+                TabKind::Terminal(id) if !live.contains(&id) => Some((t.id, id)),
+                _ => None,
+            })
+            .collect();
+        for (tab, id) in gone {
+            self.close_tab(tab);
+            repaired.push(format!("closed the tab of s{id}, which no longer runs"));
+        }
+        for &id in live {
+            if self.terminal_tab(id).is_none() {
+                let at = self.workspaces.len();
+                self.new_workspace(at, TabKind::Terminal(id));
+                repaired.push(format!("gave s{id}, shown by no tab, a workspace"));
+            }
+        }
+        repaired
     }
 
     /// Move `tab` to `index` (clamped) in `pane`'s bar, in the same or another pane; it is shown
@@ -895,6 +908,36 @@ impl Workspace {
     }
 }
 
+/// The session the file's focused tab shows (its index in `sessions`): by the focused
+/// workspace's focused pane's shown tab (version 2), else the active session (version 1). None
+/// when that is a browser tab or out of range.
+pub fn saved_focus(state: &SavedState) -> Option<usize> {
+    if state.workspaces.is_empty() {
+        return state.active;
+    }
+    let ws = state.workspaces.get(state.active_workspace?)?;
+    let pane = nth_leaf(&ws.layout, ws.focused)?;
+    match pane.tabs.get(pane.active)? {
+        SavedTab::Terminal { session } => Some(*session),
+        SavedTab::Browser { .. } => None,
+    }
+}
+
+/// `node`'s `n`th leaf in reading order.
+fn nth_leaf<T>(node: &Node<T>, n: usize) -> Option<&T> {
+    fn walk<'a, T>(node: &'a Node<T>, n: &mut usize) -> Option<&'a T> {
+        match node {
+            Node::Leaf(leaf) if *n == 0 => Some(leaf),
+            Node::Leaf(_) => {
+                *n -= 1;
+                None
+            }
+            Node::Split { first, second, .. } => walk(first, n).or_else(|| walk(second, n)),
+        }
+    }
+    walk(node, &mut { n })
+}
+
 /// Saved workspaces with each terminal tab's session renumbered by `map` (none: left out, with
 /// a pane or workspace it leaves empty); `active` follows its workspace (none if it went).
 pub fn renumber(
@@ -1232,33 +1275,58 @@ mod tests {
         // Display order: c (pinned), a, b. Closing c focuses a, its next in display order.
         m.set_pinned(c.workspace, true);
         m.focus_workspace(c.workspace);
-        m.close_workspace(c.workspace).unwrap();
+        m.close_pane(c.pane).unwrap();
         assert_eq!(m.focused_workspace(), Some(a.workspace));
         // A workspace that isn't focused closes: the focus stays.
-        m.close_workspace(b.workspace).unwrap();
+        m.close_pane(b.pane).unwrap();
         assert_eq!(m.focused_workspace(), Some(a.workspace));
         ok(&m);
     }
 
     #[test]
-    fn close_workspace_ends_every_tab_in_it() {
+    fn closing_every_pane_ends_every_tab_of_a_workspace() {
         let mut m = Model::new();
         let keep = m.new_workspace(0, term(9)).unwrap();
         let a = m.new_workspace(1, term(1)).unwrap();
         let b = m.add_tab(a.pane, web("https://x.test")).unwrap();
         let c = m.split(a.pane, Axis::Row, term(3)).unwrap();
-        let closed = m.close_workspace(a.workspace).unwrap();
-        let tabs: BTreeSet<TabId> = closed.tabs.iter().map(|t| t.id).collect();
+        let first = m.close_pane(a.pane).unwrap();
+        let last = m.close_pane(c.pane).unwrap();
+        let tabs: BTreeSet<TabId> = first.tabs.iter().chain(&last.tabs).map(|t| t.id).collect();
         assert_eq!(tabs, BTreeSet::from([a.tab, b.tab, c.tab]));
         assert_eq!(
-            closed.panes.iter().collect::<BTreeSet<_>>(),
-            BTreeSet::from([&a.pane, &c.pane])
+            (first.workspaces, last.workspaces),
+            (vec![], vec![a.workspace])
         );
-        assert_eq!(closed.workspaces, [a.workspace]);
         assert_eq!(all_terminals(&m), BTreeSet::from([9]));
         assert_eq!(m.focused_workspace(), Some(keep.workspace));
-        assert_eq!(m.close_workspace(a.workspace), None);
         ok(&m);
+    }
+
+    #[test]
+    fn reconciling_closes_tabs_of_gone_terminals_and_shows_untabbed_ones() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        m.split(a.pane, Axis::Row, term(2)).unwrap();
+        let b = m.new_workspace(1, term(3)).unwrap();
+        m.add_tab(b.pane, web("https://kept.test")).unwrap();
+        // Matching: nothing to repair, nothing changes.
+        let before = m.clone();
+        assert!(m.reconcile(&[1, 2, 3]).is_empty());
+        assert_eq!(m, before);
+        // A desync: terminal 2 is gone (its tab stayed) and 7 runs with no tab.
+        let repaired = m.reconcile(&[1, 3, 7]);
+        ok(&m);
+        assert_eq!(repaired.len(), 2, "{repaired:?}");
+        assert_eq!(
+            shape(&m),
+            [
+                vec![vec![term(1)]],
+                vec![vec![term(3), web("https://kept.test")]],
+                vec![vec![term(7)]]
+            ]
+        );
+        assert!(m.reconcile(&[1, 3, 7]).is_empty());
     }
 
     #[test]
@@ -1616,9 +1684,13 @@ mod tests {
                     }
                     7 => {
                         if let Some(w) = rng.pick(&workspaces) {
-                            let closed = m.close_workspace(w).unwrap();
-                            assert_eq!(closed.workspaces, [w]);
-                            forget(&closed, &mut live);
+                            let panes: Vec<PaneId> =
+                                m.workspace(w).unwrap().panes.iter().map(|p| p.id).collect();
+                            for p in panes {
+                                let closed = m.close_pane(p).unwrap();
+                                forget(&closed, &mut live);
+                            }
+                            assert!(m.workspace(w).is_none());
                         }
                     }
                     8 | 9 => {

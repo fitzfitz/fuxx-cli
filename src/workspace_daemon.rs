@@ -362,7 +362,7 @@ impl Workspace {
         }
         let placement = placement.without(&gone);
         let shown: Vec<u64> = views.iter().map(|(id, _)| *id).collect();
-        let terminals = placement.terminals(&shown, saved.sessions.len());
+        let model = adopt::workspaces(saved, &placement, &shown);
         self.collapsed = groups::collapsed_keys(&placement.collapsed, &placement.collapsed_hosts);
         for (slot, (id, view)) in placement.slots.into_iter().zip(views) {
             let session = self.session_for(slot, id, view, window, cx);
@@ -374,7 +374,7 @@ impl Workspace {
             self.open_first(window, cx);
             return;
         }
-        self.set_model(Model::from_state(saved, &terminals));
+        self.set_model(model);
         // The normal route, so the focused workspace's group opens (and its panes attach as
         // they are drawn).
         self.activate(window, cx);
