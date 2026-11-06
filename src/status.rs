@@ -181,6 +181,11 @@ impl StatusTracker {
         self.resize_until = Some(now + RESIZE_WINDOW);
     }
 
+    /// Whether a resize window is open at `now`.
+    fn resize_open(&self, now: Instant) -> bool {
+        self.resize_until.is_some_and(|until| now < until)
+    }
+
     /// The session produced output; `notifications` = OSC 9 / 99 / 777 notifications seen in it.
     /// Returns the new status when it changed.
     pub fn on_output(&mut self, now: Instant, notifications: usize) -> Option<Status> {
@@ -190,8 +195,13 @@ impl StatusTracker {
             self.dirty = true;
             return None;
         }
-        if self.resize_until.is_some_and(|until| now < until) {
-            return None; // the redraw for a resize
+        if self.resize_open(now) {
+            // The redraw for a resize: no status change. A working session's output still
+            // counts as output, so the idle timer doesn't run out while it streams.
+            if self.status == Status::Working {
+                self.last_output = Some(now);
+            }
+            return None;
         }
         let Some(input) = self.last_input else {
             return None; // never typed in: shell startup / prompt noise
@@ -223,9 +233,11 @@ impl StatusTracker {
     /// is something new to read: a settled session is not read again until new output or a BEL
     /// arrives. Returns the new status when it changed.
     pub fn tick(&mut self, now: Instant, screen_tail: impl FnOnce() -> String) -> Option<Status> {
-        let quiet = self
-            .last_output
-            .is_some_and(|t| now.duration_since(t) >= IDLE_AFTER);
+        // Not while a resize window is open: the session may be mid-redraw.
+        let quiet = !self.resize_open(now)
+            && self
+                .last_output
+                .is_some_and(|t| now.duration_since(t) >= IDLE_AFTER);
         let settling = self.attention || (self.status == Status::Working && quiet);
         if !settling {
             return None;
@@ -590,9 +602,11 @@ mod tests {
         t.on_resize(t0 + ms(1000));
         assert_eq!(t.on_output(t0 + ms(1100), 0), None);
         assert_eq!(t.status(), Status::Working);
-        // The redraw didn't restart the idle timer: quiet counts from the last real output.
+        // A working session's output in the window still counts as output (the idle timer
+        // runs from it), but it settles normally once quiet.
+        assert_eq!(t.tick(t0 + ms(400) + IDLE_AFTER, || "$ ".into()), None);
         assert_eq!(
-            t.tick(t0 + ms(400) + IDLE_AFTER, || "$ ".into()),
+            t.tick(t0 + ms(1100) + IDLE_AFTER, || "$ ".into()),
             Some(Status::Done)
         );
     }
@@ -607,6 +621,47 @@ mod tests {
         assert_eq!(t.tick(t0 + ms(1600) + ms(2900), || "$ ".into()), None);
         assert_eq!(
             t.tick(t0 + ms(1600) + IDLE_AFTER, || "$ ".into()),
+            Some(Status::Done)
+        );
+    }
+
+    #[test]
+    fn a_working_session_streaming_through_a_long_drag_is_not_settled() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        assert_eq!(t.status(), Status::Working);
+        // A drag of resizes over 4 s (more than IDLE_AFTER), output and ticks all along.
+        let mut at = 1000;
+        while at <= 5000 {
+            t.on_resize(t0 + ms(at));
+            assert_eq!(t.on_output(t0 + ms(at + 50), 0), None);
+            assert_eq!(t.tick(t0 + ms(at + 100), || "$ ".into()), None, "at {at}");
+            assert_eq!(t.status(), Status::Working);
+            at += 200;
+        }
+        // The output stops with the drag (last output at 5050): settles only once quiet.
+        assert_eq!(
+            t.tick(t0 + ms(5050) + IDLE_AFTER - ms(1), || "$ ".into()),
+            None
+        );
+        assert_eq!(
+            t.tick(t0 + ms(5050) + IDLE_AFTER, || "$ ".into()),
+            Some(Status::Done)
+        );
+    }
+
+    #[test]
+    fn a_quiet_working_session_is_not_settled_while_a_resize_window_is_open() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        t.on_resize(t0 + ms(400) + IDLE_AFTER - ms(100));
+        // Quiet for IDLE_AFTER, but the window is open.
+        assert_eq!(t.tick(t0 + ms(400) + IDLE_AFTER, || "$ ".into()), None);
+        // Once it closes, it settles.
+        assert_eq!(
+            t.tick(t0 + ms(400) + IDLE_AFTER + RESIZE_WINDOW, || "$ ".into()),
             Some(Status::Done)
         );
     }
