@@ -301,6 +301,18 @@ impl Page {
         self.keep_data
     }
 
+    /// The page's zoom (1.0: actual size). The web view keeps it, for the run: through every
+    /// navigation, and into a browser window when it pops out.
+    pub fn zoom(&self) -> f64 {
+        // SAFETY: main thread; a plain property read.
+        unsafe { self.view.pageZoom() }
+    }
+
+    pub fn set_zoom(&self, zoom: f64) {
+        // SAFETY: main thread; a plain property write, of a positive zoom.
+        unsafe { self.view.setPageZoom(zoom) };
+    }
+
     /// Keep `tx` where both its completion block and `drop` can answer it, first come first
     /// served.
     fn pend<T: 'static>(&self, tx: oneshot::Sender<Result<T, String>>) -> Slot<T> {

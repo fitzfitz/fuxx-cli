@@ -131,6 +131,111 @@ fn new_bindings() -> [KeyBinding; 2] {
     ]
 }
 
+/// Every key binding but ⌘T / ⌘N (`new_bindings`). Order matters where two bindings of a key
+/// are equally deep in the focused element's key contexts: the later one wins. So a browser
+/// tab's page keys come after fuxx's own.
+fn key_bindings() -> Vec<KeyBinding> {
+    let mut bindings = vec![
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-,", OpenPreferences, None),
+        KeyBinding::new("cmd-o", NewSessionInFolder, None),
+        KeyBinding::new("cmd-shift-s", NewSshSession, None),
+        KeyBinding::new("cmd-shift-b", OpenBrowser, None),
+        KeyBinding::new("cmd-w", CloseSession, None),
+        KeyBinding::new("cmd-r", RenameSession, None),
+        // macOS reports cmd-shift-] as key "}" (shift folded into the character).
+        KeyBinding::new("cmd-}", NextSession, None),
+        KeyBinding::new("cmd-{", PrevSession, None),
+        KeyBinding::new("cmd-1", SelectSession1, None),
+        KeyBinding::new("cmd-2", SelectSession2, None),
+        KeyBinding::new("cmd-3", SelectSession3, None),
+        KeyBinding::new("cmd-4", SelectSession4, None),
+        KeyBinding::new("cmd-5", SelectSession5, None),
+        KeyBinding::new("cmd-6", SelectSession6, None),
+        KeyBinding::new("cmd-7", SelectSession7, None),
+        KeyBinding::new("cmd-8", SelectSession8, None),
+        KeyBinding::new("cmd-9", SelectSession9, None),
+        KeyBinding::new("ctrl-cmd-1", LaunchPreset1, None),
+        KeyBinding::new("ctrl-cmd-2", LaunchPreset2, None),
+        KeyBinding::new("ctrl-cmd-3", LaunchPreset3, None),
+        KeyBinding::new("ctrl-cmd-4", LaunchPreset4, None),
+        KeyBinding::new("ctrl-cmd-5", LaunchPreset5, None),
+        KeyBinding::new("ctrl-cmd-6", LaunchPreset6, None),
+        KeyBinding::new("ctrl-cmd-7", LaunchPreset7, None),
+        KeyBinding::new("ctrl-cmd-8", LaunchPreset8, None),
+        KeyBinding::new("ctrl-cmd-9", LaunchPreset9, None),
+        KeyBinding::new("cmd-d", SplitRight, None),
+        KeyBinding::new("cmd-shift-d", SplitDown, None),
+        KeyBinding::new("cmd-alt-left", FocusPaneLeft, None),
+        KeyBinding::new("cmd-alt-right", FocusPaneRight, None),
+        KeyBinding::new("cmd-alt-up", FocusPaneUp, None),
+        KeyBinding::new("cmd-alt-down", FocusPaneDown, None),
+        KeyBinding::new("cmd-[", PrevPane, None),
+        KeyBinding::new("cmd-]", NextPane, None),
+        KeyBinding::new("ctrl-cmd-=", EqualizePanes, None),
+        KeyBinding::new("cmd-\\", ToggleSidebar, None),
+        KeyBinding::new("cmd-shift-u", NextNeedingYou, None),
+        KeyBinding::new("cmd-p", OpenSwitcher, None),
+        // The first binding is the one a menu shows: ⌘=, with ⌘+ (shift-=) as well.
+        KeyBinding::new("cmd-=", Bigger, None),
+        KeyBinding::new("cmd-+", Bigger, None),
+        KeyBinding::new("cmd--", Smaller, None),
+        KeyBinding::new("cmd-0", ActualSize, None),
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("cmd-m", Minimize, None),
+        // Terminal pane only. Bindings run before the pane's own key handler.
+        KeyBinding::new("cmd-c", Copy, Some("Terminal")),
+        KeyBinding::new("cmd-v", Paste, Some("Terminal")),
+        KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
+        KeyBinding::new("cmd-up", ScrollPageUp, Some("Terminal")),
+        KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
+        KeyBinding::new("cmd-down", ScrollPageDown, Some("Terminal")),
+        // ⌃Tab / ⌃⇧Tab: the focused pane's next / previous tab. Taken from the terminal
+        // program (it got nothing for them before: `keys` sends no bytes for ⌃Tab), as
+        // terminals with tabs do.
+        KeyBinding::new("ctrl-tab", NextTab, Some("Terminal")),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Terminal")),
+        // A browser tab: ⌘L to its address field, ⌃Tab / ⌃⇧Tab as in a terminal; ↑ / ↓
+        // move through the field's suggestions, and an address is pasted.
+        KeyBinding::new("cmd-l", browser_tab::FocusAddress, Some("BrowserTab")),
+        KeyBinding::new("ctrl-tab", NextTab, Some("BrowserTab")),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, Some("BrowserTab")),
+        KeyBinding::new("up", browser_tab::SuggestPrev, Some("AddressField")),
+        KeyBinding::new("down", browser_tab::SuggestNext, Some("AddressField")),
+        KeyBinding::new("cmd-v", name_input::Paste, Some("AddressField > NameInput")),
+        // The sidebar's rename box only; other keys type into it.
+        KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
+        KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
+        KeyBinding::new("enter", name_input::Confirm, Some("NameInput")),
+        KeyBinding::new("escape", name_input::Cancel, Some("NameInput")),
+        // The SSH host picker: its box is a NameInput (Enter, Escape above); these keys
+        // move through the hosts and choose.
+        KeyBinding::new("up", host_picker::SelectPrev, Some("HostPicker")),
+        KeyBinding::new("down", host_picker::SelectNext, Some("HostPicker")),
+        KeyBinding::new("tab", host_picker::ToggleTmux, Some("HostPicker")),
+        KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
+        // The session switcher: its box is a NameInput too; these keys move through it.
+        KeyBinding::new("up", switcher::SelectPrev, Some("Switcher")),
+        KeyBinding::new("down", switcher::SelectNext, Some("Switcher")),
+        // A sidebar row's tab menu: Escape closes it.
+        KeyBinding::new("escape", tab_menu::Dismiss, Some("TabMenu")),
+        // The browser's address box: its box is a NameInput too; an address is pasted.
+        KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
+        // Only so the Edit menu shows ⌘X and ⌘A: no element in fuxx has this context, so
+        // these keys never reach the actions (see `edit_menu`).
+        KeyBinding::new("cmd-x", Cut, Some("EditMenuOnly")),
+        KeyBinding::new("cmd-a", SelectAll, Some("EditMenuOnly")),
+        // The Edit menu doesn't supply "Emoji & Symbols", so bind its shortcut here.
+        KeyBinding::new(
+            "ctrl-cmd-space",
+            name_input::ShowCharacterPalette,
+            Some("NameInput"),
+        ),
+    ];
+    bindings.extend(browser_tab::page_bindings());
+    bindings
+}
+
 /// The File menu's first two items; the menu shows each one's binding.
 fn new_items() -> [MenuItem; 2] {
     [
@@ -445,103 +550,7 @@ fn main() {
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx: &mut App| {
             cx.bind_keys(new_bindings());
-            cx.bind_keys([
-                KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("cmd-,", OpenPreferences, None),
-                KeyBinding::new("cmd-o", NewSessionInFolder, None),
-                KeyBinding::new("cmd-shift-s", NewSshSession, None),
-                KeyBinding::new("cmd-shift-b", OpenBrowser, None),
-                KeyBinding::new("cmd-w", CloseSession, None),
-                KeyBinding::new("cmd-r", RenameSession, None),
-                // macOS reports cmd-shift-] as key "}" (shift folded into the character).
-                KeyBinding::new("cmd-}", NextSession, None),
-                KeyBinding::new("cmd-{", PrevSession, None),
-                KeyBinding::new("cmd-1", SelectSession1, None),
-                KeyBinding::new("cmd-2", SelectSession2, None),
-                KeyBinding::new("cmd-3", SelectSession3, None),
-                KeyBinding::new("cmd-4", SelectSession4, None),
-                KeyBinding::new("cmd-5", SelectSession5, None),
-                KeyBinding::new("cmd-6", SelectSession6, None),
-                KeyBinding::new("cmd-7", SelectSession7, None),
-                KeyBinding::new("cmd-8", SelectSession8, None),
-                KeyBinding::new("cmd-9", SelectSession9, None),
-                KeyBinding::new("ctrl-cmd-1", LaunchPreset1, None),
-                KeyBinding::new("ctrl-cmd-2", LaunchPreset2, None),
-                KeyBinding::new("ctrl-cmd-3", LaunchPreset3, None),
-                KeyBinding::new("ctrl-cmd-4", LaunchPreset4, None),
-                KeyBinding::new("ctrl-cmd-5", LaunchPreset5, None),
-                KeyBinding::new("ctrl-cmd-6", LaunchPreset6, None),
-                KeyBinding::new("ctrl-cmd-7", LaunchPreset7, None),
-                KeyBinding::new("ctrl-cmd-8", LaunchPreset8, None),
-                KeyBinding::new("ctrl-cmd-9", LaunchPreset9, None),
-                KeyBinding::new("cmd-d", SplitRight, None),
-                KeyBinding::new("cmd-shift-d", SplitDown, None),
-                KeyBinding::new("cmd-alt-left", FocusPaneLeft, None),
-                KeyBinding::new("cmd-alt-right", FocusPaneRight, None),
-                KeyBinding::new("cmd-alt-up", FocusPaneUp, None),
-                KeyBinding::new("cmd-alt-down", FocusPaneDown, None),
-                KeyBinding::new("cmd-[", PrevPane, None),
-                KeyBinding::new("cmd-]", NextPane, None),
-                KeyBinding::new("ctrl-cmd-=", EqualizePanes, None),
-                KeyBinding::new("cmd-\\", ToggleSidebar, None),
-                KeyBinding::new("cmd-shift-u", NextNeedingYou, None),
-                KeyBinding::new("cmd-p", OpenSwitcher, None),
-                // The first binding is the one a menu shows: ⌘=, with ⌘+ (shift-=) as well.
-                KeyBinding::new("cmd-=", Bigger, None),
-                KeyBinding::new("cmd-+", Bigger, None),
-                KeyBinding::new("cmd--", Smaller, None),
-                KeyBinding::new("cmd-0", ActualSize, None),
-                KeyBinding::new("cmd-h", Hide, None),
-                KeyBinding::new("cmd-m", Minimize, None),
-                // Terminal pane only. Bindings run before the pane's own key handler.
-                KeyBinding::new("cmd-c", Copy, Some("Terminal")),
-                KeyBinding::new("cmd-v", Paste, Some("Terminal")),
-                KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
-                KeyBinding::new("cmd-up", ScrollPageUp, Some("Terminal")),
-                KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
-                KeyBinding::new("cmd-down", ScrollPageDown, Some("Terminal")),
-                // ⌃Tab / ⌃⇧Tab: the focused pane's next / previous tab. Taken from the terminal
-                // program (it got nothing for them before: `keys` sends no bytes for ⌃Tab), as
-                // terminals with tabs do.
-                KeyBinding::new("ctrl-tab", NextTab, Some("Terminal")),
-                KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Terminal")),
-                // A browser tab: ⌘L to its address field, ⌃Tab / ⌃⇧Tab as in a terminal; ↑ / ↓
-                // move through the field's suggestions, and an address is pasted.
-                KeyBinding::new("cmd-l", browser_tab::FocusAddress, Some("BrowserTab")),
-                KeyBinding::new("ctrl-tab", NextTab, Some("BrowserTab")),
-                KeyBinding::new("ctrl-shift-tab", PrevTab, Some("BrowserTab")),
-                KeyBinding::new("up", browser_tab::SuggestPrev, Some("AddressField")),
-                KeyBinding::new("down", browser_tab::SuggestNext, Some("AddressField")),
-                KeyBinding::new("cmd-v", name_input::Paste, Some("AddressField > NameInput")),
-                // The sidebar's rename box only; other keys type into it.
-                KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
-                KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
-                KeyBinding::new("enter", name_input::Confirm, Some("NameInput")),
-                KeyBinding::new("escape", name_input::Cancel, Some("NameInput")),
-                // The SSH host picker: its box is a NameInput (Enter, Escape above); these keys
-                // move through the hosts and choose.
-                KeyBinding::new("up", host_picker::SelectPrev, Some("HostPicker")),
-                KeyBinding::new("down", host_picker::SelectNext, Some("HostPicker")),
-                KeyBinding::new("tab", host_picker::ToggleTmux, Some("HostPicker")),
-                KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
-                // The session switcher: its box is a NameInput too; these keys move through it.
-                KeyBinding::new("up", switcher::SelectPrev, Some("Switcher")),
-                KeyBinding::new("down", switcher::SelectNext, Some("Switcher")),
-                // A sidebar row's tab menu: Escape closes it.
-                KeyBinding::new("escape", tab_menu::Dismiss, Some("TabMenu")),
-                // The browser's address box: its box is a NameInput too; an address is pasted.
-                KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
-                // Only so the Edit menu shows ⌘X and ⌘A: no element in fuxx has this context, so
-                // these keys never reach the actions (see `edit_menu`).
-                KeyBinding::new("cmd-x", Cut, Some("EditMenuOnly")),
-                KeyBinding::new("cmd-a", SelectAll, Some("EditMenuOnly")),
-                // The Edit menu doesn't supply "Emoji & Symbols", so bind its shortcut here.
-                KeyBinding::new(
-                    "ctrl-cmd-space",
-                    name_input::ShowCharacterPalette,
-                    Some("NameInput"),
-                ),
-            ]);
+            cx.bind_keys(key_bindings());
             // Read once, before any view exists: every view takes its theme and font from it, the
             // agent submenu is built from its presets, and `persistent-sessions` decides who
             // runs the sessions.
@@ -650,10 +659,18 @@ fn quit_title(keep_running: usize) -> String {
 mod tests {
     use gpui::{MenuItem, OsAction};
 
-    use super::{edit_menu, new_bindings, new_items, quit_title, view_menu, window_menu};
+    use super::{
+        ActualSize, Bigger, Smaller, edit_menu, key_bindings, new_bindings, new_items, quit_title,
+        view_menu, window_menu,
+    };
+    use crate::browser_tab::{GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::terminal_view::{Copy, Paste};
-    use crate::workspace::{NewTab, NewWorkspace};
-    use gpui::Keystroke;
+    use crate::workspace::{
+        CloseSession, EqualizePanes, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextTab,
+        OpenSwitcher, PrevPane, PrevTab, RenameSession, SelectSession1, SelectSession9, SplitDown,
+        SplitRight,
+    };
+    use gpui::{Action, KeyContext, Keymap, Keystroke};
 
     #[test]
     fn the_edit_menu_hands_its_items_to_the_os() {
@@ -722,6 +739,86 @@ mod tests {
         };
         assert!(of("cmd-t").partial_eq(&NewTab));
         assert!(of("cmd-n").partial_eq(&NewWorkspace));
+    }
+
+    /// fuxx's keymap, bound as `main` binds it.
+    fn keymap() -> Keymap {
+        let mut bindings = new_bindings().to_vec();
+        bindings.extend(key_bindings());
+        Keymap::new(bindings)
+    }
+
+    /// The action GPUI runs for `keys` when what has the focus sits in key contexts `stack`
+    /// (outermost first): the first binding it finds (each one found is handled where these
+    /// keys go, so the first is the one that runs).
+    fn runs(keymap: &Keymap, keys: &str, stack: &[&str]) -> Box<dyn Action> {
+        let contexts: Vec<KeyContext> = stack
+            .iter()
+            .map(|c| KeyContext::parse(c).unwrap())
+            .collect();
+        let (found, _) = keymap.bindings_for_input(&[Keystroke::parse(keys).unwrap()], &contexts);
+        found
+            .first()
+            .unwrap_or_else(|| panic!("{keys} in {stack:?}: nothing bound"))
+            .action()
+            .boxed_clone()
+    }
+
+    /// Where the focus can be: a browser tab (its page has the keyboard, or the tab itself), its
+    /// address field, a terminal, the sidebar's rename box, and none of those.
+    const PAGE: &[&str] = &["Workspace", "BrowserTab"];
+    const ADDRESS_FIELD: &[&str] = &["Workspace", "BrowserTab", "AddressField", "NameInput"];
+    const TERMINAL: &[&str] = &["Workspace", "Terminal"];
+    const RENAME_BOX: &[&str] = &["Workspace", "NameInput"];
+    const WORKSPACE: &[&str] = &["Workspace"];
+
+    #[test]
+    fn browser_keys_act_on_the_page_only_while_a_browser_tab_has_the_focus() {
+        let keymap = keymap();
+        let keys: [(&str, Box<dyn Action>, Box<dyn Action>); 7] = [
+            ("cmd-r", Box::new(Reload), Box::new(RenameSession)),
+            ("cmd-[", Box::new(GoBack), Box::new(PrevPane)),
+            ("cmd-]", Box::new(GoForward), Box::new(NextPane)),
+            ("cmd-=", Box::new(ZoomIn), Box::new(Bigger)),
+            ("cmd-+", Box::new(ZoomIn), Box::new(Bigger)),
+            ("cmd--", Box::new(ZoomOut), Box::new(Smaller)),
+            ("cmd-0", Box::new(ResetZoom), Box::new(ActualSize)),
+        ];
+        for (key, page, fuxx) in keys {
+            for stack in [PAGE, ADDRESS_FIELD] {
+                let got = runs(&keymap, key, stack);
+                assert!(got.partial_eq(&*page), "{key} in {stack:?}: {}", got.name());
+            }
+            for stack in [TERMINAL, RENAME_BOX, WORKSPACE] {
+                let got = runs(&keymap, key, stack);
+                assert!(got.partial_eq(&*fuxx), "{key} in {stack:?}: {}", got.name());
+            }
+        }
+    }
+
+    #[test]
+    fn fuxx_keys_still_reach_fuxx_from_a_browser_tab() {
+        let keymap = keymap();
+        let keys: [(&str, Box<dyn Action>); 11] = [
+            ("cmd-w", Box::new(CloseSession)),
+            ("cmd-t", Box::new(NewTab)),
+            ("cmd-n", Box::new(NewWorkspace)),
+            ("cmd-d", Box::new(SplitRight)),
+            ("cmd-shift-d", Box::new(SplitDown)),
+            ("cmd-1", Box::new(SelectSession1)),
+            ("cmd-9", Box::new(SelectSession9)),
+            ("cmd-p", Box::new(OpenSwitcher)),
+            ("cmd-shift-u", Box::new(NextNeedingYou)),
+            ("ctrl-cmd-=", Box::new(EqualizePanes)),
+            ("ctrl-tab", Box::new(NextTab)),
+        ];
+        for (key, fuxx) in keys {
+            for stack in [PAGE, ADDRESS_FIELD] {
+                let got = runs(&keymap, key, stack);
+                assert!(got.partial_eq(&*fuxx), "{key} in {stack:?}: {}", got.name());
+            }
+        }
+        assert!(runs(&keymap, "ctrl-shift-tab", PAGE).partial_eq(&PrevTab));
     }
 
     #[test]

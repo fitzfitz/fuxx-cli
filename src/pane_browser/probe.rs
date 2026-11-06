@@ -8,6 +8,10 @@
 //! and back (AppKit's answers), a page with the keyboard gives it back before it hides, a closed
 //! tab's page leaves the window, and Pop Out moves a live page into a browser window.
 //!
+//! Task 4e binds fuxx's own keymap (`key_bindings`) in place of the probe's stand-ins, and adds
+//! the browser keys: ⌘[ and ⌘R in a page with the keyboard go back and reload it, not to fuxx
+//! (no previous pane, no rename), ⌘= zooms it, and fuxx's ⌘W / ⌘T / ⌘N / ⌘1 still reach fuxx.
+//!
 //! The window is never on screen, so GPUI's display link never runs: the probe draws each frame
 //! itself (`Window::draw`, what the display link calls). Key and mouse events are made up and
 //! handed to the window the way AppKit hands it real ones.
@@ -19,10 +23,9 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    App, AsyncApp, Bounds, Context, DispatchPhase, FocusHandle, IntoElement, KeyBinding,
-    KeyDownEvent, Menu, MenuItem, MouseMoveEvent, Pixels, Point, Render, TitlebarOptions, Window,
-    WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, point, prelude::*, px, rgb,
-    size,
+    App, AsyncApp, Bounds, Context, DispatchPhase, FocusHandle, IntoElement, KeyDownEvent, Menu,
+    MenuItem, MouseMoveEvent, Pixels, Point, Render, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, canvas, div, point, prelude::*, px, rgb, size,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -36,18 +39,12 @@ use serde_json::{Value, json};
 
 use super::{PaneWebView, native_frame};
 use crate::browser::{self, BarLook, Browser, PageEvent, within};
+use crate::browser_tab::{GoBack, Reload, ResetZoom, Zoom, ZoomIn, zoomed};
 use crate::reduce_motion;
-
-actions!(
-    pane_browser_probe,
-    [
-        ProbeClose,
-        ProbeNewTab,
-        ProbeSelect1,
-        ProbeTerminalCopy,
-        ProbeNextTab
-    ]
-);
+use crate::terminal_view::Copy;
+use crate::workspace::{
+    CloseSession, NewTab, NewWorkspace, NextTab, PrevPane, RenameSession, SelectSession1,
+};
 
 /// The probe gives up and exits with code 2 after this long, whatever is still pending.
 const PROBE_DEADLINE: Duration = Duration::from_secs(15);
@@ -63,12 +60,17 @@ const RESEND_WAIT: Duration = Duration::from_millis(300);
 const CONTENT: (f32, f32) = (800.0, 600.0);
 const TALLER: f64 = 700.0;
 
-/// The key codes (U.S. keyboard places) of W, T, 1, C and X.
+/// The key codes (U.S. keyboard places) of W, T, N, 1, C, X, R, [, = and 0.
 const KEY_W: u16 = 0x0D;
 const KEY_T: u16 = 0x11;
+const KEY_N: u16 = 0x2D;
 const KEY_1: u16 = 0x12;
 const KEY_C: u16 = 0x08;
 const KEY_X: u16 = 0x07;
+const KEY_R: u16 = 0x0F;
+const KEY_LEFT_BRACKET: u16 = 0x21;
+const KEY_EQUAL: u16 = 0x18;
+const KEY_0: u16 = 0x1D;
 const KEY_TAB: u16 = 0x30;
 
 /// The placeholder before and after its bounds change.
@@ -99,8 +101,8 @@ struct ProbeView {
     moves: Rc<RefCell<Vec<Point<Pixels>>>>,
     /// The keys GPUI saw go down.
     keys: Rc<RefCell<Vec<String>>>,
-    /// GPUI's keyboard focus, and the key context of what has it (`Terminal` binds ⌘C as fuxx's
-    /// terminals do; a browser tab's would bind nothing of the page's).
+    /// GPUI's keyboard focus, and the key context of what has it (`Terminal`: fuxx binds ⌘C
+    /// there; `BrowserTab`: ⌃Tab and the browser keys, nothing of the page's editing).
     focus: FocusHandle,
     context: &'static str,
 }
@@ -176,35 +178,59 @@ pub fn run_probe() -> ! {
         // GPUI made fuxx a regular app (a Dock icon); the probe shows nothing, so it isn't one.
         NSApplication::sharedApplication(mtm)
             .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-        // fuxx's own shortcuts, bound the way main.rs binds them, and a menu that shows two.
+        // fuxx's own key bindings, bound as main.rs binds them, and a menu that shows two. The
+        // actions the probe watches are logged (nothing else handles them here); a browser
+        // tab's page keys also act on the page, as a browser tab does.
         let actions: Rc<RefCell<Vec<&'static str>>> = Rc::default();
-        cx.bind_keys([
-            KeyBinding::new("cmd-w", ProbeClose, None),
-            KeyBinding::new("cmd-t", ProbeNewTab, None),
-            KeyBinding::new("cmd-1", ProbeSelect1, None),
-            KeyBinding::new("cmd-c", ProbeTerminalCopy, Some("Terminal")),
-            // As main.rs binds ⌃Tab for a browser tab's own key context.
-            KeyBinding::new("ctrl-tab", ProbeNextTab, Some("PaneBrowser")),
-        ]);
+        cx.bind_keys(crate::new_bindings());
+        cx.bind_keys(crate::key_bindings());
         let log = actions.clone();
-        cx.on_action(move |_: &ProbeClose, _| log.borrow_mut().push("cmd-w"));
+        cx.on_action(move |_: &CloseSession, _| log.borrow_mut().push("cmd-w"));
         let log = actions.clone();
-        cx.on_action(move |_: &ProbeNewTab, _| log.borrow_mut().push("cmd-t"));
+        cx.on_action(move |_: &NewTab, _| log.borrow_mut().push("cmd-t"));
         let log = actions.clone();
-        cx.on_action(move |_: &ProbeSelect1, _| log.borrow_mut().push("cmd-1"));
+        cx.on_action(move |_: &NewWorkspace, _| log.borrow_mut().push("cmd-n"));
         let log = actions.clone();
-        cx.on_action(move |_: &ProbeTerminalCopy, _| log.borrow_mut().push("terminal cmd-c"));
+        cx.on_action(move |_: &SelectSession1, _| log.borrow_mut().push("cmd-1"));
         let log = actions.clone();
-        cx.on_action(move |_: &ProbeNextTab, _| log.borrow_mut().push("ctrl-tab"));
+        cx.on_action(move |_: &Copy, _| log.borrow_mut().push("terminal cmd-c"));
+        let log = actions.clone();
+        cx.on_action(move |_: &NextTab, _| log.borrow_mut().push("ctrl-tab"));
+        let log = actions.clone();
+        cx.on_action(move |_: &RenameSession, _| log.borrow_mut().push("rename"));
+        let log = actions.clone();
+        cx.on_action(move |_: &PrevPane, _| log.borrow_mut().push("previous pane"));
         cx.set_menus([
             Menu::new("fuxx"),
             Menu::new("File").items([
-                MenuItem::action("New Tab", ProbeNewTab),
-                MenuItem::action("Close", ProbeClose),
+                MenuItem::action("New Tab", NewTab),
+                MenuItem::action("Close", CloseSession),
             ]),
         ]);
 
         let web = Rc::new(PaneWebView::new(false, mtm));
+        let page_keys = (actions.clone(), web.clone());
+        let (log, page) = page_keys.clone();
+        cx.on_action(move |_: &Reload, _| {
+            log.borrow_mut().push("page reload");
+            page.page().reload();
+        });
+        let (log, page) = page_keys.clone();
+        cx.on_action(move |_: &GoBack, _| {
+            log.borrow_mut().push("page back");
+            page.page().back();
+        });
+        let (log, page) = page_keys.clone();
+        cx.on_action(move |_: &ZoomIn, _| {
+            log.borrow_mut().push("page zoom in");
+            page.page().set_zoom(zoomed(page.page().zoom(), Zoom::In));
+        });
+        let (log, page) = page_keys;
+        cx.on_action(move |_: &ResetZoom, _| {
+            log.borrow_mut().push("page actual size");
+            page.page()
+                .set_zoom(zoomed(page.page().zoom(), Zoom::Reset));
+        });
         let placed: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
         let moves: Rc<RefCell<Vec<Point<Pixels>>>> = Rc::default();
         let keys: Rc<RefCell<Vec<String>>> = Rc::default();
@@ -462,6 +488,7 @@ impl Probe {
         for (name, chars, code) in [
             ("cmd-w", "w", KEY_W),
             ("cmd-t", "t", KEY_T),
+            ("cmd-n", "n", KEY_N),
             ("cmd-1", "1", KEY_1),
         ] {
             page_has_keys.insert(name.into(), self.key(&ns_window, chars, code, &ex).await?);
@@ -484,7 +511,7 @@ impl Probe {
         // a terminal's ⌘C would win over the page's.
         let terminal = self.focused_context("Terminal", cx)?;
         let terminal_cmd_c = self.key(&ns_window, "c", KEY_C, &ex).await?;
-        let browser_tab = self.focused_context("PaneBrowser", cx)?;
+        let browser_tab = self.focused_context("BrowserTab", cx)?;
         let browser_cmd_c = self.key(&ns_window, "c", KEY_C, &ex).await?;
         let browser_cmd_w = self.key(&ns_window, "w", KEY_W, &ex).await?;
         let gpui_focus = json!({
@@ -538,6 +565,7 @@ impl Probe {
         for (name, chars, code) in [
             ("cmd-w", "w", KEY_W),
             ("cmd-t", "t", KEY_T),
+            ("cmd-n", "n", KEY_N),
             ("cmd-1", "1", KEY_1),
             ("cmd-c", "c", KEY_C),
         ] {
@@ -688,6 +716,91 @@ impl Probe {
             "⌃Tab in the page reaches GPUI, not the page",
             &(&by_window, &by_page_view, &field_before, &field_after),
         )?;
+        // 9. The browser keys (Task 4e): the page has the keyboard and its tab GPUI's focus.
+        // ⌘[ goes back (from the pushState above) and ⌘R reloads, in the page, and neither
+        // reaches fuxx (no previous pane, no rename); ⌘= zooms the page and ⌘0 sets it back;
+        // fuxx's keys still reach fuxx.
+        self.focused_context("BrowserTab", cx)?;
+        self.web.take_keyboard();
+        let back = self.key(&ns_window, "[", KEY_LEFT_BRACKET, &ex).await?;
+        let deadline = Instant::now() + SETTLE_LIMIT;
+        while self.web.page().state().url != home {
+            check(
+                Instant::now() < deadline,
+                "⌘[ never went back",
+                &(&back, self.web.page().state().url),
+            )?;
+            ex.timer(LOAD_POLL).await;
+        }
+        within(
+            self.web.page().eval("window.fuxxMark = 7"),
+            ANSWER_LIMIT,
+            &ex,
+        )
+        .await?;
+        let reload = self.key(&ns_window, "r", KEY_R, &ex).await?;
+        let deadline = Instant::now() + SETTLE_LIMIT;
+        let reloaded = loop {
+            let mark = within(self.web.page().eval("window.fuxxMark"), ANSWER_LIMIT, &ex).await;
+            if !self.web.page().state().loading && mark == Ok(Value::Null) {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            ex.timer(LOAD_POLL).await;
+        };
+        let zoom_before = self.web.page().zoom();
+        let zoom_in = self.key(&ns_window, "=", KEY_EQUAL, &ex).await?;
+        let zoom_in_to = self.web.page().zoom();
+        let actual_size = self.key(&ns_window, "0", KEY_0, &ex).await?;
+        let actual_size_to = self.web.page().zoom();
+        let mut fuxx_keys = serde_json::Map::new();
+        for (name, chars, code) in [
+            ("cmd-w", "w", KEY_W),
+            ("cmd-t", "t", KEY_T),
+            ("cmd-n", "n", KEY_N),
+            ("cmd-1", "1", KEY_1),
+        ] {
+            fuxx_keys.insert(name.into(), self.key(&ns_window, chars, code, &ex).await?);
+        }
+        let only = |key: &Value, action: &str| {
+            key["handled"] == json!(true)
+                && key["gpui_actions_at_once"] == json!([action])
+                && key["gpui_actions_later"] == json!([])
+                && key["web_view_handled"] == json!(0)
+        };
+        let fuxx_reached = fuxx_keys.iter().all(|(name, key)| only(key, name));
+        let page_keyboard_kept = self.web.has_keyboard();
+        check(
+            only(&back, "page back")
+                && only(&reload, "page reload")
+                && reloaded
+                && only(&zoom_in, "page zoom in")
+                && (zoom_before - 1.0).abs() < 1e-3
+                && (zoom_in_to - 1.1).abs() < 1e-3
+                && only(&actual_size, "page actual size")
+                && (actual_size_to - 1.0).abs() < 1e-3
+                && fuxx_reached
+                && page_keyboard_kept,
+            "browser keys act on the page; fuxx's keys reach fuxx",
+            &(
+                &back,
+                &reload,
+                reloaded,
+                (zoom_before, zoom_in_to, actual_size_to),
+                &fuxx_keys,
+                page_keyboard_kept,
+            ),
+        )?;
+        let browser_keys = json!({
+            "cmd-[": back,
+            "cmd-r": { "key": reload, "page_reloaded": reloaded },
+            "cmd-=": { "key": zoom_in, "zoom": [zoom_before, zoom_in_to] },
+            "cmd-0": { "key": actual_size, "zoom": actual_size_to },
+            "fuxx_keys": fuxx_keys,
+            "page_still_has_keyboard": page_keyboard_kept,
+        });
         // A page holding the keyboard gives it back to GPUI's view before it hides.
         self.web.take_keyboard();
         self.web.hide();
@@ -812,6 +925,7 @@ impl Probe {
                 "hide_gives_keyboard_back": hidden_gave_back,
                 "pop_out": { "left_fuxx_window": left_window, "url_kept": popped_url == second, "page_state_kept": still_marked == json!(42), "in_browser_window": in_browser_window },
                 "closed_page_removed": removed,
+                "browser_keys": browser_keys,
             },
             "ms": started.elapsed().as_millis() as u64,
         }))
