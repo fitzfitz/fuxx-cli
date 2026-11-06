@@ -1252,10 +1252,10 @@ fn row_point(
 ///   `sidebar-narrow` and `sidebar-wide` at 180 and 400 px.
 /// - `sidebar-hover`: the pointer over the closed group's header (its "+" shows).
 /// - `sidebar-menu`: the footer's + menu open.
-/// - `sidebar-drag`: codex's row dragged down its group, its copy's centre just past shell's (as
-///   closed up), once the rows have slid (M11b Task 7b): tests and shell slid up by codex's height
-///   (and the gap), the gap between shell and the long one, claude and the rows below still, no
-///   insertion line.
+/// - `sidebar-drag`: codex's row dragged down its group, its copy right over the gap it opens
+///   between shell and the long one, once the rows have slid (M11b Task 7b): tests and shell slid
+///   up by codex's height (and the gap), the copy (as tall as codex's row) filling the gap, claude
+///   and the rows below still, no insertion line.
 /// - `sidebar-scroll`: 24 sessions, the last one active, so the list scrolls to it.
 ///
 /// Panics unless the question was read off the boxed prompt, a waiting row is 56 px and a
@@ -1346,9 +1346,10 @@ fn sidebar_scenes() {
                         assert!(cx.read(|cx| ws.read(cx).sidebar.new_menu), "menu opens");
                     }
                     _ => {
-                        // codex (row 2, three lines tall) down past tests and shell: its copy's
-                        // centre half way between shell's and the long one's as they'd be with
-                        // codex taken out (moved up by its room: its height and the gap).
+                        // codex (row 2, three lines tall) down past tests and shell: its copy right
+                        // over the gap between shell and the long one, as it opens with codex
+                        // taken out (the rows after it moved up by its room: its height and the
+                        // gap); the gap ends where shell did.
                         let bounds: Vec<_> = (1..=5)
                             .map(|i| {
                                 cx.read(|cx| {
@@ -1359,10 +1360,8 @@ fn sidebar_scenes() {
                                 })
                             })
                             .collect();
-                        let (codex, tests, shell, long) =
-                            (bounds[1], bounds[2], bounds[3], bounds[4]);
-                        let room = tests.top() - codex.top();
-                        let centre = (shell.center().y + long.center().y) / 2.0 - room;
+                        let (codex, shell) = (bounds[1], bounds[3]);
+                        let centre = shell.bottom() - codex.size.height / 2.0;
                         // Taken at its middle, 8 px down (GPUI's drag starts past its threshold):
                         // the pointer is 8 px below the copy's centre.
                         let from = codex.center();
@@ -1398,13 +1397,23 @@ fn sidebar_scenes() {
             let room = f32::from(tests.top() - codex.top());
             let x = f32::from(shell.left()) + 10.0;
             let px_at = |y: Pixels| pixel_at(&shot, dims, x, f32::from(y));
-            // shell (selected: the accent) slid up by codex's room, its top clear of the copy
-            // (whose centre is just past shell's, as closed up); the middle of where it was is
-            // in the gap: the list's own colour, no line.
+            // shell (selected: the accent) slid up by codex's room; the gap below it, down to
+            // where shell ended, is filled by codex's copy (as tall as codex's row), top to
+            // bottom: no empty band, no line.
             let up = px_at(shell.top() - px(room) + px(3.0));
             assert!(is(up, ui.accent), "{n}: shell slid up: {up:?}");
-            let was = px_at(shell.center().y);
-            assert!(is(was, ui.sidebar_background), "{n}: the gap: {was:?}");
+            let gap_top = shell.bottom() - codex.size.height;
+            for y in [
+                gap_top + px(3.0),
+                shell.center().y,
+                shell.bottom() - px(3.0),
+            ] {
+                let p = px_at(y);
+                assert!(
+                    !is(p, ui.sidebar_background) && !is(p, ui.accent),
+                    "{n}: the copy in the gap at {y:?}: {p:?}"
+                );
+            }
             // claude, above codex, stays (tinted: it's waiting).
             let still = px_at(claude.center().y);
             assert!(is(still, ui.waiting_tint), "{n}: claude stays: {still:?}");
@@ -2793,7 +2802,7 @@ fn tab_drag_scenes() {
             assert!(running(before.4), "{n}: codex runs");
 
             // Esc mid-drag: nothing moves, the drag is over.
-            let to = point(tab(cx, lp, 0).center().x + px(10.0), px(13.0));
+            let to = tab(cx, lp, 1).center();
             let from = tab(cx, lp, 2).center();
             drag(cx, window, from, to);
             cx.simulate_keystrokes(window, "escape");
@@ -2841,6 +2850,59 @@ fn tab_drag_scenes() {
                 ("claude".to_string(), true),
                 "{n}: shaky click"
             );
+            // Shakier: 3 px to start the drag, then 10 more to the right before the release.
+            // Less than half a tab from where it was: its own place, nothing moves.
+            cx.simulate_mouse_down(window, from, left, none);
+            cx.simulate_mouse_move(window, shaken, left, none);
+            let jitter = shaken + point(px(10.0), px(0.0));
+            cx.simulate_mouse_move(window, jitter, left, none);
+            assert_eq!(
+                cx.read(|cx| ws.read(cx).tab_drop),
+                None,
+                "{n}: jitter: own place"
+            );
+            release(cx, jitter);
+            assert_eq!(
+                names(cx, lp),
+                ["api", "claude", "codex", "browser"],
+                "{n}: a shaky drag right moves nothing"
+            );
+            assert_eq!(focused(cx).0, "claude", "{n}: shaky drag right");
+
+            // The same on the sidebar: the first workspace's row (three lines) shaken 3 px down,
+            // then 10 more: its own place, the order stays (and nothing is saved: no drop slot).
+            let order = workspaces(cx, &ws);
+            let from = row_point(cx, &ws, docs_row - 1, 0.0);
+            cx.simulate_mouse_down(window, from, left, none);
+            cx.simulate_mouse_move(window, from + point(px(0.0), px(3.0)), left, none);
+            assert!(cx.read(|cx| cx.has_active_drag()), "{n}: a row's drag");
+            let jitter = from + point(px(0.0), px(13.0));
+            cx.simulate_mouse_move(window, jitter, left, none);
+            let lands = cx.read(|cx| ws.read(cx).sidebar.drop_slot);
+            assert_eq!(lands, None, "{n}: a shaky row: its own place");
+            release(cx, jitter);
+            assert_eq!(workspaces(cx, &ws), order, "{n}: a shaky row moves nothing");
+
+            // A file dragged in from Finder after that: the row dragged last isn't taken for
+            // the one dragged now (it would show empty).
+            let file = gpui::ExternalPaths(vec![std::path::PathBuf::from("/tmp/notes.txt")].into());
+            cx.simulate_event(
+                window,
+                gpui::FileDropEvent::Entered {
+                    position: from,
+                    paths: file,
+                },
+            );
+            cx.run_until_parked();
+            assert!(cx.read(|cx| cx.has_active_drag()), "{n}: a file's drag");
+            assert_eq!(
+                cx.read(|cx| ws.read(cx).dragged_row(cx)),
+                None,
+                "{n}: no row is dragged"
+            );
+            cx.simulate_event(window, gpui::FileDropEvent::Exited);
+            cx.run_until_parked();
+            assert!(!cx.read(|cx| cx.has_active_drag()), "{n}: the file left");
 
             // Dropped where it is (its own gaps): nothing moves, and it is shown, as a click.
             let own = point(tab(cx, lp, 2).center().x - px(30.0), px(13.0));
@@ -2855,9 +2917,9 @@ fn tab_drag_scenes() {
             assert_eq!(names(cx, lp)[2], "codex", "{n}: its own place");
             assert_eq!(focused(cx), ("codex".to_string(), true), "{n}: codex shown");
 
-            // Reordered: codex between api and claude, shown, with the keyboard, the same
-            // terminal.
-            let to = point(tab(cx, lp, 0).center().x + px(10.0), px(13.0));
+            // Reordered: codex between api and claude (its chip's centre on claude's, the gap
+            // nearest it), shown, with the keyboard, the same terminal.
+            let to = tab(cx, lp, 1).center();
             let from = tab(cx, lp, 2).center();
             drag(cx, window, from, to);
             release(cx, to);

@@ -338,7 +338,6 @@ impl Workspace {
             None => vec![0.0; tabs.len()],
         };
         let animate = !cx.reduce_motion();
-        let mut slides = self.drag_slides.borrow_mut();
         let row = div()
             .id(("pane-tabs", pane.0 as usize))
             .flex()
@@ -357,7 +356,12 @@ impl Workspace {
                         let width = scroll
                             .bounds_for_item(i)
                             .map_or(TAB_MAX_WIDTH, |b| f32::from(b.size.width));
-                        let offset = slides.offset(Slid::Tab(tab.tab), target, now, animate);
+                        let offset = self.drag_slides.borrow_mut().offset(
+                            Slid::Tab(tab.tab),
+                            target,
+                            now,
+                            animate,
+                        );
                         self.render_tab(tab, ui, focused, offset, width, cx)
                     }),
             )
@@ -625,7 +629,7 @@ impl Workspace {
     }
 
     /// The pointer moved during a tab drag: if it's over `pane`'s bar and dropping there would
-    /// move the tab, it lands at the slot the chip's centre is at, among the bar's other tabs as
+    /// move the tab, it lands in the gap nearest the chip's centre, among the bar's other tabs as
     /// laid out with it taken out (`drag_gap::landing_slot`).
     fn drag_tab_over_bar(
         &mut self,
