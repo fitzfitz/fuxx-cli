@@ -31,11 +31,18 @@ service before this version, restart it once with `fuxx daemon stop`. Built and 
 ## Agent browser
 
 Press ⇧⌘B (File → Open Browser…) to open a browser window for the active session. It is a plain WebKit view (no
-tabs), and agents drive it: `fuxx browser open|snapshot|click|fill|press|read|eval|wait|screenshot|url|back|reload|close`,
+tabs) with a compact top bar like Safari's: back, forward and reload/stop buttons, an address field (type an address and
+press Enter; Escape puts the current one back; **⌘L** focuses it), a thin loading line, and the fuxx mark. The bar's light
+or dark follows your fuxx theme; web pages still follow macOS. Only `http://` and `https://` addresses are opened
+(`localhost:3000` gets `http://` added). Agents drive the same window: `fuxx browser open|snapshot|click|fill|press|read|eval|wait|screenshot|url|back|reload|close`,
 or the matching `browser_*` tools through `fuxx mcp`. `snapshot` lists the page's links, buttons and fields with
-refs (`e3`) that `click` and `fill` take. Only `http://` and `https://` addresses are opened (`localhost:3000` gets
-`http://` added). Logins are kept between runs, and Safari's Web Inspector can attach (Develop menu). Browsers close
-with their session and aren't restored after quitting. Built and reviewed, not yet tried on screen.
+refs (`e3`) that `click` and `fill` take. Safari's Web Inspector can attach (Develop menu). Browsers close
+with their session and aren't restored after quitting.
+
+Two settings in Preferences → Browser: **Show address bar** (On by default; Off keeps the buttons and the page title)
+and **Keep history and data** (Off by default: logins and cookies live in memory for one run; On saves them for next
+time; turning it Off deletes what was saved). Config keys: `browser-address-bar = on|off`, `browser-keep-data = on|off`.
+Built and reviewed, not yet tried on screen.
 
 ## What's new in the look
 
@@ -44,8 +51,8 @@ themes too. Each session shows a shaped status mark: a hollow ring (idle), a spi
 (waiting) and a dot with a check that pops once (done). A waiting session also shows the question it's asking under
 its name. New shortcuts: **⇧⌘U** jumps to the session that needs you, **⌘P** switches sessions (most urgent first),
 **⌘\** hides the sidebar, **⌘=** / **⌘−** / **⌘0** change the font size. Split panes get a small header each.
-Preferences has theme swatches, a live preview and **Animations** On/Off (`animations = off` in the config; macOS
-"Reduce motion" is respected too). Screenshots of every screen, in a dark and a light theme, come from
+Preferences (⌘,) has sections down the left (General, Appearance, Sessions, Browser) and remembers the last one; Appearance has theme swatches and a live preview, General has **Animations** On/Off (`animations = off` in the config; macOS
+"Reduce motion" is respected too) and "Show the tips card again". A sidebar button beside the window buttons hides and shows the sidebar (same as ⌘\). Sessions in the sidebar behave like tabs: hover shows a × to close, middle-click closes, and right-click opens a menu (Close Tab, Close Other Tabs, Close Tabs to the Right, Show All Tabs, Rename Tab…, Tab Color); closing several at once always asks first. Rows show ⌘1…⌘9 on the right. Screenshots of every screen, in a dark and a light theme, come from
 `cargo run --features ui-shots -- __ui-shots` (PNGs in `target/ui-shots/`). Built and reviewed, not yet tried on screen.
 
 ## Scripting fuxx

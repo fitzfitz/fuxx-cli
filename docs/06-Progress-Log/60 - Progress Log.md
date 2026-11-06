@@ -14,13 +14,38 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11 — UI/UX uplift 🟨 built and reviewed, on-screen check pending (M10b and M10c the same, all batched); after your check: merge, then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M10c/M11 follow-up 🟨 built and reviewed (2026-11-06), on-screen check pending (M10b, M10c and M11 the same, all batched); after your check: merge, then M11b (workspaces and pane tabs), then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-06 — M10c/M11 follow-up built: browser bar, keep-data setting, tabbed Preferences, sidebar button, tab-like rows (on-screen check pending)
+- **Did:** Built and reviewed [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] on branch
+  `m11b-browser-bar-prefs` (Tasks 1, 2, 2b, 3, 3b, 3c; Task 3d moved to M11b; Task 4 is your check, batched with M10b,
+  M10c and M11, so **nothing is marked done**). A Safari-like compact bar on browser windows (back, forward,
+  reload/stop, an address field, a loading line, light or dark with the fuxx theme); two Browser settings (Show address
+  bar, Keep history and data, Off by default); Preferences as vertical tabs (General, Appearance, Sessions, Browser;
+  920 × 452); then your in-session requests: the fuxx logo (you chose the 🖕 mark, right of the address bar); a sidebar
+  button beside the window buttons (with a slide); no number on sidebar rows (⌘N on the right instead); and tab-like
+  rows (× on hover, middle-click closes, right-click menu with Tab Color, bulk closes always ask). Your cmux layout
+  request (tabs holding terminals, workspaces, pane tabs, the in-pane browser) became its own milestone, **M11b**, so
+  Task 3d moved there. Reviews found real problems: web pages followed the fuxx theme instead of macOS (fixed: pages
+  follow macOS, the bar follows fuxx); the × hid the focused session's status mark; Close Tabs to the Right closed
+  sessions folded in a collapsed group; and keep-data Off could leave saved data on disk after a hand edit or a quit
+  during the delete (fixed with a flag in the sessions file; launch and the last On window closing wipe, and the flag
+  clears only when WebKit says the deletion is done). 577 tests. The 22-item on-screen list, the verification log and
+  the deferred minors are in the plan; one known limitation (a lost background service can stop the flag being saved)
+  is documented there.
+- **Learned:** Off-screen capture can't render macOS's glass toolbar items, so the bar's look is only checkable on
+  screen; `NSToolbar` needs a titled window (a borderless one gets no items). A "when switched" delete isn't enough for
+  data on disk: write down that data may exist, and wipe whenever it may be left. Hover-only controls must not hide
+  status the person needs; ask what the control replaces.
+- **Blocked:** On your batched on-screen check (M10b, M10c, M11, follow-up). Branch `m11b-browser-bar-prefs` stacks on
+  `m11-ui-ux`, which stacks on M10c and M10b; nothing is merged. After the check: merge them into `master`, then
+  M11b (input note: [[M11b Input - Workspaces, Pane Tabs and In-Pane Browser]]).
 
 ### 2026-11-06 — Milestone 11 built: UI/UX uplift (on-screen check pending)
 - **Did:** Same arrangement as M10b and M10c: built and reviewed, **not** marked done until you run the on-screen

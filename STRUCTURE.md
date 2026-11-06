@@ -106,7 +106,8 @@ src/
 │   agent browser (M10c)
 ├── browser_url.rs        M10c · browser addresses: http(s) only, scheme added to bare hosts (pure)
 ├── browser_js.rs         M10c · page-side scripts (snapshot with refs, click, fill, press, read, wait) and the outline
-├── browser.rs            M10c · one WebKit window per session (objc2): load, eval, screenshot, Edit keys, ⌘W
+├── browser.rs            M10c · one WebKit window per session (objc2): load, eval, screenshot, Edit keys, ⌘W   Follow-up · keep-data store choice and wipe
+├── browser/bar.rs        Follow-up · the compact top bar: back/forward/reload, address field, loading line, 🖕 mark (objc2)
 │   └── browser/probe.rs  M10c · hidden `fuxx __browser-probe` self-test: a real off-screen web view, end to end
 ├── workspace_browser.rs  M10c · the session ↔ browser map, ⇧⌘B address box, `browser.*` socket methods
 │
@@ -119,10 +120,13 @@ src/
 ├── pane_header.rs        M11 · the 22 px header over each pane of a split
 ├── switcher.rs           M11 · the ⌘P session switcher; urgency order and ⇧⌘U's next-needing-you
 ├── overlay_panel.rs      M11 · the shared panel and filter box (switcher, host picker, address box)
+├── sidebar_toggle.rs     Follow-up · the sidebar button beside the window buttons: position rule, slide curve
+├── tab_menu.rs           Follow-up · the right-click row menu: actions (close others / to the right), bulk-close text, overlay
+├── tab_color.rs          Follow-up · the 11 tab colours and their saved names
 │
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
-├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row
+├── preferences.rs        M6b · the Preferences window   M7 · Restore sessions row   Follow-up · vertical section tabs
 │
 │   notifications
 └── notifier.rs           M4 · osascript notifications, escaping, focus-aware rule

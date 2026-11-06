@@ -242,6 +242,8 @@ Run these together with the M10b and M10c checks.
 
 ## Amendment (2026-11-06, your request): Preferences as vertical tabs
 
+Status: 🟨 Built and reviewed 2026-11-06; on-screen check pending (batched with M10b, M10c, M11).
+
 Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]. Replaces the one-page Preferences above.
 
 - A list of sections down the left, like VS Code's settings; only the selected section's settings show on the right.
@@ -252,6 +254,13 @@ Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]. Replaces
   - Browser: Show address bar, Keep history and data.
 - The window keeps one size for all sections; it opens on the section you used last in this run (General first).
 
+**What shipped / decisions**
+
+- The Preferences window is 920 × 452 (wider and shorter than the old 760 × 646); ↑/↓ move through the sections.
+- Every control writes exactly what it wrote before; Browser adds Show address bar and Keep history and data
+  (`browser-keep-data = on` is written only when On).
+- "Show the tips card again" is live only after you dismiss the card; it then shows "Shown" and greys.
+
 ## Related
 
 - [[40 - Roadmap]] · [[M11 Input - UI-UX Review]] · [[46b - Milestone 6b - Settings Window]] ·
@@ -259,12 +268,28 @@ Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]. Replaces
 
 ## Amendment (2026-11-06, your requests): sidebar button and tab-like rows
 
+Status: 🟨 Built and reviewed 2026-11-06; on-screen check pending (batched with M10b, M10c, M11).
+
 Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] (Tasks 3b, 3c).
 
 - A sidebar button beside the window buttons hides/shows the sidebar (same as ⌘\); the sidebar slides with motion on.
 - Rows behave like tabs: × on hover, middle-click closes, right-click menu (Close Tab, Close Other Tabs, Close Tabs to
   the Right, Show All Tabs, Rename Tab…, Tab Color), bulk closes always ask first. The number column goes; the right
   side shows a colour dot and "⌘N" (your sample). "Move Tab to New Window" waits for multi-window support.
+
+**What shipped / decisions**
+
+- The sidebar button sits right of the traffic lights (the same spot shown or hidden; at the left edge in full screen,
+  which keeps an empty 38 px band so it never sits on the first row). Tooltip "Hide sidebar (⌘\)" / "Show sidebar (⌘\)".
+  Clicking never drags the window. A re-toggled slide starts where the last one got to.
+- × shows on hover only, for every row (the active row keeps its status mark until hovered). Middle-click closes.
+- Close Tabs to the Right closes only the rows you can see below the clicked one (a closed group's sessions stay).
+  Close Other Tabs and Close Tabs to the Right always ask in a native sheet; single closes don't.
+- The menu closes when the keyboard moves to a terminal (⌘1–9, ⌘T, ⇧⌘U) or the active session changes.
+- Tab Color: none + 11 colours, saved with the session, restored after a restart, shown as the dot on rows, in ⌘P and on
+  pane headers. `session.list` gains `color` when one is set.
+- The switcher, pane headers and notifications keep `#n`; only the sidebar rows lost the number column.
+- Plan, verification log and the on-screen checklist: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]].
 
 ## Amendment (2026-11-06, your request): tabs hold terminals
 
