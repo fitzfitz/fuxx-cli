@@ -195,8 +195,11 @@ cybers. Just update it on master then directly commit on master branch for this 
   (`browser/bar.rs` `mark_image`, today the 🖕 emoji drawn as text) becomes the 3D Cyber logo — trimmed and centred
   with no margin (`assets/logo/3d-cyber/fuxx-mark.png`, 64 px, made by the same script), compiled into fuxx and drawn
   at the toolbar's 18 pt. The in-pane browser bar has no mark (unchanged).
-- Unchanged: `cargo run` builds keep the generic Dock icon.
-- [x] Checks: the mark's embedded PNG is 64 × 64 (a Rust test); the script's fit rule (pure: bbox → scaled size and offset, centred, ≤ 824) by a small test; the `.icns`
+- **`cargo run` builds too** (your "make cargo run logo as well", 2026-11-07): a build that isn't running from the app
+  package sets its own Dock icon at launch (`NSApplication.applicationIconImage`) from a compiled-in 512 px PNG of the
+  same icon-grid picture (`assets/logo/3d-cyber/fuxx-app-icon-512.png`, made by the same script). The app copy keeps
+  its `.icns`. Notifications from such a build stay the old banners (macOS ties them to the app package).
+- [x] Checks: the mark's embedded PNG is 64 × 64 and the Dock picture 512 × 512 (Rust tests); the script's fit rule (pure: bbox → scaled size and offset, centred, ≤ 824) by a small test; the `.icns`
   holds all ten sizes (`iconutil -c iconset` round-trip); a built `fuxx.app` has the file and the plist key;
   `cargo test` unchanged. On screen (you): the Dock, ⌘Tab, a notification banner, System Settings and a popped-out browser window's toolbar show the logo.
 
