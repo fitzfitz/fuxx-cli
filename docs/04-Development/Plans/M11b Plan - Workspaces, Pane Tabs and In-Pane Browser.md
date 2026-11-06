@@ -206,9 +206,12 @@ the pointer; no insertion line — the other tabs slide out of the way, as in Gh
   - over another pane's bar → the gap opens there, and its own bar closes up;
   - over a sidebar row that would take it → its own bar closes up; the row lights up as today;
   - over anything else (a drop would cancel) → the gap goes back to the tab's own place.
-  The landing slot is decided from the chip's centre against the centres of the other tabs **as laid out with the
-  dragged tab taken out** (never from tabs while they slide, so a pointer resting on a boundary doesn't make them
-  flicker), the bar's sideways scroll included; the drop puts the tab exactly where the gap was.
+  The landing slot is **the gap nearest the copy**: measured on the other tabs **as laid out with the dragged tab taken
+  out** (never on tabs while they slide, so a pointer resting on a boundary doesn't make them flicker), the bar's
+  sideways scroll included, the gap moves past a neighbour once the copy's centre passes that neighbour's centre plus
+  half the gap's size (amended after the review: thresholds at the bare centres made a 1 px forward move swap). A
+  copy moved less than half an item stays at its own place (a shaky click reorders nothing); the drop puts the tab
+  exactly where the gap was.
 - **Sliding.** Each tab (or row) moves to its new place over **150 ms, ease-out**; a change mid-slide starts from where
   it is now (no jumps). When the drag ends the slides are dropped: the real layout already matches the gap.
 - **Sidebar rows** (your "yes", 2026-11-06): a row dragged within its run (pinned, or its group) opens a gap the same
