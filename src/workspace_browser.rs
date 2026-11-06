@@ -87,10 +87,11 @@ fn tick_interval(browsers: impl IntoIterator<Item = (bool, bool)>) -> Duration {
     }
 }
 
-/// Whether a change of `browser-keep-data` from `was` to `now` deletes what the browser saved:
-/// only turning it from on to off does.
-fn forgets_saved_data(was: bool, now: bool) -> bool {
-    was && !now
+/// Whether the saved browser data should be deleted now: `browser-keep-data` is off, a browser
+/// was opened with it on at some time (`flag`, kept in the sessions file) and no window opened
+/// with it on is still open (it keeps writing to the saved store until it closes).
+fn should_wipe(setting_on: bool, flag: bool, open_on_windows: usize) -> bool {
+    !setting_on && flag && open_on_windows == 0
 }
 
 /// What `Browsers` needs of a browser: whether the user closed its window, and its title.
@@ -284,6 +285,12 @@ impl Workspace {
             let keep_data = appearance.browser_keep_data;
             let look = bar_look(&appearance.theme, appearance.browser_address_bar);
             let browser = Browser::open(&title, keep_data, &look, cx);
+            if keep_data && !self.browser_data_kept {
+                // The saved store may now hold data; remembered on disk so that turning the
+                // setting off later deletes it even after a restart.
+                self.browser_data_kept = true;
+                self.save();
+            }
             self.browsers.insert(id, browser, title);
             self.tick_browsers(cx);
         }
@@ -295,26 +302,49 @@ impl Workspace {
     }
 
     /// The settings changed: the open browsers' top bars follow the theme and
-    /// `browser-address-bar` at once. When `browser-keep-data` went from on to off, delete what
-    /// the browser saved; windows already open keep the store they were opened with.
-    pub(crate) fn browser_settings_changed(&mut self, cx: &App) {
+    /// `browser-address-bar` at once, and saved data is deleted if `browser-keep-data` just went
+    /// off (`wipe_saved_data_if_due`); windows already open keep the store they were opened with.
+    pub(crate) fn browser_settings_changed(&mut self, cx: &mut Context<Self>) {
         let appearance = cx.global::<Appearance>();
         let look = bar_look(&appearance.theme, appearance.browser_address_bar);
         for browser in self.browsers.iter() {
             browser.set_look(&look);
         }
-        let keep_data = appearance.browser_keep_data;
-        if forgets_saved_data(self.browser_keep_data, keep_data) {
-            forget_saved_data(
-                MainThreadMarker::new().expect("GPUI's App lives on the main thread"),
-            );
+        self.wipe_saved_data_if_due(cx);
+    }
+
+    /// Delete the saved browser data when `should_wipe` says so (at launch, when the setting
+    /// goes off, when the last window opened with it on closes). The flag in the sessions file
+    /// is cleared only once WebKit says the deletion is done, so a quit meanwhile retries it at
+    /// the next launch.
+    pub(crate) fn wipe_saved_data_if_due(&mut self, cx: &mut Context<Self>) {
+        let keep_data = cx.global::<Appearance>().browser_keep_data;
+        let on_windows = self.browsers.iter().filter(|b| b.keeps_data()).count();
+        if self.browser_wiping || !should_wipe(keep_data, self.browser_data_kept, on_windows) {
+            return;
         }
-        self.browser_keep_data = keep_data;
+        self.browser_wiping = true;
+        let done = forget_saved_data(
+            MainThreadMarker::new().expect("GPUI's App lives on the main thread"),
+        );
+        cx.spawn(async move |this, cx| {
+            let finished = done.await.is_ok();
+            this.update(cx, |this, _| {
+                this.browser_wiping = false;
+                // A window opened with it on since then writes there again: the flag stays.
+                if finished && this.browsers.iter().all(|b| !b.keeps_data()) {
+                    this.browser_data_kept = false;
+                    this.save();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Bring the browsers' titles and top bars up to date and drop those the user closed (or
     /// whose session has gone). The wait before the next check (see `tick_interval`).
-    fn check_browsers(&mut self) -> Duration {
+    fn check_browsers(&mut self, cx: &mut Context<Self>) -> Duration {
         let sessions = self.sessions.items();
         self.browsers
             .forget_closed(|id| sessions.iter().any(|s| s.id == id));
@@ -331,6 +361,8 @@ impl Workspace {
             browser.refresh_bar();
             seen.push((browser.state().loading, browser.can_be_seen()));
         }
+        // The last window opened with the setting on may just have closed.
+        self.wipe_saved_data_if_due(cx);
         tick_interval(seen)
     }
 
@@ -346,8 +378,8 @@ impl Workspace {
             loop {
                 cx.background_executor().timer(wait).await;
                 let next = this
-                    .update(cx, |this, _| {
-                        let next = this.check_browsers();
+                    .update(cx, |this, cx| {
+                        let next = this.check_browsers(cx);
                         this.browsers_ticking = !this.browsers.is_empty();
                         this.browsers_ticking.then_some(next)
                     })
@@ -1109,12 +1141,17 @@ mod tests {
     }
 
     #[test]
-    fn only_turning_keep_data_off_forgets_saved_data() {
-        assert!(forgets_saved_data(true, false));
-        // No change, or turning it on: nothing is deleted.
-        assert!(!forgets_saved_data(true, true));
-        assert!(!forgets_saved_data(false, false));
-        assert!(!forgets_saved_data(false, true));
+    fn saved_data_is_deleted_only_when_off_flagged_and_no_on_window_is_open() {
+        // Off, the saved store may hold data, no window opened with it on is left.
+        assert!(should_wipe(false, true, 0));
+        // Nothing saved (the flag is clear): nothing to delete.
+        assert!(!should_wipe(false, false, 0));
+        // Still on: keep it.
+        assert!(!should_wipe(true, true, 0));
+        assert!(!should_wipe(true, false, 0));
+        // A window opened with it on still writes there: wait until it closes.
+        assert!(!should_wipe(false, true, 1));
+        assert!(!should_wipe(false, true, 3));
     }
 
     #[test]

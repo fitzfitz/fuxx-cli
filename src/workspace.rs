@@ -220,8 +220,11 @@ pub struct Workspace {
     pub(crate) browsers_ticking: bool,
     /// The browser's address box, while it is open (M10c).
     pub(crate) address_box: Option<Entity<AddressBox>>,
-    /// `browser-keep-data` as last seen, so turning it off can be told from it staying off.
-    pub(crate) browser_keep_data: bool,
+    /// The saved browser data may hold something (a window was opened with `browser-keep-data`
+    /// on): kept in the sessions file until it has been deleted.
+    pub(crate) browser_data_kept: bool,
+    /// Deleting the saved browser data is under way.
+    pub(crate) browser_wiping: bool,
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
     /// events are sent).
     pub(crate) restoring: bool,
@@ -295,6 +298,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self::blank(scripting, persistent, window, cx);
+        // Browser data saved by an earlier run, if the setting is off now, goes at once.
+        this.browser_data_kept = read_saved_quietly().is_some_and(|s| s.browser_data_kept);
+        this.wipe_saved_data_if_due(cx);
         if let Some(saved) = read_saved_quietly() {
             this.sidebar.load(&saved);
         }
@@ -345,7 +351,8 @@ impl Workspace {
             browsers: Browsers::new(),
             browsers_ticking: false,
             address_box: None,
-            browser_keep_data: cx.global::<Appearance>().browser_keep_data,
+            browser_data_kept: false,
+            browser_wiping: false,
             restoring: true,
             hold_saving: false,
             next_id: 1,
@@ -578,6 +585,7 @@ impl Workspace {
             sidebar_width: Some(self.sidebar.width),
             sidebar_hidden: self.sidebar.hidden,
             hint_dismissed: self.sidebar.hint_dismissed,
+            browser_data_kept: self.browser_data_kept,
         };
         let path = restore::state_path(&home);
         if let Err(err) = settings::write_atomic(&path, &restore::encode(&state)) {
@@ -1294,6 +1302,8 @@ impl Workspace {
 
     /// After the active session changed (by any route): open its group and focus it.
     pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The keyboard goes to a terminal, so a tab menu (which holds it) closes.
+        self.sidebar.tab_menu = None;
         self.note_active(cx);
         self.focus_active(window, cx);
     }
