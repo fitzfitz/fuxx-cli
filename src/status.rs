@@ -45,6 +45,9 @@ impl Status {
 pub const ECHO_WINDOW: Duration = Duration::from_millis(150);
 /// A working session that has been silent this long has settled.
 pub const IDLE_AFTER: Duration = Duration::from_secs(3);
+/// Plain output this soon after a resize is the program redrawing for its new size (it got
+/// SIGWINCH), not work. Every resize renews it, so a drag keeps it open.
+pub const RESIZE_WINDOW: Duration = Duration::from_millis(500);
 /// How many non-blank screen lines (from the bottom) to search for a question.
 pub const TAIL_LINES: usize = 8;
 /// Lowercased substrings meaning "the program is asking you something".
@@ -137,6 +140,8 @@ pub struct StatusTracker {
     /// A notification (or a BEL while working) arrived since the last keystroke: settle on the
     /// next tick.
     attention: bool,
+    /// Until when plain output is a redraw for a resize and changes nothing.
+    resize_until: Option<Instant>,
     /// New output (or a BEL) arrived since the screen was last read.
     dirty: bool,
 }
@@ -148,6 +153,7 @@ impl StatusTracker {
             last_input: None,
             last_output: None,
             attention: false,
+            resize_until: None,
             dirty: false,
         }
     }
@@ -169,6 +175,12 @@ impl StatusTracker {
         None
     }
 
+    /// A new size was sent to the program. Plain output for the next `RESIZE_WINDOW` is its
+    /// redraw: no Working, no settling, no new notification. Each call renews the window.
+    pub fn on_resize(&mut self, now: Instant) {
+        self.resize_until = Some(now + RESIZE_WINDOW);
+    }
+
     /// The session produced output; `notifications` = OSC 9 / 99 / 777 notifications seen in it.
     /// Returns the new status when it changed.
     pub fn on_output(&mut self, now: Instant, notifications: usize) -> Option<Status> {
@@ -177,6 +189,9 @@ impl StatusTracker {
             self.last_output = Some(now);
             self.dirty = true;
             return None;
+        }
+        if self.resize_until.is_some_and(|until| now < until) {
+            return None; // the redraw for a resize
         }
         let Some(input) = self.last_input else {
             return None; // never typed in: shell startup / prompt noise
@@ -488,6 +503,111 @@ mod tests {
         assert_eq!(
             t.tick(t0 + ms(650), || "Continue? (y/n)".into()),
             Some(Status::Waiting)
+        );
+    }
+
+    #[test]
+    fn redraw_after_a_resize_does_not_make_an_idle_session_work() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_resize(t0 + ms(1000));
+        assert_eq!(t.on_output(t0 + ms(1100), 0), None);
+        assert_eq!(t.status(), Status::Idle);
+        // Nothing to settle either: the redraw left no trace for the idle timer.
+        assert_eq!(
+            t.tick(t0 + ms(1100) + IDLE_AFTER, || -> String {
+                panic!("screen read for a redraw")
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn redraw_after_a_resize_leaves_a_waiting_session_alone() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        let ask = || "Continue? (y/n)".to_string();
+        assert_eq!(
+            t.tick(t0 + ms(400) + IDLE_AFTER, ask),
+            Some(Status::Waiting)
+        );
+        t.on_resize(t0 + ms(5000));
+        assert_eq!(t.on_output(t0 + ms(5100), 0), None);
+        // The redraw doesn't make the screen get read again (so no repeat notification).
+        assert_eq!(
+            t.tick(t0 + ms(5200), || -> String {
+                panic!("screen read for a redraw")
+            }),
+            None
+        );
+        assert_eq!(t.status(), Status::Waiting);
+    }
+
+    #[test]
+    fn output_after_the_resize_window_is_work_as_before() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_resize(t0 + ms(1000));
+        assert_eq!(
+            t.on_output(t0 + ms(1000) + RESIZE_WINDOW, 0),
+            Some(Status::Working)
+        );
+    }
+
+    #[test]
+    fn a_resize_during_a_drag_keeps_extending_the_window() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        for i in 0..5 {
+            t.on_resize(t0 + ms(1000 + i * 300));
+        }
+        // 1000 + 4 * 300 = 2200 was the last resize: 2600 is still inside, 2700 is out.
+        assert_eq!(t.on_output(t0 + ms(2600), 0), None);
+        assert_eq!(t.status(), Status::Idle);
+        assert_eq!(t.on_output(t0 + ms(2700), 0), Some(Status::Working));
+    }
+
+    #[test]
+    fn a_notification_inside_the_resize_window_still_counts() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        t.on_resize(t0 + ms(1000));
+        t.on_output(t0 + ms(1100), 1);
+        assert_eq!(
+            t.tick(t0 + ms(1150), || "all done".into()),
+            Some(Status::Done)
+        );
+    }
+
+    #[test]
+    fn a_working_session_stays_working_through_a_resize_and_settles_after() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        assert_eq!(t.status(), Status::Working);
+        t.on_resize(t0 + ms(1000));
+        assert_eq!(t.on_output(t0 + ms(1100), 0), None);
+        assert_eq!(t.status(), Status::Working);
+        // The redraw didn't restart the idle timer: quiet counts from the last real output.
+        assert_eq!(
+            t.tick(t0 + ms(400) + IDLE_AFTER, || "$ ".into()),
+            Some(Status::Done)
+        );
+    }
+
+    #[test]
+    fn a_working_session_keeps_working_on_real_output_after_a_resize() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        t.on_resize(t0 + ms(1000));
+        t.on_output(t0 + ms(1600), 0); // real output past the window renews the idle timer
+        assert_eq!(t.tick(t0 + ms(1600) + ms(2900), || "$ ".into()), None);
+        assert_eq!(
+            t.tick(t0 + ms(1600) + IDLE_AFTER, || "$ ".into()),
+            Some(Status::Done)
         );
     }
 }
