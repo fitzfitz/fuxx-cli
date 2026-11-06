@@ -219,6 +219,8 @@ in a folder with a page that has a form) and a second session.
 
 ## Amendment (2026-11-06, your request): a modern top bar, an address bar, and a keep-data setting
 
+Status: 🟨 Built and reviewed 2026-11-06; on-screen check pending (batched with M10b, M10c, M11).
+
 Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]. This replaces "no address bar" and "logins
 and cookies kept between runs" above.
 
@@ -236,6 +238,22 @@ and cookies kept between runs" above.
   - Turning it from On to Off **deletes** what was saved (your choice). The change applies to browser windows opened
     after it; windows already open keep the store they started with until closed (AI's call).
   - "History" means each window's back/forward list and what sites store; fuxx keeps no separate list of visited pages.
+
+**What shipped / decisions**
+
+- Pages keep following macOS light/dark (`prefers-color-scheme`, as before); only the bar and window chrome follow the
+  fuxx theme. Set them opposite to see it.
+- The bar's buttons and field are macOS's own glass toolbar, so how they look is an on-screen check.
+- Opening a browser never puts the keyboard in the field; only ⌘L or a click does. `javascript:` and `file:` are refused
+  with a red field and a tooltip, like agents' opens.
+- Keep history and data Off uses one in-memory store per run, shared by all browser windows opened while Off.
+- The delete is safer than "when switched": a flag in the sessions file is set when a window opens with keep-data On.
+  With the setting Off, fuxx wipes saved data at launch and when the last On window closes, and clears the flag only when
+  WebKit reports the deletion done. A window still open when you switch to Off keeps its data until it closes.
+- Known limitation: while the background service is lost, a keep-data-On browser can't save that flag, so a later Off
+  might not wipe that data (rare).
+- The 🖕 mark is a non-clickable image, last in the bar, kept when the address field is off.
+- Plan, verification log, deferred minors and the on-screen checklist: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]].
 
 ## Related
 
