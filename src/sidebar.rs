@@ -394,8 +394,8 @@ pub fn row_offsets(run: &[bool], own: usize, slot: Option<usize>, height: f32) -
     offsets
 }
 
-/// The slot a row dragged within its run lands in, from its copy's `centre` and the run's rows'
-/// `(top, bottom)` as laid out (scrolled), its own at `own`, `size` the room it takes (its height
+/// The slot a row dragged within its run lands in (the gap nearest its copy: `landing_slot`),
+/// from its copy's `centre` and the run's rows' `(top, bottom)` as laid out (scrolled), its own at `own`, `size` the room it takes (its height
 /// and the gap after it); none while its centre is off the run by more than half of it (a drop
 /// there would put it back).
 pub fn row_slot(centre: f32, spans: &[(f32, f32)], own: usize, size: f32) -> Option<usize> {
@@ -581,10 +581,12 @@ pub(crate) struct RowGrab {
 /// The row that follows the pointer during a drag: the row itself, lifted.
 struct DragPreview {
     label: SharedString,
-    /// Its place line, if it has one (the preview is as tall as the row's two lines).
+    /// Its place line, if it has one.
     place: Option<SharedString>,
     status: Status,
     width: f32,
+    /// As tall as the row (`row_height`), so it fills the gap the row leaves and opens.
+    height: f32,
 }
 
 impl Render for DragPreview {
@@ -621,18 +623,12 @@ impl Render for DragPreview {
                 .truncate()
                 .child(place)
         });
-        let height = SIDEBAR_ROW
-            + if place.is_some() {
-                WAITING_ROW - SIDEBAR_ROW
-            } else {
-                0.0
-            };
         div()
             .flex()
             .flex_col()
             .justify_center()
             .w(px(self.width - 2.0 * ROW_INSET))
-            .h(px(height))
+            .h(px(self.height))
             .px(px(ROW_PAD))
             .rounded(px(6.0))
             .opacity(0.95)
@@ -1203,12 +1199,7 @@ impl Workspace {
             .map(|(_, input)| input.clone());
         let run = self.sidebar_run(ws);
         // While it's dragged, its place shows empty: its copy is it.
-        let lifted = self
-            .sidebar
-            .drag_source
-            .get()
-            .filter(|_| cx.has_active_drag())
-            .is_some_and(|grab| grab.workspace == ws);
+        let lifted = self.dragged_row(cx) == Some(ws);
         // A pane tab dragged over it: dropping moves the tab into this workspace.
         let tab_target =
             self.dragged_tab(cx).is_some() && self.tab_drop == Some(TabDrop::Workspace(ws));
@@ -1331,6 +1322,7 @@ impl Workspace {
                 .then(|| fit_place(row.branch.as_deref(), row.folder.as_deref(), |_| true).into()),
             status: row.status,
             width: self.sidebar.width,
+            height: row_height(row),
         };
         let row_el = div()
             .id(("workspace", ws.0 as usize))
@@ -1452,14 +1444,9 @@ impl Workspace {
     /// While a row is dragged: how far each item of the list `rows` is drawn from its place
     /// (`row_offsets`), its gap at the slot it would land in, or at its own place.
     fn row_drag_offsets(&self, rows: &[SidebarRow], cx: &App) -> Vec<f32> {
-        let grab = self
-            .sidebar
-            .drag_source
-            .get()
-            .filter(|_| cx.has_active_drag());
-        let dragged = grab.and_then(|grab| {
+        let dragged = self.dragged_row(cx).and_then(|ws| {
             rows.iter().enumerate().find_map(|(i, row)| match row {
-                SidebarRow::Workspace(s) if s.workspace == grab.workspace => Some((i, s)),
+                SidebarRow::Workspace(s) if s.workspace == ws => Some((i, s)),
                 _ => None,
             })
         });
@@ -1577,7 +1564,7 @@ impl Workspace {
     }
 
     /// The pointer moved during a row drag: while it's over the list and the row's copy is over
-    /// its run, it lands at the slot the copy's centre is at among the run's other rows as laid
+    /// its run, it lands in the gap nearest the copy's centre among the run's other rows as laid
     /// out with it taken out (`row_slot`); elsewhere, its gap goes back to its own place.
     fn drag_row_over_list(
         &mut self,
@@ -2248,16 +2235,21 @@ mod tests {
     }
 
     #[test]
-    fn a_dragged_row_lands_by_its_copy_s_centre_within_its_run() {
+    fn a_dragged_row_lands_in_the_gap_nearest_its_copy_within_its_run() {
         // Three 40 px rows 2 px apart from y = 100; the middle one (42 px with its gap) dragged:
-        // closed up, the others' centres are 120 and (the third, moved up) 162.
+        // closed up, the others' centres are 120 and (the third, moved up) 162, passed half a
+        // gap later (141, 183).
         let rows = [(100.0, 140.0), (142.0, 182.0), (184.0, 224.0)];
         let size = 42.0;
         assert_eq!(row_slot(110.0, &rows, 1, size), Some(0));
-        assert_eq!(row_slot(130.0, &rows, 1, size), Some(1));
-        // The third counts where it would be with the dragged one out (162), not at 204.
-        assert_eq!(row_slot(161.0, &rows, 1, size), Some(1));
-        assert_eq!(row_slot(163.0, &rows, 1, size), Some(2));
+        assert_eq!(row_slot(140.0, &rows, 1, size), Some(0));
+        assert_eq!(row_slot(142.0, &rows, 1, size), Some(1));
+        assert_eq!(row_slot(182.0, &rows, 1, size), Some(1));
+        assert_eq!(row_slot(184.0, &rows, 1, size), Some(2));
+        // A shaky start: a few px up or down of its own centre (162) is its own place.
+        for y in [155.0, 159.0, 162.0, 165.0, 169.0] {
+            assert_eq!(row_slot(y, &rows, 1, size), Some(1), "{y}");
+        }
         // Half the row's room past the run's ends still counts; further off, nowhere.
         assert_eq!(row_slot(100.0 - 20.0, &rows, 1, size), Some(0));
         assert_eq!(row_slot(224.0 + 20.0, &rows, 1, size), Some(2));
@@ -2265,6 +2257,22 @@ mod tests {
         assert_eq!(row_slot(224.0 + 22.0, &rows, 1, size), None);
         assert_eq!(row_slot(f32::NAN, &rows, 1, size), None);
         assert_eq!(row_slot(120.0, &[], 0, size), None);
+    }
+
+    #[test]
+    fn a_tall_row_s_copy_over_any_gap_of_its_run_lands_there() {
+        // 40 px rows around a 56 px one (58 px with its gap), dragged.
+        let rows = [
+            (100.0, 140.0),
+            (142.0, 198.0),
+            (200.0, 240.0),
+            (242.0, 282.0),
+        ];
+        let size = 58.0;
+        // Each gap as it opens (closed up, the gap at the slot): its centre lands there.
+        for (slot, centre) in [(0, 128.0), (1, 170.0), (2, 212.0), (3, 254.0)] {
+            assert_eq!(row_slot(centre, &rows, 1, size), Some(slot), "{centre}");
+        }
     }
 
     #[test]

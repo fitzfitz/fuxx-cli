@@ -13,11 +13,14 @@ use crate::layout_model::{TabId, WorkspaceId};
 /// How long an item takes to slide to its new place.
 pub const SLIDE: Duration = Duration::from_millis(150);
 
-/// The slot a dragged item lands in among the others, from its copy's `centre`: how many of the
-/// others have their centre before it. `spans` are every item's `(start, end)` along the line as
-/// laid out (scrolled), the dragged one at `own` among them (none: it comes from elsewhere); the
-/// others are taken as closed up, those after it moved back by `size` (the room it takes), so a
-/// pointer resting on a boundary decides the same way every frame. NaN: the first slot.
+/// The slot a dragged item lands in among the others, from its copy's `centre`: the gap nearest
+/// it. `spans` are every item's `(start, end)` along the line as laid out (scrolled), the dragged
+/// one at `own` among them (none: it comes from elsewhere); `size` is the room it takes (the gap's
+/// size). The others are taken as closed up (those after it moved back by `size`), not as they
+/// slide, so a pointer resting on a boundary decides the same way every frame; the gap passes one
+/// once the copy's centre is past that one's centre by half the gap: half way between the gap's
+/// centre before it and after it. So a copy a little either side of its own place stays there,
+/// and one over a gap lands in it, whatever the items' sizes. NaN: the first slot.
 pub fn landing_slot(centre: f32, spans: &[(f32, f32)], own: Option<usize>, size: f32) -> usize {
     spans
         .iter()
@@ -29,9 +32,9 @@ pub fn landing_slot(centre: f32, spans: &[(f32, f32)], own: Option<usize>, size:
             } else {
                 0.0
             };
-            (start + end) / 2.0 - back
+            (start + end) / 2.0 - back + size / 2.0
         })
-        .take_while(|middle| *middle < centre)
+        .take_while(|passed_at| *passed_at < centre)
         .count()
 }
 
@@ -142,9 +145,10 @@ mod tests {
     const MS: fn(u64) -> Duration = Duration::from_millis;
 
     #[test]
-    fn the_landing_slot_counts_the_closed_up_centres_before_the_copy_s() {
+    fn the_landing_slot_is_the_gap_nearest_the_copy() {
         // Four 100 px tabs from x = 240, the third dragged: closed up, the others' centres are
-        // 290, 390 and (the fourth, moved back) 490.
+        // 290, 390 and (the fourth, moved back) 490; the gap passes one when the copy's centre
+        // is past it by half the gap (340, 440, 540): half way between two gaps' centres.
         let tabs = [
             (240.0, 340.0),
             (340.0, 440.0),
@@ -154,20 +158,33 @@ mod tests {
         let own = Some(2);
         // First, middle, end.
         assert_eq!(landing_slot(250.0, &tabs, own, 100.0), 0);
-        assert_eq!(landing_slot(289.0, &tabs, own, 100.0), 0);
-        assert_eq!(landing_slot(291.0, &tabs, own, 100.0), 1);
-        assert_eq!(landing_slot(391.0, &tabs, own, 100.0), 2);
+        assert_eq!(landing_slot(339.0, &tabs, own, 100.0), 0);
+        assert_eq!(landing_slot(341.0, &tabs, own, 100.0), 1);
+        assert_eq!(landing_slot(439.0, &tabs, own, 100.0), 1);
+        assert_eq!(landing_slot(441.0, &tabs, own, 100.0), 2);
         // The fourth counts where it would be with the dragged one out (490), not at 590.
-        assert_eq!(landing_slot(489.0, &tabs, own, 100.0), 2);
-        assert_eq!(landing_slot(491.0, &tabs, own, 100.0), 3);
+        assert_eq!(landing_slot(539.0, &tabs, own, 100.0), 2);
+        assert_eq!(landing_slot(541.0, &tabs, own, 100.0), 3);
         assert_eq!(landing_slot(900.0, &tabs, own, 100.0), 3);
-        // From elsewhere: every tab counts where it is.
-        assert_eq!(landing_slot(489.0, &tabs, None, 100.0), 2);
-        assert_eq!(landing_slot(491.0, &tabs, None, 100.0), 3);
-        assert_eq!(landing_slot(591.0, &tabs, None, 100.0), 4);
+        // A shaky start: half a tab either way of its own centre (490) is its own place.
+        for x in [441.0, 485.0, 490.0, 491.0, 495.0, 539.0] {
+            assert_eq!(landing_slot(x, &tabs, own, 100.0), 2, "{x}");
+        }
+        // The copy right over any gap lands there.
+        for slot in 0..4 {
+            let centre = 240.0 + 100.0 * slot as f32 + 50.0;
+            assert_eq!(landing_slot(centre, &tabs, own, 100.0), slot);
+        }
+        // From elsewhere (a 120 px tab): every tab counts where it is, passed at its centre
+        // plus half the gap.
+        assert_eq!(landing_slot(349.0, &tabs, None, 120.0), 0);
+        assert_eq!(landing_slot(351.0, &tabs, None, 120.0), 1);
+        assert_eq!(landing_slot(649.0, &tabs, None, 120.0), 3);
+        assert_eq!(landing_slot(651.0, &tabs, None, 120.0), 4);
         // A bar scrolled 150 px left: the spans move with it.
         let scrolled = tabs.map(|(l, r)| (l - 150.0, r - 150.0));
-        assert_eq!(landing_slot(250.0, &scrolled, own, 100.0), 2);
+        assert_eq!(landing_slot(250.0, &scrolled, own, 100.0), 1);
+        assert_eq!(landing_slot(300.0, &scrolled, own, 100.0), 2);
         // An empty bar, and NaN: the first slot.
         assert_eq!(landing_slot(300.0, &[], None, 100.0), 0);
         assert_eq!(landing_slot(f32::NAN, &tabs, own, 100.0), 0);

@@ -51,7 +51,7 @@ use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::settings;
-use crate::sidebar::{self, SidebarState};
+use crate::sidebar::{self, RowGrab, SidebarState};
 use crate::sidebar_toggle::{self, Slide};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
@@ -1893,6 +1893,20 @@ impl Workspace {
         self.tab_grab(cx).map(|grab| grab.tab)
     }
 
+    /// The sidebar row being dragged, while one is (a tab's drag clears it as it starts; with no
+    /// drag at all, `render` does).
+    pub(crate) fn dragged_row(&self, cx: &App) -> Option<WorkspaceId> {
+        self.row_grab(cx).map(|grab| grab.workspace)
+    }
+
+    /// The sidebar row being dragged and where it was taken, while one is.
+    pub(crate) fn row_grab(&self, cx: &App) -> Option<RowGrab> {
+        self.sidebar
+            .drag_source
+            .get()
+            .filter(|_| cx.has_active_drag())
+    }
+
     /// The tab being dragged and where it was taken, while one is.
     pub(crate) fn tab_grab(&self, cx: &App) -> Option<TabGrab> {
         self.tab_drag.get().filter(|_| cx.has_active_drag())
@@ -2286,11 +2300,13 @@ fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // No drag: a tab drag GPUI ended without a drop (released elsewhere) leaves nothing
-        // behind, so a later drag of something else (a file from Finder) isn't taken for it.
-        // The slides go with the drag: the layout now matches its gap.
+        // No drag: a tab or row drag GPUI ended without a drop (released elsewhere) leaves
+        // nothing behind, so a later drag of something else (a file from Finder) isn't taken for
+        // it (a row taken for dragged would show empty). The slides go with the drag: the layout
+        // now matches its gap.
         if !cx.has_active_drag() {
             self.tab_drag.set(None);
+            self.sidebar.drag_source.set(None);
             self.tab_drop = None;
             self.sidebar.drop_slot = None;
             self.drag_slides.borrow_mut().clear();
