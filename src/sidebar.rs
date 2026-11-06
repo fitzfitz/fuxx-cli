@@ -73,7 +73,7 @@ pub enum SidebarRow {
 pub struct HeaderRow {
     pub key: GroupKey,
     pub label: String,
-    /// Its sessions: `first..first + count` in the session list.
+    /// Its workspaces: `first..first + count` in the sidebar's order.
     pub first: usize,
     pub count: usize,
     pub collapsed: bool,
@@ -170,8 +170,8 @@ pub fn rows(
         .collect()
 }
 
-/// The line under a session's name: "not live" for a lost one; a waiting one's question; else
-/// a script's progress label and note.
+/// The line under a workspace's name, from its most urgent terminal: "not live" for a lost
+/// one; a waiting one's question; else a script's progress label and note.
 fn sub(s: &WorkspaceFacts) -> Option<Sub> {
     if s.lost {
         return Some(Sub::Note("not live".into()));
@@ -683,8 +683,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A group's header: chevron, name, then (closed) its most urgent mark, its session count,
-    /// and on hover a + for a new session in it. Click opens or closes it.
+    /// A group's header: chevron, name, then (closed) its most urgent mark, its workspace count,
+    /// and on hover a + for a new session (a workspace) in it. Click opens or closes it.
     fn render_header(
         &self,
         header: &HeaderRow,

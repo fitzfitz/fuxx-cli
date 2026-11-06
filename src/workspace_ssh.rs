@@ -381,6 +381,8 @@ impl Workspace {
             reconnected: true,
             _subscription: subscription,
         };
+        self.sync();
+        let index = self.index_of(session_id).unwrap_or(index);
         self.emit(&Event::Opened, Some(index));
         // The background service's new session hasn't had the note and progress.
         self.push_meta(index, cx);
