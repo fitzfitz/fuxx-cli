@@ -131,7 +131,6 @@ impl Workspace {
     /// The 🔔: its popover opens with the keyboard, and everything in it counts as seen.
     pub(crate) fn open_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_overlays(Overlay::Notifications);
-        self.sidebar.new_menu = false;
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         self.notifications_popover = Some(focus);

@@ -516,7 +516,9 @@ impl Workspace {
             .collect();
         if let Some(index) = next_needing_you(&facts, self.sessions.active_index()) {
             self.select(index, window, cx);
-            // Already the active one: it still takes the keyboard back (from a rename box, say).
+            // Already the active one: it still takes the keyboard back (from a rename box, say),
+            // so the menus and the popover close as on any other move.
+            self.close_menus();
             self.focus_active(window, cx);
         }
     }
