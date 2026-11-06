@@ -26,6 +26,7 @@ use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::ssh_target::{SshTarget, validate_host};
 use crate::status::Status;
+use crate::tab_color::TabColor;
 use crate::workspace::{Opened, Workspace};
 use crate::workspace_daemon::{open_refusal, wait_ended};
 use crate::workspace_ssh::Place;
@@ -431,6 +432,7 @@ impl Workspace {
                     progress: s.progress.as_ref(),
                     live: !s.lost,
                     ssh: s.ssh.as_ref().map(|t| t.host.as_str()),
+                    color: s.color,
                 })
             })
             .collect();
@@ -474,7 +476,14 @@ impl Workspace {
             .ok_or_else(|| ApiError::not_found(format!("no session s{id}")))
     }
 
-    fn close_view(&mut self, view: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Close the session shown by `view`, as ⌘W does (also a sidebar row's ×, middle-click and
+    /// tab menu).
+    pub(crate) fn close_view(
+        &mut self,
+        view: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(i) = self.sessions.position(|s| s.view.entity_id() == view) {
             self.close_at(i, window, cx);
         }
@@ -759,6 +768,7 @@ impl Workspace {
                 preset,
                 daemon_id: None,
                 ssh: None,
+                color: None,
             },
             run_preset: true,
         };
@@ -817,6 +827,8 @@ struct ListEntry<'a> {
     live: bool,
     /// The host of an SSH session.
     ssh: Option<&'a str>,
+    /// Its tab colour, by name (M11); left out when none.
+    color: Option<TabColor>,
 }
 
 /// The `ssh` param of `session.new` (`{ host, tmux }`): absent is a plain session.
@@ -851,6 +863,9 @@ fn list_entry(e: &ListEntry) -> Value {
     });
     if let Some(host) = e.ssh {
         entry["ssh"] = json!(host);
+    }
+    if let Some(color) = e.color {
+        entry["color"] = json!(color.name());
     }
     entry
 }
@@ -1124,6 +1139,7 @@ mod tests {
             progress: Some(&(40, Some("build".into()))),
             live: true,
             ssh: None,
+            color: None,
         };
         let v = list_entry(&e);
         assert_eq!(
@@ -1165,6 +1181,29 @@ mod tests {
                 &Value::Null
             )
         );
+    }
+
+    #[test]
+    fn list_entry_names_its_tab_color_only_when_set() {
+        let e = ListEntry {
+            id: 4,
+            number: 2,
+            name: "api",
+            title: None,
+            status: Status::Idle,
+            project: None,
+            preset: None,
+            focused: false,
+            on_screen: false,
+            note: None,
+            progress: None,
+            live: true,
+            ssh: None,
+            color: Some(TabColor::Orange),
+        };
+        assert_eq!(list_entry(&e)["color"], json!("orange"));
+        let plain = list_entry(&ListEntry { color: None, ..e });
+        assert!(plain.get("color").is_none(), "{plain}");
     }
 
     #[test]
@@ -1213,6 +1252,7 @@ mod tests {
             progress: None,
             live: true,
             ssh: None,
+            color: None,
         };
         assert!(list_entry(&e).get("ssh").is_none());
         e.ssh = Some("me@dev");
@@ -1235,6 +1275,7 @@ mod tests {
             progress: None,
             live: false,
             ssh: None,
+            color: None,
         };
         let v = list_entry(&e);
         assert_eq!(v["live"], json!(false));

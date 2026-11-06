@@ -407,6 +407,7 @@ impl Workspace {
             progress,
             lost: false,
             ssh: saved.ssh,
+            color: saved.color,
             disconnected: None,
             retries: 0,
             opened_at: Instant::now(),

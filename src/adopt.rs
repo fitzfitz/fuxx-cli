@@ -205,8 +205,9 @@ fn adopted(s: &SavedSession, info: &LiveInfo) -> Adopted {
             project: s.project.clone().or_else(|| info.project.clone()),
             preset: s.preset.clone(),
             daemon_id: Some(info.id),
-            // The service doesn't know hosts: the file does.
+            // The service doesn't know hosts or colours: the file does.
             ssh: s.ssh.clone(),
+            color: s.color,
         },
         title: info.title.clone(),
         status: info.status,
@@ -236,6 +237,7 @@ fn newcomer(info: &LiveInfo, presets: &[Preset]) -> Adopted {
             preset,
             daemon_id: Some(info.id),
             ssh: None,
+            color: None,
         },
         title: info.title.clone(),
         status: info.status,
@@ -435,6 +437,25 @@ mod tests {
             panic!()
         };
         assert_eq!(a.saved.name.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn an_adopted_session_keeps_its_tab_color() {
+        let mut a = s("a", Some(1));
+        a.color = Some(crate::tab_color::TabColor::Pink);
+        let saved = state(vec![a, s("b", Some(2))], vec![], 0);
+        let p = place_all(&saved, &[live(1), live(9)], RestoreMode::Agents);
+        let colors: Vec<_> = p
+            .slots
+            .iter()
+            .map(|slot| match slot {
+                Slot::Live(a) => a.saved.color,
+                Slot::Restore(l) => l.saved.color,
+            })
+            .collect();
+        // a (still running) keeps pink; b (started again) and newcomer 9 have none.
+        assert_eq!(shown(&p), ["s1", "+b", "s9"]);
+        assert_eq!(colors, [Some(crate::tab_color::TabColor::Pink), None, None]);
     }
 
     #[test]

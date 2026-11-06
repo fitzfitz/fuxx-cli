@@ -210,6 +210,7 @@ const SCENES: &[(&str, fn())] = &[
     ("cached-panes", cached_panes),
     ("sidebar", sidebar_scenes),
     ("sidebar-button", sidebar_button_scenes),
+    ("tabs", tab_scenes),
     ("splits", split_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
@@ -1393,6 +1394,193 @@ fn sidebar_scenes() {
     }
 }
 
+/// Sidebar rows as tabs, from real workspaces in both themes (the `sidebar` scene's eight
+/// sessions; claude orange, codex blue, tests green, the long one purple; shell active):
+/// - `tabs` and `tabs-narrow`: the rows with their colour dots and ⌘N, at 240 and 180 px (no
+///   ages there).
+/// - `tabs-hover`: the pointer over codex: a × in its mark's place; `tabs-hover-close`: on the
+///   × itself.
+/// - `tabs-menu`: codex's tab menu open (right-click), blue ringed.
+/// - `tabs-switcher`: the ⌘P switcher, the dots beside the names, over the split's pane headers
+///   (tests and shell), which show theirs too.
+///
+/// Panics unless the dots are drawn in their colour on the rows, the menu opens on the row
+/// right-clicked and a click on a swatch sets the colour.
+fn tab_scenes() {
+    use crate::tab_color::TabColor;
+    use gpui::{Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let colors = [
+        (0, TabColor::Orange),
+        (1, TabColor::Blue),
+        (2, TabColor::Green),
+        (4, TabColor::Purple),
+    ];
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for scene in [
+            "tabs",
+            "tabs-narrow",
+            "tabs-hover",
+            "tabs-hover-close",
+            "tabs-menu",
+            "tabs-switcher",
+        ] {
+            let width = if scene == "tabs-narrow" { 180.0 } else { 240.0 };
+            let dims = if scene == "tabs-narrow" {
+                size(px(720.0), px(600.0))
+            } else {
+                dims
+            };
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                    ws.sidebar.width = width;
+                    ws.sidebar.hint_dismissed = true;
+                    with_progress(&mut ws);
+                    for (i, color) in colors {
+                        ws.sessions.get_mut(i).expect("a session").color = Some(color);
+                    }
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let acting = slot.clone();
+            // codex's name line, where its dot is (its row has a note line under it).
+            let dot_y = Rc::new(std::cell::Cell::new(0.0f32));
+            let noted = dot_y.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&acting);
+                let none = Modifiers::none();
+                // codex is row 2 (under api's header).
+                let codex = row_point(cx, &ws, 2, 0.0);
+                noted.set(f32::from(row_point(cx, &ws, 2, -7.5).y));
+                match scene {
+                    "tabs-hover" => cx.simulate_mouse_move(window, codex, None, none),
+                    "tabs-hover-close" => {
+                        // The mark slot: the row's inset and padding, then half the slot.
+                        let at = point(px(6.0 + 8.0 + 7.0), px(noted.get()));
+                        cx.simulate_mouse_move(window, at, None, none)
+                    }
+                    "tabs-menu" => {
+                        cx.simulate_mouse_down(window, codex, MouseButton::Right, none);
+                        let open = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            let view = ws.sessions.items()[1].view.entity_id();
+                            ws.sidebar.tab_menu.as_ref().map(|m| m.view == view)
+                        });
+                        assert_eq!(open, Some(true), "{scene}-{slug}: codex's menu opens");
+                    }
+                    "tabs-switcher" => {
+                        cx.update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| ws.open_switcher(window, cx))
+                        })
+                        .expect("open the switcher");
+                    }
+                    _ => {}
+                }
+                // Not kept past the window: a handle left over is reported as a leak.
+                acting.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            if scene == "tabs" || scene == "tabs-narrow" {
+                // codex's blue dot, on its row's line.
+                let shot = render_with(&theme, dims, build, act);
+                let y = dot_y.get();
+                let dots = count_along(&shot, dims, ui.tab(TabColor::Blue), y, 0.0, width);
+                assert!(dots > 0, "{scene}-{slug}: codex's blue dot");
+            }
+        }
+
+        // Acting on rows, no picture: Escape closes the menu; a swatch click sets the colour (and
+        // closes it); a middle-click closes a session, and so does its ×.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = sidebar_workspace(&EIGHT, None, 3, &[WEB], window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            use crate::tab_menu::Dismiss;
+            use gpui::KeyBinding;
+
+            let ws = slotted(&slot);
+            let none = Modifiers::none();
+            let menu_open = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| ws.read(cx).sidebar.tab_menu.is_some())
+            };
+            let names = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let names = ws.sessions.items().iter().map(|s| s.label().to_string());
+                    names.collect::<Vec<_>>()
+                })
+            };
+            // As main.rs binds it.
+            cx.update(|cx| cx.bind_keys([KeyBinding::new("escape", Dismiss, Some("TabMenu"))]));
+            let codex = row_point(cx, &ws, 2, 0.0);
+            cx.simulate_mouse_down(window, codex, MouseButton::Right, none);
+            assert!(menu_open(cx), "{slug}: the menu opens");
+            cx.simulate_keystrokes(window, "escape");
+            assert!(!menu_open(cx), "{slug}: Escape closes it");
+            cx.simulate_mouse_down(window, codex, MouseButton::Right, none);
+            cx.run_until_parked();
+            // The blue swatch: found by its colour (no row has a blue dot here).
+            let image = cx.capture_screenshot(window).expect("capture the window");
+            let shot = Shot {
+                width: image.width(),
+                height: image.height(),
+                rgba: image.as_raw().to_vec(),
+            };
+            let at = centre_of(&shot, dims, ui.tab(TabColor::Blue)).expect("the blue swatch");
+            cx.simulate_click(window, at, none);
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                assert_eq!(ws.sessions.items()[1].color, Some(TabColor::Blue), "{slug}");
+                assert!(ws.sidebar.tab_menu.is_none(), "{slug}: the menu closed");
+            });
+            // Middle-click tests (row 3): closed, and nothing else selected.
+            let tests = row_point(cx, &ws, 3, 0.0);
+            cx.simulate_mouse_down(window, tests, MouseButton::Middle, none);
+            cx.simulate_mouse_up(window, tests, MouseButton::Middle, none);
+            assert!(
+                !names(cx).contains(&"tests".to_string()),
+                "{slug}: middle-click"
+            );
+            assert_eq!(
+                cx.read(|cx| ws.read(cx).sessions.active().map(|s| s.label().to_string())),
+                Some("shell".to_string()),
+                "{slug}: the active session stays"
+            );
+            // codex's × (on hover, in its mark's place).
+            let line = row_point(cx, &ws, 2, -7.5);
+            let close = point(px(6.0 + 8.0 + 7.0), line.y);
+            cx.simulate_mouse_move(window, close, None, none);
+            cx.simulate_click(window, close, none);
+            let left = names(cx);
+            assert!(!left.contains(&"codex".to_string()), "{slug}: the × closes");
+            assert_eq!(left.len(), 6, "{slug}: {left:?}");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+    }
+}
+
 /// Three panes of the active session: api (left), claude (top right, waiting) and codex (bottom
 /// right, working), split as a right split then a down split. `focus` is the focused one.
 fn split_workspace(focus: usize, window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
@@ -1431,6 +1619,33 @@ fn pixel_at(shot: &Shot, dims: Size<Pixels>, x: f32, y: f32) -> [u8; 3] {
     let (x, y) = ((x * scale) as usize, (y * scale) as usize);
     let i = (y * shot.width as usize + x) * 4;
     [shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]]
+}
+
+/// The middle of the pixels that are `c`, in points; none if there are none.
+fn centre_of(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+) -> Option<gpui::Point<Pixels>> {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (mut n, mut sx, mut sy) = (0usize, 0usize, 0usize);
+    for (i, p) in shot.rgba.chunks_exact(4).enumerate() {
+        if p[..3]
+            .iter()
+            .zip([c.r, c.g, c.b])
+            .all(|(a, b)| a.abs_diff(b) <= 3)
+        {
+            n += 1;
+            sx += i % shot.width as usize;
+            sy += i / shot.width as usize;
+        }
+    }
+    (n > 0).then(|| {
+        point(
+            px(sx as f32 / n as f32 / scale),
+            px(sy as f32 / n as f32 / scale),
+        )
+    })
 }
 
 /// How many device pixels along the row at `y` points, between `x0` and `x1` points, are `c`.
@@ -1926,6 +2141,7 @@ fn sidebar_button_scenes() {
                         ws.slide = Some(Slide {
                             showing: false,
                             since: Instant::now() - Duration::from_millis(60),
+                            from: 1.0,
                         });
                     }
                     ws

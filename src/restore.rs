@@ -9,6 +9,7 @@ use crate::presets::Preset;
 use crate::settings::Entry;
 use crate::split_tree::Node;
 use crate::ssh_target::SshTarget;
+use crate::tab_color::{self, TabColor};
 
 /// How much of the last run comes back at startup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -77,6 +78,13 @@ pub struct SavedSession {
     /// An SSH session's host and tmux choice (M10b); a restore connects again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshTarget>,
+    /// The colour given it from its row's menu (M11); a name not known here reads as none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "tab_color::lenient"
+    )]
+    pub color: Option<TabColor>,
 }
 
 /// Everything saved about the workspace.
@@ -213,6 +221,7 @@ mod tests {
                     }),
                     daemon_id: Some(4),
                     ssh: None,
+                    color: Some(TabColor::Teal),
                 },
             ],
             layouts: vec![
@@ -378,6 +387,29 @@ mod tests {
             assert!(!l[0].run_preset, "{mode:?}");
             assert_eq!(l[1].saved.ssh, None, "{mode:?}");
         }
+    }
+
+    #[test]
+    fn a_tab_color_round_trips_and_old_or_odd_files_load() {
+        let state = decode(&encode(&sample())).unwrap();
+        assert_eq!(state.sessions[1].color, Some(TabColor::Teal));
+        assert!(encode(&sample()).contains("\"color\": \"teal\""));
+        // None isn't written.
+        assert_eq!(state.sessions[0].color, None);
+        assert!(!encode(&SavedState::default()).contains("color"));
+        // A file from before tab colours: none.
+        let old = decode(r#"{"version": 1, "sessions": [{"name": "a"}]}"#).unwrap();
+        assert_eq!(old.sessions[0].color, None);
+        // A colour this fuxx doesn't know, or not a name: no colour, and the rest still loads.
+        let odd = decode(
+            r#"{"version": 1, "sessions": [{"name": "a", "color": "brown"}, {"color": 3}]}"#,
+        )
+        .expect("still loads");
+        assert_eq!(odd.sessions[0].name.as_deref(), Some("a"));
+        assert_eq!((odd.sessions[0].color, odd.sessions[1].color), (None, None));
+        // Restored as saved.
+        let back = launches(&sample(), RestoreMode::Layout, &builtins());
+        assert_eq!(back[1].saved.color, Some(TabColor::Teal));
     }
 
     #[test]

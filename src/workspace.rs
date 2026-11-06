@@ -51,6 +51,7 @@ use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::switcher::Switcher;
+use crate::tab_color::TabColor;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{TOP_BAND, UNFOCUSED_VEIL};
@@ -138,6 +139,8 @@ pub struct Session {
     pub lost: bool,
     /// The host an SSH session connects to (M10b); none for a local one.
     pub ssh: Option<SshTarget>,
+    /// The colour given it from its row's menu (M11), shown as a dot; saved.
+    pub color: Option<TabColor>,
     /// SSH: the connection failed and the pane is held for a reconnect.
     pub(crate) disconnected: Option<Disconnected>,
     /// SSH: automatic reconnects in a row so far (each waits longer).
@@ -156,6 +159,7 @@ pub(crate) enum Overlay {
     HostPicker,
     AddressBox,
     Switcher,
+    TabMenu,
 }
 
 /// Where a new session's pane goes, by view (so it holds while the list changes): a layout of
@@ -568,6 +572,7 @@ impl Workspace {
                     preset: s.preset.clone(),
                     daemon_id: self.daemon_backed().then_some(s.id),
                     ssh: s.ssh.clone(),
+                    color: s.color,
                 })
                 .collect(),
             sidebar_width: Some(self.sidebar.width),
@@ -822,6 +827,7 @@ impl Workspace {
                 progress: None,
                 lost: false,
                 ssh: saved.ssh,
+                color: saved.color,
                 disconnected: None,
                 retries: 0,
                 opened_at: Instant::now(),
@@ -1125,6 +1131,10 @@ impl Workspace {
         };
         // While its row number and name still stand.
         self.emit(&Event::Closed, Some(index));
+        // Its tab menu goes with it (the focus moves on below).
+        if self.sidebar.tab_menu.as_ref().is_some_and(|m| m.view == id) {
+            self.sidebar.tab_menu = None;
+        }
         self.browsers.session_closed(session_id);
         // Waits get a last look at its screen and status (PASS printed just before the shell
         // exited still counts), then exit / change waits are met.
@@ -1321,6 +1331,9 @@ impl Workspace {
         }
         if keep != Overlay::Switcher {
             self.switcher = None;
+        }
+        if keep != Overlay::TabMenu {
+            self.sidebar.tab_menu = None;
         }
     }
 
@@ -1607,13 +1620,14 @@ impl Workspace {
     pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar.hidden = !self.sidebar.hidden;
         // With motion on, the sidebar slides; `render` runs the frames.
-        self.slide = (!cx.reduce_motion()).then(|| Slide {
-            showing: !self.sidebar.hidden,
-            since: Instant::now(),
-        });
-        // The "+ New" menu hangs off the sidebar's footer; hidden, it can't stay open.
+        // A slide already under way turns back from where it has got to.
+        let current = self.slide;
+        self.slide = (!cx.reduce_motion()).then(|| Slide::start(!self.sidebar.hidden, current));
+        // The "+ New" menu hangs off the sidebar's footer, and a tab menu off a row; hidden,
+        // they can't stay open.
         self.sidebar.new_menu = false;
-        if self.sidebar.hidden && self.renaming.is_some() {
+        let menu = self.sidebar.tab_menu.take().is_some();
+        if self.sidebar.hidden && (self.renaming.is_some() || menu) {
             self.focus_active(window, cx);
         }
         self.save();
@@ -1707,9 +1721,7 @@ impl Render for Workspace {
         self.slide = self
             .slide
             .filter(|s| s.since.elapsed() < sidebar_toggle::SLIDE);
-        let slide = self
-            .slide
-            .map(|s| sidebar_toggle::shown_fraction(s.since.elapsed(), s.showing));
+        let slide = self.slide.map(|s| s.shown());
         if slide.is_some() {
             window.request_animation_frame();
         }
@@ -1735,6 +1747,7 @@ impl Render for Workspace {
         };
         let button = self.render_sidebar_button(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
+        let tab_menu = self.render_tab_menu(ui, cx);
         self.refresh_switcher(cx);
         let pane_band = self
             .sidebar
@@ -1860,8 +1873,10 @@ impl Render for Workspace {
             .when_some(self.address_box.clone(), |root, address| {
                 root.child(top_panel(address))
             })
-            // The sidebar's "+ New" menu, over everything, with its click-away backdrop.
+            // The sidebar's "+ New" menu and a row's tab menu, over everything, with their
+            // click-away backdrops.
             .children(new_menu)
+            .children(tab_menu)
     }
 }
 
@@ -2220,6 +2235,7 @@ mod tests {
             }),
             daemon_id: None,
             ssh: None,
+            color: None,
         };
         let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
         let c = daemon_create(

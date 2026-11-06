@@ -1,7 +1,8 @@
 //! M11: getting around. ⇧⌘U takes you to the session that has waited longest for you (each press
 //! the next one); ⌘P opens the session switcher, a panel near the top of the window: a filter
-//! box over every session, most urgent first, each row with its mark, number, name, group and
-//! age, and a waiting one's question under it. Enter goes to the chosen session.
+//! box over every session, most urgent first, each row with its mark, number, name (and its tab
+//! colour's dot), group and age, and a waiting one's question under it. Enter goes to the chosen
+//! session.
 //!
 //! The box is the sidebar's rename box (`NameInput`), as in the host picker: its Enter goes to
 //! the selected row, its Escape (or losing focus) closes the switcher.
@@ -19,9 +20,10 @@ use crate::groups::{self, GroupKey};
 use crate::host_picker::move_selection;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
-use crate::sidebar::{MARK_SLOT, mark_size, mark_slot, tabular};
+use crate::sidebar::{MARK_SLOT, color_dot, mark_size, mark_slot, tabular};
 use crate::status::{self, Status};
 use crate::status_mark;
+use crate::tab_color::TabColor;
 use crate::terminal_view::hsla;
 use crate::ui_tokens::size::{SIDEBAR_ROW, WAITING_ROW};
 use crate::ui_tokens::text;
@@ -61,6 +63,7 @@ pub struct Entry {
     pub since: Instant,
     /// While Waiting: the screen line that asked.
     pub question: Option<String>,
+    pub color: Option<TabColor>,
 }
 
 /// How urgent a status is: the lower, the sooner it's listed.
@@ -250,8 +253,8 @@ impl Switcher {
         }
     }
 
-    /// Row `at`: mark, `#n`, name, group, and how long in its status; a waiting one's question
-    /// under them.
+    /// Row `at`: mark, `#n`, name and its tab colour, group, and how long in its status; a
+    /// waiting one's question under them.
     fn render_row(&self, at: usize, now: Instant, cx: &mut Context<Self>) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
         let i = self.rows[at];
@@ -295,6 +298,9 @@ impl Switcher {
                     .when(chosen, |name| name.font_weight(FontWeight::MEDIUM))
                     .child(entry.label.clone()),
             )
+            .when_some(entry.color, |line, color| {
+                line.child(color_dot(color, ui).ml(px(6.0)))
+            })
             .when_some(entry.group.clone(), |line, group| {
                 line.child(
                     meta(ui.text_faint)
@@ -413,6 +419,7 @@ impl Workspace {
                 status: s.status,
                 since: s.status_since,
                 question: s.question.clone(),
+                color: s.color,
             })
             .collect()
     }
@@ -555,6 +562,7 @@ mod tests {
             status,
             since: Instant::now() - Duration::from_secs(secs),
             question: None,
+            color: None,
         }
     }
 

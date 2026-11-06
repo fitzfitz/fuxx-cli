@@ -1,14 +1,15 @@
 //! Pane headers (M11): when a session is split, each pane gets a 22 px strip above its terminal
-//! with its status mark, number, name and how long it has been in that status. `shows` and
-//! `look` are the pure model (when, and with which colours); `Workspace::pane_header` draws it,
-//! and `divider_active` decides which divider is drawn as the 2 px accent line.
+//! with its status mark, number, name (and its tab colour's dot) and how long it has been in that
+//! status. `shows` and `look` are the pure model (when, and with which colours);
+//! `Workspace::pane_header` draws it, and `divider_active` decides which divider is drawn as the
+//! 2 px accent line.
 
 use std::time::Instant;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{AnyElement, EntityId, SharedString, div, prelude::*, px};
 
-use crate::sidebar::{mark_slot, tabular};
+use crate::sidebar::{color_dot, mark_slot, tabular};
 use crate::status::{self, Status};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
@@ -104,9 +105,9 @@ impl Workspace {
                         .text_color(hsla(ui.text_faint))
                         .child(format!("#{}", index + 1)),
                 )
+                // The name gives way first; its colour's dot stays beside it.
                 .child(
                     div()
-                        .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
                         .whitespace_nowrap()
@@ -115,6 +116,8 @@ impl Workspace {
                         .text_color(hsla(look.text))
                         .child(session.label()),
                 )
+                .children(session.color.map(|color| color_dot(color, ui)))
+                .child(div().flex_1())
                 .children(age.map(|age| {
                     div()
                         .flex_none()
