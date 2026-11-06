@@ -1657,7 +1657,7 @@ mod tests {
             notification_summary(&info("", None, Some("claude"))),
             "fuxx — claude"
         );
-        assert_eq!(notification_summary(&info("", None, None)), "fuxx — 🖕");
+        assert_eq!(notification_summary(&info("", None, None)), "fuxx — ╭∩╮");
     }
 
     fn sample_info() -> SessionInfo {

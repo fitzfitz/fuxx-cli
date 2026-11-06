@@ -225,7 +225,7 @@ impl Session {
         )
     }
 
-    /// Your name, else the program's own title, else the preset's name, else 🖕.
+    /// Your name, else the program's own title, else the preset's name, else ╭∩╮.
     pub fn label(&self) -> SharedString {
         groups::auto_name(
             self.name.as_deref(),
@@ -1489,7 +1489,7 @@ impl Workspace {
             if let Some((message, body)) =
                 notifier::message(new).zip(notifier::body(new, question.as_deref(), worked))
             {
-                // The group says more than the name (often 🖕) among many workspaces; the number
+                // The group says more than the name (often ╭∩╮) among many workspaces; the number
                 // is its workspace's (what ⌘1–⌘9 take you to).
                 let ws = self.workspace_of(index);
                 let who = ws
@@ -2663,7 +2663,18 @@ impl Workspace {
             (Some(axis), Some(pane)) => At::Split(axis, pane),
             _ => At::New,
         };
-        self.open_shot_at(name, project, text, at, window, cx);
+        self.open_shot_at(Some(name), project, text, at, window, cx);
+    }
+
+    /// `open_shot_session` for a terminal with no name of yours (a new one): it shows the default.
+    pub(crate) fn open_unnamed_shot_session(
+        &mut self,
+        project: &Path,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_shot_at(None, project, text, At::New, window, cx);
     }
 
     /// `open_shot_session` as a new tab at the end of the focused pane's.
@@ -2676,12 +2687,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let at = self.model.focused_pane().map_or(At::New, At::Tab);
-        self.open_shot_at(name, project, text, at, window, cx);
+        self.open_shot_at(Some(name), project, text, at, window, cx);
     }
 
     fn open_shot_at(
         &mut self,
-        name: &str,
+        name: Option<&str>,
         project: &Path,
         text: &str,
         at: At,
@@ -2697,7 +2708,7 @@ impl Workspace {
             .expect("start cat");
         view.read(cx).show_text(text);
         let saved = SavedSession {
-            name: Some(name.into()),
+            name: name.map(Into::into),
             project: Some(project.into()),
             ..SavedSession::default()
         };
