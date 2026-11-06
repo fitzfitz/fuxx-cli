@@ -266,3 +266,10 @@ Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] (Tasks 3b
   the Right, Show All Tabs, Rename Tab…, Tab Color), bulk closes always ask first. The number column goes; the right
   side shows a colour dot and "⌘N" (your sample). "Move Tab to New Window" waits for multi-window support.
 
+## Amendment (2026-11-06, your request): tabs hold terminals
+
+Plan: [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] (Task 3d). The sidebar lists **tabs**; a tab is a
+split layout of one or more terminals; ⌘T makes a tab with one terminal, splits add terminals to the current tab, and
+closing a tab's last terminal closes it. Group headers stay; a tab's ring is its most urgent terminal; closing a tab with
+2+ terminals asks first.
+
