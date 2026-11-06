@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use block2::RcBlock;
+use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use futures::future::{self, Either};
 use gpui::{App, BackgroundExecutor};
@@ -20,13 +21,14 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSBitmapImageFileType,
     NSBitmapImageRep, NSEvent, NSEventModifierFlags, NSImage, NSResponder, NSView, NSWindow,
     NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    NSDate, NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
-    NSSize, NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
+    NSArray, NSDate, NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSSize, NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
 };
 use objc2_web_kit::{
     WKErrorCode, WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate,
@@ -72,76 +74,38 @@ pub struct BarLook {
     pub address_bar: bool,
 }
 
-/// One session's browser: a window holding a web view. Main thread only (it isn't `Send`).
-/// Dropping it (or `close`) closes the window, and every script or screenshot still waiting
-/// answers `browser closed`.
-pub struct Browser {
-    window: Retained<NSWindow>,
+/// What a page tells whoever shows it: the person clicked in it (they mean to type there), or a
+/// navigation started, arrived, finished or failed (its address, title and buttons may have
+/// changed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageEvent {
+    Clicked,
+    Changed,
+}
+
+/// A web page fuxx drives: a web view (in a browser window, or in a pane of fuxx's window), its
+/// delegate, and the scripts and screenshots WebKit hasn't answered yet. Main thread only.
+/// Dropping it stops the page, and every script or screenshot still waiting answers `browser
+/// closed`.
+pub(crate) struct Page {
     view: Retained<WKWebView>,
-    /// The window's and the web view's delegate (they hold it weakly, so it lives here).
+    /// The web view's delegates (it holds them weakly, so it lives here).
     delegate: Retained<BrowserDelegate>,
-    /// The top bar (the toolbar and the field hold it weakly, so it lives here too).
-    bar: Retained<bar::TopBar>,
-    /// Whether it was opened with `browser-keep-data` on (it uses the saved data store).
+    /// Whether it was made with `browser-keep-data` on (it uses the saved data store).
     keep_data: bool,
     /// Scripts and screenshots WebKit hasn't answered yet.
     pending: RefCell<Vec<Weak<dyn Unanswered>>>,
 }
 
-impl Browser {
-    /// A new browser window titled `title`, not yet shown (see `bring_to_front`): 1100 × 800
-    /// points, cascaded from the key (or else main) window, centred when there is none. Pages get a `window.open` that
-    /// loads in this window; cookies and logins live in the data store `keep_data` picks (see
-    /// `data_store`), for as long as the window lives; its top bar looks as `look` says.
-    /// Safari's Web Inspector can attach where macOS allows it (13.3 and later).
-    pub fn open(title: &str, keep_data: bool, look: &BarLook, _cx: &mut App) -> Browser {
-        let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
-        let window = new_window(
-            mtm,
-            NSWindowStyleMask::Titled
-                | NSWindowStyleMask::Closable
-                | NSWindowStyleMask::Resizable
-                | NSWindowStyleMask::Miniaturizable,
-        );
-        // Placed once the bar has given the window its final size.
-        let browser = Browser::in_window(mtm, window, keep_data, look);
-        let window = &browser.window;
-        let app = NSApplication::sharedApplication(mtm);
-        match app.keyWindow().or_else(|| app.mainWindow()) {
-            Some(beside) => {
-                let frame = beside.frame();
-                let top_left = NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height);
-                // The first call puts the window on that corner and answers the next cascade
-                // step (down and to the right), where the second puts it.
-                let next = window.cascadeTopLeftFromPoint(top_left);
-                window.cascadeTopLeftFromPoint(next);
-            }
-            None => window.center(),
-        }
-        browser.set_title(title);
-        browser
-    }
-
-    /// A browser in a window that is never shown (the probe's). Titled, as a toolbar needs a
-    /// title bar to sit in.
-    fn offscreen(mtm: MainThreadMarker, keep_data: bool, look: &BarLook) -> Browser {
-        let style =
-            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
-        Browser::in_window(mtm, new_window(mtm, style), keep_data, look)
-    }
-
-    /// Fill `window` with a new web view on the data store `keep_data` picks, under a top bar
-    /// that looks as `look` says, and take them on.
-    fn in_window(
-        mtm: MainThreadMarker,
-        window: Retained<NSWindow>,
+impl Page {
+    /// What a page's web view is made with: the data store `keep_data` picks (see `data_store`)
+    /// and a `window.open` that loads in the same view.
+    pub(crate) fn configuration(
         keep_data: bool,
-        look: &BarLook,
-    ) -> Browser {
-        let delegate = BrowserDelegate::new(mtm);
-        // SAFETY: main thread; plain WebKit set-up with valid arguments. The delegate is kept
-        // alive by the `Browser`, which clears both delegate links before it goes.
-        let view = unsafe {
+        mtm: MainThreadMarker,
+    ) -> Retained<WKWebViewConfiguration> {
+        // SAFETY: main thread (the marker); plain WebKit set-up with valid arguments.
+        unsafe {
             let config = WKWebViewConfiguration::new(mtm);
             config.setWebsiteDataStore(&data_store(keep_data, mtm));
             let shim = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
@@ -151,52 +115,40 @@ impl Browser {
                 true,
             );
             config.userContentController().addUserScript(&shim);
-            let frame = NSRect::new(NSPoint::new(0.0, 0.0), WINDOW_SIZE);
-            let view = WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &config);
+            config
+        }
+    }
+
+    /// Take on `view`, made with `configuration(keep_data)`: its delegates, and Safari's Web
+    /// Inspector where macOS allows it (13.3 and later).
+    pub(crate) fn new(view: Retained<WKWebView>, keep_data: bool, mtm: MainThreadMarker) -> Page {
+        let delegate = BrowserDelegate::new(mtm);
+        // SAFETY: main thread; the delegate is kept alive by the `Page`, which clears both
+        // delegate links before it goes.
+        unsafe {
             if view.respondsToSelector(sel!(setInspectable:)) {
                 view.setInspectable(true);
             }
             view.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-            view
-        };
-        let bar = bar::TopBar::new(mtm, &view, &delegate, look);
-        bar.install(&window, look);
-        // The bar keeps the window's content size; the page fills it, with the loading line
-        // over its top edge.
-        window.setContentSize(WINDOW_SIZE);
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), WINDOW_SIZE);
-        let content = NSView::initWithFrame(mtm.alloc(), frame);
-        view.setFrame(frame);
-        view.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable
-                | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
-        content.addSubview(&view);
-        content.addSubview(bar.line());
-        window.setContentView(Some(&content));
-        // The page has the keyboard when the window first shows, never the address field (it
-        // takes it only on ⌘L or a click).
-        window.setInitialFirstResponder(Some(&view));
-        window.makeFirstResponder(Some(&view));
-        window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        let browser = Browser {
-            window,
+        }
+        Page {
             view,
             delegate,
-            bar,
             keep_data,
             pending: RefCell::new(Vec::new()),
-        };
-        browser.refresh_bar();
-        browser
+        }
+    }
+
+    /// Tell `events` (or, with none, no one) about each navigation.
+    pub(crate) fn set_events(&self, events: Option<UnboundedSender<PageEvent>>) {
+        self.delegate.ivars().events.replace(events);
     }
 
     /// Go to `url` (already normalised to http or https). Returns at once; `state` tells when
     /// the page has loaded, or that it failed to.
     pub fn load(&self, url: &str) {
         navigate(&self.view, &self.delegate, url);
-        self.refresh_bar();
     }
 
     /// Run `js` in the page and answer with its value as JSON (`undefined` as `null`; what JSON
@@ -241,7 +193,7 @@ impl Browser {
         rx
     }
 
-    /// Where the browser is and whether it is still loading. Polled: once loading stops, `error`
+    /// Where the page is and whether it is still loading. Polled: once loading stops, `error`
     /// tells whether the last navigation failed (connection refused, unknown host and so on).
     pub fn state(&self) -> PageState {
         // SAFETY: main thread; plain property reads.
@@ -267,7 +219,18 @@ impl Browser {
         }
     }
 
-    /// A PNG of the visible part of the page, at the window's backing scale (2× on Retina).
+    /// Whether the page can go back, and forward.
+    pub fn can_go(&self) -> (bool, bool) {
+        // SAFETY: main thread; plain property reads.
+        unsafe { (self.view.canGoBack(), self.view.canGoForward()) }
+    }
+
+    /// The address the last `load` asked for (the address field shows it until a page comes).
+    pub fn requested(&self) -> Option<String> {
+        self.delegate.ivars().requested.borrow().clone()
+    }
+
+    /// A PNG of the visible part of the page, at its window's backing scale (2× on Retina).
     pub fn screenshot(&self) -> oneshot::Receiver<Result<Vec<u8>, String>> {
         let (tx, rx) = oneshot::channel();
         let slot = self.pend(tx);
@@ -296,7 +259,13 @@ impl Browser {
         self.delegate.ivars().failure.take();
         // SAFETY: main thread.
         unsafe { self.view.goBack() };
-        self.refresh_bar();
+    }
+
+    /// Go forward a page (nothing happens on the last one).
+    pub fn forward(&self) {
+        self.delegate.ivars().failure.take();
+        // SAFETY: main thread.
+        unsafe { self.view.goForward() };
     }
 
     /// Load the page again.
@@ -304,6 +273,183 @@ impl Browser {
         self.delegate.ivars().failure.take();
         // SAFETY: main thread.
         unsafe { self.view.reload() };
+    }
+
+    /// Stop loading.
+    pub fn stop(&self) {
+        // SAFETY: main thread.
+        unsafe { self.view.stopLoading() };
+    }
+
+    /// Whether it was made with `browser-keep-data` on, so it uses the saved data store.
+    pub fn keeps_data(&self) -> bool {
+        self.keep_data
+    }
+
+    /// Keep `tx` where both its completion block and `drop` can answer it, first come first
+    /// served.
+    fn pend<T: 'static>(&self, tx: oneshot::Sender<Result<T, String>>) -> Slot<T> {
+        let slot: Slot<T> = Rc::new(Cell::new(Some(tx)));
+        let mut pending = self.pending.borrow_mut();
+        // Answered requests are gone (WebKit released their blocks): forget them.
+        pending.retain(|request| request.strong_count() > 0);
+        let request: Weak<dyn Unanswered> = Rc::downgrade(&slot) as Weak<_>;
+        pending.push(request);
+        slot
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        for request in self.pending.take() {
+            if let Some(request) = request.upgrade() {
+                request.give_up();
+            }
+        }
+        self.delegate.ivars().events.take();
+        // SAFETY: main thread (a `Page` never leaves it).
+        unsafe {
+            self.view.stopLoading();
+            self.view.setUIDelegate(None);
+            self.view.setNavigationDelegate(None);
+        }
+    }
+}
+
+/// One browser window holding a page (an M10c agent window, now a browser tab popped out of
+/// its pane). Main thread only (it isn't `Send`). Dropping it (or `close`) closes the window, and
+/// every script or screenshot still waiting answers `browser closed`.
+pub struct Browser {
+    window: Retained<NSWindow>,
+    page: Page,
+    /// The top bar (the toolbar and the field hold it weakly, so it lives here).
+    bar: Retained<bar::TopBar>,
+}
+
+impl Browser {
+    /// A new browser window titled `title`, not yet shown (see `bring_to_front`): 1100 × 800
+    /// points, cascaded from the key (or else main) window, centred when there is none. Pages get a `window.open` that
+    /// loads in this window; cookies and logins live in the data store `keep_data` picks (see
+    /// `data_store`), for as long as the window lives; its top bar looks as `look` says.
+    /// Safari's Web Inspector can attach where macOS allows it (13.3 and later).
+    #[allow(dead_code)] // the agent windows' own opening; agents use browser tabs now (M11b)
+    pub fn open(title: &str, keep_data: bool, look: &BarLook, _cx: &mut App) -> Browser {
+        let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
+        let page = new_page(mtm, keep_data);
+        Browser::adopt(page, title, look, mtm)
+    }
+
+    /// A browser window titled `title` around `page` (a browser tab's, popped out of its pane:
+    /// the page, its history and what it is doing come with it), placed as `open` places one,
+    /// not yet shown.
+    pub(crate) fn adopt(page: Page, title: &str, look: &BarLook, mtm: MainThreadMarker) -> Browser {
+        let window = new_window(
+            mtm,
+            NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Resizable
+                | NSWindowStyleMask::Miniaturizable,
+        );
+        // Placed once the bar has given the window its final size.
+        let browser = Browser::in_window(mtm, window, page, look);
+        let window = &browser.window;
+        let app = NSApplication::sharedApplication(mtm);
+        match app.keyWindow().or_else(|| app.mainWindow()) {
+            Some(beside) => {
+                let frame = beside.frame();
+                let top_left = NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height);
+                // The first call puts the window on that corner and answers the next cascade
+                // step (down and to the right), where the second puts it.
+                let next = window.cascadeTopLeftFromPoint(top_left);
+                window.cascadeTopLeftFromPoint(next);
+            }
+            None => window.center(),
+        }
+        browser.set_title(title);
+        browser
+    }
+
+    /// A browser in a window that is never shown (the probe's). Titled, as a toolbar needs a
+    /// title bar to sit in.
+    fn offscreen(mtm: MainThreadMarker, keep_data: bool, look: &BarLook) -> Browser {
+        let style =
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
+        let page = new_page(mtm, keep_data);
+        Browser::in_window(mtm, new_window(mtm, style), page, look)
+    }
+
+    /// Fill `window` with `page`'s web view under a top bar that looks as `look` says, and
+    /// take them on.
+    fn in_window(
+        mtm: MainThreadMarker,
+        window: Retained<NSWindow>,
+        page: Page,
+        look: &BarLook,
+    ) -> Browser {
+        let view = &page.view;
+        let bar = bar::TopBar::new(mtm, view, &page.delegate, look);
+        bar.install(&window, look);
+        // The bar keeps the window's content size; the page fills it, with the loading line
+        // over its top edge.
+        window.setContentSize(WINDOW_SIZE);
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), WINDOW_SIZE);
+        let content = NSView::initWithFrame(mtm.alloc(), frame);
+        view.setHidden(false);
+        view.setFrame(frame);
+        view.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        content.addSubview(view);
+        content.addSubview(bar.line());
+        window.setContentView(Some(&content));
+        // The page has the keyboard when the window first shows, never the address field (it
+        // takes it only on ⌘L or a click).
+        window.setInitialFirstResponder(Some(view));
+        window.makeFirstResponder(Some(view));
+        window.setDelegate(Some(ProtocolObject::from_ref(&*page.delegate)));
+        let browser = Browser { window, page, bar };
+        browser.refresh_bar();
+        browser
+    }
+
+    /// Go to `url` (already normalised to http or https). Returns at once; `state` tells when
+    /// the page has loaded, or that it failed to.
+    pub fn load(&self, url: &str) {
+        self.page.load(url);
+        self.refresh_bar();
+    }
+
+    /// `Page::eval`.
+    pub fn eval(&self, js: &str) -> oneshot::Receiver<Result<Value, String>> {
+        self.page.eval(js)
+    }
+
+    /// `Page::run_script`.
+    #[allow(dead_code)] // the probe's; agents use browser tabs now (M11b)
+    pub fn run_script(&self, script: &str) -> oneshot::Receiver<Result<Value, String>> {
+        self.page.run_script(script)
+    }
+
+    /// `Page::state`.
+    pub fn state(&self) -> PageState {
+        self.page.state()
+    }
+
+    /// `Page::screenshot`, at the window's backing scale.
+    pub fn screenshot(&self) -> oneshot::Receiver<Result<Vec<u8>, String>> {
+        self.page.screenshot()
+    }
+
+    /// Go back a page (nothing happens on the first page).
+    pub fn back(&self) {
+        self.page.back();
+        self.refresh_bar();
+    }
+
+    /// Load the page again.
+    pub fn reload(&self) {
+        self.page.reload();
         self.refresh_bar();
     }
 
@@ -333,7 +479,7 @@ impl Browser {
             FrontOrder::TakeKeyboard => self.window.makeKeyAndOrderFront(None),
             FrontOrder::KeepKeyboard => self.window.orderFront(None),
         }
-        self.delegate.ivars().closed.set(false);
+        self.page.delegate.ivars().closed.set(false);
     }
 
     /// Whether any of the window can be seen on screen (not hidden, minimised or covered).
@@ -345,48 +491,55 @@ impl Browser {
 
     /// Whether it was opened with `browser-keep-data` on, so it uses the saved data store.
     pub fn keeps_data(&self) -> bool {
-        self.keep_data
+        self.page.keeps_data()
     }
 
     /// Whether the user has closed the window (the browser itself still works until dropped).
     pub fn is_closed(&self) -> bool {
-        self.delegate.ivars().closed.get()
+        self.page.delegate.ivars().closed.get()
     }
 
     /// Close the window and stop the page; what is still waiting answers `browser closed`.
+    #[allow(dead_code)] // the probe's
     pub fn close(self) {
         drop(self);
-    }
-
-    /// Keep `tx` where both its completion block and `close` can answer it, first come first
-    /// served.
-    fn pend<T: 'static>(&self, tx: oneshot::Sender<Result<T, String>>) -> Slot<T> {
-        let slot: Slot<T> = Rc::new(Cell::new(Some(tx)));
-        let mut pending = self.pending.borrow_mut();
-        // Answered requests are gone (WebKit released their blocks): forget them.
-        pending.retain(|request| request.strong_count() > 0);
-        let request: Weak<dyn Unanswered> = Rc::downgrade(&slot) as Weak<_>;
-        pending.push(request);
-        slot
     }
 }
 
 impl Drop for Browser {
     fn drop(&mut self) {
-        for request in self.pending.take() {
-            if let Some(request) = request.upgrade() {
-                request.give_up();
-            }
-        }
-        // SAFETY: main thread (a `Browser` never leaves it).
-        unsafe {
-            self.view.stopLoading();
-            self.view.setUIDelegate(None);
-            self.view.setNavigationDelegate(None);
-        }
+        // The page stops (and what waits on it answers) as it drops, after this.
         self.bar.detach(&self.window);
         self.window.setDelegate(None);
         self.window.close();
+    }
+}
+
+/// A page in a plain web view (a browser window's), on the data store `keep_data` picks.
+fn new_page(mtm: MainThreadMarker, keep_data: bool) -> Page {
+    let config = Page::configuration(keep_data, mtm);
+    let frame = NSRect::new(NSPoint::new(0.0, 0.0), WINDOW_SIZE);
+    // SAFETY: main thread; WKWebView's own initialiser, with valid arguments.
+    let view = unsafe { WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &config) };
+    Page::new(view, keep_data, mtm)
+}
+
+/// The page keeps macOS's light or dark (its `prefers-color-scheme`, what agents see), not
+/// fuxx's: the web view's own appearance overrides its window's. macOS's is the app's effective
+/// appearance (neither GPUI nor fuxx sets the app's own). A property read, with no observer to
+/// keep and let go of, so it is followed whenever the page's bar is brought up to date.
+pub(crate) fn follow_system_appearance(view: &WKWebView, mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    // SAFETY: AppKit's own appearance names.
+    let names = unsafe { [NSAppearanceNameAqua, NSAppearanceNameDarkAqua] };
+    let Some(system) = app
+        .effectiveAppearance()
+        .bestMatchFromAppearancesWithNames(&NSArray::from_slice(&names))
+    else {
+        return;
+    };
+    if view.appearance().map(|a| a.name()).as_deref() != Some(&*system) {
+        view.setAppearance(NSAppearance::appearanceNamed(&system).as_deref());
     }
 }
 
@@ -737,6 +890,8 @@ impl ShortcutWindow {
 /// What the browser's delegate keeps.
 #[derive(Default)]
 struct DelegateState {
+    /// Told about each navigation (a browser tab's; a window's bar is refreshed by a timer).
+    events: RefCell<Option<UnboundedSender<PageEvent>>>,
     /// The window has closed.
     closed: Cell<bool>,
     /// The address the last `load` (or the address field) asked for: a page that never came is
@@ -765,13 +920,25 @@ define_class!(
         }
     }
 
-    // SAFETY: the signatures match `webView:didCommitNavigation:`,
+    // SAFETY: the signatures match `webView:didStartProvisionalNavigation:`,
+    // `webView:didCommitNavigation:`, `webView:didFinishNavigation:`,
     // `webView:didFailProvisionalNavigation:withError:` and `webView:didFailNavigation:withError:`.
     unsafe impl WKNavigationDelegate for BrowserDelegate {
+        #[unsafe(method(webView:didStartProvisionalNavigation:))]
+        fn did_start_navigation(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>) {
+            self.changed();
+        }
+
         // A page arrived (a load, a click, a form, a redirect): any earlier failure is over.
         #[unsafe(method(webView:didCommitNavigation:))]
         fn did_commit_navigation(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.ivars().failure.take();
+            self.changed();
+        }
+
+        #[unsafe(method(webView:didFinishNavigation:))]
+        fn did_finish_navigation(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>) {
+            self.changed();
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
@@ -839,6 +1006,15 @@ impl BrowserDelegate {
         if error.code() != NSURLErrorCancelled {
             let reason = error.localizedDescription().to_string();
             self.ivars().failure.replace(Some(reason));
+        }
+        self.changed();
+    }
+
+    /// Tell whoever listens that the page changed. Only queued: the listener acts on its next
+    /// turn, never inside WebKit's call.
+    fn changed(&self) {
+        if let Some(events) = &*self.ivars().events.borrow() {
+            let _ = events.unbounded_send(PageEvent::Changed);
         }
     }
 }

@@ -77,6 +77,11 @@ impl<T> SessionList<T> {
         }
     }
 
+    /// None is active (the focused tab is a browser tab, which isn't a session).
+    pub fn deselect(&mut self) {
+        self.active = None;
+    }
+
     /// Remove; if it was active, the next one (or the new last one) becomes active.
     pub fn remove(&mut self, index: usize) -> Option<T> {
         if index >= self.items.len() {
@@ -110,6 +115,20 @@ mod tests {
         let l = list(3);
         assert_eq!(l.active_index(), Some(2));
         assert_eq!(l.active(), Some(&2));
+    }
+
+    #[test]
+    fn deselect_leaves_none_active_until_the_next_select() {
+        let mut l = list(3);
+        l.deselect();
+        assert_eq!(l.active_index(), None);
+        assert_eq!(l.active(), None);
+        // Sorting and removing keep none active.
+        l.sort_by_key(|&i| std::cmp::Reverse(i));
+        l.remove(0);
+        assert_eq!(l.active_index(), None);
+        assert!(l.select(1));
+        assert_eq!(l.active(), Some(&0));
     }
 
     #[test]

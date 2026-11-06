@@ -47,6 +47,9 @@ pub struct NameInput {
     last_line: Option<ShapedLine>,
     last_origin: Option<Point<Pixels>>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// Drawn without its own edge and fill (the box it sits in has them: a browser tab's
+    /// address field).
+    bare: bool,
     _blur: Subscription,
 }
 
@@ -73,8 +76,14 @@ impl NameInput {
             last_line: None,
             last_origin: None,
             last_bounds: None,
+            bare: false,
             _blur: blur,
         }
+    }
+
+    /// Without its own edge and fill: the box it is put in draws them.
+    pub fn bare(&mut self) {
+        self.bare = true;
     }
 
     /// The text as typed so far (with any IME composition in progress).
@@ -315,11 +324,13 @@ impl Render for NameInput {
         div()
             .flex_1()
             .overflow_hidden()
-            .px_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(hsla(edge))
-            .bg(hsla(ui.sidebar_background))
+            .when(!self.bare, |d| {
+                d.px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(hsla(edge))
+                    .bg(hsla(ui.sidebar_background))
+            })
             .key_context("NameInput")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::backspace))

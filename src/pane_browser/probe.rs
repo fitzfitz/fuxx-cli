@@ -187,7 +187,7 @@ pub fn run_probe() -> ! {
             ]),
         ]);
 
-        let web = Rc::new(PaneWebView::new(mtm));
+        let web = Rc::new(PaneWebView::new(false, mtm));
         let placed: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
         let moves: Rc<RefCell<Vec<Point<Pixels>>>> = Rc::default();
         let keys: Rc<RefCell<Vec<String>>> = Rc::default();
@@ -396,7 +396,7 @@ impl Probe {
         )?;
 
         // 5. A page, and scripts: the page is laid out at the placeholder's size.
-        self.web.load(&home);
+        self.web.page().load(&home);
         let deadline = Instant::now() + SETTLE_LIMIT;
         loop {
             // SAFETY: main thread; plain property reads.
@@ -412,10 +412,10 @@ impl Probe {
             check(Instant::now() < deadline, "the page never loaded", &home)?;
             ex.timer(LOAD_POLL).await;
         }
-        let title = within(self.web.eval("document.title"), ANSWER_LIMIT, &ex).await?;
+        let title = within(self.web.page().eval("document.title"), ANSWER_LIMIT, &ex).await?;
         check(title == json!("fuxx probe"), "eval title", &title)?;
         let page_size = within(
-            self.web.eval("[innerWidth, innerHeight]"),
+            self.web.page().eval("[innerWidth, innerHeight]"),
             ANSWER_LIMIT,
             &ex,
         )
@@ -478,6 +478,7 @@ impl Probe {
         // Typing: a plain key goes to the page (the first responder), never past GPUI.
         within(
             self.web
+                .page()
                 .eval("document.getElementById('name').focus(), document.activeElement.id"),
             ANSWER_LIMIT,
             &ex,
@@ -489,7 +490,9 @@ impl Probe {
         }
         ex.timer(RESEND_WAIT).await;
         let field = within(
-            self.web.eval("document.getElementById('name').value"),
+            self.web
+                .page()
+                .eval("document.getElementById('name').value"),
             ANSWER_LIMIT,
             &ex,
         )

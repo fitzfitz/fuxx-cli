@@ -18,6 +18,7 @@ use gpui::{
 use crate::appearance::Appearance;
 use crate::groups::{self, GroupKey};
 use crate::host_picker::move_selection;
+use crate::layout_model::WorkspaceId;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::sidebar::{MARK_SLOT, color_dot, mark_size, mark_slot, tabular};
@@ -53,7 +54,7 @@ const HINT: &str = "Enter go \u{b7} \u{2191}\u{2193} choose \u{b7} Esc close \u{
 /// What the switcher shows of one workspace, in sidebar order (its number is its place + 1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
-    /// Its most urgent terminal's id (`s<id>`): where a row goes, while the list changes.
+    /// Its workspace's id (`WorkspaceId`'s number): where a row goes, while the list changes.
     pub id: u64,
     pub label: String,
     /// Its group as the sidebar labels it; none when ungrouped.
@@ -139,7 +140,7 @@ pub fn filter_rows(entries: &[Entry], query: &str) -> Vec<usize> {
 }
 
 pub enum SwitcherEvent {
-    /// Go to this session (by id).
+    /// Go to this workspace (by `Entry::id`).
     Jump(u64),
     /// Escape, a click outside, or the box lost focus.
     Cancel,
@@ -404,27 +405,43 @@ impl Render for Switcher {
 }
 
 impl Workspace {
-    /// Every workspace as the switcher shows it, in sidebar order: its name, group and colour,
-    /// and the rest from its most urgent terminal.
-    fn switcher_entries(&self) -> Vec<Entry> {
+    /// Every workspace as the switcher shows it, in sidebar order (so its `#n` is its ⌘N): its
+    /// name, group and colour, and the rest from its most urgent terminal. One of browser tabs
+    /// only is idle since its first tab opened.
+    fn switcher_entries(&self, cx: &App) -> Vec<Entry> {
         let keys = self.sidebar_groups();
         let all: Vec<&GroupKey> = keys.iter().flatten().collect();
         self.model
             .display_order()
             .into_iter()
-            .filter_map(|ws| {
-                let s = &self.sessions.items()[self.rollup_session(ws)?];
-                Some(Entry {
-                    id: s.id,
+            .map(|ws| {
+                let (status, since, question) = match self.rollup_session(ws) {
+                    Some(i) => {
+                        let s = &self.sessions.items()[i];
+                        (s.status, s.status_since, s.question.clone())
+                    }
+                    None => {
+                        let opened = self
+                            .model
+                            .tabs_of(ws)
+                            .iter()
+                            .filter_map(|t| self.browser_tabs.get(t))
+                            .map(|v| v.read(cx).since)
+                            .min();
+                        (Status::Idle, opened.unwrap_or(self.started), None)
+                    }
+                };
+                Entry {
+                    id: ws.0,
                     label: self.workspace_label(ws).to_string(),
                     group: self
                         .workspace_group(ws)
                         .map(|k| groups::group_label(&k, &all)),
-                    status: s.status,
-                    since: s.status_since,
-                    question: s.question.clone(),
+                    status,
+                    since,
+                    question,
                     color: self.model.workspace(ws).and_then(|w| w.color),
-                })
+                }
             })
             .collect()
     }
@@ -436,7 +453,7 @@ impl Workspace {
             return;
         }
         self.close_overlays(Overlay::Switcher);
-        let (entries, phase) = (self.switcher_entries(), self.phase);
+        let (entries, phase) = (self.switcher_entries(cx), self.phase);
         let switcher = cx.new(|cx| Switcher::new(entries, phase, window, cx));
         cx.subscribe_in(&switcher, window, Self::on_switcher_event)
             .detach();
@@ -446,8 +463,8 @@ impl Workspace {
     }
 
     /// The switcher chose a workspace (its most urgent terminal becomes the active one: its
-    /// pane and tab are shown) or was closed; either way it goes and the typing returns to the
-    /// terminal.
+    /// pane and tab are shown; one of browser tabs only shows as it was) or was closed; either
+    /// way it goes and the typing returns to the focused tab.
     fn on_switcher_event(
         &mut self,
         switcher: &Entity<Switcher>,
@@ -460,10 +477,12 @@ impl Workspace {
             return;
         }
         self.switcher = None;
-        if let SwitcherEvent::Jump(id) = event
-            && let Some(index) = self.sessions.position(|s| s.id == *id)
-        {
-            self.select(index, window, cx);
+        if let SwitcherEvent::Jump(id) = event {
+            let ws = WorkspaceId(*id);
+            match self.rollup_session(ws) {
+                Some(index) => self.select(index, window, cx),
+                None => self.select_workspace(ws, window, cx),
+            }
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -472,7 +491,7 @@ impl Workspace {
     /// Give the open switcher the sessions as they are now (each time the Workspace draws).
     pub(crate) fn refresh_switcher(&self, cx: &mut Context<Self>) {
         if let Some(switcher) = &self.switcher {
-            let (entries, phase) = (self.switcher_entries(), self.phase);
+            let (entries, phase) = (self.switcher_entries(cx), self.phase);
             switcher.update(cx, |switcher, _| switcher.refresh(entries, phase));
         }
     }

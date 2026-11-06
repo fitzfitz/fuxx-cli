@@ -654,7 +654,12 @@ impl Workspace {
         self.renaming = None;
         self.pane_tab_menu = None;
         self.address_box = None;
-        self.browsers = Browsers::new(); // their windows close with their sessions
+        // The browser tabs go with their workspaces (their pages leave the window on the next
+        // frame), and the popped-out windows with them.
+        let closed = self.browser_tabs.drain().map(|(_, view)| view);
+        self.closed_browser_tabs.extend(closed);
+        self.browser_titles.clear();
+        self.browsers = Browsers::new();
         self.dragging = None;
         self.restoring = false; // even mid-startup, the list saved is the empty one
         self.save();

@@ -1,15 +1,16 @@
-//! M10c: the workspace's browsers, one per session at most (`Browsers`), and File → Open
-//! Browser… (⇧⌘B): a box over the window for an address, opened for the active session.
+//! The workspace's browsers (M11b): browser tabs in its panes (`BrowserTab`, each with its page
+//! over its pane), the windows browser tabs are popped out into (M10c's `Browser`), File → Open
+//! Browser… (⇧⌘B, a box over the window for an address), and agents' `browser.*`.
 //!
-//! A browser window is titled `<session name> — <page title>`. One timer runs while any browser
-//! is open (every 500 ms, 100 ms while a page loads): it keeps the titles and the top bars up to
-//! date (a renamed session, a new page, the loading line) and forgets the windows the user
-//! closed. Closing a session closes its browser. The bars follow the theme and the
-//! `browser-address-bar` setting as soon as they change.
+//! An agent's `fuxx browser open` uses the agent's workspace's browser tab (the most recently
+//! used, if it has several), else splits the agent's pane to the right with a new one; it never
+//! moves the person's focus. Every other `browser.*` command acts on that tab, and fails as before
+//! when there is none. Each is checked at once, then answered from a GPUI task once the page has
+//! loaded or answered, each wait with its time limit, so the UI thread never waits for a page.
 //!
-//! Also the `browser.*` socket methods (`fuxx browser …`, the MCP `browser_*` tools): checked
-//! at once, then answered from a GPUI task once the page has loaded or answered, each wait
-//! with its time limit, so the UI thread never waits for a page.
+//! A popped-out window is titled with its page's title. One timer runs while any is open (every
+//! 500 ms, 100 ms while a page loads): it keeps the titles and top bars up to date and forgets
+//! the windows the user closed. Agents don't reach popped-out windows (they use browser tabs).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,24 +27,29 @@ use crate::api::{self, ApiError, Request};
 use crate::api_server::Conn;
 use crate::appearance::Appearance;
 use crate::browser::{
-    BarLook, Browser, CLOSED, PageState, didnt_answer, forget_saved_data, within,
+    BarLook, Browser, CLOSED, Page, PageState, didnt_answer, forget_saved_data, within,
 };
+use crate::browser_history::{BrowserHistory, enter_target};
 use crate::browser_js::{self, Snapshot};
+use crate::browser_tab::{BrowserTab, BrowserTabEvent};
 use crate::browser_url::normalize_url;
+use crate::layout_model::{Model, PaneId, TabId, TabKind, WorkspaceId};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
+use crate::pane_browser::{Overlays, Showing};
+use crate::split_tree::Axis;
 use crate::terminal_view::hsla;
 use crate::theme::Theme;
 use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 use crate::workspace_api::{now_ms, opt_str, required_str};
 
-/// How often the open browsers' titles and top bars are brought up to date and closed windows
-/// noticed; more often while a page loads, so the loading line moves smoothly.
+/// How often the popped-out windows' titles and top bars are brought up to date and closed
+/// windows noticed; more often while a page loads, so the loading line moves smoothly.
 const BROWSER_TICK: Duration = Duration::from_millis(500);
 const BROWSER_TICK_LOADING: Duration = Duration::from_millis(100);
 
-/// How often `open`, `back`, `reload` and `wait` look at the page.
+/// How often `open`, `back` and `reload` look at the page.
 const BROWSER_POLL: Duration = Duration::from_millis(200);
 /// How long `open`, `back` and `reload` wait for the page to load.
 const LOAD_LIMIT: Duration = Duration::from_secs(30);
@@ -57,11 +63,11 @@ const PANEL_WIDTH: f32 = 480.0;
 const PLACEHOLDER: &str = "Address \u{2014} localhost:3000 or a URL";
 const HINT: &str = "Enter open \u{b7} Esc close";
 
-/// A browser window's title: the session's name, then the page's title once there is one.
-pub fn browser_title(session: &str, page: Option<&str>) -> String {
-    match page.map(str::trim) {
-        Some(page) if !page.is_empty() => format!("{session} \u{2014} {page}"),
-        _ => session.to_string(),
+/// A popped-out window's title: its page's title, else "Browser".
+pub fn popped_title(page: &str) -> String {
+    match page.trim() {
+        "" => "Browser".to_string(),
+        page => page.to_string(),
     }
 }
 
@@ -87,11 +93,66 @@ fn tick_interval(browsers: impl IntoIterator<Item = (bool, bool)>) -> Duration {
     }
 }
 
-/// Whether the saved browser data should be deleted now: `browser-keep-data` is off, a browser
-/// was opened with it on at some time (`flag`, kept in the sessions file) and no window opened
-/// with it on is still open (it keeps writing to the saved store until it closes).
-fn should_wipe(setting_on: bool, flag: bool, open_on_windows: usize) -> bool {
-    !setting_on && flag && open_on_windows == 0
+/// Whether the saved browser data should be deleted now: `browser-keep-data` is off, a page was
+/// made with it on at some time (`flag`, kept in the sessions file) and no page made with it on
+/// is still open (a browser tab or window; it keeps writing to the saved store until it closes).
+fn should_wipe(setting_on: bool, flag: bool, open_on_pages: usize) -> bool {
+    !setting_on && flag && open_on_pages == 0
+}
+
+/// Where a browser goes for a workspace: its browser tab, or a new one split to the right of a
+/// pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowserPlace {
+    Reuse(TabId),
+    Split(PaneId),
+}
+
+/// Where a browser goes in workspace `ws` for something in `pane`: the workspace's most recently
+/// used browser tab (`used`: higher is more recent; a tie goes to the first in reading order),
+/// else a new one split to the right of `pane`.
+pub fn browser_place(
+    model: &Model,
+    ws: WorkspaceId,
+    pane: PaneId,
+    used: impl Fn(TabId) -> u64,
+) -> BrowserPlace {
+    let mut best: Option<(TabId, u64)> = None;
+    for tab in model.tabs_of(ws) {
+        if !matches!(
+            model.tab(tab).map(|t| &t.kind),
+            Some(TabKind::Browser { .. })
+        ) {
+            continue;
+        }
+        let u = used(tab);
+        if best.is_none_or(|(_, b)| u > b) {
+            best = Some((tab, u));
+        }
+    }
+    match best {
+        Some((tab, _)) => BrowserPlace::Reuse(tab),
+        None => BrowserPlace::Split(pane),
+    }
+}
+
+/// Where an agent's browser goes: `browser_place` in the workspace and pane of its terminal
+/// `sN`; none when no tab shows it.
+pub fn agent_place(
+    model: &Model,
+    terminal: u64,
+    used: impl Fn(TabId) -> u64,
+) -> Option<BrowserPlace> {
+    let (ws, pane) = model.locate(model.terminal_tab(terminal)?)?;
+    Some(browser_place(model, ws, pane, used))
+}
+
+/// The error every browser command but `open` answers when the agent's workspace has no
+/// browser tab.
+fn no_browser(session: u64) -> ApiError {
+    ApiError::not_found(format!(
+        "no browser for s{session} (fuxx browser open URL first)"
+    ))
 }
 
 /// What `Browsers` needs of a browser: whether the user closed its window, and its title.
@@ -110,8 +171,8 @@ impl BrowserWindow for Browser {
     }
 }
 
-/// The sessions' browsers, by session id, each with the title its window shows. Dropping a
-/// browser closes its window.
+/// The popped-out browser windows, by a number of their own, each with the title its window
+/// shows. Dropping a browser closes its window.
 pub(crate) struct Browsers<B = Browser> {
     open: HashMap<u64, (B, String)>,
 }
@@ -123,51 +184,29 @@ impl<B: BrowserWindow> Browsers<B> {
         }
     }
 
-    pub fn get(&self, session: u64) -> Option<&B> {
-        self.open.get(&session).map(|(b, _)| b)
+    #[cfg(test)]
+    pub fn get(&self, id: u64) -> Option<&B> {
+        self.open.get(&id).map(|(b, _)| b)
     }
 
-    /// `session`'s browser while its window is open; else the error every browser command
-    /// but `open` answers.
-    pub fn live(&self, session: u64) -> Result<&B, ApiError> {
-        self.get(session).filter(|b| !b.is_closed()).ok_or_else(|| {
-            ApiError::not_found(format!(
-                "no browser for s{session} (fuxx browser open URL first)"
-            ))
-        })
+    /// Keep `browser` as window `id`, titled `title`.
+    pub fn insert(&mut self, id: u64, browser: B, title: String) {
+        self.open.insert(id, (browser, title));
     }
 
-    /// Keep `browser` as `session`'s, its window titled `title`.
-    pub fn insert(&mut self, session: u64, browser: B, title: String) {
-        self.open.insert(session, (browser, title));
+    /// Drop the browsers whose window the user closed.
+    pub fn forget_closed(&mut self) {
+        self.open.retain(|_, (browser, _)| !browser.is_closed());
     }
 
-    /// Session `session` closed: its browser goes, and its window with it.
-    pub fn session_closed(&mut self, session: u64) {
-        self.open.remove(&session);
-    }
-
-    /// Drop the browsers whose window the user closed, and those of sessions gone.
-    pub fn forget_closed(&mut self, has_session: impl Fn(u64) -> bool) {
-        self.open
-            .retain(|session, (browser, _)| has_session(*session) && !browser.is_closed());
-    }
-
-    /// Give each window the title `title_for` its session and browser, when that changed.
-    pub fn retitle(&mut self, title_for: impl Fn(u64, &B) -> String) {
-        for (session, (browser, shown)) in &mut self.open {
-            let title = title_for(*session, browser);
+    /// Give each window the title `title_for` its browser, when that changed.
+    pub fn retitle(&mut self, title_for: impl Fn(&B) -> String) {
+        for (browser, shown) in self.open.values_mut() {
+            let title = title_for(browser);
             if *shown != title {
                 browser.set_title(&title);
                 *shown = title;
             }
-        }
-    }
-
-    /// Session `old` goes on as `new` (an SSH reconnect): its browser goes with it.
-    pub fn rekey(&mut self, old: u64, new: u64) {
-        if let Some(open) = self.open.remove(&old) {
-            self.open.insert(new, open);
         }
     }
 
@@ -262,48 +301,270 @@ impl Render for AddressBox {
 }
 
 impl Workspace {
-    /// Open `url` in session `index`'s browser, making the browser first if it has none, and
-    /// bring it to the front: `take_keyboard` (the person's own open) also makes it the key
-    /// window, an agent's open leaves the typing where it is. A refused address (see `normalize_url`) is the error; a page that
-    /// fails to load shows in the browser (and in its `state`).
-    pub(crate) fn browser_open(
-        &mut self,
-        index: usize,
-        url: &str,
-        take_keyboard: bool,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let url = normalize_url(url)?;
-        let Some(session) = self.sessions.items().get(index) else {
-            return Err("no such session".to_string());
-        };
-        let id = session.id;
-        if self.browsers.get(id).is_none() {
-            let title = browser_title(&session.label(), None);
-            // Windows opened from now on follow the setting; open ones keep their store.
-            let appearance = cx.global::<Appearance>();
-            let keep_data = appearance.browser_keep_data;
-            let look = bar_look(&appearance.theme, appearance.browser_address_bar);
-            let browser = Browser::open(&title, keep_data, &look, cx);
-            if keep_data && !self.browser_data_kept {
-                // The saved store may now hold data; remembered on disk so that turning the
-                // setting off later deletes it even after a restart.
-                self.browser_data_kept = true;
-                self.save();
-            }
-            self.browsers.insert(id, browser, title);
-            self.tick_browsers(cx);
-        }
-        if let Some(browser) = self.browsers.get(id) {
-            browser.load(&url);
-            browser.bring_to_front(take_keyboard);
-        }
-        Ok(())
+    /// The browser tab the focused pane shows, if it shows one.
+    pub(crate) fn focused_browser_tab(&self) -> Option<&Entity<BrowserTab>> {
+        self.browser_tabs.get(&self.model.focused_tab()?)
     }
 
-    /// The settings changed: the open browsers' top bars follow the theme and
+    /// The browser tab pane `pane` shows, if it shows one.
+    pub(crate) fn pane_browser_tab(&self, pane: PaneId) -> Option<Entity<BrowserTab>> {
+        self.browser_tabs
+            .get(&self.model.pane(pane)?.active)
+            .cloned()
+    }
+
+    /// Which of fuxx's overlays are open: the one signal every page's hide rule reads.
+    pub(crate) fn overlays(&self, cx: &App) -> Overlays {
+        Overlays {
+            rename: self.renaming.is_some(),
+            host_picker: self.host_picker.is_some(),
+            address_box: self.address_box.is_some(),
+            switcher: self.switcher.is_some(),
+            row_menu: self.sidebar.tab_menu.is_some(),
+            tab_menu: self.pane_tab_menu.is_some(),
+            new_menu: self.sidebar.new_menu,
+            suggestions: self
+                .browser_tabs
+                .values()
+                .any(|v| v.read(cx).suggestions_open(cx)),
+        }
+    }
+
+    /// Every browser tab of the model has its view (a restored one, one a script made), and
+    /// each view its page once fuxx's window is known. A new view for the focused tab takes the
+    /// keyboard.
+    pub(crate) fn ensure_browser_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let missing: Vec<(TabId, Option<String>)> = self
+            .model
+            .workspaces()
+            .iter()
+            .flat_map(|w| &w.panes)
+            .flat_map(|p| &p.tabs)
+            .filter(|t| !self.browser_tabs.contains_key(&t.id))
+            .filter_map(|t| match &t.kind {
+                TabKind::Browser { url } => Some((t.id, url.clone())),
+                TabKind::Terminal(_) => None,
+            })
+            .collect();
+        let focused = self.model.focused_tab();
+        let mut focus_it = false;
+        for (tab, url) in missing {
+            self.make_browser_tab(tab, url, window, cx);
+            focus_it |= Some(tab) == focused;
+        }
+        // The focused tab's view didn't exist when it was focused (a restore, a script).
+        if focus_it {
+            self.focus_active(window, cx);
+        }
+        for view in self.browser_tabs.values() {
+            view.update(cx, |view, cx| view.ensure_page(cx));
+        }
+    }
+
+    /// The view for browser tab `tab`, opening `url`. Its page uses the data store the setting
+    /// picks now, for as long as it lives.
+    pub(crate) fn make_browser_tab(
+        &mut self,
+        tab: TabId,
+        url: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<BrowserTab> {
+        let keep_data = cx.global::<Appearance>().browser_keep_data;
+        if keep_data && !self.browser_data_kept {
+            // The saved store may now hold data; remembered on disk so that turning the
+            // setting off later deletes it even after a restart.
+            self.browser_data_kept = true;
+            self.save();
+        }
+        let view = cx.new(|cx| BrowserTab::new(tab, url, keep_data, cx));
+        cx.subscribe_in(&view, window, Self::on_browser_tab_event)
+            .detach();
+        self.browser_titles.insert(tab, view.read(cx).title());
+        self.browser_tabs.insert(tab, view.clone());
+        view
+    }
+
+    /// A click in a page: its tab (pane, workspace) takes the focus and the page the keyboard.
+    /// A page changed: the tab's title, and its saved address.
+    fn on_browser_tab_event(
+        &mut self,
+        view: &Entity<BrowserTab>,
+        event: &BrowserTabEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tab = view.read(cx).tab;
+        match event {
+            BrowserTabEvent::Clicked => {
+                self.select_tab(tab, window, cx);
+                self.focus_active(window, cx);
+                view.read(cx).page_takes_keyboard();
+            }
+            BrowserTabEvent::Changed => {
+                let (url, title) = {
+                    let view = view.read(cx);
+                    (view.bar_state().url.clone(), view.title())
+                };
+                self.browser_titles.insert(tab, title);
+                let Some(TabKind::Browser { url: saved }) = self.model.tab(tab).map(|t| &t.kind)
+                else {
+                    return;
+                };
+                let now = Some(url).filter(|u| !u.is_empty() && u != "about:blank");
+                if now.is_some() && now != *saved {
+                    self.model.set_kind(tab, TabKind::Browser { url: now });
+                    self.save();
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Each frame, once its overlays are known: which pages may show (`page_hidden`), and where
+    /// the keyboard is. A page whose tab isn't on screen hides now (no frame places it); the
+    /// rest are placed, or hidden, by their tab's own drawing.
+    pub(crate) fn update_pages(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.close_browser_pages(cx);
+        let overlay_open = self.overlays(cx).any();
+        let dragging = self.dragging.is_some()
+            || self.sidebar.resizing
+            || self.slide.is_some()
+            || cx.has_active_drag();
+        let on_screen: Vec<TabId> = self
+            .shown_layout()
+            .map(|tree| {
+                tree.leaves()
+                    .into_iter()
+                    .filter_map(|p| self.model.pane(p).map(|p| p.active))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (tab, view) in &self.browser_tabs {
+            let view = view.read(cx);
+            let tab_shown = on_screen.contains(tab);
+            view.showing.set(Showing {
+                tab_shown,
+                overlay_open,
+                dragging,
+            });
+            if !tab_shown {
+                view.hide_page();
+            }
+            view.sync_keyboard(window);
+        }
+        // The browser tab now focused is the most recently used.
+        let focused = self
+            .model
+            .focused_tab()
+            .filter(|t| self.browser_tabs.contains_key(t));
+        if focused != self.focused_browser {
+            self.focused_browser = focused;
+            if let Some(tab) = focused {
+                self.use_browser_tab(tab, cx);
+            }
+        }
+    }
+
+    /// The pages of browser tabs just closed leave the window (whoever still holds their views),
+    /// and saved data is deleted if the last page that kept it was one of them.
+    pub(crate) fn close_browser_pages(&mut self, cx: &mut Context<Self>) {
+        if self.closed_browser_tabs.is_empty() {
+            return;
+        }
+        for view in std::mem::take(&mut self.closed_browser_tabs) {
+            view.update(cx, |view, _| view.close_page());
+        }
+        self.wipe_saved_data_if_due(cx);
+    }
+
+    /// Tab `tab` was just used (shown, or an agent's command): an agent's open picks it first.
+    fn use_browser_tab(&mut self, tab: TabId, cx: &App) {
+        if let Some(view) = self.browser_tabs.get(&tab) {
+            self.browser_clock += 1;
+            view.read(cx).last_used.set(self.browser_clock);
+        }
+    }
+
+    /// When tab `tab` was last used (0: never).
+    fn browser_used(&self, tab: TabId, cx: &App) -> u64 {
+        self.browser_tabs
+            .get(&tab)
+            .map_or(0, |v| v.read(cx).last_used.get())
+    }
+
+    /// A bar's "new browser tab": a blank browser tab at the end of `pane`'s, its address field
+    /// ready for typing.
+    pub(crate) fn new_browser_tab(
+        &mut self,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(opened) = self.model.add_tab(pane, TabKind::Browser { url: None }) else {
+            return;
+        };
+        self.sync();
+        let view = self.make_browser_tab(opened.tab, None, window, cx);
+        self.save();
+        self.activate(window, cx);
+        view.update(cx, |view, cx| view.start_editing(window, cx));
+    }
+
+    /// Put a browser in workspace `ws` for something in `pane` (`browser_place`), going to
+    /// `url`: its browser tab, or a new one split right of `pane`. `by_person`: the tab is shown
+    /// and focused, and its page takes the keyboard; otherwise (an agent's) the person's focus
+    /// stays exactly where it was. Its tab.
+    fn browser_in(
+        &mut self,
+        ws: WorkspaceId,
+        pane: PaneId,
+        url: &str,
+        by_person: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<TabId> {
+        let place = browser_place(&self.model, ws, pane, |t| self.browser_used(t, cx));
+        let tab = match place {
+            BrowserPlace::Reuse(tab) => {
+                let view = self.browser_tabs.get(&tab)?.clone();
+                view.update(cx, |view, cx| view.load(url, by_person, cx));
+                tab
+            }
+            BrowserPlace::Split(pane) => {
+                let before = self.model.focused_tab();
+                let ws_focus = self.model.workspace(ws).map(|w| w.focused);
+                let kind = TabKind::Browser {
+                    url: Some(url.to_string()),
+                };
+                let opened = self.model.split(pane, Axis::Row, kind)?;
+                if !by_person {
+                    // The agent's workspace keeps its focused pane, and the person theirs.
+                    if let Some(p) = ws_focus {
+                        self.model.focus_pane(p);
+                    }
+                    if let Some(before) = before {
+                        self.model.select_tab(before);
+                    }
+                }
+                self.sync();
+                let view = self.make_browser_tab(opened.tab, None, window, cx);
+                view.update(cx, |view, cx| view.load(url, by_person, cx));
+                self.save();
+                opened.tab
+            }
+        };
+        self.use_browser_tab(tab, cx);
+        if by_person {
+            self.select_tab(tab, window, cx);
+        }
+        cx.notify();
+        Some(tab)
+    }
+
+    /// The settings changed: the popped-out windows' top bars follow the theme and
     /// `browser-address-bar` at once, and saved data is deleted if `browser-keep-data` just went
-    /// off (`wipe_saved_data_if_due`); windows already open keep the store they were opened with.
+    /// off (`wipe_saved_data_if_due`); pages already open keep the store they were made with.
     pub(crate) fn browser_settings_changed(&mut self, cx: &mut Context<Self>) {
         let appearance = cx.global::<Appearance>();
         let look = bar_look(&appearance.theme, appearance.browser_address_bar);
@@ -313,26 +574,39 @@ impl Workspace {
         self.wipe_saved_data_if_due(cx);
     }
 
-    /// Delete the saved browser data when `should_wipe` says so (at launch, when the setting
-    /// goes off, when the last window opened with it on closes). The flag in the sessions file
-    /// is cleared only once WebKit says the deletion is done, so a quit meanwhile retries it at
-    /// the next launch.
+    /// How many open pages (browser tabs and popped-out windows) were made with
+    /// `browser-keep-data` on.
+    fn pages_keeping_data(&self, cx: &App) -> usize {
+        let windows = self.browsers.iter().filter(|b| b.keeps_data()).count();
+        let tabs = self
+            .browser_tabs
+            .values()
+            .filter(|v| v.read(cx).keeps_data())
+            .count();
+        windows + tabs
+    }
+
+    /// Delete the saved browser data, and the visited pages, when `should_wipe` says so (at
+    /// launch, when the setting goes off, when the last page made with it on closes). The flag
+    /// in the sessions file is cleared only once WebKit says the deletion is done, so a quit
+    /// meanwhile retries it at the next launch.
     pub(crate) fn wipe_saved_data_if_due(&mut self, cx: &mut Context<Self>) {
         let keep_data = cx.global::<Appearance>().browser_keep_data;
-        let on_windows = self.browsers.iter().filter(|b| b.keeps_data()).count();
-        if self.browser_wiping || !should_wipe(keep_data, self.browser_data_kept, on_windows) {
+        let on_pages = self.pages_keeping_data(cx);
+        if self.browser_wiping || !should_wipe(keep_data, self.browser_data_kept, on_pages) {
             return;
         }
         self.browser_wiping = true;
+        BrowserHistory::forget(cx);
         let done = forget_saved_data(
             MainThreadMarker::new().expect("GPUI's App lives on the main thread"),
         );
         cx.spawn(async move |this, cx| {
             let finished = done.await.is_ok();
-            this.update(cx, |this, _| {
+            this.update(cx, |this, cx| {
                 this.browser_wiping = false;
-                // A window opened with it on since then writes there again: the flag stays.
-                if finished && this.browsers.iter().all(|b| !b.keeps_data()) {
+                // A page made with it on since then writes there again: the flag stays.
+                if finished && this.pages_keeping_data(cx) == 0 {
                     this.browser_data_kept = false;
                     this.save();
                 }
@@ -342,32 +616,24 @@ impl Workspace {
         .detach();
     }
 
-    /// Bring the browsers' titles and top bars up to date and drop those the user closed (or
-    /// whose session has gone). The wait before the next check (see `tick_interval`).
+    /// Bring the popped-out windows' titles and top bars up to date and drop those the user
+    /// closed. The wait before the next check (see `tick_interval`).
     fn check_browsers(&mut self, cx: &mut Context<Self>) -> Duration {
-        let sessions = self.sessions.items();
+        self.browsers.forget_closed();
         self.browsers
-            .forget_closed(|id| sessions.iter().any(|s| s.id == id));
-        self.browsers.retitle(|id, browser| {
-            let label = sessions
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.label().to_string())
-                .unwrap_or_default();
-            browser_title(&label, Some(&browser.state().title))
-        });
+            .retitle(|browser| popped_title(&browser.state().title));
         let mut seen = vec![];
         for browser in self.browsers.iter() {
             browser.refresh_bar();
             seen.push((browser.state().loading, browser.can_be_seen()));
         }
-        // The last window opened with the setting on may just have closed.
+        // The last window made with the setting on may just have closed.
         self.wipe_saved_data_if_due(cx);
         tick_interval(seen)
     }
 
-    /// Start the browser check (every 500 ms, 100 ms while a page loads) unless it's running;
-    /// it stops once no browser is open.
+    /// Start the windows' check (every 500 ms, 100 ms while a page loads) unless it's running;
+    /// it stops once no window is open.
     fn tick_browsers(&mut self, cx: &mut Context<Self>) {
         if self.browsers_ticking || self.browsers.is_empty() {
             return;
@@ -394,23 +660,49 @@ impl Workspace {
         .detach();
     }
 
-    /// File → Open Browser… (⇧⌘B): the address box, for the active session (none: nothing
-    /// happens). With a browser already open it holds that page's address, selected. Already
-    /// open: back to its box.
+    /// A browser tab's menu → Pop Out: its page (with its history, and whatever it is doing)
+    /// moves into a browser window of its own, in front, and the tab closes. A tab with no page
+    /// yet just closes.
+    pub(crate) fn pop_out(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.browser_tabs.get(&tab).cloned() else {
+            return;
+        };
+        let (page, title) = view.update(cx, |view, _| (view.take_page(), view.title()));
+        if let Some(page) = page {
+            let appearance = cx.global::<Appearance>();
+            let look = bar_look(&appearance.theme, appearance.browser_address_bar);
+            let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
+            let title = popped_title(&title);
+            let browser = Browser::adopt(page, &title, &look, mtm);
+            browser.bring_to_front(true);
+            let id = self.next_popped;
+            self.next_popped += 1;
+            self.browsers.insert(id, browser, title);
+            self.tick_browsers(cx);
+        }
+        self.close_tab(tab, window, cx);
+    }
+
+    /// File → Open Browser… (⇧⌘B): the address box, holding the focused workspace's browser
+    /// tab's address (selected), or empty. Already open: back to its box.
     pub(crate) fn open_address_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(address) = &self.address_box {
             address.focus_handle(cx).focus(window, cx);
             return;
         }
-        let Some(session) = self.sessions.active() else {
+        let (Some(ws), Some(pane)) = (self.model.focused_workspace(), self.model.focused_pane())
+        else {
             return;
         };
-        let current = self
-            .browsers
-            .get(session.id)
-            .map(|b| b.state().url)
-            .filter(|url| url != "about:blank")
-            .unwrap_or_default();
+        let current = match browser_place(&self.model, ws, pane, |t| self.browser_used(t, cx)) {
+            BrowserPlace::Reuse(tab) => self
+                .browser_tabs
+                .get(&tab)
+                .map(|v| v.read(cx).bar_state().url.clone())
+                .filter(|url| url != "about:blank")
+                .unwrap_or_default(),
+            BrowserPlace::Split(_) => String::new(),
+        };
         self.close_overlays(Overlay::AddressBox);
         let address = cx.new(|cx| AddressBox::new(current, window, cx));
         cx.subscribe_in(&address, window, Self::on_address_event)
@@ -420,8 +712,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Enter in the address box opens the address for the active session, and the box goes;
-    /// a refused address stays, with why. Closed: the typing returns to the terminal.
+    /// Enter in the address box opens the address (or searches) in the focused workspace's
+    /// browser tab, or a new one split right of the focused pane, and the box goes; a refused
+    /// address stays, with why. Closed: the typing returns to the focused tab.
     fn on_address_event(
         &mut self,
         address: &Entity<AddressBox>,
@@ -433,16 +726,29 @@ impl Workspace {
         if self.address_box.as_ref() != Some(address) {
             return;
         }
-        if let AddressBoxEvent::Open(text) = event
-            && let Some(index) = self.sessions.active_index()
-            && let Err(why) = self.browser_open(index, text, true, cx)
-        {
-            address.update(cx, |address, cx| address.show_error(why, cx));
-            return;
-        }
         self.address_box = None;
-        self.focus_active(window, cx);
         cx.notify();
+        let AddressBoxEvent::Open(text) = event else {
+            self.focus_active(window, cx);
+            return;
+        };
+        let url = match enter_target(text) {
+            Ok(url) => url,
+            Err(why) => {
+                self.address_box = Some(address.clone());
+                address.update(cx, |address, cx| address.show_error(why, cx));
+                return;
+            }
+        };
+        let place = self
+            .model
+            .focused_workspace()
+            .zip(self.model.focused_pane());
+        let opened = place.and_then(|(ws, pane)| self.browser_in(ws, pane, &url, true, window, cx));
+        if opened.is_none() {
+            eprintln!("[fuxx] browser: no browser tab could be opened for {url}");
+            self.focus_active(window, cx);
+        }
     }
 }
 
@@ -615,26 +921,45 @@ fn page_error(message: String) -> ApiError {
 }
 
 impl Workspace {
-    /// A `browser.*` request for the target session (by default the caller's). Bad parameters
-    /// and a session with no browser are answered now, as are `url` and `close`; the rest
-    /// (`None`) reply to `conn` from a GPUI task once the page has loaded or answered.
+    /// A `browser.*` request for the target session (by default the caller's), on its
+    /// workspace's browser tab (`agent_place`). Bad parameters and a workspace with no browser
+    /// tab are answered now, as are `url` and `close`; the rest (`None`) reply to `conn` from a
+    /// GPUI task once the page has loaded or answered.
     pub(crate) fn browser_request(
         &mut self,
         request: &Request,
         conn: &Conn,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Option<Value>, ApiError> {
         let p = &request.params;
         let command = BrowserCommand::parse(&request.method, p)?;
         let index = self.target_index(p, "target")?;
         let session = self.sessions.items()[index].id;
-        match &command {
-            BrowserCommand::Open { url } => {
-                self.browser_open(index, url, false, cx)
-                    .map_err(ApiError::bad_request)?;
+        let place = agent_place(&self.model, session, |t| self.browser_used(t, cx));
+        let tab = match (&command, place) {
+            (BrowserCommand::Open { url }, Some(_)) => {
+                let url = normalize_url(url).map_err(ApiError::bad_request)?;
+                let (ws, pane) = self
+                    .model
+                    .terminal_tab(session)
+                    .and_then(|t| self.model.locate(t))
+                    .ok_or_else(|| no_browser(session))?;
+                self.browser_in(ws, pane, &url, false, window, cx)
+                    .ok_or_else(|| ApiError::refused("the browser tab couldn't be opened"))?
             }
+            (_, Some(BrowserPlace::Reuse(tab))) => {
+                self.use_browser_tab(tab, cx);
+                tab
+            }
+            _ => return Err(no_browser(session)),
+        };
+        match &command {
             BrowserCommand::Url => {
-                let state = self.browsers.live(session)?.state();
+                let state = self
+                    .tab_page(tab, cx)
+                    .map(Page::state)
+                    .ok_or_else(|| ApiError::refused(CLOSED))?;
                 return Ok(Some(json!({
                     "url": state.url,
                     "title": state.title,
@@ -642,18 +967,16 @@ impl Workspace {
                 })));
             }
             BrowserCommand::Close => {
-                self.browsers.live(session)?;
-                self.browsers.session_closed(session);
+                self.close_tab(tab, window, cx);
                 return Ok(Some(json!({})));
             }
-            _ => {
-                self.browsers.live(session)?;
-            }
+            _ => {}
         }
         let (conn, id) = (conn.clone(), request.id);
         cx.spawn(async move |this, cx| {
-            let page = SessionPage {
+            let page = TabPage {
                 workspace: this,
+                tab,
                 session,
                 executor: cx.background_executor().clone(),
             };
@@ -663,28 +986,35 @@ impl Workspace {
         .detach();
         Ok(None)
     }
+
+    /// Browser tab `tab`'s page, if it has one.
+    fn tab_page<'a>(&'a self, tab: TabId, cx: &'a App) -> Option<&'a Page> {
+        self.browser_tabs.get(&tab)?.read(cx).page()
+    }
 }
 
-/// A session's browser, as a command running in a GPUI task reaches it: one gone meanwhile
-/// (its window or session closed) answers `browser closed`.
-struct SessionPage {
+/// An agent's browser tab, as a command running in a GPUI task reaches it: one gone meanwhile
+/// (its tab closed or popped out) answers `browser closed`.
+struct TabPage {
     workspace: WeakEntity<Workspace>,
+    tab: TabId,
+    /// The agent's terminal (screenshots are named after it).
     session: u64,
     executor: BackgroundExecutor,
 }
 
-impl SessionPage {
+impl TabPage {
     /// `command`'s reply (`url` and `close` are answered before any task).
     async fn run(&self, command: BrowserCommand, cx: &mut AsyncApp) -> Result<Value, ApiError> {
         match command {
             // `browser_request` has started the load.
             BrowserCommand::Open { .. } => self.loaded(cx).await,
             BrowserCommand::Back => {
-                self.with(cx, Browser::back)?;
+                self.with(cx, Page::back)?;
                 self.loaded(cx).await
             }
             BrowserCommand::Reload => {
-                self.with(cx, Browser::reload)?;
+                self.with(cx, Page::reload)?;
                 self.loaded(cx).await
             }
             BrowserCommand::Snapshot => {
@@ -704,7 +1034,7 @@ impl SessionPage {
                 Ok(json!({ "text": text }))
             }
             BrowserCommand::Eval { js } => {
-                let answer = self.with(cx, |b| b.eval(&js))?;
+                let answer = self.with(cx, |p| p.eval(&js))?;
                 let value = within(answer, SCRIPT_LIMIT, &self.executor)
                     .await
                     .map_err(page_error)?;
@@ -725,10 +1055,10 @@ impl SessionPage {
         }
     }
 
-    /// `f` of the browser, if it is still there.
-    fn with<R>(&self, cx: &AsyncApp, f: impl FnOnce(&Browser) -> R) -> Result<R, ApiError> {
+    /// `f` of the tab's page, if it is still there.
+    fn with<R>(&self, cx: &AsyncApp, f: impl FnOnce(&Page) -> R) -> Result<R, ApiError> {
         self.workspace
-            .read_with(cx, |this, _| this.browsers.get(self.session).map(f))
+            .read_with(cx, |this, cx| this.tab_page(self.tab, cx).map(f))
             .ok()
             .flatten()
             .ok_or_else(|| ApiError::refused(CLOSED))
@@ -736,7 +1066,7 @@ impl SessionPage {
 
     /// One of fuxx's own page scripts' value (run once, never retried), within the script limit.
     async fn script(&self, cx: &AsyncApp, script: &str) -> Result<Value, ApiError> {
-        let answer = self.with(cx, |b| b.run_script(script))?;
+        let answer = self.with(cx, |p| p.run_script(script))?;
         within(answer, SCRIPT_LIMIT, &self.executor)
             .await
             .map_err(page_error)
@@ -755,7 +1085,7 @@ impl SessionPage {
         let deadline = Instant::now() + LOAD_LIMIT;
         loop {
             self.executor.timer(BROWSER_POLL).await;
-            if let Some(reply) = settled(&self.with(cx, Browser::state)?) {
+            if let Some(reply) = settled(&self.with(cx, Page::state)?) {
                 return reply;
             }
             if Instant::now() >= deadline {
@@ -781,7 +1111,7 @@ impl SessionPage {
 
     /// A PNG of the page, written to `path` (or a new temp file) off the UI thread; its path.
     async fn screenshot(&self, cx: &AsyncApp, path: Option<PathBuf>) -> Result<Value, ApiError> {
-        let answer = self.with(cx, Browser::screenshot)?;
+        let answer = self.with(cx, Page::screenshot)?;
         let png = within(answer, SCRIPT_LIMIT, &self.executor)
             .await
             .map_err(page_error)?;
@@ -839,28 +1169,10 @@ mod tests {
     }
 
     #[test]
-    fn browser_titles_name_the_session_then_the_page() {
-        assert_eq!(browser_title("api", None), "api");
-        assert_eq!(browser_title("api", Some("")), "api");
-        assert_eq!(browser_title("api", Some("  ")), "api");
-        assert_eq!(browser_title("api", Some("Docs")), "api \u{2014} Docs");
-    }
-
-    #[test]
-    fn closing_a_session_drops_its_browser() {
-        let mut browsers = Browsers::new();
-        let (one, one_dropped) = Fake::new();
-        let (two, two_dropped) = Fake::new();
-        browsers.insert(1, one, "one".into());
-        browsers.insert(2, two, "two".into());
-        browsers.session_closed(1);
-        assert!(one_dropped.get(), "its window closes");
-        assert!(browsers.get(1).is_none());
-        assert!(!two_dropped.get());
-        assert!(browsers.get(2).is_some());
-        // A session without a browser: nothing happens.
-        browsers.session_closed(7);
-        assert!(browsers.get(2).is_some());
+    fn a_popped_out_window_is_titled_by_its_page() {
+        assert_eq!(popped_title("Docs"), "Docs");
+        assert_eq!(popped_title("  "), "Browser");
+        assert_eq!(popped_title(""), "Browser");
     }
 
     #[test]
@@ -868,15 +1180,11 @@ mod tests {
         let mut browsers = Browsers::new();
         let (one, one_dropped) = Fake::new();
         let (two, two_dropped) = Fake::new();
-        let (three, three_dropped) = Fake::new();
         browsers.insert(1, one, "one".into());
         browsers.insert(2, two, "two".into());
-        browsers.insert(3, three, "three".into());
         browsers.get(1).unwrap().closed.set(true);
-        // Session 3 is gone too (its browser outlived it).
-        browsers.forget_closed(|session| session != 3);
+        browsers.forget_closed();
         assert!(one_dropped.get() && browsers.get(1).is_none());
-        assert!(three_dropped.get() && browsers.get(3).is_none());
         assert!(!two_dropped.get() && browsers.get(2).is_some());
     }
 
@@ -884,36 +1192,22 @@ mod tests {
     fn a_window_is_retitled_only_when_its_title_changes() {
         let mut browsers = Browsers::new();
         let (one, _) = Fake::new();
-        browsers.insert(1, one, "api".into());
-        browsers.retitle(|_, _| "api".into());
+        browsers.insert(1, one, "Docs".into());
+        browsers.retitle(|_| "Docs".into());
         assert_eq!(
             *browsers.get(1).unwrap().title.borrow(),
             "",
             "unchanged: not set"
         );
-        browsers.retitle(|session, _| format!("s{session} \u{2014} Docs"));
-        assert_eq!(*browsers.get(1).unwrap().title.borrow(), "s1 \u{2014} Docs");
+        browsers.retitle(|_| "Docs \u{2014} API".into());
+        assert_eq!(
+            *browsers.get(1).unwrap().title.borrow(),
+            "Docs \u{2014} API"
+        );
     }
 
     #[test]
-    fn a_reconnected_session_keeps_its_browser() {
-        let mut browsers = Browsers::new();
-        let (one, one_dropped) = Fake::new();
-        browsers.insert(1, one, "box".into());
-        browsers.rekey(1, 5);
-        assert!(!one_dropped.get(), "the window stays open");
-        assert!(browsers.get(1).is_none());
-        assert!(browsers.get(5).is_some());
-        // Still known by its new id to the sweep.
-        browsers.forget_closed(|session| session == 5);
-        assert!(browsers.get(5).is_some());
-        // A session without a browser: nothing happens.
-        browsers.rekey(2, 6);
-        assert!(browsers.get(6).is_none());
-    }
-
-    #[test]
-    fn a_new_browser_for_a_session_replaces_the_old_one() {
+    fn a_new_browser_under_a_number_replaces_the_old_one() {
         let mut browsers = Browsers::new();
         let (old, old_dropped) = Fake::new();
         let (new, _) = Fake::new();
@@ -923,26 +1217,66 @@ mod tests {
         assert!(browsers.get(1).is_some());
     }
 
+    /// Workspace one: terminal s1 alone in its pane; workspace two: s2.
+    fn two_workspaces() -> (Model, PaneId, PaneId) {
+        let mut m = Model::new();
+        let one = m.new_workspace(0, TabKind::Terminal(1)).unwrap();
+        let two = m.new_workspace(1, TabKind::Terminal(2)).unwrap();
+        (m, one.pane, two.pane)
+    }
+
+    fn browser() -> TabKind {
+        TabKind::Browser { url: None }
+    }
+
     #[test]
-    fn a_command_without_a_browser_errors() {
-        let mut browsers: Browsers<Fake> = Browsers::new();
-        let none = browsers.live(3).err().expect("no browser yet");
+    fn an_agent_s_browser_is_its_workspace_s_browser_tab_else_a_split_of_its_pane() {
+        let (mut m, pane, other) = two_workspaces();
+        let never = |_| 0;
+        // No browser tab yet: split the agent's pane to the right.
+        assert_eq!(agent_place(&m, 1, never), Some(BrowserPlace::Split(pane)));
+        // Another workspace's browser tab isn't the agent's.
+        let theirs = m.add_tab(other, browser()).unwrap().tab;
+        assert_eq!(agent_place(&m, 1, never), Some(BrowserPlace::Split(pane)));
+        assert_eq!(agent_place(&m, 2, never), Some(BrowserPlace::Reuse(theirs)));
+        // A browser tab anywhere in the agent's workspace (here in a pane split beside it).
+        let first = m.split(pane, Axis::Row, browser()).unwrap();
         assert_eq!(
-            (none.code, none.message.as_str()),
+            agent_place(&m, 1, never),
+            Some(BrowserPlace::Reuse(first.tab))
+        );
+        // Two of them: the most recently used; a tie goes to the first in reading order.
+        let second = m.add_tab(pane, browser()).unwrap().tab;
+        assert_eq!(
+            agent_place(&m, 1, never),
+            Some(BrowserPlace::Reuse(second)),
+            "the agent's own pane reads first"
+        );
+        let used = |t: TabId| if t == first.tab { 5 } else { 2 };
+        assert_eq!(
+            agent_place(&m, 1, used),
+            Some(BrowserPlace::Reuse(first.tab))
+        );
+        // A terminal no tab shows: nowhere.
+        assert_eq!(agent_place(&m, 9, never), None);
+        // The person's (⇧⌘B): the focused workspace's, else a split of the focused pane.
+        let (m, pane, _) = two_workspaces();
+        let ws = m.workspaces()[0].id;
+        assert_eq!(
+            browser_place(&m, ws, pane, never),
+            BrowserPlace::Split(pane)
+        );
+    }
+
+    #[test]
+    fn a_command_without_a_browser_tab_errors_as_before() {
+        let e = no_browser(3);
+        assert_eq!(
+            (e.code, e.message.as_str()),
             (
                 "not_found",
                 "no browser for s3 (fuxx browser open URL first)"
             )
-        );
-        let (one, _) = Fake::new();
-        browsers.insert(3, one, "api".into());
-        assert!(browsers.live(3).is_ok());
-        // A window the user closed (not forgotten yet) is no browser either.
-        browsers.get(3).unwrap().closed.set(true);
-        let closed = browsers.live(3).err().expect("its window closed");
-        assert_eq!(
-            closed.message,
-            "no browser for s3 (fuxx browser open URL first)"
         );
     }
 
@@ -1141,7 +1475,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_data_is_deleted_only_when_off_flagged_and_no_on_window_is_open() {
+    fn saved_data_is_deleted_only_when_off_flagged_and_no_on_page_is_open() {
         // Off, the saved store may hold data, no window opened with it on is left.
         assert!(should_wipe(false, true, 0));
         // Nothing saved (the flag is clear): nothing to delete.

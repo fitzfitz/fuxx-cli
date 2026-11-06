@@ -14,12 +14,11 @@ use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSApplication, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSControl,
-    NSControlTextEditingDelegate, NSFont, NSFontAttributeName, NSImage, NSImageView, NSResponder,
-    NSStringDrawing, NSTextField, NSTextFieldBezelStyle, NSTextFieldDelegate, NSTextView,
-    NSTitlePosition, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem,
-    NSToolbarItemVisibilityPriorityHigh, NSView, NSWindow, NSWindowTitleVisibility,
-    NSWindowToolbarStyle,
+    NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSControl, NSControlTextEditingDelegate,
+    NSFont, NSFontAttributeName, NSImage, NSImageView, NSResponder, NSStringDrawing, NSTextField,
+    NSTextFieldBezelStyle, NSTextFieldDelegate, NSTextView, NSTitlePosition, NSToolbar,
+    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem, NSToolbarItemVisibilityPriorityHigh,
+    NSView, NSWindow, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -398,7 +397,8 @@ impl TopBar {
         let Some(view) = self.ivars().view.load() else {
             return;
         };
-        self.follow_system_appearance(&view);
+        // Followed on each refresh, which the browser check runs at least every 500 ms.
+        super::follow_system_appearance(&view, self.mtm());
         // SAFETY: main thread; plain property reads.
         let (url, loading, progress, can_back, can_forward) = unsafe {
             (
@@ -466,26 +466,6 @@ impl TopBar {
                 state.line.setHidden(false);
             }
             None => state.line.setHidden(true),
-        }
-    }
-
-    /// The page keeps macOS's light or dark (its `prefers-color-scheme`, what agents see), not
-    /// the bar's: the web view's own appearance overrides the window's. macOS's is the app's
-    /// effective appearance (neither GPUI nor fuxx sets the app's own). Followed on each
-    /// `refresh`, which the browser check runs at least every 500 ms while a browser is open: a
-    /// property read, with no observer to keep and let go of.
-    fn follow_system_appearance(&self, view: &WKWebView) {
-        let app = NSApplication::sharedApplication(self.mtm());
-        // SAFETY: AppKit's own appearance names.
-        let names = unsafe { [NSAppearanceNameAqua, NSAppearanceNameDarkAqua] };
-        let Some(system) = app
-            .effectiveAppearance()
-            .bestMatchFromAppearancesWithNames(&NSArray::from_slice(&names))
-        else {
-            return;
-        };
-        if view.appearance().map(|a| a.name()).as_deref() != Some(&*system) {
-            view.setAppearance(NSAppearance::appearanceNamed(&system).as_deref());
         }
     }
 

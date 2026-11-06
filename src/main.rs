@@ -8,7 +8,9 @@ mod api_events;
 mod api_server;
 mod appearance;
 mod browser;
+mod browser_history;
 mod browser_js;
+mod browser_tab;
 mod browser_url;
 mod cli;
 mod colors;
@@ -484,6 +486,14 @@ fn main() {
                 // terminals with tabs do.
                 KeyBinding::new("ctrl-tab", NextTab, Some("Terminal")),
                 KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Terminal")),
+                // A browser tab: ⌘L to its address field, ⌃Tab / ⌃⇧Tab as in a terminal; ↑ / ↓
+                // move through the field's suggestions, and an address is pasted.
+                KeyBinding::new("cmd-l", browser_tab::FocusAddress, Some("BrowserTab")),
+                KeyBinding::new("ctrl-tab", NextTab, Some("BrowserTab")),
+                KeyBinding::new("ctrl-shift-tab", PrevTab, Some("BrowserTab")),
+                KeyBinding::new("up", browser_tab::SuggestPrev, Some("AddressField")),
+                KeyBinding::new("down", browser_tab::SuggestNext, Some("AddressField")),
+                KeyBinding::new("cmd-v", name_input::Paste, Some("AddressField > NameInput")),
                 // The sidebar's rename box only; other keys type into it.
                 KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
                 KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
@@ -567,6 +577,13 @@ fn main() {
                 .expect("failed to open the window");
             // The marks stop animating while this window can't be seen.
             reduce_motion::watch_window(&windows_before, cx);
+            // Browser tabs' pages go in this window, over GPUI's view.
+            match pane_browser::NativeWindow::find(&windows_before) {
+                Some(native) => cx.set_global(native),
+                None => eprintln!(
+                    "[fuxx] browser: the main window wasn't found; browser tabs show no page"
+                ),
+            }
             // With persistence on, quitting (here, or by closing the window) only detaches: the
             // background service keeps the sessions running. Not while a quit that ends
             // sessions first is under way: that one finishes.

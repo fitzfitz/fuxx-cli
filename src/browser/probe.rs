@@ -431,12 +431,12 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     let selectors = [sel!(cut:), sel!(copy:), sel!(paste:), sel!(selectAll:)];
     let missing: Vec<&str> = selectors
         .iter()
-        .filter(|s| !b.view.respondsToSelector(**s))
+        .filter(|s| !b.page.view.respondsToSelector(**s))
         .map(|s| s.name().to_str().unwrap_or("?"))
         .collect();
     check(missing.is_empty(), "edit selectors", &missing)?;
     // SAFETY: main thread; `selectAll:` takes any sender.
-    let _: () = unsafe { msg_send![&*b.view, selectAll: None::<&AnyObject>] };
+    let _: () = unsafe { msg_send![&*b.page.view, selectAll: None::<&AnyObject>] };
     let selected = settle_value(&b, &ex, "String(getSelection())", |v| {
         v.as_str().is_some_and(|t| t.contains("Locked page"))
     })
@@ -977,7 +977,7 @@ fn type_in_field(b: &Browser, text: &str, command: Sel) -> Result<(), String> {
 
 /// Whether the page (not the address field) has the keyboard.
 fn page_has_keyboard(b: &Browser) -> bool {
-    let page: &NSResponder = &b.view;
+    let page: &NSResponder = &b.page.view;
     b.window
         .firstResponder()
         .is_some_and(|r| std::ptr::eq(&*r, page))
@@ -1015,7 +1015,7 @@ fn check(ok: bool, what: &str, got: &impl Debug) -> Result<(), String> {
 /// The data store `b`'s web view was made with.
 fn store_of(b: &Browser) -> Retained<WKWebsiteDataStore> {
     // SAFETY: main thread (a `Browser` never leaves it); plain property reads.
-    unsafe { b.view.configuration().websiteDataStore() }
+    unsafe { b.page.view.configuration().websiteDataStore() }
 }
 
 /// A ⌘-`key` key-down event for `window`.

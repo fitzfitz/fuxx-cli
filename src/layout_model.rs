@@ -191,6 +191,20 @@ impl Model {
             .collect()
     }
 
+    /// Every tab of a workspace, browser tabs too: panes in reading order, tabs in tab-bar
+    /// order.
+    pub fn tabs_of(&self, workspace: WorkspaceId) -> Vec<TabId> {
+        let Some(w) = self.workspace(workspace) else {
+            return Vec::new();
+        };
+        w.layout
+            .leaves()
+            .into_iter()
+            .filter_map(|id| w.pane(id))
+            .flat_map(|p| p.tabs.iter().map(|t| t.id))
+            .collect()
+    }
+
     pub fn focused_workspace(&self) -> Option<WorkspaceId> {
         self.focused
     }
@@ -909,17 +923,24 @@ impl Workspace {
 
 /// The session the file's focused tab shows (its index in `sessions`): by the focused
 /// workspace's focused pane's shown tab (version 2), else the active session (version 1). None
-/// when that is a browser tab or out of range.
-pub fn saved_focus(state: &SavedState) -> Option<usize> {
+/// when that is out of range.
+pub fn saved_focus(state: &SavedState) -> Option<SavedFocus> {
     if state.workspaces.is_empty() {
-        return state.active;
+        return state.active.map(SavedFocus::Terminal);
     }
     let ws = state.workspaces.get(state.active_workspace?)?;
     let pane = nth_leaf(&ws.layout, ws.focused)?;
-    match pane.tabs.get(pane.active)? {
-        SavedTab::Terminal { session } => Some(*session),
-        SavedTab::Browser { .. } => None,
-    }
+    Some(match pane.tabs.get(pane.active)? {
+        SavedTab::Terminal { session } => SavedFocus::Terminal(*session),
+        SavedTab::Browser { .. } => SavedFocus::Browser,
+    })
+}
+
+/// What a file's focused tab showed: a saved session (its index in `sessions`), or a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SavedFocus {
+    Terminal(usize),
+    Browser,
 }
 
 /// `node`'s `n`th leaf in reading order.
@@ -1300,6 +1321,24 @@ mod tests {
         assert_eq!(all_terminals(&m), BTreeSet::from([9]));
         assert_eq!(m.focused_workspace(), Some(keep.workspace));
         ok(&m);
+    }
+
+    #[test]
+    fn a_workspace_s_tabs_are_every_tab_in_reading_order() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let page = m.add_tab(a.pane, web("http://localhost:3000")).unwrap();
+        let right = m.split(a.pane, Axis::Row, web("https://docs.rs")).unwrap();
+        let other = m.new_workspace(1, term(2)).unwrap();
+        assert_eq!(
+            m.tabs_of(a.workspace),
+            [a.tab, page.tab, right.tab],
+            "browser tabs too"
+        );
+        assert_eq!(m.tabs_of(other.workspace), [other.tab]);
+        assert!(m.tabs_of(WorkspaceId(999)).is_empty());
+        // Only the terminals for `terminals`.
+        assert_eq!(m.terminals(a.workspace), [1]);
     }
 
     #[test]

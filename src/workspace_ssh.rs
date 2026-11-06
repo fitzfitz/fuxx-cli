@@ -357,8 +357,6 @@ impl Workspace {
             || old_session.view.focus_handle(cx).is_focused(window);
         self.emit(&Event::Closed, Some(index));
         self.check_waits(&[old_id], cx);
-        // The browser follows the session, as its row and name do.
-        self.browsers.rekey(old_id, session_id);
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
         if take_focus {
             view.focus_handle(cx).focus(window, cx);
