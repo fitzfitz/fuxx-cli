@@ -390,7 +390,8 @@ impl Workspace {
                 let terminal = entry.terminal;
                 self.note_notification(entry);
                 cx.notify();
-                cx.background_spawn(async move { notifier::fire(&title, &body, terminal) })
+                let about = self.banner_about(terminal);
+                cx.background_spawn(async move { notifier::fire(&title, &body, about) })
                     .detach();
                 Ok(json!({}))
             }
