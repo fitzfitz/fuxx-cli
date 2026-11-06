@@ -375,9 +375,10 @@ fn schema(name: &str) -> Value {
             &["body"],
         ),
         "browser_open" => (
-            "Open the session's browser window (made if needed) at a URL and wait until the page \
-             has loaded (30 s limit); returns its address and title. http and https only: a bare \
-             localhost:3000 or IP gets http://, another bare host https://.",
+            "Open the session's browser tab (its workspace's; if it has none, one is split to the \
+             right of the session's pane) at a URL and wait until the page has loaded (30 s \
+             limit); returns its address and title. http and https only: a bare localhost:3000 \
+             or IP gets http://, another bare host https://.",
             json!({
                 "target": target(),
                 "url": text("The address, e.g. localhost:3000 or https://example.com/docs."),
@@ -466,7 +467,7 @@ fn schema(name: &str) -> Value {
             &[],
         ),
         "browser_close" => (
-            "Close the session's browser window.",
+            "Close the session's browser tab.",
             json!({ "target": target() }),
             &[],
         ),

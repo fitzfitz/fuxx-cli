@@ -359,11 +359,13 @@ impl BrowserTab {
         }
     }
 
-    /// Whether the suggestions are open: the field is being typed in, and has text.
+    /// Whether the suggestions are open: the field shows, is being typed in, and has text.
     pub fn suggestions_open(&self, cx: &App) -> bool {
-        self.editing
-            .as_ref()
-            .is_some_and(|e| e.typed && !e.input.read(cx).text().trim().is_empty())
+        cx.global::<Appearance>().browser_address_bar
+            && self
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.typed && !e.input.read(cx).text().trim().is_empty())
     }
 
     /// ⌘L, or a click on the field: type an address, the current one selected. Not with the
