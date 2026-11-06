@@ -539,7 +539,10 @@ impl TopBar {
                 // A picture, not a button: no action, no bezel.
                 item.setLabel(&NSString::from_str("fuxx"));
                 item.setBordered(false);
-                item.setView(Some(&NSImageView::imageViewWithImage(&mark_image(), mtm)));
+                let picture = NSImageView::imageViewWithImage(&mark_image(), mtm);
+                // Not a drop target either: an editable picture would take a dragged-in image.
+                picture.setEditable(false);
+                item.setView(Some(&picture));
                 return Some(item);
             }
             ADDRESS => {
