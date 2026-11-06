@@ -66,7 +66,7 @@ src/
 ├── status.rs             M2 · Status (Idle/Working/Waiting/Done) + StatusTracker heuristics
 │
 │   many sessions
-├── session_list.rs       M3 · ordered sessions + active index; switching/closing rules   M7 · insert, move
+├── session_list.rs       M3 · ordered sessions + active index; switching/closing rules   M7 · insert, move   M11b · deselect while a browser tab is focused
 ├── workspace.rs          M3 · root view: sidebar, active pane, session lifecycle, actions
 │                         M4 · per-session status rings, window focus, notifications
 │                         M7 · groups, rename, drag/move, presets, save/restore   M8 · split layouts
@@ -109,7 +109,7 @@ src/
 ├── browser.rs            M10c · one WebKit window per session (objc2): load, eval, screenshot, Edit keys, ⌘W   Follow-up · keep-data store choice and wipe
 ├── browser/bar.rs        Follow-up · the compact top bar: back/forward/reload, address field, loading line, 🖕 mark (objc2)
 │   └── browser/probe.rs  M10c · hidden `fuxx __browser-probe` self-test: a real off-screen web view, end to end
-├── workspace_browser.rs  M10c · the session ↔ browser map, ⇧⌘B address box, `browser.*` socket methods
+├── workspace_browser.rs  M10c · the session ↔ browser map, ⇧⌘B address box, `browser.*` socket methods   M11b · browser tabs per workspace, Pop Out, agents drive a tab
 │
 │   UI uplift (M11)
 ├── ui_tokens.rs          M11 · sizes, text scale and the WCAG contrast maths behind UiColors (pure)
@@ -117,12 +117,23 @@ src/
 ├── status_mark.rs        M11 · the drawn status marks (ring, arc, pulsing dot, check), pop curve, ticker rule
 ├── reduce_motion.rs      M11 · macOS "Reduce motion": read at start, refreshed by its change notification
 ├── sidebar.rs            M11 · the sidebar: row model, rows, headers, scroll, resize, footer, hint card, drag
-├── pane_header.rs        M11 · the 22 px header over each pane of a split
 ├── switcher.rs           M11 · the ⌘P session switcher; urgency order and ⇧⌘U's next-needing-you
 ├── overlay_panel.rs      M11 · the shared panel and filter box (switcher, host picker, address box)
 ├── sidebar_toggle.rs     Follow-up · the sidebar button beside the window buttons: position rule, slide curve
 ├── tab_menu.rs           Follow-up · the right-click row menu: actions (close others / to the right), bulk-close text, overlay
 ├── tab_color.rs          Follow-up · the 11 tab colours and their saved names
+│
+│   workspaces, pane tabs and the in-pane browser (M11b)
+├── layout_model.rs       M11b · workspaces → panes → tabs: every rule (new, split, close cascades, move, roll-up, pinning, ⌘1–9, old-file loader), GPUI-free
+├── tab_bar.rs            M11b · the 26 px tab bar over each pane (replaces pane headers): tabs, marks, ×, buttons, drag, scroll
+├── pane_tab_menu.rs      M11b · a pane tab's right-click menu: Close Tab, Close Other Tabs in Pane, Rename Tab…, Pop Out
+├── pane_browser.rs       M11b · the web view placed over a pane each frame, and the rule for hiding it behind fuxx's own menus
+│   └── pane_browser/probe.rs  M11b · hidden `fuxx __pane-browser-probe` self-test: placing, hiding, keys, focus, a real off-screen page
+├── browser_tab.rs        M11b · a browser tab: the GPUI bar, address field, suggestions, page keys (⌘R / ⌘[ / ⌘] / zoom)
+├── browser_history.rs    M11b · visited pages for the address suggestions; kept only with "Keep history and data" On
+├── git_branch.rs         M11b · a workspace's folder (OSC 7 or the shell's cwd) and git branch for the row's second line, cached off the UI thread
+├── notification_list.rs  M11b · this run's notifications for the 🔔 popover: newest first, unseen dot, closed terminals greyed
+├── title_area.rs         M11b · the workspace name in the top band and the 🔔 button and popover in the sidebar footer
 │
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free

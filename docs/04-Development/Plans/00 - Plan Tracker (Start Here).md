@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M10c/M11 follow-up** (browser bar, tabbed Preferences, sidebar button, tab-like rows), built and reviewed 2026-11-06, on-screen check pending. M10b, M10c and M11 are built too, checks pending. M10a Persistent Sessions is complete |
-| **Status** | 🟨 M10b, M10c, M11 and the follow-up built and reviewed (577 tests); on-screen checks pending, batched (your choice). M10a ✅ done 2026-11-05. |
-| **▶ Next action** | Your batched on-screen checks: M10b ([[51 - Milestone 10b - SSH Workspaces]]), M10c ([[52 - Milestone 10c - Agent Browser]]), M11 ([[53 - Milestone 11 - UI-UX Uplift]]) and the follow-up (checklist in [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]). Then merge M10b / M10c / M11 / follow-up into `master`; then M11b ([[M11b Input - Workspaces, Pane Tabs and In-Pane Browser]]), then M12. |
+| **Current milestone** | **M11b — Workspaces, pane tabs and the in-pane browser** (Phase 4), built and reviewed 2026-11-06, on-screen check pending. The M10c/M11 follow-up, M10b, M10c and M11 are built too, checks pending. M10a Persistent Sessions is complete |
+| **Status** | 🟨 M10b, M10c, M11, the follow-up and M11b built and reviewed (715 tests); on-screen checks pending, batched (your choice). M10a ✅ done 2026-11-05. |
+| **▶ Next action** | Your batched on-screen checks: M10b ([[51 - Milestone 10b - SSH Workspaces]]), M10c ([[52 - Milestone 10c - Agent Browser]]), M11 ([[53 - Milestone 11 - UI-UX Uplift]]), the follow-up (checklist in [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]]) and M11b (64-item checklist in [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]]; also confirm its rulings). Then merge M10b / M10c / M11 / follow-up / M11b into `master`; then M12 (signed app, notification click), not planned yet. |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-11-06 |
 
@@ -57,6 +57,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M10c | Agent browser (a scriptable browser window per session) | [[M10c Plan - Agent Browser]] | 🟨 built, check pending | 7/8 | An agent opens a page and drives it |
 | M11 | UI/UX uplift (fun, but professional) | [[M11 Plan - UI-UX Uplift]] | 🟨 built, check pending | 10/11 | fuxx looks and feels like a finished tool |
 | M10c/M11 follow-up | Browser bar, keep-data setting, tabbed Preferences, sidebar button, tab-like rows | [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] | 🟨 built, check pending | 7/9 | A Safari-like browser bar; Preferences in tabs; rows you can close, colour and right-click |
+| M11b | Workspaces, pane tabs and the in-pane browser | [[M11b Plan - Workspaces, Pane Tabs and In-Pane Browser]] | 🟨 built, check pending | 14/15 | Workspaces with tab bars; a browser inside a pane; the 🔔 list in the footer; drag tabs anywhere |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
