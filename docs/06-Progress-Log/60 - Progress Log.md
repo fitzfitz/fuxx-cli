@@ -22,6 +22,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-07 — M11c Task 6: the app icon (on master, on-screen check pending)
+- **Did:** Your request after the merge: the 3D Cyber logo (from your logo session) is fuxx's app icon — the Dock,
+  ⌘Tab, Finder, notification banners (no more blank square) and System Settings — and the popped-out browser window's
+  toolbar mark instead of 🖕. The logo touched the canvas' bottom edge off-centre, so `scripts/make_app_icon.py` trims
+  it onto Apple's icon grid (824 px body in 1024 px) and writes `packaging/macos/fuxx.icns` (10 sizes) and a 64 px mark;
+  `bundle-mac.sh` copies the icon in and `Info.plist` names it. Committed straight on master, as you asked. 743 tests
+  pass; app rebuilt.
+- **Next:** your on-screen check (note 55's list now 19 items: 16–18 are the icon); push on your word; then M11d.
+
 ### 2026-11-06 — M11c built: native notifications (on-screen check pending)
 - **Did:** Your request to "extend M11" with the notification part of M12. A first test on your Mac showed the ad-hoc
   signed `fuxx.app` can post banners titled fuxx and get the click back — no paid Apple account needed. A second
@@ -33,7 +42,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   fixed (an id names the run that numbered its terminal). 742 tests pass; app rebuilt at `target/dist/fuxx.app`.
   Your other session's logo commits ride on the same branch, as you asked. M11d (Help menu) requested next.
 - **Next:** your M11c on-screen check (15 items in note 55), then merge on your word.
-- **Open:** banners show a blank icon until fuxx has an app icon.
+- **Open:** banners show a blank icon until fuxx has an app icon (done in Task 6, 2026-11-07).
 
 ### 2026-11-06 — M11b Task 6c: footer icons bigger, matching, symmetric (on-screen check pending)
 - **Did:** From your screenshot: the sidebar footer's +, 🔔 and gear were different sizes (11, 13 and 9 px; the gear was
