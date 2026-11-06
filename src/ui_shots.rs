@@ -1252,12 +1252,15 @@ fn row_point(
 ///   `sidebar-narrow` and `sidebar-wide` at 180 and 400 px.
 /// - `sidebar-hover`: the pointer over the closed group's header (its "+" shows).
 /// - `sidebar-menu`: the footer's + menu open.
-/// - `sidebar-drag`: a row dragged down its group (lifted copy, dimmed source, insertion line).
+/// - `sidebar-drag`: codex's row dragged down its group, its copy's centre just past shell's (as
+///   closed up), once the rows have slid (M11b Task 7b): tests and shell slid up by codex's height
+///   (and the gap), the gap between shell and the long one, claude and the rows below still, no
+///   insertion line.
 /// - `sidebar-scroll`: 24 sessions, the last one active, so the list scrolls to it.
 ///
 /// Panics unless the question was read off the boxed prompt, a waiting row is 56 px and a
 /// plain one 42 px (M11b: each has its folder line), the active row is scrolled into view and
-/// rows scrolled away don't count as on screen.
+/// rows scrolled away don't count as on screen, and the dragged row's run slid as described.
 fn sidebar_scenes() {
     use gpui::{Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -1323,8 +1326,13 @@ fn sidebar_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
+            // The drag's rows (claude, codex, tests, shell, the long one) as laid out, for the
+            // checks.
+            let rows: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+            let seen = rows.clone();
+            let acting = slot.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-                let ws = slotted(&slot);
+                let ws = slotted(&acting);
                 let none = Modifiers::none();
                 match scene {
                     "sidebar-hover" => {
@@ -1338,20 +1346,68 @@ fn sidebar_scenes() {
                         assert!(cx.read(|cx| ws.read(cx).sidebar.new_menu), "menu opens");
                     }
                     _ => {
-                        // codex (row 2) down past tests, into the lower half of shell (row 4).
-                        let from = row_point(cx, &ws, 2, 0.0);
-                        let to = row_point(cx, &ws, 4, 6.0);
+                        // codex (row 2, three lines tall) down past tests and shell: its copy's
+                        // centre half way between shell's and the long one's as they'd be with
+                        // codex taken out (moved up by its room: its height and the gap).
+                        let bounds: Vec<_> = (1..=5)
+                            .map(|i| {
+                                cx.read(|cx| {
+                                    let scroll = &ws.read(cx).sidebar.scroll;
+                                    let mut b = scroll.bounds_for_item(i).expect("laid out");
+                                    b.origin.y += scroll.offset().y;
+                                    b
+                                })
+                            })
+                            .collect();
+                        let (codex, tests, shell, long) =
+                            (bounds[1], bounds[2], bounds[3], bounds[4]);
+                        let room = tests.top() - codex.top();
+                        let centre = (shell.center().y + long.center().y) / 2.0 - room;
+                        // Taken at its middle, 8 px down (GPUI's drag starts past its threshold):
+                        // the pointer is 8 px below the copy's centre.
+                        let from = codex.center();
+                        let to = point(from.x, centre + px(8.0));
                         cx.simulate_mouse_down(window, from, MouseButton::Left, none);
                         let left = MouseButton::Left;
                         cx.simulate_mouse_move(window, from + point(px(0.0), px(8.0)), left, none);
                         cx.simulate_mouse_move(window, to, left, none);
-                        let line = cx.read(|cx| ws.read(cx).sidebar.drop_at.map(|(_, b)| b));
-                        assert_eq!(line, Some(true), "the line is below shell");
+                        let slot = cx.read(|cx| ws.read(cx).sidebar.drop_slot);
+                        assert_eq!(slot, Some(3), "the gap is between shell and the long one");
+                        settle_slides(cx, window);
+                        *seen.borrow_mut() = bounds;
                     }
                 }
+                // Not kept past its window (the act runs twice for the drag).
+                acting.borrow_mut().take();
             };
-            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
+            if scene != "sidebar-drag" {
+                continue;
+            }
+            let shot = render_with(&theme, dims, build, act);
+            let n = format!("{scene}-{slug}");
+            let ui = theme.ui();
+            let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+                p.iter()
+                    .zip([c.r, c.g, c.b])
+                    .all(|(a, b)| a.abs_diff(b) <= 3)
+            };
+            let rows = rows.borrow().clone();
+            let (claude, codex, tests, shell) = (rows[0], rows[1], rows[2], rows[3]);
+            let room = f32::from(tests.top() - codex.top());
+            let x = f32::from(shell.left()) + 10.0;
+            let px_at = |y: Pixels| pixel_at(&shot, dims, x, f32::from(y));
+            // shell (selected: the accent) slid up by codex's room, its top clear of the copy
+            // (whose centre is just past shell's, as closed up); the middle of where it was is
+            // in the gap: the list's own colour, no line.
+            let up = px_at(shell.top() - px(room) + px(3.0));
+            assert!(is(up, ui.accent), "{n}: shell slid up: {up:?}");
+            let was = px_at(shell.center().y);
+            assert!(is(was, ui.sidebar_background), "{n}: the gap: {was:?}");
+            // claude, above codex, stays (tinted: it's waiting).
+            let still = px_at(claude.center().y);
+            assert!(is(still, ui.waiting_tint), "{n}: claude stays: {still:?}");
         }
 
         // More sessions than fit: the last one is active, so the list scrolls to it.
@@ -2409,12 +2465,37 @@ fn tab_drag_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> Works
     ws
 }
 
-/// Dragging pane tabs (M11b Task 7), from real workspaces in both themes:
-/// - `tab-drag-line`: codex dragged left, between api and claude: the insertion line on claude's
-///   left edge, codex dimmed in its place, its chip (icon and title) under the pointer.
-/// - `tab-drag-row`: codex dragged onto docs's sidebar row: the row lit and ringed in the accent.
+/// Where a tab-drag scene's checks look (see `tab_drag_scenes`).
+#[derive(Clone, Default)]
+struct TabDragGeometry {
+    /// The left bar's four tabs' places, and the right bar's first.
+    tabs: Vec<gpui::Bounds<Pixels>>,
+    right: gpui::Bounds<Pixels>,
+    /// Where the chip's top-left should be: the pointer less where the tab was taken.
+    chip: gpui::Point<Pixels>,
+    /// docs's sidebar row.
+    row: gpui::Bounds<Pixels>,
+}
+
+/// Wait out a drag's slides (M11b Task 7b), then draw again: everything is where it slides to.
+fn settle_slides(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    std::thread::sleep(crate::drag_gap::SLIDE + std::time::Duration::from_millis(30));
+    cx.update_window(window, |_, window, _| window.refresh())
+        .expect("refresh");
+    cx.run_until_parked();
+}
+
+/// Dragging pane tabs (M11b Tasks 7 and 7b), from real workspaces in both themes, each shot once
+/// the other tabs have slid out of the way:
+/// - `tab-drag-gap`: api dragged one place right, between claude and codex: claude slid left into
+///   api's place, the gap where claude was, api's chip (icon and title) where it was taken (its
+///   top-left the pointer less the grab), no insertion line.
+/// - `tab-drag-other`: api dragged over the right pane's bar, before tests: the gap there (tests
+///   slid right by api's width), its own bar closed up.
+/// - `tab-drag-row`: codex dragged onto docs's sidebar row: the row lit and ringed in the accent,
+///   its own bar closed up.
 ///
-/// Panics unless the line and the ring are drawn there; and (not shot) unless dropping reorders
+/// Panics unless the gaps, the chip and the ring are drawn there; and (not shot) unless dropping reorders
 /// the bar, moves a tab into the other pane's bar (its empty part: the end), a pane emptied by
 /// a move closes, a drop on a row moves the tab to the end of that workspace's pane and the view
 /// follows it, a workspace emptied by a move closes without asking, a browser tab moves with its
@@ -2457,7 +2538,7 @@ fn tab_drag_scenes() {
                 .zip([c.r, c.g, c.b])
                 .all(|(a, b)| a.abs_diff(b) <= 3)
         };
-        for scene in ["tab-drag-line", "tab-drag-row"] {
+        for scene in ["tab-drag-gap", "tab-drag-other", "tab-drag-row"] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -2466,7 +2547,9 @@ fn tab_drag_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
-            let geometry: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+            // What the checks need: the left bar's four tabs' places, the right bar's first, the
+            // chip's expected top-left (the pointer less where the tab was taken), and docs's row.
+            let geometry: Rc<RefCell<TabDragGeometry>> = Rc::default();
             let seen = geometry.clone();
             let acting = slot.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
@@ -2477,79 +2560,149 @@ fn tab_drag_scenes() {
                 let tabs: Vec<_> = (0..4)
                     .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
                     .collect();
+                let right = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
                 let order = workspaces(cx, &ws);
                 assert_eq!(order.len(), 2, "{n}: two workspaces");
-                let codex = tabs[2].center();
                 let drop = cx.read(|cx| ws.read(cx).tab_drop);
                 assert_eq!(drop, None, "{n}: nothing dragged yet");
-                if scene == "tab-drag-line" {
-                    // Just right of api's middle: the gap between api and claude.
-                    let to = point(tabs[0].center().x + px(10.0), codex.y);
-                    drag(cx, window, codex, to);
-                    let drop = cx.read(|cx| ws.read(cx).tab_drop);
-                    assert_eq!(
-                        drop,
-                        Some(TabDrop::Bar {
+                // The tab taken (its middle), the pointer's end, and where it lands.
+                let (taken, to, lands) = match scene {
+                    // api, one place right: its chip's centre 10 px left of claude's middle,
+                    // which is past claude as closed up (in api's place) and short of codex as
+                    // closed up (in claude's): it lands between them.
+                    "tab-drag-gap" => {
+                        let to = point(tabs[1].center().x - px(10.0) + px(8.0), tabs[0].center().y);
+                        let at = TabDrop::Bar {
                             pane: panes[0],
-                            gap: 1
-                        }),
-                        "{n}: the line goes between api and claude"
-                    );
-                } else {
-                    let to = row_point(cx, &ws, docs_row, 0.0);
-                    drag(cx, window, codex, to);
-                    let drop = cx.read(|cx| ws.read(cx).tab_drop);
-                    assert_eq!(
-                        drop,
-                        Some(TabDrop::Workspace(order[1])),
-                        "{n}: docs's row is lit"
-                    );
-                    let row = cx.read(|cx| {
-                        let scroll = &ws.read(cx).sidebar.scroll;
-                        let mut b = scroll.bounds_for_item(docs_row).expect("laid out");
-                        b.origin.y += scroll.offset().y;
-                        b
-                    });
-                    seen.borrow_mut().push(row);
-                }
+                            gap: 2,
+                        };
+                        (0, to, at)
+                    }
+                    // api over the right bar, just in from its first tab's left: before tests.
+                    "tab-drag-other" => {
+                        let to = point(right.left() + px(5.0), tabs[0].center().y);
+                        let at = TabDrop::Bar {
+                            pane: panes[1],
+                            gap: 0,
+                        };
+                        (0, to, at)
+                    }
+                    // codex onto docs's row.
+                    _ => {
+                        let to = row_point(cx, &ws, docs_row, 0.0);
+                        (2, to, TabDrop::Workspace(order[1]))
+                    }
+                };
+                let from = tabs[taken].center();
+                drag(cx, window, from, to);
+                let drop = cx.read(|cx| ws.read(cx).tab_drop);
+                assert_eq!(drop, Some(lands), "{n}: where it lands");
                 assert!(cx.read(|cx| cx.has_active_drag()), "{n}: still dragging");
-                seen.borrow_mut().extend(tabs);
+                // GPUI took the tab where the pointer was as the drag started (past its 8 px
+                // move): the chip keeps that spot under the pointer.
+                let grab = from + point(px(8.0), px(0.0)) - tabs[taken].origin;
+                let held = cx
+                    .read(|cx| ws.read(cx).tab_drag.get())
+                    .expect("a tab's drag");
+                assert_eq!(held.at, grab, "{n}: where the tab was taken");
+                settle_slides(cx, window);
+                let row = cx.read(|cx| {
+                    let scroll = &ws.read(cx).sidebar.scroll;
+                    let mut b = scroll.bounds_for_item(docs_row).expect("laid out");
+                    b.origin.y += scroll.offset().y;
+                    b
+                });
+                *seen.borrow_mut() = TabDragGeometry {
+                    tabs,
+                    right,
+                    chip: to - grab,
+                    row,
+                };
                 acting.borrow_mut().take();
             };
             let path = shoot_with(scene, slug, &theme, wide, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
-            geometry.borrow_mut().clear();
             let shot = render_with(&theme, wide, build, act);
             let n = format!("{scene}-{slug}");
             let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
-            let geometry = geometry.borrow().clone();
-            if scene == "tab-drag-line" {
-                // The line: 2 px of accent astride claude's left edge (half over api), from 4 px
-                // below the bar's top to 4 px above its bottom; the chip is under the bar.
-                let edge = f32::from(geometry[1].left());
-                for x in [edge - 0.5, edge + 0.5] {
-                    for y in [6.0, 13.0, 20.0] {
-                        assert!(is(px_at(x, y), ui.accent), "{n}: the line at {x},{y}");
-                    }
-                    // Clear of the bar's top (api's accent line ends at the gap) and bottom.
-                    for y in [2.5, 24.0] {
-                        assert!(!is(px_at(x, y), ui.accent), "{n}: line inset at {x},{y}");
+            let g = geometry.borrow().clone();
+            let tabs = &g.tabs;
+            let width = f32::from(tabs[0].size.width);
+            let (chip_x, chip_y) = (f32::from(g.chip.x), f32::from(g.chip.y));
+            // No insertion line: no accent in the left bar below the active tab's top line.
+            let no_line = || {
+                for x in (f32::from(tabs[0].left()) as i32..f32::from(tabs[3].right()) as i32)
+                    .map(|x| x as f32 + 0.5)
+                {
+                    assert!(!is(px_at(x, 13.0), ui.accent), "{n}: no line at {x}");
+                }
+            };
+            // A place in the left bar with nothing drawn in it (a tab gone from there).
+            let empty = |tab: gpui::Bounds<Pixels>, what: &str| {
+                let left = f32::from(tab.left());
+                for dx in [6.0, 20.0, 40.0, 60.0, 80.0] {
+                    for y in [7.0, 13.0, 19.0] {
+                        let p = px_at(left + dx, y);
+                        assert!(
+                            is(p, ui.sidebar_background),
+                            "{n}: {what} empty at +{dx},{y}: {p:?}"
+                        );
                     }
                 }
-                assert!(
-                    is(px_at(edge - 3.0, 1.0), ui.accent),
-                    "{n}: api's own accent"
-                );
-                assert!(!is(px_at(edge + 1.5, 13.0), ui.accent), "{n}: 2 px wide");
-                // None along api's left edge (the bar's other gaps).
-                let api = geometry[0];
-                let x = f32::from(api.left()) + 1.0;
-                assert!(!is(px_at(x, 13.0), ui.accent), "{n}: no line before api");
-            } else {
-                // The ring along docs's row's left edge, mid-height.
-                let row = geometry[0];
-                let (x, y) = (f32::from(row.left()) + 1.0, f32::from(row.center().y));
-                assert!(is(px_at(x, y), ui.accent), "{n}: docs's row ringed");
+            };
+            match scene {
+                "tab-drag-gap" => {
+                    // claude (tinted) slid left into api's place; the gap is where claude was.
+                    let claude = px_at(f32::from(tabs[0].center().x), 3.0);
+                    assert!(
+                        is(claude, ui.waiting_tint),
+                        "{n}: claude slid left: {claude:?}"
+                    );
+                    let gap = px_at(f32::from(tabs[1].right()) - 4.0, 3.0);
+                    assert!(is(gap, ui.sidebar_background), "{n}: the gap: {gap:?}");
+                    // The chip is where api was taken: its left edge at the pointer less the
+                    // grab, level with the bar (not under it).
+                    assert_eq!(chip_y, 0.0, "{n}: the chip's top is the bar's");
+                    let inside = px_at(chip_x + 3.0, 3.0);
+                    assert!(
+                        is(inside, ui.panel),
+                        "{n}: the chip's left edge: {inside:?}"
+                    );
+                    let outside = px_at(chip_x - 3.0, 3.0);
+                    assert!(!is(outside, ui.panel), "{n}: left of the chip: {outside:?}");
+                    let low = px_at(chip_x + 10.0, 23.0);
+                    assert!(is(low, ui.panel), "{n}: the chip down the bar: {low:?}");
+                    assert!(
+                        (chip_x - (f32::from(tabs[1].left()) - 10.0)).abs() <= 1.0,
+                        "{n}: the chip's centre 10 px short of claude's middle"
+                    );
+                    no_line();
+                }
+                "tab-drag-other" => {
+                    // Its own bar closed up: claude in api's place, the last place empty.
+                    let claude = px_at(f32::from(tabs[0].center().x), 3.0);
+                    assert!(
+                        is(claude, ui.waiting_tint),
+                        "{n}: claude slid left: {claude:?}"
+                    );
+                    empty(tabs[3], "the left bar's last place");
+                    // The right bar: tests (filled, as its pane's shown tab) slid right by
+                    // api's width; the gap's end shows the bar.
+                    let left = f32::from(g.right.left());
+                    let tests = px_at(left + width + 6.0, 3.0);
+                    assert!(is(tests, ui.panel), "{n}: tests slid right: {tests:?}");
+                    let gap = px_at(left + width - 6.0, 3.0);
+                    assert!(is(gap, ui.sidebar_background), "{n}: the gap: {gap:?}");
+                    no_line();
+                }
+                _ => {
+                    // The ring along docs's row's left edge, mid-height.
+                    let (x, y) = (f32::from(g.row.left()) + 1.0, f32::from(g.row.center().y));
+                    assert!(is(px_at(x, y), ui.accent), "{n}: docs's row ringed");
+                    // Its own bar closed up: the browser tab's place is empty.
+                    empty(tabs[3], "the left bar's last place");
+                    no_line();
+                }
             }
         }
 
@@ -2648,7 +2801,11 @@ fn tab_drag_scenes() {
                 !cx.read(|cx| cx.has_active_drag()),
                 "{n}: Esc ends the drag"
             );
-            assert_eq!(cx.read(|cx| ws.read(cx).tab_drop), None, "{n}: no line");
+            assert_eq!(
+                cx.read(|cx| ws.read(cx).tab_drop),
+                None,
+                "{n}: nowhere to land"
+            );
             cx.simulate_mouse_up(window, to, left, none);
             assert_eq!(
                 names(cx, lp),
@@ -2689,7 +2846,11 @@ fn tab_drag_scenes() {
             let own = point(tab(cx, lp, 2).center().x - px(30.0), px(13.0));
             let from = tab(cx, lp, 2).center();
             drag(cx, window, from, own);
-            assert_eq!(cx.read(|cx| ws.read(cx).tab_drop), None, "{n}: no line");
+            assert_eq!(
+                cx.read(|cx| ws.read(cx).tab_drop),
+                None,
+                "{n}: its own place"
+            );
             release(cx, own);
             assert_eq!(names(cx, lp)[2], "codex", "{n}: its own place");
             assert_eq!(focused(cx), ("codex".to_string(), true), "{n}: codex shown");

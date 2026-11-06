@@ -34,6 +34,7 @@ use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::browser_tab::BrowserTab;
 use crate::daemon_client::{self, DaemonClient};
+use crate::drag_gap::Slides;
 use crate::git_branch::Places;
 use crate::groups::{self, GroupKey};
 use crate::host_picker::HostPicker;
@@ -57,6 +58,7 @@ use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::switcher::Switcher;
+use crate::tab_bar::TabGrab;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{TOP_BAND, UNFOCUSED_VEIL};
@@ -253,11 +255,14 @@ pub struct Workspace {
     /// Each pane's tab row: its scroll, and the tab last scrolled into view, if any (a pane whose
     /// shown tab changes scrolls to it). Panes gone are dropped as the bars are drawn.
     pub(crate) tab_scroll: RefCell<HashMap<PaneId, (ScrollHandle, Option<TabId>)>>,
-    /// The tab being dragged, noted as its drag starts (M11b Task 7); see `dragged_tab`.
-    pub(crate) tab_drag: Rc<Cell<Option<TabId>>>,
+    /// The tab being dragged and where it was taken, noted as its drag starts (M11b Task 7);
+    /// see `dragged_tab`.
+    pub(crate) tab_drag: Rc<Cell<Option<TabGrab>>>,
     /// While a tab is dragged: where dropping it would move it (a bar's gap, a sidebar row);
     /// none over anything else, or where it would land where it is.
     pub(crate) tab_drop: Option<TabDrop>,
+    /// While a tab or a row is dragged, the others' slides out of its way (M11b Task 7b).
+    pub(crate) drag_slides: RefCell<Slides>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
     /// The ⌘P session switcher, while it is open (M11).
@@ -427,6 +432,7 @@ impl Workspace {
             tab_scroll: RefCell::new(HashMap::new()),
             tab_drag: Rc::new(Cell::new(None)),
             tab_drop: None,
+            drag_slides: RefCell::default(),
             host_picker: None,
             switcher: None,
             browser_tabs: HashMap::new(),
@@ -1858,25 +1864,23 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Drop `dragged` on `target`'s row: it goes where the insertion line was (above or below
-    /// that row), inside the same run only (`sidebar_run`). With no line there, it stays.
-    pub(crate) fn drop_workspace(
-        &mut self,
-        dragged: WorkspaceId,
-        target: WorkspaceId,
-        cx: &mut Context<Self>,
-    ) {
-        let below = self.sidebar.drop_at.take().filter(|(w, _)| *w == target);
-        cx.notify(); // the line goes
-        let order = self.model.display_order();
-        let find = |id: WorkspaceId| order.iter().position(|&w| w == id);
-        let (Some(from), Some(to), Some((_, below))) = (find(dragged), find(target), below) else {
+    /// Drop row `dragged` on the sidebar's list: it goes where its gap was (a slot of its run,
+    /// `sidebar_run`). With its gap at its own place, it stays.
+    pub(crate) fn drop_workspace(&mut self, dragged: WorkspaceId, cx: &mut Context<Self>) {
+        let slot = self.sidebar.drop_slot.take();
+        cx.notify(); // the gap closes
+        let Some(slot) = slot else {
             return;
         };
-        if self.sidebar_run(dragged) == self.sidebar_run(target)
-            && self
-                .model
-                .move_workspace_display(dragged, sidebar::drop_index(from, to, below))
+        let run = self.sidebar_run(dragged);
+        let in_run: Vec<bool> = self
+            .model
+            .display_order()
+            .iter()
+            .map(|w| self.sidebar_run(*w) == run)
+            .collect();
+        if let Some(to) = sidebar::run_drop_index(&in_run, slot)
+            && self.model.move_workspace_display(dragged, to)
         {
             self.sync();
             self.save();
@@ -1886,6 +1890,11 @@ impl Workspace {
     /// The tab being dragged, while one is (a row's drag clears it as it starts, and GPUI ends
     /// every drag on release).
     pub(crate) fn dragged_tab(&self, cx: &App) -> Option<TabId> {
+        self.tab_grab(cx).map(|grab| grab.tab)
+    }
+
+    /// The tab being dragged and where it was taken, while one is.
+    pub(crate) fn tab_grab(&self, cx: &App) -> Option<TabGrab> {
         self.tab_drag.get().filter(|_| cx.has_active_drag())
     }
 
@@ -2279,9 +2288,12 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // No drag: a tab drag GPUI ended without a drop (released elsewhere) leaves nothing
         // behind, so a later drag of something else (a file from Finder) isn't taken for it.
+        // The slides go with the drag: the layout now matches its gap.
         if !cx.has_active_drag() {
             self.tab_drag.set(None);
             self.tab_drop = None;
+            self.sidebar.drop_slot = None;
+            self.drag_slides.borrow_mut().clear();
         }
         self.ensure_browser_tabs(window, cx);
         self.tick_marks(cx);
@@ -2358,6 +2370,12 @@ impl Render for Workspace {
                 self.render_top_band("pane-band", name, window, cx)
             })
             .flatten();
+        let panes = self.render_panes(colors, ui, window, cx);
+        // Tabs or rows sliding out of a drag's way (the bars and rows were just drawn): every
+        // frame until they're there.
+        if self.drag_slides.borrow().moving(Instant::now()) {
+            window.request_animation_frame();
+        }
 
         div()
             .flex()
@@ -2490,7 +2508,7 @@ impl Render for Workspace {
                             .w_full()
                             .overflow_hidden()
                             .child(self.render_pane_area(cx))
-                            .children(self.render_panes(colors, ui, window, cx)),
+                            .children(panes),
                     ),
             )
             .children(sliding_sidebar)
