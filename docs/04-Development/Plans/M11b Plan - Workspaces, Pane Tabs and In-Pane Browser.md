@@ -149,6 +149,15 @@ the model, not rewritten. A spike proves the in-pane web view first.
 - [ ] Tests: the binding table (⌘T → new tab action, ⌘N → new workspace action); new tab lands in the focused pane after
   its active tab and is selected; ⌘T with no workspace makes one; menu titles.
 
+### Task 4e: Browser shortcuts inside a page — ⬜ (added 2026-11-06, your answer to review #14)
+
+- While an in-pane page has the keyboard: **⌘R** reloads the page, **⌘[ / ⌘]** go back / forward, **⌘= / ⌘- / ⌘0**
+  zoom the page in / out / reset (WKWebView `pageZoom`, per tab, kept for the run). Everywhere else these keys keep
+  fuxx's meaning (rename, previous / next pane, terminal font size). The fuxx keys listed in Global Constraints (⌘W / ⌘T
+  / ⌘D / ⌘1–9 / ⌘P / ⇧⌘U, ⌃Tab) still reach fuxx from the page.
+- [ ] Tests: the key routing decision (page has keyboard × key → page action or fuxx action), zoom steps and clamps;
+  probe: ⌘R / ⌘[ in a focused page act on the page, not fuxx.
+
 ### Task 5: Sidebar rows, pinning, git branch — ⬜
 
 - Rich rows, accent-filled selection, 📌 pinned section + Pin/Unpin in the menu, Needs-input pill; `git_branch.rs`
