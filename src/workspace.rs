@@ -22,9 +22,10 @@ use std::time::Instant;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, EntityId,
-    FocusHandle, Focusable, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Stateful, StyleRefinement,
-    Subscription, Task, Window, WindowControlArea, actions, canvas, div, prelude::*, px,
+    FocusHandle, Focusable, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Stateful,
+    StyleRefinement, Subscription, Task, Window, WindowControlArea, actions, canvas, div,
+    prelude::*, px,
 };
 
 use crate::adopt::{self, Probe};
@@ -36,7 +37,7 @@ use crate::daemon_client::{self, DaemonClient};
 use crate::git_branch::Places;
 use crate::groups::{self, GroupKey};
 use crate::host_picker::HostPicker;
-use crate::layout_model::{self, Model, PaneId, TabId, TabKind, WorkspaceId};
+use crate::layout_model::{self, Model, PaneId, TabDrop, TabId, TabKind, WorkspaceId};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::notification_list::{self, NotificationList};
@@ -252,6 +253,11 @@ pub struct Workspace {
     /// Each pane's tab row: its scroll, and the tab last scrolled into view, if any (a pane whose
     /// shown tab changes scrolls to it). Panes gone are dropped as the bars are drawn.
     pub(crate) tab_scroll: RefCell<HashMap<PaneId, (ScrollHandle, Option<TabId>)>>,
+    /// The tab being dragged, noted as its drag starts (M11b Task 7); see `dragged_tab`.
+    pub(crate) tab_drag: Rc<Cell<Option<TabId>>>,
+    /// While a tab is dragged: where dropping it would move it (a bar's gap, a sidebar row);
+    /// none over anything else, or where it would land where it is.
+    pub(crate) tab_drop: Option<TabDrop>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
     /// The ⌘P session switcher, while it is open (M11).
@@ -419,6 +425,8 @@ impl Workspace {
             renaming: None,
             pane_tab_menu: None,
             tab_scroll: RefCell::new(HashMap::new()),
+            tab_drag: Rc::new(Cell::new(None)),
+            tab_drop: None,
             host_picker: None,
             switcher: None,
             browser_tabs: HashMap::new(),
@@ -1863,6 +1871,70 @@ impl Workspace {
         }
     }
 
+    /// The tab being dragged, while one is (a row's drag clears it as it starts, and GPUI ends
+    /// every drag on release).
+    pub(crate) fn dragged_tab(&self, cx: &App) -> Option<TabId> {
+        self.tab_drag.get().filter(|_| cx.has_active_drag())
+    }
+
+    /// Dragged tab `tab` dropped on a bar or row: it goes where the line (or highlight) was, if
+    /// `here` (the place under the pointer) says it was this target's; with none, it stays.
+    pub(crate) fn drop_tab(
+        &mut self,
+        tab: TabId,
+        here: impl FnOnce(TabDrop) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tab_drag.set(None);
+        let at = self.tab_drop.take().filter(|at| here(*at));
+        cx.notify(); // the line or highlight goes
+        if let Some((pane, index)) = at.and_then(|at| self.model.drop_place(tab, at)) {
+            self.move_tab(tab, pane, index, window, cx);
+        }
+    }
+
+    /// Esc during a tab drag: it ends where it started, nothing moved.
+    fn cancel_tab_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.dragged_tab(cx).is_none() {
+            return false;
+        }
+        cx.stop_active_drag(window);
+        self.tab_drag.set(None);
+        self.tab_drop = None;
+        cx.notify();
+        true
+    }
+
+    /// Move `tab` to `index` in `pane`'s bar (a drop): it is shown and takes the keyboard, and
+    /// the view follows it to its workspace. Its terminal or page goes as it is (the same view:
+    /// the same `sN`, program, screen and status). A pane or workspace it leaves empty closes,
+    /// without asking: nothing ends.
+    pub(crate) fn move_tab(
+        &mut self,
+        tab: TabId,
+        pane: PaneId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(closed) = self.model.move_tab(tab, pane, index) else {
+            return;
+        };
+        self.dragging = None; // the layouts change under a divider drag
+        self.divider_hover = None; // and a divider may be gone, with no leave event
+        // A workspace that closed: its rename box goes (`activate` closes the menus).
+        if let Some((Renaming::Workspace(ws), _)) = &self.renaming
+            && closed.workspaces.contains(ws)
+        {
+            self.renaming = None;
+        }
+        self.sync();
+        let keys = self.sidebar_groups();
+        self.collapsed.retain(|c| keys.contains(&Some(c.clone())));
+        self.activate(window, cx); // saves
+    }
+
     /// Swap the focused workspace with its neighbour above (or below), inside its run only
     /// (`sidebar_run`).
     fn move_active(&mut self, up: bool, cx: &mut Context<Self>) {
@@ -2272,6 +2344,12 @@ impl Render for Workspace {
             .size_full()
             .bg(hsla(theme.background))
             .key_context("Workspace")
+            // Esc during a tab drag cancels it, before the terminal (or a box) takes the key.
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.cancel_tab_drag(window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &NewWorkspace, window, cx| this.new_session(window, cx)),
             )

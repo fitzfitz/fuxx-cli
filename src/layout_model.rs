@@ -74,6 +74,14 @@ pub struct Closed {
     pub workspaces: Vec<WorkspaceId>,
 }
 
+/// Where a dragged tab is dropped (M11b Task 7): in a pane's tab bar, at a gap between its tabs
+/// (0: before the first; the bar's length: after the last), or on a workspace's sidebar row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabDrop {
+    Bar { pane: PaneId, gap: usize },
+    Workspace(WorkspaceId),
+}
+
 /// The workspaces in sidebar order, which one is focused, and the next id to hand out.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
@@ -367,7 +375,6 @@ impl Model {
     /// Move `tab` to `index` (clamped) in `pane`'s bar, in the same or another pane; it is shown
     /// and gets the focus. The pane it left closes if it is left empty, as for `close_tab` (the
     /// moved tab is not in `Closed::tabs`). None when either is unknown.
-    #[allow(dead_code)] // for dragging tabs (M11b Task 7)
     pub fn move_tab(&mut self, tab: TabId, pane: PaneId, index: usize) -> Option<Closed> {
         let (_, from) = self.locate(tab)?;
         self.index_of_pane(pane)?;
@@ -386,6 +393,29 @@ impl Model {
         };
         self.select_tab(tab);
         Some(closed)
+    }
+
+    /// Where `tab` dropped at `drop` goes, as `move_tab` takes it: a pane, and an index in its
+    /// bar once `tab` is out of it. A bar's gap; a workspace's row: the end of its focused (or
+    /// last focused) pane. None when it would land where it is, or either is unknown.
+    pub fn drop_place(&self, tab: TabId, drop: TabDrop) -> Option<(PaneId, usize)> {
+        let (_, from) = self.locate(tab)?;
+        let (pane, gap) = match drop {
+            TabDrop::Bar { pane, gap } => (pane, gap),
+            TabDrop::Workspace(ws) => {
+                let ws = self.workspace(ws)?;
+                (ws.focused, ws.pane(ws.focused)?.tabs.len())
+            }
+        };
+        let tabs = &self.pane(pane)?.tabs;
+        let gap = gap.min(tabs.len());
+        if pane != from {
+            return Some((pane, gap));
+        }
+        // Taking it out shifts the gaps after it one to the left.
+        let at = tabs.iter().position(|t| t.id == tab)?;
+        let index = if gap > at { gap - 1 } else { gap };
+        (index != at).then_some((pane, index))
     }
 
     /// Show `tab` in its pane and give that pane, and its workspace, the focus.
@@ -1453,6 +1483,166 @@ mod tests {
     }
 
     #[test]
+    fn move_tab_across_panes_shows_the_left_pane_s_neighbour_and_selects_the_moved_tab() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let a2 = m.add_tab(a.pane, term(2)).unwrap();
+        let a3 = m.add_tab(a.pane, term(3)).unwrap();
+        let b = m.split(a.pane, Axis::Row, term(4)).unwrap();
+        // a shows its middle tab; moving it away shows its right-hand neighbour.
+        m.select_tab(a2.tab);
+        assert_eq!(m.move_tab(a2.tab, b.pane, 1), Some(Closed::default()));
+        assert_eq!(m.pane(a.pane).unwrap().active, a3.tab);
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), term(3)]);
+        assert_eq!(tab_kinds(&m, b.pane), [term(4), term(2)]);
+        assert_eq!(m.pane(b.pane).unwrap().active, a2.tab);
+        assert_eq!(m.focused_pane(), Some(b.pane));
+        // a shows its last tab; moving it away shows the one left of it.
+        m.select_tab(a3.tab);
+        assert_eq!(m.move_tab(a3.tab, b.pane, 0), Some(Closed::default()));
+        assert_eq!(m.pane(a.pane).unwrap().active, a.tab);
+        // A tab a pane doesn't show moves without changing what that pane shows.
+        let a4 = m.add_tab(a.pane, term(5)).unwrap();
+        assert_eq!(m.move_tab(a.tab, b.pane, 99), Some(Closed::default()));
+        assert_eq!(m.pane(a.pane).unwrap().active, a4.tab);
+        assert_eq!(tab_kinds(&m, b.pane), [term(3), term(4), term(2), term(1)]);
+        assert_eq!(m.focused_tab(), Some(a.tab));
+        ok(&m);
+    }
+
+    #[test]
+    fn move_tab_into_another_workspace_closes_what_it_leaves_empty() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let b = m.new_workspace(1, term(2)).unwrap();
+        let b2 = m.split(b.pane, Axis::Column, term(3)).unwrap();
+        let c = m.new_workspace(2, term(4)).unwrap();
+        // b's lower pane loses its only tab: it closes, b's upper pane takes its place and b's
+        // focus; b stays.
+        let closed = m.move_tab(b2.tab, a.pane, 1).unwrap();
+        assert_eq!(
+            closed,
+            Closed {
+                panes: vec![b2.pane],
+                ..Closed::default()
+            }
+        );
+        assert_eq!(m.workspace(b.workspace).unwrap().layout, Node::Leaf(b.pane));
+        assert_eq!(m.workspace(b.workspace).unwrap().focused, b.pane);
+        // The tab is shown where it went, and that workspace has the focus.
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), term(3)]);
+        assert_eq!(m.locate(b2.tab), Some((a.workspace, a.pane)));
+        assert_eq!(m.focused_workspace(), Some(a.workspace));
+        assert_eq!(m.focused_tab(), Some(b2.tab));
+        ok(&m);
+        // c's only tab leaves: c's pane and c close, nothing ends (no tab in `Closed`).
+        let closed = m.move_tab(c.tab, b.pane, 0).unwrap();
+        assert_eq!(
+            closed,
+            Closed {
+                tabs: vec![],
+                panes: vec![c.pane],
+                workspaces: vec![c.workspace],
+            }
+        );
+        assert!(m.workspace(c.workspace).is_none());
+        assert_eq!(m.workspaces().len(), 2);
+        assert_eq!(tab_kinds(&m, b.pane), [term(4), term(2)]);
+        assert_eq!(m.focused_workspace(), Some(b.workspace));
+        assert_eq!(m.focused_tab(), Some(c.tab));
+        // Every terminal is still shown, once.
+        assert_eq!(all_terminals(&m), BTreeSet::from([1, 2, 3, 4]));
+        ok(&m);
+    }
+
+    #[test]
+    fn a_tab_dropped_where_it_is_stays_put() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let a2 = m.add_tab(a.pane, term(2)).unwrap();
+        m.add_tab(a.pane, term(3)).unwrap();
+        let before = m.clone();
+        // At its own index: the same order, nothing closes.
+        assert_eq!(m.move_tab(a2.tab, a.pane, 1), Some(Closed::default()));
+        assert_eq!(tab_kinds(&m, a.pane), tab_kinds(&before, a.pane));
+        // A pane's only tab, into its own pane at any index: no change at all.
+        let b = m.new_workspace(1, term(4)).unwrap();
+        let before = m.clone();
+        for index in [0, 1, 5] {
+            assert_eq!(m.move_tab(b.tab, b.pane, index), Some(Closed::default()));
+            assert_eq!(m, before);
+        }
+        ok(&m);
+    }
+
+    #[test]
+    fn a_drop_in_a_bar_lands_in_the_gap_and_one_where_the_tab_is_does_nothing() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let a2 = m.add_tab(a.pane, term(2)).unwrap();
+        let a3 = m.add_tab(a.pane, term(3)).unwrap();
+        let b = m.split(a.pane, Axis::Row, term(4)).unwrap();
+        let bar = |gap| TabDrop::Bar { pane: a.pane, gap };
+        // The middle tab (index 1): the gaps either side of it are its own place.
+        assert_eq!(m.drop_place(a2.tab, bar(1)), None);
+        assert_eq!(m.drop_place(a2.tab, bar(2)), None);
+        assert_eq!(m.drop_place(a2.tab, bar(0)), Some((a.pane, 0)));
+        // Past the tab: one less, as it's taken out first.
+        assert_eq!(m.drop_place(a2.tab, bar(3)), Some((a.pane, 2)));
+        assert_eq!(m.drop_place(a2.tab, bar(99)), Some((a.pane, 2)));
+        assert_eq!(m.drop_place(a.tab, bar(3)), Some((a.pane, 2)));
+        assert_eq!(m.drop_place(a3.tab, bar(3)), None);
+        // Another pane's bar: the gap as it is (clamped).
+        let other = |gap| TabDrop::Bar { pane: b.pane, gap };
+        assert_eq!(m.drop_place(a2.tab, other(0)), Some((b.pane, 0)));
+        assert_eq!(m.drop_place(a2.tab, other(1)), Some((b.pane, 1)));
+        assert_eq!(m.drop_place(a2.tab, other(7)), Some((b.pane, 1)));
+        // Unknown tab or pane: nowhere.
+        assert_eq!(m.drop_place(TabId(999), bar(0)), None);
+        let nowhere = TabDrop::Bar {
+            pane: PaneId(999),
+            gap: 0,
+        };
+        assert_eq!(m.drop_place(a.tab, nowhere), None);
+        // Dropped where it is, the model is left exactly as it was.
+        let before = m.clone();
+        assert_eq!(m.drop_place(a3.tab, bar(2)), None);
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn a_drop_on_a_workspace_s_row_lands_at_the_end_of_its_focused_pane() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let a2 = m.add_tab(a.pane, term(2)).unwrap();
+        let b = m.new_workspace(1, term(3)).unwrap();
+        let b2 = m.split(b.pane, Axis::Row, term(4)).unwrap();
+        m.add_tab(b2.pane, term(5)).unwrap();
+        // b last had its right pane focused: there, after its two tabs.
+        m.focus_workspace(a.workspace);
+        let row = TabDrop::Workspace(b.workspace);
+        assert_eq!(m.drop_place(a.tab, row), Some((b2.pane, 2)));
+        m.focus_pane(b.pane);
+        m.focus_workspace(a.workspace);
+        assert_eq!(m.drop_place(a.tab, row), Some((b.pane, 1)));
+        // Its own workspace's row: the end of the focused pane, unless it's already last there.
+        let own = TabDrop::Workspace(a.workspace);
+        assert_eq!(m.drop_place(a.tab, own), Some((a.pane, 1)));
+        assert_eq!(m.drop_place(a2.tab, own), None);
+        assert_eq!(
+            m.drop_place(a.tab, TabDrop::Workspace(WorkspaceId(999))),
+            None
+        );
+        // Dropped there: shown and focused in b, which takes the view.
+        let (pane, index) = m.drop_place(a.tab, row).unwrap();
+        assert_eq!(m.move_tab(a.tab, pane, index), Some(Closed::default()));
+        assert_eq!(tab_kinds(&m, b.pane), [term(3), term(1)]);
+        assert_eq!(m.focused_workspace(), Some(b.workspace));
+        assert_eq!(m.focused_tab(), Some(a.tab));
+        ok(&m);
+    }
+
+    #[test]
     fn select_tab_focuses_its_pane_and_workspace() {
         let mut m = Model::new();
         let a = m.new_workspace(0, term(1)).unwrap();
@@ -1761,7 +1951,32 @@ mod tests {
                             assert!(m.workspace(w).is_none());
                         }
                     }
-                    8 | 9 => {
+                    8 => {
+                        // A drag: dropped in a bar's gap or on a row, as `drop_place` says.
+                        if let (Some(t), Some(p), Some(w)) =
+                            (rng.pick(&tabs), rng.pick(&panes), rng.pick(&workspaces))
+                        {
+                            let drop = if rng.below(3) == 0 {
+                                TabDrop::Workspace(w)
+                            } else {
+                                TabDrop::Bar {
+                                    pane: p,
+                                    gap: rng.below(5),
+                                }
+                            };
+                            match m.drop_place(t, drop) {
+                                Some((pane, index)) => {
+                                    let closed = m.move_tab(t, pane, index).unwrap();
+                                    assert!(closed.tabs.is_empty());
+                                    let tabs = &m.pane(pane).unwrap().tabs;
+                                    assert_eq!(tabs.get(index).map(|t| t.id), Some(t));
+                                    assert_eq!(m.focused_tab(), Some(t));
+                                }
+                                None => assert!(m.tab(t).is_some()),
+                            }
+                        }
+                    }
+                    9 => {
                         if let (Some(t), Some(p)) = (rng.pick(&tabs), rng.pick(&panes)) {
                             let closed = m.move_tab(t, p, rng.below(4)).unwrap();
                             assert!(closed.tabs.is_empty());

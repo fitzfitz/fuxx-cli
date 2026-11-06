@@ -216,6 +216,7 @@ const SCENES: &[(&str, fn())] = &[
     ("splits", split_scenes),
     ("workspaces", workspace_scenes),
     ("tab-bars", tab_bar_scenes),
+    ("tab-drag", tab_drag_scenes),
     ("browser-tab", browser_tab_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
@@ -2389,6 +2390,427 @@ fn tab_bar_scenes() {
         };
         render_with(&theme, wide, build, act);
         println!("ui-shots: tab-bars-act-{slug} ok");
+    }
+}
+
+/// `tab_bar_workspace`'s two panes (left: api, claude, codex, a browser tab; right: tests) and,
+/// below it in the sidebar, a second workspace with one tab, docs. api is shown.
+fn tab_drag_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
+    let mut ws = tab_bar_workspace(true, 0, window, cx);
+    let project = std::path::Path::new(API);
+    ws.open_shot_session("docs", project, SHELL_TEXT, None, window, cx);
+    let api = ws.sessions.position(|x| x.label() == "api").expect("api");
+    ws.select(api, window, cx);
+    ws
+}
+
+/// Dragging pane tabs (M11b Task 7), from real workspaces in both themes:
+/// - `tab-drag-line`: codex dragged left, between api and claude: the insertion line on claude's
+///   left edge, codex dimmed in its place, its chip (icon and title) under the pointer.
+/// - `tab-drag-row`: codex dragged onto docs's sidebar row: the row lit and ringed in the accent.
+///
+/// Panics unless the line and the ring are drawn there; and (not shot) unless dropping reorders
+/// the bar, moves a tab into the other pane's bar (its empty part: the end), a pane emptied by
+/// a move closes, a drop on a row moves the tab to the end of that workspace's pane and the view
+/// follows it, a workspace emptied by a move closes without asking, a browser tab moves with its
+/// view, a drop elsewhere or Esc changes nothing, and a moved terminal keeps its `sN`, view,
+/// screen, status and running program, with the keyboard.
+fn tab_drag_scenes() {
+    use crate::grid::TextScope;
+    use crate::layout_model::{PaneId, TabDrop, TabKind, WorkspaceId};
+    use crate::pane_browser::page_hidden;
+    use gpui::{Focusable, Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let wide = size(px(1280.0), px(600.0));
+    let none = Modifiers::none();
+    let left = MouseButton::Left;
+    // Press on `from`, move past GPUI's drag threshold, then to `to` (still held).
+    let drag = move |cx: &mut VisualTestAppContext,
+                     window: AnyWindowHandle,
+                     from: gpui::Point<Pixels>,
+                     to: gpui::Point<Pixels>| {
+        cx.simulate_mouse_down(window, from, left, none);
+        cx.simulate_mouse_move(window, from + point(px(8.0), px(0.0)), left, none);
+        cx.simulate_mouse_move(window, to, left, none);
+    };
+    // The sidebar's second workspace (docs's) and its row's place in the list (its group's
+    // header first, then the two workspaces).
+    let docs_row = 2;
+    let workspaces = |cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>| {
+        cx.read(|cx| {
+            let model = &ws.read(cx).model;
+            model.display_order()
+        })
+    };
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= 3)
+        };
+        for scene in ["tab-drag-line", "tab-drag-row"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| tab_drag_workspace(window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let geometry: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+            let seen = geometry.clone();
+            let acting = slot.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&acting);
+                let n = format!("{scene}-{slug}");
+                let panes = shown_panes(cx, &ws);
+                assert_eq!(panes.len(), 2, "{n}: two panes");
+                let tabs: Vec<_> = (0..4)
+                    .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
+                    .collect();
+                let order = workspaces(cx, &ws);
+                assert_eq!(order.len(), 2, "{n}: two workspaces");
+                let codex = tabs[2].center();
+                let drop = cx.read(|cx| ws.read(cx).tab_drop);
+                assert_eq!(drop, None, "{n}: nothing dragged yet");
+                if scene == "tab-drag-line" {
+                    // Just right of api's middle: the gap between api and claude.
+                    let to = point(tabs[0].center().x + px(10.0), codex.y);
+                    drag(cx, window, codex, to);
+                    let drop = cx.read(|cx| ws.read(cx).tab_drop);
+                    assert_eq!(
+                        drop,
+                        Some(TabDrop::Bar {
+                            pane: panes[0],
+                            gap: 1
+                        }),
+                        "{n}: the line goes between api and claude"
+                    );
+                } else {
+                    let to = row_point(cx, &ws, docs_row, 0.0);
+                    drag(cx, window, codex, to);
+                    let drop = cx.read(|cx| ws.read(cx).tab_drop);
+                    assert_eq!(
+                        drop,
+                        Some(TabDrop::Workspace(order[1])),
+                        "{n}: docs's row is lit"
+                    );
+                    let row = cx.read(|cx| {
+                        let scroll = &ws.read(cx).sidebar.scroll;
+                        let mut b = scroll.bounds_for_item(docs_row).expect("laid out");
+                        b.origin.y += scroll.offset().y;
+                        b
+                    });
+                    seen.borrow_mut().push(row);
+                }
+                assert!(cx.read(|cx| cx.has_active_drag()), "{n}: still dragging");
+                seen.borrow_mut().extend(tabs);
+                acting.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, wide, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            geometry.borrow_mut().clear();
+            let shot = render_with(&theme, wide, build, act);
+            let n = format!("{scene}-{slug}");
+            let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
+            let geometry = geometry.borrow().clone();
+            if scene == "tab-drag-line" {
+                // The line: 2 px of accent along claude's left edge, mid-height.
+                let claude = geometry[1];
+                let x = f32::from(claude.left()) + 1.0;
+                assert!(is(px_at(x, 13.0), ui.accent), "{n}: the insertion line");
+                // From the top of the bar (the chip hangs below the pointer, at mid-height).
+                assert!(is(px_at(x, 3.0), ui.accent), "{n}: from the top");
+                // None along api's left edge (the bar's other gaps).
+                let api = geometry[0];
+                let x = f32::from(api.left()) + 1.0;
+                assert!(!is(px_at(x, 13.0), ui.accent), "{n}: no line before api");
+            } else {
+                // The ring along docs's row's left edge, mid-height.
+                let row = geometry[0];
+                let (x, y) = (f32::from(row.left()) + 1.0, f32::from(row.center().y));
+                assert!(is(px_at(x, y), ui.accent), "{n}: docs's row ringed");
+            }
+        }
+
+        // Dropping (not shot).
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| tab_drag_workspace(window, cx));
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let n = format!("tab-drag-act-{slug}");
+            // Each tab's name in `pane`'s bar (a browser tab: "browser").
+            let names = |cx: &mut VisualTestAppContext, pane: PaneId| -> Vec<String> {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let Some(p) = ws.model.pane(pane) else {
+                        return Vec::new();
+                    };
+                    p.tabs
+                        .iter()
+                        .map(|t| match t.kind {
+                            TabKind::Terminal(id) => {
+                                let i = ws.index_of(id).expect("a session");
+                                ws.sessions.items()[i].label().to_string()
+                            }
+                            TabKind::Browser { .. } => "browser".to_string(),
+                        })
+                        .collect()
+                })
+            };
+            // A terminal's id, view, screen, status and process, by its name.
+            let facts = |cx: &mut VisualTestAppContext, name: &str| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let s = ws.sessions.items().iter().find(|s| s.label() == name);
+                    let s = s.expect("a session");
+                    let view = s.view.read(cx);
+                    let pid = view.working_folder().1.expect("a local terminal");
+                    (
+                        s.id,
+                        s.view.entity_id(),
+                        view.text(TextScope::All),
+                        s.status,
+                        pid,
+                    )
+                })
+            };
+            let running = |pid: u32| {
+                std::process::Command::new("/bin/kill")
+                    .args(["-0", &pid.to_string()])
+                    .status()
+                    .is_ok_and(|s| s.success())
+            };
+            // The focused tab's name, and whether its view has GPUI's keyboard.
+            let focused = |cx: &mut VisualTestAppContext| -> (String, bool) {
+                cx.update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    let tab = ws.model.focused_tab().expect("a tab");
+                    match ws.model.tab(tab).expect("known").kind {
+                        TabKind::Terminal(id) => {
+                            let s = &ws.sessions.items()[ws.index_of(id).expect("a session")];
+                            let keys = s.view.focus_handle(cx).is_focused(window);
+                            (s.label().to_string(), keys)
+                        }
+                        TabKind::Browser { .. } => {
+                            let view = ws.browser_tabs.get(&tab).expect("its view");
+                            let keys = view.read(cx).focus_handle(cx).is_focused(window);
+                            ("browser".to_string(), keys)
+                        }
+                    }
+                })
+                .expect("the window")
+            };
+            let release = |cx: &mut VisualTestAppContext, at: gpui::Point<Pixels>| {
+                cx.simulate_mouse_up(window, at, left, none);
+                assert!(!cx.read(|cx| cx.has_active_drag()), "{n}: the drag ended");
+            };
+            let panes = shown_panes(cx, &ws);
+            let (lp, rp) = (panes[0], panes[1]);
+            let tab = |cx: &mut VisualTestAppContext, pane: PaneId, i: usize| {
+                tab_bounds(cx, &ws, pane, i).expect("laid out")
+            };
+            let before = facts(cx, "codex");
+            assert!(running(before.4), "{n}: codex runs");
+
+            // Esc mid-drag: nothing moves, the drag is over.
+            let to = point(tab(cx, lp, 0).center().x + px(10.0), px(13.0));
+            let from = tab(cx, lp, 2).center();
+            drag(cx, window, from, to);
+            cx.simulate_keystrokes(window, "escape");
+            assert!(
+                !cx.read(|cx| cx.has_active_drag()),
+                "{n}: Esc ends the drag"
+            );
+            assert_eq!(cx.read(|cx| ws.read(cx).tab_drop), None, "{n}: no line");
+            cx.simulate_mouse_up(window, to, left, none);
+            assert_eq!(
+                names(cx, lp),
+                ["api", "claude", "codex", "browser"],
+                "{n}: Esc"
+            );
+
+            // Dropped on a terminal (not a bar or a row): nothing moves.
+            let terminal = point(tab(cx, lp, 0).left() + px(200.0), px(300.0));
+            let from = tab(cx, lp, 2).center();
+            drag(cx, window, from, terminal);
+            release(cx, terminal);
+            assert_eq!(
+                names(cx, lp),
+                ["api", "claude", "codex", "browser"],
+                "{n}: dropped elsewhere"
+            );
+
+            // Dropped where it is (its own gaps): nothing moves, nothing is selected.
+            let own = point(tab(cx, lp, 2).center().x - px(30.0), px(13.0));
+            let from = tab(cx, lp, 2).center();
+            drag(cx, window, from, own);
+            assert_eq!(cx.read(|cx| ws.read(cx).tab_drop), None, "{n}: no line");
+            release(cx, own);
+            assert_eq!(names(cx, lp)[2], "codex", "{n}: its own place");
+            assert_eq!(focused(cx).0, "api", "{n}: api still shown");
+
+            // Reordered: codex between api and claude, shown, with the keyboard, the same
+            // terminal.
+            let to = point(tab(cx, lp, 0).center().x + px(10.0), px(13.0));
+            let from = tab(cx, lp, 2).center();
+            drag(cx, window, from, to);
+            release(cx, to);
+            assert_eq!(
+                names(cx, lp),
+                ["api", "codex", "claude", "browser"],
+                "{n}: reordered"
+            );
+            assert_eq!(
+                focused(cx),
+                ("codex".to_string(), true),
+                "{n}: codex focused"
+            );
+            let after = facts(cx, "codex");
+            assert_eq!(after, before, "{n}: the same terminal, screen and status");
+            assert!(running(after.4), "{n}: still running");
+
+            // claude into the right pane's bar, on its empty part: at the end.
+            let filler = point(tab(cx, rp, 0).right() + px(60.0), px(13.0));
+            let from = tab(cx, lp, 2).center();
+            drag(cx, window, from, filler);
+            release(cx, filler);
+            assert_eq!(
+                names(cx, rp),
+                ["tests", "claude"],
+                "{n}: into the other pane"
+            );
+            assert_eq!(names(cx, lp), ["api", "codex", "browser"], "{n}: left it");
+            assert_eq!(
+                focused(cx),
+                ("claude".to_string(), true),
+                "{n}: claude focused"
+            );
+
+            // The browser tab, shown (a click), into the right pane before tests: its page hides
+            // for the drag (hide rule (c)) and its view goes with it.
+            let page = cx.read(|cx| {
+                let ws = ws.read(cx);
+                let tab = ws.model.pane(lp).expect("left").tabs[2].id;
+                (tab, ws.browser_tabs[&tab].entity_id())
+            });
+            let showing = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| ws.read(cx).browser_tabs[&page.0].read(cx).showing.get())
+            };
+            let from = tab(cx, lp, 2).center();
+            cx.simulate_click(window, from, none);
+            assert_eq!(focused(cx).0, "browser", "{n}: a click still shows a tab");
+            let shown = showing(cx);
+            assert!(
+                shown.tab_shown && !page_hidden(shown),
+                "{n}: the page shows"
+            );
+            let to = point(tab(cx, rp, 0).left() + px(5.0), px(13.0));
+            drag(cx, window, from, to);
+            let mid = showing(cx);
+            assert!(
+                mid.dragging && page_hidden(mid),
+                "{n}: the page hides mid-drag"
+            );
+            release(cx, to);
+            cx.run_until_parked();
+            assert!(!showing(cx).dragging, "{n}: not after it");
+            assert_eq!(
+                names(cx, rp),
+                ["browser", "tests", "claude"],
+                "{n}: the browser tab moved"
+            );
+            let kept = cx.read(|cx| ws.read(cx).browser_tabs.get(&page.0).map(|v| v.entity_id()));
+            assert_eq!(kept, Some(page.1), "{n}: the same page view");
+            assert_eq!(
+                focused(cx),
+                ("browser".to_string(), true),
+                "{n}: browser focused"
+            );
+
+            // api, then codex, to the front of the right pane: the left pane, emptied, closes and
+            // the right one fills the workspace.
+            let to = point(tab(cx, rp, 0).left() + px(5.0), px(13.0));
+            for _ in 0..2 {
+                let at = tab(cx, lp, 0).center();
+                drag(cx, window, at, to);
+                release(cx, to);
+            }
+            assert_eq!(shown_panes(cx, &ws), [rp], "{n}: the emptied pane closed");
+            assert_eq!(
+                names(cx, rp),
+                ["codex", "api", "browser", "tests", "claude"],
+                "{n}: every tab in the one pane"
+            );
+
+            // Onto docs's row: at the end of docs's pane, shown, the view follows.
+            let order = workspaces(cx, &ws);
+            let docs: WorkspaceId = order[1];
+            let docs_pane = cx.read(|cx| ws.read(cx).model.workspace(docs).expect("docs").focused);
+            let at = tab(cx, rp, 0).center();
+            let to = row_point(cx, &ws, docs_row, 0.0);
+            drag(cx, window, at, to);
+            release(cx, to);
+            assert_eq!(names(cx, docs_pane), ["docs", "codex"], "{n}: into docs");
+            let shown = cx.read(|cx| ws.read(cx).model.focused_workspace());
+            assert_eq!(shown, Some(docs), "{n}: docs shown");
+            assert_eq!(
+                focused(cx),
+                ("codex".to_string(), true),
+                "{n}: codex focused"
+            );
+            let after = facts(cx, "codex");
+            assert_eq!(after, before, "{n}: still the same terminal");
+            assert!(running(after.4), "{n}: still running");
+            let id = cx.read(|cx| {
+                let ws = ws.read(cx);
+                ws.sessions.position(|s| s.label() == "codex")
+            });
+            let list_place = cx.read(|cx| {
+                let ws = ws.read(cx);
+                ws.workspace_of(id.expect("codex"))
+            });
+            assert_eq!(list_place, Some(docs), "{n}: scripts see it in docs");
+
+            // docs's pane: every tab to the first workspace's row, the last closes docs (no ask:
+            // nothing ends).
+            let first_row = docs_row - 1;
+            for _ in 0..2 {
+                let at = tab(cx, docs_pane, 0).center();
+                let to = row_point(cx, &ws, first_row, 0.0);
+                drag(cx, window, at, to);
+                release(cx, to);
+                let shown = cx.read(|cx| ws.read(cx).model.focused_workspace());
+                assert_eq!(shown, Some(order[0]), "{n}: the first workspace shown");
+                // Back to docs, to drag its next tab.
+                if cx.read(|cx| ws.read(cx).model.workspace(docs).is_some()) {
+                    let row = row_point(cx, &ws, docs_row, 0.0);
+                    cx.simulate_click(window, row, none);
+                }
+            }
+            assert_eq!(workspaces(cx, &ws), [order[0]], "{n}: docs closed");
+            assert_eq!(
+                names(cx, rp),
+                ["api", "browser", "tests", "claude", "docs", "codex"],
+                "{n}: each at the end of the first workspace's pane"
+            );
+            let all = cx.read(|cx| ws.read(cx).sessions.items().len());
+            assert_eq!(all, 5, "{n}: every terminal still runs");
+            assert!(running(facts(cx, "codex").4), "{n}: codex still runs");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, wide, build, act);
+        println!("ui-shots: tab-drag-act-{slug} ok");
     }
 }
 

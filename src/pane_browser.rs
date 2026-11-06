@@ -58,8 +58,8 @@ pub struct Showing {
     pub tab_shown: bool,
     /// One of fuxx's overlays is open (`Overlays::any`).
     pub overlay_open: bool,
-    /// A drag is under way (a divider, the sidebar's edge, a sidebar row), or the sidebar is
-    /// sliding over the panes.
+    /// A drag is under way (a divider, the sidebar's edge, a sidebar row, a pane tab), or the
+    /// sidebar is sliding over the panes.
     pub dragging: bool,
 }
 

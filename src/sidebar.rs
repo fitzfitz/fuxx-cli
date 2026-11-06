@@ -28,13 +28,14 @@ use gpui::{
 
 use crate::appearance::Appearance;
 use crate::groups::{self, GroupKey, Row};
-use crate::layout_model::{Model, TabKind, WorkspaceId};
+use crate::layout_model::{Model, TabDrop, TabKind, WorkspaceId};
 use crate::preferences;
 use crate::presets::MAX_PRESETS;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
 use crate::status::{self, Status};
 use crate::status_mark;
+use crate::tab_bar::DraggedTab;
 use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
@@ -1138,6 +1139,9 @@ impl Workspace {
             .drop_at
             .filter(|(w, _)| dragged.is_some() && *w == ws)
             .map(|(_, below)| below);
+        // A pane tab dragged over it: dropping moves the tab into this workspace.
+        let tab_target =
+            self.dragged_tab(cx).is_some() && self.tab_drop == Some(TabDrop::Workspace(ws));
 
         let name: AnyElement = match rename_box {
             Some(input) => input.into_any_element(),
@@ -1250,7 +1254,7 @@ impl Workspace {
                 Sub::Note(note) => under().child(text(note.clone(), ui.text_faint)),
             }
         });
-        let source = self.sidebar.drag_source.clone();
+        let (source, tab_source) = (self.sidebar.drag_source.clone(), self.tab_drag.clone());
         let preview = DragPreview {
             label: row.label.clone().into(),
             place: (row.branch.is_some() || row.folder.is_some())
@@ -1312,6 +1316,7 @@ impl Workspace {
                 },
                 move |dragged, _, _, cx| {
                     source.set(Some(dragged.workspace));
+                    tab_source.set(None); // not a tab's drag any more
                     cx.new(|_| DragPreview {
                         label: preview.label.clone(),
                         place: preview.place.clone(),
@@ -1319,12 +1324,14 @@ impl Workspace {
                     })
                 },
             )
-            // Only rows of the dragged workspace's run accept it; the drop re-checks.
-            .can_drop(move |dragged, _, _| {
-                dragged
-                    .downcast_ref::<DraggedWorkspace>()
-                    .is_some_and(|d| d.run == accepts)
-            })
+            // Only rows of the dragged workspace's run accept it; the drop re-checks. Every row
+            // accepts a pane tab (moved into its workspace, not a reorder).
+            .can_drop(
+                move |dragged, _, _| match dragged.downcast_ref::<DraggedWorkspace>() {
+                    Some(d) => d.run == accepts,
+                    None => dragged.is::<DraggedTab>(),
+                },
+            )
             .on_drag_move(cx.listener(
                 move |this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
                     this.drag_over_row(ws, event, cx)
@@ -1332,6 +1339,15 @@ impl Workspace {
             ))
             .on_drop(cx.listener(move |this, dragged: &DraggedWorkspace, _, cx| {
                 this.drop_workspace(dragged.workspace, ws, cx)
+            }))
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.drag_tab_over_row(ws, event, cx)
+                }),
+            )
+            .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                let here = |at| at == TabDrop::Workspace(ws);
+                this.drop_tab(dragged.tab, here, window, cx)
             }))
             .child(name_line)
             .children(place)
@@ -1370,6 +1386,21 @@ impl Workspace {
                 } else {
                     line.top(px(-ROW_GAP))
                 })
+            })
+            // A pane tab over it: lit as on hover (GPUI draws no hover during a drag) and ringed
+            // in the accent (on the selected row, filled with it, in `on_accent`).
+            .when(tab_target, |row_el| {
+                let ring = if row.active { ui.on_accent } else { ui.accent };
+                row_el.when_some(hover, |r, hover| r.bg(hsla(hover))).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .rounded(px(6.0))
+                        .border(px(DIVIDER_ACTIVE))
+                        .border_color(hsla(ring)),
+                )
             })
             .into_any_element()
     }
@@ -1499,6 +1530,28 @@ impl Workspace {
         };
         if self.sidebar.drop_at != next {
             self.sidebar.drop_at = next;
+            cx.notify();
+        }
+    }
+
+    /// The pointer moved during a pane tab's drag: if it's over this row (`ws`) and dropping there
+    /// would move the tab (`Model::drop_place`), the row is lit.
+    fn drag_tab_over_row(
+        &mut self,
+        ws: WorkspaceId,
+        event: &DragMoveEvent<DraggedTab>,
+        cx: &mut Context<Self>,
+    ) {
+        let over = event.bounds.contains(&event.event.position);
+        let at = TabDrop::Workspace(ws);
+        if !over && self.tab_drop != Some(at) {
+            return; // not this row's business
+        }
+        let next = Some(at)
+            .filter(|_| over)
+            .filter(|at| self.model.drop_place(event.drag(cx).tab, *at).is_some());
+        if self.tab_drop != next {
+            self.tab_drop = next;
             cx.notify();
         }
     }
