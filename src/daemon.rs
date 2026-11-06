@@ -35,6 +35,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
+use objc2_foundation::{NSDate, NSRunLoop};
 use serde_json::{Map, Value, json};
 
 use crate::daemon_session::{self, CreateSpec, DaemonSession, FrameReceiver, QUEUE_CAPACITY};
@@ -44,6 +45,7 @@ use crate::mux_proto::{
     self, DaemonInfo, Decoder, Frame, Hello, HelloOk, IncompatibleInfo, PROTO_MAX, PROTO_MIN,
     PROTO_PROGRAMS, ProtoError, Role, SessionInfo, StopReply,
 };
+use crate::native_notify;
 use crate::notifier;
 use crate::private_socket::{self, Slot, SocketGuard};
 use crate::status::Status;
@@ -55,6 +57,13 @@ pub const IDLE_EXIT: Duration = Duration::from_secs(60);
 
 /// How often sessions are ticked.
 const TICK: Duration = Duration::from_millis(50);
+
+/// `Running::wait` runs the run loop in slices this long at most, checking in between whether
+/// the daemon has exited.
+const RUN_LOOP_SLICE: Duration = Duration::from_millis(250);
+/// When the run loop has nothing to run yet and returns at once, the wait rests this long at
+/// most before running it again, instead of spinning.
+const RUN_LOOP_REST: Duration = Duration::from_millis(50);
 
 /// Live connections at most; more are accepted and closed at once.
 const MAX_CONNECTIONS: usize = 64;
@@ -360,6 +369,56 @@ struct Shared {
     input_threads: AtomicUsize,
     /// Connections that said `Hello` as `Ui`: while any is open, the GUI does the notifying.
     ui_clients: AtomicUsize,
+    /// The windows attached, and a banner click held for the next one (M11c).
+    windows: Mutex<Windows>,
+}
+
+/// What a click on one of the service's banners does (`ServiceShow::click`).
+#[derive(Debug, PartialEq, Eq)]
+enum ClickAction {
+    /// Send `Show` for this session to every window attached.
+    Show(u64),
+    /// No window is attached: the click is held for the next one, and fuxx is opened.
+    Open,
+    /// A window is attached and the banner names no session: nothing to send (macOS brings
+    /// fuxx forward by itself).
+    Nothing,
+}
+
+/// The rule for clicks on the service's banners (pure): with a window attached, the session is
+/// shown at once; with none, it is held (a later click replaces it) until the next window says
+/// `Hello`, which takes it once.
+#[derive(Debug, Default)]
+struct ServiceShow {
+    /// The session a click with no window attached asked to show.
+    held: Option<u64>,
+}
+
+impl ServiceShow {
+    /// A click on a banner about `terminal`, with or without a window `attached`.
+    fn click(&mut self, terminal: Option<u64>, attached: bool) -> ClickAction {
+        match (attached, terminal) {
+            (true, Some(id)) => ClickAction::Show(id),
+            (true, None) => ClickAction::Nothing,
+            (false, _) => {
+                self.held = terminal;
+                ClickAction::Open
+            }
+        }
+    }
+
+    /// A window said `Hello`: the session to show it, once.
+    fn hello(&mut self) -> Option<u64> {
+        self.held.take()
+    }
+}
+
+/// The windows attached (UI connections, by connection id) and the click rule, under one lock
+/// so a click and a window's `Hello` never miss each other.
+#[derive(Default)]
+struct Windows {
+    show: ServiceShow,
+    outs: HashMap<u64, Out>,
 }
 
 impl Shared {
@@ -373,6 +432,40 @@ impl Shared {
 
     fn closing(&self) -> bool {
         self.closing.load(Ordering::Acquire)
+    }
+
+    /// A click on one of the service's banners about `terminal` (M11c): shown in every window
+    /// attached, or held for the next one, which macOS is opening (`open_fuxx` is a backup).
+    /// Never waits: a window whose queue is full misses it.
+    fn banner_clicked(&self, terminal: Option<u64>) {
+        let mut windows = lock(&self.windows);
+        let attached = !windows.outs.is_empty();
+        match windows.show.click(terminal, attached) {
+            ClickAction::Show(id) => {
+                for (conn, out) in &windows.outs {
+                    if !out.try_send(&Frame::Show { id }) {
+                        log!("connection {conn}: couldn't send it s{id} to show");
+                    }
+                }
+            }
+            ClickAction::Open => {
+                drop(windows);
+                open_fuxx();
+            }
+            ClickAction::Nothing => {}
+        }
+    }
+
+    /// Window connection `conn` said `Hello` (its `HelloOk` is queued): from now on it is sent
+    /// banner clicks, and a click held meanwhile goes to it now, once.
+    fn window_attached(&self, conn: u64, out: &Out) {
+        let mut windows = lock(&self.windows);
+        windows.outs.insert(conn, out.clone());
+        if let Some(id) = windows.show.hello()
+            && !out.try_send(&Frame::Show { id })
+        {
+            log!("connection {conn}: couldn't send it s{id} to show");
+        }
     }
 
     /// Add a new session, with the last theme. Refused (handing the session back) once the
@@ -431,11 +524,35 @@ impl Running {
         *lock(&self.shared.theme)
     }
 
-    /// Block until the daemon exits (idle, or `Stop`).
+    /// Hear clicks on the service's own banners (M11c; from the app bundle and on the main
+    /// thread only, otherwise nothing happens): each shows its session in a window, now or
+    /// after the next window's `Hello`. macOS reports them while `wait` runs the run loop.
+    pub fn hear_banner_clicks(&self) {
+        let shared = Arc::downgrade(&self.shared);
+        native_notify::hear_clicks(move |terminal| {
+            if let Some(shared) = shared.upgrade() {
+                shared.banner_clicked(terminal);
+            }
+        });
+    }
+
+    /// Block until the daemon exits (idle, or `Stop`), running this thread's run loop meanwhile
+    /// in slices of at most `RUN_LOOP_SLICE`. On the service's main thread that is the main run
+    /// loop, where macOS reports clicks on its banners (M11c Task 0).
     pub fn wait(mut self) {
         if let Some(tick) = self.tick.take() {
+            while !tick.is_finished() {
+                run_loop_slice(RUN_LOOP_SLICE);
+            }
             let _ = tick.join();
         }
+    }
+
+    /// A click on one of the service's banners about `terminal`, as the delegate reports it
+    /// (tests elsewhere; the delegate itself only runs from the app bundle).
+    #[cfg(test)]
+    pub(crate) fn click_banner(&self, terminal: Option<u64>) {
+        self.shared.banner_clicked(terminal);
     }
 
     #[allow(dead_code)] // tests; the in-process daemon of M10a Task 5's tests
@@ -451,6 +568,46 @@ impl Drop for Running {
         if let Some(tick) = self.tick.take() {
             let _ = tick.join();
         }
+    }
+}
+
+/// Run this thread's run loop for up to `slice`. With nothing to run yet it returns at once;
+/// then rest (at most `RUN_LOOP_REST`) instead of spinning.
+fn run_loop_slice(slice: Duration) {
+    let started = Instant::now();
+    objc2::rc::autoreleasepool(|_| {
+        let until = NSDate::dateWithTimeIntervalSinceNow(slice.as_secs_f64());
+        NSRunLoop::currentRunLoop().runUntilDate(&until);
+    });
+    let left = slice.saturating_sub(started.elapsed());
+    if !left.is_zero() {
+        std::thread::sleep(left.min(RUN_LOOP_REST));
+    }
+}
+
+/// Open fuxx (`open -b`), from the app bundle only: a backup, as macOS already opens fuxx for a
+/// click on one of the service's banners. On its own thread; never waits or panics.
+fn open_fuxx() {
+    if !native_notify::is_bundled() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("fuxx-daemon-open".into())
+        .spawn(|| {
+            let opened = std::process::Command::new("/usr/bin/open")
+                .args(["-b", native_notify::BUNDLE_ID])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            match opened {
+                Ok(status) if status.success() => {}
+                Ok(status) => log!("open -b {}: {status}", native_notify::BUNDLE_ID),
+                Err(e) => log!("open -b {}: {e}", native_notify::BUNDLE_ID),
+            }
+        });
+    if spawned.is_err() {
+        log!("no thread to open fuxx");
     }
 }
 
@@ -516,6 +673,7 @@ fn start_with(path: &Path, tuning: Tuning) -> io::Result<Running> {
         hello_timeout: tuning.hello_timeout,
         input_threads: AtomicUsize::new(0),
         ui_clients: AtomicUsize::new(0),
+        windows: Mutex::default(),
     });
     let accepting = shared.clone();
     std::thread::Builder::new()
@@ -663,6 +821,16 @@ impl Out {
     fn send(&self, frame: &Frame) -> bool {
         self.pending.fetch_add(1, Ordering::AcqRel);
         if self.queue.send(mux_proto::encode(frame)).is_ok() {
+            return true;
+        }
+        self.pending.fetch_sub(1, Ordering::AcqRel);
+        false
+    }
+
+    /// Queue `frame` unless the queue is full. False if it wasn't queued.
+    fn try_send(&self, frame: &Frame) -> bool {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        if self.queue.try_send(mux_proto::encode(frame)).is_ok() {
             return true;
         }
         self.pending.fetch_sub(1, Ordering::AcqRel);
@@ -1005,12 +1173,17 @@ impl Connection {
                     self.shared.ui_clients.fetch_add(1, Ordering::AcqRel);
                     self.shared.resize_owner.store(self.id, Ordering::Release);
                 }
-                self.send(&Frame::HelloOk(HelloOk {
+                let ok = self.send(&Frame::HelloOk(HelloOk {
                     proto,
                     daemon_version: VERSION.into(),
                     pid: std::process::id(),
                     instance: Some(self.shared.instance),
-                }))
+                }));
+                // After the HelloOk: a banner click held for it follows it.
+                if ok && hello.role == Role::Ui {
+                    self.shared.window_attached(self.id, &self.out);
+                }
+                ok
             }
             Err(e) => {
                 log!("connection {}: {e}", self.id);
@@ -1144,6 +1317,7 @@ impl Drop for Connection {
     fn drop(&mut self) {
         if self.role == Some(Role::Ui) {
             self.shared.ui_clients.fetch_sub(1, Ordering::AcqRel);
+            lock(&self.shared.windows).outs.remove(&self.id);
         }
         // Input threads hand over what is queued without waiting, then end.
         for (_, queue) in lock(&self.inputs).drain() {
@@ -1347,6 +1521,7 @@ pub fn run_command(path: &Path) -> i32 {
                 path.display(),
                 std::process::id()
             );
+            running.hear_banner_clicks();
             running.wait();
             0
         }
@@ -1519,6 +1694,127 @@ mod tests {
 
     fn connect(path: &Path, role: Role) -> Client {
         Client::connect(path, role).unwrap().0
+    }
+
+    #[test]
+    fn a_click_with_a_window_attached_is_sent_to_it_at_once() {
+        let mut show = ServiceShow::default();
+        assert_eq!(show.click(Some(3), true), ClickAction::Show(3));
+        assert_eq!(show.hello(), None, "nothing is held");
+        // A banner about no session: macOS brings fuxx forward; nothing to send.
+        assert_eq!(show.click(None, true), ClickAction::Nothing);
+    }
+
+    #[test]
+    fn a_click_with_no_window_is_held_for_the_next_hello_once() {
+        let mut show = ServiceShow::default();
+        assert_eq!(show.click(Some(3), false), ClickAction::Open);
+        assert_eq!(show.hello(), Some(3));
+        assert_eq!(show.hello(), None, "only the next window gets it");
+    }
+
+    #[test]
+    fn a_later_click_with_no_window_replaces_the_held_one() {
+        let mut show = ServiceShow::default();
+        assert_eq!(show.click(Some(3), false), ClickAction::Open);
+        assert_eq!(show.click(Some(5), false), ClickAction::Open);
+        assert_eq!(show.hello(), Some(5));
+        // One about no session replaces it too: it only brings fuxx forward.
+        assert_eq!(show.click(Some(3), false), ClickAction::Open);
+        assert_eq!(show.click(None, false), ClickAction::Open);
+        assert_eq!(show.hello(), None);
+    }
+
+    /// Frames until `List`'s reply, to see what came before it.
+    fn frames_before_sessions(c: &mut Client) -> Vec<Frame> {
+        c.send(&Frame::List).unwrap();
+        recv_until(c, |f| matches!(f, Frame::Sessions(_)))
+    }
+
+    fn shows(frames: &[Frame]) -> Vec<u64> {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                Frame::Show { id } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_banner_click_reaches_the_next_window_after_its_hello_then_every_window_at_once() {
+        let (d, path) = daemon("show");
+        // No window: held (and fuxx opened, from the app bundle only).
+        d.shared.banner_clicked(Some(7));
+        d.shared.banner_clicked(Some(3));
+        // A script is no window: it gets nothing, and the click stays held.
+        let mut script = connect(&path, Role::Script);
+        assert_eq!(
+            shows(&frames_before_sessions(&mut script)),
+            Vec::<u64>::new()
+        );
+        // The next window gets the later click, right after its HelloOk.
+        let mut first = connect(&path, Role::Ui);
+        assert_eq!(
+            first.recv(Duration::from_secs(5)).unwrap(),
+            Frame::Show { id: 3 }
+        );
+        // Only once.
+        let mut second = connect(&path, Role::Ui);
+        assert_eq!(
+            shows(&frames_before_sessions(&mut second)),
+            Vec::<u64>::new()
+        );
+        // With windows attached, a click goes to each at once; nothing is held.
+        d.shared.banner_clicked(Some(5));
+        assert_eq!(shows(&frames_before_sessions(&mut first)), vec![5]);
+        assert_eq!(shows(&frames_before_sessions(&mut second)), vec![5]);
+        assert_eq!(
+            shows(&frames_before_sessions(&mut script)),
+            Vec::<u64>::new()
+        );
+        // Once the windows have gone, a click is held again for the next one.
+        drop((first, second));
+        assert!(eventually(|| lock(&d.shared.windows).outs.is_empty()));
+        d.shared.banner_clicked(Some(9));
+        let mut third = connect(&path, Role::Ui);
+        assert_eq!(
+            third.recv(Duration::from_secs(5)).unwrap(),
+            Frame::Show { id: 9 }
+        );
+    }
+
+    #[test]
+    fn waiting_runs_this_threads_run_loop_until_the_daemon_stops() {
+        use block2::RcBlock;
+        use objc2_foundation::NSRunLoop;
+        use std::sync::atomic::AtomicBool;
+        let (d, path) = daemon("waitstop");
+        // Something for the run loop to do, as a click's callback would be on the main thread.
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let block = RcBlock::new(move || flag.store(true, Ordering::Release));
+        // SAFETY: the block captures only an `Arc` and runs on this thread's run loop.
+        unsafe { NSRunLoop::currentRunLoop().performBlock(&block) };
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            stop(&path, false).map(|r| r.stopping)
+        });
+        let started = Instant::now();
+        d.wait();
+        assert!(matches!(stopper.join().unwrap(), Ok(true)));
+        assert!(started.elapsed() < Duration::from_secs(5), "wait ended");
+        assert!(ran.load(Ordering::Acquire), "the run loop ran meanwhile");
+    }
+
+    #[test]
+    fn waiting_ends_with_the_idle_exit() {
+        let path = temp_sock("waitidle");
+        let d = start(&path, Duration::from_millis(200)).unwrap();
+        let started = Instant::now();
+        d.wait();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!path.exists(), "the socket is removed");
     }
 
     /// The test's environment with `/bin/sh` as the login shell: quick and the same everywhere.

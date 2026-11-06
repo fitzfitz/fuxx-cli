@@ -317,6 +317,11 @@ pub enum Frame {
     Exited {
         id: u64,
     },
+    /// A click on one of the service's banners about session `id`: the window shows it (M11c).
+    /// A window that doesn't know this kind skips it.
+    Show {
+        id: u64,
+    },
     Resync {
         id: u64,
     },
@@ -366,6 +371,7 @@ mod kind {
     pub const ERROR: u8 = 0x1D;
     pub const WRITE: u8 = 0x1E;
     pub const EXIT_CODE: u8 = 0x1F;
+    pub const SHOW: u8 = 0x20;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -515,6 +521,7 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
             },
         ),
         Frame::Exited { id } => id_only(kind::EXITED, *id),
+        Frame::Show { id } => id_only(kind::SHOW, *id),
         Frame::Resync { id } => id_only(kind::RESYNC, *id),
         Frame::Text(b) => json(kind::TEXT, b),
         Frame::Info => json(kind::INFO, &Empty {}),
@@ -648,6 +655,9 @@ fn decode_frame(k: u8, p: &[u8]) -> Result<Frame, ProtoError> {
             }
         }
         kind::EXITED => Frame::Exited {
+            id: parse::<IdOnly>(p)?.id,
+        },
+        kind::SHOW => Frame::Show {
             id: parse::<IdOnly>(p)?.id,
         },
         kind::RESYNC => Frame::Resync {
@@ -1087,6 +1097,15 @@ mod tests {
         assert_eq!(negotiate(2, 2), Ok(2));
         assert_eq!(negotiate(1, 7), Ok(2), "a newer peer");
         assert!(negotiate(3, 7).is_err());
+    }
+
+    #[test]
+    fn show_frame_round_trips() {
+        for f in [Frame::Show { id: 3 }, Frame::Show { id: u64::MAX }] {
+            let bytes = encode(&f);
+            assert_eq!(bytes[4], kind::SHOW);
+            assert_eq!(one(&bytes), Ok(f));
+        }
     }
 
     #[test]

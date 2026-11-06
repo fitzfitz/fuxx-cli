@@ -182,6 +182,8 @@ impl Workspace {
                     client.pid()
                 );
                 service_ready(&client, &cx.global::<Appearance>().theme);
+                // Before reopening: a click that opened fuxx is held until that is done.
+                self.listen_for_shows(client.shows(), window, cx);
                 self.service = Service::On(client.clone());
                 self.reopen(client, window, cx);
             }
@@ -574,6 +576,7 @@ impl Workspace {
                 let live: Vec<u64> = live.iter().filter(|s| s.alive).map(|s| s.id).collect();
                 eprintln!("[fuxx] background service: reconnected (pid {})", lost.0);
                 self.reattach_lost(&client, &live, window, cx);
+                self.listen_for_shows(client.shows(), window, cx);
                 self.service = Service::On(client);
                 let ended = self.sessions.items().iter().filter(|s| s.lost).count();
                 self.notice = (ended > 0).then(|| {
