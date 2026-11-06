@@ -292,6 +292,12 @@ impl TerminalView {
         self.core.first_output()
     }
 
+    /// Where the program works: the folder it last reported (OSC 7), and its process id (a
+    /// local terminal's; see `TerminalCore`).
+    pub fn working_folder(&self) -> (Option<std::path::PathBuf>, Option<u32>) {
+        (self.core.reported_cwd(), self.core.pid())
+    }
+
     /// The terminal's text (see `grid::TextScope`).
     pub fn text(&self, scope: TextScope) -> String {
         self.core.text(scope)

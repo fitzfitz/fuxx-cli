@@ -467,7 +467,6 @@ impl Model {
             .is_some()
     }
 
-    #[allow(dead_code)] // for Pin / Unpin (M11b Task 5)
     pub fn set_pinned(&mut self, workspace: WorkspaceId, pinned: bool) -> bool {
         self.workspace_mut(workspace)
             .map(|w| w.pinned = pinned)
@@ -749,19 +748,28 @@ impl Model {
 
     /// Keep each group's workspaces in one run, as the sidebar draws them under one header:
     /// ungrouped ones first, then each group where it first appears; otherwise the order stays.
-    /// True when something moved.
+    /// Pinned workspaces keep their places (the sidebar shows them above the groups, in their own
+    /// order), so the unpinned ones are grouped in the places left. True when something moved.
     pub fn group_together<K: PartialEq>(
         &mut self,
         group: impl Fn(&Workspace) -> Option<K>,
     ) -> bool {
-        let keys: Vec<Option<K>> = self.workspaces.iter().map(&group).collect();
-        // Each workspace's run: 0 for ungrouped, else 1 + where its group first appears.
-        let run = |i: usize| match &keys[i] {
+        // The unpinned workspaces' places, and their groups.
+        let places: Vec<usize> = (0..self.workspaces.len())
+            .filter(|&i| !self.workspaces[i].pinned)
+            .collect();
+        let keys: Vec<Option<K>> = places.iter().map(|&i| group(&self.workspaces[i])).collect();
+        // Each one's run: 0 for ungrouped, else 1 + where its group first appears.
+        let run = |n: usize| match &keys[n] {
             None => 0,
-            Some(k) => 1 + keys.iter().position(|q| q.as_ref() == Some(k)).unwrap_or(i),
+            Some(k) => 1 + keys.iter().position(|q| q.as_ref() == Some(k)).unwrap_or(n),
         };
-        let mut order: Vec<usize> = (0..keys.len()).collect();
-        order.sort_by_key(|&i| run(i)); // stable: the order inside a run stays
+        let mut sorted: Vec<usize> = (0..keys.len()).collect();
+        sorted.sort_by_key(|&n| run(n)); // stable: the order inside a run stays
+        let mut order: Vec<usize> = (0..self.workspaces.len()).collect();
+        for (&place, &n) in places.iter().zip(&sorted) {
+            order[place] = places[n];
+        }
         if order.iter().enumerate().all(|(at, &i)| at == i) {
             return false;
         }
@@ -2247,6 +2255,27 @@ mod tests {
         assert_eq!(m.display_order(), [ids[3], ids[1], ids[4], ids[0], ids[2]]);
         // Unpinning still puts one back where it was in the sidebar order.
         m.set_pinned(ids[1], false);
+        ok(&m);
+    }
+
+    #[test]
+    fn grouping_leaves_pinned_workspaces_where_they_are() {
+        let mut m = Model::new();
+        let ids: Vec<WorkspaceId> = (0..5)
+            .map(|i| m.new_workspace(i as usize, term(i)).unwrap().workspace)
+            .collect();
+        // Groups by terminal: 0 api, 1 web, 2 api, 3 web, 4 api; 1 and 2 pinned.
+        m.set_pinned(ids[1], true);
+        m.set_pinned(ids[2], true);
+        let group = |w: &Workspace| ["api", "web"][m_terminal(w) as usize % 2];
+        // Only the unpinned ones are grouped, in the places they hold: 0 4 api, then 3 web.
+        assert!(m.group_together(|w| Some(group(w))));
+        let order: Vec<WorkspaceId> = m.workspaces().iter().map(|w| w.id).collect();
+        assert_eq!(order, [ids[0], ids[1], ids[2], ids[4], ids[3]]);
+        // The pinned ones keep their own order, whatever their groups (a drag among them sticks).
+        assert!(m.move_workspace_display(ids[2], 0));
+        assert!(!m.group_together(|w| Some(group(w))));
+        assert_eq!(m.display_order()[..2], [ids[2], ids[1]]);
         ok(&m);
     }
 

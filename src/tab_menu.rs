@@ -1,8 +1,8 @@
 //! Sidebar rows as tabs (M11; M11b: a row is a workspace): a row's right-click menu (Close
 //! Workspace, Close Other Workspaces, Close Workspaces Below, Show All Workspaces, Rename
-//! Workspace…, Workspace Color) and the closes it starts. Closing one workspace ends all its
-//! terminals and asks first when it has two or more (`asks_to_close`); closing several always
-//! asks, in a native sheet.
+//! Workspace…, Pin / Unpin Workspace, Workspace Color) and the closes it starts. Closing one
+//! workspace ends all its terminals and asks first when it has two or more (`asks_to_close`);
+//! closing several always asks, in a native sheet.
 //!
 //! `closes`, `enabled`, `asks_to_close`, `confirm_text` and `confirm_workspace_text` are the pure
 //! model; the rest opens, draws and acts on the menu. It is one of the overlays (one open at a time): it opens at the pointer, holds the
@@ -50,7 +50,18 @@ pub enum TabAction {
     CloseToRight,
     ShowAll,
     Rename,
+    /// Pin it (true) to the top of the sidebar, or unpin it.
+    Pin(bool),
     Color(Option<TabColor>),
+}
+
+/// The menu's pin item for a workspace that is (or isn't) `pinned`: what it says and does.
+pub fn pin_item(pinned: bool) -> (&'static str, TabAction) {
+    if pinned {
+        ("Unpin Workspace", TabAction::Pin(false))
+    } else {
+        ("Pin Workspace", TabAction::Pin(true))
+    }
 }
 
 /// The workspaces (by place in the sidebar's `len`) that `action` from workspace `at`'s menu
@@ -65,7 +76,9 @@ pub fn closes(action: TabAction, shown: &[usize], len: usize, at: usize) -> Vec<
             Some(row) => shown[row + 1..].to_vec(),
             None => Vec::new(),
         },
-        TabAction::ShowAll | TabAction::Rename | TabAction::Color(_) => Vec::new(),
+        TabAction::ShowAll | TabAction::Rename | TabAction::Pin(_) | TabAction::Color(_) => {
+            Vec::new()
+        }
     }
 }
 
@@ -176,6 +189,15 @@ impl Workspace {
             }
             TabAction::ShowAll => self.open_switcher(window, cx),
             TabAction::Rename => self.start_rename(ws, window, cx),
+            TabAction::Pin(pinned) => {
+                // Pinned ones lead the sidebar (out of their groups); unpinned, it's back in its
+                // place. The terminals follow the new order (`sync`).
+                if self.model.set_pinned(ws, pinned) {
+                    self.sync();
+                    self.save();
+                }
+                self.focus_active(window, cx);
+            }
             TabAction::Color(color) => {
                 self.model.set_color(ws, color);
                 self.save();
@@ -285,6 +307,7 @@ impl Workspace {
         let len = order.len();
         let shown = self.workspaces_with_rows();
         let current = self.model.workspace(menu.workspace)?.color;
+        let (pin_label, pin) = pin_item(self.model.workspace(menu.workspace)?.pinned);
         let hover = ui.panel_hover;
         let item = |n: usize, label: &'static str, action: TabAction| {
             let on = enabled(action, &shown, len, at);
@@ -365,6 +388,7 @@ impl Workspace {
             .child(item(3, "Show All Workspaces", TabAction::ShowAll))
             .child(separator())
             .child(item(4, "Rename Workspace\u{2026}", TabAction::Rename))
+            .child(item(5, pin_label, pin))
             .child(separator())
             .child(
                 div()
@@ -462,9 +486,23 @@ mod tests {
         assert!(closes(CloseToRight, &all(5), 5, 4).is_empty());
         assert!(closes(CloseOthers, &all(1), 1, 0).is_empty());
         // The rest close nothing.
-        for action in [ShowAll, Rename, Color(None), Color(Some(TabColor::Red))] {
+        for action in [
+            ShowAll,
+            Rename,
+            Pin(true),
+            Pin(false),
+            Color(None),
+            Color(Some(TabColor::Red)),
+        ] {
             assert!(closes(action, &all(5), 5, 1).is_empty(), "{action:?}");
         }
+    }
+
+    #[test]
+    fn the_pin_item_pins_an_unpinned_workspace_and_unpins_a_pinned_one() {
+        assert_eq!(pin_item(false), ("Pin Workspace", Pin(true)));
+        assert_eq!(pin_item(true), ("Unpin Workspace", Pin(false)));
+        assert!(enabled(Pin(true), &all(1), 1, 0));
     }
 
     #[test]

@@ -97,8 +97,10 @@ pub struct UiColors {
     pub ring_working: Rgb,
     pub ring_waiting: Rgb,
     pub ring_done: Rgb,
-    /// The one accent: the active row's bar, focus, drop lines, a hovered divider.
+    /// The one accent: the selected row's fill, focus, drop lines, a hovered divider.
     pub accent: Rgb,
+    /// Text and marks on the accent (the selected sidebar row): `on_accent`.
+    pub on_accent: Rgb,
     /// Meta text (numbers, times, the waiting question): quieter than `text_dim`, still readable.
     pub text_faint: Rgb,
     /// A plain 1 px line between panes.
@@ -126,6 +128,18 @@ impl UiColors {
     pub fn tab(&self, c: TabColor) -> Rgb {
         self.tab_colors[c as usize]
     }
+}
+
+/// What reads on the accent `accent` (the selected sidebar row's fill): of the theme's own
+/// `background` and `foreground`, the one that contrasts more with it, pushed (hue kept) to
+/// `TEXT_MIN` if it falls short.
+pub fn on_accent(accent: Rgb, background: Rgb, foreground: Rgb) -> Rgb {
+    let ink = if contrast(background, accent) >= contrast(foreground, accent) {
+        background
+    } else {
+        foreground
+    };
+    ensure_contrast(ink, accent, TEXT_MIN)
 }
 
 /// `fg` moved along its hue (see `ensure_contrast`) until it reaches `min` on every one of `bgs`.
@@ -220,6 +234,7 @@ impl Theme {
             ring_waiting: ensure_contrast(mark(waiting), sidebar, TEXT_MIN),
             ring_done: mark(done),
             accent,
+            on_accent: on_accent(accent, bg, fg),
             text_faint: text(mix(sidebar, fg, 0.55)),
             divider: quiet(mix(bg, fg, 0.16), &[bg]),
             waiting_tint,
@@ -302,6 +317,12 @@ impl Theme {
                 }
             }
         }
+        // The selected sidebar row: its text and marks on the accent.
+        pairs.push(pair(
+            ("on_accent", ui.on_accent),
+            ("accent", ui.accent),
+            TEXT_MIN,
+        ));
         // Selected text in a box.
         pairs.push(pair(
             ("text", ui.text),
@@ -628,6 +649,35 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn text_on_the_accent_reads_in_every_theme() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let ratio = contrast(ui.on_accent, ui.accent);
+            assert!(ratio >= TEXT_MIN, "{name}: on_accent is {ratio:.2}");
+            // It is the drawn pair the contrast test and the swatch board know.
+            assert!(
+                theme
+                    .drawn_pairs()
+                    .iter()
+                    .any(|p| p.fg_name == "on_accent" && p.bg_name == "accent")
+            );
+        }
+        // The theme's own ink, whichever reads better: dark ink on a light accent (Mocha's
+        // blue), the light background on a dark one.
+        let (dark, light) = (hex(0x1e1e2e), hex(0xeff1f5));
+        assert_eq!(on_accent(hex(0x89b4fa), dark, hex(0xcdd6f4)), dark);
+        assert_eq!(on_accent(hex(0x1e40af), light, hex(0x4c4f69)), light);
+        // Short of 4.5:1 (Latte's blue on its own background is 4.35): pushed, hue kept.
+        let latte_blue = hex(0x1e66f5);
+        let out = on_accent(latte_blue, light, hex(0x4c4f69));
+        assert!(contrast(light, latte_blue) < TEXT_MIN);
+        assert!(contrast(out, latte_blue) >= TEXT_MIN, "{out:?}");
+        // A mid-grey accent: still readable one way or the other.
+        let grey = hex(0x777777);
+        assert!(contrast(on_accent(grey, grey, grey), grey) >= TEXT_MIN);
     }
 
     #[test]

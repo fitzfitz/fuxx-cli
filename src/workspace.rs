@@ -33,6 +33,7 @@ use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::browser_tab::BrowserTab;
 use crate::daemon_client::{self, DaemonClient};
+use crate::git_branch::Places;
 use crate::groups::{self, GroupKey};
 use crate::host_picker::HostPicker;
 use crate::layout_model::{self, Model, PaneId, TabId, TabKind, WorkspaceId};
@@ -323,6 +324,10 @@ pub struct Workspace {
     band_pressed: bool,
     /// The sidebar sliding in or out (`sidebar_toggle`); none when it isn't moving.
     pub(crate) slide: Option<Slide>,
+    /// Where each workspace is (its folder and git branch), for its row (`git_branch`).
+    pub(crate) places: Places,
+    /// Whether the places' 5 s refresh is running (only while a row can be seen).
+    pub(crate) places_ticking: bool,
 }
 
 impl Workspace {
@@ -439,6 +444,8 @@ impl Workspace {
             sidebar: SidebarState::new(),
             band_pressed: false,
             slide: None,
+            places: Places::new(home_dir()),
+            places_ticking: false,
         }
     }
 
@@ -926,6 +933,8 @@ impl Workspace {
             );
             debug_assert!(repaired.is_empty(), "tabs and sessions out of step");
         }
+        let ids = self.session_ids();
+        self.places.retain(|id| ids.contains(&id));
         let sessions = self.sessions.items();
         let group_of = |id: u64| {
             sessions
@@ -1053,13 +1062,14 @@ impl Workspace {
             .collect()
     }
 
-    /// Each workspace's group, in display order (as the sidebar lists them).
-    pub(crate) fn display_groups(&self) -> Vec<Option<GroupKey>> {
-        self.model
-            .display_order()
-            .into_iter()
-            .map(|ws| self.workspace_group(ws))
-            .collect()
+    /// The run of rows a workspace's row moves within (a drag, Move Up / Down): the pinned
+    /// rows (true) together, else its group's.
+    pub(crate) fn sidebar_run(&self, ws: WorkspaceId) -> (bool, Option<GroupKey>) {
+        if self.model.workspace(ws).is_some_and(|w| w.pinned) {
+            (true, None)
+        } else {
+            (false, self.workspace_group(ws))
+        }
     }
 
     /// A workspace's group as the sidebar labels it; none when it has no group.
@@ -1792,7 +1802,7 @@ impl Workspace {
     }
 
     /// Drop `dragged` on `target`'s row: it goes where the insertion line was (above or below
-    /// that row), inside the same group only. With no line there, it stays.
+    /// that row), inside the same run only (`sidebar_run`). With no line there, it stays.
     pub(crate) fn drop_workspace(
         &mut self,
         dragged: WorkspaceId,
@@ -1806,7 +1816,7 @@ impl Workspace {
         let (Some(from), Some(to), Some((_, below))) = (find(dragged), find(target), below) else {
             return;
         };
-        if groups::same_group(&key_refs(&self.display_groups()), from, to)
+        if self.sidebar_run(dragged) == self.sidebar_run(target)
             && self
                 .model
                 .move_workspace_display(dragged, sidebar::drop_index(from, to, below))
@@ -1816,7 +1826,8 @@ impl Workspace {
         }
     }
 
-    /// Swap the focused workspace with its neighbour above (or below), inside its group only.
+    /// Swap the focused workspace with its neighbour above (or below), inside its run only
+    /// (`sidebar_run`).
     fn move_active(&mut self, up: bool, cx: &mut Context<Self>) {
         let order = self.model.display_order();
         let Some(from) = self
@@ -1833,7 +1844,10 @@ impl Workspace {
         }) else {
             return;
         };
-        if groups::same_group(&key_refs(&self.display_groups()), from, to)
+        let Some(&neighbour) = order.get(to) else {
+            return;
+        };
+        if self.sidebar_run(order[from]) == self.sidebar_run(neighbour)
             && self.model.move_workspace_display(order[from], to)
         {
             self.sync();
@@ -2135,6 +2149,9 @@ impl Render for Workspace {
         self.ensure_browser_tabs(window, cx);
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
+        // Before the rows are drawn, so a folder found now shows in this frame.
+        self.refresh_places(cx);
+        self.tick_places(cx);
         let title = self
             .model
             .focused_workspace()
@@ -2356,6 +2373,10 @@ impl Workspace {
         let mut this = Self::blank(None, false, window, cx);
         this.restoring = false;
         this.hold_saving = true;
+        // The rows show the folders the scenes give (under a made-up home), and no branch
+        // unless a scene sets one: nothing is looked up on this Mac.
+        this.places.frozen = true;
+        this.places.home = Some(PathBuf::from("/Users/me"));
         this
     }
 

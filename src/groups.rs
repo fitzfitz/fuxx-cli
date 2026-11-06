@@ -149,11 +149,6 @@ pub fn rows(keys: &[Option<&GroupKey>], collapsed: &[GroupKey]) -> Vec<Row> {
     out
 }
 
-/// True when both indexes exist and belong to the same group (or are both ungrouped).
-pub fn same_group(keys: &[Option<&GroupKey>], a: usize, b: usize) -> bool {
-    a < keys.len() && b < keys.len() && keys[a] == keys[b]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,23 +281,12 @@ mod tests {
         );
         // A folder and a host of the same name are different groups.
         let same_name = GroupKey::Folder("api".into());
-        assert!(!same_group(&[Some(&same_name), Some(&host_api)], 0, 1));
-        assert!(same_group(&keys, 2, 3));
+        assert_ne!(same_name, host_api);
+        assert_eq!(keys[2], keys[3]);
         // The sessions file keeps collapsed folders and hosts apart; they join back in order.
         assert_eq!(
             collapsed_keys(&[PathBuf::from("/w/work/api")], &["devbox".to_string()]),
             vec![api, dev]
         );
-    }
-
-    #[test]
-    fn same_group_rules() {
-        let (a, b) = (folder("/a"), folder("/b"));
-        let p = [None, None, Some(&a), Some(&a), Some(&b)];
-        assert!(same_group(&p, 0, 1));
-        assert!(same_group(&p, 2, 3));
-        assert!(!same_group(&p, 1, 2));
-        assert!(!same_group(&p, 3, 4));
-        assert!(!same_group(&p, 3, 9));
     }
 }

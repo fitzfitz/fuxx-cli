@@ -1,15 +1,19 @@
 //! The sidebar (M11; M11b: a row per workspace): every workspace as a row that reads at a
-//! glance, under its group's header (its first terminal's folder or host).
+//! glance, under its group's header (its first terminal's folder or host); pinned workspaces
+//! lead, above every header, with a 📌.
 //!
-//! `rows` is the pure view-model: what each row shows (name, its most urgent terminal's status
-//! and how long it has been in it, the waiting question, focused, its colour), built from facts
-//! the Workspace hands over. The rest of the file draws it. Rows behave like tabs: a × on hover
-//! in the mark's place, a middle-click closes, a right-click opens the row's menu (`tab_menu`);
-//! on the right, the colour's dot and the ⌘1–⌘9 shortcut.
+//! `rows` is the pure view-model: what each row shows (its name in bold, its most urgent
+//! terminal's status and how long it has been in it, `branch • ~/folder` from `git_branch`, the
+//! waiting question with a 🔔 "Needs input" pill, focused, pinned, its colour), built from facts
+//! the Workspace hands over. The rest of the file draws it; the selected row is filled with the
+//! accent, everything on it in `on_accent`. Rows behave like tabs: a × on hover in the mark's
+//! place, a middle-click closes, a right-click opens the row's menu (`tab_menu`, with Pin /
+//! Unpin); on the right, the colour's dot and the ⌘1–⌘9 shortcut.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -61,6 +65,12 @@ pub struct WorkspaceFacts<'a> {
     /// The background service's connection was lost (M10a).
     pub lost: bool,
     pub color: Option<TabColor>,
+    /// Pinned to the top of the sidebar (out of its group).
+    pub pinned: bool,
+    /// The git branch checked out where its first terminal is (only inside a repo).
+    pub branch: Option<&'a str>,
+    /// Where its first terminal is, as shown (`home_relative`; an SSH one's host).
+    pub folder: Option<String>,
 }
 
 /// One row of the sidebar.
@@ -107,6 +117,11 @@ pub struct WorkspaceRow {
     pub progress: Option<u8>,
     /// Its tab colour, drawn as a dot.
     pub color: Option<TabColor>,
+    /// Pinned: at the top, out of its group, with a 📌.
+    pub pinned: bool,
+    /// The second line, `branch • folder` (the branch only inside a git repo).
+    pub branch: Option<String>,
+    pub folder: Option<String>,
 }
 
 /// The line under a workspace's name.
@@ -114,7 +129,7 @@ pub struct WorkspaceRow {
 pub enum Sub {
     /// What a waiting session is asking.
     Question(String),
-    /// Waiting, but no question was found on screen.
+    /// Waiting, but no question was found on screen (the "Needs input" pill alone).
     NeedsInput,
     /// A script's note or progress label, or "not live".
     Note(String),
@@ -130,7 +145,11 @@ pub fn rows(
     shown: &[WorkspaceId],
     now: Instant,
 ) -> Vec<SidebarRow> {
-    let keys: Vec<Option<&GroupKey>> = sessions.iter().map(|s| s.group.as_ref()).collect();
+    // Pinned ones are out of their groups: they lead, above every header.
+    let keys: Vec<Option<&GroupKey>> = sessions
+        .iter()
+        .map(|s| s.group.as_ref().filter(|_| !s.pinned))
+        .collect();
     let all: Vec<&GroupKey> = keys.iter().flatten().copied().collect();
     groups::rows(&keys, collapsed)
         .into_iter()
@@ -168,6 +187,9 @@ pub fn rows(
                     grouped,
                     progress: s.progress.map(|(p, _)| *p),
                     color: s.color,
+                    pinned: s.pinned,
+                    branch: s.branch.map(String::from),
+                    folder: s.folder.clone(),
                 })
             }
         })
@@ -197,6 +219,32 @@ fn sub_line(progress: Option<&(u8, Option<String>)>, note: Option<&str>) -> Opti
         (Some(t), None) | (None, Some(t)) => Some(t.to_string()),
         (None, None) => None,
     }
+}
+
+/// `path` as a row shows it: under your home folder (`home`) it starts with `~`.
+pub fn home_relative(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// An SSH workspace's place: its host, and the folder there once its shell has said (no git
+/// branch: the folder is on another machine).
+pub fn remote_place(host: &str, folder: Option<&Path>) -> String {
+    match folder {
+        Some(folder) => format!("{host}:{}", folder.display()),
+        None => host.to_string(),
+    }
+}
+
+/// A row's height: the name line, and a line each for where it is and for what it's waiting
+/// on (or a script's note).
+pub fn row_height(row: &WorkspaceRow) -> f32 {
+    let placed = row.branch.is_some() || row.folder.is_some();
+    let lines = usize::from(placed) + usize::from(row.sub.is_some());
+    SIDEBAR_ROW + lines as f32 * (WAITING_ROW - SIDEBAR_ROW)
 }
 
 /// A workspace with no terminal (only browser tabs) is called this until you name it.
@@ -290,6 +338,11 @@ const AGE_MIN_ROW: f32 = 220.0;
 /// The tab colour dot, and the space before it and before the shortcut.
 const COLOR_DOT: f32 = 8.0;
 const META_GAP: f32 = 6.0;
+/// A pinned row's mark, right of its name.
+const PIN: &str = "📌";
+/// The "Needs input" pill: its height and words.
+const PILL: f32 = 15.0;
+const NEEDS_INPUT: &str = "🔔 Needs input";
 /// A row's × (a little bigger than the mark slot it sits on), and the rows' hover group.
 const CLOSE_BUTTON: f32 = 16.0;
 const ROW_GROUP: &str = "sidebar-row";
@@ -376,10 +429,11 @@ impl SidebarState {
     }
 }
 
-/// What a sidebar row carries while it's dragged: the workspace and its group.
+/// What a sidebar row carries while it's dragged: the workspace and the run of rows it moves
+/// within (`Workspace::sidebar_run`).
 pub(crate) struct DraggedWorkspace {
     workspace: WorkspaceId,
-    group: Option<GroupKey>,
+    run: (bool, Option<GroupKey>),
 }
 
 /// The row that follows the pointer during a drag: the row itself, lifted.
@@ -420,6 +474,7 @@ impl Render for DragPreview {
                     .ml(px(SLOT_GAP))
                     .min_w(px(0.0))
                     .truncate()
+                    .font_weight(FontWeight::BOLD)
                     .child(self.label.clone()),
             )
     }
@@ -452,6 +507,49 @@ pub(crate) fn mark_slot(mark: impl IntoElement) -> Div {
         .items_center()
         .justify_center()
         .child(mark)
+}
+
+/// The colours a row's mark and × are drawn in: on the selected row (`active`, filled with the
+/// accent) every mark and the × are `on_accent` (the mark's shape still says its status), and
+/// the ×'s hover keeps the fill; elsewhere the theme's own.
+fn on_fill(ui: UiColors, active: bool) -> UiColors {
+    if !active {
+        return ui;
+    }
+    let ink = ui.on_accent;
+    UiColors {
+        ring_idle: ink,
+        ring_working: ink,
+        ring_waiting: ink,
+        ring_done: ink,
+        text: ink,
+        text_dim: ink,
+        panel_hover: ui.accent,
+        ..ui
+    }
+}
+
+/// A waiting row's 🔔 "Needs input" pill: outlined in the waiting colour (in `on_accent` on the
+/// selected row), its words in the row's text colour.
+fn needs_input_pill(ui: UiColors, active: bool) -> Div {
+    let (edge, ink) = if active {
+        (ui.on_accent, ui.on_accent)
+    } else {
+        (ui.ring_waiting, ui.text)
+    };
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .h(px(PILL))
+        .px(px(5.0))
+        .rounded_full()
+        .border_1()
+        .border_color(hsla(edge))
+        .text_color(hsla(ink))
+        .font_weight(FontWeight::MEDIUM)
+        .line_height(px(PILL - 2.0))
+        .child(NEEDS_INPUT)
 }
 
 /// A tab colour's dot.
@@ -501,10 +599,31 @@ impl Workspace {
             .iter()
             .map(|(ws, _)| self.workspace_label(*ws))
             .collect();
+        // Where each is: its first terminal's folder (as last looked up, else the one it started
+        // in) and the branch there; an SSH one's host.
+        let places: Vec<(Option<&str>, Option<String>)> = subjects
+            .iter()
+            .map(|&(ws, _)| {
+                let first = self.model.terminals(ws).first().copied();
+                let Some(s) = first.and_then(|id| items.iter().find(|s| s.id == id)) else {
+                    return (None, None);
+                };
+                let found = self.places.folder(s.id);
+                if let Some(ssh) = &s.ssh {
+                    return (None, Some(remote_place(&ssh.host, found)));
+                }
+                let Some(folder) = found.or(s.project.as_deref()) else {
+                    return (None, None);
+                };
+                let shown = home_relative(folder, self.places.home.as_deref());
+                (self.places.branch(folder), Some(shown))
+            })
+            .collect();
         let facts: Vec<WorkspaceFacts> = subjects
             .iter()
             .zip(&labels)
-            .map(|(&(ws, subject), label)| {
+            .zip(places)
+            .map(|((&(ws, subject), label), (branch, folder))| {
                 let s = subject.map(|i| &items[i]);
                 WorkspaceFacts {
                     workspace: ws,
@@ -518,6 +637,9 @@ impl Workspace {
                     note: s.and_then(|s| s.note.as_deref()),
                     lost: s.is_some_and(|s| s.lost),
                     color: self.model.workspace(ws).and_then(|w| w.color),
+                    pinned: self.model.workspace(ws).is_some_and(|w| w.pinned),
+                    branch,
+                    folder,
                 }
             })
             .collect();
@@ -589,7 +711,7 @@ impl Workspace {
     }
 
     /// The sidebar's rows in the scrolled view; none with the sidebar hidden.
-    fn rows_in_view(&self, now: Instant) -> Vec<SidebarRow> {
+    pub(crate) fn rows_in_view(&self, now: Instant) -> Vec<SidebarRow> {
         if self.sidebar.hidden {
             return Vec::new();
         }
@@ -842,11 +964,13 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A workspace's row: its most urgent terminal's mark (a × in its place on hover), name
-    /// (or the rename box), age (when the row is wide enough), on-screen pip, colour dot and
-    /// ⌘N shortcut; under them a waiting terminal's question or a script's note; a script's
-    /// progress along the bottom. Click selects, double-click renames, the × or a middle-click
-    /// closes, a right-click opens its menu; it can be dragged within its group.
+    /// A workspace's row: its most urgent terminal's mark (a × in its place on hover), its name
+    /// in bold (or the rename box), age (when the row is wide enough), 📌 when pinned, on-screen
+    /// pip, colour dot and ⌘N shortcut; under them where it is (`branch • ~/folder`), then while
+    /// a terminal waits a 🔔 "Needs input" pill and its question (or a script's note); a
+    /// script's progress along the bottom. The selected row is filled with the accent, its text
+    /// and marks in `on_accent`. Click selects, double-click renames, the × or a middle-click
+    /// closes, a right-click opens its menu; it can be dragged within its run (`sidebar_run`).
     fn render_workspace_row(
         &self,
         row: &WorkspaceRow,
@@ -856,9 +980,10 @@ impl Workspace {
         let ws = row.workspace;
         let session = row.subject.and_then(|i| self.sessions.items().get(i));
         let waiting = row.status == Status::Waiting;
-        // The active row is filled; a waiting one is tinted. Hover deepens either a little.
+        // The selected row is filled with the accent; a waiting one is tinted. Hover deepens an
+        // unselected one a little.
         let fill = if row.active {
-            Some(ui.row_active)
+            Some(ui.accent)
         } else if waiting {
             Some(ui.waiting_tint)
         } else {
@@ -870,25 +995,24 @@ impl Workspace {
             None => Some(ui.row_hover),
         };
         let surface = fill.unwrap_or(ui.sidebar_background);
-        let label_color = if row.active || row.on_screen || waiting {
-            ui.text
-        } else {
-            ui.text_dim
-        };
+        // Everything on the accent is drawn in the one colour that reads on it.
+        let on = |c: Rgb| if row.active { ui.on_accent } else { c };
+        let marks = on_fill(ui, row.active);
         let rename_box = self
             .renaming
             .as_ref()
             .filter(|(r, _)| *r == Renaming::Workspace(ws))
             .map(|(_, input)| input.clone());
-        let group = self.workspace_group(ws);
-        // While a row is dragged: it's dimmed; rows of another group refuse it.
+        let run = self.sidebar_run(ws);
+        // While a row is dragged: it's dimmed; rows of another run (group, or the pinned ones)
+        // refuse it.
         let dragged = self
             .sidebar
             .drag_source
             .get()
             .filter(|_| cx.has_active_drag());
         let lifted = dragged == Some(ws);
-        let refused = dragged.is_some_and(|d| self.workspace_group(d) != group);
+        let refused = dragged.is_some_and(|d| self.sidebar_run(d) != run);
         let insertion = self
             .sidebar
             .drop_at
@@ -901,9 +1025,18 @@ impl Workspace {
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
-                .when(row.active, |name| name.font_weight(FontWeight::MEDIUM))
+                .font_weight(FontWeight::BOLD)
                 .child(row.label.clone())
                 .into_any_element(),
+        };
+        let meta = |child: AnyElement| {
+            div()
+                .flex_none()
+                .ml(px(META_GAP))
+                .text_size(px(text::META))
+                .font_features(tabular())
+                .text_color(hsla(on(ui.text_faint)))
+                .child(child)
         };
         // The age only where the name keeps its room.
         let age = row
@@ -914,7 +1047,7 @@ impl Workspace {
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(self.close_slot(ws, session, ui, surface, cx))
+            .child(self.close_slot(ws, session, marks, surface, cx))
             .child(
                 div()
                     .flex_1()
@@ -924,16 +1057,9 @@ impl Workspace {
                     .child(name),
             )
             .when_some(age, |line, age| {
-                line.child(
-                    div()
-                        .flex_none()
-                        .ml(px(SLOT_GAP))
-                        .text_size(px(text::META))
-                        .font_features(tabular())
-                        .text_color(hsla(ui.text_faint))
-                        .child(age),
-                )
+                line.child(meta(age.into_any_element()).ml(px(SLOT_GAP)))
             })
+            .when(row.pinned, |line| line.child(meta(PIN.into_any_element())))
             .when(row.on_screen, |line| {
                 line.child(
                     div()
@@ -945,46 +1071,79 @@ impl Workspace {
                 )
             })
             .when_some(row.color, |line, color| {
-                line.child(color_dot(color, ui).ml(px(META_GAP)))
+                // On the accent a dot of any colour keeps an edge that reads.
+                let dot = color_dot(color, ui).ml(px(META_GAP));
+                line.child(dot.when(row.active, |dot| {
+                    dot.border_1().border_color(hsla(ui.on_accent))
+                }))
             })
             .when_some(shortcut_label(row.index), |line, keys| {
-                line.child(
-                    div()
-                        .flex_none()
-                        .ml(px(META_GAP))
-                        .text_size(px(text::META))
-                        .font_features(tabular())
-                        .text_color(hsla(ui.text_faint))
-                        .child(keys),
-                )
+                line.child(meta(keys.into_any_element()))
             });
-        let sub_line = row.sub.as_ref().map(|sub| {
-            let (line, color) = match sub {
-                Sub::Question(q) => (q.clone(), ui.text_dim),
-                Sub::NeedsInput => ("Needs your input".to_string(), ui.text_faint),
-                Sub::Note(note) => (note.clone(), ui.text_faint),
-            };
+        // Under the name, level with it: where it is, then what it waits on.
+        let under = || {
             div()
+                .flex()
+                .items_center()
                 .h(px(SUB_LINE))
                 .pl(px(MARK_SLOT + SLOT_GAP))
                 .text_size(px(text::META))
                 .line_height(px(SUB_LINE))
-                .text_color(hsla(color))
-                .truncate()
-                .child(line)
-        });
-        let height = if row.sub.is_some() {
-            WAITING_ROW
-        } else {
-            SIDEBAR_ROW
         };
+        let place = (row.branch.is_some() || row.folder.is_some()).then(|| {
+            let both = row.branch.is_some() && row.folder.is_some();
+            under()
+                .text_color(hsla(on(ui.text_faint)))
+                // Short of room, both give way, the longer more; the branch loses its end, the
+                // folder its start (its own name stays).
+                .when_some(row.branch.clone(), |line, branch| {
+                    line.child(
+                        div()
+                            .flex_shrink_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(branch),
+                    )
+                })
+                .when(both, |line| {
+                    line.child(div().flex_none().px(px(4.0)).child("•"))
+                })
+                .when_some(row.folder.clone(), |line, folder| {
+                    line.child(
+                        div()
+                            .flex_shrink_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis_start()
+                            .child(folder),
+                    )
+                })
+        });
+        let status = row.sub.as_ref().map(|sub| {
+            let text = |line: String, color: Rgb| {
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_color(hsla(on(color)))
+                    .child(line)
+            };
+            match sub {
+                Sub::Question(q) => under()
+                    .child(needs_input_pill(ui, row.active))
+                    .child(text(q.clone(), ui.text_dim).ml(px(6.0))),
+                Sub::NeedsInput => under().child(needs_input_pill(ui, row.active)),
+                Sub::Note(note) => under().child(text(note.clone(), ui.text_faint)),
+            }
+        });
         let source = self.sidebar.drag_source.clone();
         let preview = DragPreview {
             label: row.label.clone().into(),
             status: row.status,
             width: self.sidebar.width,
         };
-        let accepts = group.clone();
+        let accepts = run.clone();
         div()
             .id(("workspace", ws.0 as usize))
             .group(ROW_GROUP)
@@ -993,12 +1152,12 @@ impl Workspace {
             .flex()
             .flex_col()
             .justify_center()
-            .h(px(height))
+            .h(px(row_height(row)))
             .mx(px(ROW_INSET))
             .px(px(ROW_PAD))
             .rounded(px(6.0))
             .text_size(px(text::NAME))
-            .text_color(hsla(label_color))
+            .text_color(hsla(on(ui.text)))
             .when_some(fill, |row, fill| row.bg(hsla(fill)))
             .when_some(hover, |row, hover| {
                 row.hover(move |style| style.bg(hsla(hover)))
@@ -1032,7 +1191,7 @@ impl Workspace {
             .on_drag(
                 DraggedWorkspace {
                     workspace: ws,
-                    group: group.clone(),
+                    run: run.clone(),
                 },
                 move |dragged, _, _, cx| {
                     source.set(Some(dragged.workspace));
@@ -1042,11 +1201,11 @@ impl Workspace {
                     })
                 },
             )
-            // Only rows of the dragged workspace's group accept it; the drop re-checks.
+            // Only rows of the dragged workspace's run accept it; the drop re-checks.
             .can_drop(move |dragged, _, _| {
                 dragged
                     .downcast_ref::<DraggedWorkspace>()
-                    .is_some_and(|d| d.group == accepts)
+                    .is_some_and(|d| d.run == accepts)
             })
             .on_drag_move(cx.listener(
                 move |this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
@@ -1056,24 +1215,12 @@ impl Workspace {
             .on_drop(cx.listener(move |this, dragged: &DraggedWorkspace, _, cx| {
                 this.drop_workspace(dragged.workspace, ws, cx)
             }))
-            // The active row's accent bar, on its left edge.
-            .when(row.active, |row| {
-                row.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top(px(6.0))
-                        .bottom(px(6.0))
-                        .w(px(DIVIDER_ACTIVE))
-                        .rounded(px(1.0))
-                        .bg(hsla(ui.accent)),
-                )
-            })
             .child(name_line)
-            .children(sub_line)
+            .children(place)
+            .children(status)
             // The progress bar: along the bottom, as wide as the percent.
-            .when_some(row.progress, |row, percent| {
-                row.child(
+            .when_some(row.progress, |row_el, percent| {
+                row_el.child(
                     div()
                         .absolute()
                         .bottom(px(1.0))
@@ -1085,20 +1232,22 @@ impl Workspace {
                                 .h_full()
                                 .w(relative(f32::from(percent.min(100)) / 100.0))
                                 .rounded(px(1.0))
-                                .bg(hsla(ui.ring_working)),
+                                .bg(hsla(on(ui.ring_working))),
                         ),
                 )
             })
-            // Where a dragged row would land: a line in the gap above or below this one.
-            .when_some(insertion, |row, below| {
+            // Where a dragged row would land: a line in the gap above or below this one (beside
+            // the selected row, in the text colour: an accent line would merge with its fill).
+            .when_some(insertion, |row_el, below| {
+                let color = if row.active { ui.text } else { ui.accent };
                 let line = div()
                     .absolute()
                     .left_0()
                     .right_0()
                     .h(px(DIVIDER_ACTIVE))
                     .rounded(px(1.0))
-                    .bg(hsla(ui.accent));
-                row.child(if below {
+                    .bg(hsla(color));
+                row_el.child(if below {
                     line.bottom(px(-ROW_GAP))
                 } else {
                     line.top(px(-ROW_GAP))
@@ -1220,11 +1369,11 @@ impl Workspace {
             return; // not this row's business
         }
         let dragged = event.drag(cx);
-        let (dragged, group) = (dragged.workspace, dragged.group.clone());
+        let (dragged, run) = (dragged.workspace, dragged.run.clone());
         let order = self.model.display_order();
         let find = |id: WorkspaceId| order.iter().position(|&w| w == id);
         let next = match (over, find(dragged), find(ws)) {
-            (true, Some(from), Some(to)) if self.workspace_group(ws) == group => {
+            (true, Some(from), Some(to)) if self.sidebar_run(ws) == run => {
                 let below = event.event.position.y > event.bounds.center().y;
                 (drop_index(from, to, below) != from).then_some((ws, below))
             }
@@ -1634,6 +1783,9 @@ mod tests {
             note: None,
             lost: false,
             color: None,
+            pinned: false,
+            branch: None,
+            folder: None,
         }
     }
 
@@ -1911,5 +2063,129 @@ mod tests {
         );
         assert_eq!(session(&rows[1]).label, "Browser");
         assert_eq!(session(&rows[1]).status, Status::Idle);
+    }
+
+    #[test]
+    fn a_row_says_where_its_workspace_is() {
+        let now = Instant::now();
+        let mut api = facts("api", Status::Idle, now, Some(folder("/w/api")));
+        api.branch = Some("main");
+        api.folder = Some("~/w/api".into());
+        // Not in a repo: the folder alone.
+        let mut notes = facts("notes", Status::Idle, now, None);
+        notes.folder = Some("~/notes".into());
+        // Nowhere known (a browser-only workspace).
+        let bare = facts("Browser", Status::Idle, now, None);
+        let rows = rows(&numbered(vec![notes, bare, api]), &[], None, &[], now);
+        let picked: Vec<(Option<&str>, Option<&str>)> = rows
+            .iter()
+            .filter_map(|r| match r {
+                SidebarRow::Workspace(w) => Some((w.branch.as_deref(), w.folder.as_deref())),
+                SidebarRow::Header(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            picked,
+            [
+                (None, Some("~/notes")),
+                (None, None),
+                (Some("main"), Some("~/w/api"))
+            ]
+        );
+    }
+
+    #[test]
+    fn pinned_rows_come_first_out_of_their_groups_with_their_pin() {
+        let now = Instant::now();
+        let (api, web) = (folder("/w/api"), folder("/w/web"));
+        // Display order (the model's): pinned ones first, whatever their groups.
+        let mut list = vec![
+            facts("deploy", Status::Idle, now, Some(web.clone())),
+            facts("review", Status::Waiting, now, Some(api.clone())),
+            facts("shell", Status::Idle, now, None),
+            facts("claude", Status::Working, now, Some(api.clone())),
+            facts("site", Status::Idle, now, Some(web.clone())),
+        ];
+        list[0].pinned = true;
+        list[1].pinned = true;
+        let rows = rows(&numbered(list), &[web.clone()], Some(w(1)), &[], now);
+        let shape: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                SidebarRow::Header(h) => format!("[{}]", h.label),
+                SidebarRow::Workspace(w) => {
+                    format!(
+                        "{}{}{}",
+                        w.label,
+                        ["", " pin"][w.pinned as usize],
+                        ["", " g"][w.grouped as usize]
+                    )
+                }
+            })
+            .collect();
+        // web is closed, but its pinned workspace still shows (it's not in the group now).
+        assert_eq!(
+            shape,
+            [
+                "deploy pin",
+                "review pin",
+                "shell",
+                "[api]",
+                "claude g",
+                "[web]"
+            ]
+        );
+        // ⌘1 and ⌘2 are the pinned ones; the header counts only the unpinned.
+        assert_eq!(session(&rows[1]).index, 1);
+        assert!(session(&rows[1]).active);
+        assert_eq!((header(&rows[3]).first, header(&rows[3]).count), (3, 1));
+        assert_eq!((header(&rows[5]).first, header(&rows[5]).count), (4, 1));
+    }
+
+    #[test]
+    fn an_ssh_workspace_shows_its_host_and_a_folder_only_once_reported() {
+        assert_eq!(remote_place("devbox", None), "devbox");
+        assert_eq!(
+            remote_place("devbox", Some(Path::new("/home/me/api"))),
+            "devbox:/home/me/api"
+        );
+    }
+
+    #[test]
+    fn under_home_a_folder_starts_with_a_tilde() {
+        let home = Some(Path::new("/Users/me"));
+        assert_eq!(home_relative(Path::new("/Users/me"), home), "~");
+        assert_eq!(
+            home_relative(Path::new("/Users/me/code/api"), home),
+            "~/code/api"
+        );
+        // Only whole folder names: /Users/meow isn't under /Users/me.
+        assert_eq!(
+            home_relative(Path::new("/Users/meow/x"), home),
+            "/Users/meow/x"
+        );
+        assert_eq!(home_relative(Path::new("/tmp"), home), "/tmp");
+        assert_eq!(home_relative(Path::new("/Users/me/x"), None), "/Users/me/x");
+    }
+
+    #[test]
+    fn a_row_grows_a_line_for_where_it_is_and_one_for_what_it_waits_on() {
+        let now = Instant::now();
+        let mut placed = facts("api", Status::Idle, now, None);
+        placed.folder = Some("~/api".into());
+        let mut waiting = facts("claude", Status::Waiting, now, None);
+        waiting.folder = Some("~/api".into());
+        waiting.branch = Some("main");
+        let plain_waiting = facts("agent", Status::Waiting, now, None);
+        let plain = facts("Browser", Status::Idle, now, None);
+        let rows = rows(
+            &numbered(vec![plain, placed, plain_waiting, waiting]),
+            &[],
+            None,
+            &[],
+            now,
+        );
+        let heights: Vec<f32> = rows.iter().map(|r| row_height(session(r))).collect();
+        assert_eq!(heights, [SIDEBAR_ROW, WAITING_ROW, WAITING_ROW, 56.0]);
     }
 }

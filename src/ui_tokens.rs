@@ -20,7 +20,8 @@ pub const QUIET_LINE_MIN: f32 = 1.4;
 pub mod size {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
 
-    /// A sidebar row; a waiting row grows to `WAITING_ROW` for its question line.
+    /// A sidebar row's name line; each line under it (where it is, what it waits on) grows it by
+    /// `WAITING_ROW - SIDEBAR_ROW` (M11b: `sidebar::row_height`).
     pub const SIDEBAR_ROW: f32 = 28.0;
     pub const WAITING_ROW: f32 = 42.0;
     pub const GROUP_HEADER: f32 = 24.0;

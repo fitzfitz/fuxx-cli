@@ -146,6 +146,11 @@ impl Pty {
         ))
     }
 
+    /// The child's process id (its working folder is a row's folder, M11b).
+    pub fn pid(&self) -> Option<u32> {
+        lock(&self.child).process_id()
+    }
+
     /// For the reader thread: the child's exit code after EOF.
     pub fn exit_waiter(&self) -> ExitWaiter {
         ExitWaiter(self.child.clone())
