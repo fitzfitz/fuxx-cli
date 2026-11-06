@@ -12,9 +12,9 @@ updated: 2026-11-06
 | At a glance | |
 |---|---|
 | **Milestone note** | [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] · input: [[M11b Input - Workspaces, Pane Tabs and In-Pane Browser]] |
-| **Status** | 🟨 Built and reviewed (2026-11-06); on-screen check pending (715 tests) |
-| **Tasks done** | 14 / 16 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b and 9); Task 7b added (your request); Task 8 is your check |
-| **▶ Pick up here** | Task 7b: drags feel like picking the tab up (added 2026-11-06). Then Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
+| **Status** | 🟨 Built and reviewed (2026-11-06); on-screen check pending (723 tests) |
+| **Tasks done** | 15 / 16 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b, 7b and 9); Task 8 is your check |
+| **▶ Pick up here** | Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
 | **Decisions used** | Yours (2026-11-06): the full cmux layout incl. the in-pane browser; row details (branch • folder, Needs-input badge, pinning, accent-filled selection); group headers stay; workspaces only in the sidebar; closing a 2+-terminal workspace asks; "just continue". Everything else: AI's call (spec). |
 | **Needs your eyes** | 👀 Task 8 (batched with M10b, M10c, M11 and the follow-up) |
 
@@ -189,7 +189,7 @@ the model, not rewritten. A spike proves the in-pane web view first.
 - [x] Tests: footer layout/hit rule (pure where possible); the popover still in `Overlay`; ui-shots of the footer and the
   upward popover in Mocha + Latte; the band without 🔔/+.
 
-### Task 7b: Drags feel like picking the tab up — ⬜ (added 2026-11-06, your request; after Task 6b)
+### Task 7b: Drags feel like picking the tab up — ✅ (added 2026-11-06, your request; after Task 6b)
 
 Your words: the cursor turns into a grabbing hand; the dragged tab stays where you grabbed it instead of hanging below
 the pointer; no insertion line — the other tabs slide out of the way, as in Ghostty; the same for sidebar rows.
@@ -218,7 +218,7 @@ the pointer; no insertion line — the other tabs slide out of the way, as in Gh
   way — the other rows of that run slide up or down by the dragged row's height; rows outside the run don't move; no
   insertion line. A pane tab over a row is unchanged (the row lights up).
 - Unchanged: the page hides during any drag (hide rule (c)); Esc cancels; a drop at its own place selects the tab.
-- [ ] Tests: the pure landing-slot rule (chip centre over the closed-up layout; first / middle / end, scrolled, empty
+- [x] Tests: the pure landing-slot rule (chip centre over the closed-up layout; first / middle / end, scrolled, empty
   bar, NaN); per-tab offsets for own bar / other bar / row / nowhere; row offsets within a run (variable row heights,
   rows outside the run at 0); `slide_at(from, to, elapsed)` (start, end, monotonic, retarget mid-slide continues from
   the current value); the drop index equals the gap's slot. ui-shots: a tab mid-drag after the slide settles — its own
@@ -228,7 +228,7 @@ the pointer; no insertion line — the other tabs slide out of the way, as in Gh
 
 ### Task 8: On screen — 👀 pending (batched)
 
-The spec's success check plus Review Focus 1–2 by hand. The full numbered list (64 items, grouped by area) is in
+The spec's success check plus Review Focus 1–2 by hand. The full numbered list (67 items with 29a–c from Task 7b, grouped by area) is in
 "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]].
 
 ### Task 9: Docs — ✅
@@ -257,6 +257,7 @@ checklist (pending)").
 | 7 Drag tabs anywhere | 33a810d..d4e2975 | 709 passing; the tab-drag scene mutation-checked | Needs fixes (opus): 1 Important, 6 Minor; fix round 1 addressed 5 of 5 (sonnet re-review), and fixed the fragile `splits` ui-shots check |
 | 6b 🔔 and + in the footer | d4e2975..6e21d49 | 711 passing; 16 title PNGs looked at | Approved (sonnet), 6 Minor (two folded into the final pass) |
 | Final whole-branch | 3dc3d27..ac6f20a (fix pass 3992e65, eceb6e5, 758da64, 45740ca, ac6f20a) | 715 passing | Ready after fixes (opus): 0 Critical, 2 Important, 3 Minor → one fix pass (opus) → re-review: 7 of 7 addressed, nothing new (sonnet) |
+| 7b Drags feel like picking the tab up (after the final review) | c4dd93f..b84d205 (plan amended 860fe45) | 722, then 723 passing; RED watched for each new check | Needs fixes (opus): 2 Important (the landing rule biased half an item forward, so a shaky drag reordered tabs and rows; a Finder drag hid the last-dragged row), 4 Minor; fix round 1 addressed 4 of 4 (sonnet re-review). Self-contained, so no second whole-branch review (ruling in the ledger) |
 
 Rulings made during the build are in [[Rulings - M10b M10c M11 (autonomous run)]] (M11b section). The ones that change
 what you see are listed under "Rulings you should confirm" in note 54.
@@ -300,6 +301,8 @@ Left on purpose (none blocks the merge); each is a candidate for a later polish 
   popover shot (added later in the final pass); a long doc-comment line.
 - Task 7: `move_tab` tests are characterisation tests; the scrolled-bar offset in `tab_edges` is tested only through
   the pure function; the act-drag distance is always 8 px.
+- Task 7b: Esc mid-drag snaps the tabs back instead of sliding (the slides end with the drag); with Reduce Motion on,
+  the slides jump (as the sidebar's slide does); a row's `row_slot` doc comment has one long line.
 - Final: `activate()` also closes the 🔔 popover and the + menu when the app itself moves focus (a background
   `session.new` dismisses an open popover); `focus_to_give_back` with the remembered tab closed in the meantime is
   untested (safe by reading).

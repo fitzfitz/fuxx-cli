@@ -126,6 +126,7 @@ src/
 │   workspaces, pane tabs and the in-pane browser (M11b)
 ├── layout_model.rs       M11b · workspaces → panes → tabs: every rule (new, split, close cascades, move, roll-up, pinning, ⌘1–9, old-file loader), GPUI-free
 ├── tab_bar.rs            M11b · the 26 px tab bar over each pane (replaces pane headers): tabs, marks, ×, buttons, drag, scroll
+├── drag_gap.rs           M11b · Task 7b: where a dragged tab or row lands (the gap nearest its copy), the others' offsets, the 150 ms ease-out slides; GPUI-free
 ├── pane_tab_menu.rs      M11b · a pane tab's right-click menu: Close Tab, Close Other Tabs in Pane, Rename Tab…, Pop Out
 ├── pane_browser.rs       M11b · the web view placed over a pane each frame, and the rule for hiding it behind fuxx's own menus
 │   └── pane_browser/probe.rs  M11b · hidden `fuxx __pane-browser-probe` self-test: placing, hiding, keys, focus, a real off-screen page
