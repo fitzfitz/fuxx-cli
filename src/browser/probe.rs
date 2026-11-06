@@ -11,13 +11,14 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{App, AsyncApp, BackgroundExecutor};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
-use objc2::{MainThreadMarker, msg_send, sel};
+use objc2::{AnyThread, MainThreadMarker, msg_send, sel};
 use objc2_app_kit::{
     NSAppearanceCustomization, NSApplication, NSApplicationActivationPolicy, NSBitmapImageFileType,
-    NSEvent, NSEventModifierFlags, NSEventType, NSResponder, NSToolbarItem, NSView, NSWindow,
+    NSBitmapImageRep, NSDeviceRGBColorSpace, NSEvent, NSEventModifierFlags, NSEventType,
+    NSGraphicsContext, NSImage, NSImageView, NSResponder, NSToolbarItem, NSView, NSWindow,
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
-use objc2_foundation::{NSDictionary, NSPoint, NSString, NSUserDefaults};
+use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSString, NSUserDefaults};
 use objc2_web_kit::WKWebsiteDataStore;
 use serde_json::{Value, json};
 
@@ -580,9 +581,26 @@ async fn probe_bar(
 
     let items = bar_items(&b);
     check(
-        items == ["fuxx.back", "fuxx.forward", "fuxx.reload", "fuxx.address"],
+        items
+            == [
+                "fuxx.back",
+                "fuxx.forward",
+                "fuxx.reload",
+                "fuxx.address",
+                "fuxx.mark",
+            ],
         "the bar's items",
         &items,
+    )?;
+    // fuxx's mark: a picture, not a button; saved to look at (the window's own picture can't
+    // show the toolbar's glass).
+    let mark = mark_of(&b)?;
+    check(
+        !mark["clickable"].as_bool().unwrap_or(true)
+            && !mark["bordered"].as_bool().unwrap_or(true)
+            && mark["size"] == json!([18.0, 18.0]),
+        "the mark",
+        &mark,
     )?;
     let compact = window.toolbarStyle() == NSWindowToolbarStyle::UnifiedCompact;
     let title_hidden = window.titleVisibility() == NSWindowTitleVisibility::Hidden;
@@ -753,7 +771,7 @@ async fn probe_bar(
     window.performKeyEquivalent(&*command_key(window, "l")?);
     let cmd_l_off = field.currentEditor().is_some();
     check(
-        items_off == ["fuxx.back", "fuxx.forward", "fuxx.reload"]
+        items_off == ["fuxx.back", "fuxx.forward", "fuxx.reload", "fuxx.mark"]
             && title_shown
             && !cmd_l_off
             && page_has_keyboard(&b),
@@ -774,6 +792,7 @@ async fn probe_bar(
 
     Ok(json!({
         "items": items,
+        "mark": mark,
         "compact": compact,
         "title_hidden": title_hidden,
         "fresh_buttons": fresh,
@@ -800,7 +819,7 @@ async fn probe_bar(
 fn palette_copies(b: &Browser) -> Result<(), String> {
     let toolbar = b.window.toolbar().ok_or("no toolbar")?;
     let delegate = toolbar.delegate().ok_or("no toolbar delegate")?;
-    for id in ["fuxx.back", "fuxx.address"] {
+    for id in ["fuxx.back", "fuxx.address", "fuxx.mark"] {
         // SAFETY: main thread; the toolbar delegate's own method, with its argument types.
         let _: Option<Retained<NSToolbarItem>> = unsafe {
             msg_send![
@@ -812,6 +831,69 @@ fn palette_copies(b: &Browser) -> Result<(), String> {
         };
     }
     Ok(())
+}
+
+/// The bar's mark: whether it can be clicked (an action) or has a bezel, its picture's size in
+/// points, and where a PNG of that picture (at 2×) was saved.
+fn mark_of(b: &Browser) -> Result<Value, String> {
+    let item = bar_item(b, "fuxx.mark")?;
+    let view = item.view().ok_or("the mark has no view")?;
+    let image_view = view
+        .downcast::<NSImageView>()
+        .map_err(|_| "the mark isn't a picture")?;
+    let image = image_view.image().ok_or("the mark has no picture")?;
+    let size = image.size();
+    let path = std::env::temp_dir()
+        .join("fuxx-browser-probe")
+        .join("mark@2x.png");
+    std::fs::create_dir_all(path.parent().unwrap_or(&path)).map_err(|e| e.to_string())?;
+    std::fs::write(&path, image_png_2x(&image)?)
+        .map_err(|e| format!("couldn't save {}: {e}", path.display()))?;
+    Ok(json!({
+        "clickable": item.action().is_some() || image_view.isEnabled() && image_view.action().is_some(),
+        "bordered": item.isBordered(),
+        "size": [size.width, size.height],
+        "png": path.display().to_string(),
+    }))
+}
+
+/// A PNG of `image` drawn at twice its size in points, as on a Retina screen.
+fn image_png_2x(image: &NSImage) -> Result<Vec<u8>, String> {
+    let size = image.size();
+    let (width, height) = ((size.width * 2.0) as isize, (size.height * 2.0) as isize);
+    // SAFETY: a null planes pointer makes the bitmap allocate its own pixels; 8-bit RGBA with
+    // the row and pixel sizes worked out by AppKit (0).
+    let bitmap = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            width,
+            height,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }
+    .ok_or("no bitmap for the mark")?;
+    // Points over the bitmap's pixels: 2 pixels a point.
+    bitmap.setSize(size);
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)
+        .ok_or("no drawing context for the mark")?;
+    let previous = NSGraphicsContext::currentContext();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    image.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), size));
+    context.flushGraphics();
+    NSGraphicsContext::setCurrentContext(previous.as_deref());
+    // SAFETY: an empty properties dictionary is valid for every file type.
+    let png = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+    }
+    .ok_or("the mark couldn't be encoded as PNG")?;
+    Ok(png.to_vec())
 }
 
 /// Whether macOS is in dark mode, from its own setting (not from fuxx's code).
