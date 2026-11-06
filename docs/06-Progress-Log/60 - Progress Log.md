@@ -14,13 +14,42 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M10c/M11 follow-up 🟨 built and reviewed (2026-11-06), on-screen check pending (M10b, M10c and M11 the same, all batched); after your check: merge, then M11b (workspaces and pane tabs), then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11b — workspaces, pane tabs and the in-pane browser 🟨 built and reviewed (2026-11-06), on-screen check pending (the M10c/M11 follow-up, M10b, M10c and M11 the same, all batched); after your check: merge, then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-06 — M11b built: workspaces, pane tabs and the browser in a pane (on-screen check pending)
+- **Did:** Built and reviewed [[M11b Plan - Workspaces, Pane Tabs and In-Pane Browser]] on branch `m11b-workspaces`
+  (Tasks 0–7, 4b, 4c, 4d, 4e, 6b; Task 8 is your check, so **nothing is marked done**). The sidebar now lists
+  workspaces; a workspace is a split layout of panes; each pane has a tab bar of terminal and browser tabs. Rows show the
+  bold name, `branch • ~/folder`, and a 🔔 Needs input pill with the question; selected rows fill with the accent;
+  workspaces can be pinned. The browser is a real web view placed over a pane, with a fuxx bar (address field, history
+  suggestions, "Search Google for …") and it hides whenever a fuxx menu, box or drag is in front of it. Agents'
+  `fuxx browser …` drive a browser tab beside their terminal; Pop Out moves the page to a window. Workspaces, panes, tabs
+  and page addresses come back after a restart. Your requests during the build: resizing no longer makes a terminal look
+  busy (your bug report); an empty tab bar drags the window; ⌘T is a new tab and ⌘N a new workspace; ⌘R, ⌘[ / ⌘] and
+  ⌘= / ⌘- / ⌘0 act on a page; drag tabs anywhere (within a pane, into another pane, onto a sidebar row); the 🔔 list and
+  + moved into the sidebar footer. Reviews found real problems and each was fixed: a restore that lost its fallback
+  focus, Pop Out of the last tab quitting fuxx, a streaming terminal settling early to Done during a resize drag, a
+  rename box unreadable on the selected row, `fuxx notify` missing from the 🔔 list, a shaky tab click selecting nothing,
+  and (final review) a shortcut leaving the 🔔 popover open, `fuxx new --background` taking the keyboard from a page, and
+  a workspace of pages lost on relaunch. 715 tests pass. A fragile `splits` screenshot check was also fixed. The
+  64-item on-screen checklist, the verification log and the deferred minors are in note 54 and the plan; every ruling
+  is in [[Rulings - M10b M10c M11 (autonomous run)]].
+- **Learned:** A native web view sits above everything GPUI draws and takes its clicks, so the rule has to be "hide the
+  page whenever anything of ours is in front", checked at one place every frame. A screenshot check that samples one
+  pixel row can pass or fail with the screen's scale; sample where a line is plain. A resize makes a shell redraw, and
+  that redraw looks exactly like work unless the status tracker is told a resize just happened.
+- **Blocked:** On your batched on-screen check (M10b, M10c, M11, the follow-up, M11b). Please also confirm the rulings
+  listed in note 54: the workspace name shows at the top only while the sidebar is hidden; page shortcuts act whenever a
+  browser tab has fuxx's focus, including its address field; the 🔔 is hidden with the sidebar. Branch `m11b-workspaces`
+  stacks on `m11b-browser-bar-prefs`, which stacks on `m11-ui-ux`, M10c and M10b; nothing is merged.
+- **Next task:** Your on-screen check ([[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]], "On-screen
+  checklist (pending)"); then merge, then M12.
 
 ### 2026-11-06 — M10c/M11 follow-up built: browser bar, keep-data setting, tabbed Preferences, sidebar button, tab-like rows (on-screen check pending)
 - **Did:** Built and reviewed [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] on branch
