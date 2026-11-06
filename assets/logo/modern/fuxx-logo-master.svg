@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="modern-surface" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#080C14"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Modern Terminal Squircle Badge -->
+  <rect x="82" y="82" width="860" height="860" rx="210" ry="210"
+        fill="url(#modern-surface)"
+        stroke="#00FF66" stroke-width="12" stroke-opacity="0.35"/>
+
+  <!-- Centered Mascot Glyph: ╭ ∩ ╮ -->
+  <g fill="none" stroke="#00FF66" stroke-width="50" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Left ╭ -->
+    <path d="M 350 468 L 297 468 A 60 60 0 0 0 237 528 L 237 670"/>
+    <!-- Center ∩ -->
+    <path d="M 437 670 L 437 428 A 75 75 0 0 1 587 428 L 587 670"/>
+    <!-- Right ╮ -->
+    <path d="M 674 468 L 727 468 A 60 60 0 0 1 787 528 L 787 670"/>
+  </g>
+</svg>
