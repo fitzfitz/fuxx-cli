@@ -45,7 +45,7 @@ use crate::mux_proto::{
     self, DaemonInfo, Decoder, Frame, Hello, HelloOk, IncompatibleInfo, PROTO_MAX, PROTO_MIN,
     PROTO_PROGRAMS, ProtoError, Role, SessionInfo, StopReply,
 };
-use crate::native_notify;
+use crate::native_notify::{self, Terminal};
 use crate::notifier;
 use crate::private_socket::{self, Slot, SocketGuard};
 use crate::status::Status;
@@ -434,10 +434,12 @@ impl Shared {
         self.closing.load(Ordering::Acquire)
     }
 
-    /// A click on one of the service's banners about `terminal` (M11c): shown in every window
-    /// attached, or held for the next one, which macOS is opening (`open_fuxx` is a backup).
-    /// Never waits: a window whose queue is full misses it.
-    fn banner_clicked(&self, terminal: Option<u64>) {
+    /// A click on one of the service's banners about `clicked` (M11c): its session shown in
+    /// every window attached, or held for the next one, which macOS is opening (`open_fuxx` is a
+    /// backup). A banner from another run of the service names no session of this one: fuxx
+    /// only comes forward. Never waits: a window whose queue is full misses it.
+    fn banner_clicked(&self, clicked: Option<Terminal>) {
+        let terminal = clicked.and_then(|t| t.in_run(Some(self.instance)));
         let mut windows = lock(&self.windows);
         let attached = !windows.outs.is_empty();
         match windows.show.click(terminal, attached) {
@@ -450,6 +452,9 @@ impl Shared {
             }
             ClickAction::Open => {
                 drop(windows);
+                if let Some(id) = terminal {
+                    log!("a banner click: s{id} held for the next window");
+                }
                 open_fuxx();
             }
             ClickAction::Nothing => {}
@@ -461,10 +466,14 @@ impl Shared {
     fn window_attached(&self, conn: u64, out: &Out) {
         let mut windows = lock(&self.windows);
         windows.outs.insert(conn, out.clone());
-        if let Some(id) = windows.show.hello()
-            && !out.try_send(&Frame::Show { id })
-        {
-            log!("connection {conn}: couldn't send it s{id} to show");
+        if let Some(id) = windows.show.hello() {
+            // A fuxx with "Keep running after quit" off only looks at the service (`probe_service`)
+            // and drops it; it says so in its own log.
+            if out.try_send(&Frame::Show { id }) {
+                log!("connection {conn}: given the held banner click (s{id})");
+            } else {
+                log!("connection {conn}: couldn't send it s{id} to show");
+            }
         }
     }
 
@@ -552,7 +561,9 @@ impl Running {
     /// (tests elsewhere; the delegate itself only runs from the app bundle).
     #[cfg(test)]
     pub(crate) fn click_banner(&self, terminal: Option<u64>) {
-        self.shared.banner_clicked(terminal);
+        let run = self.shared.instance;
+        self.shared
+            .banner_clicked(terminal.map(|id| Terminal { run, id }));
     }
 
     #[allow(dead_code)] // tests; the in-process daemon of M10a Task 5's tests
@@ -746,9 +757,13 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
             let ui_attached = shared.ui_clients.load(Ordering::Acquire) > 0;
             if let Some(body) = daemon_should_notify(ui_attached, old, new) {
                 let summary = notification_summary(&info);
-                let session_id = session.id();
+                // Numbered by this run of the service.
+                let about = Terminal {
+                    run: shared.instance,
+                    id: session.id(),
+                };
                 // `osascript` blocks ~100 ms: never on the tick thread.
-                std::thread::spawn(move || notifier::fire(&summary, body, Some(session_id)));
+                std::thread::spawn(move || notifier::fire(&summary, body, Some(about)));
             }
         }
         // A session's `alive` turns false together with queueing `Exited`, so forgetting it now
@@ -1741,12 +1756,46 @@ mod tests {
             .collect()
     }
 
+    /// A click on the service's banner about `sN`, numbered by this service.
+    fn ours(d: &Running, id: u64) -> Option<Terminal> {
+        Some(Terminal {
+            run: d.shared.instance,
+            id,
+        })
+    }
+
+    #[test]
+    fn a_banner_click_from_an_earlier_run_shows_nothing() {
+        let (d, path) = daemon("showrun");
+        let earlier = Some(Terminal {
+            run: d.shared.instance.wrapping_add(1),
+            id: 3,
+        });
+        // No window: it replaces a held click, and the next window is given nothing to show.
+        d.shared.banner_clicked(ours(&d, 7));
+        d.shared.banner_clicked(earlier);
+        let mut window = connect(&path, Role::Ui);
+        assert_eq!(
+            shows(&frames_before_sessions(&mut window)),
+            Vec::<u64>::new()
+        );
+        // A window attached: nothing is sent.
+        d.shared.banner_clicked(earlier);
+        assert_eq!(
+            shows(&frames_before_sessions(&mut window)),
+            Vec::<u64>::new()
+        );
+        // A banner from this run still is.
+        d.shared.banner_clicked(ours(&d, 3));
+        assert_eq!(shows(&frames_before_sessions(&mut window)), vec![3]);
+    }
+
     #[test]
     fn a_banner_click_reaches_the_next_window_after_its_hello_then_every_window_at_once() {
         let (d, path) = daemon("show");
         // No window: held (and fuxx opened, from the app bundle only).
-        d.shared.banner_clicked(Some(7));
-        d.shared.banner_clicked(Some(3));
+        d.shared.banner_clicked(ours(&d, 7));
+        d.shared.banner_clicked(ours(&d, 3));
         // A script is no window: it gets nothing, and the click stays held.
         let mut script = connect(&path, Role::Script);
         assert_eq!(
@@ -1766,7 +1815,7 @@ mod tests {
             Vec::<u64>::new()
         );
         // With windows attached, a click goes to each at once; nothing is held.
-        d.shared.banner_clicked(Some(5));
+        d.shared.banner_clicked(ours(&d, 5));
         assert_eq!(shows(&frames_before_sessions(&mut first)), vec![5]);
         assert_eq!(shows(&frames_before_sessions(&mut second)), vec![5]);
         assert_eq!(
@@ -1776,7 +1825,7 @@ mod tests {
         // Once the windows have gone, a click is held again for the next one.
         drop((first, second));
         assert!(eventually(|| lock(&d.shared.windows).outs.is_empty()));
-        d.shared.banner_clicked(Some(9));
+        d.shared.banner_clicked(ours(&d, 9));
         let mut third = connect(&path, Role::Ui);
         assert_eq!(
             third.recv(Duration::from_secs(5)).unwrap(),

@@ -42,7 +42,7 @@ use crate::host_picker::HostPicker;
 use crate::layout_model::{self, Model, PaneId, TabDrop, TabId, TabKind, WorkspaceId};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
-use crate::native_notify::PendingShow;
+use crate::native_notify::{self, PendingShow, Terminal};
 use crate::notification_list::{self, NotificationList};
 use crate::notifier;
 use crate::pane_tab_menu::PaneTabMenu;
@@ -374,12 +374,13 @@ pub struct Workspace {
 impl Workspace {
     /// `scripting`: the socket this fuxx serves and its requests, answered for as long as the
     /// workspace lives.
-    /// `clicks`: clicks on fuxx's banners, each the terminal it is about (`native_notify::install`).
+    /// `clicks`: clicks on fuxx's banners, each the terminal it is about and the run that
+    /// numbered it (`native_notify::install`).
     /// `persistent`: sessions run in the background service (connected off the UI thread before
     /// the first one opens).
     pub fn new(
         scripting: Option<(PathBuf, UnboundedReceiver<api_server::Incoming>)>,
-        clicks: UnboundedReceiver<Option<u64>>,
+        clicks: UnboundedReceiver<Option<Terminal>>,
         persistent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -671,7 +672,7 @@ impl Workspace {
     /// it existed are waiting in `clicks`).
     pub(crate) fn listen_for_clicks(
         &mut self,
-        clicks: UnboundedReceiver<Option<u64>>,
+        clicks: UnboundedReceiver<Option<Terminal>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -679,21 +680,24 @@ impl Workspace {
     }
 
     /// Hear the clicks on the background service's banners that it passes on (`Show`, from
-    /// `DaemonClient::shows`), each the session to show, for as long as the workspace lives or
-    /// the connection lasts. They are handled as clicks on the window's own banners, so one
-    /// that comes while the saved sessions reopen (it opened fuxx) is shown once they have.
+    /// `DaemonClient::shows`), each a session numbered by that service (`run`, its instance), for
+    /// as long as the workspace lives or the connection lasts. They are handled as clicks on the
+    /// window's own banners, so one that comes while the saved sessions reopen (it opened fuxx)
+    /// is shown once they have.
     pub(crate) fn listen_for_shows(
         &mut self,
         shows: UnboundedReceiver<u64>,
+        run: Option<u64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self._shows = Some(Self::hear(shows.map(Some), window, cx));
+        let clicks = shows.map(move |id| run.map(|run| Terminal { run, id }));
+        self._shows = Some(Self::hear(clicks, window, cx));
     }
 
     /// Hand each click from `clicks` to `banner_clicked`, until it ends or the workspace goes.
     fn hear(
-        mut clicks: impl futures::Stream<Item = Option<u64>> + Unpin + 'static,
+        mut clicks: impl futures::Stream<Item = Option<Terminal>> + Unpin + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<()> {
@@ -713,7 +717,7 @@ impl Workspace {
     /// names one) is shown, now or, while the saved sessions reopen, once they have.
     fn banner_clicked(
         &mut self,
-        terminal: Option<u64>,
+        terminal: Option<Terminal>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -724,11 +728,30 @@ impl Workspace {
     }
 
     /// Show a clicked banner's terminal as the 🔔 list does (nothing more if it has closed
-    /// since); one about no terminal only brought fuxx forward.
-    fn show_clicked(&mut self, terminal: Option<u64>, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = terminal {
-            self.jump_to_notification(terminal, window, cx);
+    /// since); one about no terminal, or about one numbered by another run (today's `sN` is
+    /// another terminal), only brought fuxx forward.
+    fn show_clicked(
+        &mut self,
+        terminal: Option<Terminal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let run = self.numbering_run();
+        if let Some(id) = terminal.and_then(|t| t.in_run(run)) {
+            self.jump_to_notification(id, window, cx);
         }
+    }
+
+    /// The run that numbers the sessions now (`workspace_daemon::numbering_run`).
+    fn numbering_run(&self) -> Option<u64> {
+        crate::workspace_daemon::numbering_run(&self.service, native_notify::this_run())
+    }
+
+    /// What a banner about session `terminal` names: it and the run that numbered it. None when
+    /// that run isn't known (a click on it then only brings fuxx forward).
+    pub(crate) fn banner_about(&self, terminal: Option<u64>) -> Option<Terminal> {
+        let run = self.numbering_run()?;
+        terminal.map(|id| Terminal { run, id })
     }
 
     /// Whether the background service runs the sessions (their ids are its).
@@ -1512,7 +1535,8 @@ impl Workspace {
                     status: Some(new),
                     at: Instant::now(),
                 });
-                cx.background_spawn(async move { notifier::fire(&summary, &body, terminal) })
+                let about = self.banner_about(terminal);
+                cx.background_spawn(async move { notifier::fire(&summary, &body, about) })
                     .detach();
             }
         }

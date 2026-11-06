@@ -10,7 +10,7 @@ use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, MainThreadMarker, define_class, msg_send};
-use objc2_foundation::{NSBundle, NSError, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSError, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
     UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
@@ -51,7 +51,7 @@ pub enum PostError {
     /// Not running from the app bundle.
     Unbundled,
     /// The system rejected the request.
-    #[allow(dead_code)] // the reason is for `Debug` output; `fire` just falls back
+    #[allow(dead_code)] // read only through `Debug`, in `notifier::fire`'s log line
     Rejected(String),
     /// No answer within the wait.
     TimedOut,
@@ -80,9 +80,11 @@ pub fn permission() -> Option<Permission> {
     })
 }
 
-/// Show a banner: `summary` as the title, `body` under it, no subtitle, no sound. `terminal` (the
-/// `sN` it is about) rides in the request identifier. Blocks up to 2 s for the system to take it.
-pub fn post(summary: &str, body: &str, terminal: Option<u64>) -> Result<(), PostError> {
+/// Show a banner: `summary` as the title, `body` under it, no subtitle, no sound. `about` (the
+/// terminal it is about, and the run that numbered it) rides in the request identifier. Blocks
+/// up to 2 s for the system to take it; if it doesn't answer in time, the request is withdrawn
+/// (so a late one rarely shows next to the caller's fallback banner).
+pub fn post(summary: &str, body: &str, about: Option<Terminal>) -> Result<(), PostError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -93,12 +95,12 @@ pub fn post(summary: &str, body: &str, terminal: Option<u64>) -> Result<(), Post
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(summary));
     content.setBody(&NSString::from_str(body));
-    let id = request_id(terminal, COUNTER.fetch_add(1, Ordering::Relaxed));
-    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-        &NSString::from_str(&id),
-        &content,
-        None,
-    );
+    let id = NSString::from_str(&request_id(
+        about,
+        this_run(),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
+    ));
+    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
     let (tx, rx) = mpsc::channel();
     let done = RcBlock::new(move |error: *mut NSError| {
         // SAFETY: when non-null, the system passes a live NSError for the duration of the call.
@@ -112,29 +114,76 @@ pub fn post(summary: &str, body: &str, terminal: Option<u64>) -> Result<(), Post
     match rx.recv_timeout(WAIT) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(why)) => Err(PostError::Rejected(why)),
-        Err(_) => Err(PostError::TimedOut),
+        Err(_) => {
+            let ids = NSArray::from_retained_slice(&[id]);
+            center.removePendingNotificationRequestsWithIdentifiers(&ids);
+            center.removeDeliveredNotificationsWithIdentifiers(&ids);
+            Err(PostError::TimedOut)
+        }
     }
 }
 
-/// A banner's request identifier: `fuxx-s{N}-{n}` for terminal `sN` (so a click can say which
-/// one), else `fuxx-{n}`; `n` makes each one unique.
-pub fn request_id(terminal: Option<u64>, n: u64) -> String {
-    match terminal {
-        Some(t) => format!("fuxx-s{t}-{n}"),
-        None => format!("fuxx-{n}"),
+/// A terminal a banner is about: session `sN` (`id`) as numbered by run `run`. Numbers start
+/// again at `s1` in each run, so the run tells today's `s3` from an earlier run's. The run is
+/// the background service's random instance id for a session it runs, or `this_run()` for one
+/// a window runs itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Terminal {
+    pub run: u64,
+    pub id: u64,
+}
+
+impl Terminal {
+    /// The session to show for a click, if it was numbered by `current` (the run numbering the
+    /// sessions now; `None` when that isn't known). A banner from another run shows nothing.
+    pub fn in_run(self, current: Option<u64>) -> Option<u64> {
+        (current == Some(self.run)).then_some(self.id)
     }
 }
 
-/// The terminal a request identifier is about, if it names one.
-pub fn terminal_of(request_id: &str) -> Option<u64> {
+/// A random id for this process, made once: the run that numbers a window's own sessions, and
+/// part of every banner id it posts, so ids never repeat across processes and runs (a banner
+/// with the id of an earlier one would replace it in Notification Center).
+pub fn this_run() -> u64 {
+    use std::hash::BuildHasher;
+    static RUN: OnceLock<u64> = OnceLock::new();
+    *RUN.get_or_init(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        // std's `RandomState` is keyed from the OS's randomness.
+        std::collections::hash_map::RandomState::new().hash_one((now, std::process::id()))
+    })
+}
+
+/// A banner's request identifier: `fuxx-s{N}-r{run}-{process}-{n}` for terminal `about` (so a
+/// click can say which one, and from which run), else `fuxx-{process}-{n}`. `process` (the
+/// poster's `this_run`) and `n` (its count) make each one unique.
+pub fn request_id(about: Option<Terminal>, process: u64, n: u64) -> String {
+    match about {
+        Some(Terminal { run, id }) => format!("fuxx-s{id}-r{run}-{process}-{n}"),
+        None => format!("fuxx-{process}-{n}"),
+    }
+}
+
+/// The terminal a request identifier is about, if it names one in the current form.
+pub fn terminal_of(request_id: &str) -> Option<Terminal> {
     let rest = request_id.strip_prefix("fuxx-s")?;
-    let (terminal, _) = rest.split_once('-')?;
-    terminal.parse().ok()
+    let mut parts = rest.split('-');
+    let id = parts.next()?.parse().ok()?;
+    let run = parts.next()?.strip_prefix('r')?.parse().ok()?;
+    let _process: u64 = parts.next()?.parse().ok()?;
+    let _n: u64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(Terminal { run, id })
 }
 
 /// What a click does. Set once, by `hear_clicks`; callable from any thread, so a click is heard
 /// whichever thread macOS reports it on (the window's or the background service's).
-type OnClick = Box<dyn Fn(Option<u64>) + Send + Sync>;
+type OnClick = Box<dyn Fn(Option<Terminal>) + Send + Sync>;
 static ON_CLICK: OnceLock<OnClick> = OnceLock::new();
 
 thread_local! {
@@ -187,18 +236,19 @@ define_class!(
 /// that opened fuxx is not missed): `hear_clicks`, then asks macOS, once, for permission to
 /// show alerts (no sound), without waiting for the answer. Only from the app bundle (and the
 /// main thread); otherwise nothing happens.
-pub fn install(on_click: impl Fn(Option<u64>) + Send + Sync + 'static) {
+pub fn install(on_click: impl Fn(Option<Terminal>) + Send + Sync + 'static) {
     if hear_clicks(on_click) {
         ask_permission(&UNUserNotificationCenter::currentNotificationCenter());
     }
 }
 
 /// Hear clicks on the banners this process posts: a click calls `on_click` with the terminal
-/// (`sN`) the banner is about, `None` for one about no terminal. Banners also show while fuxx is
+/// the banner is about (`sN` and the run that numbered it), `None` for one about no terminal
+/// (or with an id from before banners named their run). Banners also show while fuxx is
 /// the active app. macOS reports clicks on the main thread while its run loop runs (the app's,
 /// or the background service's `daemon::Running::wait`). Once per process, only from the app
 /// bundle and on the main thread; false (and nothing happens) otherwise.
-pub fn hear_clicks(on_click: impl Fn(Option<u64>) + Send + Sync + 'static) -> bool {
+pub fn hear_clicks(on_click: impl Fn(Option<Terminal>) + Send + Sync + 'static) -> bool {
     if MainThreadMarker::new().is_none() || !is_bundled() {
         return false;
     }
@@ -233,13 +283,17 @@ fn ask_permission(center: &UNUserNotificationCenter) {
 #[derive(Debug, Default)]
 pub struct PendingShow {
     /// The click held until the restore finishes: the terminal it is about, if any.
-    held: Option<Option<u64>>,
+    held: Option<Option<Terminal>>,
 }
 
 impl PendingShow {
     /// A click about `terminal`: what to show now, or `None` while `restoring` (it is held; a
     /// later click replaces a held one).
-    pub fn click(&mut self, terminal: Option<u64>, restoring: bool) -> Option<Option<u64>> {
+    pub fn click(
+        &mut self,
+        terminal: Option<Terminal>,
+        restoring: bool,
+    ) -> Option<Option<Terminal>> {
         if restoring {
             self.held = Some(terminal);
             None
@@ -250,7 +304,7 @@ impl PendingShow {
     }
 
     /// The restore has finished: the click held meanwhile, once.
-    pub fn restored(&mut self) -> Option<Option<u64>> {
+    pub fn restored(&mut self) -> Option<Option<Terminal>> {
         self.held.take()
     }
 }
@@ -267,21 +321,75 @@ mod tests {
         assert!(!is_bundled_id(Some("")));
     }
 
+    /// Terminal `sN` as numbered by run 41.
+    fn t(id: u64) -> Terminal {
+        Terminal { run: 41, id }
+    }
+
     #[test]
-    fn request_ids_carry_the_terminal() {
-        assert_eq!(request_id(Some(3), 7), "fuxx-s3-7");
-        assert_eq!(request_id(None, 7), "fuxx-7");
-        assert_eq!(terminal_of("fuxx-s3-7"), Some(3));
-        assert_eq!(terminal_of("fuxx-7"), None);
-        assert_eq!(terminal_of("fuxx-sx-1"), None);
-        assert_eq!(terminal_of("other"), None);
-        assert_eq!(terminal_of(""), None);
+    fn request_ids_carry_the_terminal_and_its_run() {
+        assert_eq!(request_id(Some(t(3)), 9, 7), "fuxx-s3-r41-9-7");
+        assert_eq!(request_id(None, 9, 7), "fuxx-9-7");
+        assert_eq!(terminal_of("fuxx-s3-r41-9-7"), Some(t(3)));
+        let max = Terminal {
+            run: u64::MAX,
+            id: u64::MAX,
+        };
+        assert_eq!(
+            terminal_of(&request_id(Some(max), u64::MAX, u64::MAX)),
+            Some(max)
+        );
+        assert_eq!(terminal_of("fuxx-9-7"), None);
+        // Malformed, and the old form (no run: from before ids named it) name no terminal.
+        for bad in [
+            "fuxx-s3-7",
+            "fuxx-s3-41-9-7",
+            "fuxx-s3-r41-9",
+            "fuxx-s3-r41-9-7-1",
+            "fuxx-sx-r41-9-7",
+            "fuxx-s3-rx-9-7",
+            "fuxx-s3-r41-x-7",
+            "fuxx-s3-r41-9-x",
+            "fuxx-s-r41-9-7",
+            "fuxx-s3-r-9-7",
+            "other",
+            "",
+        ] {
+            assert_eq!(terminal_of(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn request_ids_differ_across_processes_and_runs() {
+        // The same terminal and count from two processes (a window and the service, or two
+        // runs of fuxx), and from two numbering runs.
+        assert_ne!(request_id(Some(t(2)), 1, 0), request_id(Some(t(2)), 2, 0));
+        assert_ne!(request_id(None, 1, 0), request_id(None, 2, 0));
+        let other_run = Terminal { run: 42, id: 2 };
+        assert_ne!(
+            request_id(Some(t(2)), 1, 0),
+            request_id(Some(other_run), 1, 0)
+        );
+    }
+
+    #[test]
+    fn a_terminal_is_shown_only_in_the_run_that_numbered_it() {
+        assert_eq!(t(3).in_run(Some(41)), Some(3));
+        // An earlier run's s3 is not today's s3.
+        assert_eq!(t(3).in_run(Some(42)), None);
+        // The numbering isn't known (yet): nothing to show.
+        assert_eq!(t(3).in_run(None), None);
+    }
+
+    #[test]
+    fn this_process_has_one_run_id() {
+        assert_eq!(this_run(), this_run());
     }
 
     #[test]
     fn a_click_is_shown_at_once_when_no_restore_runs() {
         let mut pending = PendingShow::default();
-        assert_eq!(pending.click(Some(3), false), Some(Some(3)));
+        assert_eq!(pending.click(Some(t(3)), false), Some(Some(t(3))));
         assert_eq!(pending.click(None, false), Some(None));
         assert_eq!(pending.restored(), None);
     }
@@ -289,8 +397,8 @@ mod tests {
     #[test]
     fn a_click_during_a_restore_waits_for_it_once() {
         let mut pending = PendingShow::default();
-        assert_eq!(pending.click(Some(3), true), None);
-        assert_eq!(pending.restored(), Some(Some(3)));
+        assert_eq!(pending.click(Some(t(3)), true), None);
+        assert_eq!(pending.restored(), Some(Some(t(3))));
         assert_eq!(pending.restored(), None);
         // A script's banner (no terminal) is held the same way: fuxx still comes forward.
         assert_eq!(pending.click(None, true), None);
@@ -300,9 +408,9 @@ mod tests {
     #[test]
     fn the_later_of_two_clicks_during_a_restore_wins() {
         let mut pending = PendingShow::default();
-        assert_eq!(pending.click(Some(3), true), None);
-        assert_eq!(pending.click(Some(5), true), None);
-        assert_eq!(pending.restored(), Some(Some(5)));
+        assert_eq!(pending.click(Some(t(3)), true), None);
+        assert_eq!(pending.click(Some(t(5)), true), None);
+        assert_eq!(pending.restored(), Some(Some(t(5))));
         assert_eq!(pending.restored(), None);
     }
 }

@@ -89,6 +89,17 @@ pub(crate) fn open_refusal(service: &Service, restoring: bool) -> Option<&'stati
     }
 }
 
+/// The run that numbers the sessions (`sN`) now, for banners (M11c): the background service's
+/// instance for the sessions it runs (also once lost; `None` while connecting, or from a service
+/// too old to name one), else `local` (this fuxx's own run, `native_notify::this_run`).
+pub(crate) fn numbering_run(service: &Service, local: u64) -> Option<u64> {
+    match service {
+        Service::Off => Some(local),
+        Service::Starting => None,
+        Service::On(_) | Service::Lost { .. } => service.instance(),
+    }
+}
+
 impl Service {
     pub(crate) fn client(&self) -> Option<Arc<DaemonClient>> {
         match self {
@@ -183,7 +194,7 @@ impl Workspace {
                 );
                 service_ready(&client, &cx.global::<Appearance>().theme);
                 // Before reopening: a click that opened fuxx is held until that is done.
-                self.listen_for_shows(client.shows(), window, cx);
+                self.listen_for_shows(client.shows(), client.instance(), window, cx);
                 self.service = Service::On(client.clone());
                 self.reopen(client, window, cx);
             }
@@ -576,7 +587,7 @@ impl Workspace {
                 let live: Vec<u64> = live.iter().filter(|s| s.alive).map(|s| s.id).collect();
                 eprintln!("[fuxx] background service: reconnected (pid {})", lost.0);
                 self.reattach_lost(&client, &live, window, cx);
-                self.listen_for_shows(client.shows(), window, cx);
+                self.listen_for_shows(client.shows(), client.instance(), window, cx);
                 self.service = Service::On(client);
                 let ended = self.sessions.items().iter().filter(|s| s.lost).count();
                 self.notice = (ended > 0).then(|| {
@@ -749,10 +760,21 @@ pub(crate) fn probe_service(socket: &Path, within: Duration) -> Probe {
                 Err(e) if daemon_client::respawnable(&e) => Probe::Absent,
                 Err(_) => Probe::NoAnswer,
                 Ok(client) => match client.list() {
-                    Ok(list) => Probe::Found {
-                        instance: client.instance(),
-                        live: list.iter().filter(|s| s.alive).map(|s| s.id).collect(),
-                    },
+                    Ok(list) => {
+                        // A click on the service's banner that opened this fuxx, held for it:
+                        // with "Keep running after quit" off it doesn't show the service's
+                        // sessions, so the click only brought fuxx forward.
+                        if let Ok(id) = client.shows().try_recv() {
+                            eprintln!(
+                                "[fuxx] background service: its banner click about s{id} isn't \
+                                 shown (Keep running after quit is off)"
+                            );
+                        }
+                        Probe::Found {
+                            instance: client.instance(),
+                            live: list.iter().filter(|s| s.alive).map(|s| s.id).collect(),
+                        }
+                    }
                     Err(_) => Probe::NoAnswer,
                 },
             };
@@ -797,7 +819,8 @@ pub(crate) fn wait_ended(client: &DaemonClient, id: u64, within: Duration) -> bo
 #[cfg(test)]
 mod tests {
     use super::{
-        Service, leftover_notice, listed_sessions, open_refusal, same_service, wait_ended,
+        Service, leftover_notice, listed_sessions, numbering_run, open_refusal, same_service,
+        wait_ended,
     };
     use crate::restore::RestoreMode;
 
@@ -867,6 +890,36 @@ mod tests {
         let (live, mode, hold) = listed_sessions(Ok(vec![]), RestoreMode::Agents);
         assert!(live.is_empty() && !hold);
         assert_eq!(mode, RestoreMode::Agents);
+    }
+
+    #[test]
+    fn sessions_are_numbered_by_the_service_that_runs_them_or_by_this_run() {
+        use crate::daemon_client::DaemonClient;
+        use crate::daemon_client::tests::daemon;
+        // Run by this fuxx itself: numbered by this run.
+        assert_eq!(numbering_run(&Service::Off, 5), Some(5));
+        // Not known while connecting.
+        assert_eq!(numbering_run(&Service::Starting, 5), None);
+        // The service's (also once lost: the sessions are still its).
+        let lost = Service::Lost {
+            pid: 9,
+            instance: Some(7),
+        };
+        assert_eq!(numbering_run(&lost, 5), Some(7));
+        let old = Service::Lost {
+            pid: 9,
+            instance: None,
+        };
+        assert_eq!(
+            numbering_run(&old, 5),
+            None,
+            "an older service names no run"
+        );
+        let (_d, path) = daemon("ws-run");
+        let client = DaemonClient::connect(&path).unwrap();
+        let instance = client.instance();
+        assert!(instance.is_some());
+        assert_eq!(numbering_run(&Service::On(client), 5), instance);
     }
 
     #[test]

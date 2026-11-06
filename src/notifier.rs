@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use crate::native_notify::{self, Permission};
+use crate::native_notify::{self, Permission, PostError, Terminal};
 use crate::status::{Status, age_label};
 
 /// Which way a banner goes out.
@@ -22,28 +22,34 @@ pub fn route(bundled: bool, permission: Option<Permission>) -> Route {
 }
 
 /// Show a desktop notification: a native banner when fuxx runs from its app bundle and macOS
-/// allows it, else the `osascript` one. `terminal` is the session (`sN`) it is about, if any.
+/// allows it, else the `osascript` one. `about` is the terminal it is about (with the run that
+/// numbered it), if any.
 ///
 /// Best-effort: failures are swallowed so a notification can never crash or interrupt the app.
-/// It blocks (up to ~2 s asking macOS, ~100 ms for `osascript`), so call it off the UI thread.
-/// A native post that fails falls back to `osascript`: never both, never neither.
+/// It blocks (up to ~2 s reading the permission plus ~2 s for the post, so ~4 s, then ~100 ms
+/// for `osascript`), so call it off the UI thread. A native post that fails is logged and falls
+/// back to `osascript`: never both, never neither.
 ///
 /// Why `osascript` stays as the fallback: on modern macOS (tested on 26.x), the
 /// `NSUserNotification` API that `notify-rust`/`mac-notification-sys` rely on is deprecated and
 /// does not display notifications for an unbundled binary — `show()` succeeds but nothing
 /// appears. `osascript`'s `display notification` goes through an entitled system component and
 /// works without shipping fuxx as a signed `.app` bundle.
-pub fn fire(summary: &str, body: &str, terminal: Option<u64>) {
+pub fn fire(summary: &str, body: &str, about: Option<Terminal>) {
     let bundled = native_notify::is_bundled();
     let permission = if bundled {
         native_notify::permission()
     } else {
         None
     };
-    if route(bundled, permission) == Route::Native
-        && native_notify::post(summary, body, terminal).is_ok()
-    {
-        return;
+    if route(bundled, permission) == Route::Native {
+        match native_notify::post(summary, body, about) {
+            Ok(()) => return,
+            Err(PostError::Unbundled) => {}
+            Err(why) => eprintln!(
+                "[fuxx] notifications: the native banner failed ({why:?}); using osascript"
+            ),
+        }
     }
     fire_script(summary, body);
 }

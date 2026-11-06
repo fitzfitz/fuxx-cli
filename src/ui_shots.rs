@@ -3237,7 +3237,8 @@ fn banner_click_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> W
 /// A click on one of fuxx's banners (M11c Task 2), fed in the way the click delegate feeds it:
 /// through the clicks channel the workspace listens to (the delegate itself only runs from the
 /// app bundle, so it can't run here). From api's workspace:
-/// - a click for gone (closed since its banner) and one for no terminal (a script's banner)
+/// - a click for gone (closed since its banner), one for no terminal (a script's banner) and
+///   one for notes's number from an earlier run of fuxx (numbers start again each run)
 ///   change nothing;
 /// - a click for notes while the saved sessions are reopening shows nothing until they have,
 ///   then (as one with no restore running does at once) docs's workspace, its left pane and
@@ -3303,7 +3304,18 @@ fn banner_click() {
             "banner-click: gone (s{gone}) is closed"
         );
 
-        for (click, what) in [(Some(gone), "a closed terminal"), (None, "no terminal")] {
+        // This workspace runs its sessions itself: this run numbers them.
+        let run = crate::native_notify::this_run();
+        let ours = |id: u64| Some(crate::native_notify::Terminal { run, id });
+        let earlier = Some(crate::native_notify::Terminal {
+            run: run.wrapping_add(1),
+            id: notes,
+        });
+        for (click, what) in [
+            (ours(gone), "a closed terminal"),
+            (None, "no terminal"),
+            (earlier, "notes's number from an earlier run"),
+        ] {
             clicks.unbounded_send(click).expect("send a click");
             cx.run_until_parked();
             assert_eq!(
@@ -3351,7 +3363,7 @@ fn banner_click() {
             ws.update(cx, |ws, _| ws.restoring = true)
         })
         .expect("restoring");
-        clicks.unbounded_send(Some(notes)).expect("send a click");
+        clicks.unbounded_send(ours(notes)).expect("send a click");
         cx.run_until_parked();
         assert_eq!(
             shown(cx, &ws),
@@ -3379,7 +3391,7 @@ fn banner_click() {
             before,
             "banner-click: api's workspace again"
         );
-        clicks.unbounded_send(Some(notes)).expect("send a click");
+        clicks.unbounded_send(ours(notes)).expect("send a click");
         cx.run_until_parked();
         notes_shown(cx, "at once");
 
@@ -3387,7 +3399,9 @@ fn banner_click() {
         let (shows, heard_shows) = futures::channel::mpsc::unbounded();
         cx.update_window(window, |_, window, cx| {
             ws.update(cx, |ws, cx| {
-                ws.listen_for_shows(heard_shows, window, cx);
+                // Numbered by the run the workspace numbers by, as the service's are when it
+                // runs them.
+                ws.listen_for_shows(heard_shows, Some(run), window, cx);
                 let api = ws.sessions.position(|x| x.label() == "api").expect("api");
                 ws.select(api, window, cx);
                 ws.restoring = true;
