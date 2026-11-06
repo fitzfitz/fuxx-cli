@@ -17,7 +17,7 @@ use crate::daemon_client::{self, DaemonClient};
 use crate::groups;
 use crate::layout_model::Model;
 use crate::mux_proto::{self, Create, Progress, SetMeta};
-use crate::restore::{RestoreMode, SavedSession, SavedState};
+use crate::restore::{self, RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::ssh_target::SshTarget;
 use crate::status::Status;
@@ -315,7 +315,8 @@ impl Workspace {
     /// Show the placed sessions in their saved tabs (`saved`): live ones without their screens
     /// yet (fetched when shown, or in the background soon after), restarted ones (`ids`, per
     /// slot) at once. Slots that can't be shown are left out (their panes' neighbours take
-    /// their space); with none at all, one plain session opens.
+    /// their space); with nothing to show (no terminal, and no workspace of pages), one plain
+    /// session opens.
     fn adopt(
         &mut self,
         client: &Arc<DaemonClient>,
@@ -369,7 +370,7 @@ impl Workspace {
             let at = self.sessions.items().len();
             self.sessions.insert(at, session);
         }
-        if self.sessions.is_empty() {
+        if !restore::shows_anything(&model, !self.sessions.is_empty()) {
             eprintln!("[fuxx] restore: no session to show, opening a new one");
             self.open_first(window, cx);
             return;

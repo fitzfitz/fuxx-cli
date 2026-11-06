@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::layout_model::{self, SavedWorkspace};
+use crate::layout_model::{self, Model, SavedWorkspace};
 use crate::presets::Preset;
 use crate::settings::Entry;
 use crate::split_tree::Node;
@@ -153,6 +153,19 @@ impl Default for SavedState {
     }
 }
 
+/// Whether the file has anything to put back: a session, or a workspace (one of pages only
+/// comes back with no terminal, M11b).
+pub fn has_anything(state: &SavedState) -> bool {
+    !state.sessions.is_empty() || !state.workspaces.is_empty()
+}
+
+/// Whether a restore shows anything: a terminal came back (`terminals_back`), or `model` (built
+/// from the file) holds a workspace, as one of pages does with no terminal. When it doesn't, one
+/// plain session opens instead.
+pub fn shows_anything(model: &Model, terminals_back: bool) -> bool {
+    terminals_back || !model.workspaces().is_empty()
+}
+
 /// Pretty JSON with a trailing newline.
 pub fn encode(state: &SavedState) -> String {
     let mut text = serde_json::to_string_pretty(state).unwrap_or_default();
@@ -211,10 +224,92 @@ pub fn launch(saved: &SavedSession, mode: RestoreMode, presets: &[Preset]) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout_model::{SavedPane, SavedTab, SavedWorkspace};
+    use crate::layout_model::{SavedPane, SavedTab, SavedWorkspace, TabKind};
     use crate::presets::builtins;
     use crate::split_tree::Axis;
     use crate::ssh_target::SshTarget;
+
+    /// A version-2 file of two workspaces: "build" shows saved session 0 (a terminal), "docs"
+    /// a page; "build" was focused.
+    fn a_terminal_and_pages() -> SavedState {
+        let workspace = |name: &str, tab| SavedWorkspace {
+            name: Some(name.into()),
+            color: None,
+            pinned: false,
+            layout: Node::Leaf(SavedPane {
+                tabs: vec![tab],
+                active: 0,
+            }),
+            focused: 0,
+        };
+        SavedState {
+            sessions: vec![SavedSession::default()],
+            workspaces: vec![
+                workspace("build", SavedTab::Terminal { session: 0 }),
+                workspace(
+                    "docs",
+                    SavedTab::Browser {
+                        url: Some("https://docs.rs/gpui".into()),
+                    },
+                ),
+            ],
+            active_workspace: Some(0),
+            ..SavedState::default()
+        }
+    }
+
+    /// The one workspace `model` shows, by name, and its focused tab's kind.
+    fn shown(model: &Model) -> Vec<(Option<String>, TabKind)> {
+        model
+            .workspaces()
+            .iter()
+            .map(|w| {
+                let pane = model.pane(w.focused).expect("its pane");
+                let tab = model.tab(pane.active).expect("its tab");
+                (w.name.clone(), tab.kind.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_file_of_pages_only_comes_back_with_its_urls() {
+        // The terminal tab closed before quitting, the page stayed: no session is saved.
+        let mut state = a_terminal_and_pages();
+        state.sessions.clear();
+        state.workspaces.remove(0);
+        state.active_workspace = Some(0);
+        let state = decode(&encode(&state)).expect("it loads");
+        assert!(has_anything(&state), "a workspace of pages is something");
+        let model = Model::from_state(&state, &[]);
+        model.check().unwrap();
+        assert!(shows_anything(&model, false), "no plain session instead");
+        let page = TabKind::Browser {
+            url: Some("https://docs.rs/gpui".into()),
+        };
+        assert_eq!(shown(&model), [(Some("docs".into()), page.clone())]);
+        assert_eq!(model.tab(model.focused_tab().unwrap()).unwrap().kind, page);
+    }
+
+    #[test]
+    fn a_dead_terminals_workspace_goes_and_the_pages_one_comes_back() {
+        let state = a_terminal_and_pages();
+        assert!(has_anything(&state));
+        // Session 0 didn't start again: its workspace goes, the focus goes to the pages'.
+        let model = Model::from_state(&state, &[None]);
+        model.check().unwrap();
+        assert!(shows_anything(&model, false), "no plain session instead");
+        let page = TabKind::Browser {
+            url: Some("https://docs.rs/gpui".into()),
+        };
+        assert_eq!(shown(&model), [(Some("docs".into()), page.clone())]);
+        assert_eq!(model.tab(model.focused_tab().unwrap()).unwrap().kind, page);
+        // A file with nothing in it shows nothing: then one plain session opens.
+        assert!(!has_anything(&SavedState::default()));
+        assert!(!shows_anything(
+            &Model::from_state(&SavedState::default(), &[]),
+            false
+        ));
+    }
 
     fn r(value: &str) -> Entry {
         Entry {

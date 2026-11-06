@@ -579,7 +579,7 @@ impl Workspace {
         if mode == RestoreMode::Off {
             return None;
         }
-        let state = saved.filter(|s| !s.sessions.is_empty())?;
+        let state = saved.filter(restore::has_anything)?;
         // Not off: one per saved session, in order.
         let launches = restore::launches(&state, mode, &cx.global::<Appearance>().presets)
             .into_iter()
@@ -589,8 +589,8 @@ impl Workspace {
     }
 
     /// After the saved sessions were opened (`terminals`: per saved session, the terminal it
-    /// opened as): their workspaces, groups and focus; or one plain session when none could
-    /// start.
+    /// opened as): their workspaces, groups and focus; or one plain session when nothing came
+    /// back (no session could start and no workspace holds a page).
     fn restored(
         &mut self,
         state: SavedState,
@@ -598,7 +598,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.sessions.is_empty() {
+        let model = Model::from_state(&state, terminals);
+        if !restore::shows_anything(&model, !self.sessions.is_empty()) {
             eprintln!("[fuxx] restore: no saved session could start, opening a new one");
             self.open_first(window, cx);
             return;
@@ -608,7 +609,7 @@ impl Workspace {
                 "[fuxx] restore: a session didn't start; its neighbours take its place in its workspace"
             );
         }
-        self.set_model(Model::from_state(&state, terminals));
+        self.set_model(model);
         self.collapsed = groups::collapsed_keys(&state.collapsed, &state.collapsed_hosts);
         // The normal route, so the focused workspace's group opens.
         self.activate(window, cx);
