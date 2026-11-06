@@ -1930,11 +1930,14 @@ fn split_scenes() {
                 focus == 1,
                 "{n}: focus line, right"
             );
-            // The vertical divider, 1 px; the accent 2 px, only when hovered or dragged.
+            // The vertical divider, 1 px; the accent 2 px, only when hovered or dragged. Measured
+            // across at y = 450, in the lower panes: not at 300, where the right column's own
+            // divider (claude over codex, splitting the 600 px pane area) lies along the row,
+            // 299.5–300.5, and adds its width (or not, by how the half point is rasterised).
             let (x0, x1) = (at(ratio) - 4.0, at(ratio) + 5.0);
             let scale = shot.width as f32 / 960.0;
-            let accent = count_along(&shot, dims, ui.accent, 300.0, x0, x1);
-            let plain = count_along(&shot, dims, ui.divider, 300.0, x0, x1);
+            let accent = count_along(&shot, dims, ui.accent, 450.0, x0, x1);
+            let plain = count_along(&shot, dims, ui.divider, 450.0, x0, x1);
             if matches!(scene, "splits-hover" | "splits-drag") {
                 assert_eq!(accent, (2.0 * scale) as usize, "{n}: 2 px accent divider");
             } else {
@@ -2519,12 +2522,23 @@ fn tab_drag_scenes() {
             let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
             let geometry = geometry.borrow().clone();
             if scene == "tab-drag-line" {
-                // The line: 2 px of accent along claude's left edge, mid-height.
-                let claude = geometry[1];
-                let x = f32::from(claude.left()) + 1.0;
-                assert!(is(px_at(x, 13.0), ui.accent), "{n}: the insertion line");
-                // From the top of the bar (the chip hangs below the pointer, at mid-height).
-                assert!(is(px_at(x, 3.0), ui.accent), "{n}: from the top");
+                // The line: 2 px of accent astride claude's left edge (half over api), from 4 px
+                // below the bar's top to 4 px above its bottom; the chip is under the bar.
+                let edge = f32::from(geometry[1].left());
+                for x in [edge - 0.5, edge + 0.5] {
+                    for y in [6.0, 13.0, 20.0] {
+                        assert!(is(px_at(x, y), ui.accent), "{n}: the line at {x},{y}");
+                    }
+                    // Clear of the bar's top (api's accent line ends at the gap) and bottom.
+                    for y in [2.5, 24.0] {
+                        assert!(!is(px_at(x, y), ui.accent), "{n}: line inset at {x},{y}");
+                    }
+                }
+                assert!(
+                    is(px_at(edge - 3.0, 1.0), ui.accent),
+                    "{n}: api's own accent"
+                );
+                assert!(!is(px_at(edge + 1.5, 13.0), ui.accent), "{n}: 2 px wide");
                 // None along api's left edge (the bar's other gaps).
                 let api = geometry[0];
                 let x = f32::from(api.left()) + 1.0;
@@ -2651,14 +2665,32 @@ fn tab_drag_scenes() {
                 "{n}: dropped elsewhere"
             );
 
-            // Dropped where it is (its own gaps): nothing moves, nothing is selected.
+            // A shaky click: pressed, moved 3 px (past GPUI's 2 px drag threshold), released on
+            // the tab itself. It is shown with the keyboard, as a click would be.
+            let from = tab(cx, lp, 1).center();
+            let shaken = from + point(px(3.0), px(0.0));
+            cx.simulate_mouse_down(window, from, left, none);
+            cx.simulate_mouse_move(window, shaken, left, none);
+            assert!(
+                cx.read(|cx| cx.has_active_drag()),
+                "{n}: 3 px starts a drag"
+            );
+            release(cx, shaken);
+            assert_eq!(names(cx, lp)[1], "claude", "{n}: claude stays put");
+            assert_eq!(
+                focused(cx),
+                ("claude".to_string(), true),
+                "{n}: shaky click"
+            );
+
+            // Dropped where it is (its own gaps): nothing moves, and it is shown, as a click.
             let own = point(tab(cx, lp, 2).center().x - px(30.0), px(13.0));
             let from = tab(cx, lp, 2).center();
             drag(cx, window, from, own);
             assert_eq!(cx.read(|cx| ws.read(cx).tab_drop), None, "{n}: no line");
             release(cx, own);
             assert_eq!(names(cx, lp)[2], "codex", "{n}: its own place");
-            assert_eq!(focused(cx).0, "api", "{n}: api still shown");
+            assert_eq!(focused(cx), ("codex".to_string(), true), "{n}: codex shown");
 
             // Reordered: codex between api and claude, shown, with the keyboard, the same
             // terminal.
