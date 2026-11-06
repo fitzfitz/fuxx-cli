@@ -121,6 +121,25 @@ the model, not rewritten. A spike proves the in-pane web view first.
 - [ ] Tests: hide-rule decision, suggestion ranking + search URL, agent targeting; probe extended; ui-shots of the bar
   and suggestions (the page itself is native and won't appear in shots).
 
+### Task 4b: Resizing doesn't make a terminal look busy — ⬜ (added 2026-11-06, your bug report)
+
+- Cause: a resize sends the shell a redraw signal (SIGWINCH); the redrawn prompt arrives as output > 150 ms after the
+  last keystroke, so `StatusTracker::on_output` marks the terminal Working, then it settles to Done (and may notify).
+- `StatusTracker::on_resize(now)` opens a redraw window (`RESIZE_WINDOW` = 500 ms, renewed by every resize while a
+  drag goes on); output inside it changes nothing (no Working, no Done, no notification, no `last_output` bump). Called
+  from both resize paths (in-app terminals in `terminal_view.rs`, background-service terminals in `daemon_session.rs`).
+- [ ] Tests (first): idle + resize + output → still Idle; Waiting + resize + redraw → still Waiting, no repeat
+  notification; output after the window → Working as before; a resize during a live drag keeps extending the window;
+  attention (OSC notifications) inside the window still counts.
+
+### Task 4c: Drag the window by an empty tab bar — ⬜ (added 2026-11-06, your request)
+
+- The empty part of a pane tab bar whose top touches the window's top edge drags the window (double-click zooms, as
+  the titlebar band already does); tabs and the bar's buttons keep their clicks; tab bars lower down (under a
+  horizontal split) don't drag.
+- [ ] Tests: the pure "is this bar at the window top" rule over layouts (single pane, side-by-side, stacked, nested);
+  on-screen check added to Task 8.
+
 ### Task 5: Sidebar rows, pinning, git branch — ⬜
 
 - Rich rows, accent-filled selection, 📌 pinned section + Pin/Unpin in the menu, Needs-input pill; `git_branch.rs`
@@ -133,7 +152,15 @@ the model, not rewritten. A spike proves the in-pane web view first.
   workspace name at the content top.
 - [ ] Tests: notification list model; ui-shots.
 
-### Task 7: Drag a tab between panes — ⬜ (optional; cut if it fights GPUI)
+### Task 7: Drag tabs anywhere — ⬜ (required since 2026-11-06, your request; was optional)
+
+- Drag a tab to reorder it within its pane (an insertion line shows where it lands); into another pane's tab bar (same
+  or another split); or onto a sidebar workspace row (the tab moves into that workspace's focused pane, at the end, and
+  is selected). A pane or workspace emptied by the move closes through the model's cascade. The in-pane page hides
+  while a tab drag is under way (Global Constraints, hide rule (c)). Esc or dropping elsewhere cancels.
+- [ ] Tests: the pure drop-target rule (insertion index from the pointer's x over tab bounds; bar vs sidebar row vs
+  nowhere), `move_tab` across panes and workspaces with cascades (model invariants hold), the terminal keeps its `sN`
+  and keeps running; ui-shots of the insertion line and a highlighted drop row.
 
 ### Task 8: On screen — 👀 ⬜ (batched)
 
