@@ -300,7 +300,7 @@ const CHEVRON_TURN: Duration = Duration::from_millis(120);
 /// The first-run hint card.
 const HINT_TITLE: &str = "Three things to know";
 const HINT_LINES: [&str; 3] = [
-    "⌘T new workspace · ⇧⌘S SSH · ⇧⌘B browser",
+    "⌘N workspace · ⌘T tab · ⇧⌘S SSH · ⇧⌘B browser",
     "Rings: spinning = working, pulsing = needs you, ✓ = done",
     "⇧⌘U jumps to what needs you",
 ];
@@ -1381,7 +1381,7 @@ impl Workspace {
                 )
         };
         let mut items = vec![
-            item(("new-menu", 0), "New Session".into(), "⌘T".into())
+            item(("new-menu", 0), "New Workspace".into(), "⌘N".into())
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.close_new_menu(cx);
                     this.new_session(window, cx)

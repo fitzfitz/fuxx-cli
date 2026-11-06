@@ -89,11 +89,12 @@ use terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
 use workspace::{
     CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
-    LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp, NewSession,
-    NewSessionInFolder, NewSshSession, NextNeedingYou, NextPane, NextSession, NextTab, OpenBrowser,
-    OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession, SelectSession1, SelectSession2,
-    SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7, SelectSession8,
-    SelectSession9, SplitDown, SplitRight, ToggleSidebar, Workspace,
+    LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp,
+    NewSessionInFolder, NewSshSession, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextSession,
+    NextTab, OpenBrowser, OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession,
+    SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6,
+    SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, ToggleSidebar,
+    Workspace,
 };
 
 actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions, Hide]);
@@ -120,6 +121,22 @@ fn edit_menu() -> Menu {
         MenuItem::os_action("Paste", Paste, OsAction::Paste),
         MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
     ])
+}
+
+/// ⌘T (a new tab in the focused pane) and ⌘N (a new workspace).
+fn new_bindings() -> [KeyBinding; 2] {
+    [
+        KeyBinding::new("cmd-t", NewTab, None),
+        KeyBinding::new("cmd-n", NewWorkspace, None),
+    ]
+}
+
+/// The File menu's first two items; the menu shows each one's binding.
+fn new_items() -> [MenuItem; 2] {
+    [
+        MenuItem::action("New Workspace", NewWorkspace),
+        MenuItem::action("New Tab", NewTab),
+    ]
 }
 
 /// The View menu: the sidebar, and the font size (written to the settings file, as Preferences
@@ -192,10 +209,12 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
             QuitAndEndSessions,
         ));
     }
+    let [new_workspace, new_tab] = new_items();
     cx.set_menus([
         Menu::new("fuxx").items(app_items),
         Menu::new("File").items([
-            MenuItem::action("New Session", NewSession),
+            new_workspace,
+            new_tab,
             MenuItem::action("New Session in Folder\u{2026}", NewSessionInFolder),
             MenuItem::action("New SSH Session\u{2026}", NewSshSession),
             MenuItem::submenu(Menu::new("New Agent Session").items(preset_items)),
@@ -425,10 +444,10 @@ fn main() {
     application()
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx: &mut App| {
+            cx.bind_keys(new_bindings());
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-,", OpenPreferences, None),
-                KeyBinding::new("cmd-t", NewSession, None),
                 KeyBinding::new("cmd-o", NewSessionInFolder, None),
                 KeyBinding::new("cmd-shift-s", NewSshSession, None),
                 KeyBinding::new("cmd-shift-b", OpenBrowser, None),
@@ -631,8 +650,10 @@ fn quit_title(keep_running: usize) -> String {
 mod tests {
     use gpui::{MenuItem, OsAction};
 
-    use super::{edit_menu, quit_title, view_menu, window_menu};
+    use super::{edit_menu, new_bindings, new_items, quit_title, view_menu, window_menu};
     use crate::terminal_view::{Copy, Paste};
+    use crate::workspace::{NewTab, NewWorkspace};
+    use gpui::Keystroke;
 
     #[test]
     fn the_edit_menu_hands_its_items_to_the_os() {
@@ -685,6 +706,45 @@ mod tests {
             ["Toggle Sidebar", "Bigger", "Smaller", "Actual Size"]
         );
         assert_eq!(names(&window_menu()), ["Minimize", "Zoom"]);
+    }
+
+    #[test]
+    fn command_t_is_a_new_tab_and_command_n_a_new_workspace() {
+        let bindings = new_bindings();
+        let of = |keys: &str| {
+            let typed = [Keystroke::parse(keys).unwrap()];
+            let hits: Vec<_> = bindings
+                .iter()
+                .filter(|b| b.match_keystrokes(&typed) == Some(false))
+                .collect();
+            assert_eq!(hits.len(), 1, "{keys}");
+            hits[0].action().boxed_clone()
+        };
+        assert!(of("cmd-t").partial_eq(&NewTab));
+        assert!(of("cmd-n").partial_eq(&NewWorkspace));
+    }
+
+    #[test]
+    fn the_file_menu_offers_a_new_workspace_and_a_new_tab() {
+        let items = new_items();
+        let named: Vec<(String, bool, bool)> = items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Action { name, action, .. } => (
+                    name.to_string(),
+                    action.partial_eq(&NewWorkspace),
+                    action.partial_eq(&NewTab),
+                ),
+                _ => panic!("only actions"),
+            })
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("New Workspace".to_string(), true, false),
+                ("New Tab".to_string(), false, true)
+            ]
+        );
     }
 
     #[test]

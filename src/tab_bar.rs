@@ -526,7 +526,12 @@ impl Workspace {
 
     /// A bar's "new terminal tab": a plain terminal at the end of `pane`'s tabs, in the group of
     /// the terminal the pane shows; or, for an SSH one, another session to its host.
-    fn new_terminal_tab(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn new_terminal_tab(
+        &mut self,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let shown = self
             .pane_session(pane)
             .map(|s| (s.id, s.project.clone(), s.ssh.clone()));

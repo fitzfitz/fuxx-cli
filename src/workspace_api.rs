@@ -705,7 +705,7 @@ impl Workspace {
         .detach();
     }
 
-    /// `session.new`: a session like ⌘T / a preset (a workspace of its own), or with `split` a
+    /// `session.new`: a session like ⌘N / a preset (a workspace of its own), or with `split` a
     /// pane like ⌘D beside `of`, or with `tab` a tab in `of`'s pane (M11b).
     /// A bad request is an error now; otherwise the reply goes to `conn` once the session is
     /// open (at once without the background service).
@@ -861,7 +861,7 @@ enum NewPlace {
 }
 
 /// Where `session.new` opens a session, from its `split`, `tab` and whether it names `of`: a
-/// workspace of its own (⌘T), a pane beside `of` (⌘D), or a tab in `of`'s pane (M11b). `of`
+/// workspace of its own (⌘N), a pane beside `of` (⌘D), or a tab in `of`'s pane (M11b). `of`
 /// without the target's caller or focused default needs one of them; both can't be.
 fn new_place(split: Option<Axis>, tab: bool, of: bool) -> Result<NewPlace, ApiError> {
     match (split, tab) {

@@ -66,7 +66,8 @@ use crate::workspace_ssh::{
 actions!(
     workspace,
     [
-        NewSession,
+        NewWorkspace,
+        NewTab,
         NewSessionInFolder,
         NewSshSession,
         OpenBrowser,
@@ -185,6 +186,11 @@ pub(crate) enum At {
 /// Runs once a session has opened (with its id) or failed to (`None`).
 pub(crate) type Opened =
     Box<dyn FnOnce(&mut Workspace, Option<u64>, &mut Window, &mut Context<Workspace>)>;
+
+/// Whether a mouse move with `pressed` held starts the window moving (from a pressed band).
+fn starts_window_move(pressed: Option<MouseButton>) -> bool {
+    pressed == Some(MouseButton::Left)
+}
 
 impl Session {
     /// Its sidebar group: its host (SSH), else its folder.
@@ -1142,6 +1148,16 @@ impl Workspace {
         );
     }
 
+    /// ⌘T: a new terminal tab at the end of the focused pane's bar, as its new-terminal button
+    /// makes one (also when the focused tab is a browser). With no pane (no workspace open) it
+    /// is a new workspace.
+    pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.model.focused_pane() {
+            Some(pane) => self.new_terminal_tab(pane, window, cx),
+            None => self.new_session(window, cx),
+        }
+    }
+
     /// Ask for a folder, then open a session in it. Cancel does nothing.
     pub(crate) fn new_session_in_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -1990,10 +2006,14 @@ impl Workspace {
             .on_mouse_down_out(
                 cx.listener(|this, _: &MouseDownEvent, _, _| this.band_pressed = false),
             )
-            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
-                if this.band_pressed {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _| {
+                // A press whose release was missed must not make a later plain hover move the
+                // window.
+                if this.band_pressed && starts_window_move(event.pressed_button) {
                     this.band_pressed = false;
                     window.start_window_move();
+                } else if event.pressed_button != Some(MouseButton::Left) {
+                    this.band_pressed = false;
                 }
             }))
             .on_click(|event: &ClickEvent, window, _| {
@@ -2184,7 +2204,10 @@ impl Render for Workspace {
             .size_full()
             .bg(hsla(theme.background))
             .key_context("Workspace")
-            .on_action(cx.listener(|this, _: &NewSession, window, cx| this.new_session(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &NewWorkspace, window, cx| this.new_session(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &NewTab, window, cx| this.new_tab(window, cx)))
             .on_action(cx.listener(|this, _: &NewSessionInFolder, window, cx| {
                 this.new_session_in_folder(window, cx)
             }))
@@ -2593,14 +2616,25 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_create, notification_summary, scripting_env, session_env, window_title};
+    use super::{
+        daemon_create, notification_summary, scripting_env, session_env, starts_window_move,
+        window_title,
+    };
     use crate::presets::Preset;
     use crate::pty::apply_env;
     use crate::restore::SavedSession;
+    use gpui::MouseButton;
     use portable_pty::CommandBuilder;
     use std::collections::BTreeMap;
     use std::ffi::OsStr;
     use std::path::Path;
+
+    #[test]
+    fn only_a_held_left_button_starts_a_window_move() {
+        assert!(starts_window_move(Some(MouseButton::Left)));
+        assert!(!starts_window_move(None));
+        assert!(!starts_window_move(Some(MouseButton::Right)));
+    }
 
     #[test]
     fn scripting_variables_follow_whether_this_fuxx_serves_the_socket() {
