@@ -13,7 +13,7 @@ updated: 2026-11-06
 |---|---|
 | **Milestone note** | [[55 - Milestone 11c - Native Notifications]] (the spec) |
 | **Status** | 🟨 Built and reviewed 2026-11-06 (742 tests); on-screen check pending |
-| **Tasks done** | 6 / 7 (Tasks 0, 1, 2, 3, 3b, 5); Task 4 is your check |
+| **Tasks done** | 6 / 8 (Tasks 0, 1, 2, 3, 3b, 5); Task 6 (app icon) added 2026-11-07; Task 4 is your check |
 | **▶ Pick up here** | Task 4: your on-screen check — the list is in [[55 - Milestone 11c - Native Notifications]], "On-screen checklist (pending)" |
 | **Decisions used** | Yours (2026-11-06): extend M11 with native notifications; go. Everything else: AI's call, in note 55 "Settled before planning". |
 | **Needs your eyes** | 👀 Task 0 (clicks) and Task 4 (on screen) |
@@ -176,6 +176,25 @@ Your words: "Change the new tab, new workspace title from the emoji to ╭∩╮
   `"fuxx — ╭∩╮"`; a ui-shot of a new workspace's row and tab showing ╭∩╮ readably (Mocha + Latte); `cargo test`,
   clippy, fmt, full `__ui-shots`.
 - [x] Commit `feat(m11c): new tabs and workspaces are named ╭∩╮`.
+
+### Task 6: The app icon — ⬜ (added 2026-11-07, your request; after the merge, on master by your word)
+
+Your words: "now we already have icons, should we implement the icon on notif, on app bar, etc?" → "yes go with 3d
+cybers. Just update it on master then directly commit on master branch for this work".
+
+- `fuxx.app` gets an icon: the **3D Cyber** logo (`assets/logo/3d-cyber/fuxx-logo-large.png`). macOS then shows it in
+  the Dock, ⌘Tab, Finder, Launchpad, the About window, **notification banners** (today a blank square), System
+  Settings → Notifications and the permission question. (The menu bar never shows an app icon on macOS.)
+- On Apple's icon grid: the logo's visible area (it touches the bottom edge, off-centre) is trimmed, scaled to fit an
+  **824 px** body and centred on a transparent **1024 px** canvas, then exported at 16, 32, 128, 256 and 512 px plus
+  their @2x versions into `packaging/macos/fuxx.icns` with macOS's `iconutil`.
+- `scripts/make-app-icon.py` regenerates the `.icns` (Pillow, as the logo scripts already need); the `.icns` is
+  committed, so building the app needs no Python. `scripts/bundle-mac.sh` copies it to `Contents/Resources/` and
+  `Info.plist` names it (`CFBundleIconFile` = `fuxx`).
+- Unchanged: the browser bar's 🖕 mark (not asked); `cargo run` builds keep the generic Dock icon.
+- [ ] Checks: the script's fit rule (pure: bbox → scaled size and offset, centred, ≤ 824) by a small test; the `.icns`
+  holds all ten sizes (`iconutil -c iconset` round-trip); a built `fuxx.app` has the file and the plist key;
+  `cargo test` unchanged. On screen (you): the Dock, ⌘Tab, a notification banner and System Settings show the logo.
 
 ### Task 4: On screen — 👀 pending (you)
 
