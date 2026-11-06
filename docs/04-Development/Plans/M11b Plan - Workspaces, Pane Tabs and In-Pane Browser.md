@@ -13,8 +13,8 @@ updated: 2026-11-06
 |---|---|
 | **Milestone note** | [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] · input: [[M11b Input - Workspaces, Pane Tabs and In-Pane Browser]] |
 | **Status** | 🟨 Built and reviewed (2026-11-06); on-screen check pending (723 tests) |
-| **Tasks done** | 15 / 17 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b, 7b and 9); Task 6c added (your screenshot); Task 8 is your check |
-| **▶ Pick up here** | Task 6c: footer icons bigger, matching, symmetric (added 2026-11-06). Then Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
+| **Tasks done** | 16 / 17 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b, 6c, 7b and 9); Task 8 is your check |
+| **▶ Pick up here** | Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
 | **Decisions used** | Yours (2026-11-06): the full cmux layout incl. the in-pane browser; row details (branch • folder, Needs-input badge, pinning, accent-filled selection); group headers stay; workspaces only in the sidebar; closing a 2+-terminal workspace asks; "just continue". Everything else: AI's call (spec). |
 | **Needs your eyes** | 👀 Task 8 (batched with M10b, M10c, M11 and the follow-up) |
 
@@ -189,7 +189,7 @@ the model, not rewritten. A spike proves the in-pane web view first.
 - [x] Tests: footer layout/hit rule (pure where possible); the popover still in `Overlay`; ui-shots of the footer and the
   upward popover in Mocha + Latte; the band without 🔔/+.
 
-### Task 6c: Footer icons — bigger, matching, symmetric — ⬜ (added 2026-11-06, your screenshot: "not aligned symmetrically and the icons are too small")
+### Task 6c: Footer icons — bigger, matching, symmetric — ✅ (added 2026-11-06, your screenshot: "not aligned symmetrically and the icons are too small")
 
 Measured at Task 6b's build (ui-shots, 240 px sidebar): + is 11 px, 12 px from the left edge; the 🔔 13 × 12 px; the
 gear a text character "⚙︎" (9 × 10 px), 14 px from the right edge; vertical centres 1 px apart.
@@ -202,7 +202,7 @@ gear a text character "⚙︎" (9 × 10 px), 14 px from the right edge; vertical
   sits a 4 px gap left of the gear.
 - The unseen dot sits on the bigger bell's top right; the 🔔 popover and + menu anchors follow the new button places
   (`footer_buttons`).
-- [ ] Tests: `footer_buttons` (the pure places: + and gear mirror each other at 180 / 240 / 340 px). ui-shots (Mocha +
+- [x] Tests: `footer_buttons` (the pure places: + and gear mirror each other at 180 / 240 / 340 px). ui-shots (Mocha +
   Latte, 180 and 240 px sidebars): each icon's drawn ink is 14–16 px tall; the three vertical centres agree within
   0.5 px; the + ink's left gap equals the gear ink's right gap within 1 px; hover and lit states still light the icon;
   the unseen dot on the bell; the popover / menu edges as before.
@@ -246,7 +246,7 @@ the pointer; no insertion line — the other tabs slide out of the way, as in Gh
 
 ### Task 8: On screen — 👀 pending (batched)
 
-The spec's success check plus Review Focus 1–2 by hand. The full numbered list (67 items with 29a–c from Task 7b, grouped by area) is in
+The spec's success check plus Review Focus 1–2 by hand. The full numbered list (68 items with 29a–c from Task 7b and 47a from Task 6c, grouped by area) is in
 "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]].
 
 ### Task 9: Docs — ✅
@@ -276,6 +276,7 @@ checklist (pending)").
 | 6b 🔔 and + in the footer | d4e2975..6e21d49 | 711 passing; 16 title PNGs looked at | Approved (sonnet), 6 Minor (two folded into the final pass) |
 | Final whole-branch | 3dc3d27..ac6f20a (fix pass 3992e65, eceb6e5, 758da64, 45740ca, ac6f20a) | 715 passing | Ready after fixes (opus): 0 Critical, 2 Important, 3 Minor → one fix pass (opus) → re-review: 7 of 7 addressed, nothing new (sonnet) |
 | 7b Drags feel like picking the tab up (after the final review) | c4dd93f..b84d205 (plan amended 860fe45) | 722, then 723 passing; RED watched for each new check | Needs fixes (opus): 2 Important (the landing rule biased half an item forward, so a shaky drag reordered tabs and rows; a Finder drag hid the last-dragged row), 4 Minor; fix round 1 addressed 4 of 4 (sonnet re-review). Self-contained, so no second whole-branch review (ruling in the ledger) |
+| 6c Footer icons (after the final review) | 85d7c04..adcb4c9 | 723 passing; ink measured: + 14, 🔔 16, gear 14 px, centres equal, gaps 13 / 13 px | Approved (sonnet), 4 Minor (the stale comment fixed in adcb4c9) |
 
 Rulings made during the build are in [[Rulings - M10b M10c M11 (autonomous run)]] (M11b section). The ones that change
 what you see are listed under "Rulings you should confirm" in note 54.
@@ -319,6 +320,7 @@ Left on purpose (none blocks the merge); each is a candidate for a later polish 
   popover shot (added later in the final pass); a long doc-comment line.
 - Task 7: `move_tab` tests are characterisation tests; the scrolled-bar offset in `tab_edges` is tested only through
   the pure function; the act-drag distance is always 8 px.
+- Task 6c: hover is pixel-checked only for the 🔔 (the + and gear share its code); the lit state has no pixel check.
 - Task 7b: Esc mid-drag snaps the tabs back instead of sliding (the slides end with the drag); with Reduce Motion on,
   the slides jump (as the sidebar's slide does); a row's `row_slot` doc comment has one long line.
 - Final: `activate()` also closes the 🔔 popover and the + menu when the app itself moves focus (a background

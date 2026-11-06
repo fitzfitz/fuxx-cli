@@ -22,6 +22,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-06 — M11b Task 6c: footer icons bigger, matching, symmetric (on-screen check pending)
+- **Did:** From your screenshot: the sidebar footer's +, 🔔 and gear were different sizes (11, 13 and 9 px; the gear was
+  a text character) and the + sat 12 px from the left while the gear sat 14 px from the right. Now all three are 16 px
+  line icons drawn like the tab bars' icons, in 28 px buttons, centred at one height, with the + and the gear 13 px
+  from their edges. ui-shots measure this in both themes at two sidebar widths. Review approved; 723 tests pass. App
+  rebuilt at `target/dist/fuxx.app`.
+- **Next:** Task 8, your on-screen check (note 54's list: 68 items; 47a is new).
+
 ### 2026-11-06 — M11b Task 7b: drags feel like picking the tab up (on-screen check pending)
 - **Did:** Your request after the build: while a pane tab or a sidebar row is dragged the pointer is a closed hand, the
   copy stays exactly where you grabbed it, and instead of an insertion line the other tabs (or rows, within their
