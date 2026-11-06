@@ -19,6 +19,8 @@ pub enum Cli {
     Help(String),
     /// M10c spike (hidden): drive an off-screen web view end to end, print one JSON line, exit.
     BrowserProbe,
+    /// M11b spike (hidden): a web view inside an off-screen GPUI window, one JSON line, exit.
+    PaneBrowserProbe,
     /// `fuxx daemon ...`: the background service that keeps sessions (M10a).
     Daemon(DaemonCommand),
     /// Send one request. `stream`: read lines until the reply line or the end (`events`, `wait`).
@@ -358,6 +360,14 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
                 Ok(Cli::BrowserProbe)
             } else {
                 Err("fuxx: usage: fuxx __browser-probe".to_string())
+            };
+        }
+        // M11b spike: hidden, not in USAGE.
+        "__pane-browser-probe" => {
+            return if leading_json == 0 && rest.len() == 1 {
+                Ok(Cli::PaneBrowserProbe)
+            } else {
+                Err("fuxx: usage: fuxx __pane-browser-probe".to_string())
             };
         }
         _ => {}
@@ -829,6 +839,21 @@ mod tests {
             panic!("help didn't parse")
         };
         assert!(!usage.contains("__browser"));
+    }
+
+    #[test]
+    fn the_pane_browser_probe_parses_and_stays_out_of_help() {
+        assert!(matches!(
+            p(&["__pane-browser-probe"]),
+            Ok(Cli::PaneBrowserProbe)
+        ));
+        assert!(p(&["__pane-browser-probe", "--bogus"]).is_err());
+        assert!(p(&["--json", "__pane-browser-probe"]).is_err());
+        assert!(!USAGE.contains("__pane"));
+        let Ok(Cli::Help(usage)) = p(&["help"]) else {
+            panic!("help didn't parse")
+        };
+        assert!(!usage.contains("__pane"));
     }
 
     #[test]

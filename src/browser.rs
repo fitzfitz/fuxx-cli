@@ -41,6 +41,7 @@ mod bar;
 mod probe;
 
 pub use probe::run_probe;
+pub(crate) use probe::serve_probe_pages;
 
 /// A browser window's content size, in points.
 const WINDOW_SIZE: NSSize = NSSize::new(1100.0, 800.0);
@@ -399,7 +400,7 @@ thread_local! {
 /// store, saved on disk, so cookies and logins come back next run. Otherwise the run's one
 /// in-memory store, shared by every window opened while the setting is off: nothing is written
 /// to disk, and it all goes when fuxx quits.
-fn data_store(keep: bool, mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
+pub(crate) fn data_store(keep: bool, mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
     // SAFETY: main thread (the marker); plain WebKit class methods.
     unsafe {
         if keep {
@@ -441,7 +442,7 @@ pub fn forget_saved_data(mtm: MainThreadMarker) -> oneshot::Receiver<()> {
 
 /// Where a script's or screenshot's answer goes: taken by whichever comes first, WebKit's
 /// completion block or the browser closing.
-type Slot<T> = Rc<Cell<Option<oneshot::Sender<Result<T, String>>>>>;
+pub(crate) type Slot<T> = Rc<Cell<Option<oneshot::Sender<Result<T, String>>>>>;
 
 /// A request still waiting for WebKit, whatever its answer's type.
 trait Unanswered {
@@ -505,7 +506,7 @@ fn navigate(view: &WKWebView, page: &BrowserDelegate, url: &str) {
 }
 
 /// Run `script` (an eval script) in `view`; its answer goes to `slot`.
-fn evaluate(view: &WKWebView, script: &str, slot: Slot<Value>) {
+pub(crate) fn evaluate(view: &WKWebView, script: &str, slot: Slot<Value>) {
     let block = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
         // SAFETY: WebKit passes a valid object or nil for each.
         let (result, error) = unsafe { (result.as_ref(), error.as_ref()) };
