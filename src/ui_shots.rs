@@ -212,6 +212,7 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar-button", sidebar_button_scenes),
     ("tabs", tab_scenes),
     ("splits", split_scenes),
+    ("workspaces", workspace_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("panels", panel_scenes),
@@ -1770,6 +1771,94 @@ fn split_scenes() {
             }
             println!("ui-shots: {}", path.display());
         }
+    }
+}
+
+/// The `workspaces` scene's sessions, in the order they open (an axis: split from the one
+/// before).
+const WORKSPACES: [(ShotSession, Option<Axis>); 5] = [
+    (shot("server", WEB, Status::Idle, 0, SHELL_TEXT), None),
+    (shot("agent", WEB, Status::Waiting, 95, CLAUDE_PROMPT), None),
+    (shot("api", API, Status::Idle, 0, SHELL_TEXT), None),
+    (
+        shot("tests", API, Status::Done, 12 * 60, SHELL_TEXT),
+        Some(Axis::Row),
+    ),
+    (
+        shot("codex", API, Status::Working, 32, AGENT_TEXT),
+        Some(Axis::Column),
+    ),
+];
+
+/// M11b: the sidebar lists workspaces. Web's `server` (idle) and `agent` (waiting, its own
+/// workspace), then api: a workspace of three terminals (`api` left, `tests` done top right,
+/// `codex` working bottom right), focused on `api`. In both themes:
+/// - `workspaces`: api's three panes on screen; the sidebar has one row per workspace, api's
+///   with its most urgent terminal's ring (tests: done) and agent's waiting with its question.
+///
+/// Panics unless the sidebar has the two headers and three rows (not five), api's row says
+/// tests' status, the waiting row is 42 px, and the three panes each have a header.
+fn workspace_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                for (s, axis) in &WORKSPACES {
+                    let project = std::path::Path::new(s.project);
+                    ws.open_shot_session(s.name, project, s.text, *axis, window, cx);
+                }
+                for (s, _) in &WORKSPACES {
+                    let i = ws
+                        .sessions
+                        .position(|x| x.label() == s.name)
+                        .expect("opened");
+                    ws.set_status(i, s.status, false, cx);
+                    let session = ws.sessions.get_mut(i).expect("opened");
+                    session.status_since = Instant::now() - Duration::from_secs(s.age);
+                    session.pop = None;
+                }
+                let api = ws.sessions.position(|x| x.label() == "api").expect("api");
+                ws.select(api, window, cx);
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let check = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let n = format!("workspaces-{slug}");
+                assert_eq!(ws.model.workspaces().len(), 3, "{n}: three workspaces");
+                // Web's header, server, agent; api's header, api.
+                assert_eq!(ws.sidebar.scroll.children_count(), 5, "{n}: rows");
+                let height = |i: usize| {
+                    let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
+                    f32::from(b.size.height)
+                };
+                assert_eq!(height(2), 42.0, "{n}: agent's waiting row");
+                assert_eq!(height(4), 28.0, "{n}: api's row");
+                let api = ws.model.focused_workspace().expect("focused");
+                let ring = ws
+                    .rollup_session(api)
+                    .map(|i| ws.sessions.items()[i].status);
+                assert_eq!(ring, Some(Status::Done), "{n}: api's ring is tests'");
+                assert_eq!(ws.header_sessions().len(), 3, "{n}: three panes");
+            });
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with("workspaces", slug, &theme, dims, build, check);
+        println!("ui-shots: {}", path.display());
     }
 }
 
