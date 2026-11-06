@@ -598,6 +598,7 @@ async fn probe_bar(
     check(
         !mark["clickable"].as_bool().unwrap_or(true)
             && !mark["bordered"].as_bool().unwrap_or(true)
+            && !mark["editable"].as_bool().unwrap_or(true)
             && mark["size"] == json!([18.0, 18.0]),
         "the mark",
         &mark,
@@ -833,8 +834,8 @@ fn palette_copies(b: &Browser) -> Result<(), String> {
     Ok(())
 }
 
-/// The bar's mark: whether it can be clicked (an action) or has a bezel, its picture's size in
-/// points, and where a PNG of that picture (at 2×) was saved.
+/// The bar's mark: whether it can be clicked (an action), has a bezel or takes a dropped picture
+/// (editable), its picture's size in points, and where a PNG of that picture (at 2×) was saved.
 fn mark_of(b: &Browser) -> Result<Value, String> {
     let item = bar_item(b, "fuxx.mark")?;
     let view = item.view().ok_or("the mark has no view")?;
@@ -852,6 +853,7 @@ fn mark_of(b: &Browser) -> Result<Value, String> {
     Ok(json!({
         "clickable": item.action().is_some() || image_view.isEnabled() && image_view.action().is_some(),
         "bordered": item.isBordered(),
+        "editable": image_view.isEditable(),
         "size": [size.width, size.height],
         "png": path.display().to_string(),
     }))
