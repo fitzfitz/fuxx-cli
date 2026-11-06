@@ -31,6 +31,7 @@ mod mouse;
 #[allow(dead_code)] // used by the daemon and client from M10a Task 3/4
 mod mux_proto;
 mod name_input;
+mod notification_list;
 mod notifier;
 mod overlay_panel;
 mod pane_browser;
@@ -60,6 +61,7 @@ mod tab_menu;
 mod terminal;
 mod terminal_view;
 mod theme;
+mod title_area;
 #[cfg(feature = "ui-shots")]
 mod ui_shots;
 mod ui_tokens;

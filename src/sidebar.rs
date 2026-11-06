@@ -915,7 +915,7 @@ impl Workspace {
                 }
             })
             .collect();
-        let band = self.render_top_band("sidebar-band", window, cx);
+        let band = self.render_top_band("sidebar-band", None, window, cx);
         let list = div()
             .id("sidebar-rows")
             .flex()
