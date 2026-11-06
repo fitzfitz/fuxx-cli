@@ -25,7 +25,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ### 2026-11-07 — M11c Task 6: the app icon (on master, on-screen check pending)
 - **Did:** Your request after the merge: the 3D Cyber logo (from your logo session) is fuxx's app icon — the Dock,
   ⌘Tab, Finder, notification banners (no more blank square) and System Settings — and the popped-out browser window's
-  toolbar mark instead of 🖕. The logo touched the canvas' bottom edge off-centre, so `scripts/make_app_icon.py` trims
+  toolbar mark instead of 🖕; a `cargo run` build sets the logo as its Dock icon at launch (your follow-up). The logo touched the canvas' bottom edge off-centre, so `scripts/make_app_icon.py` trims
   it onto Apple's icon grid (824 px body in 1024 px) and writes `packaging/macos/fuxx.icns` (10 sizes) and a 64 px mark;
   `bundle-mac.sh` copies the icon in and `Info.plist` names it. Committed straight on master, as you asked. 743 tests
   pass; app rebuilt.

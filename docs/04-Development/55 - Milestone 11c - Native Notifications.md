@@ -103,7 +103,8 @@ old banners still come; allowing it later in System Settings → fuxx banners fr
 - **Default name ╭∩╮** for new tabs and workspaces (Task 3b, your request).
 - **The app icon** (Task 6, 2026-11-07, your request): the 3D Cyber logo on Apple's icon grid in `fuxx.app` — the Dock,
   ⌘Tab, Finder, notification banners and System Settings show it — and as the popped-out browser window's toolbar mark
-  (instead of 🖕). `scripts/make_app_icon.py` regenerates both from the logo.
+  (instead of 🖕); a `cargo run` build sets the same picture as its Dock icon at launch. `scripts/make_app_icon.py`
+  regenerates all three from the logo.
 
 ### Rulings you should confirm
 
@@ -154,6 +155,7 @@ start an agent (or `sleep 5; echo done`-style work) in one tab and switch to ano
     `killall Dock`.)
 17. A fuxx notification banner and System Settings → Notifications → fuxx show the logo.
 18. Pop out a browser tab: the logo sits at the right of its toolbar, sharp, in light and dark.
+18a. `cargo run`: the Dock shows the logo too (not "exec"). Its notifications stay the old "Script Editor" ones.
 
 **The default name (Task 3b)**
 19. A new workspace and a new tab are named **╭∩╮** (sidebar row, tab, window title, ⌘P, `fuxx ls`); it reads well

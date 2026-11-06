@@ -43,6 +43,7 @@ src/
 ├── settings.rs           M6 · read ~/.config/fuxx/config (key = value, includes)
 ├── theme.rs              M6 · Theme (defaults → theme file → your values), built-in themes, UiColors
 ├── fonts.rs              M6 · font family/size/features; bundled icon font registered with macOS
+├── app_icon.rs          M11c · the Dock icon for a build not running from the app package (`cargo run`)
 ├── appearance.rs         M6 · loads all of the above once at startup (GPUI Global)
 │
 ├── grid.rs               M1 · GridSnapshot: a copy of the screen + paint batching
