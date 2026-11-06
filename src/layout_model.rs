@@ -166,14 +166,6 @@ impl Model {
         })
     }
 
-    #[allow(dead_code)] // for the pane tab bars (M11b Task 3)
-    pub fn workspace_of(&self, pane: PaneId) -> Option<WorkspaceId> {
-        self.workspaces
-            .iter()
-            .find(|w| w.panes.iter().any(|p| p.id == pane))
-            .map(|w| w.id)
-    }
-
     /// The tab showing terminal `sN`.
     pub fn terminal_tab(&self, terminal: u64) -> Option<TabId> {
         self.panes()
@@ -766,23 +758,6 @@ impl Model {
         }
     }
 
-    /// Close `pane` and every tab in it; a workspace left with no pane closes, and the focus
-    /// moves as for `close_tab`.
-    #[allow(dead_code)] // for the pane tab bars (M11b Task 3)
-    pub fn close_pane(&mut self, pane: PaneId) -> Option<Closed> {
-        let tabs: Vec<TabId> = self.pane(pane)?.tabs.iter().map(|t| t.id).collect();
-        let mut closed = Closed::default();
-        for tab in tabs {
-            let Some(c) = self.close_tab(tab) else {
-                continue;
-            };
-            closed.tabs.extend(c.tabs);
-            closed.panes.extend(c.panes);
-            closed.workspaces.extend(c.workspaces);
-        }
-        Some(closed)
-    }
-
     /// A sidebar drag: move a workspace to `to` in display order, inside its own run (pinned or
     /// not). False (no change) when `to` is out of range or in the other run.
     pub fn move_workspace_display(&mut self, workspace: WorkspaceId, to: usize) -> bool {
@@ -1258,7 +1233,6 @@ mod tests {
         );
         assert_eq!(m.pane(a.pane).unwrap().active, c.tab);
         assert_eq!(m.locate(b.tab), Some((a.workspace, a.pane)));
-        assert_eq!(m.workspace_of(a.pane), Some(a.workspace));
         assert_eq!(m.add_tab(PaneId(999), term(4)), None);
     }
 
@@ -1358,29 +1332,32 @@ mod tests {
         // Display order: c (pinned), a, b. Closing c focuses a, its next in display order.
         m.set_pinned(c.workspace, true);
         m.focus_workspace(c.workspace);
-        m.close_pane(c.pane).unwrap();
+        m.close_tab(c.tab).unwrap();
         assert_eq!(m.focused_workspace(), Some(a.workspace));
         // A workspace that isn't focused closes: the focus stays.
-        m.close_pane(b.pane).unwrap();
+        m.close_tab(b.tab).unwrap();
         assert_eq!(m.focused_workspace(), Some(a.workspace));
         ok(&m);
     }
 
     #[test]
-    fn closing_every_pane_ends_every_tab_of_a_workspace() {
+    fn closing_every_tab_of_a_workspace_closes_it() {
         let mut m = Model::new();
         let keep = m.new_workspace(0, term(9)).unwrap();
         let a = m.new_workspace(1, term(1)).unwrap();
         let b = m.add_tab(a.pane, web("https://x.test")).unwrap();
         let c = m.split(a.pane, Axis::Row, term(3)).unwrap();
-        let first = m.close_pane(a.pane).unwrap();
-        let last = m.close_pane(c.pane).unwrap();
-        let tabs: BTreeSet<TabId> = first.tabs.iter().chain(&last.tabs).map(|t| t.id).collect();
+        // As closing a workspace does: each of its tabs (`tabs_of`), in turn.
+        let closed: Vec<Closed> = m
+            .tabs_of(a.workspace)
+            .into_iter()
+            .map(|t| m.close_tab(t).unwrap())
+            .collect();
+        let tabs: BTreeSet<TabId> = closed.iter().flat_map(|c| &c.tabs).map(|t| t.id).collect();
         assert_eq!(tabs, BTreeSet::from([a.tab, b.tab, c.tab]));
-        assert_eq!(
-            (first.workspaces, last.workspaces),
-            (vec![], vec![a.workspace])
-        );
+        let workspaces: Vec<WorkspaceId> =
+            closed.iter().flat_map(|c| c.workspaces.clone()).collect();
+        assert_eq!(workspaces, [a.workspace], "once, with its last tab");
         assert_eq!(all_terminals(&m), BTreeSet::from([9]));
         assert_eq!(m.focused_workspace(), Some(keep.workspace));
         ok(&m);
@@ -1942,10 +1919,8 @@ mod tests {
                     }
                     7 => {
                         if let Some(w) = rng.pick(&workspaces) {
-                            let panes: Vec<PaneId> =
-                                m.workspace(w).unwrap().panes.iter().map(|p| p.id).collect();
-                            for p in panes {
-                                let closed = m.close_pane(p).unwrap();
+                            for t in m.tabs_of(w) {
+                                let closed = m.close_tab(t).unwrap();
                                 forget(&closed, &mut live);
                             }
                             assert!(m.workspace(w).is_none());
@@ -2438,35 +2413,29 @@ mod tests {
     }
 
     #[test]
-    fn closing_a_pane_closes_its_tabs_and_cascades() {
+    fn closing_a_panes_last_tab_closes_it_and_then_its_workspace() {
         let mut m = Model::new();
         let a = m.new_workspace(0, term(1)).unwrap();
-        m.add_tab(a.pane, web("https://a.test")).unwrap();
+        let web_a = m.add_tab(a.pane, web("https://a.test")).unwrap();
         let b = m.split(a.pane, Axis::Row, term(2)).unwrap();
-        m.add_tab(b.pane, term(3)).unwrap();
+        let three = m.add_tab(b.pane, term(3)).unwrap();
         let other = m.new_workspace(1, term(4)).unwrap();
         m.focus_pane(b.pane);
-        let closed = m.close_pane(b.pane).unwrap();
+        let first = m.close_tab(three.tab).unwrap();
+        assert_eq!((first.panes, first.workspaces), (vec![], vec![]));
+        let closed = m.close_tab(b.tab).unwrap();
         ok(&m);
-        assert_eq!(
-            closed
-                .tabs
-                .iter()
-                .map(|t| t.kind.clone())
-                .collect::<Vec<_>>(),
-            [term(2), term(3)]
-        );
         assert_eq!((closed.panes, closed.workspaces), (vec![b.pane], vec![]));
         // Its neighbour takes its space and the focus.
         assert_eq!(m.workspace(a.workspace).unwrap().layout, Node::Leaf(a.pane));
         assert_eq!(m.focused_pane(), Some(a.pane));
         // A workspace's last pane: the workspace goes too.
-        let last = m.close_pane(a.pane).unwrap();
+        m.close_tab(web_a.tab).unwrap();
+        let last = m.close_tab(a.tab).unwrap();
         ok(&m);
         assert_eq!(last.workspaces, [a.workspace]);
-        assert_eq!(last.tabs.len(), 2);
         assert_eq!(m.focused_workspace(), Some(other.workspace));
-        assert_eq!(m.close_pane(a.pane), None);
+        assert_eq!(m.close_tab(a.tab), None);
     }
 
     #[test]
