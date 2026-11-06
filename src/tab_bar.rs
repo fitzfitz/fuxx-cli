@@ -203,11 +203,13 @@ const STROKE: f32 = 1.25;
 
 impl Workspace {
     /// `pane`'s tab bar: its tabs (scrolling sideways when they don't fit) and, pinned on the
-    /// right, its buttons. None for an unknown pane.
+    /// right, its buttons. None for an unknown pane. `drags_window`: the bar is at the window's
+    /// top edge, so its empty part (after the last tab) drags the window.
     pub(crate) fn render_tab_bar(
         &self,
         pane: PaneId,
         ui: UiColors,
+        drags_window: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let p = self.model.pane(pane)?;
@@ -238,7 +240,20 @@ impl Workspace {
             .children(
                 tabs.into_iter()
                     .map(|tab| self.render_tab(tab, ui, focused, cx)),
-            );
+            )
+            // What the tabs leave empty; it takes no space once they fill the row.
+            .child({
+                let filler = div()
+                    .id(("pane-tabs-empty", pane.0 as usize))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full();
+                if drags_window {
+                    self.drag_window_by(filler, cx)
+                } else {
+                    filler
+                }
+            });
         let buttons = div()
             .flex()
             .flex_none()

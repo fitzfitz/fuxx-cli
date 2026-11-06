@@ -95,6 +95,24 @@ impl<T: Copy + PartialEq> Node<T> {
         }
     }
 
+    /// The leaves with no pane above them, i.e. whose top edge is the layout's top edge: in a
+    /// stacked split only the first (upper) child's count, in a side-by-side one both sides'.
+    pub fn top_leaves(&self) -> Vec<T> {
+        match self {
+            Node::Leaf(id) => vec![*id],
+            Node::Split {
+                axis: Axis::Column,
+                first,
+                ..
+            } => first.top_leaves(),
+            Node::Split { first, second, .. } => {
+                let mut out = first.top_leaves();
+                out.extend(second.top_leaves());
+                out
+            }
+        }
+    }
+
     pub fn contains(&self, id: T) -> bool {
         match self {
             Node::Leaf(leaf) => *leaf == id,
@@ -423,6 +441,34 @@ mod tests {
         w: 100.0,
         h: 50.0,
     };
+
+    #[test]
+    fn top_leaves_are_the_panes_with_nothing_above_them() {
+        // One pane: it is the top.
+        assert_eq!(Node::Leaf(1).top_leaves(), [1]);
+        // 1 | (2 over 3): the two columns both reach the top, 3 sits under 2.
+        assert_eq!(three().top_leaves(), [1, 2]);
+        // 1 over 2: only 1.
+        let mut stacked = Node::Leaf(1);
+        assert!(stacked.split(1, 2, Axis::Column));
+        assert_eq!(stacked.top_leaves(), [1]);
+        // (1 | 2) over 3: 1 and 2, not 3.
+        let mut t = Node::Leaf(1);
+        assert!(t.split(1, 3, Axis::Column));
+        assert!(t.split(1, 2, Axis::Row));
+        assert_eq!(t.top_leaves(), [1, 2]);
+        // 1 over (2 | 3): only 1, however the lower half is cut.
+        let mut t = Node::Leaf(1);
+        assert!(t.split(1, 2, Axis::Column));
+        assert!(t.split(2, 3, Axis::Row));
+        assert_eq!(t.top_leaves(), [1]);
+        // Nested: ((1 over 2) | 3) over 4 -> 1 and 3.
+        let mut t = Node::Leaf(1);
+        assert!(t.split(1, 4, Axis::Column));
+        assert!(t.split(1, 3, Axis::Row));
+        assert!(t.split(1, 2, Axis::Column));
+        assert_eq!(t.top_leaves(), [1, 3]);
+    }
 
     #[test]
     fn split_keeps_reading_order() {
