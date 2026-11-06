@@ -3,6 +3,11 @@
 //! window resize, hiding under an overlay, a page load and scripts, shortcuts while the page has
 //! the keyboard, and mouse moves; one JSON report line, then it quits.
 //!
+//! Task 4 added what browser tabs rely on: a click in the page is told (`PageEvent::Clicked`),
+//! navigations are told (`Changed`), ⌃Tab in the page reaches GPUI, the keyboard is handed over
+//! and back (AppKit's answers), a page with the keyboard gives it back before it hides, a closed
+//! tab's page leaves the window, and Pop Out moves a live page into a browser window.
+//!
 //! The window is never on screen, so GPUI's display link never runs: the probe draws each frame
 //! itself (`Window::draw`, what the display link calls). Key and mouse events are made up and
 //! handed to the window the way AppKit hands it real ones.
@@ -12,6 +17,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     App, AsyncApp, Bounds, Context, DispatchPhase, FocusHandle, IntoElement, KeyBinding,
     KeyDownEvent, Menu, MenuItem, MouseMoveEvent, Pixels, Point, Render, TitlebarOptions, Window,
@@ -29,12 +35,18 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use serde_json::{Value, json};
 
 use super::{PaneWebView, native_frame};
-use crate::browser::{self, within};
+use crate::browser::{self, BarLook, Browser, PageEvent, within};
 use crate::reduce_motion;
 
 actions!(
     pane_browser_probe,
-    [ProbeClose, ProbeNewTab, ProbeSelect1, ProbeTerminalCopy]
+    [
+        ProbeClose,
+        ProbeNewTab,
+        ProbeSelect1,
+        ProbeTerminalCopy,
+        ProbeNextTab
+    ]
 );
 
 /// The probe gives up and exits with code 2 after this long, whatever is still pending.
@@ -57,6 +69,7 @@ const KEY_T: u16 = 0x11;
 const KEY_1: u16 = 0x12;
 const KEY_C: u16 = 0x08;
 const KEY_X: u16 = 0x07;
+const KEY_TAB: u16 = 0x30;
 
 /// The placeholder before and after its bounds change.
 fn first_place() -> Bounds<Pixels> {
@@ -170,6 +183,8 @@ pub fn run_probe() -> ! {
             KeyBinding::new("cmd-t", ProbeNewTab, None),
             KeyBinding::new("cmd-1", ProbeSelect1, None),
             KeyBinding::new("cmd-c", ProbeTerminalCopy, Some("Terminal")),
+            // As main.rs binds ⌃Tab for a browser tab's own key context.
+            KeyBinding::new("ctrl-tab", ProbeNextTab, Some("PaneBrowser")),
         ]);
         let log = actions.clone();
         cx.on_action(move |_: &ProbeClose, _| log.borrow_mut().push("cmd-w"));
@@ -179,6 +194,8 @@ pub fn run_probe() -> ! {
         cx.on_action(move |_: &ProbeSelect1, _| log.borrow_mut().push("cmd-1"));
         let log = actions.clone();
         cx.on_action(move |_: &ProbeTerminalCopy, _| log.borrow_mut().push("terminal cmd-c"));
+        let log = actions.clone();
+        cx.on_action(move |_: &ProbeNextTab, _| log.borrow_mut().push("ctrl-tab"));
         cx.set_menus([
             Menu::new("fuxx"),
             Menu::new("File").items([
@@ -395,7 +412,10 @@ impl Probe {
             &(&covered, hidden, &uncovered, shown_again),
         )?;
 
-        // 5. A page, and scripts: the page is laid out at the placeholder's size.
+        // 5. A page, and scripts: the page is laid out at the placeholder's size. The page's
+        // events go to a channel, as a browser tab's do.
+        let (events_tx, mut events_rx) = futures::channel::mpsc::unbounded::<PageEvent>();
+        self.web.listen(events_tx);
         self.web.page().load(&home);
         let deadline = Instant::now() + SETTLE_LIMIT;
         loop {
@@ -544,6 +564,151 @@ impl Probe {
         self.click(&ns_window, &content, over_page)?;
         let after_click_on_page = responder_name(&ns_window, web, &gpui_view);
 
+        // 8. What browser tabs rely on (Task 4).
+        let mut events = Vec::new();
+        while let Ok(event) = events_rx.try_recv() {
+            events.push(format!("{event:?}"));
+        }
+        let navigation_told = events.iter().any(|e| e == "Changed");
+        check(navigation_told, "the page's navigations are told", &events)?;
+        // In a key window AppKit gives a click to the view its hit test finds; this window is
+        // never key, so its first click only activates it (as the spike found). Which view gets
+        // a click on the page, and that view's `mouseDown:` as AppKit would send it.
+        let clicked_by_window = events.iter().any(|e| e == "Clicked");
+        let superview = unsafe { content.superview() };
+        let in_frame = content.convertPoint_toView(over_page, superview.as_deref());
+        let hit_view = content.hitTest(in_frame);
+        let hit_is_page_view = hit_view.as_deref().is_some_and(|v| std::ptr::eq(v, web));
+        let hit_class = hit_view.as_deref().map(class_name);
+        let down = mouse_event(&ns_window, &content, NSEventType::LeftMouseDown, over_page)?;
+        let up = mouse_event(&ns_window, &content, NSEventType::LeftMouseUp, over_page)?;
+        let view: &NSResponder = web;
+        view.mouseDown(&down);
+        view.mouseUp(&up);
+        let clicked_flag = self.web.clicked();
+        ex.timer(LOAD_POLL).await;
+        let mut clicked_told = false;
+        while let Ok(event) = events_rx.try_recv() {
+            clicked_told |= event == PageEvent::Clicked;
+        }
+        check(
+            hit_is_page_view && clicked_flag && clicked_told,
+            "a click on the page is the page view's, and is told",
+            &(&hit_class, clicked_flag, clicked_told),
+        )?;
+        self.web.settle_click();
+        // The keyboard over to the page and back, as a browser tab hands it.
+        let took = self.web.take_keyboard();
+        let page_has_it = self.web.has_keyboard();
+        let gave = self.web.give_keyboard_back();
+        let gpui_has_it = first_responder_is(&ns_window, &gpui_view);
+        check(
+            took && page_has_it && gave && gpui_has_it,
+            "the keyboard goes to the page and back",
+            &(took, page_has_it, gave, gpui_has_it),
+        )?;
+        // ⌃Tab with the page holding the keyboard: AppKit's own route (the window's
+        // `sendEvent:`), then the page view's `keyDown:` on its own. Neither types into the page.
+        let field_before = within(
+            self.web.page().eval(
+                "document.getElementById('name').focus(), document.getElementById('name').value",
+            ),
+            ANSWER_LIMIT,
+            &ex,
+        )
+        .await?;
+        self.web.take_keyboard();
+        let ctrl_tab = |kind| {
+            key_event_of(
+                &ns_window,
+                kind,
+                "\t",
+                KEY_TAB,
+                NSEventModifierFlags::Control,
+            )
+        };
+        let before = self.actions.borrow().len();
+        ns_window.sendEvent(&*ctrl_tab(NSEventType::KeyDown)?);
+        ns_window.sendEvent(&*ctrl_tab(NSEventType::KeyUp)?);
+        let by_window: Vec<&str> = self.actions.borrow()[before..].to_vec();
+        let before = self.actions.borrow().len();
+        let view: &NSResponder = web;
+        view.keyDown(&*ctrl_tab(NSEventType::KeyDown)?);
+        let by_page_view: Vec<&str> = self.actions.borrow()[before..].to_vec();
+        ex.timer(RESEND_WAIT).await;
+        let field_after = within(
+            self.web
+                .page()
+                .eval("document.getElementById('name').value"),
+            ANSWER_LIMIT,
+            &ex,
+        )
+        .await?;
+        check(
+            by_page_view == ["ctrl-tab"] && field_after == field_before,
+            "⌃Tab in the page reaches GPUI, not the page",
+            &(&by_window, &by_page_view, &field_before, &field_after),
+        )?;
+        // A page holding the keyboard gives it back to GPUI's view before it hides.
+        self.web.take_keyboard();
+        self.web.hide();
+        let hidden_gave_back = first_responder_is(&ns_window, &gpui_view) && web.isHidden();
+        check(
+            hidden_gave_back,
+            "hiding gives the keyboard back first",
+            &responder_name(&ns_window, web, &gpui_view),
+        )?;
+        // Pop Out: a second page, loaded, moved whole into a browser window.
+        let other = PaneWebView::new(false, self.mtm);
+        other.attach(&content, &gpui_view);
+        other.route_events_to(&gpui_view);
+        let second = format!("{home}two");
+        other.page().load(&second);
+        let deadline = Instant::now() + SETTLE_LIMIT;
+        while other.page().state().loading || other.page().state().url != second {
+            check(
+                Instant::now() < deadline,
+                "the second page never loaded",
+                &second,
+            )?;
+            ex.timer(LOAD_POLL).await;
+        }
+        let marked = within(other.page().eval("window.fuxxMark = 42"), ANSWER_LIMIT, &ex).await?;
+        let other_view: Retained<NSView> = Retained::from(other.view() as &NSView);
+        let page = other.into_page();
+        let left_window = other_view.window().is_none();
+        let look = BarLook {
+            dark: true,
+            accent: Rgb {
+                r: 137,
+                g: 180,
+                b: 250,
+            },
+            address_bar: true,
+        };
+        let popped = Browser::adopt(page, "probe", &look, self.mtm);
+        let popped_url = popped.state().url;
+        // The same page, not loaded again: what its script set is still there.
+        let still_marked = within(popped.eval("window.fuxxMark"), ANSWER_LIMIT, &ex).await?;
+        let in_browser_window = other_view
+            .window()
+            .is_some_and(|w| !std::ptr::eq(&*w, &*ns_window));
+        check(
+            marked == json!(42)
+                && left_window
+                && popped_url == second
+                && still_marked == json!(42)
+                && in_browser_window,
+            "Pop Out moves the live page into a browser window",
+            &(left_window, &popped_url, &still_marked, in_browser_window),
+        )?;
+        drop(popped);
+        // A closed tab's page leaves the window at once (and stops), whoever still holds it.
+        self.web.remove();
+        let removed =
+            web.window().is_none() && !content.subviews().iter().any(|v| std::ptr::eq(&*v, web));
+        check(removed, "a closed tab's page leaves the window", &removed)?;
+
         Ok(json!({
             "view_order": order,
             "content_view_flipped": content.isFlipped(),
@@ -592,6 +757,21 @@ impl Probe {
                 "keyboard_after_click_on_page": after_click_on_page,
                 "window_visible": ns_window.isVisible(),
                 "window_key": ns_window.isKeyWindow(),
+            },
+            "browser_tab": {
+                "navigation_told": navigation_told,
+                "click": {
+                    "by_window_sendevent": clicked_by_window,
+                    "hit_view": hit_class,
+                    "hit_is_page_view": hit_is_page_view,
+                    "page_view_mouse_down_told": clicked_told,
+                    "clicked_flag": clicked_flag,
+                },
+                "keyboard": { "took": took, "page_had_it": page_has_it, "gave_back": gave, "gpui_has_it": gpui_has_it },
+                "ctrl_tab": { "by_window": by_window, "by_page_view": by_page_view, "page_field_unchanged": field_after == field_before },
+                "hide_gives_keyboard_back": hidden_gave_back,
+                "pop_out": { "left_fuxx_window": left_window, "url_kept": popped_url == second, "page_state_kept": still_marked == json!(42), "in_browser_window": in_browser_window },
+                "closed_page_removed": removed,
             },
             "ms": started.elapsed().as_millis() as u64,
         }))
