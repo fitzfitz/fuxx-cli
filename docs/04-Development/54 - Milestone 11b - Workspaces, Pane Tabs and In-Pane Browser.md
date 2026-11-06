@@ -46,7 +46,11 @@ where each workspace is (git branch and folder) and which one needs you.
 - ⌘D / ⇧⌘D split the focused pane (the new pane gets one terminal tab). ⌘W closes the focused tab; closing a pane's last
   tab closes the pane; closing a workspace's last pane closes the workspace.
 - Switching tabs: click; ⌃Tab / ⌃⇧Tab within the focused pane (AI's call).
-- Drag a tab to another pane's tab bar to move it (AI's call: nice-to-have, last task, may be cut if it fights GPUI).
+- **Drag tabs anywhere** (yours, 2026-11-06): reorder within a pane, drop into another pane's tab bar, or drop onto a
+  sidebar workspace to move the tab there. A pane or workspace left empty closes.
+- **The empty part of a tab bar at the window's top drags the window** (yours, 2026-11-06); double-click zooms.
+- **Resizing doesn't make a terminal look busy** (your bug report, 2026-11-06): a shell redrawing its prompt after a
+  resize no longer counts as work.
 
 ### The browser in a pane
 
