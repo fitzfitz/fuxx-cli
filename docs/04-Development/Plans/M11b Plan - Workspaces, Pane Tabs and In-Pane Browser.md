@@ -146,8 +146,8 @@ the model, not rewritten. A spike proves the in-pane web view first.
   focused tab is a browser tab; with no workspace open it makes a new workspace. **⌘N** (unbound until now) makes a new
   workspace (what ⌘T did). Menus show both ("New Workspace ⌘N", "New Tab ⌘T"); the sidebar footer's "+ New", the
   title-area +, hints, tooltips and Help text follow; Preferences / scripting unchanged.
-- [ ] Tests: the binding table (⌘T → new tab action, ⌘N → new workspace action); new tab lands in the focused pane after
-  its active tab and is selected; ⌘T with no workspace makes one; menu titles.
+- [ ] Tests: the binding table (⌘T → new tab action, ⌘N → new workspace action); new tab lands in the focused pane at the
+  end of its bar (as the bar's new-terminal button) and is selected; ⌘T with no workspace makes one; menu titles.
 
 ### Task 4e: Browser shortcuts inside a page — ⬜ (added 2026-11-06, your answer to review #14)
 
