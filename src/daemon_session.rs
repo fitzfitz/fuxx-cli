@@ -1555,6 +1555,27 @@ mod tests {
     }
 
     #[test]
+    fn the_redraw_after_a_resize_is_not_work() {
+        let s = spawn("stty -echo; sleep 30");
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        s.input(b"go");
+        s.resize(TermDims { cols: 50, rows: 12 }, CellPx::default());
+        // The child's redraw for the new size, past the echo window but inside the resize one.
+        let out_at = Instant::now() + Duration::from_millis(300);
+        s.state.lock().output(b"prompt\r\n", 0, out_at);
+        assert_eq!(s.info().status, "idle");
+        assert!(
+            !std::iter::from_fn(|| rx.try_recv().ok()).any(|f| matches!(f, Frame::Status { .. })),
+            "a redraw changed the status"
+        );
+        // Past the window, output is work again.
+        let later = out_at + crate::status::RESIZE_WINDOW;
+        s.state.lock().output(b"busy\r\n", 0, later);
+        assert_eq!(s.info().status, "working");
+    }
+
+    #[test]
     fn title_bell_and_exit_go_out_as_frames() {
         let s = spawn(r"stty -echo; read go; printf '\033]2;hello\007'; printf '\007'; read go");
         let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
