@@ -21,10 +21,10 @@ use std::time::Instant;
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Entity, EntityId, Focusable, Hsla,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point,
-    ScrollHandle, SharedString, StyleRefinement, Subscription, Task, Window, WindowControlArea,
-    actions, canvas, div, prelude::*, px,
+    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, EntityId, Focusable,
+    Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels,
+    Point, ScrollHandle, SharedString, Stateful, StyleRefinement, Subscription, Task, Window,
+    WindowControlArea, actions, canvas, div, prelude::*, px,
 };
 
 use crate::adopt::{self, Probe};
@@ -1844,6 +1844,7 @@ impl Workspace {
         &self,
         colors: PaneColors,
         ui: UiColors,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let active = self.model.focused_pane()?;
@@ -1894,10 +1895,17 @@ impl Workspace {
         });
         // Each pane's tab bar (outside the cached terminal, so a mark or a hover redraws only
         // the bar), drawn first: it needs the listeners `cx` makes.
+        // The bars at the window's top edge also drag the window (not in full screen, which has
+        // no title bar to move).
+        let top = if window.is_fullscreen() {
+            Vec::new()
+        } else {
+            tree.top_leaves()
+        };
         let bars: RefCell<HashMap<PaneId, AnyElement>> = RefCell::new(
             tree.leaves()
                 .into_iter()
-                .filter_map(|id| Some((id, self.render_tab_bar(id, ui, cx)?)))
+                .filter_map(|id| Some((id, self.render_tab_bar(id, ui, top.contains(&id), cx)?)))
                 .collect(),
         );
         self.tab_scroll
@@ -1960,34 +1968,17 @@ impl Workspace {
         .size_full()
     }
 
-    /// The window's top band, the traffic lights' place: pressing it and moving drags the
-    /// window, and a double-click does what the macOS setting "Double-click a window's title bar
-    /// to" says. In full screen, which has no traffic lights, it is an empty strip that holds
-    /// the sidebar button, and moves nothing.
-    pub(crate) fn render_top_band(
+    /// `area` made a place to drag the window by: pressing it and moving drags the window, a
+    /// double-click does what the macOS setting "Double-click a window's title bar to" says.
+    /// As Zed's own title bar does, the move starts on the first mouse move after a press, so a
+    /// plain click (or double-click) stays a click. Shared by the top band and the pane tab
+    /// bars' empty parts, so they can't drift apart.
+    pub(crate) fn drag_window_by(
         &self,
-        id: &'static str,
-        window: &Window,
+        area: Stateful<Div>,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if window.is_fullscreen() {
-            return Some(
-                div()
-                    .id(id)
-                    .flex_none()
-                    .w_full()
-                    .h(px(TOP_BAND))
-                    .into_any_element(),
-            );
-        }
-        // As Zed's own title bar does: the move starts on the first mouse move after a press,
-        // so a plain click (or double-click) stays a click.
-        let band = div()
-            .id(id)
-            .flex_none()
-            .w_full()
-            .h(px(TOP_BAND))
-            .window_control_area(WindowControlArea::Drag)
+    ) -> Stateful<Div> {
+        area.window_control_area(WindowControlArea::Drag)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, _| this.band_pressed = true),
@@ -2009,7 +2000,34 @@ impl Workspace {
                 if event.click_count() == 2 {
                     window.titlebar_double_click();
                 }
-            });
+            })
+    }
+
+    /// The window's top band, the traffic lights' place: pressing it and moving drags the
+    /// window, and a double-click does what the macOS setting "Double-click a window's title bar
+    /// to" says. In full screen, which has no traffic lights, it is an empty strip that holds
+    /// the sidebar button, and moves nothing.
+    pub(crate) fn render_top_band(
+        &self,
+        id: &'static str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if window.is_fullscreen() {
+            return Some(
+                div()
+                    .id(id)
+                    .flex_none()
+                    .w_full()
+                    .h(px(TOP_BAND))
+                    .into_any_element(),
+            );
+        }
+        let band = self
+            .drag_window_by(div().id(id), cx)
+            .flex_none()
+            .w_full()
+            .h(px(TOP_BAND));
         Some(band.into_any_element())
     }
 
@@ -2282,7 +2300,7 @@ impl Render for Workspace {
                             .w_full()
                             .overflow_hidden()
                             .child(self.render_pane_area(cx))
-                            .children(self.render_panes(colors, ui, cx)),
+                            .children(self.render_panes(colors, ui, window, cx)),
                     ),
             )
             .children(sliding_sidebar)
