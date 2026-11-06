@@ -12,6 +12,7 @@ use gpui::{Context, Entity, EntityId, Focusable, Task, Window, prelude::*};
 
 use crate::api_events::Event;
 use crate::host_picker::{HostPicker, HostPickerEvent};
+use crate::layout_model::TabKind;
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::ssh_target::{self, Effective, SshTarget};
@@ -55,8 +56,8 @@ pub(crate) struct Disconnected {
     auto: bool,
 }
 
-/// Where an SSH session opens: a layout of its own, a pane beside (Row) or under (Column)
-/// session `of`, or in place of session `index` (a reconnect: same pane, name and group).
+/// Where an SSH session opens: a workspace of its own, a pane beside (Row) or under (Column)
+/// session `of`'s, or in place of session `index` (a reconnect: same tab, name and group).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
     New,
@@ -246,14 +247,16 @@ pub(crate) fn check_restored(launch: &mut Launch) -> Result<(), String> {
     Ok(())
 }
 
-/// `launches` without the SSH ones whose saved host is refused (`check_restored`), and why
-/// each of those was.
-pub(crate) fn checked_launches(launches: Vec<Launch>) -> (Vec<Launch>, Vec<String>) {
+/// `launches` (each with its place in the sessions file) without the SSH ones whose saved host
+/// is refused (`check_restored`), and why each of those was.
+pub(crate) fn checked_launches(
+    launches: Vec<(usize, Launch)>,
+) -> (Vec<(usize, Launch)>, Vec<String>) {
     let mut refused = Vec::new();
     let kept = launches
         .into_iter()
-        .filter_map(|mut launch| match check_restored(&mut launch) {
-            Ok(()) => Some(launch),
+        .filter_map(|(i, mut launch)| match check_restored(&mut launch) {
+            Ok(()) => Some((i, launch)),
             Err(why) => {
                 refused.push(why);
                 None
@@ -317,9 +320,10 @@ pub(crate) fn ssh_refusal(
 }
 
 impl Workspace {
-    /// A reconnected SSH session takes the place of the held one (by view `old`): its row, its
-    /// pane in the layout, its name, note and progress. Scripts see the old one close and the
-    /// new one open in the same row. False if `old` is gone (its pane was closed meanwhile).
+    /// A reconnected SSH session takes the place of the held one (by view `old`): its tab (so
+    /// its pane and workspace), its name, note and progress. Scripts see the old one close and
+    /// the new one open in the same place. False if `old` is gone (its tab was closed
+    /// meanwhile).
     pub(crate) fn replace_session(
         &mut self,
         old: EntityId,
@@ -342,23 +346,9 @@ impl Workspace {
         self.check_waits(&[old_id], cx);
         // The browser follows the session, as its row and name do.
         self.browsers.rekey(old_id, session_id);
-        let new = view.entity_id();
-        let swap = |v: EntityId| if v == old { new } else { v };
-        self.layouts = self.layouts.iter().map(|t| t.map(&swap)).collect();
-        // A rename of this session that is open goes on, for the new view.
-        if let Some((v, _)) = self.renaming.as_mut()
-            && *v == old
-        {
-            *v = new;
-        }
-        if self.dragging.as_ref().is_some_and(|(v, _)| *v == old) {
-            self.dragging = None;
-        }
-        // And its tab menu, if open.
-        if let Some(menu) = self.sidebar.tab_menu.as_mut()
-            && menu.view == old
-        {
-            menu.view = new;
+        // The tab shows the new terminal; the old one ends as its view is dropped below.
+        if let Some(tab) = self.model.terminal_tab(old_id) {
+            self.model.set_kind(tab, TabKind::Terminal(session_id));
         }
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
         if take_focus {
@@ -383,7 +373,6 @@ impl Workspace {
             progress: session.progress.take(),
             lost: false,
             ssh: saved.ssh,
-            color: session.color,
             disconnected: None,
             retries: session.retries,
             opened_at: Instant::now(),
@@ -434,12 +423,12 @@ impl Workspace {
                 return not_opened(self, then, window, cx);
             }
         };
-        let view_of = |i: usize| self.sessions.items().get(i).map(|s| s.view.entity_id());
         let (at, name) = match place {
             Place::New => (At::New, None),
-            Place::Split { of, axis } => {
-                (view_of(of).map_or(At::New, |v| At::Split(axis, v)), None)
-            }
+            Place::Split { of, axis } => (
+                self.pane_of(of).map_or(At::New, |p| At::Split(axis, p)),
+                None,
+            ),
             Place::Replace(index) => match self.sessions.items().get(index) {
                 Some(old) => (At::Replace(old.view.entity_id()), old.name.clone()),
                 None => return not_opened(self, then, window, cx),
@@ -800,14 +789,20 @@ mod tests {
         assert!(target.tmux_name.is_some(), "named");
         assert!(check_restored(&mut ssh_launch("-oProxyCommand=x")).is_err());
         let (kept, refused) = checked_launches(vec![
-            Launch::default(),
-            ssh_launch("-oProxyCommand=x"),
-            ssh_launch("devbox"),
-            ssh_launch("dev\nbox"),
+            (0, Launch::default()),
+            (1, ssh_launch("-oProxyCommand=x")),
+            (2, ssh_launch("devbox")),
+            (3, ssh_launch("dev\nbox")),
         ]);
         assert_eq!(kept.len(), 2);
-        assert_eq!(kept[0], Launch::default(), "a local session is untouched");
-        assert_eq!(kept[1].saved.ssh.as_ref().unwrap().host, "devbox");
+        assert_eq!(
+            kept[0],
+            (0, Launch::default()),
+            "a local session is untouched"
+        );
+        // Each keeps its place in the sessions file.
+        assert_eq!(kept[1].0, 2);
+        assert_eq!(kept[1].1.saved.ssh.as_ref().unwrap().host, "devbox");
         assert_eq!(refused.len(), 2);
     }
 

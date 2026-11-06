@@ -1,17 +1,19 @@
-//! Sidebar rows as tabs (M11): a row's right-click menu (Close Tab, Close Other Tabs, Close Tabs
-//! to the Right, Show All Tabs, Rename Tab…, Tab Color) and the closes it starts. Closing one
-//! session is like ⌘W; closing several always asks first, in a native sheet.
+//! Sidebar rows as tabs (M11; M11b: a row is a workspace): a row's right-click menu (Close
+//! Workspace, Close Other Workspaces, Close Workspaces Below, Show All Workspaces, Rename
+//! Workspace…, Workspace Color) and the closes it starts. Closing one workspace ends all its
+//! terminals and asks first when it has two or more (`asks_to_close`); closing several always
+//! asks, in a native sheet.
 //!
-//! `closes`, `enabled` and `confirm_text` are the pure model; the rest opens, draws and acts on
-//! the menu. It is one of the overlays (one open at a time): it opens at the pointer, holds the
+//! `closes`, `enabled`, `asks_to_close`, `confirm_text` and `confirm_workspace_text` are the pure
+//! model; the rest opens, draws and acts on the menu. It is one of the overlays (one open at a time): it opens at the pointer, holds the
 //! keyboard so Escape closes it, and a click anywhere else (or any choice) closes it too.
 
 use gpui::{
-    AnyElement, ClickEvent, Context, EntityId, FocusHandle, MouseButton, MouseDownEvent,
-    PathBuilder, Pixels, Point, PromptLevel, Window, actions, anchored, canvas, div, point,
-    prelude::*, px,
+    AnyElement, ClickEvent, Context, FocusHandle, MouseButton, MouseDownEvent, PathBuilder, Pixels,
+    Point, PromptLevel, Window, actions, anchored, canvas, div, point, prelude::*, px,
 };
 
+use crate::layout_model::WorkspaceId;
 use crate::overlay_panel;
 use crate::status::Status;
 use crate::tab_color::TabColor;
@@ -33,14 +35,14 @@ const SWATCH_GAP: f32 = 6.0;
 /// How far from the window's edges the menu keeps.
 const EDGE_MARGIN: f32 = 8.0;
 
-/// An open tab menu: whose row (by view), where it opened, and the focus it holds.
+/// An open row menu: whose row (its workspace), where it opened, and the focus it holds.
 pub(crate) struct TabMenu {
-    pub view: EntityId,
+    pub workspace: WorkspaceId,
     at: Point<Pixels>,
     focus: FocusHandle,
 }
 
-/// What the menu can do to its session.
+/// What the menu can do to its workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabAction {
     Close,
@@ -51,10 +53,10 @@ pub enum TabAction {
     Color(Option<TabColor>),
 }
 
-/// The sessions (by place in the list of `len`) that `action` from session `at`'s menu closes:
-/// itself; every other one; or the rows shown below it (`shown`: the sessions the sidebar has a
-/// row for, in order; those folded in a closed group have none and stay). None for the actions
-/// that close nothing.
+/// The workspaces (by place in the sidebar's `len`) that `action` from workspace `at`'s menu
+/// closes: itself; every other one; or the rows shown below it (`shown`: the workspaces the
+/// sidebar has a row for, in order; those folded in a closed group have none and stay). None for
+/// the actions that close nothing.
 pub fn closes(action: TabAction, shown: &[usize], len: usize, at: usize) -> Vec<usize> {
     match action {
         TabAction::Close => vec![at],
@@ -67,8 +69,8 @@ pub fn closes(action: TabAction, shown: &[usize], len: usize, at: usize) -> Vec<
     }
 }
 
-/// Whether `action` can be chosen from session `at`'s menu (of `len` sessions, `shown` as in
-/// `closes`): Close Other Tabs needs another session, Close Tabs to the Right a row below it.
+/// Whether `action` can be chosen from workspace `at`'s menu (of `len`, `shown` as in `closes`):
+/// Close Other Workspaces needs another workspace, Close Workspaces Below a row below it.
 pub fn enabled(action: TabAction, shown: &[usize], len: usize, at: usize) -> bool {
     match action {
         TabAction::CloseOthers | TabAction::CloseToRight => {
@@ -78,29 +80,50 @@ pub fn enabled(action: TabAction, shown: &[usize], len: usize, at: usize) -> boo
     }
 }
 
-/// The confirm sheet for closing `count` sessions, `busy` of them with an agent still working or
-/// waiting: its message, and a line about the busy ones when there are any.
+/// Whether closing one workspace of `terminals` terminals asks first: with two or more (a
+/// single tab or pane closes at once, as ⌘W does).
+pub fn asks_to_close(terminals: usize) -> bool {
+    terminals >= 2
+}
+
+/// The confirm sheet for closing `count` workspaces, `busy` of their terminals with an agent
+/// still working or waiting: its message, and a line about the busy ones when there are any.
 pub fn confirm_text(count: usize, busy: usize) -> (String, Option<String>) {
-    let plural = |n: usize, one: &str, many: &str| {
-        if n == 1 {
-            one.to_string()
-        } else {
-            many.to_string()
-        }
-    };
-    let message = format!("Close {count} {}?", plural(count, "session", "sessions"));
-    let detail = (busy > 0).then(|| {
+    let message = format!(
+        "Close {count} {}?",
+        plural(count, "workspace", "workspaces")
+    );
+    (message, busy_line(busy))
+}
+
+/// The confirm sheet for closing one workspace of `terminals` terminals, `busy` as in
+/// `confirm_text`.
+pub fn confirm_workspace_text(terminals: usize, busy: usize) -> (String, Option<String>) {
+    let message = format!(
+        "Close workspace with {terminals} {}?",
+        plural(terminals, "terminal", "terminals")
+    );
+    (message, busy_line(busy))
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 { one } else { many }.to_string()
+}
+
+/// The sheet's line about the busy agents, when there are any.
+fn busy_line(busy: usize) -> Option<String> {
+    (busy > 0).then(|| {
         let who = plural(busy, "agent is", "agents are");
         format!("{busy} {who} still working or waiting.")
-    });
-    (message, detail)
+    })
 }
 
 impl Workspace {
-    /// Right-click on `view`'s row: its menu opens at `at` (the pointer) and takes the keyboard.
+    /// Right-click on a workspace's row: its menu opens at `at` (the pointer) and takes the
+    /// keyboard.
     pub(crate) fn open_tab_menu(
         &mut self,
-        view: EntityId,
+        workspace: WorkspaceId,
         at: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -109,7 +132,11 @@ impl Workspace {
         self.sidebar.new_menu = false;
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        self.sidebar.tab_menu = Some(TabMenu { view, at, focus });
+        self.sidebar.tab_menu = Some(TabMenu {
+            workspace,
+            at,
+            focus,
+        });
         cx.notify();
     }
 
@@ -121,53 +148,98 @@ impl Workspace {
         }
     }
 
-    /// A choice from the menu: it closes, then does `action` to its session.
+    /// A choice from the menu: it closes, then does `action` to its workspace.
     fn choose(&mut self, action: TabAction, window: &mut Window, cx: &mut Context<Self>) {
         let Some(menu) = self.sidebar.tab_menu.take() else {
             return;
         };
         cx.notify();
-        let Some(at) = self.sessions.position(|s| s.view.entity_id() == menu.view) else {
+        let ws = menu.workspace;
+        let order = self.model.display_order();
+        let Some(at) = order.iter().position(|&w| w == ws) else {
             self.focus_active(window, cx);
             return;
         };
-        let len = self.sessions.items().len();
         match action {
-            TabAction::Close => self.close_at(at, window, cx),
+            TabAction::Close => {
+                self.focus_active(window, cx);
+                self.close_workspace(ws, window, cx);
+            }
             TabAction::CloseOthers | TabAction::CloseToRight => {
                 self.focus_active(window, cx);
-                let shown = self.sessions_with_rows();
-                self.confirm_close(closes(action, &shown, len, at), window, cx);
+                let shown = self.workspaces_with_rows();
+                let chosen = closes(action, &shown, order.len(), at)
+                    .into_iter()
+                    .filter_map(|i| order.get(i).copied())
+                    .collect();
+                self.confirm_close(chosen, window, cx);
             }
             TabAction::ShowAll => self.open_switcher(window, cx),
-            TabAction::Rename => self.start_rename(at, window, cx),
+            TabAction::Rename => self.start_rename(ws, window, cx),
             TabAction::Color(color) => {
-                if let Some(session) = self.sessions.get_mut(at) {
-                    session.color = color;
-                }
+                self.model.set_color(ws, color);
                 self.save();
                 self.focus_active(window, cx);
             }
         }
     }
 
-    /// Close the sessions at `indices`, once a native sheet has asked (always, for more than
-    /// one from the menu). Cancel keeps them all.
-    fn confirm_close(&mut self, indices: Vec<usize>, window: &mut Window, cx: &mut Context<Self>) {
-        let chosen: Vec<_> = indices
-            .iter()
-            .filter_map(|&i| self.sessions.items().get(i))
-            .collect();
+    /// Close a workspace (its ×, a middle-click, its menu's Close): every terminal in it ends.
+    /// With two or more it asks first, in a native sheet; Cancel keeps it.
+    pub(crate) fn close_workspace(
+        &mut self,
+        ws: WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let terminals = self.model.terminals(ws);
+        if !asks_to_close(terminals.len()) {
+            self.end_terminals(&terminals, window, cx);
+            return;
+        }
+        let (message, detail) = confirm_workspace_text(terminals.len(), self.busy(&terminals));
+        self.ask_then_end(message, detail, terminals, window, cx);
+    }
+
+    /// Close the workspaces `chosen`, once a native sheet has asked (always, for a bulk close
+    /// from the menu). Cancel keeps them all.
+    fn confirm_close(
+        &mut self,
+        chosen: Vec<WorkspaceId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if chosen.is_empty() {
             return;
         }
-        let busy = chosen
+        let terminals: Vec<u64> = chosen
             .iter()
+            .flat_map(|&ws| self.model.terminals(ws))
+            .collect();
+        let (message, detail) = confirm_text(chosen.len(), self.busy(&terminals));
+        self.ask_then_end(message, detail, terminals, window, cx);
+    }
+
+    /// How many of `terminals` have an agent still working or waiting.
+    fn busy(&self, terminals: &[u64]) -> usize {
+        self.sessions
+            .items()
+            .iter()
+            .filter(|s| terminals.contains(&s.id))
             .filter(|s| matches!(s.status, Status::Working | Status::Waiting))
-            .count();
-        // By view, so the ones closed are the ones asked about, whatever moves meanwhile.
-        let views: Vec<EntityId> = chosen.iter().map(|s| s.view.entity_id()).collect();
-        let (message, detail) = confirm_text(views.len(), busy);
+            .count()
+    }
+
+    /// Ask (`message`, `detail`) in a native sheet; on Close, end `terminals`. By id, so the
+    /// ones ended are the ones asked about, whatever moves meanwhile.
+    fn ask_then_end(
+        &mut self,
+        message: String,
+        detail: Option<String>,
+        terminals: Vec<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let answer = window.prompt(
             PromptLevel::Warning,
             &message,
@@ -180,13 +252,20 @@ impl Workspace {
                 return;
             }
             this.update_in(cx, |this, window, cx| {
-                for view in views {
-                    this.close_view(view, window, cx);
-                }
+                this.end_terminals(&terminals, window, cx)
             })
             .ok();
         })
         .detach();
+    }
+
+    /// End each of `terminals` as ⌘W would (those already gone are skipped).
+    fn end_terminals(&mut self, terminals: &[u64], window: &mut Window, cx: &mut Context<Self>) {
+        for &id in terminals {
+            if let Some(i) = self.index_of(id) {
+                self.close_at(i, window, cx);
+            }
+        }
     }
 
     /// The open tab menu, over the window at the pointer, with its click-away backdrop.
@@ -199,12 +278,11 @@ impl Workspace {
         if self.sidebar.hidden {
             return None;
         }
-        let at = self
-            .sessions
-            .position(|s| s.view.entity_id() == menu.view)?;
-        let len = self.sessions.items().len();
-        let shown = self.sessions_with_rows();
-        let current = self.sessions.items()[at].color;
+        let order = self.model.display_order();
+        let at = order.iter().position(|&w| w == menu.workspace)?;
+        let len = order.len();
+        let shown = self.workspaces_with_rows();
+        let current = self.model.workspace(menu.workspace)?.color;
         let hover = ui.panel_hover;
         let item = |n: usize, label: &'static str, action: TabAction| {
             let on = enabled(action, &shown, len, at);
@@ -279,12 +357,12 @@ impl Workspace {
             .on_mouse_down(MouseButton::Right, |_: &MouseDownEvent, _, cx| {
                 cx.stop_propagation()
             })
-            .child(item(0, "Close Tab", TabAction::Close))
-            .child(item(1, "Close Other Tabs", TabAction::CloseOthers))
-            .child(item(2, "Close Tabs to the Right", TabAction::CloseToRight))
-            .child(item(3, "Show All Tabs", TabAction::ShowAll))
+            .child(item(0, "Close Workspace", TabAction::Close))
+            .child(item(1, "Close Other Workspaces", TabAction::CloseOthers))
+            .child(item(2, "Close Workspaces Below", TabAction::CloseToRight))
+            .child(item(3, "Show All Workspaces", TabAction::ShowAll))
             .child(separator())
-            .child(item(4, "Rename Tab\u{2026}", TabAction::Rename))
+            .child(item(4, "Rename Workspace\u{2026}", TabAction::Rename))
             .child(separator())
             .child(
                 div()
@@ -293,7 +371,7 @@ impl Workspace {
                     .pb(px(4.0))
                     .text_size(px(text::META))
                     .text_color(hsla(ui.text_faint))
-                    .child("Tab Color"),
+                    .child("Workspace Color"),
             )
             .child(
                 div()
@@ -423,18 +501,40 @@ mod tests {
 
     #[test]
     fn the_confirm_says_how_many_and_who_is_busy() {
-        assert_eq!(confirm_text(3, 0), ("Close 3 sessions?".to_string(), None));
+        assert_eq!(
+            confirm_text(3, 0),
+            ("Close 3 workspaces?".to_string(), None)
+        );
         assert_eq!(
             confirm_text(4, 2),
             (
-                "Close 4 sessions?".to_string(),
+                "Close 4 workspaces?".to_string(),
                 Some("2 agents are still working or waiting.".to_string())
             )
         );
         assert_eq!(
             confirm_text(1, 1),
             (
-                "Close 1 session?".to_string(),
+                "Close 1 workspace?".to_string(),
+                Some("1 agent is still working or waiting.".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn closing_a_workspace_asks_only_with_two_or_more_terminals() {
+        assert!(!asks_to_close(0));
+        assert!(!asks_to_close(1));
+        assert!(asks_to_close(2));
+        assert!(asks_to_close(7));
+        assert_eq!(
+            confirm_workspace_text(3, 0),
+            ("Close workspace with 3 terminals?".to_string(), None)
+        );
+        assert_eq!(
+            confirm_workspace_text(2, 1),
+            (
+                "Close workspace with 2 terminals?".to_string(),
                 Some("1 agent is still working or waiting.".to_string())
             )
         );

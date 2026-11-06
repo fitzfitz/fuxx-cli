@@ -1,15 +1,16 @@
 //! M10a: reopening fuxx with the background service. Its live sessions are shown again in the
-//! places the sessions file gives them (matched by `daemon_id`); saved sessions that no longer
-//! run come back through M7 restore; live ones the file doesn't know are added to the sidebar.
-//! Pure and GPUI-free, so the rules are unit-tested; listing and attaching are the caller's.
+//! places the sessions file gives them (matched by `daemon_id`; M11b: their saved tabs); saved
+//! sessions that no longer run come back through M7 restore; live ones the file doesn't know
+//! are added to the sidebar, each a workspace of its own. Pure and GPUI-free, so the rules are
+//! unit-tested; listing and attaching are the caller's, and `Model::from_state` lays them out.
 
 use std::path::PathBuf;
 
-use crate::groups::{self, GroupKey};
+use crate::layout_model;
 use crate::mux_proto::SessionInfo;
 use crate::presets::Preset;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
-use crate::split_tree::{self, Node};
+use crate::split_tree::Node;
 use crate::status::Status;
 
 /// A session the background service runs now, as its `List` gives it.
@@ -65,23 +66,24 @@ pub enum Slot {
     Restore(Launch),
 }
 
-/// The reopened workspace: the sessions in sidebar order and their layouts (leaves are slot
-/// indices; every slot is in exactly one).
+/// The reopened sessions: the saved ones in the file's order, then the live ones it doesn't
+/// know. Where each one goes is the file's (`terminals`, then `Model::from_state`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placement {
     pub slots: Vec<Slot>,
-    pub layouts: Vec<Node<usize>>,
+    /// Each slot's place in the file's `sessions`; none for a live session the file doesn't
+    /// know.
+    pub origins: Vec<Option<usize>>,
     pub collapsed: Vec<PathBuf>,
     pub collapsed_hosts: Vec<String>,
-    /// The active slot (0 when there are none).
-    pub active: usize,
 }
 
 /// Place the live sessions (`live`, of the service with random id `instance`) by the saved
-/// state: a saved session whose `daemon_id` is live in the same service is shown there, with the service's name, note, progress, title and status where it has
-/// them; the others are started again per `mode` (`off`: not at all); live sessions the file
-/// doesn't know join their group (or the ungrouped run) as layouts of their own. Live ones are
-/// always shown, whatever the mode: hiding them would leave processes running unseen.
+/// state: a saved session whose `daemon_id` is live in the same service is shown there, with the
+/// service's name, note, progress, title and status where it has them; the others are started
+/// again per `mode` (`off`: not at all); live sessions the file doesn't know come after them.
+/// Live ones are always shown, whatever the mode: hiding them would leave processes running
+/// unseen.
 pub fn place(
     saved: &SavedState,
     live: &[LiveInfo],
@@ -92,7 +94,8 @@ pub fn place(
     // Ids are only the same sessions under the same service (a new one numbers from 1 again).
     let same_service = saved.daemon_instance.is_some() && saved.daemon_instance == instance;
     let mut shown: Vec<u64> = Vec::new();
-    let mut slots: Vec<(Origin, Slot)> = Vec::new();
+    let mut slots = Vec::new();
+    let mut origins = Vec::new();
     for (i, s) in saved.sessions.iter().enumerate() {
         // A live session is shown once: a second entry with its id (a damaged file) is dead.
         let found = s
@@ -107,93 +110,54 @@ pub fn place(
             None => restore::launch(s, mode, presets).map(Slot::Restore),
         };
         if let Some(slot) = slot {
-            slots.push((Origin::Saved(i), slot));
+            slots.push(slot);
+            origins.push(Some(i));
         }
     }
-    let placed = |i: usize| slots.iter().any(|(o, _)| *o == Origin::Saved(i));
-    let mut layouts: Vec<Node<Origin>> = saved
-        .layouts
-        .iter()
-        .filter_map(|t| keep_panes(t, placed))
-        .map(|t| t.map(&Origin::Saved))
-        .collect();
-    for (k, info) in live.iter().filter(|l| !shown.contains(&l.id)).enumerate() {
-        let keys: Vec<Option<GroupKey>> = slots.iter().map(|(_, s)| s.group()).collect();
-        let keys: Vec<Option<&GroupKey>> = keys.iter().map(Option::as_ref).collect();
-        let key = groups::key(None, info.project.as_deref());
-        let at = groups::insert_index(&keys, key.as_ref());
-        slots.insert(at, (Origin::New(k), Slot::Live(newcomer(info, presets))));
-        layouts.push(Node::Leaf(Origin::New(k)));
+    for info in live.iter().filter(|l| !shown.contains(&l.id)) {
+        slots.push(Slot::Live(newcomer(info, presets)));
+        origins.push(None);
     }
-    let index_of = |o: Origin| slots.iter().position(|(x, _)| *x == o);
-    let trees = layouts
-        .iter()
-        .map(|t| t.map(&|o| index_of(o).unwrap_or(usize::MAX)))
-        .collect();
-    let (layouts, _) = split_tree::sanitize(trees, slots.len());
-    let active = saved.active.and_then(|i| index_of(Origin::Saved(i)));
-    let slots: Vec<Slot> = slots.into_iter().map(|(_, s)| s).collect();
     Placement {
-        active: active.or_else(|| first_live(&slots)).unwrap_or(0),
         slots,
-        layouts,
+        origins,
         collapsed: saved.collapsed.clone(),
         collapsed_hosts: saved.collapsed_hosts.clone(),
     }
 }
 
 impl Placement {
-    /// Without the slots `gone` (e.g. sessions that couldn't start): their panes' neighbours
-    /// take their space, and the active one falls back if it went.
+    /// Without the slots `gone` (e.g. sessions that couldn't start): their tabs aren't
+    /// restored, so their panes' neighbours take their space.
     pub fn without(self, gone: &[usize]) -> Placement {
-        let kept: Vec<usize> = (0..self.slots.len())
-            .filter(|i| !gone.contains(i))
-            .collect();
-        let new_index = |i: usize| kept.iter().position(|&k| k == i);
-        let trees = self
-            .layouts
-            .iter()
-            .filter_map(|t| keep_panes(t, |i| new_index(i).is_some()))
-            .map(|t| t.map(&|i| new_index(i).unwrap_or(usize::MAX)))
-            .collect();
-        let (layouts, _) = split_tree::sanitize(trees, kept.len());
-        let active = new_index(self.active);
-        let slots: Vec<Slot> = self
+        let (slots, origins) = self
             .slots
             .into_iter()
+            .zip(self.origins)
             .enumerate()
             .filter(|(i, _)| !gone.contains(i))
-            .map(|(_, s)| s)
-            .collect();
+            .map(|(_, kept)| kept)
+            .unzip();
         Placement {
-            active: active.or_else(|| first_live(&slots)).unwrap_or(0),
             slots,
-            layouts,
-            collapsed: self.collapsed,
-            collapsed_hosts: self.collapsed_hosts,
+            origins,
+            ..self
         }
     }
-}
 
-impl Slot {
-    /// Its sidebar group (an SSH session's is its host).
-    fn group(&self) -> Option<GroupKey> {
-        let saved = match self {
-            Slot::Live(a) => &a.saved,
-            Slot::Restore(l) => &l.saved,
-        };
-        groups::key(
-            saved.ssh.as_ref().map(|t| t.host.as_str()),
-            saved.project.as_deref(),
-        )
+    /// What `Model::from_state` takes for a file of `saved` sessions, slot `i` being shown as
+    /// terminal `ids[i]`: per saved session its terminal (none: not shown), then the live ones
+    /// the file doesn't know, which no saved tab shows (each becomes a workspace of its own).
+    pub fn terminals(&self, ids: &[u64], saved: usize) -> Vec<Option<u64>> {
+        let mut terminals = vec![None; saved];
+        for (origin, &id) in self.origins.iter().zip(ids) {
+            match origin {
+                Some(i) if *i < saved => terminals[*i] = Some(id),
+                _ => terminals.push(Some(id)),
+            }
+        }
+        terminals
     }
-}
-
-/// Where a slot came from, so the layouts follow it while the sidebar order is settled.
-#[derive(Clone, Copy, PartialEq)]
-enum Origin {
-    Saved(usize),
-    New(usize),
 }
 
 /// Saved session `s`, running as `info`: the service's facts where it has them.
@@ -246,8 +210,6 @@ fn newcomer(info: &LiveInfo, presets: &[Preset]) -> Adopted {
     }
 }
 
-/// `tree` without the panes `keep` refuses (their neighbours take the space); `None` if none
-/// is left.
 /// What fuxx found of the background service when it starts without it (persistence off: a
 /// connect-only look; on, but the service couldn't be reached: `NoAnswer`).
 #[derive(Clone, Debug, PartialEq)]
@@ -310,15 +272,21 @@ pub fn without_service(saved: SavedState, probe: &Probe) -> (SavedState, bool) {
         .filter(|(_, h)| !**h)
         .map(|(s, _)| s)
         .collect();
+    let (workspaces, active_workspace) =
+        layout_model::renumber(&saved.workspaces, saved.active_workspace, index);
     let state = SavedState {
         active: saved.active.and_then(index),
         layouts,
+        workspaces,
+        active_workspace,
         sessions,
         ..saved
     };
     (state, true)
 }
 
+/// `tree` without the panes `keep` refuses (their neighbours take the space); `None` if none
+/// is left.
 fn keep_panes(tree: &Node<usize>, keep: impl Fn(usize) -> bool) -> Option<Node<usize>> {
     tree.leaves()
         .into_iter()
@@ -326,16 +294,13 @@ fn keep_panes(tree: &Node<usize>, keep: impl Fn(usize) -> bool) -> Option<Node<u
         .try_fold(tree.clone(), |t, i| t.remove(i))
 }
 
-fn first_live(slots: &[Slot]) -> Option<usize> {
-    slots.iter().position(|s| matches!(s, Slot::Live(_)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::groups::{self, GroupKey};
+    use crate::layout_model::{Model, SavedPane, SavedTab, SavedWorkspace, TabKind};
     use crate::mux_proto::{Dims, Progress};
     use crate::presets::builtins;
-    use crate::restore::VERSION;
     use crate::split_tree::Axis;
     use crate::ssh_target::SshTarget;
 
@@ -363,8 +328,9 @@ mod tests {
         }
     }
     fn state(sessions: Vec<SavedSession>, layouts: Vec<Node<usize>>, active: usize) -> SavedState {
+        // A version-1 file: sessions and their layouts.
         SavedState {
-            version: VERSION,
+            version: 1,
             active: Some(active),
             collapsed: vec![PathBuf::from("/w/api")],
             collapsed_hosts: Vec::new(),
@@ -391,6 +357,50 @@ mod tests {
                 Slot::Restore(l) => format!("+{}", l.saved.name.as_deref().unwrap_or("?")),
             })
             .collect()
+    }
+    /// The workspaces a placement comes back as, as fuxx lays them out: a live slot shows its
+    /// own id, a slot started again gets 100 + its place.
+    fn model(saved: &SavedState, p: &Placement) -> Model {
+        let ids: Vec<u64> = p
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| match slot {
+                Slot::Live(a) => a.id,
+                Slot::Restore(_) => 100 + i as u64,
+            })
+            .collect();
+        Model::from_state(saved, &p.terminals(&ids, saved.sessions.len()))
+    }
+    /// Each workspace's panes (reading order), each pane's terminals (tab order).
+    fn shape(m: &Model) -> Vec<Vec<Vec<u64>>> {
+        m.workspaces()
+            .iter()
+            .map(|w| {
+                w.layout
+                    .leaves()
+                    .into_iter()
+                    .map(|p| {
+                        m.pane(p)
+                            .unwrap()
+                            .tabs
+                            .iter()
+                            .filter_map(|t| match t.kind {
+                                TabKind::Terminal(id) => Some(id),
+                                TabKind::Browser { .. } => None,
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+    /// The terminal the focused tab shows.
+    fn focused(m: &Model) -> Option<u64> {
+        match m.tab(m.focused_tab()?)?.kind {
+            TabKind::Terminal(id) => Some(id),
+            TabKind::Browser { .. } => None,
+        }
     }
     const INSTANCE: u64 = 0xfeed;
     fn place_all(saved: &SavedState, live: &[LiveInfo], mode: RestoreMode) -> Placement {
@@ -471,8 +481,9 @@ mod tests {
         // The service lists them in its own order.
         let p = place_all(&saved, &[live(3), live(1), live(2)], RestoreMode::Agents);
         assert_eq!(shown(&p), ["s1", "s2", "s3"]);
-        assert_eq!(p.layouts, saved.layouts);
-        assert_eq!(p.active, 2);
+        let m = model(&saved, &p);
+        assert_eq!(shape(&m), [vec![vec![1], vec![2]], vec![vec![3]]]);
+        assert_eq!(focused(&m), Some(3));
         assert_eq!(p.collapsed, saved.collapsed);
         let Slot::Live(b) = &p.slots[1] else { panic!() };
         assert_eq!(b.saved.name.as_deref(), Some("b"));
@@ -527,26 +538,46 @@ mod tests {
             &[live(1), live(2), live(3), api, live(10), new_group],
             RestoreMode::Agents,
         );
-        // After its group; ungrouped at the end of the leading run; a new group at the end.
-        assert_eq!(shown(&p), ["s1", "s10", "s2", "s9", "s3", "s11"]);
+        // After the saved ones, in the service's order.
+        assert_eq!(shown(&p), ["s1", "s2", "s3", "s9", "s10", "s11"]);
         let Slot::Live(nine) = &p.slots[3] else {
             panic!()
         };
         assert_eq!(nine.saved.project, Some(PathBuf::from("/w/api")));
         assert_eq!(nine.saved.daemon_id, Some(9));
-        // The saved split still holds api and web; each newcomer is a layout of its own.
+        // The saved split still holds api and web; each newcomer is a workspace of its own.
+        let mut m = model(&saved, &p);
         assert_eq!(
-            p.layouts,
-            vec![
-                Node::Leaf(0),
-                split(Axis::Row, Node::Leaf(2), Node::Leaf(4)),
-                Node::Leaf(3),
-                Node::Leaf(1),
-                Node::Leaf(5),
+            shape(&m),
+            [
+                vec![vec![1]],
+                vec![vec![2], vec![3]],
+                vec![vec![9]],
+                vec![vec![10]],
+                vec![vec![11]]
             ]
         );
-        // The active session (web) is still the active one.
-        assert_eq!(p.active, 4);
+        // The active session (web) is still the focused one.
+        assert_eq!(focused(&m), Some(3));
+        // Each joins its group as the sidebar keeps them (by the workspace's first terminal):
+        // after its group; ungrouped ones in the leading run; a new group at the end.
+        let group = |id: u64| -> Option<GroupKey> {
+            p.slots.iter().find_map(|slot| match slot {
+                Slot::Live(a) if a.id == id => groups::key(None, a.saved.project.as_deref()),
+                _ => None,
+            })
+        };
+        m.group_together(|w| group(shape_first(w)));
+        assert_eq!(
+            shape(&m),
+            [
+                vec![vec![1]],
+                vec![vec![10]],
+                vec![vec![2], vec![3]],
+                vec![vec![9]],
+                vec![vec![11]]
+            ]
+        );
     }
 
     #[test]
@@ -563,10 +594,15 @@ mod tests {
         let p = place_all(&saved, &[live(1), live(3)], RestoreMode::Off);
         assert_eq!(shown(&p), ["s1", "s3"]);
         // b's neighbour takes its space.
-        assert_eq!(
-            p.layouts,
-            vec![split(Axis::Row, Node::Leaf(0), Node::Leaf(1))]
-        );
+        let m = model(&saved, &p);
+        assert_eq!(shape(&m), [vec![vec![1], vec![3]]]);
+        assert!(matches!(
+            m.workspaces()[0].layout,
+            Node::Split {
+                axis: Axis::Row,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -582,55 +618,39 @@ mod tests {
             0,
         );
         let p = place_all(&saved, &[live(1), live(2), live(3)], RestoreMode::Agents);
-        let Node::Split { ratio, .. } = &p.layouts[0] else {
-            panic!("{:?}", p.layouts)
+        let m = model(&saved, &p);
+        m.check().unwrap();
+        let Node::Split { ratio, .. } = &m.workspaces()[0].layout else {
+            panic!("{:?}", m.workspaces()[0].layout)
         };
         assert!(*ratio <= crate::split_tree::MAX_RATIO);
-        // Every session in exactly one layout.
-        let mut leaves: Vec<usize> = p.layouts.iter().flat_map(|t| t.leaves()).collect();
-        leaves.sort();
-        assert_eq!(leaves, [0, 1, 2]);
+        // Every session in exactly one tab.
+        assert_eq!(shape(&m), [vec![vec![1], vec![2]], vec![vec![3]]]);
     }
 
     #[test]
-    fn the_active_session_is_kept_or_falls_back_to_the_first_live_one() {
+    fn the_active_session_keeps_the_focus_or_it_falls_back_to_the_first_workspace() {
         let two = || vec![s("a", None), s("b", Some(2)), s("c", Some(3))];
-        // Kept, renumbered past a session that isn't coming back.
-        let kept = place_all(
-            &state(two(), vec![], 2),
-            &[live(2), live(3)],
-            RestoreMode::Off,
-        );
-        assert_eq!(
-            (shown(&kept), kept.active),
-            (vec!["s2".into(), "s3".into()], 1)
-        );
-        // Started again: still the active one.
-        let again = place_all(
-            &state(two(), vec![], 0),
-            &[live(2), live(3)],
-            RestoreMode::Agents,
-        );
-        assert_eq!(again.active, 0);
-        // Gone (restore off): the first live one.
-        let gone = place_all(
-            &state(two(), vec![], 0),
-            &[live(2), live(3)],
-            RestoreMode::Off,
-        );
-        assert_eq!(gone.active, 0);
-        // None saved (or out of range): the first live one, not the first restored.
+        // Kept, past a session that isn't coming back.
+        let saved = state(two(), vec![], 2);
+        let kept = place_all(&saved, &[live(2), live(3)], RestoreMode::Off);
+        assert_eq!(shown(&kept), ["s2", "s3"]);
+        assert_eq!(focused(&model(&saved, &kept)), Some(3));
+        // Started again (as 100): still the focused one.
+        let saved = state(two(), vec![], 0);
+        let again = place_all(&saved, &[live(2), live(3)], RestoreMode::Agents);
+        assert_eq!(focused(&model(&saved, &again)), Some(100));
+        // Gone (restore off): the first workspace.
+        let gone = place_all(&saved, &[live(2), live(3)], RestoreMode::Off);
+        assert_eq!(focused(&model(&saved, &gone)), Some(2));
+        // None saved (or out of range): the first workspace.
         let mut none = state(two(), vec![], 0);
         none.active = None;
         let p = place_all(&none, &[live(3)], RestoreMode::Agents);
-        assert_eq!(
-            (shown(&p), p.active),
-            (vec!["+a".into(), "+b".into(), "s3".into()], 2)
-        );
+        assert_eq!(shown(&p), ["+a", "+b", "s3"]);
+        assert_eq!(focused(&model(&none, &p)), Some(100));
         none.active = Some(99);
-        assert_eq!(place_all(&none, &[live(3)], RestoreMode::Agents).active, 2);
-        // Nothing live: the first.
-        assert_eq!(place_all(&none, &[], RestoreMode::Agents).active, 0);
+        assert_eq!(focused(&model(&none, &p)), Some(100));
     }
 
     #[test]
@@ -701,7 +721,7 @@ mod tests {
         let saved = state(vec![s("a", Some(1)), s("dup", Some(1))], vec![], 0);
         let p = place_all(&saved, &[live(1)], RestoreMode::Off);
         assert_eq!(shown(&p), ["s1"]);
-        assert_eq!(p.layouts, vec![Node::Leaf(0)]);
+        assert_eq!(shape(&model(&saved, &p)), [vec![vec![1]]]);
     }
 
     #[test]
@@ -719,10 +739,13 @@ mod tests {
         // `a`, the active one, didn't start.
         let p = p.without(&[0]);
         assert_eq!(shown(&p), ["s2", "+c"]);
-        assert_eq!(p.layouts, vec![Node::Leaf(0), Node::Leaf(1)]);
-        assert_eq!(p.active, 0);
+        assert_eq!(p.origins, [Some(1), Some(2)]);
+        // b takes a's space; the focus falls back to the first workspace.
+        let m = model(&saved, &p);
+        assert_eq!(shape(&m), [vec![vec![2]], vec![vec![101]]]);
+        assert_eq!(focused(&m), Some(2));
         let none = p.without(&[0, 1]);
-        assert!(none.slots.is_empty() && none.layouts.is_empty());
+        assert!(none.slots.is_empty() && none.origins.is_empty());
     }
 
     #[test]
@@ -747,15 +770,15 @@ mod tests {
         );
         saved.collapsed_hosts = vec!["devbox".into()];
         let p = place_all(&saved, &[live(1), live(3), live(9)], RestoreMode::Agents);
-        // The SSH sessions are a group (their host's), so the ungrouped newcomer goes before it.
-        assert_eq!(shown(&p), ["s3", "s9", "s1", "+b"]);
-        let Slot::Live(a) = &p.slots[2] else { panic!() };
+        // The newcomer after the saved ones (the sidebar then puts it with the ungrouped ones).
+        assert_eq!(shown(&p), ["s3", "s1", "+b", "s9"]);
+        let Slot::Live(a) = &p.slots[1] else { panic!() };
         assert_eq!(
             a.saved.ssh.as_ref(),
             Some(&dev),
             "still running: shown with its host"
         );
-        let Slot::Restore(b) = &p.slots[3] else {
+        let Slot::Restore(b) = &p.slots[2] else {
             panic!()
         };
         assert_eq!(
@@ -763,7 +786,7 @@ mod tests {
             Some(&dev),
             "restarted: connects again"
         );
-        let Slot::Live(nine) = &p.slots[1] else {
+        let Slot::Live(nine) = &p.slots[3] else {
             panic!()
         };
         assert_eq!(nine.saved.ssh, None, "the service doesn't know hosts");
@@ -887,5 +910,121 @@ mod tests {
             without_service(local.clone(), &Probe::NoAnswer),
             (local, false)
         );
+    }
+
+    /// The first terminal of a workspace (its group's).
+    fn shape_first(w: &crate::layout_model::Workspace) -> u64 {
+        w.layout
+            .leaves()
+            .into_iter()
+            .filter_map(|p| w.pane(p))
+            .flat_map(|p| &p.tabs)
+            .find_map(|t| match t.kind {
+                TabKind::Terminal(id) => Some(id),
+                TabKind::Browser { .. } => None,
+            })
+            .unwrap_or(0)
+    }
+
+    /// A version-2 file: workspace "api" holds a pane of two terminal tabs (the second shown)
+    /// and a browser, split with a pane of one; "notes" holds one; "notes" is focused.
+    fn with_tabs() -> SavedState {
+        let terminal = |session| SavedTab::Terminal { session };
+        SavedState {
+            active: Some(3),
+            sessions: vec![
+                s("a", Some(1)),
+                s("b", Some(2)),
+                s("c", Some(3)),
+                s("notes", None),
+            ],
+            daemon_instance: Some(INSTANCE),
+            workspaces: vec![
+                SavedWorkspace {
+                    name: Some("api".into()),
+                    color: None,
+                    pinned: true,
+                    layout: Node::Split {
+                        axis: Axis::Row,
+                        ratio: 0.6,
+                        first: Box::new(Node::Leaf(SavedPane {
+                            tabs: vec![
+                                terminal(0),
+                                terminal(1),
+                                SavedTab::Browser {
+                                    url: Some("http://localhost:3000".into()),
+                                },
+                            ],
+                            active: 1,
+                        })),
+                        second: Box::new(Node::Leaf(SavedPane {
+                            tabs: vec![terminal(2)],
+                            active: 0,
+                        })),
+                    },
+                    focused: 1,
+                },
+                SavedWorkspace {
+                    name: Some("notes".into()),
+                    color: None,
+                    pinned: false,
+                    layout: Node::Leaf(SavedPane {
+                        tabs: vec![terminal(3)],
+                        active: 0,
+                    }),
+                    focused: 0,
+                },
+            ],
+            active_workspace: Some(1),
+            ..SavedState::default()
+        }
+    }
+
+    #[test]
+    fn the_service_s_sessions_land_back_in_their_tabs() {
+        let saved = with_tabs();
+        // b no longer runs (started again as 101); a newcomer (9) is added.
+        let p = place_all(&saved, &[live(3), live(1), live(9)], RestoreMode::Agents);
+        assert_eq!(shown(&p), ["s1", "+b", "s3", "+notes", "s9"]);
+        let m = model(&saved, &p);
+        m.check().unwrap();
+        assert_eq!(
+            shape(&m),
+            [vec![vec![1, 101], vec![3]], vec![vec![103]], vec![vec![9]]]
+        );
+        let api = &m.workspaces()[0];
+        assert_eq!((api.name.as_deref(), api.pinned), (Some("api"), true));
+        // The tab that was shown is shown again, the browser keeps its page.
+        let first = m.pane(api.layout.leaves()[0]).unwrap();
+        assert_eq!(m.tab(first.active).unwrap().kind, TabKind::Terminal(101));
+        assert_eq!(
+            first.tabs[2].kind,
+            TabKind::Browser {
+                url: Some("http://localhost:3000".into())
+            }
+        );
+        assert_eq!(focused(&m), Some(103), "notes is focused");
+        // Restore off: b and notes aren't started again; the rest of api stays where it was.
+        let off = place_all(&saved, &[live(3), live(1)], RestoreMode::Off);
+        let m = model(&saved, &off);
+        assert_eq!(shape(&m), [vec![vec![1], vec![3]]]);
+        // Notes is gone: the first workspace, on the pane it had focused.
+        assert_eq!(focused(&m), Some(3));
+    }
+
+    #[test]
+    fn without_the_service_held_sessions_leave_their_tabs_and_the_rest_renumber() {
+        let found = Probe::Found {
+            instance: Some(INSTANCE),
+            live: vec![1, 3],
+        };
+        let (state, hold) = without_service(with_tabs(), &found);
+        assert!(hold);
+        assert_eq!(names(&state), ["b", "notes"]);
+        let m = Model::from_state(&state, &[Some(20), Some(21)]);
+        m.check().unwrap();
+        assert_eq!(shape(&m), [vec![vec![20]], vec![vec![21]]]);
+        assert_eq!(state.active_workspace, Some(1));
+        assert_eq!(focused(&m), Some(21));
     }
 }

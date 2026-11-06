@@ -55,26 +55,16 @@ impl<T> SessionList<T> {
         index
     }
 
-    /// Move an item; the same item stays active. False (no change) when out of range.
-    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
-        let len = self.items.len();
-        if from >= len || to >= len {
-            return false;
-        }
-        let item = self.items.remove(from);
-        self.items.insert(to, item);
-        self.active = self.active.map(|a| {
-            if a == from {
-                to
-            } else if from < a && a <= to {
-                a - 1
-            } else if to <= a && a < from {
-                a + 1
-            } else {
-                a
-            }
-        });
-        true
+    /// Reorder by `key` (stable); the same item stays active.
+    pub fn sort_by_key<K: Ord>(&mut self, key: impl Fn(&T) -> K) {
+        let mut order: Vec<usize> = (0..self.items.len()).collect();
+        order.sort_by_key(|&i| key(&self.items[i]));
+        self.active = self.active.and_then(|a| order.iter().position(|&i| i == a));
+        let mut old: Vec<Option<T>> = std::mem::take(&mut self.items)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.items = order.into_iter().filter_map(|i| old[i].take()).collect();
     }
 
     /// Returns false (and changes nothing) when out of range.
@@ -84,20 +74,6 @@ impl<T> SessionList<T> {
             true
         } else {
             false
-        }
-    }
-
-    /// Wraps around.
-    pub fn select_next(&mut self) {
-        if let Some(i) = self.active {
-            self.active = Some((i + 1) % self.items.len());
-        }
-    }
-
-    /// Wraps around.
-    pub fn select_prev(&mut self) {
-        if let Some(i) = self.active {
-            self.active = Some((i + self.items.len() - 1) % self.items.len());
         }
     }
 
@@ -145,15 +121,6 @@ mod tests {
     }
 
     #[test]
-    fn next_and_prev_wrap() {
-        let mut l = list(3);
-        l.select_next();
-        assert_eq!(l.active_index(), Some(0));
-        l.select_prev();
-        assert_eq!(l.active_index(), Some(2));
-    }
-
-    #[test]
     fn removing_the_active_item_activates_its_neighbour() {
         let mut l = list(3);
         l.select(1);
@@ -191,16 +158,15 @@ mod tests {
     }
 
     #[test]
-    fn move_item_keeps_the_same_item_active() {
-        let mut l = list(4);
+    fn sorting_keeps_the_same_item_active() {
+        let mut l = list(5);
         l.select(1);
-        assert!(l.move_item(1, 3));
-        assert_eq!(l.items(), &[0, 2, 3, 1]);
+        // Reverse order: item 1 is now at index 3, and still active.
+        l.sort_by_key(|&i| std::cmp::Reverse(i));
+        assert_eq!(l.items(), [4, 3, 2, 1, 0]);
         assert_eq!(l.active(), Some(&1));
-        l.select(0);
-        assert!(l.move_item(3, 1));
-        assert_eq!(l.items(), &[0, 1, 2, 3]);
-        assert_eq!(l.active(), Some(&0));
-        assert!(!l.move_item(0, 4));
+        let mut empty: SessionList<usize> = SessionList::new();
+        empty.sort_by_key(|&i| i);
+        assert_eq!(empty.active_index(), None);
     }
 }

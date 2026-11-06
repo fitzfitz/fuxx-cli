@@ -158,6 +158,7 @@ impl Model {
         })
     }
 
+    #[allow(dead_code)] // for the pane tab bars (M11b Task 3)
     pub fn workspace_of(&self, pane: PaneId) -> Option<WorkspaceId> {
         self.workspaces
             .iter()
@@ -217,6 +218,7 @@ impl Model {
     }
 
     /// Its ⌘N digit: 1–9 for the first nine in display order.
+    #[allow(dead_code)] // for the rich rows (M11b Task 5)
     pub fn shortcut(&self, workspace: WorkspaceId) -> Option<u8> {
         let at = self.display_order().iter().position(|&w| w == workspace)?;
         (at < 9).then(|| at as u8 + 1)
@@ -282,6 +284,7 @@ impl Model {
     }
 
     /// A new tab at the end of `pane`'s bar; it gets the focus. None as for `split`.
+    #[allow(dead_code)] // for `fuxx new --tab` (this task's next step)
     pub fn add_tab(&mut self, pane: PaneId, kind: TabKind) -> Option<Opened> {
         let w = self.index_of_pane(pane)?;
         if self.shown_elsewhere(&kind, None) {
@@ -303,6 +306,7 @@ impl Model {
 
     /// Show something else in `tab` (a reconnected terminal, a browser's new page); returns
     /// what it showed. None when `tab` is unknown or another tab already shows the terminal.
+    /// The caller ends the terminal it showed (the model only places terminals).
     pub fn set_kind(&mut self, tab: TabId, kind: TabKind) -> Option<TabKind> {
         if self.tab(tab).is_none() || self.shown_elsewhere(&kind, Some(tab)) {
             return None;
@@ -327,6 +331,7 @@ impl Model {
     }
 
     /// Close a workspace and every tab in it; the focus moves as for `close_tab`.
+    #[allow(dead_code)] // the workspace ends its terminals one by one (`close_at`)
     pub fn close_workspace(&mut self, workspace: WorkspaceId) -> Option<Closed> {
         let w = self.workspaces.iter().position(|w| w.id == workspace)?;
         let ws = self.remove_workspace(w);
@@ -343,6 +348,7 @@ impl Model {
     /// Move `tab` to `index` (clamped) in `pane`'s bar, in the same or another pane; it is shown
     /// and gets the focus. The pane it left closes if it is left empty, as for `close_tab` (the
     /// moved tab is not in `Closed::tabs`). None when either is unknown.
+    #[allow(dead_code)] // for dragging tabs (M11b Task 7)
     pub fn move_tab(&mut self, tab: TabId, pane: PaneId, index: usize) -> Option<Closed> {
         let (_, from) = self.locate(tab)?;
         self.index_of_pane(pane)?;
@@ -394,6 +400,7 @@ impl Model {
 
     /// ⌃Tab / ⌃⇧Tab: show the next (or previous) tab of the focused pane, wrapping. None when
     /// it has only one.
+    #[allow(dead_code)] // for ⌃Tab (M11b Task 3)
     pub fn cycle_tab(&mut self, forward: bool) -> Option<TabId> {
         let p = self.pane_mut(self.focused_pane()?)?;
         let n = p.tabs.len();
@@ -435,6 +442,7 @@ impl Model {
             .is_some()
     }
 
+    #[allow(dead_code)] // for Pin / Unpin (M11b Task 5)
     pub fn set_pinned(&mut self, workspace: WorkspaceId, pinned: bool) -> bool {
         self.workspace_mut(workspace)
             .map(|w| w.pinned = pinned)
@@ -637,7 +645,10 @@ impl Model {
     /// as version 1 did. A workspace takes the first name and colour its sessions had (those
     /// were the sidebar row's). `terminals` is as for `from_saved`.
     pub fn from_old(state: &SavedState, terminals: &[Option<u64>]) -> Self {
-        let (trees, _) = split_tree::sanitize(state.layouts.clone(), state.sessions.len());
+        let (mut trees, _) = split_tree::sanitize(state.layouts.clone(), state.sessions.len());
+        // Layouts were kept in the order they were made; the sidebar listed the sessions in
+        // order, so each workspace goes where its first row was.
+        trees.sort_by_key(|t| t.leaves().into_iter().min());
         let mut active = None;
         let saved: Vec<SavedWorkspace> = trees
             .iter()
@@ -664,6 +675,77 @@ impl Model {
             })
             .collect();
         Self::from_saved(&saved, active, terminals)
+    }
+
+    /// The model from a saved file: by its workspaces (version 2), or else by the layouts of
+    /// a version-1 file (`from_old`). `terminals` is as for `from_saved`.
+    pub fn from_state(state: &SavedState, terminals: &[Option<u64>]) -> Self {
+        if state.workspaces.is_empty() {
+            Self::from_old(state, terminals)
+        } else {
+            Self::from_saved(&state.workspaces, state.active_workspace, terminals)
+        }
+    }
+
+    /// Close `pane` and every tab in it; a workspace left with no pane closes, and the focus
+    /// moves as for `close_tab`.
+    #[allow(dead_code)] // for the pane tab bars (M11b Task 3)
+    pub fn close_pane(&mut self, pane: PaneId) -> Option<Closed> {
+        let tabs: Vec<TabId> = self.pane(pane)?.tabs.iter().map(|t| t.id).collect();
+        let mut closed = Closed::default();
+        for tab in tabs {
+            let Some(c) = self.close_tab(tab) else {
+                continue;
+            };
+            closed.tabs.extend(c.tabs);
+            closed.panes.extend(c.panes);
+            closed.workspaces.extend(c.workspaces);
+        }
+        Some(closed)
+    }
+
+    /// A sidebar drag: move a workspace to `to` in display order, inside its own run (pinned or
+    /// not). False (no change) when `to` is out of range or in the other run.
+    pub fn move_workspace_display(&mut self, workspace: WorkspaceId, to: usize) -> bool {
+        let Some(&target) = self.display_order().get(to) else {
+            return false;
+        };
+        let pinned = |id| self.workspace(id).map(|w| w.pinned);
+        if pinned(workspace) != pinned(target) {
+            return false;
+        }
+        // Within one run, display order is sidebar order: taking the target's sidebar place
+        // lands it before the target (moving up) or after it (moving down), as in display order.
+        let Some(at) = self.workspaces.iter().position(|w| w.id == target) else {
+            return false;
+        };
+        self.move_workspace(workspace, at)
+    }
+
+    /// Keep each group's workspaces in one run, as the sidebar draws them under one header:
+    /// ungrouped ones first, then each group where it first appears; otherwise the order stays.
+    /// True when something moved.
+    pub fn group_together<K: PartialEq>(
+        &mut self,
+        group: impl Fn(&Workspace) -> Option<K>,
+    ) -> bool {
+        let keys: Vec<Option<K>> = self.workspaces.iter().map(&group).collect();
+        // Each workspace's run: 0 for ungrouped, else 1 + where its group first appears.
+        let run = |i: usize| match &keys[i] {
+            None => 0,
+            Some(k) => 1 + keys.iter().position(|q| q.as_ref() == Some(k)).unwrap_or(i),
+        };
+        let mut order: Vec<usize> = (0..keys.len()).collect();
+        order.sort_by_key(|&i| run(i)); // stable: the order inside a run stays
+        if order.iter().enumerate().all(|(at, &i)| at == i) {
+            return false;
+        }
+        let mut old: Vec<Option<Workspace>> = std::mem::take(&mut self.workspaces)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.workspaces = order.into_iter().filter_map(|i| old[i].take()).collect();
+        true
     }
 
     /// The next unused id (ids are shared by workspaces, panes and tabs).
@@ -812,6 +894,53 @@ impl Workspace {
     fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
         self.panes.iter_mut().find(|p| p.id == id)
     }
+}
+
+/// Saved workspaces with each terminal tab's session renumbered by `map` (none: left out, with
+/// a pane or workspace it leaves empty); `active` follows its workspace (none if it went).
+pub fn renumber(
+    saved: &[SavedWorkspace],
+    active: Option<usize>,
+    map: impl Fn(usize) -> Option<usize>,
+) -> (Vec<SavedWorkspace>, Option<usize>) {
+    let mut kept = Vec::new();
+    let mut kept_active = None;
+    for (i, sw) in saved.iter().enumerate() {
+        // Each saved pane's new place in reading order, if kept.
+        let mut places: Vec<Option<usize>> = Vec::new();
+        let mut placed = 0;
+        let layout = filter_leaves(&sw.layout, &mut |sp: &SavedPane| {
+            let mut tabs = Vec::new();
+            let mut active = 0;
+            for (t, tab) in sp.tabs.iter().enumerate() {
+                let tab = match tab {
+                    SavedTab::Terminal { session } => match map(*session) {
+                        Some(session) => SavedTab::Terminal { session },
+                        None => continue,
+                    },
+                    browser => browser.clone(),
+                };
+                if t <= sp.active {
+                    active = tabs.len();
+                }
+                tabs.push(tab);
+            }
+            let pane = (!tabs.is_empty()).then(|| SavedPane { tabs, active });
+            places.push(pane.as_ref().map(|_| placed));
+            placed += usize::from(pane.is_some());
+            pane
+        });
+        let Some(layout) = layout else { continue };
+        if active == Some(i) {
+            kept_active = Some(kept.len());
+        }
+        kept.push(SavedWorkspace {
+            layout,
+            focused: places.get(sw.focused).copied().flatten().unwrap_or(0),
+            ..sw.clone()
+        });
+    }
+    (kept, kept_active)
 }
 
 /// `node` with each leaf mapped by `keep` (in reading order); a leaf it drops gives its space
@@ -1893,12 +2022,13 @@ mod tests {
         };
         let m = Model::from_old(&state, &started(4));
         ok(&m);
-        // Only (1 over 2) is good; 0 and 3 stand alone, as version 1 did.
+        // Only (1 over 2) is good; 0 and 3 stand alone, as version 1 did. The workspaces are in
+        // the old sidebar's order: by the first row each one held.
         assert_eq!(
             shape(&m),
             [
-                vec![vec![term(101)], vec![term(102)]],
                 vec![vec![term(100)]],
+                vec![vec![term(101)], vec![term(102)]],
                 vec![vec![term(103)]],
             ]
         );
@@ -1931,5 +2061,172 @@ mod tests {
             shape(&short),
             [vec![vec![term(100)]], vec![vec![term(101)]]]
         );
+    }
+
+    #[test]
+    fn old_layouts_come_back_in_the_old_sidebar_order() {
+        // Layouts were kept in the order they were made; the sidebar listed sessions in order.
+        let state = restore::decode(
+            r#"{"version": 1, "active": 0, "sessions": [{}, {}, {}],
+                "layouts": [{"leaf": 2}, {"split": {"axis": "row", "ratio": 0.5,
+                  "first": {"leaf": 1}, "second": {"leaf": 0}}}]}"#,
+        )
+        .unwrap();
+        let m = Model::from_old(&state, &started(3));
+        ok(&m);
+        assert_eq!(
+            shape(&m),
+            [
+                vec![vec![term(101)], vec![term(100)]],
+                vec![vec![term(102)]]
+            ]
+        );
+    }
+
+    #[test]
+    fn closing_a_pane_closes_its_tabs_and_cascades() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        m.add_tab(a.pane, web("https://a.test")).unwrap();
+        let b = m.split(a.pane, Axis::Row, term(2)).unwrap();
+        m.add_tab(b.pane, term(3)).unwrap();
+        let other = m.new_workspace(1, term(4)).unwrap();
+        m.focus_pane(b.pane);
+        let closed = m.close_pane(b.pane).unwrap();
+        ok(&m);
+        assert_eq!(
+            closed
+                .tabs
+                .iter()
+                .map(|t| t.kind.clone())
+                .collect::<Vec<_>>(),
+            [term(2), term(3)]
+        );
+        assert_eq!((closed.panes, closed.workspaces), (vec![b.pane], vec![]));
+        // Its neighbour takes its space and the focus.
+        assert_eq!(m.workspace(a.workspace).unwrap().layout, Node::Leaf(a.pane));
+        assert_eq!(m.focused_pane(), Some(a.pane));
+        // A workspace's last pane: the workspace goes too.
+        let last = m.close_pane(a.pane).unwrap();
+        ok(&m);
+        assert_eq!(last.workspaces, [a.workspace]);
+        assert_eq!(last.tabs.len(), 2);
+        assert_eq!(m.focused_workspace(), Some(other.workspace));
+        assert_eq!(m.close_pane(a.pane), None);
+    }
+
+    #[test]
+    fn a_drag_moves_within_its_pinned_or_unpinned_run_in_display_order() {
+        let mut m = Model::new();
+        let ids: Vec<WorkspaceId> = (0..5)
+            .map(|i| m.new_workspace(i as usize, term(i)).unwrap().workspace)
+            .collect();
+        m.set_pinned(ids[1], true);
+        m.set_pinned(ids[3], true);
+        // Display order: 1 3 | 0 2 4.
+        assert_eq!(m.display_order(), [ids[1], ids[3], ids[0], ids[2], ids[4]]);
+        // 4 to the top of the unpinned run (display place 2).
+        assert!(m.move_workspace_display(ids[4], 2));
+        assert_eq!(m.display_order(), [ids[1], ids[3], ids[4], ids[0], ids[2]]);
+        // 1 below 3 in the pinned run.
+        assert!(m.move_workspace_display(ids[1], 1));
+        assert_eq!(m.display_order(), [ids[3], ids[1], ids[4], ids[0], ids[2]]);
+        // Across the runs, or out of range: refused, nothing moves.
+        assert!(!m.move_workspace_display(ids[0], 0));
+        assert!(!m.move_workspace_display(ids[3], 4));
+        assert!(!m.move_workspace_display(ids[0], 9));
+        assert_eq!(m.display_order(), [ids[3], ids[1], ids[4], ids[0], ids[2]]);
+        // Unpinning still puts one back where it was in the sidebar order.
+        m.set_pinned(ids[1], false);
+        ok(&m);
+    }
+
+    #[test]
+    fn grouping_keeps_each_group_together_and_ungrouped_ones_first() {
+        let mut m = Model::new();
+        let ids: Vec<WorkspaceId> = (0..6)
+            .map(|i| m.new_workspace(i as usize, term(i)).unwrap().workspace)
+            .collect();
+        // Groups by terminal: 0 api, 1 none, 2 web, 3 api, 4 none, 5 web.
+        let group = |w: &Workspace| match m_terminal(w) % 3 {
+            0 => Some("api"),
+            1 => None,
+            _ => Some("web"),
+        };
+        let mut moved = m.clone();
+        assert!(moved.group_together(group));
+        ok(&moved);
+        let order: Vec<WorkspaceId> = moved.workspaces().iter().map(|w| w.id).collect();
+        assert_eq!(order, [ids[1], ids[4], ids[0], ids[3], ids[2], ids[5]]);
+        // Already together: nothing moves.
+        assert!(!moved.group_together(group));
+        let focused = m.focused_workspace();
+        m.group_together(group);
+        assert_eq!(m.focused_workspace(), focused);
+    }
+
+    /// A one-terminal workspace's terminal.
+    fn m_terminal(w: &Workspace) -> u64 {
+        match w.panes[0].tabs[0].kind {
+            TabKind::Terminal(id) => id,
+            TabKind::Browser { .. } => u64::MAX,
+        }
+    }
+
+    #[test]
+    fn a_file_loads_by_its_workspaces_or_else_its_old_layouts() {
+        let old = restore::decode(RECORDED_V1).unwrap();
+        assert_eq!(
+            Model::from_state(&old, &started(9)),
+            Model::from_old(&old, &started(9))
+        );
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(100)).unwrap();
+        m.split(a.pane, Axis::Column, term(101)).unwrap();
+        m.new_workspace(1, term(102)).unwrap();
+        let (workspaces, active) = m.to_saved(|id| Some((id - 100) as usize));
+        let state = SavedState {
+            sessions: vec![SavedSession::default(); 3],
+            workspaces,
+            active_workspace: active,
+            ..SavedState::default()
+        };
+        let back = Model::from_state(
+            &restore::decode(&restore::encode(&state)).unwrap(),
+            &started(3),
+        );
+        ok(&back);
+        assert_eq!(shape(&back), shape(&m));
+        assert_eq!(
+            back.focused_workspace(),
+            Some(back.workspaces()[1].id),
+            "the focused workspace comes back"
+        );
+    }
+
+    #[test]
+    fn renumbering_saved_sessions_drops_the_ones_left_out() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(0)).unwrap();
+        let b = m.split(a.pane, Axis::Row, term(1)).unwrap();
+        m.add_tab(b.pane, term(2)).unwrap();
+        m.new_workspace(1, term(3)).unwrap();
+        m.focus_pane(b.pane);
+        let (saved, active) = m.to_saved(|id| Some(id as usize));
+        // Sessions 1 and 3 are left out; 0 and 2 are now 0 and 1.
+        let map = |i: usize| match i {
+            0 => Some(0),
+            2 => Some(1),
+            _ => None,
+        };
+        let (kept, kept_active) = renumber(&saved, active, map);
+        let back = Model::from_saved(&kept, kept_active, &[Some(10), Some(12)]);
+        ok(&back);
+        assert_eq!(shape(&back), [vec![vec![term(10)], vec![term(12)]]]);
+        // The focus stays on the pane that held 1, now showing 2.
+        assert_eq!(back.focused_tab(), back.terminal_tab(12));
+        // The focused workspace's own sessions all left: no focused one.
+        let (_, none) = renumber(&saved, Some(1), map);
+        assert_eq!(none, None);
     }
 }

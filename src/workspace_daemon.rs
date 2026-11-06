@@ -8,15 +8,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, EntityId, Window, prelude::*};
+use gpui::{Context, Window, prelude::*};
 
 use crate::adopt::{self, LiveInfo, Placement, Probe, Slot};
 use crate::appearance::Appearance;
 use crate::daemon;
 use crate::daemon_client::{self, DaemonClient};
 use crate::groups;
+use crate::layout_model::Model;
 use crate::mux_proto::{self, Create, Progress, SetMeta};
-use crate::restore::{RestoreMode, SavedSession};
+use crate::restore::{RestoreMode, SavedSession, SavedState};
 use crate::session_list::SessionList;
 use crate::ssh_target::SshTarget;
 use crate::status::Status;
@@ -216,7 +217,7 @@ impl Workspace {
                 let listing = client.clone();
                 listed = cx.background_spawn(async move { listing.list() }).await;
             }
-            let Ok((placement, creates)) =
+            let Ok((placement, saved, creates)) =
                 this.update(cx, |this, cx| this.placement(&client, listed, cx))
             else {
                 return;
@@ -252,7 +253,7 @@ impl Workspace {
                 });
             }
             this.update_in(cx, |this, window, cx| {
-                this.adopt(&client, placement, &ids, window, cx);
+                this.adopt(&client, placement, &saved, &ids, window, cx);
                 if let Some(why) = refused {
                     this.ssh_failed(&why, cx);
                 }
@@ -262,14 +263,20 @@ impl Workspace {
         .detach();
     }
 
-    /// Where every session goes, and per slot the `Create` of one to start again (with its
-    /// SSH target: its program is filled in once read).
+    /// Where every session goes (the placement, and the sessions file it places them by), and
+    /// per slot the `Create` of one to start again (with its SSH target: its program is filled
+    /// in once read).
+    #[allow(clippy::type_complexity)]
     fn placement(
         &mut self,
         client: &DaemonClient,
         listed: std::io::Result<Vec<mux_proto::SessionInfo>>,
         cx: &Context<Self>,
-    ) -> (Placement, Vec<Option<(Create, Option<SshTarget>)>>) {
+    ) -> (
+        Placement,
+        SavedState,
+        Vec<Option<(Create, Option<SshTarget>)>>,
+    ) {
         if let Err(err) = &listed {
             eprintln!(
                 "[fuxx] background service: could not list its sessions ({err}); not reopening them, and keeping the sessions file for the next launch"
@@ -302,16 +309,18 @@ impl Workspace {
                 Slot::Live(_) => None,
             })
             .collect();
-        (placement, creates)
+        (placement, saved, creates)
     }
 
-    /// Show the placed sessions: live ones without their screens yet (fetched when shown, or
-    /// in the background soon after), restarted ones (`ids`, per slot) at once. Slots that
-    /// can't be shown are left out; with none at all, one plain session opens.
+    /// Show the placed sessions in their saved tabs (`saved`): live ones without their screens
+    /// yet (fetched when shown, or in the background soon after), restarted ones (`ids`, per
+    /// slot) at once. Slots that can't be shown are left out (their panes' neighbours take
+    /// their space); with none at all, one plain session opens.
     fn adopt(
         &mut self,
         client: &Arc<DaemonClient>,
         placement: Placement,
+        saved: &SavedState,
         ids: &[Option<u64>],
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -352,7 +361,9 @@ impl Workspace {
             self.hold_saving = true;
         }
         let placement = placement.without(&gone);
-        let entities: Vec<EntityId> = views.iter().map(|(_, v)| v.entity_id()).collect();
+        let shown: Vec<u64> = views.iter().map(|(id, _)| *id).collect();
+        let terminals = placement.terminals(&shown, saved.sessions.len());
+        self.collapsed = groups::collapsed_keys(&placement.collapsed, &placement.collapsed_hosts);
         for (slot, (id, view)) in placement.slots.into_iter().zip(views) {
             let session = self.session_for(slot, id, view, window, cx);
             let at = self.sessions.items().len();
@@ -363,15 +374,9 @@ impl Workspace {
             self.open_first(window, cx);
             return;
         }
-        self.layouts = placement
-            .layouts
-            .iter()
-            .map(|t| t.map(&|i| entities[i]))
-            .collect();
-        self.collapsed = groups::collapsed_keys(&placement.collapsed, &placement.collapsed_hosts);
-        // The normal route, so the active session's group opens (and its layout attaches as it
-        // is drawn).
-        self.sessions.select(placement.active);
+        self.set_model(Model::from_state(saved, &terminals));
+        // The normal route, so the focused workspace's group opens (and its panes attach as
+        // they are drawn).
         self.activate(window, cx);
         self.finish_restoring(cx);
         self.attach_rest_later(cx);
@@ -407,7 +412,6 @@ impl Workspace {
             progress,
             lost: false,
             ssh: saved.ssh,
-            color: saved.color,
             disconnected: None,
             retries: 0,
             opened_at: Instant::now(),
@@ -601,7 +605,7 @@ impl Workspace {
             if !session.lost || !live.contains(&session.id) {
                 continue;
             }
-            let (id, old) = (session.id, session.view.entity_id());
+            let id = session.id;
             let view = match TerminalView::attach_daemon(cx, client.clone(), id) {
                 Ok(view) => view,
                 Err(err) => {
@@ -609,15 +613,7 @@ impl Workspace {
                     continue;
                 }
             };
-            let new = view.entity_id();
-            let swap = |v: EntityId| if v == old { new } else { v };
-            self.layouts = self.layouts.iter().map(|t| t.map(&swap)).collect();
-            if self.renaming.as_ref().is_some_and(|(v, _)| *v == old) {
-                self.renaming = None;
-            }
-            if self.dragging.as_ref().is_some_and(|(v, _)| *v == old) {
-                self.dragging = None;
-            }
+            // Its tab names it by id, so it stays where it is.
             let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
             if let Some(session) = self.sessions.get_mut(index) {
                 session.view = view;
@@ -653,7 +649,7 @@ impl Workspace {
             .collect();
         // Dropping the views ends Local sessions and detaches the service's.
         self.sessions = SessionList::new();
-        self.layouts.clear();
+        self.model = Model::new();
         self.collapsed.clear();
         self.renaming = None;
         self.address_box = None;

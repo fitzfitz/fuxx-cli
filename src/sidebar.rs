@@ -1,10 +1,11 @@
-//! The sidebar (M11): every session as a row that reads at a glance, under its group's header.
+//! The sidebar (M11; M11b: a row per workspace): every workspace as a row that reads at a
+//! glance, under its group's header (its first terminal's folder or host).
 //!
-//! `rows` is the pure view-model: what each row shows (name, status and how long it has been in
-//! it, the waiting question, active / on screen, its tab colour), built from facts the Workspace
-//! hands over. The rest of the file draws it. Rows behave like tabs: a × on hover in the mark's
-//! place, a middle-click closes, a right-click opens the tab menu (`tab_menu`); on the right, the
-//! tab colour's dot and the ⌘1–⌘9 shortcut.
+//! `rows` is the pure view-model: what each row shows (name, its most urgent terminal's status
+//! and how long it has been in it, the waiting question, focused, its colour), built from facts
+//! the Workspace hands over. The rest of the file draws it. Rows behave like tabs: a × on hover
+//! in the mark's place, a middle-click closes, a right-click opens the row's menu (`tab_menu`);
+//! on the right, the colour's dot and the ⌘1–⌘9 shortcut.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -16,13 +17,14 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     Animation, AnimationExt, AnyElement, BoxShadow, ClickEvent, Context, DispatchPhase, Div,
-    DragMoveEvent, EntityId, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, ScrollHandle, SharedString, Task, Window, canvas,
-    div, point, prelude::*, px, relative,
+    DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathBuilder, ScrollHandle, SharedString, Task, Window, canvas, div, point,
+    prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
 use crate::groups::{self, GroupKey, Row};
+use crate::layout_model::WorkspaceId;
 use crate::preferences;
 use crate::presets::MAX_PRESETS;
 use crate::reduce_motion::WindowVisible;
@@ -40,9 +42,12 @@ use crate::ui_tokens::size::{
 use crate::ui_tokens::text;
 use crate::workspace::{POP_SHOWN, Session, Workspace};
 
-/// What the sidebar needs to know of one session, in sidebar order.
-pub struct SessionFacts<'a> {
+/// What the sidebar needs to know of one workspace, in display order: its name, colour and
+/// group, and the rest from the terminal its ring is (its most urgent: `subject`).
+pub struct WorkspaceFacts<'a> {
     pub label: &'a str,
+    /// The session (its place in the session list) the row's mark and age are about.
+    pub subject: usize,
     pub status: Status,
     /// When `status` last changed.
     pub since: Instant,
@@ -60,7 +65,7 @@ pub struct SessionFacts<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SidebarRow {
     Header(HeaderRow),
-    Session(SessionRow),
+    Workspace(WorkspaceRow),
 }
 
 /// A group's header.
@@ -76,20 +81,22 @@ pub struct HeaderRow {
     pub mark: Option<Status>,
 }
 
-/// A session's row.
+/// A workspace's row.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SessionRow {
-    /// Its place in the session list (⌘1–⌘9 select the first nine by it).
+pub struct WorkspaceRow {
+    /// Its place in the sidebar (⌘1–⌘9 select the first nine by it).
     pub index: usize,
+    /// The session its mark and age are about.
+    pub subject: usize,
     pub label: String,
     pub status: Status,
     /// How long it has been in its status ("4m"); Idle shows none.
     pub age: Option<String>,
     /// The small line under the name, if any.
     pub sub: Option<Sub>,
-    /// The focused session.
+    /// The focused workspace.
     pub active: bool,
-    /// In the layout on screen, but not the focused pane.
+    /// On screen, but not the focused one (never, since one workspace shows at a time).
     pub on_screen: bool,
     /// Under a group header.
     pub grouped: bool,
@@ -99,7 +106,7 @@ pub struct SessionRow {
     pub color: Option<TabColor>,
 }
 
-/// The line under a session's name.
+/// The line under a workspace's name.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Sub {
     /// What a waiting session is asking.
@@ -110,11 +117,11 @@ pub enum Sub {
     Note(String),
 }
 
-/// The sidebar's rows: leading ungrouped sessions, then each group under its header (a closed
-/// group's sessions left out). `active` is the focused session; `shown`, the sessions in the
-/// layout on screen.
+/// The sidebar's rows: leading ungrouped workspaces, then each group under its header (a closed
+/// group's workspaces left out). `active` is the focused workspace; `shown`, the others on
+/// screen.
 pub fn rows(
-    sessions: &[SessionFacts],
+    sessions: &[WorkspaceFacts],
     collapsed: &[GroupKey],
     active: Option<usize>,
     shown: &[usize],
@@ -144,8 +151,9 @@ pub fn rows(
             Row::Session { index, grouped } => {
                 let s = &sessions[index];
                 let is_active = active == Some(index);
-                SidebarRow::Session(SessionRow {
+                SidebarRow::Workspace(WorkspaceRow {
                     index,
+                    subject: s.subject,
                     label: s.label.to_string(),
                     status: s.status,
                     age: (s.status != Status::Idle)
@@ -164,7 +172,7 @@ pub fn rows(
 
 /// The line under a session's name: "not live" for a lost one; a waiting one's question; else
 /// a script's progress label and note.
-fn sub(s: &SessionFacts) -> Option<Sub> {
+fn sub(s: &WorkspaceFacts) -> Option<Sub> {
     if s.lost {
         return Some(Sub::Note("not live".into()));
     }
@@ -187,7 +195,7 @@ fn sub_line(progress: Option<&(u8, Option<String>)>, note: Option<&str>) -> Opti
     }
 }
 
-/// The shortcut that selects session `index` (0-based): "⌘1" to "⌘9" for the first nine, none
+/// The shortcut that selects the workspace in sidebar place `index` (0-based): "⌘1" to "⌘9" for the first nine, none
 /// after.
 pub fn shortcut_label(index: usize) -> Option<String> {
     (index < 9).then(|| format!("⌘{}", index + 1))
@@ -206,8 +214,8 @@ pub fn clamp_width(width: Option<f32>) -> f32 {
     }
 }
 
-/// Where a session dragged from `from` and dropped on `target`'s upper (or with `below`, lower)
-/// half lands, as `SessionList::move_item` takes it.
+/// Where a row dragged from `from` and dropped on `target`'s upper (or with `below`, lower)
+/// half lands, as `Model::move_workspace_display` takes it.
 pub fn drop_index(from: usize, target: usize, below: bool) -> usize {
     // The place before which it goes, then one less if taking it out shifted that place.
     let before = target + usize::from(below);
@@ -287,11 +295,11 @@ pub(crate) struct SidebarState {
     pub new_menu: bool,
     /// A row's tab menu is open (right-click).
     pub tab_menu: Option<TabMenu>,
-    /// While a row is dragged: the row the pointer is over (by view), and whether it's in its
-    /// lower half. Only where the drop would move it.
-    pub drop_at: Option<(EntityId, bool)>,
-    /// The row being dragged (by view), noted as its drag starts.
-    pub drag_source: Rc<Cell<Option<EntityId>>>,
+    /// While a row is dragged: the row the pointer is over, and whether it's in its lower
+    /// half. Only where the drop would move it.
+    pub drop_at: Option<(WorkspaceId, bool)>,
+    /// The row being dragged, noted as its drag starts.
+    pub drag_source: Rc<Cell<Option<WorkspaceId>>>,
     /// The group last opened or closed, and that toggle's number: its chevron turns.
     pub turned: Option<(GroupKey, u64)>,
     turns: u64,
@@ -341,9 +349,9 @@ impl SidebarState {
     }
 }
 
-/// What a sidebar row carries while it's dragged: the session (by its view) and its group.
-pub(crate) struct DraggedSession {
-    view: EntityId,
+/// What a sidebar row carries while it's dragged: the workspace and its group.
+pub(crate) struct DraggedWorkspace {
+    workspace: WorkspaceId,
     group: Option<GroupKey>,
 }
 
@@ -454,48 +462,46 @@ fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
 impl Workspace {
     /// The sidebar's rows as they are now.
     fn sidebar_rows(&self, now: Instant) -> Vec<SidebarRow> {
+        let order = self.model.display_order();
         let items = self.sessions.items();
-        let labels: Vec<SharedString> = items.iter().map(Session::label).collect();
-        let facts: Vec<SessionFacts> = items
+        // Every workspace has a terminal for its ring (browser tabs come in a later task).
+        let rows_of: Vec<(WorkspaceId, SharedString, usize)> = order
             .iter()
-            .zip(&labels)
-            .map(|(s, label)| SessionFacts {
-                label,
-                status: s.status,
-                since: s.status_since,
-                question: s.question.as_deref(),
-                group: s.group(),
-                progress: s.progress.as_ref(),
-                note: s.note.as_deref(),
-                lost: s.lost,
-                color: s.color,
+            .filter_map(|&ws| Some((ws, self.workspace_label(ws), self.rollup_session(ws)?)))
+            .collect();
+        let facts: Vec<WorkspaceFacts> = rows_of
+            .iter()
+            .map(|(ws, label, subject)| {
+                let ws = *ws;
+                let s = &items[*subject];
+                WorkspaceFacts {
+                    label,
+                    subject: *subject,
+                    status: s.status,
+                    since: s.status_since,
+                    question: s.question.as_deref(),
+                    group: self.workspace_group(ws),
+                    progress: s.progress.as_ref(),
+                    note: s.note.as_deref(),
+                    lost: s.lost,
+                    color: self.model.workspace(ws).and_then(|w| w.color),
+                }
             })
             .collect();
-        let shown: Vec<usize> = self
-            .shown_layout()
-            .map(|t| {
-                t.leaves()
-                    .into_iter()
-                    .filter_map(|id| self.sessions.position(|s| s.view.entity_id() == id))
-                    .collect()
-            })
-            .unwrap_or_default();
-        rows(
-            &facts,
-            &self.collapsed,
-            self.sessions.active_index(),
-            &shown,
-            now,
-        )
+        let active = self
+            .model
+            .focused_workspace()
+            .and_then(|f| order.iter().position(|&w| w == f));
+        rows(&facts, &self.collapsed, active, &[], now)
     }
 
-    /// The sessions that have a row in the sidebar, in order: all but those folded in a closed
-    /// group (scrolled out of view or not).
-    pub(crate) fn sessions_with_rows(&self) -> Vec<usize> {
+    /// The workspaces (by place in the sidebar) that have a row: all but those folded in a
+    /// closed group (scrolled out of view or not).
+    pub(crate) fn workspaces_with_rows(&self) -> Vec<usize> {
         self.sidebar_rows(Instant::now())
             .into_iter()
             .filter_map(|row| match row {
-                SidebarRow::Session(s) => Some(s.index),
+                SidebarRow::Workspace(s) => Some(s.index),
                 SidebarRow::Header(_) => None,
             })
             .collect()
@@ -512,18 +518,24 @@ impl Workspace {
             .into_iter()
             .filter_map(|row| match row {
                 SidebarRow::Header(h) => h.mark,
-                SidebarRow::Session(s) => Some(s.status),
+                SidebarRow::Workspace(s) => Some(s.status),
             })
             .chain(headers)
             .collect()
     }
 
-    /// Whether session `index`'s row is on screen: the sidebar is shown, its group open, and
-    /// the row in the scrolled view.
+    /// Whether session `index`'s workspace's row is on screen: the sidebar is shown, its
+    /// group open, and the row in the scrolled view.
     pub(crate) fn row_on_screen(&self, index: usize) -> bool {
+        let Some(number) = self
+            .workspace_of(index)
+            .and_then(|ws| self.workspace_number(ws))
+        else {
+            return false;
+        };
         self.rows_in_view(Instant::now())
             .iter()
-            .any(|row| matches!(row, SidebarRow::Session(s) if s.index == index))
+            .any(|row| matches!(row, SidebarRow::Workspace(s) if s.index + 1 == number))
     }
 
     /// The sidebar's rows in the scrolled view; none with the sidebar hidden.
@@ -552,7 +564,7 @@ impl Workspace {
                 .rows_in_view(now)
                 .into_iter()
                 .filter_map(|row| match row {
-                    SidebarRow::Session(s) if s.age.is_some() => Some(s.index),
+                    SidebarRow::Workspace(s) if s.age.is_some() => Some(s.subject),
                     _ => None,
                 });
             // Pane headers show an age too (every status but Idle).
@@ -604,7 +616,7 @@ impl Workspace {
                 self.sidebar.reveal_active = false;
                 let active = rows
                     .iter()
-                    .position(|r| matches!(r, SidebarRow::Session(s) if s.active));
+                    .position(|r| matches!(r, SidebarRow::Workspace(s) if s.active));
                 if let Some(i) = active {
                     self.sidebar.scroll.scroll_to_item(i);
                 }
@@ -615,7 +627,7 @@ impl Workspace {
             .enumerate()
             .map(|(i, row)| match row {
                 SidebarRow::Header(h) => self.render_header(h, i == 0, ui, cx),
-                SidebarRow::Session(s) => self.render_session_row(s, ui, cx),
+                SidebarRow::Workspace(s) => self.render_workspace_row(s, ui, cx),
             })
             .collect();
         let band = self.render_top_band("sidebar-band", window, cx);
@@ -786,20 +798,21 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A session's row: mark (a × in its place on hover), name
-    /// (or the rename box), age (when the row is wide enough), on-screen pip, tab colour dot and
-    /// ⌘N shortcut; under them a waiting session's question or a script's note; a script's
+    /// A workspace's row: its most urgent terminal's mark (a × in its place on hover), name
+    /// (or the rename box), age (when the row is wide enough), on-screen pip, colour dot and
+    /// ⌘N shortcut; under them a waiting terminal's question or a script's note; a script's
     /// progress along the bottom. Click selects, double-click renames, the × or a middle-click
-    /// closes, a right-click opens the tab menu; it can be dragged within its group.
-    fn render_session_row(
+    /// closes, a right-click opens its menu; it can be dragged within its group.
+    fn render_workspace_row(
         &self,
-        row: &SessionRow,
+        row: &WorkspaceRow,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let index = row.index;
-        let session = &self.sessions.items()[index];
-        let view = session.view.entity_id();
+        let Some(&ws) = self.model.display_order().get(row.index) else {
+            return div().into_any_element();
+        };
+        let session = &self.sessions.items()[row.subject];
         let waiting = row.status == Status::Waiting;
         // The active row is filled; a waiting one is tinted. Hover deepens either a little.
         let fill = if row.active {
@@ -823,27 +836,21 @@ impl Workspace {
         let rename_box = self
             .renaming
             .as_ref()
-            .filter(|(v, _)| *v == view)
+            .filter(|(w, _)| *w == ws)
             .map(|(_, input)| input.clone());
-        let group = session.group();
+        let group = self.workspace_group(ws);
         // While a row is dragged: it's dimmed; rows of another group refuse it.
         let dragged = self
             .sidebar
             .drag_source
             .get()
             .filter(|_| cx.has_active_drag());
-        let lifted = dragged == Some(view);
-        let refused = dragged.is_some_and(|d| {
-            self.sessions
-                .items()
-                .iter()
-                .find(|s| s.view.entity_id() == d)
-                .is_some_and(|s| s.group() != group)
-        });
+        let lifted = dragged == Some(ws);
+        let refused = dragged.is_some_and(|d| self.workspace_group(d) != group);
         let insertion = self
             .sidebar
             .drop_at
-            .filter(|(v, _)| dragged.is_some() && *v == view)
+            .filter(|(w, _)| dragged.is_some() && *w == ws)
             .map(|(_, below)| below);
 
         let name: AnyElement = match rename_box {
@@ -865,7 +872,7 @@ impl Workspace {
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(self.close_slot(view, session, ui, surface, cx))
+            .child(self.close_slot(ws, session, ui, surface, cx))
             .child(
                 div()
                     .flex_1()
@@ -937,7 +944,7 @@ impl Workspace {
         };
         let accepts = group.clone();
         div()
-            .id(("session", view))
+            .id(("workspace", ws.0 as usize))
             .group(ROW_GROUP)
             .flex_none()
             .relative()
@@ -963,49 +970,49 @@ impl Workspace {
                 }
             })
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                this.select(index, window, cx);
+                this.select_workspace(ws, window, cx);
                 if event.click_count() == 2 {
-                    this.start_rename(index, window, cx);
+                    this.start_rename(ws, window, cx);
                 }
             }))
             // A middle-click closes it, like its ×; it never selects or drags (both left only).
             .on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if event.is_middle_click() {
-                    this.close_view(view, window, cx);
+                    this.close_workspace(ws, window, cx);
                 }
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.open_tab_menu(view, event.position, window, cx)
+                    this.open_tab_menu(ws, event.position, window, cx)
                 }),
             )
             .on_drag(
-                DraggedSession {
-                    view,
+                DraggedWorkspace {
+                    workspace: ws,
                     group: group.clone(),
                 },
                 move |dragged, _, _, cx| {
-                    source.set(Some(dragged.view));
+                    source.set(Some(dragged.workspace));
                     cx.new(|_| DragPreview {
                         label: preview.label.clone(),
                         ..preview
                     })
                 },
             )
-            // Only rows of the dragged session's group accept it; the drop re-checks.
+            // Only rows of the dragged workspace's group accept it; the drop re-checks.
             .can_drop(move |dragged, _, _| {
                 dragged
-                    .downcast_ref::<DraggedSession>()
+                    .downcast_ref::<DraggedWorkspace>()
                     .is_some_and(|d| d.group == accepts)
             })
-            .on_drag_move(
-                cx.listener(move |this, event: &DragMoveEvent<DraggedSession>, _, cx| {
-                    this.drag_over_row(view, event, cx)
-                }),
-            )
-            .on_drop(cx.listener(move |this, dragged: &DraggedSession, _, cx| {
-                this.drop_session(dragged.view, view, cx)
+            .on_drag_move(cx.listener(
+                move |this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
+                    this.drag_over_row(ws, event, cx)
+                },
+            ))
+            .on_drop(cx.listener(move |this, dragged: &DraggedWorkspace, _, cx| {
+                this.drop_workspace(dragged.workspace, ws, cx)
             }))
             // The active row's accent bar, on its left edge.
             .when(row.active, |row| {
@@ -1100,10 +1107,10 @@ impl Workspace {
     }
 
     /// A row's mark slot: its status mark, or while the row is hovered a × in its place that
-    /// closes the session (like ⌘W).
+    /// closes the workspace (asking first when it has 2+ terminals).
     fn close_slot(
         &self,
-        view: EntityId,
+        ws: WorkspaceId,
         session: &Session,
         ui: UiColors,
         surface: Rgb,
@@ -1118,7 +1125,7 @@ impl Workspace {
             .child(self.session_mark("row", session, ui, surface))
             .group_hover(ROW_GROUP, |s| s.invisible());
         let close = div()
-            .id(("row-close", view))
+            .id(("row-close", ws.0 as usize))
             .absolute()
             .top(px(-(CLOSE_BUTTON - MARK_SLOT) / 2.0))
             .left(px(-(CLOSE_BUTTON - MARK_SLOT) / 2.0))
@@ -1135,7 +1142,7 @@ impl Workspace {
             .group_hover(ROW_GROUP, |s| s.visible())
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation(); // not also a click on the row
-                this.close_view(view, window, cx)
+                this.close_workspace(ws, window, cx)
             }));
         div()
             .flex_none()
@@ -1145,25 +1152,26 @@ impl Workspace {
             .child(close)
     }
 
-    /// The pointer moved during a row drag: if it's over this row (`view`) and dropping there
+    /// The pointer moved during a row drag: if it's over this row (`ws`) and dropping there
     /// would move the dragged one, the insertion line goes above or below it.
     fn drag_over_row(
         &mut self,
-        view: EntityId,
-        event: &DragMoveEvent<DraggedSession>,
+        ws: WorkspaceId,
+        event: &DragMoveEvent<DraggedWorkspace>,
         cx: &mut Context<Self>,
     ) {
         let over = event.bounds.contains(&event.event.position);
-        if !over && self.sidebar.drop_at.is_none_or(|(v, _)| v != view) {
+        if !over && self.sidebar.drop_at.is_none_or(|(w, _)| w != ws) {
             return; // not this row's business
         }
         let dragged = event.drag(cx);
-        let (dragged, group) = (dragged.view, dragged.group.clone());
-        let find = |id: EntityId| self.sessions.position(|s| s.view.entity_id() == id);
-        let next = match (over, find(dragged), find(view)) {
-            (true, Some(from), Some(to)) if self.sessions.items()[to].group() == group => {
+        let (dragged, group) = (dragged.workspace, dragged.group.clone());
+        let order = self.model.display_order();
+        let find = |id: WorkspaceId| order.iter().position(|&w| w == id);
+        let next = match (over, find(dragged), find(ws)) {
+            (true, Some(from), Some(to)) if self.workspace_group(ws) == group => {
                 let below = event.event.position.y > event.bounds.center().y;
-                (drop_index(from, to, below) != from).then_some((view, below))
+                (drop_index(from, to, below) != from).then_some((ws, below))
             }
             _ => None,
         };
@@ -1528,7 +1536,7 @@ impl Workspace {
     }
 }
 
-/// A header's element id: stable while its sessions are reordered or closed.
+/// A header's element id: stable while its workspaces are reordered or closed.
 fn group_id(key: &GroupKey) -> u64 {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
@@ -1549,9 +1557,10 @@ mod tests {
         status: Status,
         since: Instant,
         group: Option<GroupKey>,
-    ) -> SessionFacts<'_> {
-        SessionFacts {
+    ) -> WorkspaceFacts<'_> {
+        WorkspaceFacts {
             label,
+            subject: 0,
             status,
             since,
             question: None,
@@ -1563,9 +1572,9 @@ mod tests {
         }
     }
 
-    fn session(row: &SidebarRow) -> &SessionRow {
+    fn session(row: &SidebarRow) -> &WorkspaceRow {
         match row {
-            SidebarRow::Session(s) => s,
+            SidebarRow::Workspace(s) => s,
             SidebarRow::Header(h) => panic!("a header: {h:?}"),
         }
     }
@@ -1573,7 +1582,7 @@ mod tests {
     fn header(row: &SidebarRow) -> &HeaderRow {
         match row {
             SidebarRow::Header(h) => h,
-            SidebarRow::Session(s) => panic!("a session: {s:?}"),
+            SidebarRow::Workspace(s) => panic!("a session: {s:?}"),
         }
     }
 

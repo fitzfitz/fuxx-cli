@@ -1268,7 +1268,7 @@ fn sidebar_scenes() {
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(sidebar_appearance(theme, cx));
                 let ws = cx.new(|cx| {
-                    let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                    let mut ws = sidebar_workspace(&EIGHT, None, 3, &[WEB], window, cx);
                     ws.sidebar.width = width;
                     with_progress(&mut ws);
                     ws
@@ -1303,7 +1303,7 @@ fn sidebar_scenes() {
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(sidebar_appearance(theme, cx));
                 let ws = cx.new(|cx| {
-                    let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                    let mut ws = sidebar_workspace(&EIGHT, None, 3, &[WEB], window, cx);
                     ws.sidebar.hint_dismissed = true;
                     with_progress(&mut ws);
                     ws
@@ -1442,12 +1442,13 @@ fn tab_scenes() {
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(sidebar_appearance(theme, cx));
                 let ws = cx.new(|cx| {
-                    let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                    let mut ws = sidebar_workspace(&EIGHT, None, 3, &[WEB], window, cx);
                     ws.sidebar.width = width;
                     ws.sidebar.hint_dismissed = true;
                     with_progress(&mut ws);
                     for (i, color) in colors {
-                        ws.sessions.get_mut(i).expect("a session").color = Some(color);
+                        let row = ws.model.display_order()[i];
+                        ws.model.set_color(row, Some(color));
                     }
                     ws
                 });
@@ -1479,8 +1480,8 @@ fn tab_scenes() {
                         cx.simulate_mouse_down(window, codex, MouseButton::Right, none);
                         let open = cx.read(|cx| {
                             let ws = ws.read(cx);
-                            let view = ws.sessions.items()[1].view.entity_id();
-                            ws.sidebar.tab_menu.as_ref().map(|m| m.view == view)
+                            let row = ws.model.display_order()[1];
+                            ws.sidebar.tab_menu.as_ref().map(|m| m.workspace == row)
                         });
                         assert_eq!(open, Some(true), "{scene}-{slug}: codex's menu opens");
                     }
@@ -1556,7 +1557,9 @@ fn tab_scenes() {
             cx.simulate_click(window, at, none);
             cx.read(|cx| {
                 let ws = ws.read(cx);
-                assert_eq!(ws.sessions.items()[1].color, Some(TabColor::Blue), "{slug}");
+                let row = ws.model.display_order()[1];
+                let color = ws.model.workspace(row).and_then(|w| w.color);
+                assert_eq!(color, Some(TabColor::Blue), "{slug}");
                 assert!(ws.sidebar.tab_menu.is_none(), "{slug}: the menu closed");
             });
             // Middle-click tests (row 3): closed, and nothing else selected.
@@ -1829,7 +1832,7 @@ fn switcher_scenes() {
                 let ws = slotted(&slot);
                 cx.update_window(window, |_, window, cx| {
                     ws.update(cx, |ws, cx| match scene {
-                        "rename" => ws.start_rename(3, window, cx),
+                        "rename" => ws.start_rename(ws.model.display_order()[3], window, cx),
                         _ => ws.open_switcher(window, cx),
                     })
                 })
@@ -1921,7 +1924,7 @@ fn overlays() {
         ] {
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| match step {
-                    "rename" => ws.start_rename(3, window, cx),
+                    "rename" => ws.start_rename(ws.model.display_order()[3], window, cx),
                     "address" => ws.open_address_box(window, cx),
                     _ => ws.open_switcher(window, cx),
                 })

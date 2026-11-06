@@ -1,15 +1,16 @@
-//! Pane headers (M11): when a session is split, each pane gets a 22 px strip above its terminal
-//! with its status mark, number, name (and its tab colour's dot) and how long it has been in that
-//! status. `shows` and `look` are the pure model (when, and with which colours);
+//! Pane headers (M11): when a workspace is split, each pane gets a 22 px strip above its shown
+//! terminal with its status mark, number, name and how long it has been in that status (until
+//! M11b's tab bars replace them). `shows` and `look` are the pure model (when, and with which colours);
 //! `Workspace::pane_header` draws it, and `divider_active` decides which divider is drawn as the
 //! 2 px accent line.
 
 use std::time::Instant;
 
 use alacritty_terminal::vte::ansi::Rgb;
-use gpui::{AnyElement, EntityId, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, SharedString, div, prelude::*, px};
 
-use crate::sidebar::{color_dot, mark_slot, tabular};
+use crate::layout_model::PaneId;
+use crate::sidebar::{mark_slot, tabular};
 use crate::status::{self, Status};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
@@ -58,8 +59,8 @@ const PAD: f32 = 8.0;
 const UNDERLINE: f32 = 2.0;
 
 impl Workspace {
-    /// The sessions of the layout on screen that get a header, in layout order (none unless
-    /// it's split).
+    /// The sessions the panes on screen show under a header, in layout order (none unless the
+    /// workspace is split).
     pub(crate) fn header_sessions(&self) -> Vec<usize> {
         let Some(tree) = self.shown_layout() else {
             return Vec::new();
@@ -70,15 +71,15 @@ impl Workspace {
         }
         leaves
             .into_iter()
-            .filter_map(|id| self.sessions.position(|s| s.view.entity_id() == id))
+            .filter_map(|pane| self.pane_session(pane).and_then(|s| self.index_of(s.id)))
             .collect()
     }
 
-    /// The header of the pane showing `view`; `None` for a pane with none.
-    pub(crate) fn pane_header(&self, view: EntityId, ui: UiColors) -> Option<AnyElement> {
-        let index = self.sessions.position(|s| s.view.entity_id() == view)?;
-        let session = &self.sessions.items()[index];
-        let focused = self.sessions.active_index() == Some(index);
+    /// The header of `pane`, about the session it shows; `None` for a pane with none.
+    pub(crate) fn pane_header(&self, pane: PaneId, ui: UiColors) -> Option<AnyElement> {
+        let session = self.pane_session(pane)?;
+        let index = self.index_of(session.id)?;
+        let focused = self.model.focused_pane() == Some(pane);
         let look = look(&ui, session.status, focused);
         let age: Option<SharedString> = (session.status != Status::Idle).then(|| {
             status::age_label(Instant::now().saturating_duration_since(session.status_since)).into()
@@ -116,7 +117,6 @@ impl Workspace {
                         .text_color(hsla(look.text))
                         .child(session.label()),
                 )
-                .children(session.color.map(|color| color_dot(color, ui)))
                 .child(div().flex_1())
                 .children(age.map(|age| {
                     div()
