@@ -6,19 +6,23 @@
 //! width, then the row scrolls sideways. On the right, pinned: new terminal tab, new browser tab
 //! split right, split down.
 //!
-//! `bar_tabs`, `icon`, `tip`, `look` and `BarButton` are the pure model; the rest draws the bar
-//! and acts on its clicks.
+//! A tab can be dragged (M11b Task 7): within its bar or into another pane's (an insertion line
+//! shows where it lands), or onto a sidebar row (into that workspace's focused pane, at the end).
+//!
+//! `bar_tabs`, `icon`, `tip`, `look`, `insertion_gap`, `line_edge` and `BarButton` are the pure
+//! model; the rest draws the bar and acts on its clicks and drags.
 
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, AnyView, ClickEvent, Context, Div, Focusable, MouseButton, MouseDownEvent,
-    PathBuilder, Pixels, Point, ScrollHandle, SharedString, Window, canvas, div, point, prelude::*,
-    px,
+    AnyElement, AnyView, ClickEvent, Context, Div, DragMoveEvent, Focusable, MouseButton,
+    MouseDownEvent, PathBuilder, Pixels, Point, ScrollHandle, SharedString, Window, canvas, div,
+    point, prelude::*, px,
 };
 
-use crate::layout_model::{Pane, PaneId, TabId, TabKind};
+use crate::appearance::Appearance;
+use crate::layout_model::{Pane, PaneId, TabDrop, TabId, TabKind};
 use crate::restore::{Launch, SavedSession};
 use crate::sidebar::{mark_size, mark_slot};
 use crate::sidebar_toggle::Tip;
@@ -27,7 +31,7 @@ use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::TAB_BAR;
+use crate::ui_tokens::size::{DIVIDER_ACTIVE, TAB_BAR};
 use crate::ui_tokens::text;
 use crate::workspace::{At, Renaming, Workspace};
 use crate::workspace_ssh::Place;
@@ -122,6 +126,32 @@ pub fn bar_tabs(
         .collect()
 }
 
+/// The gap a tab dragged over a bar goes into, from the pointer's `x` and the bar's tabs'
+/// `(left, right)` edges as drawn (scrolled), in order: before the first tab whose middle is
+/// right of the pointer, else after the last (the bar's empty part and its buttons).
+pub fn insertion_gap(x: f32, tabs: &[(f32, f32)]) -> usize {
+    tabs.iter()
+        .take_while(|(left, right)| (left + right) / 2.0 < x)
+        .count()
+}
+
+/// Which side of a tab the insertion line is drawn on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+}
+
+/// The tab that draws the insertion line for `gap` in a bar of `count` tabs, and on which edge:
+/// the tab after the gap on its left, or after the last tab, that one on its right.
+pub fn line_edge(gap: usize, count: usize) -> Option<(usize, Edge)> {
+    match count {
+        0 => None,
+        _ if gap < count => Some((gap, Edge::Left)),
+        _ => Some((count - 1, Edge::Right)),
+    }
+}
+
 /// How a tab is drawn.
 #[derive(Debug, PartialEq)]
 pub struct Look {
@@ -186,6 +216,66 @@ impl BarButton {
     }
 }
 
+/// What a pane tab carries while it's dragged.
+pub(crate) struct DraggedTab {
+    pub tab: TabId,
+}
+
+/// The tab that follows the pointer during a drag: a chip as big as the tab, with its icon (or
+/// mark) and title. It hangs just below the pointer, so the bar it's over (and the insertion
+/// line) stays in sight.
+struct TabChip {
+    title: SharedString,
+    icon: TabIcon,
+    width: f32,
+    /// How far below the drawn spot (the tab's top-left, as GPUI keeps it under the pointer)
+    /// the chip starts: the grab's height in the tab, and a little more.
+    below: f32,
+}
+
+/// The gap between the pointer and the chip under it.
+const CHIP_GAP: f32 = 6.0;
+
+impl Render for TabChip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = cx.global::<Appearance>().theme.ui();
+        let icon: AnyElement = match self.icon {
+            TabIcon::Mark(status) => {
+                status_mark::mark_on(status, &ui, 0.0, None, px(mark_size(status)), ui.panel)
+                    .into_any_element()
+            }
+            TabIcon::Globe => glyph(Glyph::Globe, ui.text).into_any_element(),
+            TabIcon::Terminal => glyph(Glyph::Terminal, ui.text).into_any_element(),
+        };
+        let chip = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w(px(self.width))
+            .h(px(TAB_BAR))
+            .pl(px(TAB_PAD_LEFT))
+            .pr(px(TAB_PAD_RIGHT + CLOSE))
+            .gap(px(TAB_GAP))
+            .rounded(px(4.0))
+            .opacity(0.95)
+            .shadow_md()
+            .bg(hsla(ui.panel))
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .text_size(px(text::NAME))
+            .text_color(hsla(ui.text))
+            .child(mark_slot(icon))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(self.title.clone()),
+            );
+        div().pt(px(self.below)).child(chip)
+    }
+}
+
 /// A tab's side padding and the gap between its parts; the × button's side.
 const TAB_PAD_LEFT: f32 = 8.0;
 const TAB_PAD_RIGHT: f32 = 4.0;
@@ -228,6 +318,11 @@ impl Workspace {
             |tab| self.browser_titles.get(&tab).map(|t| t.clone().into()),
         );
         let scroll = self.tab_row_scroll(pane, p.active, &tabs);
+        // While a tab is dragged over this bar: where it would land.
+        let line = match self.dragged_tab(cx).and(self.tab_drop) {
+            Some(TabDrop::Bar { pane: p, gap }) if p == pane => line_edge(gap, tabs.len()),
+            _ => None,
+        };
         let row = div()
             .id(("pane-tabs", pane.0 as usize))
             .flex()
@@ -237,10 +332,14 @@ impl Workspace {
             .h_full()
             .overflow_x_scroll()
             .track_scroll(&scroll)
-            .children(
-                tabs.into_iter()
-                    .map(|tab| self.render_tab(tab, ui, focused, cx)),
-            )
+            .children(tabs.into_iter().enumerate().map(|(i, tab)| {
+                let edge = line.filter(|(at, _)| *at == i).map(|(_, edge)| edge);
+                // As last laid out, for its drag chip.
+                let width = scroll
+                    .bounds_for_item(i)
+                    .map_or(TAB_MAX_WIDTH, |b| f32::from(b.size.width));
+                self.render_tab(tab, ui, focused, edge, width, cx)
+            }))
             // What the tabs leave empty; it takes no space once they fill the row.
             .child({
                 let filler = div()
@@ -279,6 +378,17 @@ impl Workspace {
                         this.focus_pane_of_bar(pane, window, cx)
                     }),
                 )
+                // A dragged tab lands in the gap nearest the pointer: over a tab, the empty part
+                // (the window-drag area: its handlers stop nothing) or the buttons (the end).
+                .on_drag_move(
+                    cx.listener(move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                        this.drag_tab_over_bar(pane, event, cx)
+                    }),
+                )
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                    let here = |at| matches!(at, TabDrop::Bar { pane: p, .. } if p == pane);
+                    this.drop_tab(dragged.tab, here, window, cx)
+                }))
                 .child(row)
                 .child(buttons)
                 .into_any_element(),
@@ -306,12 +416,16 @@ impl Workspace {
     }
 
     /// One tab: its icon (or mark), its title (or the rename box), × on hover, the accent line
-    /// along the top of the focused pane's active tab.
+    /// along the top of the focused pane's active tab. It can be dragged (a press and a move of
+    /// a few pixels; a click stays a click), dimmed meanwhile, its chip `width` wide; `line`: a
+    /// dragged tab would land on this side of it.
     fn render_tab(
         &self,
         tab: BarTab,
         ui: UiColors,
         pane_focused: bool,
+        line: Option<Edge>,
+        width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = look(&ui, tab.status, tab.active, pane_focused);
@@ -374,6 +488,9 @@ impl Workspace {
             }));
         let terminal = tab.terminal;
         let tip = tab.tip.clone();
+        let lifted = self.dragged_tab(cx) == Some(id);
+        let (source, rows) = (self.tab_drag.clone(), self.sidebar.drag_source.clone());
+        let (chip_title, chip_icon) = (tab.title.clone(), tab.icon);
         div()
             .id(("pane-tab", id.0 as usize))
             .group(group)
@@ -413,6 +530,29 @@ impl Workspace {
                         .bg(hsla(ui.accent)),
                 )
             })
+            .when_some(line, |t, edge| {
+                let line = div()
+                    .absolute()
+                    .top_0()
+                    .h_full()
+                    .w(px(DIVIDER_ACTIVE))
+                    .bg(hsla(ui.accent));
+                t.child(match edge {
+                    Edge::Left => line.left_0(),
+                    Edge::Right => line.right_0(),
+                })
+            })
+            .when(lifted, |t| t.opacity(0.4))
+            .on_drag(DraggedTab { tab: id }, move |dragged, grab, _, cx| {
+                source.set(Some(dragged.tab));
+                rows.set(None); // not a row's drag any more
+                cx.new(|_| TabChip {
+                    title: chip_title.clone(),
+                    icon: chip_icon,
+                    width,
+                    below: f32::from(grab.y) + CHIP_GAP,
+                })
+            })
             // Its press is its own (not the bar's, which only focuses the pane).
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                 cx.stop_propagation()
@@ -439,6 +579,48 @@ impl Workspace {
             )
             .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() })
             .into_any_element()
+    }
+
+    /// The pointer moved during a tab drag: if it's over `pane`'s bar and dropping there would
+    /// move the tab, the insertion line goes in the gap nearest it (`insertion_gap`).
+    fn drag_tab_over_bar(
+        &mut self,
+        pane: PaneId,
+        event: &DragMoveEvent<DraggedTab>,
+        cx: &mut Context<Self>,
+    ) {
+        let over = event.bounds.contains(&event.event.position);
+        let ours = matches!(self.tab_drop, Some(TabDrop::Bar { pane: p, .. }) if p == pane);
+        if !over && !ours {
+            return; // not this bar's business
+        }
+        let next = over
+            .then(|| {
+                let x = f32::from(event.event.position.x);
+                TabDrop::Bar {
+                    pane,
+                    gap: insertion_gap(x, &self.tab_edges(pane)),
+                }
+            })
+            .filter(|at| self.model.drop_place(event.drag(cx).tab, *at).is_some());
+        if self.tab_drop != next {
+            self.tab_drop = next;
+            cx.notify();
+        }
+    }
+
+    /// `pane`'s tabs' left and right edges as last drawn (its row scrolled), in bar order.
+    fn tab_edges(&self, pane: PaneId) -> Vec<(f32, f32)> {
+        let count = self.model.pane(pane).map_or(0, |p| p.tabs.len());
+        let scrolls = self.tab_scroll.borrow();
+        let Some((scroll, _)) = scrolls.get(&pane) else {
+            return Vec::new();
+        };
+        let dx = f32::from(scroll.offset().x);
+        (0..count)
+            .map_while(|i| scroll.bounds_for_item(i))
+            .map(|b| (f32::from(b.left()) + dx, f32::from(b.right()) + dx))
+            .collect()
     }
 
     /// A press on a bar's empty part: its pane takes the focus (and the keyboard comes back
@@ -930,6 +1112,37 @@ mod tests {
             BarButton::ALL.map(BarButton::enabled),
             [true, true, true, true]
         );
+    }
+
+    #[test]
+    fn a_dragged_tab_goes_into_the_gap_nearest_the_pointer() {
+        // Three 100 px tabs from x = 240 (after the sidebar).
+        let tabs = [(240.0, 340.0), (340.0, 440.0), (440.0, 540.0)];
+        // Left of the first tab's middle: before it; right of the last one's: after it.
+        assert_eq!(insertion_gap(0.0, &tabs), 0);
+        assert_eq!(insertion_gap(250.0, &tabs), 0);
+        assert_eq!(insertion_gap(289.0, &tabs), 0);
+        assert_eq!(insertion_gap(291.0, &tabs), 1);
+        assert_eq!(insertion_gap(339.0, &tabs), 1);
+        assert_eq!(insertion_gap(389.0, &tabs), 1);
+        assert_eq!(insertion_gap(391.0, &tabs), 2);
+        assert_eq!(insertion_gap(491.0, &tabs), 3);
+        // The bar's empty part and its buttons: the end.
+        assert_eq!(insertion_gap(900.0, &tabs), 3);
+        // A bar scrolled 150 px left: its tabs' bounds move with it.
+        let scrolled = tabs.map(|(l, r)| (l - 150.0, r - 150.0));
+        assert_eq!(insertion_gap(250.0, &scrolled), 2);
+        assert_eq!(insertion_gap(f32::NAN, &tabs), 0);
+        assert_eq!(insertion_gap(300.0, &[]), 0);
+    }
+
+    #[test]
+    fn the_insertion_line_sits_on_the_edge_of_the_tab_after_the_gap() {
+        assert_eq!(line_edge(0, 3), Some((0, Edge::Left)));
+        assert_eq!(line_edge(2, 3), Some((2, Edge::Left)));
+        assert_eq!(line_edge(3, 3), Some((2, Edge::Right)));
+        assert_eq!(line_edge(7, 3), Some((2, Edge::Right)));
+        assert_eq!(line_edge(0, 0), None);
     }
 
     #[test]
