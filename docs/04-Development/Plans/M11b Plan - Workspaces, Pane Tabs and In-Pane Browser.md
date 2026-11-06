@@ -13,8 +13,8 @@ updated: 2026-11-06
 |---|---|
 | **Milestone note** | [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] · input: [[M11b Input - Workspaces, Pane Tabs and In-Pane Browser]] |
 | **Status** | 🟨 Built and reviewed (2026-11-06); on-screen check pending (715 tests) |
-| **Tasks done** | 14 / 15 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b and 9); Task 8 is your check |
-| **▶ Pick up here** | Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
+| **Tasks done** | 14 / 16 built and reviewed (Tasks 0–7, 4b, 4c, 4d, 4e, 6b and 9); Task 7b added (your request); Task 8 is your check |
+| **▶ Pick up here** | Task 7b: drags feel like picking the tab up (added 2026-11-06). Then Task 8: your on-screen check. The numbered list is in "On-screen checklist (pending)" of [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]] |
 | **Decisions used** | Yours (2026-11-06): the full cmux layout incl. the in-pane browser; row details (branch • folder, Needs-input badge, pinning, accent-filled selection); group headers stay; workspaces only in the sidebar; closing a 2+-terminal workspace asks; "just continue". Everything else: AI's call (spec). |
 | **Needs your eyes** | 👀 Task 8 (batched with M10b, M10c, M11 and the follow-up) |
 
@@ -188,6 +188,40 @@ the model, not rewritten. A spike proves the in-pane web view first.
   hidden too (as the gear is).
 - [x] Tests: footer layout/hit rule (pure where possible); the popover still in `Overlay`; ui-shots of the footer and the
   upward popover in Mocha + Latte; the band without 🔔/+.
+
+### Task 7b: Drags feel like picking the tab up — ⬜ (added 2026-11-06, your request; after Task 6b)
+
+Your words: the cursor turns into a grabbing hand; the dragged tab stays where you grabbed it instead of hanging below
+the pointer; no insertion line — the other tabs slide out of the way, as in Ghostty; the same for sidebar rows.
+
+- **Grab point.** The dragged copy (the tab chip, the sidebar row's preview) is drawn where the grabbed tab or row was,
+  relative to the pointer (GPUI's drag `cursor_offset`), so the pointer stays on the spot you grabbed for the whole
+  drag. The chip loses its "hang below the bar" offset (`CHIP_GAP`), which only kept the insertion line visible.
+- **Closed hand.** While a pane tab or a sidebar row is dragged, the pointer is macOS's closed hand (`CursorStyle::ClosedHand`)
+  wherever it is in the window — over bars, the sidebar, terminals, and empty areas. Hovering without pressing keeps
+  the normal arrow (as Safari / Ghostty tabs). After the drop or a cancel, the pointer is back to normal.
+- **The gap shows where it will land; no insertion line.** The dragged tab's own place is empty (the chip *is* the
+  tab), and a gap as wide as the dragged tab opens where a drop would put it:
+  - over its own bar → the gap moves along that bar (the tabs between slide aside);
+  - over another pane's bar → the gap opens there, and its own bar closes up;
+  - over a sidebar row that would take it → its own bar closes up; the row lights up as today;
+  - over anything else (a drop would cancel) → the gap goes back to the tab's own place.
+  The landing slot is decided from the chip's centre against the centres of the other tabs **as laid out with the
+  dragged tab taken out** (never from tabs while they slide, so a pointer resting on a boundary doesn't make them
+  flicker), the bar's sideways scroll included; the drop puts the tab exactly where the gap was.
+- **Sliding.** Each tab (or row) moves to its new place over **150 ms, ease-out**; a change mid-slide starts from where
+  it is now (no jumps). When the drag ends the slides are dropped: the real layout already matches the gap.
+- **Sidebar rows** (your "yes", 2026-11-06): a row dragged within its run (pinned, or its group) opens a gap the same
+  way — the other rows of that run slide up or down by the dragged row's height; rows outside the run don't move; no
+  insertion line. A pane tab over a row is unchanged (the row lights up).
+- Unchanged: the page hides during any drag (hide rule (c)); Esc cancels; a drop at its own place selects the tab.
+- [ ] Tests: the pure landing-slot rule (chip centre over the closed-up layout; first / middle / end, scrolled, empty
+  bar, NaN); per-tab offsets for own bar / other bar / row / nowhere; row offsets within a run (variable row heights,
+  rows outside the run at 0); `slide_at(from, to, elapsed)` (start, end, monotonic, retarget mid-slide continues from
+  the current value); the drop index equals the gap's slot. ui-shots: a tab mid-drag after the slide settles — its own
+  bar's neighbours shifted by its width, no line; over another bar — the gap there, its own bar closed up; the chip's
+  top-left = pointer − grab offset; a row drag — the run's rows shifted. The cursor is on-screen only (items added to
+  Task 8).
 
 ### Task 8: On screen — 👀 pending (batched)
 
