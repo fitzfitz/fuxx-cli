@@ -286,6 +286,8 @@ pub struct Workspace {
     /// is hidden or shown.
     _reduce_motion: Subscription,
     _window_visible: Subscription,
+    /// Browser tabs' pages follow macOS's light or dark when it changes.
+    _system_appearance: Subscription,
     /// The status marks' shared clock (see `status_mark`), advanced by their ticker.
     pub(crate) phase: f32,
     /// Whether the marks' 100 ms ticker is running (only while a mark on screen moves).
@@ -368,6 +370,11 @@ impl Workspace {
         });
         let reduce_motion = cx.observe_global::<SystemReduceMotion>(|_, cx| cx.notify());
         let window_visible = cx.observe_global::<WindowVisible>(|_, cx| cx.notify());
+        let system_appearance = cx.observe_window_appearance(window, |this, _, cx| {
+            for view in this.browser_tabs.values() {
+                view.read(cx).follow_appearance();
+            }
+        });
         let (socket, requests) = scripting.unzip();
         Self {
             sessions: SessionList::new(),
@@ -407,6 +414,7 @@ impl Workspace {
             _appearance: appearance,
             _reduce_motion: reduce_motion,
             _window_visible: window_visible,
+            _system_appearance: system_appearance,
             phase: 0.0,
             marks_ticking: false,
             pops: 0,
@@ -1399,8 +1407,9 @@ impl Workspace {
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child
         // (Local), or detaches (background service; `close_at` already ended it there).
         self.sessions.remove(index);
-        // Browser tabs may still be there; with nothing left at all the window goes.
-        if self.sessions.is_empty() && self.model.workspaces().is_empty() {
+        // Browser tabs or popped-out windows may still be there; with nothing left at all the
+        // window goes.
+        if self.all_gone() {
             self.save(); // an empty list, so the next launch starts fresh
             // Last session gone: close the window (and quit), once wait replies and the closed
             // event have reached their clients.

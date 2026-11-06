@@ -93,6 +93,12 @@ fn tick_interval(browsers: impl IntoIterator<Item = (bool, bool)>) -> Duration {
     }
 }
 
+/// Whether fuxx's work is all gone, so its window closes (and fuxx quits): no terminal, no
+/// workspace, and no popped-out browser window still open (Pop Out of the last tab keeps fuxx).
+pub(crate) fn nothing_left(terminals: usize, workspaces: usize, popped_open: usize) -> bool {
+    terminals == 0 && workspaces == 0 && popped_open == 0
+}
+
 /// Whether the saved browser data should be deleted now: `browser-keep-data` is off, a page was
 /// made with it on at some time (`flag`, kept in the sessions file) and no page made with it on
 /// is still open (a browser tab or window; it keeps writing to the saved store until it closes).
@@ -301,6 +307,16 @@ impl Render for AddressBox {
 }
 
 impl Workspace {
+    /// Whether nothing is left (`nothing_left`): the window then closes and fuxx quits.
+    pub(crate) fn all_gone(&self) -> bool {
+        let popped = self.browsers.iter().filter(|b| !b.is_closed()).count();
+        nothing_left(
+            self.sessions.items().len(),
+            self.model.workspaces().len(),
+            popped,
+        )
+    }
+
     /// The browser tab the focused pane shows, if it shows one.
     pub(crate) fn focused_browser_tab(&self) -> Option<&Entity<BrowserTab>> {
         self.browser_tabs.get(&self.model.focused_tab()?)
@@ -667,7 +683,13 @@ impl Workspace {
         let Some(view) = self.browser_tabs.get(&tab).cloned() else {
             return;
         };
+        let had_page = view.read(cx).page().is_some();
         let (page, title) = view.update(cx, |view, _| (view.take_page(), view.title()));
+        if had_page && page.is_none() {
+            // Something still holds the page (a frame being drawn): the tab stays, page and all.
+            eprintln!("[fuxx] browser: the page couldn't be popped out; the tab stays");
+            return;
+        }
         if let Some(page) = page {
             let appearance = cx.global::<Appearance>();
             let look = bar_look(&appearance.theme, appearance.browser_address_bar);
@@ -967,7 +989,8 @@ impl Workspace {
                 })));
             }
             BrowserCommand::Close => {
-                self.close_tab(tab, window, cx);
+                // An agent's: the person's focus stays where it is.
+                self.close_browser_tab(tab, false, window, cx);
                 return Ok(Some(json!({})));
             }
             _ => {}
@@ -1472,6 +1495,17 @@ mod tests {
         // Timeouts are `timeout` (exit 124); other page errors are refusals.
         assert_eq!(page_error(didnt_answer(SCRIPT_LIMIT)).code, "timeout");
         assert_eq!(page_error("the script failed: x".into()).code, "refused");
+    }
+
+    #[test]
+    fn fuxx_stays_while_a_terminal_a_workspace_or_a_popped_out_window_is_left() {
+        assert!(nothing_left(0, 0, 0));
+        assert!(!nothing_left(1, 1, 0));
+        // Browser tabs only.
+        assert!(!nothing_left(0, 1, 0));
+        // The last tab popped out: its window keeps fuxx running.
+        assert!(!nothing_left(0, 0, 1));
+        assert!(!nothing_left(0, 0, 2));
     }
 
     #[test]

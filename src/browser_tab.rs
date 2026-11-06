@@ -22,6 +22,8 @@ use gpui::{
 };
 use objc2::MainThreadMarker;
 
+use alacritty_terminal::vte::ansi::Rgb;
+
 use crate::appearance::Appearance;
 use crate::browser::{Page, PageEvent, follow_system_appearance};
 use crate::browser_history::{self, BrowserHistory, Visit, enter_target, search_label};
@@ -29,7 +31,7 @@ use crate::layout_model::TabId;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::pane_browser::{NativeWindow, PaneWebView, Showing, page_hidden};
 use crate::sidebar_toggle::Tip;
-use crate::tab_bar::{BROWSER_TITLE, Glyph, glyph};
+use crate::tab_bar::{BROWSER_TITLE, Glyph, glyph, glyph_with};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::text;
@@ -41,6 +43,8 @@ actions!(browser_tab, [FocusAddress, SuggestPrev, SuggestNext]);
 pub const BAR: f32 = 34.0;
 const BUTTON: f32 = 24.0;
 const BUTTON_GAP: f32 = 2.0;
+/// The buttons' lines: heavier than the tab bar's, so a usable button reads in full colour.
+const BUTTON_STROKE: f32 = 1.75;
 const FIELD: f32 = 24.0;
 const FIELD_RADIUS: f32 = 7.0;
 const BAR_PAD: f32 = 6.0;
@@ -64,6 +68,14 @@ pub fn browser_tab_title(url: &str, title: &str) -> String {
     } else {
         host.to_string()
     }
+}
+
+/// The bar's buttons' colours: (usable, not usable). A usable one is the text colour; one that
+/// can't be used is that faint colour taken halfway to the bar's own, so the two can't be
+/// mistaken (in a light theme the faint text is nearly as dark as the text). A control that
+/// can't be used has no contrast floor; a usable one keeps well over the marks' 3:1.
+pub fn button_colors(ui: &UiColors) -> (Rgb, Rgb) {
+    (ui.text, crate::theme::mix(ui.text_faint, ui.panel, 0.5))
 }
 
 /// What the bar shows of the page.
@@ -202,6 +214,14 @@ impl BrowserTab {
         self.web = Some(Rc::new(web));
     }
 
+    /// The page takes macOS's light or dark (its `prefers-color-scheme`), as it is now.
+    pub fn follow_appearance(&self) {
+        if let Some(web) = &self.web {
+            let mtm = MainThreadMarker::new().expect("GPUI's App lives on the main thread");
+            follow_system_appearance(web.view(), mtm);
+        }
+    }
+
     /// The page, once made.
     pub fn page(&self) -> Option<&Page> {
         self.web.as_deref().map(PaneWebView::page)
@@ -272,6 +292,7 @@ impl BrowserTab {
         };
         let state = page.state();
         let (can_back, can_forward) = page.can_go();
+        self.follow_appearance();
         let blank = state.url.is_empty() || state.url == "about:blank";
         let url = match (blank, page.requested()) {
             (true, Some(requested)) => requested,
@@ -512,7 +533,8 @@ impl BrowserTab {
         cx.notify();
     }
 
-    /// A button of the bar: its icon, dim until hovered, faint when it can't be used.
+    /// A button of the bar: its icon in the text colour, faint when it can't be used (so Back
+    /// that works and Back that doesn't are told apart at a glance).
     fn button(
         &self,
         id: &'static str,
@@ -523,7 +545,8 @@ impl BrowserTab {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let color = if enabled { ui.text_dim } else { ui.text_faint };
+        let (usable, unusable) = button_colors(&ui);
+        let color = if enabled { usable } else { unusable };
         div()
             .id(id)
             .flex()
@@ -532,7 +555,7 @@ impl BrowserTab {
             .justify_center()
             .size(px(BUTTON))
             .rounded(px(5.0))
-            .child(glyph(kind, color))
+            .child(glyph_with(kind, color, BUTTON_STROKE))
             .when(enabled, |b| {
                 b.cursor_pointer()
                     .hover(move |s| s.bg(hsla(ui.panel_hover)))
@@ -589,12 +612,10 @@ impl BrowserTab {
                     .into_any_element()
             }
         };
-        div()
+        let field = div()
             .id("address-field")
-            .relative()
             .flex()
-            .flex_1()
-            .min_w(px(0.0))
+            .w_full()
             .items_center()
             .h(px(FIELD))
             .px(px(10.0))
@@ -604,6 +625,9 @@ impl BrowserTab {
             .border_color(hsla(edge))
             .bg(hsla(ui.sidebar_background))
             .text_size(px(text::NAME))
+            // What is typed and the caret are drawn in it (`NameInput` takes the inherited
+            // colour, which nothing above a browser tab sets).
+            .text_color(hsla(ui.text))
             .key_context("AddressField")
             .when(editing.is_none(), |f| f.cursor_text())
             .on_click(
@@ -621,13 +645,20 @@ impl BrowserTab {
                         .child(why),
                 )
             })
+            .on_action(cx.listener(|this, _: &SuggestPrev, _, cx| this.choose(-1, cx)))
+            .on_action(cx.listener(|this, _: &SuggestNext, _, cx| this.choose(1, cx)));
+        // The field's own bounds (its edge included): the suggestions line up under them.
+        div()
+            .relative()
+            .flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .child(field)
             .child(
                 canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
                     .absolute()
                     .size_full(),
             )
-            .on_action(cx.listener(|this, _: &SuggestPrev, _, cx| this.choose(-1, cx)))
-            .on_action(cx.listener(|this, _: &SuggestNext, _, cx| this.choose(1, cx)))
             .into_any_element()
     }
 
@@ -848,6 +879,28 @@ impl Render for BrowserTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_usable_button_and_one_that_isn_t_are_told_apart_in_every_theme() {
+        use crate::theme::{BUILTIN_THEMES, Theme, apply, builtin_theme};
+        use crate::ui_tokens::{MARK_MIN, contrast};
+        let mut themes = vec![("default".to_string(), Theme::default())];
+        for name in BUILTIN_THEMES {
+            let mut t = Theme::default();
+            apply(
+                &mut t,
+                &crate::settings::parse(builtin_theme(name).unwrap()),
+            );
+            themes.push((name.to_string(), t));
+        }
+        for (name, theme) in themes {
+            let ui = theme.ui();
+            let (on, off) = button_colors(&ui);
+            let (c_on, c_off) = (contrast(on, ui.panel), contrast(off, ui.panel));
+            assert!(c_on >= MARK_MIN, "{name}: usable {c_on}");
+            assert!(c_on >= 1.8 * c_off, "{name}: usable {c_on} vs not {c_off}");
+        }
+    }
 
     #[test]
     fn a_browser_tab_is_titled_by_its_page_then_its_host() {
