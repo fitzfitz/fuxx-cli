@@ -20,8 +20,8 @@ use crate::workspace::Workspace;
 /// How long the slide takes.
 pub const SLIDE: Duration = Duration::from_millis(160);
 /// The hit area's side, and its corner radius.
-const HIT: f32 = 24.0;
-const HIT_RADIUS: f32 = 6.0;
+pub(crate) const HIT: f32 = 24.0;
+pub(crate) const HIT_RADIUS: f32 = 6.0;
 /// The icon: a 16 × 13 rounded outline with a divider a third of the way in.
 const ICON: (f32, f32) = (16.0, 13.0);
 const STROKE: f32 = 1.5;

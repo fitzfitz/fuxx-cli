@@ -89,6 +89,8 @@ pub struct Overlays {
     pub new_menu: bool,
     /// A browser tab's address suggestions.
     pub suggestions: bool,
+    /// The title area's notifications popover.
+    pub notifications: bool,
 }
 
 impl Overlays {
@@ -102,6 +104,7 @@ impl Overlays {
             tab_menu,
             new_menu,
             suggestions,
+            notifications,
         } = *self;
         rename
             || host_picker
@@ -111,6 +114,7 @@ impl Overlays {
             || tab_menu
             || new_menu
             || suggestions
+            || notifications
     }
 }
 
@@ -566,6 +570,10 @@ mod tests {
             },
             Overlays {
                 suggestions: true,
+                ..none
+            },
+            Overlays {
+                notifications: true,
                 ..none
             },
         ];

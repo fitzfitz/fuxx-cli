@@ -357,6 +357,7 @@ impl Workspace {
                 .browser_tabs
                 .values()
                 .any(|v| v.read(cx).suggestions_open(cx)),
+            notifications: self.notifications_popover.is_some(),
         }
     }
 

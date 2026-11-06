@@ -26,7 +26,7 @@ use crate::status_mark::{self, BREATHS_PER_BEAT, TURNS_PER_BEAT};
 use crate::terminal_view::hsla;
 use crate::theme::{self, Theme, UiColors};
 use crate::ui_tokens::{self, contrast};
-use crate::workspace::Workspace;
+use crate::workspace::{Overlay, Workspace};
 use crate::{fonts, settings};
 
 /// The two themes every scene is shot in: (file slug, built-in theme name).
@@ -211,6 +211,7 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar", sidebar_scenes),
     ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-button", sidebar_button_scenes),
+    ("title-area", title_area_scenes),
     ("tabs", tab_scenes),
     ("splits", split_scenes),
     ("workspaces", workspace_scenes),
@@ -2848,7 +2849,9 @@ fn switcher_scenes() {
 /// One box over the window at a time: opening the rename box, the switcher or the address box
 /// over another closes that one, and the new one keeps the keyboard (the old one's late "lost
 /// focus" must not take it back). Rename -> switcher -> rename -> address box -> switcher, each
-/// checked after frames have run the focus changes. Panics on the first that doesn't hold.
+/// checked after frames have run the focus changes. Then every overlay (`Overlay::ALL`) is opened
+/// in turn: each must count in the in-pane pages' hide signal (`overlays().any()`), and closing
+/// the overlays must clear it. Panics on the first that doesn't hold.
 fn overlays() {
     use gpui::Focusable;
     use std::cell::RefCell;
@@ -2908,6 +2911,56 @@ fn overlays() {
                 cx.run_until_parked();
             }
             assert_eq!(open(cx), [(expect, true)], "overlays: after opening {step}");
+        }
+        // Every overlay hides the pages while it's open: one forgotten in `overlays()` would sit
+        // under a page.
+        for overlay in Overlay::ALL {
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let first = ws.model.display_order()[0];
+                    let at = point(px(300.0), px(200.0));
+                    match overlay {
+                        Overlay::Rename => ws.start_rename(first, window, cx),
+                        Overlay::HostPicker => {
+                            // Made up hosts: no `~/.ssh` read, no `ssh -G` run.
+                            ws.close_overlays(Overlay::HostPicker);
+                            let picker = cx.new(|cx| {
+                                crate::host_picker::HostPicker::new(vec![], vec![], window, cx)
+                            });
+                            picker.focus_handle(cx).focus(window, cx);
+                            ws.host_picker = Some(picker);
+                        }
+                        Overlay::AddressBox => ws.open_address_box(window, cx),
+                        Overlay::Switcher => ws.open_switcher(window, cx),
+                        Overlay::TabMenu => ws.open_tab_menu(first, at, window, cx),
+                        Overlay::PaneTabMenu => {
+                            let tab = ws.model.focused_tab().expect("a focused tab");
+                            ws.open_pane_tab_menu(tab, at, window, cx)
+                        }
+                        Overlay::Notifications => ws.open_notifications(window, cx),
+                    }
+                })
+            })
+            .expect("open it");
+            cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+                .expect("draw");
+            cx.run_until_parked();
+            let other = if overlay == Overlay::Rename {
+                Overlay::Switcher
+            } else {
+                Overlay::Rename
+            };
+            cx.update(|cx| {
+                assert!(
+                    ws.read(cx).overlays(cx).any(),
+                    "overlays: {overlay:?} hides the pages"
+                );
+                ws.update(cx, |ws, _| ws.close_overlays(other));
+                assert!(
+                    !ws.read(cx).overlays(cx).any(),
+                    "overlays: closing them clears {overlay:?}"
+                );
+            });
         }
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
@@ -3176,4 +3229,279 @@ fn sidebar_button_scenes() {
             "{slug}: still partly in"
         );
     }
+}
+
+/// A long question, so an entry's second line is cut.
+const LONG_QUESTION: &str = "Do you want to run cargo test --workspace --all-features -- \
+    --include-ignored --test-threads=1 in /Users/me/code/web before the migration?";
+
+/// The notifications fuxx would have raised over `switcher_workspace`, oldest first: build
+/// finished (40 m ago), a terminal since closed (`s99`, 25 m), tests finished (12 m), claude
+/// waits (4 m) and agent waits with a long question (95 s).
+fn shot_notifications(ws: &mut Workspace) {
+    use crate::notification_list::Entry;
+    use std::time::{Duration, Instant};
+
+    let now = Instant::now();
+    let raised = |ws: &Workspace, name: &str, status, message: &str, secs| {
+        let i = ws.sessions.position(|s| s.label() == name).expect(name);
+        let workspace = ws.workspace_of(i).expect("in a workspace");
+        Entry {
+            terminal: ws.sessions.items()[i].id,
+            title: ws.workspace_label(workspace).to_string(),
+            message: message.into(),
+            status,
+            at: now - Duration::from_secs(secs),
+        }
+    };
+    let entries = [
+        raised(ws, "build", Status::Done, "Worked for 3m", 40 * 60),
+        Entry {
+            terminal: 99,
+            title: "migrate".into(),
+            message: "Worked for 18m".into(),
+            status: Status::Done,
+            at: now - Duration::from_secs(25 * 60),
+        },
+        raised(ws, "tests", Status::Done, "Worked for 12m", 12 * 60),
+        raised(ws, "claude", Status::Waiting, CLAUDE_QUESTION, 4 * 60),
+        raised(ws, "agent", Status::Waiting, LONG_QUESTION, 95),
+    ];
+    for entry in entries {
+        ws.note_notification(entry);
+    }
+}
+
+/// The title area over `switcher_workspace` (shell active), in both themes:
+/// - `title-band`: the sidebar shown, the 🔔 and + right of the sidebar button, nothing unseen;
+/// - `title-unseen`: the same with notifications unseen (the 🔔's dot);
+/// - `title-hidden`: the sidebar hidden: the band runs over the panes with the workspace's name
+///   centred in it, the dot still there;
+/// - `title-narrow`: hidden, a 560 px window and a long name, cut with an ellipsis;
+/// - `title-popover`: the popover open over five notifications, newest first (agent's long
+///   question cut, a closed terminal's entry greyed);
+/// - `title-popover-empty`: the popover with none yet.
+///
+/// Panics unless the dot shows exactly while some are unseen, opening the popover sees them
+/// all (and it counts as an overlay), the name is drawn in the band only with the sidebar hidden
+/// and never past its inset; and (Mocha) unless a press on the 🔔 doesn't arm a window drag
+/// while one between the buttons does, a click on the 🔔 opens the popover and Escape or a
+/// click outside closes it, a click on a closed terminal's entry does nothing, and a click on
+/// agent's entry shows agent (its workspace and tab) with the keyboard.
+fn title_area_scenes() {
+    use crate::sidebar_toggle::HIT;
+    use crate::tab_menu::Dismiss;
+    use crate::title_area::{DOT, DOT_INSET, bell_origin, entry_top, name_inset, plus_origin};
+    use gpui::{Focusable, KeyBinding, Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    const LONG_NAME: &str = "Refactor the auth middleware to use the new session store";
+    let (bx, by) = bell_origin(false);
+    let dot = (bx + HIT - DOT_INSET - DOT / 2.0, by + DOT_INSET + DOT / 2.0);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
+        for scene in [
+            "title-band",
+            "title-unseen",
+            "title-hidden",
+            "title-narrow",
+            "title-popover",
+            "title-popover-empty",
+        ] {
+            let dims = match scene {
+                "title-narrow" => size(px(560.0), px(200.0)),
+                "title-popover" | "title-popover-empty" => size(px(960.0), px(480.0)),
+                _ => size(px(760.0), px(200.0)),
+            };
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = switcher_workspace(window, cx);
+                    ws.sidebar.hidden = matches!(scene, "title-hidden" | "title-narrow");
+                    if scene != "title-popover-empty" {
+                        shot_notifications(&mut ws);
+                    }
+                    if scene == "title-band" {
+                        ws.notifications.mark_seen();
+                    }
+                    if scene == "title-narrow" {
+                        let shown = ws.model.focused_workspace().expect("focused");
+                        ws.model.set_name(shown, Some(LONG_NAME.into()));
+                    }
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let n = format!("{scene}-{slug}");
+                if scene.starts_with("title-popover") {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| ws.open_notifications(window, cx))
+                    })
+                    .expect("open it");
+                    cx.run_until_parked();
+                    cx.update(|cx| {
+                        let ws = ws.read(cx);
+                        assert_eq!(ws.notifications.unseen(), 0, "{n}: all seen");
+                        assert!(ws.overlays(cx).any(), "{n}: an overlay");
+                    });
+                }
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+            let path = dir.join(format!("{scene}-{slug}.png"));
+            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            println!("ui-shots: {}", path.display());
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let n = format!("{scene}-{slug}");
+            match scene {
+                "title-band" => assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot"),
+                "title-unseen" | "title-hidden" => {
+                    assert_eq!(at(dot.0, dot.1), bg(ui.accent), "{n}: the dot")
+                }
+                _ => {}
+            }
+            // The name: ink in the band's middle with the sidebar hidden, none past its inset.
+            let width = f32::from(dims.width);
+            let inset = name_inset(false);
+            let band_ink = |x0: f32, x1: f32| -> usize {
+                (0..20)
+                    .map(|k| 9.0 + k as f32)
+                    .map(|y| {
+                        let mut x = x0;
+                        let mut inked = 0;
+                        while x < x1 {
+                            inked += usize::from(at(x, y) != bg(theme.background));
+                            x += 1.0;
+                        }
+                        inked
+                    })
+                    .sum()
+            };
+            if matches!(scene, "title-hidden" | "title-narrow") {
+                assert!(
+                    band_ink(inset, width - inset) > 20,
+                    "{n}: the name in the band"
+                );
+                assert_eq!(
+                    band_ink(width - inset, width),
+                    0,
+                    "{n}: nothing right of the name's room"
+                );
+                // The pane tab bars start under the band.
+                assert_ne!(at(width / 2.0, 50.0), bg(theme.background), "{n}: a bar");
+            }
+        }
+    }
+
+    // What the title area does (Mocha only: the behaviour is the same in every theme).
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(sidebar_appearance(theme, cx));
+        let ws = cx.new(|cx| {
+            let mut ws = switcher_workspace(window, cx);
+            shot_notifications(&mut ws);
+            ws
+        });
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        let none = Modifiers::none();
+        cx.update(|cx| cx.bind_keys([KeyBinding::new("escape", Dismiss, Some("TabMenu"))]));
+        let open = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| ws.read(cx).notifications_popover.is_some())
+        };
+        let pressed = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).band_pressed);
+        let active = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                ws.sessions.active().map(|s| s.label().to_string())
+            })
+        };
+        let bell = point(px(bx + HIT / 2.0), px(by + HIT / 2.0));
+        // A press on the 🔔 is its own (it doesn't arm a window drag) and, released, opens the
+        // popover, which sees everything; Escape closes it.
+        assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 5);
+        cx.simulate_mouse_down(window, bell, MouseButton::Left, none);
+        assert!(!pressed(cx), "title-area: the 🔔 doesn't drag the window");
+        cx.simulate_mouse_up(window, bell, MouseButton::Left, none);
+        assert!(open(cx), "title-area: the 🔔 opens the popover");
+        assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 0);
+        cx.simulate_keystrokes(window, "escape");
+        assert!(!open(cx), "title-area: Escape closes it");
+        // Between the buttons the band still drags the window (the + is pressed the same way as
+        // the 🔔, by the same `band_button`).
+        let gap = point(px(plus_origin(false).0 - 2.0), px(by + HIT / 2.0));
+        cx.simulate_mouse_down(window, gap, MouseButton::Left, none);
+        assert!(
+            pressed(cx),
+            "title-area: between the buttons the band drags"
+        );
+        cx.simulate_mouse_up(window, gap, MouseButton::Left, none);
+        // A click outside closes it.
+        cx.simulate_click(window, bell, none);
+        cx.simulate_click(window, point(px(800.0), px(400.0)), none);
+        assert!(!open(cx), "title-area: a click outside closes it");
+        // The closed terminal's entry (the fourth) does nothing; agent's (the first) jumps.
+        let entry = |i: usize| point(px(bx + 60.0), px(entry_top(i) + 20.0));
+        cx.simulate_click(window, bell, none);
+        cx.simulate_click(window, entry(3), none);
+        assert!(
+            open(cx),
+            "title-area: a closed terminal's entry does nothing"
+        );
+        assert_eq!(active(cx).as_deref(), Some("shell"));
+        // The hover fill shows where the first entry is (so the click lands on it).
+        cx.simulate_mouse_move(window, entry(0), None, none);
+        cx.run_until_parked();
+        let image = cx.capture_screenshot(window).expect("capture the window");
+        let shot = Shot {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.as_raw().to_vec(),
+        };
+        let ui = theme.ui();
+        let fill = pixel_at(
+            &shot,
+            size(px(960.0), px(600.0)),
+            bx + 12.0,
+            entry_top(0) + 2.0,
+        );
+        assert_eq!(
+            fill,
+            [ui.panel_hover.r, ui.panel_hover.g, ui.panel_hover.b],
+            "title-area: the first entry is where `entry_top` says"
+        );
+        cx.simulate_click(window, entry(0), none);
+        assert!(!open(cx), "title-area: a jump closes it");
+        assert_eq!(
+            active(cx).as_deref(),
+            Some("agent"),
+            "title-area: agent shown"
+        );
+        cx.update_window(window, |_, window, cx| {
+            let ws = ws.read(cx);
+            let view = &ws.sessions.active().expect("agent").view;
+            assert!(
+                view.focus_handle(cx).is_focused(window),
+                "title-area: agent has the keyboard"
+            );
+        })
+        .expect("read the focus");
+        slot.borrow_mut().take();
+    };
+    render_with(&theme, size(px(960.0), px(600.0)), build, act);
 }

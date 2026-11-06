@@ -21,10 +21,10 @@ use std::time::Instant;
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, EntityId, Focusable,
-    Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels,
-    Point, ScrollHandle, SharedString, Stateful, StyleRefinement, Subscription, Task, Window,
-    WindowControlArea, actions, canvas, div, prelude::*, px,
+    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, EntityId,
+    FocusHandle, Focusable, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Stateful, StyleRefinement,
+    Subscription, Task, Window, WindowControlArea, actions, canvas, div, prelude::*, px,
 };
 
 use crate::adopt::{self, Probe};
@@ -39,6 +39,7 @@ use crate::host_picker::HostPicker;
 use crate::layout_model::{self, Model, PaneId, TabId, TabKind, WorkspaceId};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::notification_list::{self, NotificationList};
 use crate::notifier;
 use crate::pane_tab_menu::PaneTabMenu;
 use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
@@ -157,7 +158,7 @@ pub struct Session {
 }
 
 /// The boxes over the window that take the keyboard; only one is open at a time.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Overlay {
     Rename,
     HostPicker,
@@ -165,6 +166,22 @@ pub(crate) enum Overlay {
     Switcher,
     TabMenu,
     PaneTabMenu,
+    Notifications,
+}
+
+impl Overlay {
+    /// Every overlay: a new one goes here too, so the check that each hides the in-pane pages
+    /// (the `overlays` UI scene) opens it.
+    #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
+    pub(crate) const ALL: [Overlay; 7] = [
+        Overlay::Rename,
+        Overlay::HostPicker,
+        Overlay::AddressBox,
+        Overlay::Switcher,
+        Overlay::TabMenu,
+        Overlay::PaneTabMenu,
+        Overlay::Notifications,
+    ];
 }
 
 /// What the rename box names: a workspace (its sidebar row) or a terminal (its pane tab).
@@ -321,13 +338,17 @@ pub struct Workspace {
     /// itself), its scroll, its hint card and menu.
     pub(crate) sidebar: SidebarState,
     /// The top band was pressed and the mouse hasn't moved since: the next move drags the window.
-    band_pressed: bool,
+    pub(crate) band_pressed: bool,
     /// The sidebar sliding in or out (`sidebar_toggle`); none when it isn't moving.
     pub(crate) slide: Option<Slide>,
     /// Where each workspace is (its folder and git branch), for its row (`git_branch`).
     pub(crate) places: Places,
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
     pub(crate) places_ticking: bool,
+    /// This run's notifications, for the title area's 🔔 (`title_area`).
+    pub(crate) notifications: NotificationList,
+    /// The 🔔's popover, while it is open: the focus it holds (so Escape closes it).
+    pub(crate) notifications_popover: Option<FocusHandle>,
 }
 
 impl Workspace {
@@ -446,6 +467,8 @@ impl Workspace {
             slide: None,
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             places_ticking: false,
+            notifications: NotificationList::default(),
+            notifications_popover: None,
         }
     }
 
@@ -1380,6 +1403,16 @@ impl Workspace {
                     body: &body,
                 };
                 self.emit(&posted, Some(index));
+                self.note_notification(notification_list::Entry {
+                    terminal: self.sessions.items()[index].id,
+                    title: ws.map_or_else(
+                        || label.to_string(),
+                        |ws| self.workspace_label(ws).to_string(),
+                    ),
+                    message: body.clone(),
+                    status: new,
+                    at: Instant::now(),
+                });
                 cx.background_spawn(async move { notifier::fire(&summary, &body) })
                     .detach();
             }
@@ -1701,6 +1734,9 @@ impl Workspace {
         }
         if keep != Overlay::PaneTabMenu {
             self.pane_tab_menu = None;
+        }
+        if keep != Overlay::Notifications {
+            self.notifications_popover = None;
         }
     }
 
@@ -2040,10 +2076,12 @@ impl Workspace {
     /// The window's top band, the traffic lights' place: pressing it and moving drags the
     /// window, and a double-click does what the macOS setting "Double-click a window's title bar
     /// to" says. In full screen, which has no traffic lights, it is an empty strip that holds
-    /// the sidebar button, and moves nothing.
+    /// the sidebar button, and moves nothing. `label`, if any, is drawn in the band (the
+    /// workspace's name over the content, `title_area`).
     pub(crate) fn render_top_band(
         &self,
         id: &'static str,
+        label: Option<AnyElement>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -2051,17 +2089,21 @@ impl Workspace {
             return Some(
                 div()
                     .id(id)
+                    .relative()
                     .flex_none()
                     .w_full()
                     .h(px(TOP_BAND))
+                    .children(label)
                     .into_any_element(),
             );
         }
         let band = self
             .drag_window_by(div().id(id), cx)
+            .relative()
             .flex_none()
             .w_full()
-            .h(px(TOP_BAND));
+            .h(px(TOP_BAND))
+            .children(label);
         Some(band.into_any_element())
     }
 
@@ -2206,6 +2248,8 @@ impl Render for Workspace {
             (node, _) => (node, None),
         };
         let button = self.render_sidebar_button(ui, window, cx);
+        let title_buttons = self.render_title_buttons(ui, window, cx);
+        let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
@@ -2215,7 +2259,10 @@ impl Render for Workspace {
         let pane_band = self
             .sidebar
             .hidden
-            .then(|| self.render_top_band("pane-band", window, cx))
+            .then(|| {
+                let name = self.render_workspace_name(ui, window);
+                self.render_top_band("pane-band", name, window, cx)
+            })
             .flatten();
 
         div()
@@ -2348,6 +2395,7 @@ impl Render for Workspace {
             )
             .children(sliding_sidebar)
             .child(button)
+            .children(title_buttons)
             // The host picker, the switcher and the address box: over everything, centred near
             // the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {
@@ -2364,6 +2412,7 @@ impl Render for Workspace {
             .children(new_menu)
             .children(tab_menu)
             .children(pane_tab_menu)
+            .children(notifications)
     }
 }
 
