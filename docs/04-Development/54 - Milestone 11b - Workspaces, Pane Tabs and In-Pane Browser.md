@@ -48,7 +48,7 @@ where each workspace is (git branch and folder) and which one needs you.
 - Switching tabs: click; ⌃Tab / ⌃⇧Tab within the focused pane (AI's call).
 - **Drag tabs anywhere** (yours, 2026-11-06): reorder within a pane, drop into another pane's tab bar, or drop onto a
   sidebar workspace to move the tab there. A pane or workspace left empty closes.
-- **Drags feel like picking the tab up** (yours, 2026-11-06, Task 7b — being built): the pointer is a closed hand, the
+- **Drags feel like picking the tab up** (yours, 2026-11-06, Task 7b): the pointer is a closed hand, the
   dragged tab stays where you grabbed it, and instead of an insertion line the other tabs slide aside to open a gap
   where it will land (as in Ghostty). Sidebar rows do the same within their run.
 - **The empty part of a tab bar at the window's top drags the window** (yours, 2026-11-06); double-click zooms.
@@ -122,6 +122,9 @@ All of these are already listed under "Panes and their tabs" above; here is wher
 - **Page shortcuts** (Task 4e): ⌘R, ⌘[ / ⌘], ⌘= / ⌘- / ⌘0 act on the page.
 - **Drag tabs anywhere** (Task 7): reorder, into another pane, or onto a sidebar workspace row.
 - **🔔 and + in the sidebar footer** (Task 6b): the title area keeps only the sidebar button.
+- **Drags feel like picking the tab up** (Task 7b): a closed hand while dragging; the copy stays where you grabbed it;
+  no insertion line — the other tabs (or rows, within their run) slide aside over 0.15 s to open a gap where it will
+  land; the gap goes to whichever slot is nearest the copy, so a small wobble moves nothing.
 
 ### Rulings you should confirm
 
@@ -205,9 +208,11 @@ Not run yet. Batched with M10b, M10c, M11 and the follow-up (your choice). Items
 21. Clicks stay clicks: a plain click on empty bar space focuses that pane; tabs, × and the four buttons never move the
     window. With tabs filling the row there is no empty part to drag. Press the band, leave the window, release
     elsewhere, hover back: the window must not move.
-22. Drag a tab a little within its bar: the line follows between tabs (and reads as a gap marker next to the active
-    tab), the chip hangs below the pointer, the tab dims. Drop: it lands there, is shown, and typing goes to it. Drag in
-    a scrolled bar: the line still lands between the right tabs.
+22. Drag a tab along its bar: the pointer turns into a closed hand, and the copy stays exactly where you grabbed it
+    (no jump below the pointer). The tab's own place goes empty and the other tabs slide aside to open a gap where it
+    will land — no line. Move back: they slide back. Drop: it lands in the gap, is shown, and typing goes to it. Drag in
+    a scrolled bar: the gap still opens between the right tabs. Hovering a tab without pressing keeps the arrow; after
+    a drop or Esc the pointer is normal again.
 23. Click tabs quickly and a little shakily: every click shows its tab, even a tiny drag that ends on it.
 24. Drag a tab into another pane's bar, including the empty end part, in a window whose top bars drag the window: the
     window must not move.
@@ -216,11 +221,19 @@ Not run yet. Batched with M10b, M10c, M11 and the follow-up (your choice). Items
     and `fuxx ls --json` shows its new workspace and pane. Dropping on its own workspace's row moves it to the end of
     the focused pane.
 26. Drag a workspace's only tab onto another row: the emptied workspace closes with no question.
-27. Esc mid-drag: nothing moves. Release over a terminal: nothing moves. (With a page holding the keyboard, Esc may not
+27. Esc mid-drag: nothing moves (the tabs snap back without sliding). Release over a terminal: nothing moves. (With a page holding the keyboard, Esc may not
     cancel; a release elsewhere still does.) Drag a file in from Finder after a cancelled tab drag: no tab stays dimmed.
 28. With a page showing, drag any tab over the page: the page hides during the drag and comes back after. Drag the
     browser tab itself into another pane: the page keeps its state (no reload).
 29. Quit and relaunch after moving tabs: the layout comes back as you left it.
+29a. Drag a tab into another pane's bar: a gap opens there and its own bar closes up; move away over a terminal and
+    the gap goes back to the tab's own place. The slides look smooth (about 0.15 s), not jumpy. With Reduce Motion on
+    (System Settings → Accessibility → Display) they jump instead — expected.
+29b. Over a terminal mid-drag the pointer stays a closed hand (not the I-beam).
+29c. Drag a sidebar row within its group (and a pinned row among pinned rows): the closed hand, the row's copy stays
+    where you grabbed it (as tall as the row, its status line too), the other rows of that group slide up or down to
+    open a gap, no line; rows of other groups stay still. Shake a row a few pixels and let go: the order doesn't change.
+    Then drag a file in from Finder: no row disappears.
 
 **The browser in a pane (overlays hiding the page, keys, Pop Out)**
 

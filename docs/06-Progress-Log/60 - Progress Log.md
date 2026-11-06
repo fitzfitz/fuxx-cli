@@ -22,6 +22,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-06 — M11b Task 7b: drags feel like picking the tab up (on-screen check pending)
+- **Did:** Your request after the build: while a pane tab or a sidebar row is dragged the pointer is a closed hand, the
+  copy stays exactly where you grabbed it, and instead of an insertion line the other tabs (or rows, within their
+  group) slide aside over 0.15 s to open a gap where it will land, as in Ghostty. Dragging into another pane opens the
+  gap there and closes up the bar it left; over a place that wouldn't take it the gap goes home. New pure module
+  `drag_gap.rs`. The review caught that my first landing rule was lopsided (a 1 px move right swapped tabs, so a shaky
+  click could reorder tabs or workspaces) and that a Finder drag after a row drag hid that row; both fixed, re-review
+  clean. 723 tests pass; every ui-shots scene passes. App rebuilt at `target/dist/fuxx.app`.
+- **Next:** Task 8, your batched on-screen check — note 54's list now has 67 items (22 and 27 changed; 29a–c new).
+- **Open:** the cursor and how smooth the slides feel can only be checked on screen.
+
 ### 2026-11-06 — M11b built: workspaces, pane tabs and the browser in a pane (on-screen check pending)
 - **Did:** Built and reviewed [[M11b Plan - Workspaces, Pane Tabs and In-Pane Browser]] on branch `m11b-workspaces`
   (Tasks 0–7, 4b, 4c, 4d, 4e, 6b; Task 8 is your check, so **nothing is marked done**). The sidebar now lists
