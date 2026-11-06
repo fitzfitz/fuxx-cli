@@ -48,12 +48,11 @@ pane and tab.
 
 ## Settled before planning (AI's calls, after a builder's read)
 
-1. **A click on a banner the background service posted is untested** (the test's banner showed, but nobody clicked
-   it). Which process macOS hands that click to — the running service, a newly launched fuxx window, or nothing — is
-   unknown. **The plan starts with a short test of exactly this** (with the service running and the window closed,
-   and with the window open). If the click reaches the service, the service passes it to the window (opening
-   `fuxx.app` when none is attached) over its existing connection; if it opens a fresh fuxx, the window takes it
-   directly. The result decides the plan's shape before anything else is built.
+1. **Where a click on a background banner goes** — tested 2026-11-06 (plan Task 0, you clicked): with a fuxx window
+   open, **the window** gets it (even for the service's banner); with no window but the service running, **the
+   service** gets it and macOS opens fuxx by itself; with neither, macOS opens fuxx and **the new fuxx** gets it. So
+   both handle clicks: the window directly (also at launch), the service by passing the terminal to the window once it
+   connects.
 2. **"That terminal" is its session id** — the `sN` that `fuxx ls` shows, which the background service keeps across
    window reattaches (M10a). The banner carries it; the window finds the tab holding `sN` in its layout.
 3. **A click before the layout exists** (fuxx opened by the click) is held as one pending target and shown once
