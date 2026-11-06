@@ -46,7 +46,7 @@ pub enum Node<T> {
 }
 
 /// Clamp into `MIN_RATIO..=MAX_RATIO`; NaN becomes an even split.
-fn clamp_ratio(ratio: f32) -> f32 {
+pub(crate) fn clamp_ratio(ratio: f32) -> f32 {
     if ratio.is_nan() {
         0.5
     } else {

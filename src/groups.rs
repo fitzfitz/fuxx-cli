@@ -77,17 +77,21 @@ pub fn insert_index(keys: &[Option<&GroupKey>], key: Option<&GroupKey>) -> usize
     }
 }
 
-/// The most urgent status of a group: Waiting > Done > Working > Idle.
-pub fn rolled_up(statuses: impl IntoIterator<Item = Status>) -> Status {
-    let rank = |s: Status| match s {
+/// How much a status needs you, for roll-ups: Waiting > Done > Working > Idle.
+pub fn urgency(status: Status) -> u8 {
+    match status {
         Status::Idle => 0,
         Status::Working => 1,
         Status::Done => 2,
         Status::Waiting => 3,
-    };
+    }
+}
+
+/// The most urgent status of a group: Waiting > Done > Working > Idle.
+pub fn rolled_up(statuses: impl IntoIterator<Item = Status>) -> Status {
     statuses
         .into_iter()
-        .max_by_key(|s| rank(*s))
+        .max_by_key(|s| urgency(*s))
         .unwrap_or(Status::Idle)
 }
 
