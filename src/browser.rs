@@ -624,7 +624,7 @@ const KEY_ZERO: u16 = 0x1D;
 /// The key a shortcut is read as, the way AppKit's menus read it: the key's own character
 /// (`chars`, without modifiers) when the layout types Latin letters, else (another script, or
 /// none) the letter at that place on a U.S. keyboard. So ⌘W is the same key for the browser
-/// window as for the menus on every layout, and never falls through to Close Session.
+/// window as for the menus on every layout, and never falls through to Close Tab.
 fn shortcut_letter(chars: Option<&str>, key_code: u16) -> Option<char> {
     let mut typed = chars.unwrap_or_default().chars();
     match (typed.next(), typed.next()) {
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(shortcut_letter(Some("Z"), KEY_Z), Some('z'));
         assert_eq!(shortcut_letter(Some(","), KEY_W), Some(','));
         // Another script (Russian, Greek…): the letter at that place on a U.S. keyboard, as
-        // the menus fall back to, so ⌘W never reaches fuxx's Close Session.
+        // the menus fall back to, so ⌘W never reaches fuxx's Close Tab.
         assert_eq!(shortcut_letter(Some("ц"), KEY_W), Some('w'));
         assert_eq!(shortcut_letter(Some("я"), KEY_Z), Some('z'));
         assert_eq!(shortcut_letter(Some("ж"), 0x29), None);

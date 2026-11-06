@@ -527,19 +527,13 @@ impl Workspace {
     /// gets a workspace of its own, so none runs unseen.
     pub(crate) fn set_model(&mut self, model: Model) {
         self.model = model;
-        for id in self
-            .sessions
-            .items()
-            .iter()
-            .map(|s| s.id)
-            .collect::<Vec<_>>()
-        {
-            if self.model.terminal_tab(id).is_none() {
-                let at = self.model.workspaces().len();
-                self.model.new_workspace(at, TabKind::Terminal(id));
-            }
-        }
+        self.model.reconcile(&self.session_ids());
         self.sync();
+    }
+
+    /// Every session's id (sN), in list order.
+    fn session_ids(&self) -> Vec<u64> {
+        self.sessions.items().iter().map(|s| s.id).collect()
     }
 
     /// One plain session, then saving starts.
@@ -869,6 +863,16 @@ impl Workspace {
     /// After the model changed: the workspaces' groups kept together (the sidebar draws each
     /// under one header), the sessions in sidebar order, and the focused tab's the active one.
     pub(crate) fn sync(&mut self) {
+        // Every session has exactly one terminal tab and every terminal tab a session: each op
+        // keeps it, so a mismatch is a bug. Said, caught in debug builds, and repaired.
+        let repaired = self.model.reconcile(&self.session_ids());
+        if !repaired.is_empty() {
+            eprintln!(
+                "[fuxx] layout: tabs and sessions were out of step; {}",
+                repaired.join("; ")
+            );
+            debug_assert!(repaired.is_empty(), "tabs and sessions out of step");
+        }
         let sessions = self.sessions.items();
         let group_of = |id: u64| {
             sessions
@@ -987,7 +991,8 @@ impl Workspace {
         Some(groups::group_label(&key, &all))
     }
 
-    /// A workspace's name: yours, else its focused pane's terminal's.
+    /// A workspace's name: yours, else its focused pane's terminal's, else its first
+    /// terminal's, else (only browser tabs) "Browser".
     pub(crate) fn workspace_label(&self, ws: WorkspaceId) -> SharedString {
         let Some(w) = self.model.workspace(ws) else {
             return groups::DEFAULT_NAME.into();
@@ -995,9 +1000,14 @@ impl Workspace {
         if let Some(name) = w.name.as_deref().filter(|n| !n.trim().is_empty()) {
             return name.to_string().into();
         }
+        let first = || {
+            let id = *self.model.terminals(ws).first()?;
+            self.sessions.items().iter().find(|s| s.id == id)
+        };
         self.pane_session(w.focused)
+            .or_else(first)
             .map(Session::label)
-            .unwrap_or_else(|| groups::DEFAULT_NAME.into())
+            .unwrap_or_else(|| sidebar::BROWSER_NAME.into())
     }
 
     /// A workspace's place in the sidebar, from 1 (what ⌘N and the window title show).

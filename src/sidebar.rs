@@ -24,7 +24,7 @@ use gpui::{
 
 use crate::appearance::Appearance;
 use crate::groups::{self, GroupKey, Row};
-use crate::layout_model::WorkspaceId;
+use crate::layout_model::{Model, WorkspaceId};
 use crate::preferences;
 use crate::presets::MAX_PRESETS;
 use crate::reduce_motion::WindowVisible;
@@ -45,9 +45,11 @@ use crate::workspace::{POP_SHOWN, Session, Workspace};
 /// What the sidebar needs to know of one workspace, in display order: its name, colour and
 /// group, and the rest from the terminal its ring is (its most urgent: `subject`).
 pub struct WorkspaceFacts<'a> {
+    pub workspace: WorkspaceId,
     pub label: &'a str,
-    /// The session (its place in the session list) the row's mark and age are about.
-    pub subject: usize,
+    /// The session (its place in the session list) the row's mark and age are about; none for
+    /// a workspace with no terminal (idle, no age).
+    pub subject: Option<usize>,
     pub status: Status,
     /// When `status` last changed.
     pub since: Instant,
@@ -84,10 +86,11 @@ pub struct HeaderRow {
 /// A workspace's row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceRow {
+    pub workspace: WorkspaceId,
     /// Its place in the sidebar (⌘1–⌘9 select the first nine by it).
     pub index: usize,
-    /// The session its mark and age are about.
-    pub subject: usize,
+    /// The session its mark and age are about (none: a workspace with no terminal).
+    pub subject: Option<usize>,
     pub label: String,
     pub status: Status,
     /// How long it has been in its status ("4m"); Idle shows none.
@@ -123,8 +126,8 @@ pub enum Sub {
 pub fn rows(
     sessions: &[WorkspaceFacts],
     collapsed: &[GroupKey],
-    active: Option<usize>,
-    shown: &[usize],
+    active: Option<WorkspaceId>,
+    shown: &[WorkspaceId],
     now: Instant,
 ) -> Vec<SidebarRow> {
     let keys: Vec<Option<&GroupKey>> = sessions.iter().map(|s| s.group.as_ref()).collect();
@@ -150,8 +153,9 @@ pub fn rows(
             }
             Row::Session { index, grouped } => {
                 let s = &sessions[index];
-                let is_active = active == Some(index);
+                let is_active = active == Some(s.workspace);
                 SidebarRow::Workspace(WorkspaceRow {
+                    workspace: s.workspace,
                     index,
                     subject: s.subject,
                     label: s.label.to_string(),
@@ -160,7 +164,7 @@ pub fn rows(
                         .then(|| status::age_label(now.saturating_duration_since(s.since))),
                     sub: sub(s),
                     active: is_active,
-                    on_screen: !is_active && shown.contains(&index),
+                    on_screen: !is_active && shown.contains(&s.workspace),
                     grouped,
                     progress: s.progress.map(|(p, _)| *p),
                     color: s.color,
@@ -193,6 +197,27 @@ fn sub_line(progress: Option<&(u8, Option<String>)>, note: Option<&str>) -> Opti
         (Some(t), None) | (None, Some(t)) => Some(t.to_string()),
         (None, None) => None,
     }
+}
+
+/// A workspace with no terminal (only browser tabs) is called this until you name it.
+pub const BROWSER_NAME: &str = "Browser";
+
+/// Each workspace in display order with the session its row is about: its ring, the most
+/// urgent terminal (`Model::rollup`; `index_of` gives a terminal's place in the session list);
+/// none for a workspace with no terminal, which still gets its row.
+pub fn row_subjects(
+    model: &Model,
+    index_of: impl Fn(u64) -> Option<usize>,
+    status: impl Fn(u64) -> Status,
+) -> Vec<(WorkspaceId, Option<usize>)> {
+    model
+        .display_order()
+        .into_iter()
+        .map(|ws| {
+            let subject = model.rollup(ws, &status).and_then(|(id, _)| index_of(id));
+            (ws, subject)
+        })
+        .collect()
 }
 
 /// The shortcut that selects the workspace in sidebar place `index` (0-based): "⌘1" to "⌘9" for the first nine, none
@@ -275,7 +300,7 @@ const CHEVRON_TURN: Duration = Duration::from_millis(120);
 /// The first-run hint card.
 const HINT_TITLE: &str = "Three things to know";
 const HINT_LINES: [&str; 3] = [
-    "⌘T new session · ⇧⌘S SSH · ⇧⌘B browser",
+    "⌘T new workspace · ⇧⌘S SSH · ⇧⌘B browser",
     "Rings: spinning = working, pulsing = needs you, ✓ = done",
     "⇧⌘U jumps to what needs you",
 ];
@@ -460,39 +485,47 @@ fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
 }
 
 impl Workspace {
-    /// The sidebar's rows as they are now.
+    /// The sidebar's rows as they are now: one per workspace, in display order.
     fn sidebar_rows(&self, now: Instant) -> Vec<SidebarRow> {
-        let order = self.model.display_order();
         let items = self.sessions.items();
-        // Every workspace has a terminal for its ring (browser tabs come in a later task).
-        let rows_of: Vec<(WorkspaceId, SharedString, usize)> = order
+        let status = |id: u64| {
+            items
+                .iter()
+                .find(|s| s.id == id)
+                .map_or(Status::Idle, |s| s.status)
+        };
+        let subjects = row_subjects(&self.model, |id| self.index_of(id), status);
+        let labels: Vec<SharedString> = subjects
             .iter()
-            .filter_map(|&ws| Some((ws, self.workspace_label(ws), self.rollup_session(ws)?)))
+            .map(|(ws, _)| self.workspace_label(*ws))
             .collect();
-        let facts: Vec<WorkspaceFacts> = rows_of
+        let facts: Vec<WorkspaceFacts> = subjects
             .iter()
-            .map(|(ws, label, subject)| {
-                let ws = *ws;
-                let s = &items[*subject];
+            .zip(&labels)
+            .map(|(&(ws, subject), label)| {
+                let s = subject.map(|i| &items[i]);
                 WorkspaceFacts {
+                    workspace: ws,
                     label,
-                    subject: *subject,
-                    status: s.status,
-                    since: s.status_since,
-                    question: s.question.as_deref(),
+                    subject,
+                    status: s.map_or(Status::Idle, |s| s.status),
+                    since: s.map_or(now, |s| s.status_since),
+                    question: s.and_then(|s| s.question.as_deref()),
                     group: self.workspace_group(ws),
-                    progress: s.progress.as_ref(),
-                    note: s.note.as_deref(),
-                    lost: s.lost,
+                    progress: s.and_then(|s| s.progress.as_ref()),
+                    note: s.and_then(|s| s.note.as_deref()),
+                    lost: s.is_some_and(|s| s.lost),
                     color: self.model.workspace(ws).and_then(|w| w.color),
                 }
             })
             .collect();
-        let active = self
-            .model
-            .focused_workspace()
-            .and_then(|f| order.iter().position(|&w| w == f));
-        rows(&facts, &self.collapsed, active, &[], now)
+        rows(
+            &facts,
+            &self.collapsed,
+            self.model.focused_workspace(),
+            &[],
+            now,
+        )
     }
 
     /// The workspaces (by place in the sidebar) that have a row: all but those folded in a
@@ -527,15 +560,12 @@ impl Workspace {
     /// Whether session `index`'s workspace's row is on screen: the sidebar is shown, its
     /// group open, and the row in the scrolled view.
     pub(crate) fn row_on_screen(&self, index: usize) -> bool {
-        let Some(number) = self
-            .workspace_of(index)
-            .and_then(|ws| self.workspace_number(ws))
-        else {
+        let Some(ws) = self.workspace_of(index) else {
             return false;
         };
         self.rows_in_view(Instant::now())
             .iter()
-            .any(|row| matches!(row, SidebarRow::Workspace(s) if s.index + 1 == number))
+            .any(|row| matches!(row, SidebarRow::Workspace(s) if s.workspace == ws))
     }
 
     /// The sidebar's rows in the scrolled view; none with the sidebar hidden.
@@ -564,7 +594,7 @@ impl Workspace {
                 .rows_in_view(now)
                 .into_iter()
                 .filter_map(|row| match row {
-                    SidebarRow::Workspace(s) if s.age.is_some() => Some(s.subject),
+                    SidebarRow::Workspace(s) if s.age.is_some() => s.subject,
                     _ => None,
                 });
             // Pane headers show an age too (every status but Idle).
@@ -809,10 +839,8 @@ impl Workspace {
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(&ws) = self.model.display_order().get(row.index) else {
-            return div().into_any_element();
-        };
-        let session = &self.sessions.items()[row.subject];
+        let ws = row.workspace;
+        let session = row.subject.and_then(|i| self.sessions.items().get(i));
         let waiting = row.status == Status::Waiting;
         // The active row is filled; a waiting one is tinted. Hover deepens either a little.
         let fill = if row.active {
@@ -1106,23 +1134,36 @@ impl Workspace {
         }
     }
 
-    /// A row's mark slot: its status mark, or while the row is hovered a × in its place that
-    /// closes the workspace (asking first when it has 2+ terminals).
+    /// A row's mark slot: its session's status mark (an idle one for a workspace with no
+    /// terminal), or while the row is hovered a × in its place that closes the workspace
+    /// (asking first when it has 2+ terminals).
     fn close_slot(
         &self,
         ws: WorkspaceId,
-        session: &Session,
+        session: Option<&Session>,
         ui: UiColors,
         surface: Rgb,
         cx: &mut Context<Self>,
     ) -> Div {
+        let mark = match session {
+            Some(session) => self.session_mark("row", session, ui, surface),
+            None => status_mark::mark_on(
+                Status::Idle,
+                &ui,
+                self.phase,
+                None,
+                px(mark_size(Status::Idle)),
+                surface,
+            )
+            .into_any_element(),
+        };
         let mark = div()
             .absolute()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
-            .child(self.session_mark("row", session, ui, surface))
+            .child(mark)
             .group_hover(ROW_GROUP, |s| s.invisible());
         let close = div()
             .id(("row-close", ws.0 as usize))
@@ -1559,8 +1600,9 @@ mod tests {
         group: Option<GroupKey>,
     ) -> WorkspaceFacts<'_> {
         WorkspaceFacts {
+            workspace: WorkspaceId(0),
             label,
-            subject: 0,
+            subject: Some(0),
             status,
             since,
             question: None,
@@ -1570,6 +1612,17 @@ mod tests {
             lost: false,
             color: None,
         }
+    }
+
+    /// Each row's workspace is its place (as `rows` takes them).
+    fn numbered(mut rows: Vec<WorkspaceFacts<'_>>) -> Vec<WorkspaceFacts<'_>> {
+        for (i, f) in rows.iter_mut().enumerate() {
+            f.workspace = WorkspaceId(i as u64);
+        }
+        rows
+    }
+    fn w(i: u64) -> WorkspaceId {
+        WorkspaceId(i)
     }
 
     fn session(row: &SidebarRow) -> &WorkspaceRow {
@@ -1605,7 +1658,8 @@ mod tests {
         sessions[2].progress = Some(&bar);
         sessions[2].note = Some("3 of 7");
         sessions[2].color = Some(TabColor::Teal);
-        let rows = rows(&sessions, &[], Some(1), &[1, 3], now);
+        let sessions = numbered(sessions);
+        let rows = rows(&sessions, &[], Some(w(1)), &[w(1), w(3)], now);
         assert_eq!(rows.len(), 6, "{rows:?}");
 
         let shell = session(&rows[0]);
@@ -1653,7 +1707,7 @@ mod tests {
         let mut s = facts("api", Status::Waiting, now, None);
         s.question = Some("Proceed? (y/n)");
         s.lost = true;
-        let rows = rows(&[s], &[], None, &[], now);
+        let rows = rows(&numbered(vec![s]), &[], None, &[], now);
         assert_eq!(session(&rows[0]).sub, Some(Sub::Note("not live".into())));
     }
 
@@ -1668,7 +1722,7 @@ mod tests {
             facts("d", Status::Done, now, Some(web.clone())),
             facts("e", Status::Idle, now, Some(web.clone())),
         ];
-        let rows = rows(&sessions, &[web.clone()], None, &[], now);
+        let rows = rows(&numbered(sessions.into()), &[web.clone()], None, &[], now);
         // api open (header + 3 rows), web closed (its header only).
         assert_eq!(rows.len(), 5, "{rows:?}");
         let open = header(&rows[0]);
@@ -1774,5 +1828,65 @@ mod tests {
         assert!(!shows(2.0, -84.0));
         assert!(shows(3.0, -84.0) && shows(6.0, -84.0));
         assert!(!shows(7.0, -84.0));
+    }
+
+    #[test]
+    fn a_workspace_without_a_terminal_keeps_its_row_and_the_rows_below_keep_theirs() {
+        use crate::layout_model::{Model, TabKind};
+        let mut m = Model::new();
+        let a = m.new_workspace(0, TabKind::Terminal(1)).unwrap();
+        let web = TabKind::Browser {
+            url: Some("http://localhost:3000".into()),
+        };
+        let b = m.new_workspace(1, web).unwrap();
+        let c = m.new_workspace(2, TabKind::Terminal(2)).unwrap();
+        m.focus_workspace(c.workspace);
+        // Sessions s1 and s2 are at places 0 and 1 of the session list.
+        let index_of = |id: u64| Some(id as usize - 1);
+        let status = |id: u64| {
+            if id == 2 {
+                Status::Waiting
+            } else {
+                Status::Idle
+            }
+        };
+        let subjects = row_subjects(&m, index_of, status);
+        assert_eq!(
+            subjects,
+            [
+                (a.workspace, Some(0)),
+                (b.workspace, None),
+                (c.workspace, Some(1))
+            ]
+        );
+        // Its row: idle, named after the workspace (else "Browser"); c's row is still c's.
+        let now = Instant::now();
+        let mut browser = facts(BROWSER_NAME, Status::Idle, now, None);
+        browser.subject = None;
+        let mut list = vec![
+            facts("api", Status::Idle, now, None),
+            browser,
+            facts("agent", Status::Waiting, now, None),
+        ];
+        for (f, (ws, subject)) in list.iter_mut().zip(&subjects) {
+            f.workspace = *ws;
+            f.subject = *subject;
+        }
+        let rows = rows(&list, &[], m.focused_workspace(), &[], now);
+        let picked: Vec<(WorkspaceId, usize, Option<usize>, bool)> = rows
+            .iter()
+            .map(session)
+            .map(|r| (r.workspace, r.index, r.subject, r.active))
+            .collect();
+        assert_eq!(
+            picked,
+            [
+                (a.workspace, 0, Some(0), false),
+                (b.workspace, 1, None, false),
+                (c.workspace, 2, Some(1), true)
+            ]
+        );
+        assert_eq!(session(&rows[1]).label, "Browser");
+        assert_eq!(session(&rows[1]).status, Status::Idle);
     }
 }

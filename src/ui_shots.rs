@@ -1241,8 +1241,9 @@ fn row_point(
 
 /// The sidebar, from real workspaces in both themes:
 /// - `sidebar`: eight sessions in two groups (waiting with a boxed question, working with a
-///   script's progress, done and idle split together, a long title, a closed group) and the
-///   first-run hint; `sidebar-narrow` and `sidebar-wide` at 180 and 400 px.
+///   script's progress, done and idle split together in one workspace (M11b: one row, its two
+///   panes on screen with their headers), a long title, a closed group) and the first-run hint;
+///   `sidebar-narrow` and `sidebar-wide` at 180 and 400 px.
 /// - `sidebar-hover`: the pointer over the closed group's header (its "+" shows).
 /// - `sidebar-menu`: the "+ New" menu open.
 /// - `sidebar-drag`: a row dragged down its group (lifted copy, dimmed source, insertion line).
@@ -1269,7 +1270,7 @@ fn sidebar_scenes() {
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(sidebar_appearance(theme, cx));
                 let ws = cx.new(|cx| {
-                    let mut ws = sidebar_workspace(&EIGHT, None, 3, &[WEB], window, cx);
+                    let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
                     ws.sidebar.width = width;
                     with_progress(&mut ws);
                     ws
@@ -1283,14 +1284,17 @@ fn sidebar_scenes() {
                     let ws = ws.read(cx);
                     let question = ws.sessions.items()[0].question.as_deref();
                     assert_eq!(question, Some(CLAUDE_QUESTION), "{scene}-{slug}: question");
-                    // Rows: api header, its five sessions, web's header.
+                    // Rows: api header, its four workspaces (tests and shell split in one),
+                    // web's header.
                     let height = |i: usize| {
                         let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                         f32::from(b.size.height)
                     };
                     assert_eq!(height(1), 42.0, "{scene}-{slug}: waiting row");
-                    assert_eq!(height(4), 28.0, "{scene}-{slug}: plain row");
-                    assert_eq!(ws.sidebar.scroll.children_count(), 7, "{scene}-{slug}");
+                    assert_eq!(height(3), 28.0, "{scene}-{slug}: the split workspace's row");
+                    assert_eq!(ws.sidebar.scroll.children_count(), 6, "{scene}-{slug}");
+                    // The split workspace is on screen: two panes, each with its header.
+                    assert_eq!(ws.header_sessions().len(), 2, "{scene}-{slug}: headers");
                 });
             };
             let path = shoot_with(scene, slug, &theme, dims, build, check);

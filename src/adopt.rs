@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::layout_model;
+use crate::layout_model::{self, Model};
 use crate::mux_proto::SessionInfo;
 use crate::presets::Preset;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
@@ -210,6 +210,28 @@ fn newcomer(info: &LiveInfo, presets: &[Preset]) -> Adopted {
     }
 }
 
+/// The workspaces the placement comes back as (`Model::from_state`), slot `i` shown as terminal
+/// `ids[i]`. When the file's focused session didn't come back, the first live one (an agent
+/// still running, not a restarted shell) gets the focus, as before workspaces (M10a).
+pub fn workspaces(saved: &SavedState, p: &Placement, ids: &[u64]) -> Model {
+    let terminals = p.terminals(ids, saved.sessions.len());
+    let mut model = Model::from_state(saved, &terminals);
+    let came_back = layout_model::saved_focus(saved)
+        .and_then(|i| terminals.get(i).copied().flatten())
+        .is_some();
+    if !came_back {
+        let first_live = p
+            .slots
+            .iter()
+            .zip(ids)
+            .find_map(|(slot, &id)| matches!(slot, Slot::Live(_)).then_some(id));
+        if let Some(tab) = first_live.and_then(|id| model.terminal_tab(id)) {
+            model.select_tab(tab);
+        }
+    }
+    model
+}
+
 /// What fuxx found of the background service when it starts without it (persistence off: a
 /// connect-only look; on, but the service couldn't be reached: `NoAnswer`).
 #[derive(Clone, Debug, PartialEq)]
@@ -298,7 +320,7 @@ fn keep_panes(tree: &Node<usize>, keep: impl Fn(usize) -> bool) -> Option<Node<u
 mod tests {
     use super::*;
     use crate::groups::{self, GroupKey};
-    use crate::layout_model::{Model, SavedPane, SavedTab, SavedWorkspace, TabKind};
+    use crate::layout_model::{SavedPane, SavedTab, SavedWorkspace, TabKind};
     use crate::mux_proto::{Dims, Progress};
     use crate::presets::builtins;
     use crate::split_tree::Axis;
@@ -370,7 +392,7 @@ mod tests {
                 Slot::Restore(_) => 100 + i as u64,
             })
             .collect();
-        Model::from_state(saved, &p.terminals(&ids, saved.sessions.len()))
+        workspaces(saved, p, &ids)
     }
     /// Each workspace's panes (reading order), each pane's terminals (tab order).
     fn shape(m: &Model) -> Vec<Vec<Vec<u64>>> {
@@ -629,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn the_active_session_keeps_the_focus_or_it_falls_back_to_the_first_workspace() {
+    fn the_active_session_is_kept_or_falls_back_to_the_first_live_one() {
         let two = || vec![s("a", None), s("b", Some(2)), s("c", Some(3))];
         // Kept, past a session that isn't coming back.
         let saved = state(two(), vec![], 2);
@@ -640,16 +662,19 @@ mod tests {
         let saved = state(two(), vec![], 0);
         let again = place_all(&saved, &[live(2), live(3)], RestoreMode::Agents);
         assert_eq!(focused(&model(&saved, &again)), Some(100));
-        // Gone (restore off): the first workspace.
+        // Gone (restore off): the first live one.
         let gone = place_all(&saved, &[live(2), live(3)], RestoreMode::Off);
         assert_eq!(focused(&model(&saved, &gone)), Some(2));
-        // None saved (or out of range): the first workspace.
+        // None saved (or out of range): the first live one, not the first restored.
         let mut none = state(two(), vec![], 0);
         none.active = None;
         let p = place_all(&none, &[live(3)], RestoreMode::Agents);
         assert_eq!(shown(&p), ["+a", "+b", "s3"]);
-        assert_eq!(focused(&model(&none, &p)), Some(100));
+        assert_eq!(focused(&model(&none, &p)), Some(3));
         none.active = Some(99);
+        assert_eq!(focused(&model(&none, &p)), Some(3));
+        // Nothing live: the first workspace.
+        let p = place_all(&none, &[], RestoreMode::Agents);
         assert_eq!(focused(&model(&none, &p)), Some(100));
     }
 
@@ -1008,8 +1033,8 @@ mod tests {
         let off = place_all(&saved, &[live(3), live(1)], RestoreMode::Off);
         let m = model(&saved, &off);
         assert_eq!(shape(&m), [vec![vec![1], vec![3]]]);
-        // Notes is gone: the first workspace, on the pane it had focused.
-        assert_eq!(focused(&m), Some(3));
+        // Notes is gone: the first live session.
+        assert_eq!(focused(&m), Some(1));
     }
 
     #[test]
