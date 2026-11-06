@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    Animation, AnimationExt, AnyElement, BoxShadow, ClickEvent, Context, DispatchPhase, Div,
-    DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, ScrollHandle, SharedString, Task, TextStyle, TruncateFrom, Window,
-    canvas, div, point, prelude::*, px, relative,
+    Animation, AnimationExt, AnyElement, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase,
+    Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, TextStyle,
+    TruncateFrom, Window, canvas, div, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -503,6 +503,13 @@ impl SidebarState {
         self.width = clamp_width(saved.sidebar_width);
         self.hidden = saved.sidebar_hidden;
         self.hint_dismissed = saved.hint_dismissed;
+    }
+
+    /// Whether a drag's pointer is over a row drawn at `row`: inside it, and where the list
+    /// shows it (a row partly scrolled under the band or the footer is cut there; its bounds
+    /// aren't).
+    fn pointer_on_row(&self, event: &MouseMoveEvent, row: Bounds<Pixels>) -> bool {
+        row.contains(&event.position) && self.scroll.bounds().contains(&event.position)
     }
 
     /// Whether row `i` was in the scrolled view when last laid out (yes before any layout).
@@ -1347,7 +1354,7 @@ impl Workspace {
             )
             .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
                 let here = |at| at == TabDrop::Workspace(ws);
-                this.drop_tab(dragged.tab, here, window, cx)
+                this.drop_tab(dragged.tab, here, window, cx);
             }))
             .child(name_line)
             .children(place)
@@ -1513,7 +1520,7 @@ impl Workspace {
         event: &DragMoveEvent<DraggedWorkspace>,
         cx: &mut Context<Self>,
     ) {
-        let over = event.bounds.contains(&event.event.position);
+        let over = self.sidebar.pointer_on_row(&event.event, event.bounds);
         if !over && self.sidebar.drop_at.is_none_or(|(w, _)| w != ws) {
             return; // not this row's business
         }
@@ -1542,7 +1549,7 @@ impl Workspace {
         event: &DragMoveEvent<DraggedTab>,
         cx: &mut Context<Self>,
     ) {
-        let over = event.bounds.contains(&event.event.position);
+        let over = self.sidebar.pointer_on_row(&event.event, event.bounds);
         let at = TabDrop::Workspace(ws);
         if !over && self.tab_drop != Some(at) {
             return; // not this row's business

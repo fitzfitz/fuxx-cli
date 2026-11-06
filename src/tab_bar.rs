@@ -135,9 +135,12 @@ pub fn insertion_gap(x: f32, tabs: &[(f32, f32)]) -> usize {
         .count()
 }
 
-/// Which side of a tab the insertion line is drawn on.
+/// Where on a tab the insertion line is drawn: astride its left or right edge (half over the
+/// neighbour or the bar's empty part), or inside the first tab's left edge (the bar's start,
+/// where the row cuts anything further left).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {
+    Start,
     Left,
     Right,
 }
@@ -147,6 +150,7 @@ pub enum Edge {
 pub fn line_edge(gap: usize, count: usize) -> Option<(usize, Edge)> {
     match count {
         0 => None,
+        _ if gap == 0 => Some((0, Edge::Start)),
         _ if gap < count => Some((gap, Edge::Left)),
         _ => Some((count - 1, Edge::Right)),
     }
@@ -222,19 +226,18 @@ pub(crate) struct DraggedTab {
 }
 
 /// The tab that follows the pointer during a drag: a chip as big as the tab, with its icon (or
-/// mark) and title. It hangs just below the pointer, so the bar it's over (and the insertion
-/// line) stays in sight.
+/// mark) and title. It hangs below the pointer by as much as the bar's bottom was below the
+/// grab, and a little more: over a bar, it never covers the bar (or the insertion line).
 struct TabChip {
     title: SharedString,
     icon: TabIcon,
     width: f32,
-    /// How far below the drawn spot (the tab's top-left, as GPUI keeps it under the pointer)
-    /// the chip starts: the grab's height in the tab, and a little more.
-    below: f32,
 }
 
-/// The gap between the pointer and the chip under it.
+/// The gap between the bottom of the bar the pointer is at and the chip under it.
 const CHIP_GAP: f32 = 6.0;
+/// The insertion line stops this far short of the bar's top and bottom.
+const LINE_INSET: f32 = 4.0;
 
 impl Render for TabChip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -272,7 +275,9 @@ impl Render for TabChip {
                     .truncate()
                     .child(self.title.clone()),
             );
-        div().pt(px(self.below)).child(chip)
+        // GPUI draws this view where the grabbed tab's top-left was, relative to the pointer:
+        // a bar's height below that is the bar's bottom.
+        div().pt(px(TAB_BAR + CHIP_GAP)).child(chip)
     }
 }
 
@@ -385,9 +390,15 @@ impl Workspace {
                         this.drag_tab_over_bar(pane, event, cx)
                     }),
                 )
+                // Put back in its own bar where it was (no line): shown, as a click would. A
+                // click that moved past GPUI's 2 px drag threshold ends here, and isn't lost.
                 .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
                     let here = |at| matches!(at, TabDrop::Bar { pane: p, .. } if p == pane);
-                    this.drop_tab(dragged.tab, here, window, cx)
+                    let tab = dragged.tab;
+                    let home = this.model.locate(tab).is_some_and(|(_, p)| p == pane);
+                    if !this.drop_tab(tab, here, window, cx) && home {
+                        this.select_tab(tab, window, cx);
+                    }
                 }))
                 .child(row)
                 .child(buttons)
@@ -530,27 +541,31 @@ impl Workspace {
                         .bg(hsla(ui.accent)),
                 )
             })
+            // Astride the gap and short of the bar's top and bottom, so it reads as a place
+            // between tabs, not as part of the active tab's accent outline.
             .when_some(line, |t, edge| {
                 let line = div()
                     .absolute()
-                    .top_0()
-                    .h_full()
+                    .top(px(LINE_INSET))
+                    .bottom(px(LINE_INSET))
                     .w(px(DIVIDER_ACTIVE))
+                    .rounded(px(DIVIDER_ACTIVE / 2.0))
                     .bg(hsla(ui.accent));
+                let astride = px(-DIVIDER_ACTIVE / 2.0);
                 t.child(match edge {
-                    Edge::Left => line.left_0(),
-                    Edge::Right => line.right_0(),
+                    Edge::Start => line.left_0(),
+                    Edge::Left => line.left(astride),
+                    Edge::Right => line.right(astride),
                 })
             })
             .when(lifted, |t| t.opacity(0.4))
-            .on_drag(DraggedTab { tab: id }, move |dragged, grab, _, cx| {
+            .on_drag(DraggedTab { tab: id }, move |dragged, _, _, cx| {
                 source.set(Some(dragged.tab));
                 rows.set(None); // not a row's drag any more
                 cx.new(|_| TabChip {
                     title: chip_title.clone(),
                     icon: chip_icon,
                     width,
-                    below: f32::from(grab.y) + CHIP_GAP,
                 })
             })
             // Its press is its own (not the bar's, which only focuses the pane).
@@ -1138,7 +1153,9 @@ mod tests {
 
     #[test]
     fn the_insertion_line_sits_on_the_edge_of_the_tab_after_the_gap() {
-        assert_eq!(line_edge(0, 3), Some((0, Edge::Left)));
+        // Before the first tab: the bar's start, where the row cuts anything left of it.
+        assert_eq!(line_edge(0, 3), Some((0, Edge::Start)));
+        assert_eq!(line_edge(1, 3), Some((1, Edge::Left)));
         assert_eq!(line_edge(2, 3), Some((2, Edge::Left)));
         assert_eq!(line_edge(3, 3), Some((2, Edge::Right)));
         assert_eq!(line_edge(7, 3), Some((2, Edge::Right)));

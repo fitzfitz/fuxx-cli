@@ -1879,19 +1879,22 @@ impl Workspace {
 
     /// Dragged tab `tab` dropped on a bar or row: it goes where the line (or highlight) was, if
     /// `here` (the place under the pointer) says it was this target's; with none, it stays.
+    /// Whether it moved.
     pub(crate) fn drop_tab(
         &mut self,
         tab: TabId,
         here: impl FnOnce(TabDrop) -> bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         self.tab_drag.set(None);
         let at = self.tab_drop.take().filter(|at| here(*at));
         cx.notify(); // the line or highlight goes
-        if let Some((pane, index)) = at.and_then(|at| self.model.drop_place(tab, at)) {
-            self.move_tab(tab, pane, index, window, cx);
-        }
+        let Some((pane, index)) = at.and_then(|at| self.model.drop_place(tab, at)) else {
+            return false;
+        };
+        self.move_tab(tab, pane, index, window, cx);
+        true
     }
 
     /// Esc during a tab drag: it ends where it started, nothing moved.
@@ -2261,6 +2264,12 @@ fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // No drag: a tab drag GPUI ended without a drop (released elsewhere) leaves nothing
+        // behind, so a later drag of something else (a file from Finder) isn't taken for it.
+        if !cx.has_active_drag() {
+            self.tab_drag.set(None);
+            self.tab_drop = None;
+        }
         self.ensure_browser_tabs(window, cx);
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
