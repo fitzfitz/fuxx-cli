@@ -2191,12 +2191,13 @@ impl Workspace {
         // A slide already under way turns back from where it has got to.
         let current = self.slide;
         self.slide = (!cx.reduce_motion()).then(|| Slide::start(!self.sidebar.hidden, current));
-        // The "+ New" menu hangs off the sidebar's footer, and a tab menu off a row; hidden,
-        // they can't stay open.
+        // The + menu and the 🔔's popover hang off the sidebar's footer, and a tab menu off a
+        // row; hidden, they can't stay open.
         self.sidebar.new_menu = false;
+        let popover = self.sidebar.hidden && self.notifications_popover.take().is_some();
         let menu = self.sidebar.tab_menu.take().is_some();
         let renaming_row = matches!(self.renaming, Some((Renaming::Workspace(_), _)));
-        if self.sidebar.hidden && (renaming_row || menu) {
+        if self.sidebar.hidden && (renaming_row || menu) || popover {
             self.focus_active(window, cx);
         }
         self.save();
@@ -2330,7 +2331,6 @@ impl Render for Workspace {
             (node, _) => (node, None),
         };
         let button = self.render_sidebar_button(ui, window, cx);
-        let title_buttons = self.render_title_buttons(ui, window, cx);
         let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
         let tab_menu = self.render_tab_menu(ui, cx);
@@ -2483,7 +2483,6 @@ impl Render for Workspace {
             )
             .children(sliding_sidebar)
             .child(button)
-            .children(title_buttons)
             // The host picker, the switcher and the address box: over everything, centred near
             // the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {
@@ -2495,7 +2494,7 @@ impl Render for Workspace {
             .when_some(self.address_box.clone(), |root, address| {
                 root.child(top_panel(address))
             })
-            // The sidebar's "+ New" menu and a row's tab menu, over everything, with their
+            // The sidebar's + menu and a row's tab menu, over everything, with their
             // click-away backdrops.
             .children(new_menu)
             .children(tab_menu)

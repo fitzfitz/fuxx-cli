@@ -1214,7 +1214,7 @@ fn with_progress(ws: &mut Workspace) {
     codex.note = Some("3 of 5 tables".into());
 }
 
-/// The appearance for sidebar scenes: the built-in presets, for the "+ New" menu.
+/// The appearance for sidebar scenes: the built-in presets, for the + menu.
 fn sidebar_appearance(theme: Theme, cx: &App) -> Appearance {
     Appearance {
         presets: crate::presets::builtins(),
@@ -1250,7 +1250,7 @@ fn row_point(
 ///   panes on screen with their tab bars), a long title, a closed group) and the first-run hint;
 ///   `sidebar-narrow` and `sidebar-wide` at 180 and 400 px.
 /// - `sidebar-hover`: the pointer over the closed group's header (its "+" shows).
-/// - `sidebar-menu`: the "+ New" menu open.
+/// - `sidebar-menu`: the footer's + menu open.
 /// - `sidebar-drag`: a row dragged down its group (lifted copy, dimmed source, insertion line).
 /// - `sidebar-scroll`: 24 sessions, the last one active, so the list scrolls to it.
 ///
@@ -1307,7 +1307,7 @@ fn sidebar_scenes() {
             println!("ui-shots: {}", path.display());
         }
 
-        // The pointer over web's (closed) header; the "+ New" menu open; a row mid-drag.
+        // The pointer over web's (closed) header; the + menu open; a row mid-drag.
         for scene in ["sidebar-hover", "sidebar-menu", "sidebar-drag"] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
@@ -1331,7 +1331,8 @@ fn sidebar_scenes() {
                         cx.simulate_mouse_move(window, at, None, none);
                     }
                     "sidebar-menu" => {
-                        let at = point(px(30.0), dims.height - px(18.0));
+                        // The footer's + (an icon now, no "New" label), at its left.
+                        let at = point(px(18.0), dims.height - px(18.0));
                         cx.simulate_click(window, at, none);
                         assert!(cx.read(|cx| ws.read(cx).sidebar.new_menu), "menu opens");
                     }
@@ -3734,34 +3735,41 @@ fn shot_notifications(ws: &mut Workspace) {
 }
 
 /// The title area over `switcher_workspace` (shell active), in both themes:
-/// - `title-band`: the sidebar shown, the 🔔 and + right of the sidebar button, nothing unseen;
-/// - `title-hover`: the same with the pointer on the 🔔 (its fill, its outline brighter);
+/// - `title-band`: the sidebar shown, its top band holding only the sidebar button, and the
+///   footer's +, 🔔 and gear, nothing unseen;
+/// - `title-hover`: the same with the pointer on the footer's 🔔 (its fill, its outline brighter);
 /// - `title-unseen`: the same with notifications unseen (the 🔔's dot);
+/// - `title-footer-narrow`: the narrowest sidebar (180 px) with the dot: the three buttons fit;
 /// - `title-hidden`: the sidebar hidden: the band runs over the panes with the workspace's name
-///   centred in it, the dot still there;
+///   centred in it, and no footer, so no 🔔;
 /// - `title-narrow`: hidden, a 560 px window and a long name, cut with an ellipsis;
-/// - `title-popover`: the popover open over six notifications, newest first (agent's long
-///   question cut, a closed terminal's entry greyed, a script's last with its own title);
+/// - `title-popover`: the popover open upward from the 🔔 over six notifications, newest first
+///   (agent's long question cut, a closed terminal's entry greyed, a script's last with its own
+///   title);
 /// - `title-popover-empty`: the popover with none yet.
 ///
-/// Panics unless the dot shows exactly while some are unseen, opening the popover sees them
-/// all (and it counts as an overlay), the name is drawn in the band only with the sidebar hidden
-/// and never past its inset; and (Mocha) unless a press on the 🔔 doesn't arm a window drag
-/// while one between the buttons does, a click on the 🔔 opens the popover and Escape or a
-/// click outside closes it, a click on a closed terminal's entry (or a script's with no
-/// terminal) does nothing, and a click on
-/// agent's entry shows agent (its workspace and tab) with the keyboard.
+/// Panics unless the dot shows exactly while some are unseen (and never with the sidebar
+/// hidden), the band holds no 🔔 or + where they were, opening the popover sees them all (and it
+/// counts as an overlay), the name is drawn in the band only with the sidebar hidden and never
+/// past its inset; and (Mocha) unless a press where the buttons were still arms a window drag,
+/// a press on the 🔔 doesn't, a click on the 🔔 opens the popover and Escape or a click outside
+/// closes it, a click on the + opens its menu, a click on a closed terminal's entry (or a
+/// script's with no terminal) does nothing, a click on agent's entry shows agent (its workspace
+/// and tab) with the keyboard, and hiding the sidebar closes the popover.
 fn title_area_scenes() {
-    use crate::sidebar_toggle::HIT;
+    use crate::sidebar_toggle::{HIT, button_origin};
     use crate::tab_menu::Dismiss;
-    use crate::title_area::{DOT, DOT_INSET, bell_origin, entry_top, name_inset, plus_origin};
+    use crate::title_area::{DOT, DOT_INSET, FOOTER_BUTTON, entry_top, footer_buttons, name_inset};
+    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH};
     use gpui::{Focusable, KeyBinding, Modifiers, MouseButton};
     use std::cell::RefCell;
     use std::rc::Rc;
 
     const LONG_NAME: &str = "Refactor the auth middleware to use the new session store";
-    let (bx, by) = bell_origin(false);
-    let dot = (bx + HIT - DOT_INSET - DOT / 2.0, by + DOT_INSET + DOT / 2.0);
+    const FOOTER: f32 = 36.0;
+    // Where the 🔔 and + sat in the band, right of the sidebar button, before they moved.
+    let (sx, sy) = button_origin(false);
+    let old_buttons = (sx + HIT + 2.0, sx + HIT + 2.0 + 2.0 * HIT + 2.0);
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -3770,6 +3778,7 @@ fn title_area_scenes() {
             "title-band",
             "title-hover",
             "title-unseen",
+            "title-footer-narrow",
             "title-hidden",
             "title-narrow",
             "title-popover",
@@ -3777,9 +3786,19 @@ fn title_area_scenes() {
         ] {
             let dims = match scene {
                 "title-narrow" => size(px(560.0), px(200.0)),
+                "title-footer-narrow" => size(px(360.0), px(200.0)),
                 "title-popover" | "title-popover-empty" => size(px(960.0), px(480.0)),
                 _ => size(px(760.0), px(200.0)),
             };
+            let sidebar_width = if scene == "title-footer-narrow" {
+                SIDEBAR_MIN_WIDTH
+            } else {
+                SIDEBAR_DEFAULT_WIDTH
+            };
+            let (height, width) = (f32::from(dims.height), f32::from(dims.width));
+            let [plus_x, bell_x, _] = footer_buttons(sidebar_width);
+            // The footer's buttons sit centred in the footer under its 1 px edge.
+            let centre_y = height - FOOTER + 1.0 + (FOOTER - 1.0) / 2.0;
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -3787,6 +3806,7 @@ fn title_area_scenes() {
                 let ws = cx.new(|cx| {
                     let mut ws = switcher_workspace(window, cx);
                     ws.sidebar.hidden = matches!(scene, "title-hidden" | "title-narrow");
+                    ws.sidebar.width = sidebar_width;
                     if scene != "title-popover-empty" {
                         shot_notifications(&mut ws);
                     }
@@ -3806,7 +3826,7 @@ fn title_area_scenes() {
                 let ws = slotted(&slot);
                 let n = format!("{scene}-{slug}");
                 if scene == "title-hover" {
-                    let bell = point(px(bx + HIT / 2.0), px(by + HIT / 2.0));
+                    let bell = point(px(bell_x + FOOTER_BUTTON / 2.0), px(centre_y));
                     cx.simulate_mouse_move(window, bell, None, gpui::Modifiers::none());
                 }
                 if scene.starts_with("title-popover") {
@@ -3831,23 +3851,78 @@ fn title_area_scenes() {
             println!("ui-shots: {}", path.display());
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let n = format!("{scene}-{slug}");
-            // The bell's rim (1.5 px from 9.5 px down its 14 px box, drawn on one whole pixel
-            // row): dim, the full text colour on hover.
-            let rim = at(bx + HIT / 2.0, by + (HIT - 14.0) / 2.0 + 9.75);
-            match scene {
-                "title-band" => {
-                    assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
-                    assert_eq!(rim, bg(ui.text_dim), "{n}: the bell, dim");
+            let hidden = matches!(scene, "title-hidden" | "title-narrow");
+            // Whether any pixel of colour `c` is in the 🔔's column, down the footer: its dome,
+            // rim and clapper are on that line.
+            let bell_has = |c: alacritty_terminal::vte::ansi::Rgb| -> bool {
+                let x = bell_x + FOOTER_BUTTON / 2.0;
+                (0..28).any(|k| at(x, centre_y - 14.0 + k as f32) == bg(c))
+            };
+            // The dot's middle: the 🔔's top right (its button is 24 px, centred in the footer).
+            let dot = (
+                bell_x + FOOTER_BUTTON - DOT_INSET - DOT / 2.0,
+                centre_y - FOOTER_BUTTON / 2.0 + DOT_INSET + DOT / 2.0,
+            );
+            if !hidden {
+                match scene {
+                    "title-band" => {
+                        assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
+                        assert!(bell_has(ui.text_dim), "{n}: the bell, dim");
+                    }
+                    "title-hover" => {
+                        assert!(bell_has(ui.text), "{n}: the bell, hovered");
+                        assert!(!bell_has(ui.text_dim), "{n}: nothing dim left on it");
+                    }
+                    "title-unseen" | "title-footer-narrow" => {
+                        assert_eq!(at(dot.0, dot.1), bg(ui.accent), "{n}: the dot")
+                    }
+                    _ => {}
                 }
-                "title-hover" => assert_eq!(rim, bg(ui.text), "{n}: the bell, hovered"),
-                "title-unseen" | "title-hidden" => {
-                    assert_eq!(at(dot.0, dot.1), bg(ui.accent), "{n}: the dot")
+                // The + is drawn in the footer's left (ink in its box), the gear's box at the
+                // right edge is inside the sidebar.
+                let inked = |x0: f32| -> usize {
+                    let mut inked = 0;
+                    for dy in 0..24 {
+                        for dx in 0..24 {
+                            let (x, y) = (x0 + dx as f32, centre_y - 12.0 + dy as f32);
+                            inked += usize::from(at(x, y) != bg(ui.sidebar_background));
+                        }
+                    }
+                    inked
+                };
+                assert!(inked(plus_x) > 8, "{n}: the + is drawn");
+                assert!(inked(footer_buttons(sidebar_width)[2]) > 8, "{n}: the gear");
+                assert!(
+                    plus_x + FOOTER_BUTTON <= bell_x && bell_x + FOOTER_BUTTON <= sidebar_width,
+                    "{n}: the buttons fit the sidebar"
+                );
+            } else {
+                // No footer, so no 🔔, whatever is unseen: nothing at the foot but the panes.
+                assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
+            }
+            // The band holds no 🔔 or + where they were: only the sidebar background (or, with
+            // the sidebar hidden, the content's) between the sidebar button and the name.
+            let band_bg = if hidden {
+                bg(theme.background)
+            } else {
+                bg(ui.sidebar_background)
+            };
+            let inset = name_inset(false);
+            if scene != "title-footer-narrow" {
+                let stop = if hidden {
+                    inset - 2.0
+                } else {
+                    old_buttons.1 + HIT
+                };
+                for y in [sy + 2.0, sy + HIT / 2.0, sy + HIT - 2.0] {
+                    let mut x = sx + HIT + 2.0;
+                    while x < stop {
+                        assert_eq!(at(x, y), band_bg, "{n}: the band is bare at ({x}, {y})");
+                        x += 1.0;
+                    }
                 }
-                _ => {}
             }
             // The name: ink in the band's middle with the sidebar hidden, none past its inset.
-            let width = f32::from(dims.width);
-            let inset = name_inset(false);
             let band_ink = |x0: f32, x1: f32| -> usize {
                 (0..20)
                     .map(|k| 9.0 + k as f32)
@@ -3862,7 +3937,7 @@ fn title_area_scenes() {
                     })
                     .sum()
             };
-            if matches!(scene, "title-hidden" | "title-narrow") {
+            if hidden {
                 assert!(
                     band_ink(inset, width - inset) > 20,
                     "{n}: the name in the band"
@@ -3886,6 +3961,7 @@ fn title_area_scenes() {
         cx.set_global(sidebar_appearance(theme, cx));
         let ws = cx.new(|cx| {
             let mut ws = switcher_workspace(window, cx);
+            ws.sidebar.width = SIDEBAR_DEFAULT_WIDTH;
             shot_notifications(&mut ws);
             ws
         });
@@ -3895,6 +3971,7 @@ fn title_area_scenes() {
     let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
         let ws = slotted(&slot);
         let none = Modifiers::none();
+        let (width, height) = (960.0, 600.0);
         cx.update(|cx| cx.bind_keys([KeyBinding::new("escape", Dismiss, Some("TabMenu"))]));
         let open = |cx: &mut VisualTestAppContext| {
             cx.read(|cx| ws.read(cx).notifications_popover.is_some())
@@ -3906,7 +3983,10 @@ fn title_area_scenes() {
                 ws.sessions.active().map(|s| s.label().to_string())
             })
         };
-        let bell = point(px(bx + HIT / 2.0), px(by + HIT / 2.0));
+        let [plus_x, bell_x, _] = footer_buttons(SIDEBAR_DEFAULT_WIDTH);
+        let foot_y = height - FOOTER / 2.0;
+        let bell = point(px(bell_x + FOOTER_BUTTON / 2.0), px(foot_y));
+        let plus = point(px(plus_x + FOOTER_BUTTON / 2.0), px(foot_y));
         // A press on the 🔔 is its own (it doesn't arm a window drag) and, released, opens the
         // popover, which sees everything; Escape closes it.
         assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 6);
@@ -3917,21 +3997,31 @@ fn title_area_scenes() {
         assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 0);
         cx.simulate_keystrokes(window, "escape");
         assert!(!open(cx), "title-area: Escape closes it");
-        // Between the buttons the band still drags the window (the + is pressed the same way as
-        // the 🔔, by the same `band_button`).
-        let gap = point(px(plus_origin(false).0 - 2.0), px(by + HIT / 2.0));
-        cx.simulate_mouse_down(window, gap, MouseButton::Left, none);
+        // Where the 🔔 and + were in the band, the band drags the window: no dead hit area.
+        let was = point(px(old_buttons.0 + HIT / 2.0), px(sy + HIT / 2.0));
+        cx.simulate_mouse_down(window, was, MouseButton::Left, none);
         assert!(
             pressed(cx),
-            "title-area: between the buttons the band drags"
+            "title-area: where the buttons were the band drags"
         );
-        cx.simulate_mouse_up(window, gap, MouseButton::Left, none);
-        // A click outside closes it.
+        cx.simulate_mouse_up(window, was, MouseButton::Left, none);
+        // The + opens its menu (and a click on it again closes it).
+        let menu = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).sidebar.new_menu);
+        cx.simulate_click(window, plus, none);
+        assert!(menu(cx), "title-area: the + opens the new menu");
+        cx.simulate_click(window, point(px(width - 20.0), px(40.0)), none);
+        assert!(!menu(cx), "title-area: a click outside closes it");
+        // A click outside closes the popover.
         cx.simulate_click(window, bell, none);
-        cx.simulate_click(window, point(px(800.0), px(400.0)), none);
+        cx.simulate_click(window, point(px(800.0), px(40.0)), none);
         assert!(!open(cx), "title-area: a click outside closes it");
         // The closed terminal's entry (the fourth) does nothing; agent's (the first) jumps.
-        let entry = |i: usize| point(px(bx + 60.0), px(entry_top(i) + 20.0));
+        let entry = |i: usize| {
+            point(
+                px(bell_x + 60.0),
+                px(entry_top(i, 6, SIDEBAR_DEFAULT_WIDTH, height) + 20.0),
+            )
+        };
         cx.simulate_click(window, bell, none);
         cx.simulate_click(window, entry(3), none);
         assert!(
@@ -3958,9 +4048,9 @@ fn title_area_scenes() {
         let ui = theme.ui();
         let fill = pixel_at(
             &shot,
-            size(px(960.0), px(600.0)),
-            bx + 12.0,
-            entry_top(0) + 2.0,
+            size(px(width), px(height)),
+            bell_x + 12.0,
+            entry_top(0, 6, SIDEBAR_DEFAULT_WIDTH, height) + 2.0,
         );
         assert_eq!(
             fill,
@@ -3983,6 +4073,17 @@ fn title_area_scenes() {
             );
         })
         .expect("read the focus");
+        // Hiding the sidebar takes the footer, and the popover open over it, away.
+        cx.simulate_click(window, bell, none);
+        assert!(open(cx), "title-area: reopened");
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.toggle_sidebar(window, cx))
+        })
+        .expect("hide the sidebar");
+        assert!(
+            !open(cx),
+            "title-area: hiding the sidebar closes the popover"
+        );
         slot.borrow_mut().take();
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
