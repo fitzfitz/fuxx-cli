@@ -5,7 +5,7 @@ status: planned
 
 # 55 - Milestone 11c - Native Notifications
 
-**Status:: ⬜ Designed 2026-11-06 (your go); plan next.**  ·  **Phase 4: an M11 extension.**
+**Status:: ⬜ Planned 2026-11-06 (your go).**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11c Plan - Native Notifications]]
 **Moved from M12:** "notifications named fuxx" and "clicking a notification switches to that session" (D5, 2026-10-26),
 because the test below showed neither needs the paid Apple signature.
 
@@ -34,8 +34,7 @@ pane and tab.
   title is today's summary, the body today's text; the banner says fuxx and carries which terminal raised it. No sound
   (as today).
 - **Clicking a banner** brings fuxx forward and shows that terminal: selects its workspace, focuses its pane, selects
-  its tab. If that terminal has closed since, fuxx just comes forward. The 🔔 list marks that notification seen, as a
-  click in the list does.
+  its tab. If that terminal has closed since, fuxx just comes forward.
 - **With the window closed** (background service on): clicking a banner opens fuxx; once fuxx has reattached to the
   service and restored the layout, it shows that terminal.
 - **Permission.** The window asks macOS once, at launch (macOS shows its "Allow notifications from fuxx?" question
@@ -67,7 +66,9 @@ pane and tab.
 6. **New dependency: `objc2-user-notifications` 0.3.2** (the same family as fuxx's other Apple bindings, at the version
    the test used; you agreed to it before the test). GPUI's own app delegate is left alone: notifications get their
    own delegate object.
-7. **Every banner is new** (no replacing an earlier one). A click marks that terminal's entries in the 🔔 list seen.
+7. **Every banner is new** (no replacing an earlier one). A banner click leaves the 🔔 list's unseen count alone: that
+   count means "new since you last opened the list" and isn't kept per terminal (corrected while planning; the
+   earlier "marks that terminal's entries seen" didn't fit the list).
 
 ## Not in M11c
 
