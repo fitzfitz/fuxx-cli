@@ -468,7 +468,7 @@ impl Workspace {
         .detach();
     }
 
-    /// File → New SSH Session…: open the host picker with the recent hosts and those in
+    /// File → New SSH Workspace…: open the host picker with the recent hosts and those in
     /// `~/.ssh/config`, and put the typing there. Already open: back to its box.
     pub(crate) fn open_host_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(picker) = &self.host_picker {

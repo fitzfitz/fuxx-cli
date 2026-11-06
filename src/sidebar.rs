@@ -280,7 +280,7 @@ const SLOT_GAP: f32 = 8.0;
 /// A row's name line, and the small line under it.
 const NAME_LINE: f32 = 18.0;
 const SUB_LINE: f32 = 15.0;
-/// A header's + (new session in the group), shown on hover.
+/// A header's + (a new workspace in the group), shown on hover.
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
 const FOOTER: f32 = 36.0;
@@ -295,6 +295,8 @@ const CLOSE_BUTTON: f32 = 16.0;
 const ROW_GROUP: &str = "sidebar-row";
 /// The "+ New" menu's width.
 const MENU_WIDTH: f32 = 230.0;
+/// The "+ New" menu's first items (the presets follow): label and shortcut.
+const NEW_MENU: [(&str, &str); 2] = [("New Workspace", "⌘N"), ("New Workspace in Folder…", "⌘O")];
 /// How long a header's chevron takes to turn.
 const CHEVRON_TURN: Duration = Duration::from_millis(120);
 /// The first-run hint card.
@@ -726,7 +728,7 @@ impl Workspace {
     }
 
     /// A group's header: chevron, name, then (closed) its most urgent mark, its workspace count,
-    /// and on hover a + for a new session (a workspace) in it. Click opens or closes it.
+    /// and on hover a + for a new workspace in it. Click opens or closes it.
     fn render_header(
         &self,
         header: &HeaderRow,
@@ -1347,8 +1349,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The "+ New" menu, over the window above the footer: a new session (here, or in a
-    /// folder) and each preset. A click anywhere else closes it.
+    /// The "+ New" menu, over the window above the footer: a new workspace (here, or in a
+    /// folder) and each preset's. A click anywhere else closes it.
     pub(crate) fn render_new_menu(
         &self,
         ui: UiColors,
@@ -1380,23 +1382,20 @@ impl Workspace {
                         .child(keys),
                 )
         };
+        let [(new, new_keys), (in_folder, in_folder_keys)] = NEW_MENU;
         let mut items = vec![
-            item(("new-menu", 0), "New Workspace".into(), "⌘N".into())
+            item(("new-menu", 0), new.into(), new_keys.into())
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.close_new_menu(cx);
                     this.new_session(window, cx)
                 }))
                 .into_any_element(),
-            item(
-                ("new-menu", 1),
-                "New Session in Folder…".into(),
-                "⌘O".into(),
-            )
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.close_new_menu(cx);
-                this.new_session_in_folder(window, cx)
-            }))
-            .into_any_element(),
+            item(("new-menu", 1), in_folder.into(), in_folder_keys.into())
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.close_new_menu(cx);
+                    this.new_session_in_folder(window, cx)
+                }))
+                .into_any_element(),
         ];
         let presets = &cx.global::<Appearance>().presets;
         if !presets.is_empty() {
@@ -1600,6 +1599,18 @@ fn group_id(key: &GroupKey) -> u64 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_hint_and_the_new_menu_say_n_makes_a_workspace_and_t_a_tab() {
+        assert_eq!(
+            HINT_LINES[0],
+            "⌘N workspace · ⌘T tab · ⇧⌘S SSH · ⇧⌘B browser"
+        );
+        assert_eq!(
+            NEW_MENU,
+            [("New Workspace", "⌘N"), ("New Workspace in Folder…", "⌘O")]
+        );
+    }
 
     fn folder(p: &str) -> GroupKey {
         GroupKey::Folder(PathBuf::from(p))

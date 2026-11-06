@@ -244,6 +244,31 @@ fn new_items() -> [MenuItem; 2] {
     ]
 }
 
+/// The File menu: new workspaces and tabs (and each agent preset's), the workspace's own items,
+/// going places, the browser, closing, Preferences.
+fn file_menu(preset_items: Vec<MenuItem>) -> Menu {
+    let [new_workspace, new_tab] = new_items();
+    Menu::new("File").items([
+        new_workspace,
+        new_tab,
+        MenuItem::action("New Workspace in Folder\u{2026}", NewSessionInFolder),
+        MenuItem::action("New SSH Workspace\u{2026}", NewSshSession),
+        MenuItem::submenu(Menu::new("New Agent Workspace").items(preset_items)),
+        MenuItem::action("Rename Workspace\u{2026}", RenameSession),
+        MenuItem::action("Move Workspace Up", MoveSessionUp),
+        MenuItem::action("Move Workspace Down", MoveSessionDown),
+        MenuItem::separator(),
+        MenuItem::action("Go to Session\u{2026}", OpenSwitcher),
+        MenuItem::action("Go to What Needs You", NextNeedingYou),
+        MenuItem::separator(),
+        MenuItem::action("Open Browser\u{2026}", OpenBrowser),
+        MenuItem::separator(),
+        MenuItem::action("Close Tab", CloseSession),
+        MenuItem::separator(),
+        MenuItem::action("Preferences\u{2026}", OpenPreferences),
+    ])
+}
+
 /// The View menu: the sidebar, and the font size (written to the settings file, as Preferences
 /// does).
 fn view_menu() -> Menu {
@@ -314,28 +339,9 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
             QuitAndEndSessions,
         ));
     }
-    let [new_workspace, new_tab] = new_items();
     cx.set_menus([
         Menu::new("fuxx").items(app_items),
-        Menu::new("File").items([
-            new_workspace,
-            new_tab,
-            MenuItem::action("New Session in Folder\u{2026}", NewSessionInFolder),
-            MenuItem::action("New SSH Session\u{2026}", NewSshSession),
-            MenuItem::submenu(Menu::new("New Agent Session").items(preset_items)),
-            MenuItem::action("Rename Workspace\u{2026}", RenameSession),
-            MenuItem::action("Move Workspace Up", MoveSessionUp),
-            MenuItem::action("Move Workspace Down", MoveSessionDown),
-            MenuItem::separator(),
-            MenuItem::action("Go to Session\u{2026}", OpenSwitcher),
-            MenuItem::action("Go to What Needs You", NextNeedingYou),
-            MenuItem::separator(),
-            MenuItem::action("Open Browser\u{2026}", OpenBrowser),
-            MenuItem::separator(),
-            MenuItem::action("Close Tab", CloseSession),
-            MenuItem::separator(),
-            MenuItem::action("Preferences\u{2026}", OpenPreferences),
-        ]),
+        file_menu(preset_items),
         edit_menu(),
         Menu::new("Pane").items([
             MenuItem::action("Split Right", SplitRight),
@@ -660,8 +666,8 @@ mod tests {
     use gpui::{MenuItem, OsAction};
 
     use super::{
-        ActualSize, Bigger, Smaller, edit_menu, key_bindings, new_bindings, new_items, quit_title,
-        view_menu, window_menu,
+        ActualSize, Bigger, Smaller, edit_menu, file_menu, key_bindings, new_bindings, new_items,
+        quit_title, view_menu, window_menu,
     };
     use crate::browser_tab::{GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::terminal_view::{Copy, Paste};
@@ -840,6 +846,31 @@ mod tests {
             [
                 ("New Workspace".to_string(), true, false),
                 ("New Tab".to_string(), false, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn every_new_item_in_the_file_menu_says_what_it_makes() {
+        let menu = file_menu(vec![]);
+        let named: Vec<String> = menu
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name.to_string()),
+                MenuItem::Submenu(menu) => Some(format!("{} ▸", menu.name)),
+                _ => None,
+            })
+            .take(5)
+            .collect();
+        assert_eq!(
+            named,
+            [
+                "New Workspace",
+                "New Tab",
+                "New Workspace in Folder…",
+                "New SSH Workspace…",
+                "New Agent Workspace ▸"
             ]
         );
     }
