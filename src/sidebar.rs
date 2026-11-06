@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    Animation, AnimationExt, AnyElement, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase,
-    Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
+    Animation, AnimationExt, AnyElement, AnyView, Bounds, BoxShadow, ClickEvent, Context,
+    DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, TextStyle,
     TruncateFrom, Window, canvas, div, point, prelude::*, px, relative,
 };
@@ -33,6 +33,7 @@ use crate::preferences;
 use crate::presets::MAX_PRESETS;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
+use crate::sidebar_toggle::Tip;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_bar::DraggedTab;
@@ -40,6 +41,7 @@ use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
+use crate::title_area::{BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, bell_icon, plus_icon, unseen_dot};
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
     SIDEBAR_ROW, STATUS_MARK, WAITING_ROW,
@@ -402,7 +404,7 @@ pub fn in_view(top: f32, bottom: f32, view_top: f32, view_bottom: f32, offset: f
 
 /// Layout, in pixels (row and header heights, text sizes and widths are in `ui_tokens`).
 /// Rows' margin from the sidebar's sides, and their own padding each side.
-const ROW_INSET: f32 = 6.0;
+pub(crate) const ROW_INSET: f32 = 6.0;
 const ROW_PAD: f32 = 8.0;
 /// Between rows; above every group header but the first row, more.
 const ROW_GAP: f32 = 2.0;
@@ -417,7 +419,7 @@ const SUB_LINE: f32 = 15.0;
 /// A header's + (a new workspace in the group), shown on hover.
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
-const FOOTER: f32 = 36.0;
+pub(crate) const FOOTER: f32 = 36.0;
 const RESIZE_STRIP: f32 = 4.0;
 /// A row narrower than this leaves the age out, so the name keeps its room.
 const AGE_MIN_ROW: f32 = 220.0;
@@ -438,9 +440,9 @@ const NEEDS_INPUT: &str = "🔔 Needs input";
 /// A row's × (a little bigger than the mark slot it sits on), and the rows' hover group.
 const CLOSE_BUTTON: f32 = 16.0;
 const ROW_GROUP: &str = "sidebar-row";
-/// The "+ New" menu's width.
+/// The + menu's width.
 const MENU_WIDTH: f32 = 230.0;
-/// The "+ New" menu's first items (the presets follow): label and shortcut.
+/// The + menu's first items (the presets follow): label and shortcut.
 const NEW_MENU: [(&str, &str); 2] = [("New Workspace", "⌘N"), ("New Workspace in Folder…", "⌘O")];
 /// How long a header's chevron takes to turn.
 const CHEVRON_TURN: Duration = Duration::from_millis(120);
@@ -463,7 +465,7 @@ pub(crate) struct SidebarState {
     pub reveal_active: bool,
     /// The right edge is being dragged.
     pub resizing: bool,
-    /// The footer's "+ New" menu is open.
+    /// The footer's + menu is open.
     pub new_menu: bool,
     /// A row's tab menu is open (right-click).
     pub tab_menu: Option<TabMenu>,
@@ -1629,14 +1631,18 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The footer: "+ New" (a menu of ways to start a session) and a gear for Preferences.
+    /// The footer: a + (a menu of ways to start a session), then, at the right, the 🔔 (this
+    /// run's notifications, with a dot while some are unseen) beside a gear for Preferences.
     fn render_footer(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let open = self.sidebar.new_menu;
+        let unseen = self.notifications.unseen() > 0;
         let button = |id: &'static str| {
             div()
                 .id(id)
                 .flex()
                 .items_center()
+                .justify_center()
+                .w(px(FOOTER_BUTTON))
                 .h(px(24.0))
                 .rounded(px(6.0))
                 .text_color(hsla(ui.text_dim))
@@ -1647,18 +1653,17 @@ impl Workspace {
             .flex_none()
             .flex()
             .items_center()
+            .gap(px(FOOTER_GAP))
             .h(px(FOOTER))
             .px(px(ROW_INSET))
             .border_t_1()
             .border_color(hsla(ui.sidebar_border))
             .child(
                 button("sidebar-new")
-                    .px(px(8.0))
-                    .gap(px(6.0))
-                    .text_size(px(12.0))
-                    .when(open, |b| b.bg(hsla(ui.row_hover)).text_color(hsla(ui.text)))
-                    .child(div().text_size(px(15.0)).child("+"))
-                    .child("New")
+                    .group("sidebar-new")
+                    .when(open, |b| b.bg(hsla(ui.row_hover)))
+                    .child(plus_icon(ui, "sidebar-new", open))
+                    .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("New\u{2026}".into())).into() })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.sidebar.new_menu = !this.sidebar.new_menu;
                         cx.notify();
@@ -1666,9 +1671,18 @@ impl Workspace {
             )
             .child(div().flex_1())
             .child(
+                button("sidebar-notifications")
+                    .group(BELL_GROUP)
+                    .relative()
+                    .child(bell_icon(ui))
+                    .when(unseen, |b| b.child(unseen_dot(ui)))
+                    .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Notifications".into())).into() })
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_notifications(window, cx)
+                    })),
+            )
+            .child(
                 button("sidebar-preferences")
-                    .w(px(24.0))
-                    .justify_center()
                     .text_size(px(15.0))
                     .child("\u{2699}\u{fe0e}")
                     .on_click(|_: &ClickEvent, _, cx| preferences::open_or_activate(cx)),
@@ -1676,7 +1690,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The "+ New" menu, over the window above the footer: a new workspace (here, or in a
+    /// The + menu, over the window above the footer: a new workspace (here, or in a
     /// folder) and each preset's. A click anywhere else closes it.
     pub(crate) fn render_new_menu(
         &self,

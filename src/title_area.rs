@@ -1,33 +1,34 @@
-//! The title area (M11b): right of the sidebar button in the top band, a 🔔 that opens this
-//! run's notifications (`notification_list`; a dot while some are unseen) and a + that makes a
-//! new workspace (⌘N); and the selected workspace's name at the content's top.
+//! The title area (M11b): the selected workspace's name at the content's top, and the 🔔 of
+//! this run's notifications (`notification_list`; a dot while some are unseen), which lives in
+//! the sidebar's footer beside the Preferences gear (so it goes with the footer when the
+//! sidebar is hidden).
 //!
 //! The name is drawn in the top band, centred over the content, wherever the content has one:
 //! with the sidebar hidden (the band then runs over the panes). With the sidebar shown the pane
 //! tab bars are the window's top (they drag it) and the selected row, filled with the accent,
 //! already names the workspace, so no band is added to say it again and the terminals keep that
-//! height.
+//! height. The band's one button is the sidebar's (`sidebar_toggle`).
 //!
-//! The popover is one of the overlays (one open at a time): it holds the keyboard so Escape
-//! closes it, and a click anywhere else closes it too. Clicking an entry whose terminal is still
-//! open shows that terminal (its workspace, pane and tab) as ⇧⌘U does; a closed one's entry is
-//! greyed and does nothing. The dot follows the list, which changes only when a notification is
-//! raised or the popover opens: no timer.
+//! The popover is one of the overlays (one open at a time): it opens upward from the 🔔, holds
+//! the keyboard so Escape closes it, and a click anywhere else closes it too. Clicking an entry
+//! whose terminal is still open shows that terminal (its workspace, pane and tab) as ⇧⌘U does;
+//! a closed one's entry is greyed and does nothing. The dot follows the list, which changes
+//! only when a notification is raised or the popover opens: no timer.
 //!
-//! `bell_origin`, `plus_origin` and `name_inset` are the pure geometry.
+//! `footer_buttons`, `popover_anchor`, `list_room`, `entry_top` and `name_inset` are the pure
+//! geometry.
 
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, AnyView, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent,
-    Stateful, Window, anchored, div, point, prelude::*, px,
+    Anchor, AnyElement, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent, Window,
+    anchored, div, point, prelude::*, px,
 };
 
-use crate::appearance::Appearance;
 use crate::notification_list::Entry;
 use crate::overlay_panel;
-use crate::sidebar::{MARK_SLOT, mark_size, mark_slot, tabular};
-use crate::sidebar_toggle::{self, HIT, HIT_RADIUS, Tip};
+use crate::sidebar::{FOOTER, MARK_SLOT, ROW_INSET, mark_size, mark_slot, tabular};
+use crate::sidebar_toggle::{self, HIT};
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_menu::Dismiss;
@@ -37,17 +38,18 @@ use crate::ui_tokens::size::TOP_BAND;
 use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 
-/// The space between the band's buttons.
-const GAP: f32 = 4.0;
-/// The space between the last button and the workspace's name, and the least room the name is
+/// The footer's buttons (the +, the 🔔, the gear): each one's side, and the space between them.
+pub(crate) const FOOTER_BUTTON: f32 = 24.0;
+pub(crate) const FOOTER_GAP: f32 = 4.0;
+/// The space between the sidebar button and the workspace's name, and the least room the name is
 /// drawn in (less would show little more than an ellipsis).
 const NAME_GAP: f32 = 12.0;
 const NAME_MIN: f32 = 60.0;
-/// The unseen dot, at the 🔔's top right, and the ring of the band's colour that keeps it apart
+/// The unseen dot, at the 🔔's top right, and the ring of the footer's colour that keeps it apart
 /// from the 🔔 (inside `DOT`).
 pub(crate) const DOT: f32 = 10.0;
 pub(crate) const DOT_INSET: f32 = 1.5;
-/// The popover: its width, how far below the buttons it opens, how far from the window's edges
+/// The popover: its width, how far above the footer it opens, how far from the window's edges
 /// it keeps, and the most its list may take (the rest scrolls).
 const POPOVER_WIDTH: f32 = 340.0;
 const POPOVER_DROP: f32 = 4.0;
@@ -66,36 +68,50 @@ const ENTRY_GAP: f32 = 2.0;
 const ENTRY: f32 = ENTRY_PAD + LINE + SUB + ENTRY_PAD;
 /// A script's notification's mark (it has no status).
 const SCRIPT_DOT: f32 = 6.0;
-/// The 🔔's box (drawn as an outline, `bell_icon`).
+/// The footer's 🔔 button's hover group, and the 🔔's box (drawn as an outline, `bell_icon`).
+pub(crate) const BELL_GROUP: &str = "notifications-button";
 const BELL: f32 = 14.0;
 /// The + drawn as two strokes, like the sidebar button's outline.
 const PLUS: f32 = 11.0;
 const STROKE: f32 = 1.5;
 
-/// The 🔔's top left in the window: right of the sidebar button, on the same line.
-pub fn bell_origin(full_screen: bool) -> (f32, f32) {
-    let (x, y) = sidebar_toggle::button_origin(full_screen);
-    (x + HIT + GAP, y)
+/// The popover's height around its list: its edge, padding, header and the gap under it.
+const PANEL_CHROME: f32 = 2.0 + 2.0 * PADDING + HEADER + PADDING;
+
+/// The left edges, in the sidebar `width` wide, of the footer's buttons: the + at the footer's
+/// left inset, the gear at the right, the 🔔 beside it.
+pub(crate) fn footer_buttons(width: f32) -> [f32; 3] {
+    let gear = width - ROW_INSET - FOOTER_BUTTON;
+    [ROW_INSET, gear - FOOTER_GAP - FOOTER_BUTTON, gear]
 }
 
-/// The +'s top left: right of the 🔔.
-pub fn plus_origin(full_screen: bool) -> (f32, f32) {
-    let (x, y) = bell_origin(full_screen);
-    (x + HIT + GAP, y)
+/// The popover's bottom left corner in the window: over the 🔔, just above the footer.
+pub(crate) fn popover_anchor(sidebar_width: f32, viewport_height: f32) -> (f32, f32) {
+    let bell = footer_buttons(sidebar_width)[1];
+    (bell, viewport_height - FOOTER - POPOVER_DROP)
 }
 
-/// Entry `i`'s top in the window (the list not scrolled), under the 🔔 opened windowed.
+/// The most the list may take in a window `viewport_height` high: up to `LIST_MAX`, and short
+/// enough that the whole panel stays under the top band (where the traffic lights are).
+pub(crate) fn list_room(viewport_height: f32) -> f32 {
+    let above = viewport_height - FOOTER - POPOVER_DROP - TOP_BAND - PANEL_CHROME;
+    above.clamp(0.0, LIST_MAX)
+}
+
+/// Entry `i`'s top in the window (the list not scrolled) of `count` entries, the popover open
+/// above the footer: the list's foot is one padding and the edge above the anchor.
 #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
-pub(crate) fn entry_top(i: usize) -> f32 {
-    let (_, y) = bell_origin(false);
-    let list = y + HIT + POPOVER_DROP + 1.0 + PADDING + HEADER + PADDING;
-    list + i as f32 * (ENTRY + ENTRY_GAP)
+pub(crate) fn entry_top(i: usize, count: usize, sidebar_width: f32, viewport_height: f32) -> f32 {
+    let (_, y) = popover_anchor(sidebar_width, viewport_height);
+    let content = count as f32 * ENTRY + count.saturating_sub(1) as f32 * ENTRY_GAP;
+    let list = content.min(list_room(viewport_height));
+    y - 1.0 - PADDING - list + i as f32 * (ENTRY + ENTRY_GAP)
 }
 
-/// How far in from each side of the band the workspace's name keeps: clear of the buttons on
-/// the left, and as far on the right so it stays centred.
+/// How far in from each side of the band the workspace's name keeps: clear of the sidebar
+/// button on the left, and as far on the right so it stays centred.
 pub fn name_inset(full_screen: bool) -> f32 {
-    plus_origin(full_screen).0 + HIT + NAME_GAP
+    sidebar_toggle::button_origin(full_screen).0 + HIT + NAME_GAP
 }
 
 /// Whether a band `width` wide has room for the name between its insets.
@@ -148,47 +164,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The 🔔 (with its dot while some are unseen) and the +, absolutely placed over the top
-    /// band right of the sidebar button, in the same spot whether the sidebar is shown or not.
-    pub(crate) fn render_title_buttons(
-        &self,
-        ui: UiColors,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> [AnyElement; 2] {
-        let full_screen = window.is_fullscreen();
-        let unseen = self.notifications.unseen() > 0;
-        // The band under the buttons: the sidebar's top, or (hidden) the content's.
-        let band = if self.sidebar.hidden {
-            cx.global::<Appearance>().theme.background
-        } else {
-            ui.sidebar_background
-        };
-        let bell = band_button("notifications-button", bell_origin(full_screen), ui)
-            .child(bell_icon(ui))
-            .when(unseen, |bell| {
-                bell.child(
-                    div()
-                        .absolute()
-                        .top(px(DOT_INSET))
-                        .right(px(DOT_INSET))
-                        .size(px(DOT))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(hsla(band))
-                        .bg(hsla(ui.accent)),
-                )
-            })
-            .on_click(cx.listener(|this, _, window, cx| this.open_notifications(window, cx)))
-            .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Notifications".into())).into() });
-        let plus = band_button("new-workspace-button", plus_origin(full_screen), ui)
-            .child(plus_icon(ui))
-            .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx)))
-            .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("New Workspace (⌘N)".into())).into() });
-        [bell.into_any_element(), plus.into_any_element()]
-    }
-
-    /// The open popover under the 🔔, with its click-away backdrop: this run's notifications,
+    /// The open popover above the footer's 🔔, with its click-away backdrop: this run's notifications,
     /// newest first, or a line saying there are none yet.
     pub(crate) fn render_notifications(
         &self,
@@ -237,14 +213,13 @@ impl Workspace {
                 )
                 .into_any_element()
         } else {
-            // Down to near the window's foot, at most `LIST_MAX`; the rest scrolls.
-            let room = window.viewport_size().height.as_f32() - TOP_BAND - 80.0;
+            // Up to the top band, at most `LIST_MAX`; the rest scrolls.
             div()
                 .id("notifications-list")
                 .flex()
                 .flex_col()
                 .gap(px(ENTRY_GAP))
-                .max_h(px(room.clamp(120.0, LIST_MAX)))
+                .max_h(px(list_room(window.viewport_size().height.as_f32())))
                 .overflow_y_scroll()
                 .children(rows)
                 .into_any_element()
@@ -266,7 +241,7 @@ impl Workspace {
             })
             .child(header)
             .child(body);
-        let (x, y) = bell_origin(window.is_fullscreen());
+        let (x, y) = popover_anchor(self.sidebar.width, window.viewport_size().height.as_f32());
         Some(
             div()
                 .id("notifications-backdrop")
@@ -289,7 +264,8 @@ impl Workspace {
                 )
                 .child(
                     anchored()
-                        .position(point(px(x), px(y + HIT + POPOVER_DROP)))
+                        .anchor(Anchor::BottomLeft)
+                        .position(point(px(x), px(y)))
                         .snap_to_window_with_margin(px(EDGE_MARGIN))
                         .child(panel),
                 )
@@ -446,31 +422,10 @@ fn status_mark(status: Status, ui: UiColors) -> AnyElement {
     status_mark::mark_on(status, &ui, 0.0, None, px(mark_size(status)), ui.panel).into_any_element()
 }
 
-/// A button in the top band at `origin`: a hover fill, and a press that stays its own (the band
-/// under it would start a window drag).
-fn band_button(id: &'static str, (x, y): (f32, f32), ui: UiColors) -> Stateful<Div> {
-    div()
-        .id(id)
-        .group(id)
-        .absolute()
-        .left(px(x))
-        .top(px(y))
-        .size(px(HIT))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(HIT_RADIUS))
-        .hover(move |s| s.bg(hsla(ui.panel_hover)))
-        .occlude()
-        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-            cx.stop_propagation()
-        })
-}
-
 /// The 🔔 as an outline in the sidebar button's stroke: a dome open at the bottom, its rim and
 /// clapper, in the dim text colour, the full one on hover.
-fn bell_icon(ui: UiColors) -> Div {
-    const GROUP: &str = "notifications-button";
+pub(crate) fn bell_icon(ui: UiColors) -> Div {
+    const GROUP: &str = BELL_GROUP;
     let (dim, full) = (hsla(ui.text_dim), hsla(ui.text));
     let mut dome = div()
         .absolute()
@@ -510,13 +465,26 @@ fn bell_icon(ui: UiColors) -> Div {
         .child(clapper)
 }
 
-/// The +: two strokes in the dim text colour, the full one on hover.
-fn plus_icon(ui: UiColors) -> Div {
+/// The unseen dot for the 🔔's top right, ringed in the sidebar's colour.
+pub(crate) fn unseen_dot(ui: UiColors) -> Div {
+    div()
+        .absolute()
+        .top(px(DOT_INSET))
+        .right(px(DOT_INSET))
+        .size(px(DOT))
+        .rounded_full()
+        .border_2()
+        .border_color(hsla(ui.sidebar_background))
+        .bg(hsla(ui.accent))
+}
+
+/// The +: two strokes in the dim text colour, the full one on hover of `group` (or while `lit`).
+pub(crate) fn plus_icon(ui: UiColors, group: &'static str, lit: bool) -> Div {
     let stroke = || {
         div()
             .absolute()
-            .bg(hsla(ui.text_dim))
-            .group_hover("new-workspace-button", move |s| s.bg(hsla(ui.text)))
+            .bg(hsla(if lit { ui.text } else { ui.text_dim }))
+            .group_hover(group, move |s| s.bg(hsla(ui.text)))
     };
     let at = (PLUS - STROKE) / 2.0;
     div()
@@ -529,30 +497,66 @@ fn plus_icon(ui: UiColors) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sidebar::{FOOTER, ROW_INSET};
     use crate::sidebar_toggle::button_origin;
-    use crate::ui_tokens::size::SIDEBAR_MIN_WIDTH;
+    use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 
     #[test]
-    fn the_bell_and_the_plus_follow_the_sidebar_button_on_its_line() {
-        for full_screen in [false, true] {
-            let (sx, sy) = button_origin(full_screen);
-            let (bx, by) = bell_origin(full_screen);
-            let (px, py) = plus_origin(full_screen);
-            assert_eq!((by, py), (sy, sy), "one line, centred in the band");
-            assert_eq!(bx, sx + HIT + GAP);
-            assert_eq!(px, bx + HIT + GAP);
-            // All three fit over the narrowest sidebar, so they never hang off it.
-            assert!(px + HIT <= SIDEBAR_MIN_WIDTH, "full screen {full_screen}");
+    fn the_footers_three_buttons_fit_the_narrowest_sidebar_and_keep_apart() {
+        for width in [SIDEBAR_MIN_WIDTH, 260.0, SIDEBAR_MAX_WIDTH] {
+            let [plus, bell, gear] = footer_buttons(width);
+            assert_eq!(plus, ROW_INSET, "the + at the footer's left inset");
+            assert_eq!(
+                gear + FOOTER_BUTTON + ROW_INSET,
+                width,
+                "the gear at the right"
+            );
+            assert_eq!(
+                bell + FOOTER_BUTTON + FOOTER_GAP,
+                gear,
+                "the bell beside the gear"
+            );
+            assert!(
+                plus + FOOTER_BUTTON + FOOTER_GAP <= bell,
+                "width {width}: no overlap"
+            );
         }
-        // In full screen they move left with the sidebar button.
-        assert!(bell_origin(true).0 < bell_origin(false).0);
     }
 
     #[test]
-    fn the_name_keeps_clear_of_the_buttons() {
+    fn the_popover_opens_upward_from_the_bell_clear_of_the_band() {
+        for height in [300.0, 480.0, 600.0, 1000.0] {
+            let (x, y) = popover_anchor(260.0, height);
+            assert_eq!(x, footer_buttons(260.0)[1], "over the bell");
+            assert_eq!(y, height - FOOTER - POPOVER_DROP, "just above the footer");
+            // The fullest list: its panel (header, padding and edge included) stays under
+            // the top band, where the traffic lights are.
+            let panel = PANEL_CHROME + list_room(height);
+            assert!(
+                y - panel >= TOP_BAND,
+                "height {height}: {} vs {TOP_BAND}",
+                y - panel
+            );
+        }
+    }
+
+    #[test]
+    fn an_entrys_place_is_counted_up_from_the_footer() {
+        let (_, y) = popover_anchor(260.0, 600.0);
+        // The last of three ends one padding and the edge above the anchor.
+        let last = entry_top(2, 3, 260.0, 600.0);
+        assert_eq!(last + ENTRY, y - 1.0 - PADDING);
+        assert_eq!(entry_top(1, 3, 260.0, 600.0) + ENTRY + ENTRY_GAP, last);
+        // A list that scrolls fills `list_room`, whatever its length.
+        let top = entry_top(0, 50, 260.0, 600.0);
+        assert_eq!(top, y - 1.0 - PADDING - list_room(600.0));
+    }
+
+    #[test]
+    fn the_name_keeps_clear_of_the_sidebar_button() {
         for full_screen in [false, true] {
-            let (px, _) = plus_origin(full_screen);
-            assert_eq!(name_inset(full_screen), px + HIT + NAME_GAP);
+            let (x, _) = button_origin(full_screen);
+            assert_eq!(name_inset(full_screen), x + HIT + NAME_GAP);
         }
     }
 
@@ -561,12 +565,9 @@ mod tests {
         let inset = name_inset(false);
         assert!(shows_name(2.0 * inset + NAME_MIN, false));
         assert!(!shows_name(2.0 * inset + NAME_MIN - 1.0, false));
-        assert!(
-            !shows_name(360.0, false),
-            "the sidebar button scene's window"
-        );
-        assert!(shows_name(560.0, false));
-        // Full screen's buttons sit further left: more room.
+        assert!(!shows_name(160.0, false));
+        assert!(shows_name(360.0, false), "room now the + and 🔔 have left");
+        // Full screen's button sits further left: more room.
         assert!(shows_name(2.0 * inset + NAME_MIN - 1.0, true));
     }
 }
