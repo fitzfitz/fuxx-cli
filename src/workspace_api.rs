@@ -235,7 +235,7 @@ impl Workspace {
                 Err(e) => Reply::Now(Err(e)),
             },
             method if method.starts_with("browser.") => {
-                match self.browser_request(request, conn, cx) {
+                match self.browser_request(request, conn, window, cx) {
                     Ok(Some(result)) => Reply::Now(Ok(result)),
                     Ok(None) => Reply::Later,
                     Err(e) => Reply::Now(Err(e)),

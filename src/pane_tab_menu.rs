@@ -1,6 +1,7 @@
-//! A pane tab's right-click menu (M11b): Close Tab, Close Other Tabs in Pane, Rename Tab…. Close
-//! Tab ends the tab at once (as its × and ⌘W do); Close Other Tabs is a bulk close, so it asks
-//! first in a native sheet; Rename Tab… names the tab's terminal (as `session.rename` does).
+//! A pane tab's right-click menu (M11b): Close Tab, Close Other Tabs in Pane, Rename Tab…, and for
+//! a browser tab Pop Out. Close Tab ends the tab at once (as its × and ⌘W do); Close Other Tabs
+//! is a bulk close, so it asks first in a native sheet; Rename Tab… names the tab's terminal (as
+//! `session.rename` does); Pop Out moves a browser tab's page into a window of its own (M10c's).
 //!
 //! `closes`, `enabled` and `confirm_text` are the pure model; the rest opens, draws and acts on
 //! the menu. Like the row menu, it is one of the overlays (one open at a time): it opens at the
@@ -39,6 +40,7 @@ pub enum PaneTabAction {
     Close,
     CloseOthers,
     Rename,
+    PopOut,
 }
 
 /// The tabs `action` from `tab`'s menu closes, in bar order: itself, or every other tab of its
@@ -55,12 +57,12 @@ pub fn closes(action: PaneTabAction, pane: &Pane, tab: TabId) -> Vec<TabId> {
             .map(|t| t.id)
             .filter(|&id| id != tab)
             .collect(),
-        PaneTabAction::Rename => Vec::new(),
+        PaneTabAction::Rename | PaneTabAction::PopOut => Vec::new(),
     }
 }
 
 /// Whether `action` can be chosen from `tab`'s menu: Close Other Tabs needs another tab in the
-/// pane; Rename Tab… needs a terminal to name.
+/// pane; Rename Tab… needs a terminal to name; Pop Out, a browser tab.
 pub fn enabled(action: PaneTabAction, pane: &Pane, tab: TabId) -> bool {
     match action {
         PaneTabAction::Close => pane.tabs.iter().any(|t| t.id == tab),
@@ -69,6 +71,10 @@ pub fn enabled(action: PaneTabAction, pane: &Pane, tab: TabId) -> bool {
             .tabs
             .iter()
             .any(|t| t.id == tab && matches!(t.kind, TabKind::Terminal(_))),
+        PaneTabAction::PopOut => pane
+            .tabs
+            .iter()
+            .any(|t| t.id == tab && matches!(t.kind, TabKind::Browser { .. })),
     }
 }
 
@@ -141,6 +147,10 @@ impl Workspace {
                 Some(id) => self.start_tab_rename(id, window, cx),
                 None => self.focus_active(window, cx),
             },
+            PaneTabAction::PopOut => {
+                self.focus_active(window, cx);
+                self.pop_out(tab, window, cx);
+            }
         }
     }
 
@@ -246,7 +256,10 @@ impl Workspace {
                 PaneTabAction::CloseOthers,
             ))
             .child(separator)
-            .child(item(2, "Rename Tab\u{2026}", PaneTabAction::Rename));
+            .child(item(2, "Rename Tab\u{2026}", PaneTabAction::Rename))
+            .when(enabled(PaneTabAction::PopOut, pane, menu.tab), |panel| {
+                panel.child(item(3, "Pop Out", PaneTabAction::PopOut))
+            });
         Some(
             div()
                 .id("pane-tab-menu-backdrop")
@@ -335,6 +348,15 @@ mod tests {
         // A browser tab has no terminal to name (its title is the page's).
         assert!(!enabled(Rename, &two, TabId(2)));
         assert!(enabled(Close, &two, TabId(2)));
+    }
+
+    #[test]
+    fn only_a_browser_tab_pops_out_and_that_closes_nothing_else() {
+        let two = pane(&[TabKind::Terminal(1), browser()]);
+        assert!(enabled(PopOut, &two, TabId(2)));
+        assert!(!enabled(PopOut, &two, TabId(1)));
+        assert!(!enabled(PopOut, &two, TabId(9)));
+        assert!(closes(PopOut, &two, TabId(2)).is_empty());
     }
 
     #[test]

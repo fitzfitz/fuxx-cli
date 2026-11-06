@@ -13,7 +13,7 @@ use gpui::{
     Point, PromptLevel, Window, actions, anchored, canvas, div, point, prelude::*, px,
 };
 
-use crate::layout_model::WorkspaceId;
+use crate::layout_model::{TabId, WorkspaceId};
 use crate::overlay_panel;
 use crate::status::Status;
 use crate::tab_color::TabColor;
@@ -184,8 +184,9 @@ impl Workspace {
         }
     }
 
-    /// Close a workspace (its ×, a middle-click, its menu's Close): every terminal in it ends.
-    /// With two or more it asks first, in a native sheet; Cancel keeps it.
+    /// Close a workspace (its ×, a middle-click, its menu's Close): every tab in it closes,
+    /// every terminal ending. With two or more terminals it asks first, in a native sheet;
+    /// Cancel keeps it.
     pub(crate) fn close_workspace(
         &mut self,
         ws: WorkspaceId,
@@ -193,12 +194,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let terminals = self.model.terminals(ws);
+        let tabs = self.model.tabs_of(ws);
         if !asks_to_close(terminals.len()) {
-            self.end_terminals(&terminals, window, cx);
+            self.end_tabs(&tabs, window, cx);
             return;
         }
         let (message, detail) = confirm_workspace_text(terminals.len(), self.busy(&terminals));
-        self.ask_then_end(message, detail, terminals, window, cx);
+        self.ask_then_end(message, detail, tabs, window, cx);
     }
 
     /// Close the workspaces `chosen`, once a native sheet has asked (always, for a bulk close
@@ -216,8 +218,12 @@ impl Workspace {
             .iter()
             .flat_map(|&ws| self.model.terminals(ws))
             .collect();
+        let tabs: Vec<TabId> = chosen
+            .iter()
+            .flat_map(|&ws| self.model.tabs_of(ws))
+            .collect();
         let (message, detail) = confirm_text(chosen.len(), self.busy(&terminals));
-        self.ask_then_end(message, detail, terminals, window, cx);
+        self.ask_then_end(message, detail, tabs, window, cx);
     }
 
     /// How many of `terminals` have an agent still working or waiting.
@@ -230,13 +236,13 @@ impl Workspace {
             .count()
     }
 
-    /// Ask (`message`, `detail`) in a native sheet; on Close, end `terminals`. By id, so the
-    /// ones ended are the ones asked about, whatever moves meanwhile.
+    /// Ask (`message`, `detail`) in a native sheet; on Close, close `tabs`. By id, so the ones
+    /// closed are the ones asked about, whatever moves meanwhile.
     fn ask_then_end(
         &mut self,
         message: String,
         detail: Option<String>,
-        terminals: Vec<u64>,
+        tabs: Vec<TabId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -251,20 +257,16 @@ impl Workspace {
             if answer.await != Ok(0) {
                 return;
             }
-            this.update_in(cx, |this, window, cx| {
-                this.end_terminals(&terminals, window, cx)
-            })
-            .ok();
+            this.update_in(cx, |this, window, cx| this.end_tabs(&tabs, window, cx))
+                .ok();
         })
         .detach();
     }
 
-    /// End each of `terminals` as ⌘W would (those already gone are skipped).
-    fn end_terminals(&mut self, terminals: &[u64], window: &mut Window, cx: &mut Context<Self>) {
-        for &id in terminals {
-            if let Some(i) = self.index_of(id) {
-                self.close_at(i, window, cx);
-            }
+    /// Close each of `tabs` as ⌘W would, its terminal ending (those already gone are skipped).
+    fn end_tabs(&mut self, tabs: &[TabId], window: &mut Window, cx: &mut Context<Self>) {
+        for &tab in tabs {
+            self.close_tab(tab, window, cx);
         }
     }
 

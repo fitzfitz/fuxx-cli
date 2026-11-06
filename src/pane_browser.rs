@@ -2,26 +2,34 @@
 //! fuxx's own window.
 //!
 //! GPUI draws the whole window into one Metal-backed view; a web view added beside it, above it,
-//! in the window's content view covers whatever GPUI draws in that rectangle. The placeholder's
-//! `canvas` places the web view on each frame (see [`native_frame`]).
+//! in the window's content view covers whatever GPUI draws in that rectangle (and takes its
+//! clicks). So the placeholder's `canvas` places the web view on each frame (see
+//! [`native_frame`]), and it is hidden whenever something of fuxx's would be drawn under it
+//! ([`page_hidden`]).
 //!
-//! The hidden `fuxx __pane-browser-probe` spike (Task 0) lives in `probe`.
+//! The keyboard: AppKit's first responder is GPUI's view, except while the page has it. The page
+//! takes it on a click in it (the `PageView` says so, as `PageEvent::Clicked`) or after a
+//! navigation the person started; the browser tab then holds GPUI's focus, so fuxx's shortcuts act
+//! on it. It gives the keyboard back to GPUI's view when GPUI's focus leaves the tab, and before
+//! it hides.
+//!
+//! The hidden `fuxx __pane-browser-probe` (Task 0, extended in Task 4) lives in `probe`.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
-use futures::channel::oneshot;
-use gpui::{Bounds, Pixels};
+use futures::channel::mpsc::UnboundedSender;
+use gpui::{Bounds, Global, Pixels};
 use objc2::rc::{Retained, Weak};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSEvent, NSResponder, NSView, NSWindowOrderingMode,
+    NSAutoresizingMaskOptions, NSEvent, NSEventModifierFlags, NSResponder, NSView,
+    NSWindowOrderingMode,
 };
-use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
+use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize};
 use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
-use serde_json::Value;
 
-use crate::{browser, browser_js};
+use crate::browser::{Page, PageEvent};
+use crate::reduce_motion;
 
 mod probe;
 
@@ -43,33 +51,127 @@ pub fn native_frame(bounds: Bounds<Pixels>, content_height: Pixels) -> NSRect {
     )
 }
 
-/// A web view in fuxx's window, over a pane's placeholder. Main thread only. Dropping it takes
-/// it out of the window.
+/// What decides whether a browser tab's page shows this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Showing {
+    /// Its tab is the active tab of a pane of the workspace on screen.
+    pub tab_shown: bool,
+    /// One of fuxx's overlays is open (`Overlays::any`).
+    pub overlay_open: bool,
+    /// A drag is under way (a divider, the sidebar's edge, a sidebar row), or the sidebar is
+    /// sliding over the panes.
+    pub dragging: bool,
+}
+
+/// The hide rule: the page shows only while its tab is on screen and nothing of fuxx's is drawn
+/// over it or dragged across it. A native view covers GPUI's drawing and takes its clicks, so
+/// anything GPUI draws there must not be hidden under it.
+pub fn page_hidden(s: Showing) -> bool {
+    !s.tab_shown || s.overlay_open || s.dragging
+}
+
+/// Which of fuxx's overlays are open: the boxes, panels, menus and popovers drawn over the
+/// window. One open hides every page (`page_hidden`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Overlays {
+    /// The rename box (a sidebar row's or a tab's).
+    pub rename: bool,
+    pub host_picker: bool,
+    /// File → Open Browser…'s address box.
+    pub address_box: bool,
+    /// ⌘P.
+    pub switcher: bool,
+    /// A sidebar row's right-click menu.
+    pub row_menu: bool,
+    /// A pane tab's right-click menu.
+    pub tab_menu: bool,
+    /// The sidebar footer's "+ New" menu.
+    pub new_menu: bool,
+    /// A browser tab's address suggestions.
+    pub suggestions: bool,
+}
+
+impl Overlays {
+    pub fn any(&self) -> bool {
+        let Overlays {
+            rename,
+            host_picker,
+            address_box,
+            switcher,
+            row_menu,
+            tab_menu,
+            new_menu,
+            suggestions,
+        } = *self;
+        rename
+            || host_picker
+            || address_box
+            || switcher
+            || row_menu
+            || tab_menu
+            || new_menu
+            || suggestions
+    }
+}
+
+/// fuxx's window's content view and GPUI's view in it: where browser tabs' pages go. Set once the
+/// window has opened (`main`); there is none in the UI screenshots, which make no pages.
+pub struct NativeWindow {
+    pub content: Retained<NSView>,
+    pub gpui: Retained<NSView>,
+}
+
+impl Global for NativeWindow {}
+
+impl NativeWindow {
+    /// The window GPUI opened since `before` (the app's window numbers then), found the way the
+    /// app finds its main window, and its two views. GPUI's is the content view's `GPUIView`.
+    pub fn find(before: &[isize]) -> Option<NativeWindow> {
+        let window = reduce_motion::window_opened_since(before)?;
+        let content = window.contentView()?;
+        let gpui = content
+            .subviews()
+            .iter()
+            .find(|v| v.class().name().to_bytes() == b"GPUIView")?;
+        Some(NativeWindow { content, gpui })
+    }
+}
+
+/// A page in fuxx's window, over a pane's placeholder. Main thread only. Dropping it takes it
+/// out of the window.
 pub struct PaneWebView {
+    /// None once `into_page` has given it away.
+    page: Option<Page>,
     view: Retained<PageView>,
 }
 
 impl PaneWebView {
-    /// A new, empty web view on the run's in-memory data store (keep-data off), not yet in a
-    /// window.
-    pub fn new(mtm: MainThreadMarker) -> PaneWebView {
-        // SAFETY: main thread (the marker); plain WebKit set-up with valid arguments.
-        let config = unsafe {
-            let config = WKWebViewConfiguration::new(mtm);
-            config.setWebsiteDataStore(&browser::data_store(false, mtm));
-            config
-        };
+    /// A new, empty page, not yet in a window: on the saved data store with `keep_data`, else
+    /// the run's in-memory one.
+    pub fn new(keep_data: bool, mtm: MainThreadMarker) -> PaneWebView {
+        let config = Page::configuration(keep_data, mtm);
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+        let view = PageView::new(mtm, frame, &config);
+        let page = Page::new(Retained::into_super(view.clone()), keep_data, mtm);
         PaneWebView {
-            view: PageView::new(mtm, frame, &config),
+            page: Some(page),
+            view,
         }
     }
 
+    /// The page: loading, scripts, its state.
+    pub fn page(&self) -> &Page {
+        self.page
+            .as_ref()
+            .expect("a pane web view has its page until into_page")
+    }
+
     /// Put the web view in `content` (the window's content view), just above `gpui` (GPUI's
-    /// view, also in `content`), so it covers what GPUI draws beneath it. Its top keeps its
-    /// distance from the window's top while the window resizes, as GPUI's layout does, until
-    /// the next frame places it exactly.
+    /// view, also in `content`), hidden until it is placed, so it covers what GPUI draws beneath
+    /// it. Its top keeps its distance from the window's top while the window resizes, as GPUI's
+    /// layout does, until the next frame places it exactly.
     pub fn attach(&self, content: &NSView, gpui: &NSView) {
+        self.view.setHidden(true);
         self.view
             .setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
         content.addSubview_positioned_relativeTo(
@@ -81,44 +183,121 @@ impl PaneWebView {
 
     /// Cover the placeholder at `bounds` in a window whose content is `content_height` high,
     /// or hide (`hidden`). Called from the placeholder's prepaint, every frame; AppKit is only
-    /// told what changed.
+    /// told what changed. A page that has the keyboard gives it back to GPUI's view before it
+    /// hides.
     pub fn place(&self, bounds: Bounds<Pixels>, content_height: Pixels, hidden: bool) {
+        if hidden {
+            self.hide();
+            return;
+        }
         let frame = native_frame(bounds, content_height);
         if self.view.frame() != frame {
             self.view.setFrame(frame);
         }
-        if self.view.isHidden() != hidden {
-            self.view.setHidden(hidden);
+        if self.view.isHidden() {
+            self.view.setHidden(false);
         }
     }
 
-    /// Go to `url` (already normalised to http or https). Returns at once.
-    pub fn load(&self, url: &str) {
-        if let Some(address) = NSURL::URLWithString(&NSString::from_str(url)) {
-            // SAFETY: main thread; the view copies the request.
-            unsafe {
-                self.view
-                    .loadRequest(&NSURLRequest::requestWithURL(&address))
-            };
+    /// Hide it (not placed this frame, or the hide rule), giving the keyboard back to GPUI's
+    /// view first if it had it.
+    pub fn hide(&self) {
+        if self.view.isHidden() {
+            return;
         }
+        if self.has_keyboard() {
+            self.give_keyboard_back();
+        }
+        self.view.setHidden(true);
     }
 
-    /// Run `js` (one expression) in the page and answer with its value as JSON, as the agent
-    /// browser's `run_script` does.
-    pub fn eval(&self, js: &str) -> oneshot::Receiver<Result<Value, String>> {
-        let (tx, rx) = oneshot::channel();
-        let script = browser_js::eval_expression_js(js);
-        browser::evaluate(&self.view, &script, Rc::new(Cell::new(Some(tx))));
-        rx
+    /// Take it out of the window now, the page stopped (its tab closed): it never shows again,
+    /// whoever still holds it.
+    pub fn remove(&self) {
+        self.hide();
+        self.page().stop();
+        self.view.removeFromSuperview();
+    }
+
+    /// Tell `events` about the page's navigations, and about clicks in it.
+    pub fn listen(&self, events: UnboundedSender<PageEvent>) {
+        self.page().set_events(Some(events.clone()));
+        self.view.ivars().events.replace(Some(events));
     }
 
     /// Offer every key equivalent (⌘ and ⌃ shortcuts) to `gpui` (GPUI's view) before the page,
-    /// and pass it the mouse moves AppKit gives the page while the page has the keyboard (AppKit
-    /// sends them to the first responder only, so GPUI would see none, anywhere). The probe
-    /// found AppKit asks GPUI's view first anyway; this keeps it so whatever the views' order,
-    /// at the cost of GPUI being asked twice about a key it doesn't bind.
+    /// and pass it ⌃Tab and the mouse moves AppKit gives the page while the page has the
+    /// keyboard (AppKit sends them to the first responder only, so GPUI would see none,
+    /// anywhere). The probe found AppKit asks GPUI's view first anyway; this keeps it so whatever
+    /// the views' order, at the cost of GPUI being asked twice about a key it doesn't bind. It
+    /// is also where the keyboard goes back to (`give_keyboard_back`).
     pub fn route_events_to(&self, gpui: &NSView) {
         self.view.ivars().gpui.replace(Some(Weak::new(gpui)));
+    }
+
+    /// Whether the page has the keyboard (its window's first responder).
+    pub fn has_keyboard(&self) -> bool {
+        let Some(window) = self.view.window() else {
+            return false;
+        };
+        let view: &NSResponder = &self.view;
+        window
+            .firstResponder()
+            .is_some_and(|r| std::ptr::eq(&*r, view))
+    }
+
+    /// Give the page the keyboard. False (and said) when AppKit refused, or it isn't in a window.
+    pub fn take_keyboard(&self) -> bool {
+        let Some(window) = self.view.window() else {
+            return false;
+        };
+        let view: &NSResponder = &self.view;
+        let took = window.makeFirstResponder(Some(view));
+        if !took {
+            eprintln!("[fuxx] browser: the page couldn't take the keyboard");
+        }
+        took
+    }
+
+    /// Give the keyboard back to GPUI's view. False (and said) when AppKit refused.
+    pub fn give_keyboard_back(&self) -> bool {
+        let (Some(window), Some(gpui)) = (self.view.window(), self.view.gpui()) else {
+            return false;
+        };
+        let gpui: &NSResponder = &gpui;
+        let gave = window.makeFirstResponder(Some(gpui));
+        if !gave {
+            eprintln!("[fuxx] browser: the keyboard couldn't go back to fuxx from the page");
+        }
+        gave
+    }
+
+    /// The page was clicked and fuxx hasn't caught up yet (its keyboard isn't to be taken away
+    /// meanwhile); `settle_click` once it has.
+    pub fn clicked(&self) -> bool {
+        self.view.ivars().clicked.get()
+    }
+
+    pub fn settle_click(&self) {
+        self.view.ivars().clicked.set(false);
+    }
+
+    /// The page, out of fuxx's window and no longer talking to GPUI (Pop Out: a browser window
+    /// takes it on).
+    pub fn into_page(mut self) -> Page {
+        let state = self.view.ivars();
+        state.gpui.take();
+        state.events.take();
+        if self.has_keyboard() {
+            self.give_keyboard_back();
+        }
+        self.view.removeFromSuperview();
+        let page = self
+            .page
+            .take()
+            .expect("a pane web view has its page until into_page");
+        page.set_events(None);
+        page
     }
 
     /// The web view itself.
@@ -127,6 +306,7 @@ impl PaneWebView {
     }
 
     /// How many key equivalents the web view has handled itself (not passed to GPUI first).
+    #[allow(dead_code)] // the probe's
     pub fn key_equivalents_seen(&self) -> usize {
         self.view.ivars().seen.get()
     }
@@ -134,8 +314,13 @@ impl PaneWebView {
 
 impl Drop for PaneWebView {
     fn drop(&mut self) {
-        // SAFETY: main thread (a `PaneWebView` never leaves it).
-        unsafe { self.view.stopLoading() };
+        // Given away (`into_page`): it is another window's now.
+        if self.page.is_none() {
+            return;
+        }
+        if self.has_keyboard() {
+            self.give_keyboard_back();
+        }
         self.view.removeFromSuperview();
     }
 }
@@ -146,9 +331,16 @@ struct PageViewState {
     /// GPUI's view, offered each key equivalent first and given each mouse move
     /// (`route_events_to`).
     gpui: RefCell<Option<Weak<NSView>>>,
+    /// Told about clicks in the page (`listen`).
+    events: RefCell<Option<UnboundedSender<PageEvent>>>,
+    /// Clicked, and fuxx hasn't caught up yet.
+    clicked: Cell<bool>,
     /// Key equivalents the web view handled itself.
     seen: Cell<usize>,
 }
+
+/// The key code of Tab (`kVK_Tab`).
+const KEY_TAB: u16 = 0x30;
 
 define_class!(
     // SAFETY: WKWebView may be subclassed; `PageView` has no `Drop`.
@@ -170,6 +362,32 @@ define_class!(
             if let Some(gpui) = self.gpui() {
                 gpui.mouseMoved(event);
             }
+        }
+
+        // A click in the page: the person means to type there. fuxx is told (it moves its own
+        // focus to the browser tab), then WebKit has the click as usual.
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            if let Some(events) = &*self.ivars().events.borrow() {
+                self.ivars().clicked.set(true);
+                let _ = events.unbounded_send(PageEvent::Clicked);
+            }
+            // SAFETY: WKWebView's own `mouseDown:`, with the event it was given.
+            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+        }
+
+        // ⌃Tab / ⌃⇧Tab are the pane's next and previous tab, not the page's (nor AppKit's key
+        // view loop): they go to GPUI's view.
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if is_ctrl_tab(event.modifierFlags(), event.keyCode())
+                && let Some(gpui) = self.gpui()
+            {
+                gpui.keyDown(event);
+                return;
+            }
+            // SAFETY: WKWebView's own `keyDown:`, with the event it was given.
+            let _: () = unsafe { msg_send![super(self), keyDown: event] };
         }
     }
 );
@@ -203,6 +421,13 @@ impl PageView {
     fn gpui(&self) -> Option<Retained<NSView>> {
         self.ivars().gpui.borrow().as_ref().and_then(Weak::load)
     }
+}
+
+/// Whether a key is ⌃Tab or ⌃⇧Tab (Control held, without ⌘ or ⌥).
+fn is_ctrl_tab(flags: NSEventModifierFlags, key_code: u16) -> bool {
+    key_code == KEY_TAB
+        && flags.contains(NSEventModifierFlags::Control)
+        && !flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Option)
 }
 
 #[cfg(test)]
@@ -262,6 +487,19 @@ mod tests {
     }
 
     #[test]
+    fn only_control_tab_goes_to_fuxx() {
+        let ctrl = NSEventModifierFlags::Control;
+        let shift = NSEventModifierFlags::Shift;
+        assert!(is_ctrl_tab(ctrl, KEY_TAB));
+        assert!(is_ctrl_tab(ctrl | shift, KEY_TAB));
+        assert!(!is_ctrl_tab(NSEventModifierFlags::empty(), KEY_TAB));
+        assert!(!is_ctrl_tab(shift, KEY_TAB));
+        assert!(!is_ctrl_tab(ctrl | NSEventModifierFlags::Command, KEY_TAB));
+        assert!(!is_ctrl_tab(ctrl | NSEventModifierFlags::Option, KEY_TAB));
+        assert!(!is_ctrl_tab(ctrl, 0x00));
+    }
+
+    #[test]
     fn fractions_of_a_point_are_kept() {
         // GPUI lays out in fractional points; AppKit takes them as they are (a Retina display
         // shows half points), so nothing is rounded.
@@ -269,5 +507,74 @@ mod tests {
             native_frame(bounds(10.5, 20.25, 300.5, 150.75), px(601.5)),
             rect(10.5, 430.5, 300.5, 150.75)
         );
+    }
+
+    fn showing(tab_shown: bool, overlay_open: bool, dragging: bool) -> Showing {
+        Showing {
+            tab_shown,
+            overlay_open,
+            dragging,
+        }
+    }
+
+    #[test]
+    fn the_page_shows_only_on_screen_with_nothing_over_it_and_nothing_dragged() {
+        assert!(!page_hidden(showing(true, false, false)));
+        // Its tab isn't the active tab of a pane on screen (another tab, another workspace).
+        assert!(page_hidden(showing(false, false, false)));
+        // An overlay is open: it would be drawn under the page, and the page would take its
+        // clicks.
+        assert!(page_hidden(showing(true, true, false)));
+        // A divider, the sidebar's edge or a row is dragged (or the sidebar slides over it).
+        assert!(page_hidden(showing(true, false, true)));
+        assert!(page_hidden(showing(false, true, true)));
+    }
+
+    #[test]
+    fn every_overlay_hides_the_page() {
+        let none = Overlays::default();
+        assert!(!none.any());
+        let each = [
+            Overlays {
+                rename: true,
+                ..none
+            },
+            Overlays {
+                host_picker: true,
+                ..none
+            },
+            Overlays {
+                address_box: true,
+                ..none
+            },
+            Overlays {
+                switcher: true,
+                ..none
+            },
+            Overlays {
+                row_menu: true,
+                ..none
+            },
+            Overlays {
+                tab_menu: true,
+                ..none
+            },
+            Overlays {
+                new_menu: true,
+                ..none
+            },
+            Overlays {
+                suggestions: true,
+                ..none
+            },
+        ];
+        for overlays in each {
+            assert!(overlays.any(), "{overlays:?}");
+            assert!(page_hidden(Showing {
+                tab_shown: true,
+                overlay_open: overlays.any(),
+                dragging: false,
+            }));
+        }
     }
 }

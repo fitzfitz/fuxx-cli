@@ -4,7 +4,7 @@
 //! icon's place; × closes it (shown on hover). The active tab is filled and, in the focused pane,
 //! has an accent line along its top; a waiting tab is tinted. Too many tabs shrink to a minimum
 //! width, then the row scrolls sideways. On the right, pinned: new terminal tab, new browser tab
-//! (disabled until browser tabs exist), split right, split down.
+//! split right, split down.
 //!
 //! `bar_tabs`, `icon`, `tip`, `look` and `BarButton` are the pure model; the rest draws the bar
 //! and acts on its clicks.
@@ -35,7 +35,7 @@ use crate::workspace_ssh::Place;
 /// scrolls.
 pub const TAB_MIN_WIDTH: f32 = 90.0;
 pub const TAB_MAX_WIDTH: f32 = 200.0;
-/// A browser tab's title until it shows a page (Task 4).
+/// A browser tab's title until it shows a page.
 pub const BROWSER_TITLE: &str = "New tab";
 
 /// What a tab shows left of its title.
@@ -88,8 +88,13 @@ pub fn tip(title: &str, status: Status, age: Duration) -> String {
 }
 
 /// `pane`'s tabs in bar order. `facts` tells about a terminal; one it doesn't know (never, while
-/// tabs and sessions are in step) is drawn as an idle "Terminal".
-pub fn bar_tabs(pane: &Pane, facts: impl Fn(u64) -> Option<TerminalFacts>) -> Vec<BarTab> {
+/// tabs and sessions are in step) is drawn as an idle "Terminal". `page` gives a browser tab's
+/// title (none: "New tab").
+pub fn bar_tabs(
+    pane: &Pane,
+    facts: impl Fn(u64) -> Option<TerminalFacts>,
+    page: impl Fn(TabId) -> Option<SharedString>,
+) -> Vec<BarTab> {
     pane.tabs
         .iter()
         .map(|t| {
@@ -99,7 +104,8 @@ pub fn bar_tabs(pane: &Pane, facts: impl Fn(u64) -> Option<TerminalFacts>) -> Ve
                     None => (Some(id), "Terminal".into(), Status::Idle, Duration::ZERO),
                 },
                 TabKind::Browser { .. } => {
-                    (None, BROWSER_TITLE.into(), Status::Idle, Duration::ZERO)
+                    let title = page(t.id).unwrap_or_else(|| BROWSER_TITLE.into());
+                    (None, title, Status::Idle, Duration::ZERO)
                 }
             };
             BarTab {
@@ -163,16 +169,16 @@ impl BarButton {
         BarButton::SplitDown,
     ];
 
-    /// Whether it can be clicked: all but new browser tab, until browser tabs exist (Task 4).
+    /// Whether it can be clicked (all can, since browser tabs exist).
     pub fn enabled(self) -> bool {
-        self != BarButton::NewBrowser
+        true
     }
 
-    /// Its tooltip (a disabled one says why).
+    /// Its tooltip.
     pub fn tooltip(self) -> &'static str {
         match self {
             BarButton::NewTerminal => "New terminal tab",
-            BarButton::NewBrowser => "Browser tabs come in the next step",
+            BarButton::NewBrowser => "New browser tab",
             BarButton::SplitRight => "Split right",
             BarButton::SplitDown => "Split down",
         }
@@ -206,14 +212,18 @@ impl Workspace {
         let p = self.model.pane(pane)?;
         let focused = self.model.focused_pane() == Some(pane);
         let now = Instant::now();
-        let tabs = bar_tabs(p, |id| {
-            let s = self.sessions.items().iter().find(|s| s.id == id)?;
-            Some(TerminalFacts {
-                label: s.label(),
-                status: s.status,
-                age: now.saturating_duration_since(s.status_since),
-            })
-        });
+        let tabs = bar_tabs(
+            p,
+            |id| {
+                let s = self.sessions.items().iter().find(|s| s.id == id)?;
+                Some(TerminalFacts {
+                    label: s.label(),
+                    status: s.status,
+                    age: now.saturating_duration_since(s.status_since),
+                })
+            },
+            |tab| self.browser_titles.get(&tab).map(|t| t.clone().into()),
+        );
         let scroll = self.tab_row_scroll(pane, p.active, &tabs);
         let row = div()
             .id(("pane-tabs", pane.0 as usize))
@@ -265,15 +275,15 @@ impl Workspace {
         let mut scrolls = self.tab_scroll.borrow_mut();
         let (scroll, revealed) = scrolls
             .entry(pane)
-            .or_insert_with(|| (ScrollHandle::new(), TabId(0)));
-        if *revealed != shown {
+            .or_insert_with(|| (ScrollHandle::new(), None));
+        if *revealed != Some(shown) {
             if let Some(i) = tabs.iter().position(|t| t.tab == shown) {
                 scroll.scroll_to_item(i);
             }
             // A row not laid out yet drops the request (GPUI learns it scrolls only then), so
             // it's asked again on the next frame.
             if scroll.bounds().size.width > px(0.0) {
-                *revealed = shown;
+                *revealed = Some(shown);
             }
         }
         scroll.clone()
@@ -440,9 +450,10 @@ impl Workspace {
         }
     }
 
-    /// Close `tab` (its ×, a middle-click, its menu): a terminal ends, as ⌘W ends it; a browser
-    /// tab just goes. Never asks. The pane's next tab shows, or the pane (then the workspace)
-    /// goes with its last one.
+    /// Close `tab` (its ×, a middle-click, its menu, ⌘W, a workspace closing): a terminal ends;
+    /// a browser tab's page goes with its view (`sync` drops it). Never asks. The pane's next
+    /// tab shows, or the pane (then the workspace) goes with its last one; with nothing left,
+    /// the window.
     pub(crate) fn close_tab(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         match self.model.tab(tab).map(|t| t.kind.clone()) {
             Some(TabKind::Terminal(id)) => {
@@ -452,8 +463,19 @@ impl Workspace {
             }
             Some(TabKind::Browser { .. }) => {
                 self.model.close_tab(tab);
+                if let Some(menu) = &self.pane_tab_menu
+                    && menu.tab == tab
+                {
+                    self.pane_tab_menu = None;
+                }
                 self.sync();
+                self.close_browser_pages(cx);
                 self.save();
+                if self.sessions.is_empty() && self.model.workspaces().is_empty() {
+                    let conns = self.subscribers.clone();
+                    self.quit_after_flush(conns, None, window, cx);
+                    return;
+                }
                 self.activate(window, cx);
             }
             None => {}
@@ -550,7 +572,7 @@ fn render_button(
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, window, cx| match button {
                             BarButton::NewTerminal => this.new_terminal_tab(pane, window, cx),
-                            BarButton::NewBrowser => {}
+                            BarButton::NewBrowser => this.new_browser_tab(pane, window, cx),
                             BarButton::SplitRight => this.split_pane(pane, Axis::Row, window, cx),
                             BarButton::SplitDown => this.split_pane(pane, Axis::Column, window, cx),
                         }),
@@ -565,9 +587,9 @@ fn render_button(
     )
 }
 
-/// The small line icons the bar draws.
+/// The small line icons the tab bars (and the browser tabs' bars) draw.
 #[derive(Clone, Copy)]
-enum Glyph {
+pub(crate) enum Glyph {
     /// `>_`
     Terminal,
     /// A circle with a meridian and the equator.
@@ -575,10 +597,19 @@ enum Glyph {
     /// A box split by a line down its middle, and by one across it.
     SplitRight,
     SplitDown,
+    /// Chevrons left and right.
+    Back,
+    Forward,
+    /// Three quarters of a circle with an arrowhead.
+    Reload,
+    /// A cross.
+    Stop,
+    /// A magnifying glass.
+    Search,
 }
 
 /// `kind` in `color`, in a 12 px box.
-fn glyph(kind: Glyph, color: Rgb) -> Div {
+pub(crate) fn glyph(kind: Glyph, color: Rgb) -> Div {
     div().flex_none().size(px(ICON)).child(
         canvas(
             |_, _, _| (),
@@ -619,6 +650,53 @@ fn glyph(kind: Glyph, color: Rgb) -> Div {
                         equator.move_to(p(c.0 - r, c.1));
                         equator.line_to(p(c.0 + r, c.1));
                         paths.push(equator);
+                    }
+                    Glyph::Back | Glyph::Forward => {
+                        let (tip, wing) = if matches!(kind, Glyph::Back) {
+                            (3.5, 8.0)
+                        } else {
+                            (8.5, 4.0)
+                        };
+                        let mut chevron = stroke();
+                        chevron.move_to(p(wing, 1.5));
+                        chevron.line_to(p(tip, 6.0));
+                        chevron.line_to(p(wing, 10.5));
+                        paths.push(chevron);
+                    }
+                    Glyph::Reload => {
+                        let (c, r) = ((6.0, 6.0), 4.5);
+                        let mut arc = stroke();
+                        arc.move_to(p(c.0 + r, c.1));
+                        let radii = point(px(r * u), px(r * u));
+                        arc.arc_to(radii, px(0.0), true, true, p(c.0, c.1 - r));
+                        paths.push(arc);
+                        let mut head = stroke();
+                        head.move_to(p(c.0 - 1.8, c.1 - r - 1.8));
+                        head.line_to(p(c.0, c.1 - r));
+                        head.line_to(p(c.0 - 1.8, c.1 - r + 1.8));
+                        paths.push(head);
+                    }
+                    Glyph::Stop => {
+                        for (a, b) in [((2.5, 2.5), (9.5, 9.5)), ((9.5, 2.5), (2.5, 9.5))] {
+                            let mut line = stroke();
+                            line.move_to(p(a.0, a.1));
+                            line.line_to(p(b.0, b.1));
+                            paths.push(line);
+                        }
+                    }
+                    Glyph::Search => {
+                        let (c, r) = ((5.0, 5.0), 3.5);
+                        let mut lens = stroke();
+                        let radii = point(px(r * u), px(r * u));
+                        lens.move_to(p(c.0, c.1 - r));
+                        lens.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
+                        lens.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
+                        lens.close();
+                        paths.push(lens);
+                        let mut handle = stroke();
+                        handle.move_to(p(7.6, 7.6));
+                        handle.line_to(p(10.8, 10.8));
+                        paths.push(handle);
                     }
                     Glyph::SplitRight | Glyph::SplitDown => {
                         let mut frame = stroke();
@@ -718,11 +796,15 @@ mod tests {
             ],
             active: TabId(12),
         };
-        let tabs = bar_tabs(&pane, |id| match id {
-            1 => terminal("shell", Status::Idle, 0),
-            2 => terminal("claude", Status::Waiting, 95),
-            _ => None,
-        });
+        let tabs = bar_tabs(
+            &pane,
+            |id| match id {
+                1 => terminal("shell", Status::Idle, 0),
+                2 => terminal("claude", Status::Waiting, 95),
+                _ => None,
+            },
+            |_| None,
+        );
         let ids: Vec<TabId> = tabs.iter().map(|t| t.tab).collect();
         assert_eq!(ids, [TabId(10), TabId(11), TabId(12), TabId(13)]);
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_ref()).collect();
@@ -782,19 +864,47 @@ mod tests {
     }
 
     #[test]
-    fn the_buttons_are_in_order_and_new_browser_tab_waits_for_task_4() {
+    fn the_buttons_are_in_order_and_all_enabled() {
         assert_eq!(
             BarButton::ALL.map(BarButton::tooltip),
             [
                 "New terminal tab",
-                "Browser tabs come in the next step",
+                "New browser tab",
                 "Split right",
                 "Split down"
             ]
         );
         assert_eq!(
             BarButton::ALL.map(BarButton::enabled),
-            [true, false, true, true]
+            [true, true, true, true]
         );
+    }
+
+    #[test]
+    fn a_browser_tab_shows_its_page_s_title() {
+        let pane = Pane {
+            id: crate::layout_model::PaneId(1),
+            tabs: vec![
+                crate::layout_model::Tab {
+                    id: TabId(10),
+                    kind: TabKind::Browser { url: None },
+                },
+                crate::layout_model::Tab {
+                    id: TabId(11),
+                    kind: TabKind::Browser {
+                        url: Some("https://docs.rs/".into()),
+                    },
+                },
+            ],
+            active: TabId(11),
+        };
+        let tabs = bar_tabs(
+            &pane,
+            |_| None,
+            |tab| (tab == TabId(11)).then(|| "Docs.rs".into()),
+        );
+        let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_ref()).collect();
+        assert_eq!(titles, [BROWSER_TITLE, "Docs.rs"]);
+        assert_eq!(tabs[1].tip, "Docs.rs");
     }
 }

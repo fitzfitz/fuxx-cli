@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::layout_model::{self, Model};
+use crate::layout_model::{self, Model, SavedFocus, TabKind};
 use crate::mux_proto::SessionInfo;
 use crate::presets::Preset;
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
@@ -216,9 +216,15 @@ fn newcomer(info: &LiveInfo, presets: &[Preset]) -> Adopted {
 pub fn workspaces(saved: &SavedState, p: &Placement, ids: &[u64]) -> Model {
     let terminals = p.terminals(ids, saved.sessions.len());
     let mut model = Model::from_state(saved, &terminals);
-    let came_back = layout_model::saved_focus(saved)
-        .and_then(|i| terminals.get(i).copied().flatten())
-        .is_some();
+    let came_back = match layout_model::saved_focus(saved) {
+        Some(SavedFocus::Terminal(i)) => terminals.get(i).copied().flatten().is_some(),
+        // A browser tab needs no terminal to come back: it keeps the focus it had.
+        Some(SavedFocus::Browser) => model
+            .focused_tab()
+            .and_then(|t| model.tab(t))
+            .is_some_and(|t| matches!(t.kind, TabKind::Browser { .. })),
+        None => false,
+    };
     if !came_back {
         let first_live = p
             .slots
@@ -1035,6 +1041,30 @@ mod tests {
         assert_eq!(shape(&m), [vec![vec![1], vec![3]]]);
         // Notes is gone: the first live session.
         assert_eq!(focused(&m), Some(1));
+    }
+
+    #[test]
+    fn a_saved_focus_on_a_browser_tab_stays_there() {
+        let mut saved = with_tabs();
+        // api's first pane, showing its browser tab, had the focus.
+        saved.active_workspace = Some(0);
+        saved.workspaces[0].focused = 0;
+        if let Node::Split { first, .. } = &mut saved.workspaces[0].layout
+            && let Node::Leaf(pane) = first.as_mut()
+        {
+            pane.active = 2;
+        }
+        let p = place_all(&saved, &[live(3), live(1)], RestoreMode::Agents);
+        let m = model(&saved, &p);
+        let tab = m.tab(m.focused_tab().unwrap()).unwrap();
+        assert_eq!(
+            tab.kind,
+            TabKind::Browser {
+                url: Some("http://localhost:3000".into())
+            },
+            "not moved to the first live terminal"
+        );
+        assert_eq!(focused(&m), None);
     }
 
     #[test]

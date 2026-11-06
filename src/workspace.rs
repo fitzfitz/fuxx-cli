@@ -31,6 +31,7 @@ use crate::adopt::{self, Probe};
 use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
+use crate::browser_tab::BrowserTab;
 use crate::daemon_client::{self, DaemonClient};
 use crate::groups::{self, GroupKey};
 use crate::host_picker::HostPicker;
@@ -223,16 +224,30 @@ pub struct Workspace {
     pub(crate) renaming: Option<(Renaming, Entity<NameInput>)>,
     /// A pane tab's right-click menu, while it is open.
     pub(crate) pane_tab_menu: Option<PaneTabMenu>,
-    /// Each pane's tab row: its scroll, and the tab last scrolled into view (a pane whose shown
-    /// tab changes scrolls to it). Panes gone are dropped as the bars are drawn.
-    pub(crate) tab_scroll: RefCell<HashMap<PaneId, (ScrollHandle, TabId)>>,
+    /// Each pane's tab row: its scroll, and the tab last scrolled into view, if any (a pane whose
+    /// shown tab changes scrolls to it). Panes gone are dropped as the bars are drawn.
+    pub(crate) tab_scroll: RefCell<HashMap<PaneId, (ScrollHandle, Option<TabId>)>>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
     /// The ⌘P session switcher, while it is open (M11).
     pub(crate) switcher: Option<Entity<Switcher>>,
-    /// The sessions' browsers (M10c).
+    /// The browser tabs' views (M11b), by tab: one for each browser tab of the model (`sync`
+    /// drops those whose tab has gone, and with them their pages).
+    pub(crate) browser_tabs: HashMap<TabId, Entity<BrowserTab>>,
+    /// Each browser tab's title as its page last said (for the tab bar and a workspace's name).
+    pub(crate) browser_titles: HashMap<TabId, String>,
+    /// Browser tabs just closed whose pages still have to leave the window.
+    pub(crate) closed_browser_tabs: Vec<Entity<BrowserTab>>,
+    /// Counts the browser tabs' uses (`BrowserTab::last_used`).
+    pub(crate) browser_clock: u64,
+    /// When this workspace was made (an age for things with no status of their own).
+    pub(crate) started: Instant,
+    /// The browser tab focused as of the last frame (it counts as used when it becomes so).
+    pub(crate) focused_browser: Option<TabId>,
+    /// Browser tabs popped out into windows of their own (M10c's), by a number of their own.
     pub(crate) browsers: Browsers,
-    /// Whether the 500 ms browser check is running (only while a browser is open).
+    pub(crate) next_popped: u64,
+    /// Whether the 500 ms check of those windows is running (only while one is open).
     pub(crate) browsers_ticking: bool,
     /// The browser's address box, while it is open (M10c).
     pub(crate) address_box: Option<Entity<AddressBox>>,
@@ -366,7 +381,14 @@ impl Workspace {
             tab_scroll: RefCell::new(HashMap::new()),
             host_picker: None,
             switcher: None,
+            browser_tabs: HashMap::new(),
+            browser_titles: HashMap::new(),
+            closed_browser_tabs: Vec::new(),
+            browser_clock: 0,
+            focused_browser: None,
+            started: Instant::now(),
             browsers: Browsers::new(),
+            next_popped: 1,
             browsers_ticking: false,
             address_box: None,
             browser_data_kept: false,
@@ -923,9 +945,35 @@ impl Workspace {
                 .position(|&id| id == s.id)
                 .unwrap_or(usize::MAX)
         });
-        if let Some(i) = self.focused_terminal().and_then(|id| self.index_of(id)) {
-            self.sessions.select(i);
+        // A browser tab focused: no terminal is the active one (⌘W, a new session's folder and
+        // the scripts' "focused" go by the focused tab).
+        match self.focused_terminal().and_then(|id| self.index_of(id)) {
+            Some(i) => {
+                self.sessions.select(i);
+            }
+            None if self.model.focused_tab().is_some() => self.sessions.deselect(),
+            None => {}
         }
+        // A browser tab gone (closed, its pane or workspace closed): its page goes with its view.
+        let model = &self.model;
+        let is_browser = |tab: &TabId| {
+            model
+                .tab(*tab)
+                .is_some_and(|t| matches!(t.kind, TabKind::Browser { .. }))
+        };
+        let gone: Vec<TabId> = self
+            .browser_tabs
+            .keys()
+            .copied()
+            .filter(|tab| !is_browser(tab))
+            .collect();
+        for tab in gone {
+            if let Some(view) = self.browser_tabs.remove(&tab) {
+                // Its page leaves the window at once (`close_browser_pages`).
+                self.closed_browser_tabs.push(view);
+            }
+        }
+        self.browser_titles.retain(|tab, _| is_browser(tab));
         // Every op keeps the model's rules; a break is a bug, said where it can be found.
         if let Err(broken) = self.model.check() {
             eprintln!("[fuxx] layout: {broken}");
@@ -1024,6 +1072,10 @@ impl Workspace {
         self.pane_session(w.focused)
             .or_else(first)
             .map(Session::label)
+            .or_else(|| {
+                let tab = self.model.pane(w.focused)?.active;
+                Some(self.browser_titles.get(&tab)?.clone().into())
+            })
             .unwrap_or_else(|| sidebar::BROWSER_NAME.into())
     }
 
@@ -1049,9 +1101,16 @@ impl Workspace {
         self.index_of(id)
     }
 
-    /// The active session's folder, so a new session joins its group.
+    /// The active session's folder, so a new session joins its group; with a browser tab
+    /// focused, its workspace's group's (its first terminal's).
     pub(crate) fn active_project(&self) -> Option<PathBuf> {
-        self.sessions.active().and_then(|s| s.project.clone())
+        if let Some(session) = self.sessions.active() {
+            return session.project.clone();
+        }
+        let ws = self.model.focused_workspace()?;
+        let first = *self.model.terminals(ws).first()?;
+        let i = self.index_of(first)?;
+        self.sessions.items()[i].project.clone()
     }
 
     pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1327,7 +1386,6 @@ impl Workspace {
         };
         // While its row number and name still stand.
         self.emit(&Event::Closed, Some(index));
-        self.browsers.session_closed(session_id);
         // Waits get a last look at its screen and status (PASS printed just before the shell
         // exited still counts), then exit / change waits are met.
         let mut replied = self.check_waits(&[session_id], cx);
@@ -1341,7 +1399,8 @@ impl Workspace {
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child
         // (Local), or detaches (background service; `close_at` already ended it there).
         self.sessions.remove(index);
-        if self.sessions.is_empty() {
+        // Browser tabs may still be there; with nothing left at all the window goes.
+        if self.sessions.is_empty() && self.model.workspaces().is_empty() {
             self.save(); // an empty list, so the next launch starts fresh
             // Last session gone: close the window (and quit), once wait replies and the closed
             // event have reached their clients.
@@ -1758,7 +1817,13 @@ impl Workspace {
         }
     }
 
+    /// The keyboard to the focused tab: its terminal, or a browser tab (GPUI's focus only: its
+    /// page takes AppKit's keyboard only on a click in it or a navigation the person started).
     pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab) = self.focused_browser_tab() {
+            tab.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
         if let Some(session) = self.sessions.active() {
             session.view.focus_handle(cx).focus(window, cx);
         }
@@ -1792,6 +1857,9 @@ impl Workspace {
         // time the workspace redraws (the marks' ticker, the sidebar). One whose padding just
         // changed is drawn afresh this frame: it can't notify itself mid-frame.
         let view = |id: PaneId| {
+            if let Some(browser) = self.pane_browser_tab(id) {
+                return Some(browser.into_any_element());
+            }
             find(id).map(|view| {
                 if resplit.contains(&id) {
                     view.into_any_element()
@@ -2017,6 +2085,7 @@ fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_browser_tabs(window, cx);
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
         let title = self
@@ -2074,6 +2143,8 @@ impl Render for Workspace {
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
         self.refresh_switcher(cx);
+        // Last, once every overlay of this frame is known: which pages show.
+        self.update_pages(window, cx);
         let pane_band = self
             .sidebar
             .hidden
@@ -2099,8 +2170,8 @@ impl Render for Workspace {
                 cx.listener(|this, _: &OpenBrowser, window, cx| this.open_address_box(window, cx)),
             )
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
-                if let Some(i) = this.sessions.active_index() {
-                    this.close_at(i, window, cx);
+                if let Some(tab) = this.model.focused_tab() {
+                    this.close_tab(tab, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NextSession, window, cx| {

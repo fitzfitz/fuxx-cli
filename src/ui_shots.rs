@@ -214,6 +214,7 @@ const SCENES: &[(&str, fn())] = &[
     ("splits", split_scenes),
     ("workspaces", workspace_scenes),
     ("tab-bars", tab_bar_scenes),
+    ("browser-tab", browser_tab_scenes),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("panels", panel_scenes),
@@ -2220,6 +2221,276 @@ fn tab_bar_scenes() {
         };
         render_with(&theme, wide, build, act);
         println!("ui-shots: tab-bars-act-{slug} ok");
+    }
+}
+
+/// What the browser tab scenes' page shows (no page is made off-screen: the bar is given it).
+const PAGE_URL: &str = "http://localhost:3000/dashboard";
+const PAGE_TITLE: &str = "Acme dashboard";
+
+/// A workspace for the browser tab scenes: api's terminal on the left; on the right, focused, a
+/// browser tab on `PAGE_URL` (`loading`: still loading, so its third button is stop).
+fn browser_workspace(loading: bool, window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
+    use crate::browser_tab::BarState;
+    use crate::layout_model::TabKind;
+
+    let mut ws = Workspace::for_shots(window, cx);
+    ws.sidebar.hint_dismissed = true;
+    let project = std::path::Path::new(API);
+    ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+    let pane = ws.model.focused_pane().expect("a pane");
+    let url = Some(PAGE_URL.to_string());
+    let opened = ws
+        .model
+        .split(pane, Axis::Row, TabKind::Browser { url: url.clone() })
+        .expect("split");
+    ws.sync();
+    let view = ws.make_browser_tab(opened.tab, url, window, cx);
+    view.update(cx, |view, _| {
+        view.show_state(BarState {
+            url: PAGE_URL.into(),
+            title: PAGE_TITLE.into(),
+            loading,
+            can_back: true,
+            can_forward: false,
+        })
+    });
+    ws.browser_titles.insert(opened.tab, PAGE_TITLE.into());
+    ws.activate(window, cx);
+    ws
+}
+
+/// The pages the suggestions scene remembers.
+fn shot_history() -> Vec<crate::browser_history::Visit> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let visit = |url: &str, title: &str, days: u64, visits: u32| crate::browser_history::Visit {
+        url: url.into(),
+        title: title.into(),
+        last_visit: now - days * 24 * 60 * 60,
+        visits,
+    };
+    vec![
+        visit("https://docs.rs/gpui/latest/gpui/", "gpui - Rust", 1, 6),
+        visit(
+            "https://doc.rust-lang.org/book/",
+            "The Rust Programming Language",
+            2,
+            3,
+        ),
+        visit(
+            "https://www.docker.com/",
+            "Docker: Accelerated Container Application Development",
+            9,
+            1,
+        ),
+        visit(
+            "https://github.com/zed-industries/zed",
+            "Zed: docs, issues and code",
+            0,
+            12,
+        ),
+        visit("http://localhost:3000/dashboard", "Acme dashboard", 0, 30),
+    ]
+}
+
+/// The browser tab (M11b Task 4), in both themes. The page itself is a native view, never in a
+/// shot: its place shows the theme's background.
+/// - `browser-tab`: api's terminal, and beside it a browser tab, focused: its tab titled by the
+///   page, under it the 34 px bar (back on, forward off, reload, the rounded address field with
+///   the address).
+/// - `browser-tab-title`: "Show address bar" off: the page's title in the field's place; the page
+///   is loading, so reload is stop.
+/// - `browser-tab-suggestions`: the field clicked and "doc" typed (keep-data on): the visited
+///   pages whose host starts with it, then one whose title holds it, then "Search Google for
+///   “doc”", the first chosen with ↓.
+///
+/// Panics unless the field is where the bar puts it and the suggestions count as an overlay
+/// (the page would hide); and (not shot) unless ⌃Tab cycles from a browser tab, ⌘W closes it,
+/// "New browser tab" makes one ready for typing, a page-only workspace is in ⌘P, and Pop Out
+/// closes a tab with no page.
+fn browser_tab_scenes() {
+    use crate::browser_history::BrowserHistory;
+    use crate::browser_tab::SuggestNext;
+    use crate::layout_model::TabKind;
+    use crate::workspace::{CloseSession, NextTab, OpenSwitcher, PrevTab};
+    use gpui::{KeyBinding, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for scene in [
+            "browser-tab",
+            "browser-tab-title",
+            "browser-tab-suggestions",
+        ] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                let mut appearance = shot_appearance(theme, cx);
+                appearance.browser_address_bar = scene != "browser-tab-title";
+                appearance.browser_keep_data = scene == "browser-tab-suggestions";
+                cx.set_global(appearance);
+                BrowserHistory::set_for_shots(shot_history(), cx);
+                let loading = scene == "browser-tab-title";
+                let ws = cx.new(|cx| browser_workspace(loading, window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let n = format!("{scene}-{slug}");
+                let field = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let view = ws
+                        .focused_browser_tab()
+                        .expect("the browser tab is focused");
+                    assert_eq!(ws.focused_terminal(), None, "{n}: no terminal focused");
+                    assert!(ws.sessions.active().is_none(), "{n}: no active session");
+                    view.read(cx).field_bounds()
+                });
+                if scene == "browser-tab-title" {
+                    assert_eq!(field, None, "{n}: no address field");
+                    slot.borrow_mut().take();
+                    return;
+                }
+                let field = field.expect("the field is drawn");
+                // Under the 26 px tab bar, centred in the 34 px bar (inside its 1 px edge).
+                assert_eq!(
+                    f32::from(field.size.height),
+                    24.0 - 2.0,
+                    "{n}: field height"
+                );
+                let top = f32::from(field.top());
+                assert!((30.0..=33.0).contains(&top), "{n}: field top {top}");
+                if scene == "browser-tab-suggestions" {
+                    cx.update(|cx| {
+                        cx.bind_keys([KeyBinding::new("down", SuggestNext, Some("AddressField"))])
+                    });
+                    cx.simulate_click(window, field.center(), Modifiers::none());
+                    cx.simulate_input(window, "doc");
+                    cx.simulate_keystrokes(window, "down");
+                    let open = cx.read(|cx| ws.read(cx).overlays(cx));
+                    assert!(open.suggestions, "{n}: the suggestions are open");
+                    assert!(open.any(), "{n}: an overlay (the page hides)");
+                }
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            println!("ui-shots: {}", path.display());
+        }
+
+        // Acting on a browser tab (not shot).
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            BrowserHistory::set_for_shots(Vec::new(), cx);
+            let ws = cx.new(|cx| browser_workspace(false, window, cx));
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let n = format!("browser-tab-act-{slug}");
+            cx.update(|cx| {
+                cx.bind_keys([
+                    KeyBinding::new("ctrl-tab", NextTab, Some("BrowserTab")),
+                    KeyBinding::new("ctrl-shift-tab", PrevTab, Some("BrowserTab")),
+                    KeyBinding::new("cmd-w", CloseSession, None),
+                    KeyBinding::new("cmd-p", OpenSwitcher, None),
+                ])
+            });
+            let kinds = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let pane = ws.model.focused_pane().expect("a pane");
+                    let p = ws.model.pane(pane).expect("known");
+                    p.tabs
+                        .iter()
+                        .map(|t| match t.kind {
+                            TabKind::Terminal(_) => "terminal",
+                            TabKind::Browser { .. } => "browser",
+                        })
+                        .collect::<Vec<_>>()
+                })
+            };
+            let focused_kind = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    match ws.model.tab(ws.model.focused_tab()?)?.kind {
+                        TabKind::Terminal(_) => Some("terminal"),
+                        TabKind::Browser { .. } => Some("browser"),
+                    }
+                })
+            };
+            // "New browser tab" on the browser's pane: a second browser tab, its field typed in.
+            let pane = cx.read(|cx| ws.read(cx).model.focused_pane().expect("a pane"));
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.new_browser_tab(pane, window, cx))
+            })
+            .expect("new browser tab");
+            cx.run_until_parked();
+            assert_eq!(kinds(cx), ["browser", "browser"], "{n}: a new browser tab");
+            let editing = cx.read(|cx| ws.read(cx).overlays(cx));
+            assert!(
+                !editing.suggestions,
+                "{n}: nothing typed yet, no suggestions"
+            );
+            // ⌃Tab from a browser tab (its own key context) goes back to the first; ⌘W closes it.
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.focus_active(window, cx))
+            })
+            .expect("focus");
+            cx.simulate_keystrokes(window, "ctrl-tab");
+            let first = cx.read(|cx| ws.read(cx).model.pane(pane).map(|p| p.tabs[0].id));
+            assert_eq!(
+                cx.read(|cx| ws.read(cx).model.focused_tab()),
+                first,
+                "{n}: ⌃Tab"
+            );
+            cx.simulate_keystrokes(window, "cmd-w");
+            assert_eq!(kinds(cx), ["browser"], "{n}: ⌘W closed the browser tab");
+            assert_eq!(
+                focused_kind(cx),
+                Some("browser"),
+                "{n}: the other one shows"
+            );
+            // A workspace of browser tabs only is in ⌘P, numbered in its place.
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.model.new_workspace(1, TabKind::Browser { url: None });
+                    ws.sync();
+                    ws.activate(window, cx);
+                })
+            })
+            .expect("a page-only workspace");
+            cx.run_until_parked();
+            cx.simulate_keystrokes(window, "cmd-p");
+            let rows = cx.read(|cx| {
+                let ws = ws.read(cx);
+                ws.switcher.as_ref().map(|s| s.read(cx).shown().count())
+            });
+            assert_eq!(rows, Some(2), "{n}: both workspaces in ⌘P");
+            // Pop Out of a tab with no page (off-screen): the tab just closes.
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.close_overlays(crate::workspace::Overlay::Switcher);
+                    ws.switcher = None;
+                    let tab = ws.model.focused_tab().expect("a tab");
+                    ws.pop_out(tab, window, cx);
+                })
+            })
+            .expect("pop out");
+            let left = cx.read(|cx| ws.read(cx).model.workspaces().len());
+            assert_eq!(left, 1, "{n}: the page-only workspace went with its tab");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: browser-tab-act-{slug} ok");
     }
 }
 
