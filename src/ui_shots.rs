@@ -2914,7 +2914,7 @@ fn overlays() {
         }
         // Every overlay hides the pages while it's open: one forgotten in `overlays()` would sit
         // under a page.
-        for overlay in Overlay::ALL {
+        for &overlay in Overlay::ALL {
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| {
                     let first = ws.model.display_order()[0];
@@ -3235,8 +3235,8 @@ fn sidebar_button_scenes() {
 const LONG_QUESTION: &str = "Do you want to run cargo test --workspace --all-features -- \
     --include-ignored --test-threads=1 in /Users/me/code/web before the migration?";
 
-/// The notifications fuxx would have raised over `switcher_workspace`, oldest first: build
-/// finished (40 m ago), a terminal since closed (`s99`, 25 m), tests finished (12 m), claude
+/// The notifications fuxx would have raised over `switcher_workspace`, oldest first: a script's
+/// `fuxx notify` from outside fuxx's terminals (50 m ago), build finished (40 m), a terminal since closed (`s99`, 25 m), tests finished (12 m), claude
 /// waits (4 m) and agent waits with a long question (95 s).
 fn shot_notifications(ws: &mut Workspace) {
     use crate::notification_list::Entry;
@@ -3247,20 +3247,27 @@ fn shot_notifications(ws: &mut Workspace) {
         let i = ws.sessions.position(|s| s.label() == name).expect(name);
         let workspace = ws.workspace_of(i).expect("in a workspace");
         Entry {
-            terminal: ws.sessions.items()[i].id,
+            terminal: Some(ws.sessions.items()[i].id),
             title: ws.workspace_label(workspace).to_string(),
             message: message.into(),
-            status,
+            status: Some(status),
             at: now - Duration::from_secs(secs),
         }
     };
     let entries = [
+        Entry::scripted(
+            "deploy.sh",
+            "Staging is live at https://staging.example.com",
+            None,
+            |_| true,
+            now - Duration::from_secs(50 * 60),
+        ),
         raised(ws, "build", Status::Done, "Worked for 3m", 40 * 60),
         Entry {
-            terminal: 99,
+            terminal: Some(99),
             title: "migrate".into(),
             message: "Worked for 18m".into(),
-            status: Status::Done,
+            status: Some(Status::Done),
             at: now - Duration::from_secs(25 * 60),
         },
         raised(ws, "tests", Status::Done, "Worked for 12m", 12 * 60),
@@ -3274,19 +3281,21 @@ fn shot_notifications(ws: &mut Workspace) {
 
 /// The title area over `switcher_workspace` (shell active), in both themes:
 /// - `title-band`: the sidebar shown, the 🔔 and + right of the sidebar button, nothing unseen;
+/// - `title-hover`: the same with the pointer on the 🔔 (its fill, its outline brighter);
 /// - `title-unseen`: the same with notifications unseen (the 🔔's dot);
 /// - `title-hidden`: the sidebar hidden: the band runs over the panes with the workspace's name
 ///   centred in it, the dot still there;
 /// - `title-narrow`: hidden, a 560 px window and a long name, cut with an ellipsis;
-/// - `title-popover`: the popover open over five notifications, newest first (agent's long
-///   question cut, a closed terminal's entry greyed);
+/// - `title-popover`: the popover open over six notifications, newest first (agent's long
+///   question cut, a closed terminal's entry greyed, a script's last with its own title);
 /// - `title-popover-empty`: the popover with none yet.
 ///
 /// Panics unless the dot shows exactly while some are unseen, opening the popover sees them
 /// all (and it counts as an overlay), the name is drawn in the band only with the sidebar hidden
 /// and never past its inset; and (Mocha) unless a press on the 🔔 doesn't arm a window drag
 /// while one between the buttons does, a click on the 🔔 opens the popover and Escape or a
-/// click outside closes it, a click on a closed terminal's entry does nothing, and a click on
+/// click outside closes it, a click on a closed terminal's entry (or a script's with no
+/// terminal) does nothing, and a click on
 /// agent's entry shows agent (its workspace and tab) with the keyboard.
 fn title_area_scenes() {
     use crate::sidebar_toggle::HIT;
@@ -3305,6 +3314,7 @@ fn title_area_scenes() {
         let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
         for scene in [
             "title-band",
+            "title-hover",
             "title-unseen",
             "title-hidden",
             "title-narrow",
@@ -3326,7 +3336,7 @@ fn title_area_scenes() {
                     if scene != "title-popover-empty" {
                         shot_notifications(&mut ws);
                     }
-                    if scene == "title-band" {
+                    if matches!(scene, "title-band" | "title-hover") {
                         ws.notifications.mark_seen();
                     }
                     if scene == "title-narrow" {
@@ -3341,6 +3351,10 @@ fn title_area_scenes() {
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
                 let n = format!("{scene}-{slug}");
+                if scene == "title-hover" {
+                    let bell = point(px(bx + HIT / 2.0), px(by + HIT / 2.0));
+                    cx.simulate_mouse_move(window, bell, None, gpui::Modifiers::none());
+                }
                 if scene.starts_with("title-popover") {
                     cx.update_window(window, |_, window, cx| {
                         ws.update(cx, |ws, cx| ws.open_notifications(window, cx))
@@ -3363,8 +3377,15 @@ fn title_area_scenes() {
             println!("ui-shots: {}", path.display());
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let n = format!("{scene}-{slug}");
+            // The bell's rim (1.5 px from 9.5 px down its 14 px box, drawn on one whole pixel
+            // row): dim, the full text colour on hover.
+            let rim = at(bx + HIT / 2.0, by + (HIT - 14.0) / 2.0 + 9.75);
             match scene {
-                "title-band" => assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot"),
+                "title-band" => {
+                    assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
+                    assert_eq!(rim, bg(ui.text_dim), "{n}: the bell, dim");
+                }
+                "title-hover" => assert_eq!(rim, bg(ui.text), "{n}: the bell, hovered"),
                 "title-unseen" | "title-hidden" => {
                     assert_eq!(at(dot.0, dot.1), bg(ui.accent), "{n}: the dot")
                 }
@@ -3434,7 +3455,7 @@ fn title_area_scenes() {
         let bell = point(px(bx + HIT / 2.0), px(by + HIT / 2.0));
         // A press on the 🔔 is its own (it doesn't arm a window drag) and, released, opens the
         // popover, which sees everything; Escape closes it.
-        assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 5);
+        assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 6);
         cx.simulate_mouse_down(window, bell, MouseButton::Left, none);
         assert!(!pressed(cx), "title-area: the 🔔 doesn't drag the window");
         cx.simulate_mouse_up(window, bell, MouseButton::Left, none);
@@ -3462,6 +3483,13 @@ fn title_area_scenes() {
         assert!(
             open(cx),
             "title-area: a closed terminal's entry does nothing"
+        );
+        assert_eq!(active(cx).as_deref(), Some("shell"));
+        // So does a script's from outside fuxx's terminals (the sixth).
+        cx.simulate_click(window, entry(5), none);
+        assert!(
+            open(cx),
+            "title-area: a script's entry with no terminal does nothing"
         );
         assert_eq!(active(cx).as_deref(), Some("shell"));
         // The hover fill shows where the first entry is (so the click lands on it).

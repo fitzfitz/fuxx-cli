@@ -1,10 +1,11 @@
 //! This run's notifications (M11b), for the 🔔 popover in the title area: every notification
-//! fuxx raises (a terminal finished, or waits for you: the M4 rules), whether or not macOS showed
-//! it. Newest first, at most `MAX` (the oldest go). The ones raised since the popover was last
+//! fuxx raises (a terminal finished, or waits for you: the M4 rules; or a script's `fuxx notify`),
+//! whether or not macOS showed it. Newest first, at most `MAX` (the oldest go). The ones raised since the popover was last
 //! opened are unseen, and the 🔔 has a dot while there are any.
 //!
 //! A terminal closed since keeps its entries, greyed and not clickable (`shown`): terminal ids
-//! are never reused, so an entry can't jump to another terminal. Pure; the popover is in
+//! are never reused, so an entry can't jump to another terminal. A script's notification is
+//! about the terminal it ran in, if any (`scripted`); one from outside fuxx has none to go to. Pure; the popover is in
 //! `title_area`.
 
 use std::collections::VecDeque;
@@ -18,16 +19,37 @@ pub const MAX: usize = 50;
 /// One notification as it was raised.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
-    /// The terminal it was about (`sN`): where a click goes.
-    pub terminal: u64,
-    /// The name of the workspace it was in then.
+    /// The terminal it was about (`sN`): where a click goes. None: a script's notification
+    /// from outside fuxx's terminals.
+    pub terminal: Option<u64>,
+    /// Its title: the name of the workspace it was in then, or the title a script gave.
     pub title: String,
-    /// What the notification said under its title: a waiting terminal's question, or how long a
-    /// finished one worked.
+    /// What the notification said under its title: a waiting terminal's question, how long a
+    /// finished one worked, or a script's text.
     pub message: String,
-    /// Done or Waiting.
-    pub status: Status,
+    /// Done or Waiting; none for a script's notification.
+    pub status: Option<Status>,
     pub at: Instant,
+}
+
+impl Entry {
+    /// A script's notification (`fuxx notify`): `title` and `body` as it gave them, about the
+    /// terminal it ran in (`caller`, its `FUXX_SESSION`) while that one is `open`.
+    pub fn scripted(
+        title: &str,
+        body: &str,
+        caller: Option<u64>,
+        open: impl Fn(u64) -> bool,
+        at: Instant,
+    ) -> Entry {
+        Entry {
+            terminal: caller.filter(|&id| open(id)),
+            title: title.into(),
+            message: body.into(),
+            status: None,
+            at,
+        }
+    }
 }
 
 /// The list: oldest first inside, newest first out.
@@ -65,7 +87,9 @@ impl NotificationList {
     /// The entries newest first, each with whether its terminal is still open (`open`), so it
     /// can be clicked; a closed one's is drawn greyed.
     pub fn shown(&self, open: impl Fn(u64) -> bool) -> Vec<(&Entry, bool)> {
-        self.newest_first().map(|e| (e, open(e.terminal))).collect()
+        self.newest_first()
+            .map(|e| (e, e.terminal.is_some_and(&open)))
+            .collect()
     }
 }
 
@@ -77,20 +101,20 @@ mod tests {
     /// Notification `n` (terminal `sN`, raised `n` seconds after `start`).
     fn entry(start: Instant, n: u64) -> Entry {
         Entry {
-            terminal: n,
+            terminal: Some(n),
             title: format!("ws{n}"),
             message: format!("question {n}"),
-            status: if n % 2 == 0 {
+            status: Some(if n % 2 == 0 {
                 Status::Done
             } else {
                 Status::Waiting
-            },
+            }),
             at: start + Duration::from_secs(n),
         }
     }
 
     fn terminals(list: &NotificationList) -> Vec<u64> {
-        list.newest_first().map(|e| e.terminal).collect()
+        list.newest_first().filter_map(|e| e.terminal).collect()
     }
 
     #[test]
@@ -152,11 +176,54 @@ mod tests {
             list.push(entry(start, n));
         }
         // s1 closed since.
-        let shown: Vec<(u64, bool)> = list
+        let shown: Vec<(Option<u64>, bool)> = list
             .shown(|id| id != 1)
             .into_iter()
             .map(|(e, open)| (e.terminal, open))
             .collect();
-        assert_eq!(shown, [(3, true), (1, false), (2, true), (1, false)]);
+        let s = Some;
+        assert_eq!(
+            shown,
+            [(s(3), true), (s(1), false), (s(2), true), (s(1), false)]
+        );
+    }
+
+    #[test]
+    fn a_scripts_notification_goes_to_the_terminal_it_ran_in() {
+        let at = Instant::now();
+        let open = |id| id == 4;
+        let from_s4 = Entry::scripted("Build", "Tests passed", Some(4), open, at);
+        assert_eq!(
+            from_s4,
+            Entry {
+                terminal: Some(4),
+                title: "Build".into(),
+                message: "Tests passed".into(),
+                status: None,
+                at,
+            }
+        );
+        // From outside fuxx's terminals, or one closed since (an id never comes back): no
+        // terminal to go to.
+        assert_eq!(Entry::scripted("fuxx", "hi", None, open, at).terminal, None);
+        assert_eq!(
+            Entry::scripted("fuxx", "hi", Some(9), open, at).terminal,
+            None
+        );
+    }
+
+    #[test]
+    fn a_notification_with_no_terminal_is_listed_but_cannot_be_clicked() {
+        let at = Instant::now();
+        let mut list = NotificationList::default();
+        list.push(Entry::scripted("fuxx", "deployed", None, |_| true, at));
+        list.push(entry(at, 2));
+        assert_eq!(list.unseen(), 2, "it counts for the dot");
+        let shown: Vec<(&str, bool)> = list
+            .shown(|_| true)
+            .into_iter()
+            .map(|(e, open)| (e.message.as_str(), open))
+            .collect();
+        assert_eq!(shown, [("question 2", true), ("deployed", false)]);
     }
 }
