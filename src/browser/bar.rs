@@ -8,18 +8,22 @@
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
+use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSControl,
-    NSControlTextEditingDelegate, NSImage, NSResponder, NSTextField, NSTextFieldBezelStyle,
-    NSTextFieldDelegate, NSTextView, NSTitlePosition, NSToolbar, NSToolbarDelegate,
-    NSToolbarDisplayMode, NSToolbarItem, NSToolbarItemVisibilityPriorityHigh, NSView, NSWindow,
-    NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSControlTextEditingDelegate, NSFont, NSFontAttributeName, NSImage, NSImageView, NSResponder,
+    NSStringDrawing, NSTextField, NSTextFieldBezelStyle, NSTextFieldDelegate, NSTextView,
+    NSTitlePosition, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem,
+    NSToolbarItemVisibilityPriorityHigh, NSView, NSWindow, NSWindowTitleVisibility,
+    NSWindowToolbarStyle,
 };
-use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSArray, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
 use objc2_web_kit::WKWebView;
 
 use super::{BarLook, BrowserDelegate, navigate};
@@ -30,6 +34,7 @@ const BACK: &str = "fuxx.back";
 const FORWARD: &str = "fuxx.forward";
 const RELOAD: &str = "fuxx.reload";
 const ADDRESS: &str = "fuxx.address";
+const MARK: &str = "fuxx.mark";
 
 /// The address field: never narrower than this, as wide as the bar allows (the maximum only
 /// has to be wider than any screen: AppKit's toolbar gives a far larger one too little room).
@@ -38,6 +43,11 @@ const FIELD_MAX_WIDTH: f64 = 4_000.0;
 const PLACEHOLDER: &str = "Enter an address";
 /// The loading line's height, in points.
 const LINE_HEIGHT: f64 = 2.0;
+/// fuxx's mark (its logo, the person's choice), drawn as a picture the toolbar's icon size.
+const MARK_TEXT: &str = "\u{1F595}";
+const MARK_SIZE: f64 = 18.0;
+/// The emoji's font size: its line fills the picture's height.
+const MARK_FONT_SIZE: f64 = 15.0;
 /// How long a refused address stays red in the field.
 const ERROR_SHOWN: Duration = Duration::from_secs(2);
 
@@ -100,6 +110,17 @@ fn loading_line(loading: bool, progress: f64, width: f64) -> Option<f64> {
 /// The address typed into the field, as the browser opens it: the same check agents get.
 fn entered_address(text: &str) -> Result<String, String> {
     normalize_url(text)
+}
+
+/// The bar's items, in order: the buttons, the address field when it shows, and fuxx's mark
+/// last.
+fn bar_items(address_bar: bool) -> Vec<&'static str> {
+    let mut items = vec![BACK, FORWARD, RELOAD];
+    if address_bar {
+        items.push(ADDRESS);
+    }
+    items.push(MARK);
+    items
 }
 
 /// The reload button's symbol, label and tooltip.
@@ -194,16 +215,12 @@ define_class!(
 
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
         fn default_items(&self, _toolbar: &NSToolbar) -> Retained<NSArray<NSString>> {
-            let mut items = vec![BACK, FORWARD, RELOAD];
-            if self.ivars().address_bar.get() {
-                items.push(ADDRESS);
-            }
-            identifiers(&items)
+            identifiers(&bar_items(self.ivars().address_bar.get()))
         }
 
         #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
         fn allowed_items(&self, _toolbar: &NSToolbar) -> Retained<NSArray<NSString>> {
-            identifiers(&[BACK, FORWARD, RELOAD, ADDRESS])
+            identifiers(&bar_items(true))
         }
     }
 
@@ -358,8 +375,10 @@ impl TopBar {
         let at = item_index(&toolbar, ADDRESS);
         match (show, at) {
             (true, None) => {
-                let end = toolbar.items().count() as isize;
-                toolbar.insertItemWithItemIdentifier_atIndex(&NSString::from_str(ADDRESS), end);
+                // Where the bar's order puts it: after the buttons, before the mark.
+                let at = bar_items(true).iter().position(|id| *id == ADDRESS);
+                let at = at.unwrap_or(0) as isize;
+                toolbar.insertItemWithItemIdentifier_atIndex(&NSString::from_str(ADDRESS), at);
                 self.refresh();
             }
             (false, Some(at)) => {
@@ -516,6 +535,13 @@ impl TopBar {
                 let (symbol, label, tip) = reload_face(ReloadButton::Reload);
                 (symbol, label, tip, sel!(reloadOrStop:), &state.reload)
             }
+            MARK => {
+                // A picture, not a button: no action, no bezel.
+                item.setLabel(&NSString::from_str("fuxx"));
+                item.setBordered(false);
+                item.setView(Some(&NSImageView::imageViewWithImage(&mark_image(), mtm)));
+                return Some(item);
+            }
             ADDRESS => {
                 item.setLabel(&NSString::from_str("Address"));
                 if going_in {
@@ -633,6 +659,36 @@ impl TopBar {
     }
 }
 
+/// fuxx's mark: the emoji drawn centred in a square the toolbar's icon size. Drawn by a handler,
+/// so AppKit draws it afresh at each screen's scale (sharp on Retina), the same in light and dark.
+fn mark_image() -> Retained<NSImage> {
+    let draw = RcBlock::new(|rect: NSRect| -> Bool {
+        let font = NSFont::systemFontOfSize(MARK_FONT_SIZE);
+        // SAFETY: AppKit's own attribute name.
+        let key = unsafe { NSFontAttributeName };
+        let attributes: Retained<NSDictionary<NSString, AnyObject>> =
+            NSDictionary::from_slices(&[key], &[font.as_ref()]);
+        let text = NSString::from_str(MARK_TEXT);
+        // SAFETY: the font attribute takes an NSFont.
+        unsafe {
+            let size = text.sizeWithAttributes(Some(&attributes));
+            let at = NSPoint::new(
+                rect.origin.x + (rect.size.width - size.width) / 2.0,
+                rect.origin.y + (rect.size.height - size.height) / 2.0,
+            );
+            text.drawAtPoint_withAttributes(at, Some(&attributes));
+        }
+        Bool::YES
+    });
+    let mark = NSImage::imageWithSize_flipped_drawingHandler(
+        NSSize::new(MARK_SIZE, MARK_SIZE),
+        false,
+        &draw,
+    );
+    mark.setAccessibilityDescription(Some(&NSString::from_str("fuxx")));
+    mark
+}
+
 /// An SF Symbol, described as `label` for VoiceOver.
 fn symbol_image(symbol: &str, label: &str) -> Option<Retained<NSImage>> {
     NSImage::imageWithSystemSymbolName_accessibilityDescription(
@@ -740,6 +796,12 @@ mod tests {
         );
         assert_eq!(field_text("", None, false), Some(String::new()));
         assert_eq!(field_text("about:blank", None, false), Some(String::new()));
+    }
+
+    #[test]
+    fn the_mark_comes_last_with_or_without_the_address_field() {
+        assert_eq!(bar_items(true), [BACK, FORWARD, RELOAD, ADDRESS, MARK]);
+        assert_eq!(bar_items(false), [BACK, FORWARD, RELOAD, MARK]);
     }
 
     #[test]
