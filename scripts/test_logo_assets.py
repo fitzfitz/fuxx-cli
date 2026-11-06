@@ -49,5 +49,7 @@ def verify_logos(base_dir: str):
         print("ALL LOGO ASSETS VERIFIED SUCCESSFULLY.")
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "/Users/fitzgeral/Kerja/proj/fuxx-cli/assets/logo"
+    from pathlib import Path
+    default_dir = str(Path(__file__).resolve().parent.parent / "assets" / "logo")
+    target = sys.argv[1] if len(sys.argv) > 1 else default_dir
     verify_logos(target)
