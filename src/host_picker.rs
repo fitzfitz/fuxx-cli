@@ -1,4 +1,4 @@
-//! M10b: the host picker (File → New SSH Session…, ⇧⌘S). A panel near the top of the window:
+//! M10b: the host picker (File → New SSH Workspace…, ⇧⌘S). A panel near the top of the window:
 //! a box to type a host, the hosts on offer (recent first, then `~/.ssh/config`'s), and the
 //! "Keep running on the host (tmux)" option. Typing filters the hosts and offers the typed
 //! text as a host of its own. The config hosts' `ssh -G` runs off the UI thread as the picker
