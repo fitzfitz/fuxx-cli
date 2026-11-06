@@ -379,7 +379,7 @@ impl Workspace {
         // The normal route, so the focused workspace's group opens (and its panes attach as
         // they are drawn).
         self.activate(window, cx);
-        self.finish_restoring(cx);
+        self.finish_restoring(window, cx);
         self.attach_rest_later(cx);
     }
 

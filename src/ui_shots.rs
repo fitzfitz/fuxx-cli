@@ -219,6 +219,7 @@ const SCENES: &[(&str, fn())] = &[
     ("tab-drag", tab_drag_scenes),
     ("browser-tab", browser_tab_scenes),
     ("api-background", api_background),
+    ("banner-click", banner_click),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("panels", panel_scenes),
@@ -3164,6 +3165,184 @@ fn api_background() {
         slot.borrow_mut().take();
     };
     render_with(&theme, size(px(960.0), px(560.0)), build, act);
+}
+
+/// Two workspaces for `banner_click`: api's, and docs's split in two: docs and notes in the left
+/// pane (docs shown), tests in the right (focused). gone, a tab of the left pane, was closed.
+/// api's workspace is the one shown.
+fn banner_click_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
+    let mut ws = Workspace::for_shots(window, cx);
+    ws.sidebar.hint_dismissed = true;
+    let project = std::path::Path::new(API);
+    ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+    ws.open_shot_session("docs", project, SHELL_TEXT, None, window, cx);
+    ws.open_shot_tab("notes", project, AGENT_TEXT, window, cx);
+    ws.open_shot_tab("gone", project, SHELL_TEXT, window, cx);
+    let at = |ws: &Workspace, name: &str| ws.sessions.position(|x| x.label() == name);
+    let gone = at(&ws, "gone").expect("gone");
+    ws.close_at(gone, window, cx);
+    ws.select(at(&ws, "docs").expect("docs"), window, cx);
+    ws.open_shot_session("tests", project, SHELL_TEXT, Some(Axis::Row), window, cx);
+    ws.select(at(&ws, "api").expect("api"), window, cx);
+    ws
+}
+
+/// A click on one of fuxx's banners (M11c Task 2), fed in the way the click delegate feeds it:
+/// through the clicks channel the workspace listens to (the delegate itself only runs from the
+/// app bundle, so it can't run here). From api's workspace:
+/// - a click for gone (closed since its banner) and one for no terminal (a script's banner)
+///   change nothing;
+/// - a click for notes while the saved sessions are reopening shows nothing until they have,
+///   then (as one with no restore running does at once) docs's workspace, its left pane and
+///   notes's tab, with the keyboard.
+///
+/// Shot once notes is shown (`banner-click-mocha.png`). Panics unless all of that holds.
+fn banner_click() {
+    use crate::layout_model::{PaneId, TabId, WorkspaceId};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(shot_appearance(theme, cx));
+        let ws = cx.new(|cx| banner_click_workspace(window, cx));
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    };
+    type Shown = (Option<WorkspaceId>, Option<PaneId>, Option<TabId>);
+    let shown = |cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>| -> Shown {
+        cx.read(|cx| {
+            let model = &ws.read(cx).model;
+            (
+                model.focused_workspace(),
+                model.focused_pane(),
+                model.focused_tab(),
+            )
+        })
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        let (clicks, heard) = futures::channel::mpsc::unbounded();
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.listen_for_clicks(heard, window, cx))
+        })
+        .expect("listen for clicks");
+        let (notes, gone, api) = cx.read(|cx| {
+            let ws = ws.read(cx);
+            let id = |name: &str| {
+                ws.sessions
+                    .items()
+                    .iter()
+                    .find(|s| s.label() == name)
+                    .map(|s| s.id)
+            };
+            let notes = id("notes").expect("notes");
+            // gone opened right after notes, so it had the next number.
+            (notes, notes + 1, id("api"))
+        });
+        let before = shown(cx, &ws);
+        assert_eq!(
+            cx.read(|cx| ws.read(cx).focused_terminal()),
+            api,
+            "banner-click: api's workspace is shown first"
+        );
+        assert!(
+            cx.read(|cx| ws.read(cx).index_of(gone).is_none()),
+            "banner-click: gone (s{gone}) is closed"
+        );
+
+        for (click, what) in [(Some(gone), "a closed terminal"), (None, "no terminal")] {
+            clicks.unbounded_send(click).expect("send a click");
+            cx.run_until_parked();
+            assert_eq!(
+                shown(cx, &ws),
+                before,
+                "banner-click: a click for {what} changes nothing"
+            );
+        }
+
+        // Where notes is, and a check that it is what's shown, with the keyboard.
+        let (want_tab, want_ws, want_pane) = cx.read(|cx| {
+            let model = &ws.read(cx).model;
+            let tab = model.terminal_tab(notes).expect("notes's tab");
+            let (w, p) = model.locate(tab).expect("notes's place");
+            (tab, w, p)
+        });
+        let notes_shown = |cx: &mut VisualTestAppContext, how: &str| {
+            let (workspace, pane, tab) = shown(cx, &ws);
+            assert_ne!(workspace, before.0, "banner-click {how}: another workspace");
+            assert_eq!(
+                workspace,
+                Some(want_ws),
+                "banner-click {how}: notes's workspace"
+            );
+            assert_eq!(pane, Some(want_pane), "banner-click {how}: notes's pane");
+            assert_ne!(
+                pane, before.1,
+                "banner-click {how}: not the pane focused before"
+            );
+            assert_eq!(tab, Some(want_tab), "banner-click {how}: notes's tab");
+            cx.update_window(window, |_, window, cx| {
+                let ws = ws.read(cx);
+                let index = ws.index_of(notes).expect("notes");
+                let view = &ws.sessions.items()[index].view;
+                assert!(
+                    gpui::Focusable::focus_handle(view.read(cx), cx).contains_focused(window, cx),
+                    "banner-click {how}: notes has the keyboard"
+                );
+            })
+            .expect("read the focus");
+        };
+
+        // While the saved sessions are reopening, the click waits for them to finish.
+        cx.update_window(window, |_, _, cx| {
+            ws.update(cx, |ws, _| ws.restoring = true)
+        })
+        .expect("restoring");
+        clicks.unbounded_send(Some(notes)).expect("send a click");
+        cx.run_until_parked();
+        assert_eq!(
+            shown(cx, &ws),
+            before,
+            "banner-click: nothing is shown while restoring"
+        );
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.finish_restoring(window, cx))
+        })
+        .expect("finish restoring");
+        cx.run_until_parked();
+        notes_shown(cx, "after the restore");
+
+        // Back on api's workspace, a click with no restore running shows notes at once.
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let api = ws.sessions.position(|x| x.label() == "api").expect("api");
+                ws.select(api, window, cx);
+            })
+        })
+        .expect("back to api");
+        cx.run_until_parked();
+        assert_eq!(
+            shown(cx, &ws),
+            before,
+            "banner-click: api's workspace again"
+        );
+        clicks.unbounded_send(Some(notes)).expect("send a click");
+        cx.run_until_parked();
+        notes_shown(cx, "at once");
+        slot.borrow_mut().take();
+    };
+    let path = shoot_with(
+        "banner-click",
+        "mocha",
+        &theme,
+        size(px(1280.0), px(600.0)),
+        build,
+        act,
+    );
+    println!("ui-shots: {}", path.display());
 }
 
 /// The pages the suggestions scene remembers.

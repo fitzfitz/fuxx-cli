@@ -556,6 +556,13 @@ fn main() {
         }
     }
 
+    // Clicks on fuxx's banners, heard from before the app runs (a click that opened fuxx comes
+    // as it starts), wait here for the workspace (from the app bundle only).
+    let (clicked, clicks) = futures::channel::mpsc::unbounded();
+    native_notify::install(move |terminal| {
+        let _ = clicked.unbounded_send(terminal);
+    });
+
     // macOS apps normally keep running with no windows; a terminal should quit instead.
     application()
         .with_quit_mode(QuitMode::LastWindowClosed)
@@ -610,7 +617,7 @@ fn main() {
                         ..Default::default()
                     },
                     move |window, cx| {
-                        cx.new(|cx| Workspace::new(scripting, persistent, window, cx))
+                        cx.new(|cx| Workspace::new(scripting, clicks, persistent, window, cx))
                     },
                 )
                 .expect("failed to open the window");

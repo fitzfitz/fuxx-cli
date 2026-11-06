@@ -19,6 +19,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, EntityId,
@@ -41,6 +42,7 @@ use crate::host_picker::HostPicker;
 use crate::layout_model::{self, Model, PaneId, TabDrop, TabId, TabKind, WorkspaceId};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::native_notify::PendingShow;
 use crate::notification_list::{self, NotificationList};
 use crate::notifier;
 use crate::pane_tab_menu::PaneTabMenu;
@@ -303,6 +305,10 @@ pub struct Workspace {
     window_active: bool,
     /// Answers scripting requests (see `workspace_api`); none when scripting is off.
     _requests: Option<Task<()>>,
+    /// Hears clicks on fuxx's banners (`listen_for_clicks`).
+    _clicks: Option<Task<()>>,
+    /// A banner click held while the saved sessions reopen, shown when they have.
+    pending_show: PendingShow,
     /// The socket this fuxx serves; none when it isn't serving (scripting off, or another fuxx
     /// has it). Decides the shells' scripting variables.
     socket: Option<PathBuf>,
@@ -366,15 +372,18 @@ pub struct Workspace {
 impl Workspace {
     /// `scripting`: the socket this fuxx serves and its requests, answered for as long as the
     /// workspace lives.
+    /// `clicks`: clicks on fuxx's banners, each the terminal it is about (`native_notify::install`).
     /// `persistent`: sessions run in the background service (connected off the UI thread before
     /// the first one opens).
     pub fn new(
         scripting: Option<(PathBuf, UnboundedReceiver<api_server::Incoming>)>,
+        clicks: UnboundedReceiver<Option<u64>>,
         persistent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self::blank(scripting, persistent, window, cx);
+        this.listen_for_clicks(clicks, window, cx);
         // Browser data saved by an earlier run, if the setting is off now, goes at once.
         this.browser_data_kept = read_saved_quietly().is_some_and(|s| s.browser_data_kept);
         this.wipe_saved_data_if_due(cx);
@@ -452,6 +461,8 @@ impl Workspace {
             next_id: 1,
             window_active: window.is_window_active(),
             _requests: requests.map(|rx| Self::serve_requests(rx, window, cx)),
+            _clicks: None,
+            pending_show: PendingShow::default(),
             socket,
             subscribers: Vec::new(),
             waits: WaitTable::new(),
@@ -619,7 +630,7 @@ impl Workspace {
         self.collapsed = groups::collapsed_keys(&state.collapsed, &state.collapsed_hosts);
         // The normal route, so the focused workspace's group opens.
         self.activate(window, cx);
-        self.finish_restoring(cx);
+        self.finish_restoring(window, cx);
     }
 
     /// Take `model` (a restore's): every session it doesn't show (never, by how it is built)
@@ -637,16 +648,62 @@ impl Workspace {
 
     /// One plain session, then saving starts.
     pub(crate) fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let done: Opened = Box::new(|this, _, _, cx| this.finish_restoring(cx));
+        let done: Opened = Box::new(|this, _, window, cx| this.finish_restoring(window, cx));
         // Part of the restore, so not refused as other opens are meanwhile.
         self.open_now(Launch::default(), At::New, None, Some(done), window, cx);
     }
 
-    /// Saving starts, and the Quit item says how many sessions keep running.
-    pub(crate) fn finish_restoring(&mut self, cx: &mut Context<Self>) {
+    /// Saving starts, the Quit item says how many sessions keep running, and a banner click
+    /// that came meanwhile is shown.
+    pub(crate) fn finish_restoring(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.restoring = false;
         self.save();
         self.sync_quit_title(cx);
+        if let Some(terminal) = self.pending_show.restored() {
+            self.show_clicked(terminal, window, cx);
+        }
+    }
+
+    /// Hear clicks on fuxx's banners for as long as the workspace lives (clicks that came before
+    /// it existed are waiting in `clicks`).
+    pub(crate) fn listen_for_clicks(
+        &mut self,
+        mut clicks: UnboundedReceiver<Option<u64>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._clicks = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(terminal) = clicks.next().await {
+                let heard = this.update_in(cx, |this, window, cx| {
+                    this.banner_clicked(terminal, window, cx)
+                });
+                if heard.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// A click on one of fuxx's banners: fuxx comes forward and terminal `sN` (if the banner
+    /// names one) is shown, now or, while the saved sessions reopen, once they have.
+    fn banner_clicked(
+        &mut self,
+        terminal: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.activate(true);
+        if let Some(terminal) = self.pending_show.click(terminal, self.restoring) {
+            self.show_clicked(terminal, window, cx);
+        }
+    }
+
+    /// Show a clicked banner's terminal as the 🔔 list does (nothing more if it has closed
+    /// since); one about no terminal only brought fuxx forward.
+    fn show_clicked(&mut self, terminal: Option<u64>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(terminal) = terminal {
+            self.jump_to_notification(terminal, window, cx);
+        }
     }
 
     /// Whether the background service runs the sessions (their ids are its).

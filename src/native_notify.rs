@@ -2,15 +2,19 @@
 //! the app bundle. Only usable when the running binary is inside `fuxx.app` — unbundled, the
 //! framework throws, so nothing here touches it unless `is_bundled()`.
 
+use std::cell::RefCell;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use block2::RcBlock;
-use objc2::runtime::Bool;
+use block2::{DynBlock, RcBlock};
+use objc2::rc::Retained;
+use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::{ClassType, MainThreadMarker, define_class, msg_send};
 use objc2_foundation::{NSBundle, NSError, NSString};
 use objc2_user_notifications::{
-    UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
-    UNNotificationRequest, UNNotificationSettings, UNUserNotificationCenter,
+    UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
+    UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
+    UNNotificationSettings, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 
 /// The app's identity, as `packaging/macos/Info.plist` has it.
@@ -76,23 +80,6 @@ pub fn permission() -> Option<Permission> {
     })
 }
 
-/// Ask macOS for permission to show alerts (no sound). Used by Task 3's first-run flow; returns
-/// whether it was granted, `None` on timeout or unbundled. Blocks while the system prompt is up
-/// only as long as the 2 s wait.
-#[allow(dead_code)] // used by the permission prompt (M11c Task 3)
-pub fn request_permission() -> Option<bool> {
-    if !is_bundled() {
-        return None;
-    }
-    let (tx, rx) = mpsc::channel();
-    let center = UNUserNotificationCenter::currentNotificationCenter();
-    let done = RcBlock::new(move |granted: Bool, _error: *mut NSError| {
-        let _ = tx.send(granted.as_bool());
-    });
-    center.requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert, &done);
-    rx.recv_timeout(WAIT).ok()
-}
-
 /// Show a banner: `summary` as the title, `body` under it, no subtitle, no sound. `terminal` (the
 /// `sN` it is about) rides in the request identifier. Blocks up to 2 s for the system to take it.
 pub fn post(summary: &str, body: &str, terminal: Option<u64>) -> Result<(), PostError> {
@@ -139,11 +126,134 @@ pub fn request_id(terminal: Option<u64>, n: u64) -> String {
 }
 
 /// The terminal a request identifier is about, if it names one.
-#[allow(dead_code)] // used by the click handler (M11c Task 2)
 pub fn terminal_of(request_id: &str) -> Option<u64> {
     let rest = request_id.strip_prefix("fuxx-s")?;
     let (terminal, _) = rest.split_once('-')?;
     terminal.parse().ok()
+}
+
+/// What a click does, and the delegate that reports it (macOS keeps only a weak reference to
+/// the delegate, so it is kept here). Set once by `install`, on the main thread.
+struct Clicks {
+    on_click: Box<dyn Fn(Option<u64>)>,
+    _delegate: Retained<ClickDelegate>,
+}
+
+thread_local! {
+    static CLICKS: RefCell<Option<Clicks>> = const { RefCell::new(None) };
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no ivars, no `Drop`.
+    #[unsafe(super = NSObject)]
+    struct ClickDelegate;
+
+    unsafe impl NSObjectProtocol for ClickDelegate {}
+
+    unsafe impl UNUserNotificationCenterDelegate for ClickDelegate {
+        /// A banner arriving while fuxx is the active app is still shown (macOS hides it by
+        /// default then), and kept in Notification Center as usual. No sound.
+        #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+        fn will_present(
+            &self,
+            _center: &UNUserNotificationCenter,
+            _notification: &UNNotification,
+            handler: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
+        ) {
+            handler
+                .call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List,));
+        }
+
+        /// A click on one of fuxx's banners: `on_click` with the terminal it is about, if any.
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+        fn did_receive(
+            &self,
+            _center: &UNUserNotificationCenter,
+            response: &UNNotificationResponse,
+            handler: &DynBlock<dyn Fn()>,
+        ) {
+            let id = response.notification().request().identifier().to_string();
+            let terminal = terminal_of(&id);
+            // macOS calls this on the main thread, where `install` left the callback.
+            let heard = CLICKS.with_borrow(|clicks| {
+                clicks
+                    .as_ref()
+                    .map(|clicks| (clicks.on_click)(terminal))
+                    .is_some()
+            });
+            if !heard {
+                eprintln!("[fuxx] notifications: a click on {id} arrived off the main thread");
+            }
+            handler.call(());
+        }
+    }
+);
+
+/// Hear clicks on fuxx's banners (the window's side, at launch, before the app runs so a click
+/// that opened fuxx is not missed): a click calls `on_click` on the main thread with the
+/// terminal (`sN`) the banner is about, `None` for one about no terminal. Banners also show
+/// while fuxx is the active app. Then asks macOS, once, for permission to show alerts (no
+/// sound), without waiting for the answer. Only from the app bundle (and the main thread);
+/// otherwise nothing happens.
+pub fn install(on_click: impl Fn(Option<u64>) + 'static) {
+    if MainThreadMarker::new().is_none() || !is_bundled() {
+        return;
+    }
+    if CLICKS.with_borrow(Option::is_some) {
+        return;
+    }
+    // SAFETY: `new` on an NSObject subclass with no ivars returns a fresh, initialised object.
+    let delegate: Retained<ClickDelegate> = unsafe { msg_send![ClickDelegate::class(), new] };
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    CLICKS.set(Some(Clicks {
+        on_click: Box::new(on_click),
+        _delegate: delegate,
+    }));
+    ask_permission(&center);
+}
+
+/// Ask macOS for permission to show alerts (no sound). Not waited for: the answer only matters
+/// to later banners, which read it (`permission`). macOS asks the person only the first time.
+fn ask_permission(center: &UNUserNotificationCenter) {
+    let done = RcBlock::new(|_granted: Bool, error: *mut NSError| {
+        // SAFETY: when non-null, the system passes a live NSError for the duration of the call.
+        if let Some(e) = unsafe { error.as_ref() } {
+            eprintln!(
+                "[fuxx] notifications: asking permission: {}",
+                e.localizedDescription()
+            );
+        }
+    });
+    center.requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert, &done);
+}
+
+/// A banner click to show once the window can: at once, or (clicked while the saved sessions
+/// are still reopening, as when the click itself opened fuxx) once that has finished. Pure.
+#[derive(Debug, Default)]
+pub struct PendingShow {
+    /// The click held until the restore finishes: the terminal it is about, if any.
+    held: Option<Option<u64>>,
+}
+
+impl PendingShow {
+    /// A click about `terminal`: what to show now, or `None` while `restoring` (it is held; a
+    /// later click replaces a held one).
+    pub fn click(&mut self, terminal: Option<u64>, restoring: bool) -> Option<Option<u64>> {
+        if restoring {
+            self.held = Some(terminal);
+            None
+        } else {
+            self.held = None;
+            Some(terminal)
+        }
+    }
+
+    /// The restore has finished: the click held meanwhile, once.
+    pub fn restored(&mut self) -> Option<Option<u64>> {
+        self.held.take()
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +277,33 @@ mod tests {
         assert_eq!(terminal_of("fuxx-sx-1"), None);
         assert_eq!(terminal_of("other"), None);
         assert_eq!(terminal_of(""), None);
+    }
+
+    #[test]
+    fn a_click_is_shown_at_once_when_no_restore_runs() {
+        let mut pending = PendingShow::default();
+        assert_eq!(pending.click(Some(3), false), Some(Some(3)));
+        assert_eq!(pending.click(None, false), Some(None));
+        assert_eq!(pending.restored(), None);
+    }
+
+    #[test]
+    fn a_click_during_a_restore_waits_for_it_once() {
+        let mut pending = PendingShow::default();
+        assert_eq!(pending.click(Some(3), true), None);
+        assert_eq!(pending.restored(), Some(Some(3)));
+        assert_eq!(pending.restored(), None);
+        // A script's banner (no terminal) is held the same way: fuxx still comes forward.
+        assert_eq!(pending.click(None, true), None);
+        assert_eq!(pending.restored(), Some(None));
+    }
+
+    #[test]
+    fn the_later_of_two_clicks_during_a_restore_wins() {
+        let mut pending = PendingShow::default();
+        assert_eq!(pending.click(Some(3), true), None);
+        assert_eq!(pending.click(Some(5), true), None);
+        assert_eq!(pending.restored(), Some(Some(5)));
+        assert_eq!(pending.restored(), None);
     }
 }
