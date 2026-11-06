@@ -20,6 +20,7 @@ use crate::api_server::{Conn, Incoming};
 use crate::appearance::Appearance;
 use crate::daemon_client::DaemonClient;
 use crate::grid::TextScope;
+use crate::layout_model::TabId;
 use crate::notification_list::Entry;
 use crate::notifier;
 use crate::presets::Preset;
@@ -766,8 +767,7 @@ impl Workspace {
         if let Some(why) = open_refusal(&self.service, self.restoring) {
             return Err(ApiError::unavailable(format!("no new session: {why}")));
         }
-        // By id: the new session's row can push the previous one down.
-        let previous = self.sessions.active().map(|s| s.id);
+        let previous = self.focus_to_give_back();
         if let Some(target) = ssh {
             let place = match (place, of) {
                 (NewPlace::Split(axis), Some(of)) => Place::Split { of, axis },
@@ -813,12 +813,20 @@ impl Workspace {
         Ok(())
     }
 
+    /// What `session.new --background` gives the focus back to once its session has opened: the
+    /// focused tab, a terminal's or a browser tab's (with a page focused no session is active).
+    /// By its tab id: the new session's row can push the previous one down.
+    pub(crate) fn focus_to_give_back(&self) -> Option<TabId> {
+        self.model.focused_tab()
+    }
+
     /// The rest of `session.new` once session `id` opened (`None`: it didn't): type `run`,
-    /// and with `background` give the focus back to `previous`.
-    fn api_opened(
+    /// and with `background` give the focus back to tab `previous` (`select_tab`, which shows a
+    /// browser tab as well as a terminal's).
+    pub(crate) fn api_opened(
         &mut self,
         id: Option<u64>,
-        previous: Option<u64>,
+        previous: Option<TabId>,
         run: Option<String>,
         background: bool,
         window: &mut Window,
@@ -832,8 +840,8 @@ impl Workspace {
         if let Some(run) = run {
             self.type_into(index, format!("{run}\r").as_bytes(), cx);
         }
-        if background && let Some(i) = previous.and_then(|p| index_of(self, p)) {
-            self.select(i, window, cx);
+        if background && let Some(tab) = previous {
+            self.select_tab(tab, window, cx);
         }
         Ok(json!({ "id": format!("s{id}") }))
     }
