@@ -1694,11 +1694,20 @@ impl Workspace {
 
     /// After the active session changed (by any route): open its group and focus it.
     pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // The keyboard goes to a terminal, so a tab menu (which holds it) closes.
-        self.sidebar.tab_menu = None;
-        self.pane_tab_menu = None;
+        self.close_menus();
         self.note_active(cx);
         self.focus_active(window, cx);
+    }
+
+    /// The keyboard is going to the focused tab, so the menus and the 🔔's popover close: the
+    /// tab menus and the popover hold it (left open, Escape would go to the terminal), and every
+    /// one of them, the + menu too, hides the pages while it's open. The boxes (rename, address,
+    /// picker, switcher) end on losing the keyboard themselves.
+    pub(crate) fn close_menus(&mut self) {
+        self.sidebar.tab_menu = None;
+        self.pane_tab_menu = None;
+        self.notifications_popover = None;
+        self.sidebar.new_menu = false;
     }
 
     /// `activate` without moving the focus (an SSH session reconnected by its timer, M10b).
@@ -1723,10 +1732,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Close every box over the window but `keep`, before `keep` takes the keyboard. Each box's
-    /// late "lost focus" then finds it already closed and leaves the focus alone (their event
-    /// handlers ignore a box that isn't the current one).
+    /// Close every box over the window but `keep`, before `keep` takes the keyboard, and the +
+    /// menu (it holds no keyboard, so it isn't an `Overlay`, but it mustn't stay over the box).
+    /// Each box's late "lost focus" then finds it already closed and leaves the focus alone
+    /// (their event handlers ignore a box that isn't the current one).
     pub(crate) fn close_overlays(&mut self, keep: Overlay) {
+        self.sidebar.new_menu = false;
         if keep != Overlay::Rename {
             self.renaming = None;
         }

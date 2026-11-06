@@ -3417,6 +3417,31 @@ fn overlays() {
                 );
             });
         }
+        // The + menu (no keyboard of its own) hides the pages too, and any box opening closes
+        // it: ⌘P's switcher isn't left under its click-away backdrop.
+        cx.update(|cx| {
+            ws.update(cx, |ws, _| ws.sidebar.new_menu = true);
+            assert!(
+                ws.read(cx).overlays(cx).any(),
+                "overlays: the + menu hides the pages"
+            );
+        });
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.open_switcher(window, cx))
+        })
+        .expect("open the switcher");
+        cx.update(|cx| {
+            let ws = ws.read(cx);
+            assert!(
+                !ws.sidebar.new_menu && ws.switcher.is_some(),
+                "overlays: ⌘P closes the + menu"
+            );
+        });
+        cx.update(|cx| ws.update(cx, |ws, _| ws.close_overlays(Overlay::Rename)));
+        assert!(
+            cx.update(|cx| !ws.read(cx).overlays(cx).any()),
+            "overlays: closing them clears the + menu"
+        );
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
 }
@@ -4073,6 +4098,56 @@ fn title_area_scenes() {
             );
         })
         .expect("read the focus");
+        // A shortcut that moves the keyboard closes the popover and the + menu: else the popover
+        // stays drawn without the keyboard (Escape would go to the terminal) and the pages stay
+        // hidden. ⇧⌘U (to the next that needs you, then to the one shown), ⌘1, and a new tab
+        // as ⌘T opens one (`open_shot_tab`: a real ⌘T would start a shell).
+        cx.update(|cx| {
+            cx.bind_keys([
+                KeyBinding::new("cmd-shift-u", crate::workspace::NextNeedingYou, None),
+                KeyBinding::new("cmd-1", crate::workspace::SelectSession1, None),
+            ])
+        });
+        let hidden = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).overlays(cx).any());
+        for step in ["cmd-shift-u", "cmd-shift-u", "cmd-1", "new tab"] {
+            for (opener, at) in [("popover", bell), ("+ menu", plus)] {
+                cx.simulate_click(window, at, none);
+                let opened = if opener == "popover" {
+                    open(cx)
+                } else {
+                    menu(cx)
+                };
+                assert!(opened, "title-area: the {opener} opens before {step}");
+                if step == "new tab" {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| {
+                            ws.open_shot_tab("tab", std::path::Path::new(API), "", window, cx)
+                        })
+                    })
+                    .expect("a new tab");
+                } else {
+                    cx.simulate_keystrokes(window, step);
+                }
+                cx.run_until_parked();
+                assert!(
+                    !open(cx) && !menu(cx),
+                    "title-area: {step} closes the {opener}"
+                );
+                assert!(
+                    !hidden(cx),
+                    "title-area: {step} leaves no page held hidden by the {opener}"
+                );
+                cx.update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    let view = &ws.sessions.active().expect("a terminal").view;
+                    assert!(
+                        view.focus_handle(cx).is_focused(window),
+                        "title-area: after {step} its terminal has the keyboard"
+                    );
+                })
+                .expect("read the focus");
+            }
+        }
         // Hiding the sidebar takes the footer, and the popover open over it, away.
         cx.simulate_click(window, bell, none);
         assert!(open(cx), "title-area: reopened");

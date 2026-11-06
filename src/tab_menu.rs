@@ -143,7 +143,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.close_overlays(Overlay::TabMenu);
-        self.sidebar.new_menu = false;
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         self.sidebar.tab_menu = Some(TabMenu {
