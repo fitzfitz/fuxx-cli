@@ -41,7 +41,7 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
   detection, extended to OSC 99 / OSC 777 / BEL on 2026-10-26, + heuristics on the output stream).
 - `P0` Visual **ring / status badge** per session in the sidebar; at-a-glance across all sessions.
 - `P1` Desktop notifications for **background** sessions (focus-aware — don't nag about the active one).
-- `P1` Jump-to-session from a notification. *(Moved to M12 by D5, 2026-10-26: needs the real `.app`.)*
+- `P1` Jump-to-session from a notification. *(Moved to M12 by D5, 2026-10-26; moved again to **M11c** on 2026-11-06: a test showed the ad-hoc signed `.app` can do it.)*
 - `P2` Notification history / activity feed.
 
 ## D. Layout
@@ -64,8 +64,8 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 ## G. Distribution & platform
 
 - `P1` Cross-platform-capable (macOS first; Linux via the Rust stack).
-- `P2` **Ship as a real `.app`** (bundle + signing/notarization) → fixes the notification identity
-  (v1's `osascript` banner shows as "Script Editor" until then — see memory `macos-notify-rust-broken`).
+- `P2` **Ship as a real `.app`** (bundle + signing/notarization). The notification identity (v1's `osascript` banner
+  shows as "Script Editor") is fixed earlier, in **M11c**, from the ad-hoc signed app (test, 2026-11-06).
 - `P2` Homebrew cask for install.
 - `P3` Windows support.
 
