@@ -178,10 +178,12 @@ keyboard ─► terminal_view ─► keys ─► pty ─► shell / agent
 
 ```
 scripts/
-├── bundle-mac.sh         M4b · universal release build → fuxx.app → target/dist/fuxx-<version>.dmg
+├── bundle-mac.sh         M4b · universal release build → fuxx.app (with its icon, M11c) → target/dist/fuxx-<version>.dmg
+├── make_app_icon.py      M11c · the 3D Cyber logo → packaging/macos/fuxx.icns + the browser bar's mark (run by hand)
 └── check-dmg.sh          M4b · the test: asserts a DMG is installable (both CPUs, macOS 11.0, version, seal)
 packaging/
-└── macos/Info.plist      M4b · bundle metadata (id io.github.fitzfitz.fuxx); @VERSION@ from Cargo.toml
+├── macos/Info.plist      M4b · bundle metadata (id io.github.fitzfitz.fuxx, icon fuxx); @VERSION@ from Cargo.toml
+└── macos/fuxx.icns       M11c · the app icon (made by scripts/make_app_icon.py)
 ```
 
 To make a new tester build: bump `version` in `Cargo.toml`, run `scripts/bundle-mac.sh`, then

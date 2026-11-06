@@ -74,7 +74,7 @@ pane and tab.
 
 ## Not in M11c
 
-- An app icon (banners show a blank icon until fuxx has one — separate work, not planned yet).
+- ~~An app icon~~ — added after the merge as plan Task 6 (2026-11-07, your request): the 3D Cyber logo.
 - Developer ID signing and notarization, Gatekeeper's "Open Anyway" (still M12).
 - Notification buttons, Dock badges, grouping, sounds, removing old banners from Notification Center.
 - A fuxx setting to turn notifications off (none exists today).
@@ -101,6 +101,9 @@ old banners still come; allowing it later in System Settings → fuxx banners fr
   so, and sends the window a new `Show` message right after it connects. Its main thread now runs the macOS event loop
   in short slices so it can hear clicks. Older windows and services ignore the new message.
 - **Default name ╭∩╮** for new tabs and workspaces (Task 3b, your request).
+- **The app icon** (Task 6, 2026-11-07, your request): the 3D Cyber logo on Apple's icon grid in `fuxx.app` — the Dock,
+  ⌘Tab, Finder, notification banners and System Settings show it — and as the popped-out browser window's toolbar mark
+  (instead of 🖕). `scripts/make_app_icon.py` regenerates both from the logo.
 
 ### Rulings you should confirm
 
@@ -145,8 +148,15 @@ start an agent (or `sleep 5; echo done`-style work) in one tab and switch to ano
     still come, the old way ("Script Editor"). Then allow fuxx in System Settings: fuxx banners from then on.
 14. A `cargo run` build still notifies (old banners).
 
+**The app icon (Task 6)**
+16. The Dock, ⌘Tab and Finder show the 3D Cyber logo, the same size as other apps' icons (not oversized). (If the
+    Dock still shows a blank icon, macOS cached the old one: drag `fuxx.app` somewhere else and back, or run
+    `killall Dock`.)
+17. A fuxx notification banner and System Settings → Notifications → fuxx show the logo.
+18. Pop out a browser tab: the logo sits at the right of its toolbar, sharp, in light and dark.
+
 **The default name (Task 3b)**
-15. A new workspace and a new tab are named **╭∩╮** (sidebar row, tab, window title, ⌘P, `fuxx ls`); it reads well
+19. A new workspace and a new tab are named **╭∩╮** (sidebar row, tab, window title, ⌘P, `fuxx ls`); it reads well
     in a dark and a light theme. Names you gave stay as they were.
 
 ## Related

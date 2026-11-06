@@ -13,7 +13,7 @@ updated: 2026-11-06
 |---|---|
 | **Milestone note** | [[55 - Milestone 11c - Native Notifications]] (the spec) |
 | **Status** | 🟨 Built and reviewed 2026-11-06 (742 tests); on-screen check pending |
-| **Tasks done** | 6 / 8 (Tasks 0, 1, 2, 3, 3b, 5); Task 6 (app icon) added 2026-11-07; Task 4 is your check |
+| **Tasks done** | 7 / 8 (Tasks 0, 1, 2, 3, 3b, 5, 6); Task 4 is your check |
 | **▶ Pick up here** | Task 4: your on-screen check — the list is in [[55 - Milestone 11c - Native Notifications]], "On-screen checklist (pending)" |
 | **Decisions used** | Yours (2026-11-06): extend M11 with native notifications; go. Everything else: AI's call, in note 55 "Settled before planning". |
 | **Needs your eyes** | 👀 Task 0 (clicks) and Task 4 (on screen) |
@@ -177,7 +177,7 @@ Your words: "Change the new tab, new workspace title from the emoji to ╭∩╮
   clippy, fmt, full `__ui-shots`.
 - [x] Commit `feat(m11c): new tabs and workspaces are named ╭∩╮`.
 
-### Task 6: The app icon — ⬜ (added 2026-11-07, your request; after the merge, on master by your word)
+### Task 6: The app icon — ✅ (added 2026-11-07, your request; after the merge, on master by your word)
 
 Your words: "now we already have icons, should we implement the icon on notif, on app bar, etc?" → "yes go with 3d
 cybers. Just update it on master then directly commit on master branch for this work".
@@ -196,7 +196,7 @@ cybers. Just update it on master then directly commit on master branch for this 
   with no margin (`assets/logo/3d-cyber/fuxx-mark.png`, 64 px, made by the same script), compiled into fuxx and drawn
   at the toolbar's 18 pt. The in-pane browser bar has no mark (unchanged).
 - Unchanged: `cargo run` builds keep the generic Dock icon.
-- [ ] Checks: the mark's embedded PNG is 64 × 64 (a Rust test); the script's fit rule (pure: bbox → scaled size and offset, centred, ≤ 824) by a small test; the `.icns`
+- [x] Checks: the mark's embedded PNG is 64 × 64 (a Rust test); the script's fit rule (pure: bbox → scaled size and offset, centred, ≤ 824) by a small test; the `.icns`
   holds all ten sizes (`iconutil -c iconset` round-trip); a built `fuxx.app` has the file and the plist key;
   `cargo test` unchanged. On screen (you): the Dock, ⌘Tab, a notification banner, System Settings and a popped-out browser window's toolbar show the logo.
 
@@ -219,6 +219,7 @@ the M4 note's D5 line, and the memory `macos-notify-rust-broken` if the tests ta
 | 3 Background-service banners | c39f778..70346c4 | 737 | Approved (opus), 5 Minor |
 | 3b Default name ╭∩╮ | 70346c4..d141ca9 | 737; default-name ui-shot | Approved (sonnet), 2 Minor |
 | Final whole-branch | 3b80a8d..f855088 | 742; 29 ui-shots scenes | With fixes (opus): 2 Important (banner ids repeated across runs → a click on an old banner showed an unrelated terminal; a new banner could replace an old one), 5 Minor → one fix pass (opus) → re-review 6/6 addressed (sonnet) |
+| 6 App icon (on master, your word) | this commit | 743; fit rule 4/4 (Python); `.icns` round-trip: 10 sizes; built app has the icon, plist key, valid seal | Not reviewed by an agent (small, on master at your request) |
 
 ## Deferred minors
 

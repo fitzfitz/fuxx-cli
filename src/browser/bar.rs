@@ -8,20 +8,19 @@
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
-use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSControl, NSControlTextEditingDelegate,
-    NSFont, NSFontAttributeName, NSImage, NSImageView, NSResponder, NSStringDrawing, NSTextField,
-    NSTextFieldBezelStyle, NSTextFieldDelegate, NSTextView, NSTitlePosition, NSToolbar,
-    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem, NSToolbarItemVisibilityPriorityHigh,
-    NSView, NSWindow, NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSImage, NSImageView, NSResponder, NSTextField, NSTextFieldBezelStyle, NSTextFieldDelegate,
+    NSTextView, NSTitlePosition, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem,
+    NSToolbarItemVisibilityPriorityHigh, NSView, NSWindow, NSWindowTitleVisibility,
+    NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    NSArray, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    NSArray, NSData, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 use objc2_web_kit::WKWebView;
 
@@ -42,11 +41,10 @@ const FIELD_MAX_WIDTH: f64 = 4_000.0;
 const PLACEHOLDER: &str = "Enter an address";
 /// The loading line's height, in points.
 const LINE_HEIGHT: f64 = 2.0;
-/// fuxx's mark (its logo, the person's choice), drawn as a picture the toolbar's icon size.
-const MARK_TEXT: &str = "\u{1F595}";
+/// fuxx's mark: the 3D Cyber logo, trimmed and centred (made by `scripts/make_app_icon.py`),
+/// shown at the toolbar's icon size. 64 px, so it stays sharp at 2x.
+const MARK_PNG: &[u8] = include_bytes!("../../assets/logo/3d-cyber/fuxx-mark.png");
 const MARK_SIZE: f64 = 18.0;
-/// The emoji's font size: its line fills the picture's height.
-const MARK_FONT_SIZE: f64 = 15.0;
 /// How long a refused address stays red in the field.
 const ERROR_SHOWN: Duration = Duration::from_secs(2);
 
@@ -519,7 +517,7 @@ impl TopBar {
                 // A picture, not a button: no action, no bezel.
                 item.setLabel(&NSString::from_str("fuxx"));
                 item.setBordered(false);
-                let picture = NSImageView::imageViewWithImage(&mark_image(), mtm);
+                let picture = NSImageView::imageViewWithImage(&mark_image(mtm), mtm);
                 // Not a drop target either: an editable picture would take a dragged-in image.
                 picture.setEditable(false);
                 item.setView(Some(&picture));
@@ -642,32 +640,13 @@ impl TopBar {
     }
 }
 
-/// fuxx's mark: the emoji drawn centred in a square the toolbar's icon size. Drawn by a handler,
-/// so AppKit draws it afresh at each screen's scale (sharp on Retina), the same in light and dark.
-fn mark_image() -> Retained<NSImage> {
-    let draw = RcBlock::new(|rect: NSRect| -> Bool {
-        let font = NSFont::systemFontOfSize(MARK_FONT_SIZE);
-        // SAFETY: AppKit's own attribute name.
-        let key = unsafe { NSFontAttributeName };
-        let attributes: Retained<NSDictionary<NSString, AnyObject>> =
-            NSDictionary::from_slices(&[key], &[font.as_ref()]);
-        let text = NSString::from_str(MARK_TEXT);
-        // SAFETY: the font attribute takes an NSFont.
-        unsafe {
-            let size = text.sizeWithAttributes(Some(&attributes));
-            let at = NSPoint::new(
-                rect.origin.x + (rect.size.width - size.width) / 2.0,
-                rect.origin.y + (rect.size.height - size.height) / 2.0,
-            );
-            text.drawAtPoint_withAttributes(at, Some(&attributes));
-        }
-        Bool::YES
-    });
-    let mark = NSImage::imageWithSize_flipped_drawingHandler(
-        NSSize::new(MARK_SIZE, MARK_SIZE),
-        false,
-        &draw,
-    );
+/// fuxx's mark: the logo at the toolbar's icon size (AppKit picks the 64 px picture's detail for
+/// Retina). It's compiled in, so it can't be missing; an empty square stands in should it not decode.
+fn mark_image(mtm: MainThreadMarker) -> Retained<NSImage> {
+    let size = NSSize::new(MARK_SIZE, MARK_SIZE);
+    let mark = NSImage::initWithData(mtm.alloc(), &NSData::with_bytes(MARK_PNG))
+        .unwrap_or_else(|| NSImage::initWithSize(mtm.alloc(), size));
+    mark.setSize(size);
     mark.setAccessibilityDescription(Some(&NSString::from_str("fuxx")));
     mark
 }
@@ -720,6 +699,14 @@ mod tests {
             can_forward,
             loading,
         }
+    }
+
+    #[test]
+    fn the_mark_is_the_64_px_logo() {
+        // A PNG: its signature, then the IHDR chunk's width and height (big-endian) at bytes 16..24.
+        assert_eq!(&MARK_PNG[..8], b"\x89PNG\r\n\x1a\n");
+        let side = |at: usize| u32::from_be_bytes(MARK_PNG[at..at + 4].try_into().unwrap());
+        assert_eq!((side(16), side(20)), (64, 64));
     }
 
     #[test]

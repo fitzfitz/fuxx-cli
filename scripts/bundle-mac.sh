@@ -30,6 +30,10 @@ mkdir -p "$app/Contents/MacOS"
 lipo -create -output "$app/Contents/MacOS/fuxx" \
     target/aarch64-apple-darwin/release/fuxx target/x86_64-apple-darwin/release/fuxx
 sed "s/@VERSION@/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+# The app icon (Dock, ⌘Tab, Finder, notification banners), named by Info.plist's CFBundleIconFile.
+# Made from the 3D Cyber logo by scripts/make_app_icon.py (M11c Task 6).
+mkdir -p "$app/Contents/Resources"
+cp packaging/macos/fuxx.icns "$app/Contents/Resources/fuxx.icns"
 # The bundled fonts and themes are compiled into the binary; their licences require the notices to
 # travel with every copy, so they ship in Resources/Licenses.
 licenses="$app/Contents/Resources/Licenses"
