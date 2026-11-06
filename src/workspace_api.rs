@@ -387,9 +387,10 @@ impl Workspace {
                     |id| self.index_of(id).is_some(),
                     Instant::now(),
                 );
+                let terminal = entry.terminal;
                 self.note_notification(entry);
                 cx.notify();
-                cx.background_spawn(async move { notifier::fire(&title, &body) })
+                cx.background_spawn(async move { notifier::fire(&title, &body, terminal) })
                     .detach();
                 Ok(json!({}))
             }

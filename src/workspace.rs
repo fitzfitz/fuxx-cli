@@ -1397,6 +1397,7 @@ impl Workspace {
             _ => None,
         };
         let label = session.label();
+        let terminal = Some(session.id);
         let question = session.question.clone();
         if old != new {
             let change = Event::StatusChanged { from: old, to: new };
@@ -1429,7 +1430,7 @@ impl Workspace {
                     status: Some(new),
                     at: Instant::now(),
                 });
-                cx.background_spawn(async move { notifier::fire(&summary, &body) })
+                cx.background_spawn(async move { notifier::fire(&summary, &body, terminal) })
                     .detach();
             }
         }

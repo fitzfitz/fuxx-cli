@@ -588,8 +588,9 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
             let ui_attached = shared.ui_clients.load(Ordering::Acquire) > 0;
             if let Some(body) = daemon_should_notify(ui_attached, old, new) {
                 let summary = notification_summary(&info);
+                let session_id = session.id();
                 // `osascript` blocks ~100 ms: never on the tick thread.
-                std::thread::spawn(move || notifier::fire(&summary, body));
+                std::thread::spawn(move || notifier::fire(&summary, body, Some(session_id)));
             }
         }
         // A session's `alive` turns false together with queueing `Exited`, so forgetting it now
