@@ -1,13 +1,17 @@
-//! The Preferences window (File > Preferences..., cmd-,): theme, font, size, ligatures and
-//! animations, and how sessions are kept, with a live preview of a terminal.
+//! The Preferences window (File > Preferences..., cmd-,): animations and the tips card, theme,
+//! font, size and ligatures with a live preview of a terminal, how sessions are kept, and the
+//! browser windows' address bar and saved data.
 //!
 //! Every click changes one line of fuxx's settings file and reloads the appearance, so it applies
 //! at once to every session and is still there next time. The choices and the lines written come
 //! from the tested pure functions in `prefs` and `settings`; this file is only the GPUI wiring.
 //!
-//! The window is a two-column form (labels left, controls right) in two sections, Appearance and
-//! Sessions. Beside the theme and font lists, the preview paints a fixed terminal screen the way
-//! a pane does, in the current theme, font, size and ligatures, so it changes with every pick.
+//! Like VS Code's settings, a list of sections runs down the left (General, Appearance, Sessions,
+//! Browser) and only the chosen section's settings show beside it, as a two-column form (labels
+//! left, controls right). The window keeps one size, the largest section's, and opens on the
+//! section last used in this run. Beside the theme and font lists, the preview paints a fixed
+//! terminal screen the way a pane does, in the current theme, font, size and ligatures, so it
+//! changes with every pick.
 
 use std::cell::RefCell;
 use std::ops::Range;
@@ -16,9 +20,10 @@ use std::rc::Rc;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, Div, FocusHandle, FontWeight, Global,
-    SharedString, Stateful, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle,
-    WindowKind, WindowOptions, canvas, div, font, prelude::*, px, size, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, FocusHandle, FontWeight, Global,
+    KeyDownEvent, SharedString, Stateful, Subscription, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div, font, prelude::*, px, size,
+    uniform_list,
 };
 
 use crate::appearance::{self, Appearance};
@@ -31,27 +36,39 @@ use crate::sidebar::small_caps;
 use crate::terminal::TermDims;
 use crate::terminal_view::{hsla, paint_fixed_screen};
 use crate::theme::{self, Theme, UiColors};
-use crate::ui_tokens::text;
-use crate::workspace::CloseSession;
+use crate::ui_tokens::{size::SIDEBAR_ROW, text};
+use crate::workspace::{CloseSession, Workspace};
 
-const WIDTH: f32 = 760.0;
-/// Between the window's edges and the form.
+/// The section list down the left, its 1 px edge included.
+pub(crate) const SECTIONS_WIDTH: f32 = 160.0;
+/// Inside the section list, around its rows.
+const SECTIONS_INSET: f32 = 8.0;
+/// A section's row in the list, as tall as a sidebar row, and the gap between rows.
+const SECTION_ROW: f32 = SIDEBAR_ROW;
+const SECTION_ROW_GAP: f32 = 2.0;
+/// Where the first row starts: its name lines up with the section's title beside it.
+const SECTIONS_TOP: f32 = PAD - (SECTION_ROW - 16.0) / 2.0;
+/// The chosen section's form, beside the list: as wide as the one-page window was.
+const FORM_WIDTH: f32 = 760.0;
+const WIDTH: f32 = SECTIONS_WIDTH + FORM_WIDTH;
+/// Between the window's edges (and the section list) and the form.
 const PAD: f32 = 20.0;
 /// A section's title line ("Appearance", "Sessions") and the space under it.
 const HEADER: f32 = 24.0;
 const FIELD_GAP: f32 = 10.0;
-/// Above a section's title, after the last field of the one before.
-const SECTION_GAP: f32 = 20.0;
 /// The labels' column; they are right-aligned against the controls.
 const LABEL_WIDTH: f32 = 150.0;
 const LABEL_GAP: f32 = 16.0;
 /// The controls' column (as wide as the theme list, name and swatch).
 const CONTROL_WIDTH: f32 = 260.0;
+/// A note under a switch may run the rest of the form's width: the sections with notes have no
+/// preview beside them.
+const NOTE_WIDTH: f32 = FORM_WIDTH - 2.0 * PAD - LABEL_WIDTH - LABEL_GAP;
 /// Between the controls and the preview.
 const PREVIEW_GAP: f32 = 24.0;
 /// The preview takes the rest of the width.
 const PREVIEW_WIDTH: f32 =
-    WIDTH - 2.0 * PAD - LABEL_WIDTH - LABEL_GAP - CONTROL_WIDTH - PREVIEW_GAP;
+    FORM_WIDTH - 2.0 * PAD - LABEL_WIDTH - LABEL_GAP - CONTROL_WIDTH - PREVIEW_GAP;
 /// A row in the theme and font lists.
 const LIST_ROW: f32 = 24.0;
 /// Inside a list's 1 px border, so its rows' rounded corners clear the box's.
@@ -59,19 +76,18 @@ const LIST_INSET: f32 = 2.0;
 /// Seven rows, so every built-in theme shows without scrolling.
 const THEME_LIST: f32 = list_height(7.0);
 const FONT_LIST: f32 = list_height(5.0);
-/// The size row's square buttons.
+/// The size row's square buttons, and the tips card's button.
 const SIZE_ROW: f32 = 28.0;
 /// A switch: a 24 px option inside 2 px of padding and a 1 px border, top and bottom.
 const SWITCH: f32 = 30.0;
 const SWITCH_INSET: f32 = 2.0;
-/// A note under a control: a small gap and one 16 px line.
+/// A note under a control: a small gap and one 16 px line; each further line adds `NOTE_LINE`.
 const NOTE: f32 = 20.0;
+const NOTE_LINE: f32 = 16.0;
 /// The preview stands beside the two lists.
 const PREVIEW_HEIGHT: f32 = THEME_LIST + FIELD_GAP + FONT_LIST;
-/// The fields of each section, top to bottom: what the window's height is made of. `render`
-/// draws each field at exactly these heights.
-const APPEARANCE_FIELDS: [f32; 5] = [THEME_LIST, FONT_LIST, SIZE_ROW, SWITCH, SWITCH + NOTE];
-const SESSIONS_FIELDS: [f32; 2] = [SWITCH, SWITCH + NOTE];
+/// The "Preview" line under it, and the gap above that.
+const CAPTION: f32 = 6.0 + 16.0;
 /// The size the monospace test measures glyphs at; any size gives the same answer.
 const MEASURE_SIZE: f32 = 13.0;
 
@@ -80,24 +96,199 @@ const fn list_height(rows: f32) -> f32 {
     rows * LIST_ROW + 2.0 * (1.0 + LIST_INSET)
 }
 
-/// A section: its title, then its fields with a gap between each.
-fn section_height(fields: &[f32]) -> f32 {
-    HEADER + fields.iter().sum::<f32>() + FIELD_GAP * fields.len().saturating_sub(1) as f32
+/// A section's part of the window: its title, then its fields with a gap between each.
+fn body_height(section: Section) -> f32 {
+    let fields = section.controls();
+    HEADER
+        + fields.iter().map(|c| c.height()).sum::<f32>()
+        + FIELD_GAP * fields.len().saturating_sub(1) as f32
 }
 
-/// The window's height: the form's sections stacked between the padding.
+/// The window's height: the tallest section between the padding, so every section fits and the
+/// window never changes size.
 fn window_height() -> f32 {
-    PAD + section_height(&APPEARANCE_FIELDS) + SECTION_GAP + section_height(&SESSIONS_FIELDS) + PAD
+    let tallest = Section::ALL
+        .map(body_height)
+        .into_iter()
+        .fold(0.0, f32::max);
+    PAD + tallest + PAD
 }
 
 /// The notes under the switches.
 const ANIMATIONS_NOTE: &str = "Also off when macOS Reduce motion is on.";
 const KEEP_NOTE: &str = "Takes effect the next time fuxx starts.";
+/// One sentence a line, so it never wraps on its own.
+const KEEP_DATA_NOTE: [&str; 2] = [
+    "Turning this off deletes saved browser data.",
+    "Applies to browser windows opened after the change.",
+];
+
+/// A part of Preferences, shown on its own beside the section list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum Section {
+    #[default]
+    General,
+    Appearance,
+    Sessions,
+    Browser,
+}
+
+impl Section {
+    /// In the list's order, top to bottom.
+    pub(crate) const ALL: [Section; 4] = [
+        Section::General,
+        Section::Appearance,
+        Section::Sessions,
+        Section::Browser,
+    ];
+
+    fn title(self) -> &'static str {
+        match self {
+            Section::General => "General",
+            Section::Appearance => "Appearance",
+            Section::Sessions => "Sessions",
+            Section::Browser => "Browser",
+        }
+    }
+
+    /// The section's controls, top to bottom: what `render` draws, and what its height is made
+    /// of. Each control is in exactly one section.
+    fn controls(self) -> &'static [Control] {
+        use Control::*;
+        match self {
+            Section::General => &[Switch(OnOff::Animations), TipsCard],
+            Section::Appearance => &[Theme, Font, Size, Ligatures],
+            Section::Sessions => &[Restore, Switch(OnOff::KeepRunning)],
+            Section::Browser => &[Switch(OnOff::AddressBar), Switch(OnOff::KeepData)],
+        }
+    }
+
+    /// The next section down (`down`) or up the list; the ends stay put.
+    fn step(self, down: bool) -> Section {
+        let i = Section::ALL.iter().position(|&s| s == self).unwrap_or(0);
+        let i = if down {
+            (i + 1).min(Section::ALL.len() - 1)
+        } else {
+            i.saturating_sub(1)
+        };
+        Section::ALL[i]
+    }
+}
+
+/// One row of a section's form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Control {
+    Theme,
+    Font,
+    Size,
+    Ligatures,
+    Restore,
+    /// "Show the tips card again": not a setting, the sidebar's card (`hint_dismissed`).
+    TipsCard,
+    Switch(OnOff),
+}
+
+impl Control {
+    fn label(self) -> &'static str {
+        match self {
+            Control::Theme => "Theme",
+            Control::Font => "Font",
+            Control::Size => "Size",
+            Control::Ligatures => "Ligatures",
+            Control::Restore => "Restore sessions",
+            Control::TipsCard => "Tips card",
+            Control::Switch(OnOff::Animations) => "Animations",
+            Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
+            Control::Switch(OnOff::AddressBar) => "Show address bar",
+            Control::Switch(OnOff::KeepData) => "Keep history and data",
+        }
+    }
+
+    /// The row's height: `render` draws it at exactly this.
+    fn height(self) -> f32 {
+        match self {
+            Control::Theme => THEME_LIST,
+            Control::Font => FONT_LIST,
+            Control::Size | Control::TipsCard => SIZE_ROW,
+            Control::Ligatures | Control::Restore => SWITCH,
+            Control::Switch(s) => match s.note().len() {
+                0 => SWITCH,
+                lines => SWITCH + NOTE + NOTE_LINE * (lines - 1) as f32,
+            },
+        }
+    }
+
+    /// How tall the box the label is centred in is: a list's first row, or the control itself.
+    fn label_height(self) -> f32 {
+        match self {
+            Control::Theme | Control::Font => LIST_ROW + 2.0 * (1.0 + LIST_INSET),
+            Control::Size | Control::TipsCard => SIZE_ROW,
+            Control::Ligatures | Control::Restore | Control::Switch(_) => SWITCH,
+        }
+    }
+}
+
+/// The settings that are an On / Off switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnOff {
+    Animations,
+    KeepRunning,
+    AddressBar,
+    KeepData,
+}
+
+impl OnOff {
+    /// The settings line it writes.
+    fn key(self) -> &'static str {
+        match self {
+            OnOff::Animations => "animations",
+            OnOff::KeepRunning => "persistent-sessions",
+            OnOff::AddressBar => "browser-address-bar",
+            OnOff::KeepData => "browser-keep-data",
+        }
+    }
+
+    /// The values to write for `on`: none for the default, which removes the line.
+    fn values(self, on: bool) -> Vec<String> {
+        match self {
+            OnOff::Animations => prefs::animations_values(on),
+            OnOff::KeepRunning => prefs::persistence_values(on),
+            OnOff::AddressBar => prefs::browser_address_bar_values(on),
+            OnOff::KeepData => prefs::browser_keep_data_values(on),
+        }
+    }
+
+    /// Whether it is on now.
+    fn current(self, a: &Appearance) -> bool {
+        match self {
+            OnOff::Animations => a.animations,
+            OnOff::KeepRunning => a.persistent,
+            OnOff::AddressBar => a.browser_address_bar,
+            OnOff::KeepData => a.browser_keep_data,
+        }
+    }
+
+    /// The lines under the switch.
+    fn note(self) -> &'static [&'static str] {
+        match self {
+            OnOff::Animations => &[ANIMATIONS_NOTE],
+            OnOff::KeepRunning => &[KEEP_NOTE],
+            OnOff::AddressBar => &[],
+            OnOff::KeepData => &KEEP_DATA_NOTE,
+        }
+    }
+}
 
 /// The open Preferences window, if any, so cmd-, brings it to the front instead of opening another.
 struct PreferencesWindow(Option<WindowHandle<PreferencesView>>);
 
 impl Global for PreferencesWindow {}
+
+/// The section last shown, so Preferences opens on it again for the rest of the run.
+#[derive(Default)]
+struct LastSection(Section);
+
+impl Global for LastSection {}
 
 /// Bring the Preferences window to the front, or open it if it isn't open.
 pub fn open_or_activate(cx: &mut App) {
@@ -144,19 +335,31 @@ pub fn window_size() -> gpui::Size<gpui::Pixels> {
 /// Where the preview is drawn, as (x, y, width, height) in the window: for the screenshots' checks.
 #[cfg(feature = "ui-shots")]
 pub(crate) fn preview_area() -> (f32, f32, f32, f32) {
-    let x = PAD + LABEL_WIDTH + LABEL_GAP + CONTROL_WIDTH + PREVIEW_GAP;
+    let x = SECTIONS_WIDTH + PAD + LABEL_WIDTH + LABEL_GAP + CONTROL_WIDTH + PREVIEW_GAP;
     (x, PAD + HEADER, PREVIEW_WIDTH, PREVIEW_HEIGHT)
 }
 
-/// Where the last note's line is drawn (the form's bottom), as (x, y, width, height).
+/// Where the tallest section's last control is drawn (the form's bottom), as (x, y, width,
+/// height).
 #[cfg(feature = "ui-shots")]
-pub(crate) fn last_note_area() -> (f32, f32, f32, f32) {
-    let x = PAD + LABEL_WIDTH + LABEL_GAP;
-    (x, window_height() - PAD - 16.0, CONTROL_WIDTH, 16.0)
+pub(crate) fn last_control_area() -> (f32, f32, f32, f32) {
+    let x = SECTIONS_WIDTH + PAD + LABEL_WIDTH + LABEL_GAP;
+    (x, window_height() - PAD - SWITCH, CONTROL_WIDTH, SWITCH)
+}
+
+/// Where the section list's row for `section` is drawn, as (x, y, width, height).
+#[cfg(feature = "ui-shots")]
+pub(crate) fn section_row_area(section: Section) -> (f32, f32, f32, f32) {
+    let i = Section::ALL.iter().position(|&s| s == section).unwrap_or(0) as f32;
+    let y = SECTIONS_TOP + i * (SECTION_ROW + SECTION_ROW_GAP);
+    let width = SECTIONS_WIDTH - 1.0 - 2.0 * SECTIONS_INSET;
+    (SECTIONS_INSET, y, width, SECTION_ROW)
 }
 
 pub struct PreferencesView {
     focus_handle: FocusHandle,
+    /// The section shown beside the list.
+    section: Section,
     /// `Default`, then every theme (built-in and the user's), worked out once.
     themes: Vec<String>,
     /// Each theme's swatch (`prefs::swatch`), in the order of `themes`.
@@ -169,8 +372,14 @@ pub struct PreferencesView {
     default_family: SharedString,
     /// The preview's screen, kept between redraws.
     preview: Rc<PreviewScreen>,
+    /// The main window's workspace, whose sidebar has the tips card (none in the screenshots).
+    workspace: Option<WeakEntity<Workspace>>,
+    /// Whether the tips card is dismissed, kept in step with the workspace.
+    tips_dismissed: bool,
     /// Re-renders the highlighted rows and the colors when the appearance changes.
     _appearance: Subscription,
+    /// Keeps `tips_dismissed` in step with the workspace.
+    _workspace: Option<Subscription>,
 }
 
 impl PreferencesView {
@@ -178,6 +387,29 @@ impl PreferencesView {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let appearance_sub = cx.observe_global::<Appearance>(|_, cx| cx.notify());
+        let section = cx
+            .try_global::<LastSection>()
+            .map_or_else(Section::default, |l| l.0);
+
+        // The tips card lives in the main window's sidebar. Its workspace notifies often, so
+        // redraw only when the card comes or goes.
+        let workspace = cx
+            .windows()
+            .into_iter()
+            .find_map(|w| w.downcast::<Workspace>())
+            .and_then(|w| w.entity(cx).ok());
+        let tips_dismissed = workspace
+            .as_ref()
+            .is_some_and(|w| w.read(cx).sidebar.hint_dismissed);
+        let workspace_sub = workspace.as_ref().map(|w| {
+            cx.observe(w, |this, workspace, cx| {
+                let dismissed = workspace.read(cx).sidebar.hint_dismissed;
+                if dismissed != this.tips_dismissed {
+                    this.tips_dismissed = dismissed;
+                    cx.notify();
+                }
+            })
+        });
 
         let appearance = cx.global::<Appearance>();
         let user_dir = appearance.user_theme_dir.clone();
@@ -215,13 +447,53 @@ impl PreferencesView {
 
         Self {
             focus_handle,
+            section,
             themes,
             swatches,
             fonts,
             installed,
             default_family,
             preview: Rc::default(),
+            workspace: workspace.as_ref().map(|w| w.downgrade()),
+            tips_dismissed,
             _appearance: appearance_sub,
+            _workspace: workspace_sub,
+        }
+    }
+
+    /// For the screenshots: show `section`, with the tips card dismissed or not.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) fn shown_as(mut self, section: Section, tips_dismissed: bool) -> Self {
+        self.section = section;
+        self.tips_dismissed = tips_dismissed;
+        self
+    }
+
+    /// Show `section`, and open on it next time in this run.
+    fn select(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.section = section;
+        cx.set_global(LastSection(section));
+        cx.notify();
+    }
+
+    /// Up and down arrows move through the section list (nothing else here takes them).
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let down = match event.keystroke.key.as_str() {
+            "down" => true,
+            "up" => false,
+            _ => return,
+        };
+        self.select(self.section.step(down), cx);
+        cx.stop_propagation();
+    }
+
+    /// "Show the tips card again": the sidebar shows it, and remembers that.
+    fn show_tips_card(&mut self, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.as_ref().and_then(WeakEntity::upgrade) {
+            workspace.update(cx, |workspace, cx| workspace.show_hint(cx));
         }
     }
 
@@ -330,157 +602,122 @@ impl PreferencesView {
     fn fonts(&self) -> &[String] {
         &self.fonts
     }
-}
 
-impl Render for PreferencesView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let appearance = cx.global::<Appearance>();
-        let preview_theme = appearance.theme;
-        let ui = appearance.theme.ui();
-        let size_label = format!("{} pt", format_size(appearance.font_size));
-        let ligatures = prefs::ligatures_on(&appearance.font_settings.features);
-        let animations = appearance.animations;
-        let restore = appearance.restore;
-        let persistent = appearance.persistent;
+    /// The list of sections down the left; the shown one is highlighted.
+    fn section_list(&self, ui: UiColors, cx: &Context<Self>) -> Div {
+        div()
+            .flex_none()
+            .w(px(SECTIONS_WIDTH))
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap(px(SECTION_ROW_GAP))
+            .pt(px(SECTIONS_TOP))
+            .px(px(SECTIONS_INSET))
+            .border_r_1()
+            .border_color(hsla(ui.sidebar_border))
+            .children(Section::ALL.iter().enumerate().map(|(i, &section)| {
+                let current = section == self.section;
+                list_row(("section", i), current, ui)
+                    .h(px(SECTION_ROW))
+                    .when(!current, |r| r.text_color(hsla(ui.text_dim)))
+                    .child(section.title())
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| this.select(section, cx)),
+                    )
+            }))
+    }
 
-        let theme_list = self.choice_list(
-            "theme-list",
-            "theme",
-            THEME_LIST,
-            Self::themes,
-            Self::current_theme,
-            Self::theme_row,
-            ui,
-            cx,
-        );
-        let font_list = self.choice_list(
-            "font-list",
-            "font-family",
-            FONT_LIST,
-            Self::fonts,
-            Self::current_font,
-            Self::font_row,
-            ui,
-            cx,
-        );
-
-        let step_button = |id: &'static str, label: &'static str, step: prefs::FontStep| {
-            button(id, ui)
-                .child(label)
-                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    step_font_size(cx, step);
-                }))
+    /// One row of the form, label and control, `control.height()` tall.
+    fn form_row(&self, control: Control, ui: UiColors, cx: &Context<Self>) -> Div {
+        let element = match control {
+            Control::Theme => self
+                .choice_list(
+                    "theme-list",
+                    "theme",
+                    THEME_LIST,
+                    Self::themes,
+                    Self::current_theme,
+                    Self::theme_row,
+                    ui,
+                    cx,
+                )
+                .into_any_element(),
+            Control::Font => self
+                .choice_list(
+                    "font-list",
+                    "font-family",
+                    FONT_LIST,
+                    Self::fonts,
+                    Self::current_font,
+                    Self::font_row,
+                    ui,
+                    cx,
+                )
+                .into_any_element(),
+            Control::Size => size_row(ui, cx).into_any_element(),
+            Control::Ligatures => ligature_switch(ui, cx).into_any_element(),
+            Control::Restore => restore_switch(ui, cx).into_any_element(),
+            Control::TipsCard => self.tips_card_button(ui, cx).into_any_element(),
+            Control::Switch(s) => {
+                let switch = on_off_switch(s, ui, cx);
+                if s.note().is_empty() {
+                    switch.into_any_element()
+                } else {
+                    with_note(switch, s.note(), ui).into_any_element()
+                }
+            }
         };
-        let size_row = div()
+        field(
+            control.label(),
+            control.height(),
+            control.label_height(),
+            element,
+            ui,
+        )
+    }
+
+    /// "Show the tips card again"; greyed, with "Shown" beside it, while the card shows.
+    fn tips_card_button(&self, ui: UiColors, cx: &Context<Self>) -> Div {
+        let dismissed = self.tips_dismissed;
+        let button = div()
+            .id("tips-card")
+            .flex_none()
+            .h(px(SIZE_ROW))
+            .flex()
+            .items_center()
+            .px_3()
+            .rounded_md()
+            .border_1()
+            .border_color(hsla(ui.sidebar_border))
+            .text_color(hsla(if dismissed { ui.text } else { ui.text_faint }))
+            .child("Show the tips card again")
+            .when(dismissed, |b| {
+                b.hover(|s| s.bg(hsla(ui.row_hover)))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.show_tips_card(cx)))
+            });
+        div()
             .flex()
             .flex_row()
             .items_center()
             .gap_3()
-            .child(step_button(
-                "size-down",
-                "\u{2212}",
-                prefs::FontStep::Smaller,
-            ))
-            .child(
-                div()
-                    .min_w(px(56.0))
-                    .flex()
-                    .justify_center()
-                    .font_features(crate::sidebar::tabular())
-                    .child(size_label),
-            )
-            .child(step_button("size-up", "+", prefs::FontStep::Bigger));
+            .child(button)
+            .when(!dismissed, |row| {
+                row.child(
+                    div()
+                        .text_size(px(text::META))
+                        .text_color(hsla(ui.text_faint))
+                        .child("Shown"),
+                )
+            })
+    }
 
-        let ligature_option = |id: &'static str, label: &'static str, on: bool| {
-            option(id, on == ligatures, ui)
-                .child(label)
-                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    // Clicking the option already chosen changes nothing.
-                    let features = cx.global::<Appearance>().font_settings.features.clone();
-                    if prefs::ligatures_on(&features) != on {
-                        apply(cx, "font-feature", &prefs::feature_lines(&features, on));
-                    }
-                }))
-        };
-        let ligature_switch = switch(ui)
-            .child(ligature_option("ligatures-on", "On", true))
-            .child(ligature_option("ligatures-off", "Off", false));
-
-        let animation_option = |id: &'static str, label: &'static str, on: bool| {
-            option(id, on == animations, ui)
-                .child(label)
-                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    if cx.global::<Appearance>().animations != on {
-                        // On is the default: the absence of the line.
-                        apply(cx, "animations", &prefs::animations_values(on));
-                    }
-                }))
-        };
-        let animation_switch = switch(ui)
-            .child(animation_option("animations-on", "On", true))
-            .child(animation_option("animations-off", "Off", false));
-
-        let restore_option = |id: &'static str, label: &'static str, mode: RestoreMode| {
-            option(id, mode == restore, ui)
-                .child(label)
-                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    if cx.global::<Appearance>().restore != mode {
-                        // The default (agents) is the absence of the line.
-                        let values = if mode == RestoreMode::default() {
-                            vec![]
-                        } else {
-                            vec![mode.as_str().to_string()]
-                        };
-                        apply(cx, "session-restore", &values);
-                    }
-                }))
-        };
-        let restore_switch = switch(ui)
-            .child(restore_option("restore-off", "Off", RestoreMode::Off))
-            .child(restore_option(
-                "restore-layout",
-                "Layout",
-                RestoreMode::Layout,
-            ))
-            .child(restore_option(
-                "restore-agents",
-                "Layout + agents",
-                RestoreMode::Agents,
-            ));
-
-        let keep_option = |id: &'static str, label: &'static str, on: bool| {
-            option(id, on == persistent, ui)
-                .child(label)
-                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    if cx.global::<Appearance>().persistent != on {
-                        // Off is the default: the absence of the line.
-                        apply(cx, "persistent-sessions", &prefs::persistence_values(on));
-                    }
-                }))
-        };
-        let keep_switch = switch(ui)
-            .child(keep_option("keep-on", "On", true))
-            .child(keep_option("keep-off", "Off", false));
-
-        // The lists' labels line up with their first row; the others with their control.
-        let first_row = LIST_ROW + 2.0 * (1.0 + LIST_INSET);
-        let appearance_form = div()
-            .flex()
-            .flex_col()
-            .gap(px(FIELD_GAP))
-            .child(field("Theme", THEME_LIST, first_row, theme_list, ui))
-            .child(field("Font", FONT_LIST, first_row, font_list, ui))
-            .child(field("Size", SIZE_ROW, SIZE_ROW, size_row, ui))
-            .child(field("Ligatures", SWITCH, SWITCH, ligature_switch, ui))
-            .child(field(
-                "Animations",
-                SWITCH + NOTE,
-                SWITCH,
-                with_note(animation_switch, ANIMATIONS_NOTE, ui),
-                ui,
-            ));
+    /// The live preview: a terminal screen in the current theme, font, size and ligatures, with
+    /// its caption.
+    fn preview(&self, theme: Theme, ui: UiColors) -> Div {
         let kept = self.preview.clone();
-        let preview = div()
+        let screen = div()
             .flex_none()
             .w(px(PREVIEW_WIDTH))
             .h(px(PREVIEW_HEIGHT))
@@ -489,12 +726,12 @@ impl Render for PreferencesView {
             .rounded(px(6.0))
             .border_1()
             .border_color(hsla(ui.sidebar_border))
-            .bg(hsla(preview_theme.background))
+            .bg(hsla(theme.background))
             .child(
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
-                        let theme = &preview_theme;
+                        let theme = &theme;
                         paint_fixed_screen(theme, bounds, window, cx, |dims| {
                             kept.get(theme, dims, || {
                                 grid::fixed_screen(&preview_text(dims.cols), dims, theme)
@@ -504,55 +741,168 @@ impl Render for PreferencesView {
                 )
                 .size_full(),
             );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(CAPTION - 16.0))
+            .child(screen)
+            .child(
+                div()
+                    .h(px(16.0))
+                    .flex()
+                    .items_center()
+                    .text_size(px(text::META))
+                    .text_color(hsla(ui.text_faint))
+                    .child("Preview"),
+            )
+    }
+}
+
+impl Render for PreferencesView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let appearance = cx.global::<Appearance>();
+        let theme = appearance.theme;
+        let ui = theme.ui();
+
+        let form = div().flex().flex_col().gap(px(FIELD_GAP)).children(
+            self.section
+                .controls()
+                .iter()
+                .map(|&control| self.form_row(control, ui, cx)),
+        );
+        // Appearance has the preview beside its lists.
+        let body = if self.section == Section::Appearance {
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(PREVIEW_GAP))
+                .child(form)
+                .child(self.preview(theme, ui))
+        } else {
+            form
+        };
 
         div()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|_, _: &CloseSession, window, _| window.remove_window()))
+            .on_key_down(cx.listener(Self::on_key_down))
             .flex()
-            .flex_col()
+            .flex_row()
             .size_full()
-            .p(px(PAD))
             .bg(hsla(ui.sidebar_background))
             .text_size(px(text::NAME))
             .text_color(hsla(ui.text))
-            .child(heading("Appearance", ui))
+            .child(self.section_list(ui, cx))
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(PREVIEW_GAP))
-                    .child(appearance_form)
-                    .child(
-                        div().flex().flex_col().gap(px(6.0)).child(preview).child(
-                            div()
-                                .text_size(px(text::META))
-                                .text_color(hsla(ui.text_faint))
-                                .child("Preview"),
-                        ),
-                    ),
-            )
-            .child(heading("Sessions", ui).mt(px(SECTION_GAP)))
-            .child(
-                div()
+                    .flex_1()
                     .flex()
                     .flex_col()
-                    .gap(px(FIELD_GAP))
-                    .child(field(
-                        "Restore sessions",
-                        SWITCH,
-                        SWITCH,
-                        restore_switch,
-                        ui,
-                    ))
-                    .child(field(
-                        "Keep running after quit",
-                        SWITCH + NOTE,
-                        SWITCH,
-                        with_note(keep_switch, KEEP_NOTE, ui),
-                        ui,
-                    )),
+                    .p(px(PAD))
+                    .child(heading(self.section.title(), ui))
+                    .child(body),
             )
     }
+}
+
+/// The size row: smaller, the size, bigger.
+fn size_row(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+    let size_label = format!("{} pt", format_size(cx.global::<Appearance>().font_size));
+    let step_button = |id: &'static str, label: &'static str, step: prefs::FontStep| {
+        button(id, ui)
+            .child(label)
+            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                step_font_size(cx, step);
+            }))
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .child(step_button(
+            "size-down",
+            "\u{2212}",
+            prefs::FontStep::Smaller,
+        ))
+        .child(
+            div()
+                .min_w(px(56.0))
+                .flex()
+                .justify_center()
+                .font_features(crate::sidebar::tabular())
+                .child(size_label),
+        )
+        .child(step_button("size-up", "+", prefs::FontStep::Bigger))
+}
+
+/// Ligatures On / Off: rewrites the `font-feature` lines, keeping every other feature.
+fn ligature_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+    let ligatures = prefs::ligatures_on(&cx.global::<Appearance>().font_settings.features);
+    let ligature_option = |id: &'static str, label: &'static str, on: bool| {
+        option(id, on == ligatures, ui)
+            .child(label)
+            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                // Clicking the option already chosen changes nothing.
+                let features = cx.global::<Appearance>().font_settings.features.clone();
+                if prefs::ligatures_on(&features) != on {
+                    apply(cx, "font-feature", &prefs::feature_lines(&features, on));
+                }
+            }))
+    };
+    switch(ui)
+        .child(ligature_option("ligatures-on", "On", true))
+        .child(ligature_option("ligatures-off", "Off", false))
+}
+
+/// Restore sessions: Off, Layout, or Layout + agents.
+fn restore_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+    let restore = cx.global::<Appearance>().restore;
+    let restore_option = |id: &'static str, label: &'static str, mode: RestoreMode| {
+        option(id, mode == restore, ui)
+            .child(label)
+            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                if cx.global::<Appearance>().restore != mode {
+                    // The default (agents) is the absence of the line.
+                    let values = if mode == RestoreMode::default() {
+                        vec![]
+                    } else {
+                        vec![mode.as_str().to_string()]
+                    };
+                    apply(cx, "session-restore", &values);
+                }
+            }))
+    };
+    switch(ui)
+        .child(restore_option("restore-off", "Off", RestoreMode::Off))
+        .child(restore_option(
+            "restore-layout",
+            "Layout",
+            RestoreMode::Layout,
+        ))
+        .child(restore_option(
+            "restore-agents",
+            "Layout + agents",
+            RestoreMode::Agents,
+        ))
+}
+
+/// An On / Off switch for `setting`.
+fn on_off_switch(setting: OnOff, ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+    let on_now = setting.current(cx.global::<Appearance>());
+    let choice = |label: &'static str, on: bool| {
+        option((setting.key(), usize::from(on)), on == on_now, ui)
+            .child(label)
+            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                // Clicking the option already chosen changes nothing.
+                if setting.current(cx.global::<Appearance>()) != on {
+                    apply(cx, setting.key(), &setting.values(on));
+                }
+            }))
+    };
+    switch(ui)
+        .child(choice("On", true))
+        .child(choice("Off", false))
 }
 
 /// The preview's screen, kept between frames: built again only when the theme or the grid
@@ -766,27 +1116,32 @@ fn field(
         )
 }
 
-/// A switch with a one-line note under it.
-fn with_note(control: impl IntoElement, note: &'static str, ui: UiColors) -> Div {
+/// A switch with a note under it, one line per entry of `note`.
+fn with_note(control: impl IntoElement, note: &'static [&'static str], ui: UiColors) -> Div {
     div()
         .flex()
         .flex_col()
         .child(div().flex().child(control))
         .child(
             div()
-                .mt(px(NOTE - 16.0))
-                .h(px(16.0))
+                .mt(px(NOTE - NOTE_LINE))
+                .w(px(NOTE_WIDTH))
                 .flex()
-                .items_center()
+                .flex_col()
                 .text_size(px(text::META))
                 .text_color(hsla(ui.text_dim))
-                .child(note),
+                .children(
+                    note.iter()
+                        .map(|&line| div().h(px(NOTE_LINE)).flex().items_center().child(line)),
+                ),
         )
 }
 
-/// The box a switch's options sit in, side by side.
+/// The box a switch's options sit in, side by side, only as wide as they are.
 fn switch(ui: UiColors) -> Div {
     div()
+        // The control column would otherwise stretch it to its width.
+        .self_start()
         .flex_none()
         .h(px(SWITCH))
         .flex()
@@ -799,7 +1154,7 @@ fn switch(ui: UiColors) -> Div {
 }
 
 /// One option of a switch, filled when it is the current choice.
-fn option(id: &'static str, current: bool, ui: UiColors) -> Stateful<Div> {
+fn option(id: impl Into<ElementId>, current: bool, ui: UiColors) -> Stateful<Div> {
     div()
         .id(id)
         .h(px(SWITCH - 2.0 * (1.0 + SWITCH_INSET)))
@@ -1071,23 +1426,147 @@ mod tests {
     }
 
     #[test]
-    fn window_height_is_computed_from_the_form() {
+    fn sections_list_every_control_once() {
+        use Control::*;
+        // The sections, in order, and what each holds (the 2026-11-06 amendment to note 53).
+        let titles: Vec<&str> = Section::ALL.iter().map(|s| s.title()).collect();
+        assert_eq!(titles, ["General", "Appearance", "Sessions", "Browser"]);
+        assert_eq!(
+            Section::General.controls(),
+            [Switch(OnOff::Animations), TipsCard]
+        );
+        assert_eq!(
+            Section::Appearance.controls(),
+            [Theme, Font, Size, Ligatures]
+        );
+        assert_eq!(
+            Section::Sessions.controls(),
+            [Restore, Switch(OnOff::KeepRunning)]
+        );
+        assert_eq!(
+            Section::Browser.controls(),
+            [Switch(OnOff::AddressBar), Switch(OnOff::KeepData)]
+        );
+        // Every control, in exactly one section, under its own label.
+        let every = [
+            Theme,
+            Font,
+            Size,
+            Ligatures,
+            Restore,
+            TipsCard,
+            Switch(OnOff::Animations),
+            Switch(OnOff::KeepRunning),
+            Switch(OnOff::AddressBar),
+            Switch(OnOff::KeepData),
+        ];
+        let listed: Vec<Control> = Section::ALL
+            .iter()
+            .flat_map(|s| s.controls().iter().copied())
+            .collect();
+        for control in every {
+            let times = listed.iter().filter(|&&c| c == control).count();
+            assert_eq!(times, 1, "{control:?} is listed {times} times");
+        }
+        assert_eq!(listed.len(), every.len());
+        let mut labels: Vec<&str> = every.iter().map(|c| c.label()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()));
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), every.len(), "two controls share a label");
+        // The arrow keys move through the list and stop at its ends.
+        assert_eq!(Section::General.step(true), Section::Appearance);
+        assert_eq!(Section::Sessions.step(false), Section::Appearance);
+        assert_eq!(Section::Browser.step(true), Section::Browser);
+        assert_eq!(Section::General.step(false), Section::General);
+        // A fresh run opens on General.
+        assert_eq!(Section::default(), Section::General);
+    }
+
+    #[test]
+    fn on_off_switches_write_as_before() {
+        // Moved into their sections, the switches write the same lines as the one-page window.
+        assert_eq!(OnOff::Animations.key(), "animations");
+        assert_eq!(OnOff::KeepRunning.key(), "persistent-sessions");
+        for on in [true, false] {
+            assert_eq!(OnOff::Animations.values(on), prefs::animations_values(on));
+            assert_eq!(OnOff::KeepRunning.values(on), prefs::persistence_values(on));
+        }
+        assert_eq!(OnOff::Animations.note(), [ANIMATIONS_NOTE]);
+        assert_eq!(OnOff::KeepRunning.note(), [KEEP_NOTE]);
+    }
+
+    #[test]
+    fn browser_values() {
+        use Control::Switch;
+        assert_eq!(Switch(OnOff::AddressBar).label(), "Show address bar");
+        assert_eq!(Switch(OnOff::KeepData).label(), "Keep history and data");
+        // The address bar is on by default: only off is written.
+        assert_eq!(OnOff::AddressBar.key(), "browser-address-bar");
+        assert!(OnOff::AddressBar.values(true).is_empty());
+        assert_eq!(OnOff::AddressBar.values(false), ["off"]);
+        // Keeping data is off by default: only on is written.
+        assert_eq!(OnOff::KeepData.key(), "browser-keep-data");
+        assert_eq!(OnOff::KeepData.values(true), ["on"]);
+        assert!(OnOff::KeepData.values(false).is_empty());
+        // The note under Keep history and data, word for word.
+        assert!(OnOff::AddressBar.note().is_empty());
+        assert_eq!(
+            OnOff::KeepData.note().join(" "),
+            "Turning this off deletes saved browser data. Applies to browser windows opened \
+             after the change."
+        );
+        // Through the file: only that key's line changes.
+        let dir = std::env::temp_dir().join(format!("fuxx-browser-values-{}", std::process::id()));
+        let path = dir.join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "theme = Nord\n").unwrap();
+        let read = || std::fs::read_to_string(&path).unwrap();
+        let set = |s: OnOff, on: bool| write_setting(&path, s.key(), &s.values(on)).unwrap();
+        set(OnOff::KeepData, true);
+        set(OnOff::AddressBar, false);
+        assert_eq!(
+            read(),
+            "theme = Nord\nbrowser-keep-data = on\nbrowser-address-bar = off\n"
+        );
+        set(OnOff::KeepData, false);
+        set(OnOff::AddressBar, true);
+        assert_eq!(read(), "theme = Nord\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn window_fits_the_largest_section() {
         // Appearance: its title, the theme list (seven rows, so every built-in shows without
         // scrolling) and the font list (five), each with its border and inset (2 x 3 px), the
-        // size buttons, two switches and the note under the second, with a gap between fields.
+        // size buttons and the ligatures switch, with a gap between fields.
         let (theme_list, font_list) = (7.0 * LIST_ROW + 6.0, 5.0 * LIST_ROW + 6.0);
-        let appearance =
-            HEADER + theme_list + font_list + SIZE_ROW + SWITCH + (SWITCH + NOTE) + 4.0 * FIELD_GAP;
-        // Sessions: its title, the restore switch, the keep-running switch and its note.
-        let sessions = HEADER + SWITCH + (SWITCH + NOTE) + FIELD_GAP;
+        let appearance = HEADER + theme_list + font_list + SIZE_ROW + SWITCH + 3.0 * FIELD_GAP;
+        assert_eq!(body_height(Section::Appearance), appearance);
+        // Every section fits; the tallest sets the height, and it is Appearance.
+        let inside = window_height() - 2.0 * PAD;
+        for section in Section::ALL {
+            assert!(body_height(section) <= inside, "{section:?} doesn't fit");
+            let fields: f32 = section.controls().iter().map(|c| c.height()).sum();
+            assert!(fields > 0.0, "{section:?} has no fields");
+        }
+        assert_eq!(window_height(), PAD + appearance + PAD);
+        // Browser: two switches, the second with its two-line note.
         assert_eq!(
-            window_height(),
-            PAD + appearance + SECTION_GAP + sessions + PAD
+            body_height(Section::Browser),
+            HEADER + SWITCH + (SWITCH + NOTE + 16.0) + FIELD_GAP
         );
-        // As the constants are today.
-        assert_eq!(window_height(), 646.0);
-        // The preview sits beside the two lists.
+        // The preview and its caption stand beside the lists, within the section.
         assert_eq!(PREVIEW_HEIGHT, theme_list + FIELD_GAP + font_list);
+        assert!(HEADER + PREVIEW_HEIGHT + CAPTION <= appearance);
+        // The section list fits too.
+        assert!(SECTIONS_TOP + 4.0 * (SECTION_ROW + SECTION_ROW_GAP) <= window_height());
+        // As wide as the list and the old one-page form; the preview keeps its width.
+        assert_eq!(SECTIONS_WIDTH, 160.0);
+        assert_eq!(WIDTH, SECTIONS_WIDTH + FORM_WIDTH);
+        assert_eq!(PREVIEW_WIDTH, 270.0);
+        // As the constants are today.
+        assert_eq!((WIDTH, window_height()), (920.0, 452.0));
     }
 
     #[test]

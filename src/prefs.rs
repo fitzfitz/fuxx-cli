@@ -113,13 +113,11 @@ pub fn animations_values(on: bool) -> Vec<String> {
 
 /// `browser-address-bar` values to write: nothing when on (the default, so no line), `off`
 /// otherwise.
-#[allow(dead_code)] // written by Preferences → Browser (follow-up Task 3)
 pub fn browser_address_bar_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
 /// `browser-keep-data` values to write: `on`, or nothing (off is the default, so no line).
-#[allow(dead_code)] // written by Preferences → Browser (follow-up Task 3)
 pub fn browser_keep_data_values(on: bool) -> Vec<String> {
     if on { vec!["on".to_string()] } else { vec![] }
 }

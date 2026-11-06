@@ -1786,22 +1786,41 @@ fn panel_scenes() {
     }
 }
 
-/// The Preferences window at its computed size: in both themes with the defaults
-/// (`preferences-mocha`, `preferences-latte`), and with Nord picked, ligatures and animations off,
-/// at 16 pt (`preferences-nord`) and 20 pt (`preferences-nord-20pt`), so the list, switches and
-/// preview follow the choices and the preview's text fits its narrower screen.
+/// The Preferences window at its computed size, each section in both themes
+/// (`preferences-<section>-mocha`, `-latte`; General with the tips card dismissed, so its button
+/// is live, and `preferences-general-shown-mocha` with the card showing), and Appearance with Nord
+/// picked and ligatures off at 16 pt (`preferences-appearance-nord`) and 20 pt
+/// (`preferences-appearance-nord-20pt`), so the lists, switches and preview follow the choices and
+/// the preview's text fits its narrower screen.
 ///
-/// Panics unless nothing is drawn in the bottom padding and the last note sits just above it (the
-/// computed height is the form's), and the preview shows the theme's background and its magenta
-/// (the agent's box).
+/// Panics unless nothing is drawn in the bottom padding and Appearance's last control sits just
+/// above it (the window is the tallest section's height), the shown section's row in the list
+/// has the selection colour and the others don't, and Appearance's preview shows the theme's
+/// background and its magenta (the agent's box).
 fn preferences_scenes() {
-    use crate::preferences::{self, PreferencesView};
+    use crate::preferences::{self, PreferencesView, SECTIONS_WIDTH, Section};
 
     let dims = preferences::window_size();
-    let mut shots: Vec<_> = SHOT_THEMES.iter().map(|&(s, n)| (s, n, None)).collect();
-    shots.push(("nord", "Nord", Some(16.0)));
-    shots.push(("nord-20pt", "Nord", Some(20.0)));
-    for (slug, name, changed) in shots {
+    // (slug, theme, section, tips card dismissed, font size changed to)
+    let mut shots: Vec<(String, &str, Section, bool, Option<f32>)> = Vec::new();
+    for section in Section::ALL {
+        let name = format!("{section:?}").to_lowercase();
+        for (slug, theme) in SHOT_THEMES {
+            shots.push((format!("{name}-{slug}"), theme, section, true, None));
+        }
+    }
+    let mocha = SHOT_THEMES[0].1;
+    shots.push((
+        "general-shown-mocha".into(),
+        mocha,
+        Section::General,
+        false,
+        None,
+    ));
+    for (slug, size) in [("appearance-nord", 16.0), ("appearance-nord-20pt", 20.0)] {
+        shots.push((slug.into(), "Nord", Section::Appearance, true, Some(size)));
+    }
+    for (slug, name, section, dismissed, changed) in shots {
         let theme = shot_theme(name);
         let build = move |window: &mut Window, cx: &mut App| -> AnyView {
             let mut a = shot_appearance(theme, cx);
@@ -1811,12 +1830,12 @@ fn preferences_scenes() {
                 a.font_settings.features = vec![("calt".into(), 0)];
                 a.font = fonts::gpui_font(&a.font_settings, &cx.text_system().all_font_names());
                 a.font_size = size;
-                a.animations = false;
             }
             cx.set_global(a);
-            cx.new(|cx| PreferencesView::new(window, cx)).into()
+            cx.new(|cx| PreferencesView::new(window, cx).shown_as(section, dismissed))
+                .into()
         };
-        let path = shoot("preferences", slug, &theme, dims, build);
+        let path = shoot("preferences", &slug, &theme, dims, build);
         let shot = render(&theme, dims, build);
         let ui = theme.ui();
         let scene = format!("preferences-{slug}");
@@ -1828,19 +1847,37 @@ fn preferences_scenes() {
             let pixels = (x1 * scale) as usize - (x0 * scale) as usize;
             count_along(&shot, dims, ui.sidebar_background, y, x0, x1) == pixels
         };
-        // The bottom padding is empty: the form ends where the height says it does.
+        // The bottom padding is empty beside the section list's edge: the tallest section ends
+        // where the height says it does.
         for y in [height - 14.0, height - 8.0, height - 3.0] {
             assert!(
-                full(y, 0.0, width),
+                full(y, 0.0, SECTIONS_WIDTH - 1.0) && full(y, SECTIONS_WIDTH, width),
                 "{scene}: something is drawn at y = {y}"
             );
         }
-        // The last note is drawn in the line just above the padding.
-        let (nx, ny, nw, nh) = preferences::last_note_area();
-        let inked = (0..nh as usize).any(|dy| !full(ny + dy as f32, nx, nx + nw));
+        // The shown section's row is filled with the selection colour; the others aren't.
+        for s in Section::ALL {
+            let (x, y, w, h) = preferences::section_row_area(s);
+            let filled = count_along(&shot, dims, ui.selection, y + h / 2.0, x, x + w);
+            if s == section {
+                assert!(
+                    filled as f32 > w * scale / 2.0,
+                    "{scene}: the {s:?} row isn't highlighted"
+                );
+            } else {
+                assert_eq!(filled, 0, "{scene}: the {s:?} row is highlighted");
+            }
+        }
+        if section != Section::Appearance {
+            println!("ui-shots: {}", path.display());
+            continue;
+        }
+        // The last control is drawn just above the padding.
+        let (cx0, cy0, cw, ch) = preferences::last_control_area();
+        let inked = (0..ch as usize).any(|dy| !full(cy0 + dy as f32, cx0, cx0 + cw));
         assert!(
             inked,
-            "{scene}: the last note isn't where the layout puts it"
+            "{scene}: the last control isn't where the layout puts it"
         );
         // The preview is painted in the theme: its background and the agent box's magenta.
         let (px0, py0, pw, ph) = preferences::preview_area();

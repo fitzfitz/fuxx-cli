@@ -1304,6 +1304,13 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Preferences' "Show the tips card again": back, and remembered.
+    pub(crate) fn show_hint(&mut self, cx: &mut Context<Self>) {
+        self.sidebar.hint_dismissed = false;
+        self.save();
+        cx.notify();
+    }
+
     /// The strip along the sidebar's right edge: drag it to resize the sidebar. A 2 px accent
     /// line shows on hover and while dragging. While dragging, the whole window follows the
     /// mouse until release.
