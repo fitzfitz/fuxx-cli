@@ -611,15 +611,15 @@ impl TerminalCore {
 
     /// Resize screen + PTY. No-op when unchanged, so it's cheap to call every frame.
     /// Daemon: asks the daemon, and the replica resizes when the daemon's `Resized` arrives, at
-    /// the same point in the output as the daemon's Term.
-    pub fn resize(&self, dims: TermDims, cell: CellPx) {
+    /// the same point in the output as the daemon's Term. Returns whether a new size was sent.
+    pub fn resize(&self, dims: TermDims, cell: CellPx) -> bool {
         if dims.cols == 0 || dims.rows == 0 {
-            return;
+            return false;
         }
         // Held throughout, so racing resizes apply in the order they were stored.
         let mut current = self.dims.lock().unwrap();
         if *current == (dims, cell) {
-            return;
+            return false;
         }
         *current = (dims, cell);
         match &self.backend {
@@ -631,6 +631,7 @@ impl TerminalCore {
             }
             Backend::Daemon(link) => link.send(Command::Resize(dims, cell)),
         }
+        true
     }
 
     pub fn dims(&self) -> TermDims {

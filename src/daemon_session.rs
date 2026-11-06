@@ -726,6 +726,8 @@ impl DaemonSession {
         s.cell = cell;
         if let Some(pty) = &s.pty {
             let _ = pty.resize(dims, cell);
+            // The child redraws for the new size: that output isn't work.
+            s.tracker.on_resize(Instant::now());
         }
     }
 

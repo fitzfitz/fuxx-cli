@@ -133,6 +133,9 @@ pub struct TerminalView {
     core: TerminalCore,
     focus_handle: FocusHandle,
     tracker: StatusTracker,
+    /// When the canvas last sent the pty a new size; the tracker hears of it before the next
+    /// output, input or tick, so the redraw that follows isn't taken for work.
+    resized_at: Rc<Cell<Option<Instant>>>,
     /// Written by the canvas prepaint; `None` until the first paint (mouse events are ignored).
     layout: Rc<Cell<Option<GridLayout>>>,
     /// Fractional wheel lines carried between scroll events.
@@ -353,6 +356,7 @@ impl TerminalView {
             core,
             focus_handle,
             tracker: StatusTracker::new(),
+            resized_at: Rc::new(Cell::new(None)),
             layout: Rc::new(Cell::new(None)),
             scroll: ScrollAccumulator::default(),
             hovered: None,
@@ -370,6 +374,7 @@ impl TerminalView {
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
             TermEvent::Output { notifications } => {
+                self.hear_of_resize();
                 if self.tracks_status()
                     && let Some(status) = self.tracker.on_output(Instant::now(), notifications)
                 {
@@ -414,12 +419,20 @@ impl TerminalView {
         if !self.tracks_status() {
             return;
         }
+        self.hear_of_resize();
         let core = &self.core;
         if let Some(status) = self
             .tracker
             .tick(Instant::now(), || core.tail_text(TAIL_LINES))
         {
             self.status_changed(status, cx);
+        }
+    }
+
+    /// Pass a resize the canvas made on to the tracker (a no-op when there was none).
+    fn hear_of_resize(&mut self) {
+        if let Some(at) = self.resized_at.take() {
+            self.tracker.on_resize(at);
         }
     }
 
@@ -478,6 +491,7 @@ impl TerminalView {
             return;
         }
         self.core.input(bytes);
+        self.hear_of_resize();
         if self.tracks_status()
             && let Some(status) = self.tracker.on_input(Instant::now())
         {
@@ -735,6 +749,7 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         let resize_core = self.core.clone();
+        let resized_at = self.resized_at.clone();
         let paint_core = self.core.clone();
         let theme = self.core.theme();
         let layout = self.layout.clone();
@@ -768,13 +783,16 @@ impl Render for TerminalView {
                             metrics.cell_width,
                             metrics.line_height,
                         );
-                        resize_core.resize(
+                        let sent = resize_core.resize(
                             grid.dims,
                             CellPx {
                                 width: f32::from(metrics.cell_width).round() as u16,
                                 height: f32::from(metrics.line_height).round() as u16,
                             },
                         );
+                        if sent {
+                            resized_at.set(Some(Instant::now()));
+                        }
                         let grid = GridLayout {
                             dims: resize_core.dims(),
                             ..grid
