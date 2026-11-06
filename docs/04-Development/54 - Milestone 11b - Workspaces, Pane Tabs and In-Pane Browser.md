@@ -48,6 +48,9 @@ where each workspace is (git branch and folder) and which one needs you.
 - Switching tabs: click; ⌃Tab / ⌃⇧Tab within the focused pane (AI's call).
 - **Drag tabs anywhere** (yours, 2026-11-06): reorder within a pane, drop into another pane's tab bar, or drop onto a
   sidebar workspace to move the tab there. A pane or workspace left empty closes.
+- **Drags feel like picking the tab up** (yours, 2026-11-06, Task 7b — being built): the pointer is a closed hand, the
+  dragged tab stays where you grabbed it, and instead of an insertion line the other tabs slide aside to open a gap
+  where it will land (as in Ghostty). Sidebar rows do the same within their run.
 - **The empty part of a tab bar at the window's top drags the window** (yours, 2026-11-06); double-click zooms.
 - **⌘T opens a new terminal tab in the focused pane; ⌘N makes a new workspace** (yours, 2026-11-06; replaces "⌘T =
   new workspace" above).
