@@ -52,22 +52,28 @@ pub enum TabAction {
 }
 
 /// The sessions (by place in the list of `len`) that `action` from session `at`'s menu closes:
-/// itself; every other one; or the ones after it in the list (the rows below it). None for the
-/// actions that close nothing.
-pub fn closes(action: TabAction, len: usize, at: usize) -> Vec<usize> {
+/// itself; every other one; or the rows shown below it (`shown`: the sessions the sidebar has a
+/// row for, in order; those folded in a closed group have none and stay). None for the actions
+/// that close nothing.
+pub fn closes(action: TabAction, shown: &[usize], len: usize, at: usize) -> Vec<usize> {
     match action {
         TabAction::Close => vec![at],
         TabAction::CloseOthers => (0..len).filter(|&i| i != at).collect(),
-        TabAction::CloseToRight => (at + 1..len).collect(),
+        TabAction::CloseToRight => match shown.iter().position(|&i| i == at) {
+            Some(row) => shown[row + 1..].to_vec(),
+            None => Vec::new(),
+        },
         TabAction::ShowAll | TabAction::Rename | TabAction::Color(_) => Vec::new(),
     }
 }
 
-/// Whether `action` can be chosen from session `at`'s menu (of `len` sessions): Close Other
-/// Tabs needs another session, Close Tabs to the Right one below it.
-pub fn enabled(action: TabAction, len: usize, at: usize) -> bool {
+/// Whether `action` can be chosen from session `at`'s menu (of `len` sessions, `shown` as in
+/// `closes`): Close Other Tabs needs another session, Close Tabs to the Right a row below it.
+pub fn enabled(action: TabAction, shown: &[usize], len: usize, at: usize) -> bool {
     match action {
-        TabAction::CloseOthers | TabAction::CloseToRight => !closes(action, len, at).is_empty(),
+        TabAction::CloseOthers | TabAction::CloseToRight => {
+            !closes(action, shown, len, at).is_empty()
+        }
         _ => true,
     }
 }
@@ -130,7 +136,8 @@ impl Workspace {
             TabAction::Close => self.close_at(at, window, cx),
             TabAction::CloseOthers | TabAction::CloseToRight => {
                 self.focus_active(window, cx);
-                self.confirm_close(closes(action, len, at), window, cx);
+                let shown = self.sessions_with_rows();
+                self.confirm_close(closes(action, &shown, len, at), window, cx);
             }
             TabAction::ShowAll => self.open_switcher(window, cx),
             TabAction::Rename => self.start_rename(at, window, cx),
@@ -196,10 +203,11 @@ impl Workspace {
             .sessions
             .position(|s| s.view.entity_id() == menu.view)?;
         let len = self.sessions.items().len();
+        let shown = self.sessions_with_rows();
         let current = self.sessions.items()[at].color;
         let hover = ui.panel_hover;
         let item = |n: usize, label: &'static str, action: TabAction| {
-            let on = enabled(action, len, at);
+            let on = enabled(action, &shown, len, at);
             div()
                 .id(("tab-menu", n))
                 .flex()
@@ -359,36 +367,55 @@ mod tests {
     use super::*;
     use TabAction::*;
 
+    /// Every one of `n` sessions has a row (no group closed).
+    fn all(n: usize) -> Vec<usize> {
+        (0..n).collect()
+    }
+
     #[test]
     fn closes_pick_the_right_sessions() {
         // Five sessions, the menu on the second (index 1).
-        assert_eq!(closes(Close, 5, 1), [1]);
-        assert_eq!(closes(CloseOthers, 5, 1), [0, 2, 3, 4]);
-        assert_eq!(closes(CloseToRight, 5, 1), [2, 3, 4]);
+        assert_eq!(closes(Close, &all(5), 5, 1), [1]);
+        assert_eq!(closes(CloseOthers, &all(5), 5, 1), [0, 2, 3, 4]);
+        assert_eq!(closes(CloseToRight, &all(5), 5, 1), [2, 3, 4]);
         // The last one has nothing to its right; the only one, no others.
-        assert!(closes(CloseToRight, 5, 4).is_empty());
-        assert!(closes(CloseOthers, 1, 0).is_empty());
+        assert!(closes(CloseToRight, &all(5), 5, 4).is_empty());
+        assert!(closes(CloseOthers, &all(1), 1, 0).is_empty());
         // The rest close nothing.
         for action in [ShowAll, Rename, Color(None), Color(Some(TabColor::Red))] {
-            assert!(closes(action, 5, 1).is_empty(), "{action:?}");
+            assert!(closes(action, &all(5), 5, 1).is_empty(), "{action:?}");
         }
     }
 
     #[test]
+    fn close_to_the_right_leaves_a_closed_group_below_alone() {
+        // Seven sessions; 3..6 are in a closed group below, so only 0, 1, 2 and 6 have rows.
+        let shown = [0, 1, 2, 6];
+        assert_eq!(closes(CloseToRight, &shown, 7, 0), [1, 2, 6]);
+        assert_eq!(closes(CloseToRight, &shown, 7, 2), [6]);
+        // Only the closed group below: nothing to close, so it's disabled.
+        let shown = [0, 1, 2];
+        assert!(closes(CloseToRight, &shown, 7, 2).is_empty());
+        assert!(!enabled(CloseToRight, &shown, 7, 2));
+        // Close Other Tabs still means every other session, folded or not.
+        assert_eq!(closes(CloseOthers, &shown, 7, 2), [0, 1, 3, 4, 5, 6]);
+    }
+
+    #[test]
     fn bulk_closes_are_disabled_when_they_would_close_nothing() {
-        assert!(enabled(CloseOthers, 2, 0));
-        assert!(!enabled(CloseOthers, 1, 0));
-        assert!(enabled(CloseToRight, 3, 1));
-        assert!(!enabled(CloseToRight, 3, 2));
+        assert!(enabled(CloseOthers, &all(2), 2, 0));
+        assert!(!enabled(CloseOthers, &all(1), 1, 0));
+        assert!(enabled(CloseToRight, &all(3), 3, 1));
+        assert!(!enabled(CloseToRight, &all(3), 3, 2));
         for action in [Close, ShowAll, Rename, Color(None)] {
-            assert!(enabled(action, 1, 0), "{action:?}");
+            assert!(enabled(action, &all(1), 1, 0), "{action:?}");
         }
         // Enabled exactly when it closes something.
         for (len, at) in [(1, 0), (2, 0), (2, 1), (5, 2), (5, 4)] {
             for action in [CloseOthers, CloseToRight] {
                 assert_eq!(
-                    enabled(action, len, at),
-                    !closes(action, len, at).is_empty()
+                    enabled(action, &all(len), len, at),
+                    !closes(action, &all(len), len, at).is_empty()
                 );
             }
         }

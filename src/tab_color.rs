@@ -107,10 +107,20 @@ mod tests {
         assert_eq!(TabColor::parse("brown"), None);
         assert_eq!(TabColor::parse("Blue"), None);
         // Eleven distinct colours.
-        let mut bases: Vec<_> = TabColor::ALL
+        let bases: std::collections::HashSet<_> = TabColor::ALL
             .map(|c| (c.base().r, c.base().g, c.base().b))
             .into();
-        bases.dedup();
         assert_eq!(bases.len(), 11);
+    }
+
+    #[test]
+    fn all_is_in_declaration_order() {
+        // `UiColors::tab` indexes its table by `c as usize`.
+        assert!(
+            TabColor::ALL
+                .iter()
+                .enumerate()
+                .all(|(i, &c)| c as usize == i)
+        );
     }
 }
