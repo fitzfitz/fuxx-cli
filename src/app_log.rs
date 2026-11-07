@@ -74,6 +74,7 @@ pub fn start(home: &Path) {
         return;
     };
     // SAFETY: `file` is open; `dup2` copies it onto fds 1 and 2, which then own their copies.
+    // A failed `dup2` is deliberately ignored: stderr then stays where it was.
     unsafe {
         dup2(file.as_raw_fd(), 1);
         dup2(file.as_raw_fd(), 2);
