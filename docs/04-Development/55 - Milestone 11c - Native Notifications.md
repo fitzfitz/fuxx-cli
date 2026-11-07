@@ -116,6 +116,16 @@ old banners still come; allowing it later in System Settings → fuxx banners fr
    fuxx forward — the terminal numbers start again, so it can't know which terminal that was.
 6. The browser bar keeps its 🖕 mark; only tab and workspace names became ╭∩╮.
 
+## Known limitation: the banner icon (2026-11-07)
+
+Banners are fuxx's own (text right, clicks jump to the tab — you confirmed), but their icon is still blank. Checked:
+macOS maps the app ID to the installed copy and returns the logo for it (Finder/Dock are fine). Ruled out: stale
+icon-less copies registered under the same ID (removed), cached notification services (restarted `usernoted` and
+`NotificationCenter`), a per-version cache (the installed copy bumped to 0.2.1). Left, unproven: macOS 26 may want the
+new icon format for banners (`Assets.car` + `CFBundleIconName`, built by Xcode's `actool` — not installed), or
+Notification Center keeps the blank icon fuxx registered with first. Next step when Xcode is installed: add an
+`Assets.car` beside the `.icns` and test.
+
 ## On-screen checklist (pending)
 
 Use `target/dist/fuxx.app` (rebuilt for this check). Banners appear only for a terminal you're **not** looking at, so

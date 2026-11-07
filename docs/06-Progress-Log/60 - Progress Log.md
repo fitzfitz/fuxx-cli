@@ -29,7 +29,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   it onto Apple's icon grid (824 px body in 1024 px) and writes `packaging/macos/fuxx.icns` (10 sizes) and a 64 px mark;
   `bundle-mac.sh` copies the icon in and `Info.plist` names it. Committed straight on master, as you asked. 743 tests
   pass; app rebuilt.
-- **Next:** your on-screen check (note 55's list now 19 items: 16–18 are the icon); push on your word; then M11d.
+- **Next:** your on-screen check (note 55's list now 19 items: 16–18 are the icon); then M11d.
+- **Seen on your Mac (2026-11-07):** fuxx banners ("#10 proj — Finished · Worked for 13s") and a click jumping to the
+  tab work. **Open:** the banner's icon is still blank after three ruled-out causes — see note 55 "Known limitation";
+  next try needs Xcode (macOS 26's `Assets.car` icon). Pushed to origin on your word.
 
 ### 2026-11-06 — M11c built: native notifications (on-screen check pending)
 - **Did:** Your request to "extend M11" with the notification part of M12. A first test on your Mac showed the ad-hoc
