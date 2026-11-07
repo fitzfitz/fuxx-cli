@@ -51,6 +51,7 @@ use crate::ui_tokens::size::{
     SIDEBAR_ROW, STATUS_MARK, WAITING_ROW,
 };
 use crate::ui_tokens::text;
+use crate::updater;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
 
 /// What the sidebar needs to know of one workspace, in display order: its name, colour and
@@ -453,6 +454,27 @@ const SUB_LINE: f32 = 15.0;
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
 pub(crate) const FOOTER: f32 = 36.0;
+/// The Update Available button over the footer (M11e): its height, its corners' radius, and
+/// the space between it and the footer's top edge.
+pub(crate) const UPDATE_BUTTON: f32 = 28.0;
+pub(crate) const UPDATE_RADIUS: f32 = 8.0;
+pub(crate) const UPDATE_GAP: f32 = 8.0;
+/// Its colours, fixed whatever the theme (blue, as asked): the fill, hovered, and its words.
+pub(crate) const UPDATE_FILL: Rgb = Rgb {
+    r: 0x1F,
+    g: 0x6F,
+    b: 0xEB,
+};
+pub(crate) const UPDATE_HOVER: Rgb = Rgb {
+    r: 0x1A,
+    g: 0x5F,
+    b: 0xCC,
+};
+pub(crate) const UPDATE_TEXT: Rgb = Rgb {
+    r: 0xFF,
+    g: 0xFF,
+    b: 0xFF,
+};
 const RESIZE_STRIP: f32 = 4.0;
 /// A row narrower than this leaves the age out, so the name keeps its room.
 const AGE_MIN_ROW: f32 = 220.0;
@@ -1039,6 +1061,7 @@ impl Workspace {
             .child(list)
             .children(notice)
             .children(hint)
+            .children(self.render_update_button(cx))
             .child(self.render_footer(ui, cx))
             .child(self.render_resize_edge(ui, cx))
             .into_any_element()
@@ -1695,6 +1718,40 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The blue Update Available button over the footer, while a newer fuxx is known
+    /// (`updater::button`). A click opens the update offer; while the update downloads it says
+    /// so and takes no clicks.
+    fn render_update_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = &cx.try_global::<updater::Updates>()?.state;
+        let (words, clickable) = updater::button(state)?;
+        Some(
+            div()
+                .id("sidebar-update")
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(px(UPDATE_BUTTON))
+                .mx(px(ROW_INSET))
+                .mb(px(UPDATE_GAP))
+                .rounded(px(UPDATE_RADIUS))
+                .bg(hsla(UPDATE_FILL))
+                .text_size(px(text::NAME))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(hsla(UPDATE_TEXT))
+                .child(words)
+                .when(clickable, |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|style| style.bg(hsla(UPDATE_HOVER)))
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            updater::show_offer(this, window, cx)
+                        }))
+                })
+                .into_any_element(),
+        )
+    }
+
     /// The footer: a + (a menu of ways to start a session), then, at the right, the 🔔 (this
     /// run's notifications, with a dot while some are unseen) beside a gear for Preferences.
     fn render_footer(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
@@ -2014,6 +2071,20 @@ fn group_id(key: &GroupKey) -> u64 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_update_button_is_blue_rounded_and_readable() {
+        let rgb = |r, g, b| Rgb { r, g, b };
+        assert_eq!(UPDATE_FILL, rgb(0x1F, 0x6F, 0xEB));
+        assert_eq!(UPDATE_HOVER, rgb(0x1A, 0x5F, 0xCC));
+        assert_eq!(UPDATE_TEXT, rgb(0xFF, 0xFF, 0xFF));
+        assert_eq!((UPDATE_BUTTON, UPDATE_RADIUS, UPDATE_GAP), (28.0, 8.0, 8.0));
+        // White text meets the 4.5:1 floor on both fills, whatever the theme.
+        for fill in [UPDATE_FILL, UPDATE_HOVER] {
+            let ratio = crate::ui_tokens::contrast(UPDATE_TEXT, fill);
+            assert!(ratio >= 4.5, "white on {fill:?} is {ratio:.2}");
+        }
+    }
 
     #[test]
     fn the_hint_and_the_new_menu_say_n_makes_a_workspace_and_t_a_tab() {
