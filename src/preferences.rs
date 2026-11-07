@@ -116,6 +116,7 @@ fn window_height() -> f32 {
 
 /// The notes under the switches.
 const ANIMATIONS_NOTE: &str = "Also off when macOS Reduce motion is on.";
+const CHECK_UPDATES_NOTE: &str = "Asks GitHub once a day whether a newer fuxx is out.";
 const KEEP_NOTE: &str = "Takes effect the next time fuxx starts.";
 /// One sentence a line, so it never wraps on its own.
 const KEEP_DATA_NOTE: [&str; 2] = [
@@ -156,7 +157,11 @@ impl Section {
     fn controls(self) -> &'static [Control] {
         use Control::*;
         match self {
-            Section::General => &[Switch(OnOff::Animations), TipsCard],
+            Section::General => &[
+                Switch(OnOff::Animations),
+                Switch(OnOff::CheckUpdates),
+                TipsCard,
+            ],
             Section::Appearance => &[Theme, Font, Size, Ligatures],
             Section::Sessions => &[Restore, Switch(OnOff::KeepRunning)],
             Section::Browser => &[Switch(OnOff::AddressBar), Switch(OnOff::KeepData)],
@@ -198,6 +203,7 @@ impl Control {
             Control::Restore => "Restore sessions",
             Control::TipsCard => "Tips card",
             Control::Switch(OnOff::Animations) => "Animations",
+            Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
             Control::Switch(OnOff::AddressBar) => "Show address bar",
             Control::Switch(OnOff::KeepData) => "Keep history and data",
@@ -232,6 +238,7 @@ impl Control {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OnOff {
     Animations,
+    CheckUpdates,
     KeepRunning,
     AddressBar,
     KeepData,
@@ -242,6 +249,7 @@ impl OnOff {
     fn key(self) -> &'static str {
         match self {
             OnOff::Animations => "animations",
+            OnOff::CheckUpdates => "check-updates",
             OnOff::KeepRunning => "persistent-sessions",
             OnOff::AddressBar => "browser-address-bar",
             OnOff::KeepData => "browser-keep-data",
@@ -252,6 +260,7 @@ impl OnOff {
     fn values(self, on: bool) -> Vec<String> {
         match self {
             OnOff::Animations => prefs::animations_values(on),
+            OnOff::CheckUpdates => prefs::check_updates_values(on),
             OnOff::KeepRunning => prefs::persistence_values(on),
             OnOff::AddressBar => prefs::browser_address_bar_values(on),
             OnOff::KeepData => prefs::browser_keep_data_values(on),
@@ -262,6 +271,7 @@ impl OnOff {
     fn current(self, a: &Appearance) -> bool {
         match self {
             OnOff::Animations => a.animations,
+            OnOff::CheckUpdates => a.check_updates,
             OnOff::KeepRunning => a.persistent,
             OnOff::AddressBar => a.browser_address_bar,
             OnOff::KeepData => a.browser_keep_data,
@@ -272,6 +282,7 @@ impl OnOff {
     fn note(self) -> &'static [&'static str] {
         match self {
             OnOff::Animations => &[ANIMATIONS_NOTE],
+            OnOff::CheckUpdates => &[CHECK_UPDATES_NOTE],
             OnOff::KeepRunning => &[KEEP_NOTE],
             OnOff::AddressBar => &[],
             OnOff::KeepData => &KEEP_DATA_NOTE,
@@ -1433,7 +1444,11 @@ mod tests {
         assert_eq!(titles, ["General", "Appearance", "Sessions", "Browser"]);
         assert_eq!(
             Section::General.controls(),
-            [Switch(OnOff::Animations), TipsCard]
+            [
+                Switch(OnOff::Animations),
+                Switch(OnOff::CheckUpdates),
+                TipsCard
+            ]
         );
         assert_eq!(
             Section::Appearance.controls(),
@@ -1456,6 +1471,7 @@ mod tests {
             Restore,
             TipsCard,
             Switch(OnOff::Animations),
+            Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),
             Switch(OnOff::AddressBar),
             Switch(OnOff::KeepData),
@@ -1494,6 +1510,20 @@ mod tests {
         }
         assert_eq!(OnOff::Animations.note(), [ANIMATIONS_NOTE]);
         assert_eq!(OnOff::KeepRunning.note(), [KEEP_NOTE]);
+    }
+
+    #[test]
+    fn check_updates_switch() {
+        use Control::Switch;
+        assert_eq!(Switch(OnOff::CheckUpdates).label(), "Check for updates");
+        assert_eq!(OnOff::CheckUpdates.key(), "check-updates");
+        // On by default: only off is written.
+        assert!(OnOff::CheckUpdates.values(true).is_empty());
+        assert_eq!(OnOff::CheckUpdates.values(false), ["off"]);
+        assert_eq!(
+            OnOff::CheckUpdates.note(),
+            ["Asks GitHub once a day whether a newer fuxx is out."]
+        );
     }
 
     #[test]

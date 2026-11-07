@@ -122,6 +122,11 @@ pub fn browser_keep_data_values(on: bool) -> Vec<String> {
     if on { vec!["on".to_string()] } else { vec![] }
 }
 
+/// `check-updates` values to write: nothing when on (the default, so no line), `off` otherwise.
+pub fn check_updates_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
 /// The theme a list choice stands for, on its own (without the user's other colour lines):
 /// the defaults for `Default`, otherwise the named theme read with `read_theme`.
 pub fn choice_theme(name: &str, read_theme: &dyn Fn(&str) -> Option<String>) -> Theme {
@@ -292,5 +297,11 @@ mod tests {
         // Keeping data is off by default: only on is written.
         assert_eq!(browser_keep_data_values(true), vec!["on".to_string()]);
         assert!(browser_keep_data_values(false).is_empty());
+    }
+
+    #[test]
+    fn check_updates_line_is_written_only_when_off() {
+        assert!(check_updates_values(true).is_empty());
+        assert_eq!(check_updates_values(false), vec!["off".to_string()]);
     }
 }

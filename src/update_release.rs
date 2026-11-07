@@ -82,11 +82,7 @@ pub fn parse_latest(json: &str) -> Result<Release, String> {
         .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(wanted.as_str()))
         .and_then(|a| {
             let url = a.get("browser_download_url")?.as_str()?.to_string();
-            let sha256 = a
-                .get("digest")
-                .and_then(|d| d.as_str())
-                .and_then(|d| d.strip_prefix("sha256:"))
-                .map(|h| h.to_ascii_lowercase());
+            let sha256 = a.get("digest").and_then(|d| d.as_str()).and_then(sha256_of);
             Some(Asset { url, sha256 })
         });
     Ok(Release {
@@ -97,7 +93,43 @@ pub fn parse_latest(json: &str) -> Result<Release, String> {
     })
 }
 
+/// The hex of a `sha256:` digest, lowercase, when it is exactly 64 hex digits; else None.
+fn sha256_of(digest: &str) -> Option<String> {
+    let hex = digest.strip_prefix("sha256:")?;
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
+}
+
+/// What a check found, for the running version.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CheckOutcome {
+    /// GitHub's latest release is newer than the running app.
+    Newer(Release),
+    /// The latest release is the running version or older; carries the running version.
+    UpToDate(Version),
+    /// Offline, GitHub's error, or JSON we can't read: the reason.
+    Failed(String),
+}
+
+/// What a check found: the fetched-and-parsed release (or why there is none) against `running`.
+pub fn check_outcome(result: Result<Release, String>, running: Version) -> CheckOutcome {
+    match result {
+        Ok(release) if is_newer(release.version, running) => CheckOutcome::Newer(release),
+        Ok(_) => CheckOutcome::UpToDate(running),
+        Err(reason) => CheckOutcome::Failed(reason),
+    }
+}
+
+/// The manual check's sheet when there is nothing newer.
+pub fn up_to_date_title(v: Version) -> String {
+    format!("fuxx {v} is the newest version.")
+}
+
+/// The manual check's sheet when it couldn't ask (the reason is its text).
+pub const CHECK_FAILED: &str = "Couldn't check for updates";
+
 /// The first `lines` non-empty lines of the release notes, joined by newlines.
+#[allow(dead_code)] // used by the Update Available offer from M11e Task 4
 pub fn notes_excerpt(body: &str, lines: usize) -> String {
     body.lines()
         .map(str::trim_end)
@@ -117,15 +149,27 @@ mod tests {
         "body": "One\n\nTwo",
         "assets": [
             {"name": "fuxx-0.3.1.dmg", "browser_download_url": "https://x/fuxx-0.3.1.dmg", "digest": "sha256:FFFF"},
-            {"name": "fuxx-0.3.1.zip", "browser_download_url": "https://x/fuxx-0.3.1.zip", "digest": "sha256:ABC123"}
+            {"name": "fuxx-0.3.1.zip", "browser_download_url": "https://x/fuxx-0.3.1.zip", "digest": "sha256:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"}
         ]
     }"#;
+
+    /// A valid SHA-256: 64 hex digits.
+    const HEX64: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     #[test]
     fn parses_versions() {
         assert_eq!(parse_version("0.3.0"), Some(Version(0, 3, 0)));
         assert_eq!(parse_version("v0.3.0"), Some(Version(0, 3, 0)));
-        for bad in ["v1.2", "1.2.3-beta", "", "x.y.z"] {
+        for bad in [
+            "v1.2",
+            "1.2.3-beta",
+            "",
+            "x.y.z",
+            "+1.2.3",
+            " 1.2.3",
+            "99999999999999999999.0.0",
+            "1.2.3.4",
+        ] {
             assert_eq!(parse_version(bad), None, "{bad}");
         }
         assert_eq!(Version(0, 3, 0).to_string(), "0.3.0");
@@ -151,16 +195,19 @@ mod tests {
         assert_eq!(r.notes, "One\n\nTwo");
         let zip = r.zip.unwrap();
         assert_eq!(zip.url, "https://x/fuxx-0.3.1.zip");
-        assert_eq!(zip.sha256, Some("abc123".to_string()));
+        assert_eq!(zip.sha256, Some(HEX64.to_string()));
     }
 
     #[test]
     fn no_matching_asset_or_digest() {
         let no_zip = SAMPLE.replace("fuxx-0.3.1.zip", "other.zip");
         assert_eq!(parse_latest(&no_zip).unwrap().zip, None);
-        let no_digest = SAMPLE.replace(r#", "digest": "sha256:ABC123""#, "");
+        let no_digest = SAMPLE.replace(
+            &format!(r#", "digest": "sha256:{}""#, HEX64.to_uppercase()),
+            "",
+        );
         assert_eq!(parse_latest(&no_digest).unwrap().zip.unwrap().sha256, None);
-        let null_digest = SAMPLE.replace(r#""sha256:ABC123""#, "null");
+        let null_digest = SAMPLE.replace(&format!(r#""sha256:{}""#, HEX64.to_uppercase()), "null");
         assert_eq!(
             parse_latest(&null_digest).unwrap().zip.unwrap().sha256,
             None
@@ -192,5 +239,75 @@ mod tests {
         let ex = notes_excerpt(&body, 6);
         assert_eq!(ex.lines().count(), 6);
         assert_eq!(ex.lines().last(), Some("line 6"));
+    }
+
+    /// The zip's digest as read from `SAMPLE` with its digest replaced by `digest`.
+    fn digest_of(digest: &str) -> Option<String> {
+        let j = SAMPLE.replace(&format!("sha256:{}", HEX64.to_uppercase()), digest);
+        parse_latest(&j).unwrap().zip.unwrap().sha256
+    }
+
+    #[test]
+    fn accepts_only_a_sha256_of_64_hex_digits() {
+        assert_eq!(
+            digest_of(&format!("sha256:{HEX64}")),
+            Some(HEX64.to_string())
+        );
+        let short = &HEX64[..63];
+        let long = format!("{HEX64}0");
+        let not_hex = format!("{}g", &HEX64[..63]);
+        for bad in [
+            String::new(),
+            "sha256:".to_string(),
+            format!("sha256:{short}"),
+            format!("sha256:{long}"),
+            format!("sha256:{not_hex}"),
+            format!("sha512:{HEX64}"),
+            HEX64.to_string(),
+            format!("sha256: {}", &HEX64[1..]),
+        ] {
+            assert_eq!(digest_of(&bad), None, "{bad:?}");
+        }
+    }
+
+    fn release(v: Version) -> Release {
+        Release {
+            version: v,
+            page_url: "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.1".into(),
+            notes: String::new(),
+            zip: None,
+        }
+    }
+
+    #[test]
+    fn check_outcomes() {
+        let running = Version(0, 3, 0);
+        let newer = release(Version(0, 3, 1));
+        assert_eq!(
+            check_outcome(Ok(newer.clone()), running),
+            CheckOutcome::Newer(newer)
+        );
+        assert_eq!(
+            check_outcome(Ok(release(running)), running),
+            CheckOutcome::UpToDate(running)
+        );
+        // An older release (a pulled one): still up to date, at the running version.
+        assert_eq!(
+            check_outcome(Ok(release(Version(0, 2, 9))), running),
+            CheckOutcome::UpToDate(running)
+        );
+        assert_eq!(
+            check_outcome(Err("offline or unreachable".into()), running),
+            CheckOutcome::Failed("offline or unreachable".into())
+        );
+    }
+
+    #[test]
+    fn check_copy() {
+        assert_eq!(
+            up_to_date_title(Version(0, 3, 0)),
+            "fuxx 0.3.0 is the newest version."
+        );
+        assert_eq!(CHECK_FAILED, "Couldn't check for updates");
     }
 }

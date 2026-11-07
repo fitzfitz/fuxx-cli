@@ -763,6 +763,7 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         animations: true,
         browser_address_bar: true,
         browser_keep_data: false,
+        check_updates: true,
     }
 }
 
