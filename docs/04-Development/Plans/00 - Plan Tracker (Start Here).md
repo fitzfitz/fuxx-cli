@@ -1,6 +1,6 @@
 ---
 tags: [moc, development, plans, tracker]
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # 00 - Plan Tracker (Start Here)
@@ -20,10 +20,10 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M11c — Native notifications** (Phase 4, an M11 extension): built and reviewed 2026-11-06 (742 tests), on-screen check pending: [[M11c Plan - Native Notifications]]. Next: M11d (Help menu). M10b, M10c, M11, the follow-up and M11b are merged and pushed; their on-screen checks are still to come. |
-| **Status** | 🟨 M11c built and reviewed; ⬜ M11d requested. 🟨 M10b, M10c, M11, the follow-up and M11b built, reviewed and merged; on-screen checks pending. M10a ✅ done 2026-11-05. |
-| **▶ Next action** | Your M11c on-screen check (15 items in [[55 - Milestone 11c - Native Notifications]]); the batched checks for notes 51–54 and the follow-up plan stay open. |
+| **Status** | 🟨 M11c built and reviewed (app icon added 2026-11-07); 🟦 M11d planned 2026-11-07. 🟨 M10b, M10c, M11, the follow-up and M11b built, reviewed and merged; on-screen checks pending. M10a ✅ done 2026-11-05. |
+| **▶ Next action** | Your review of the M11d plan ([[M11d Plan - Help Menu]]), then its build; your M11c on-screen check (19 items in [[55 - Milestone 11c - Native Notifications]]); the batched checks for notes 51–54 and the follow-up plan stay open. |
 | **Blocked on** | Nothing. |
-| **Last updated** | 2026-11-06 |
+| **Last updated** | 2026-11-07 |
 
 ## Legend
 
@@ -59,7 +59,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M10c/M11 follow-up | Browser bar, keep-data setting, tabbed Preferences, sidebar button, tab-like rows | [[M10c-M11 Follow-up Plan - Browser Bar and Tabbed Preferences]] | 🟨 built, check pending | 7/9 | A Safari-like browser bar; Preferences in tabs; rows you can close, colour and right-click |
 | M11b | Workspaces, pane tabs and the in-pane browser | [[M11b Plan - Workspaces, Pane Tabs and In-Pane Browser]] | 🟨 built, merged, check pending | 16/17 | Workspaces with tab bars; a browser inside a pane; the 🔔 list in the footer; drag tabs anywhere |
 | M11c | Native notifications | [[M11c Plan - Native Notifications]] | 🟨 built, check pending | 6/7 | Banners from fuxx; a click shows the terminal that raised it; osascript fallback; default name ╭∩╮. |
-| M11d | Help menu and shortcut list | — (input: [[M11d Input - Help Menu]]) | ⬜ requested | 0 | A Help menu: searchable shortcuts, command reference, notifications status, welcome tips, report an issue / logs. |
+| M11d | Help menu and shortcut list | [[M11d Plan - Help Menu]] (spec: [[56 - Milestone 11d - Help Menu]]) | 🟦 planned | 0/7 | A Help menu: searchable shortcuts, command reference, notifications status, welcome tips, report an issue / logs. |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).

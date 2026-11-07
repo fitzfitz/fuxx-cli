@@ -14,13 +14,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11b — workspaces, pane tabs and the in-pane browser 🟨 built and reviewed (2026-11-06), on-screen check pending (the M10c/M11 follow-up, M10b, M10c and M11 the same, all batched); after your check: merge, then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11d — Help menu 🟦 planned (2026-11-07), build after your review. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-07 — M11d planned: the Help menu
+- **Did:** You asked to plan the Help menu (requested 2026-11-06) and said "go" to skip the questions, so every
+  design choice is AI's call, written down in [[56 - Milestone 11d - Help Menu]] for you to correct. The Help menu
+  comes after Window and gets macOS's search box (fuxx marks it as the Help menu itself, since GPUI doesn't). It
+  holds Keyboard Shortcuts (⌘/, a ⌘P-style searchable panel built from the real key-binding table, so a test fails if
+  a new shortcut isn't listed), the fuxx Command Reference (the same panel, built from `fuxx help`'s text, plus the
+  MCP setup line with the running fuxx's path), Notifications Status… (a sheet from macOS's current answer, with
+  Open System Settings), Show Welcome Tips (the sidebar comes back with the card), Report an Issue… (a prefilled
+  GitHub issue with fuxx's and macOS's versions) and Show Logs (`~/Library/Logs/fuxx/`, where the window now writes
+  `fuxx.log` when run from the app). No new crates; `objc2-app-kit` gains `NSMenu` and `NSMenuItem`.
+  Plan: [[M11d Plan - Help Menu]], 5 build tasks, then your check and the docs. The status snapshot above was out of
+  date (it still said M11b) and is corrected.
+- **Next:** your review of note 56 and the plan, then the build. The M11c on-screen check is still open.
 
 ### 2026-11-07 — M11c Task 6: the app icon (on master, on-screen check pending)
 - **Did:** Your request after the merge: the 3D Cyber logo (from your logo session) is fuxx's app icon — the Dock,
