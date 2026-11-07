@@ -23,7 +23,7 @@ impl ShortcutGroup {
             ShortcutGroup::Panes => "Panes",
             ShortcutGroup::Terminal => "Terminal",
             ShortcutGroup::BrowserPages => "Browser pages",
-            ShortcutGroup::WindowAndApp => "Window and app",
+            ShortcutGroup::WindowAndApp => "Window & app",
         }
     }
 }
@@ -231,7 +231,7 @@ pub fn shortcut_rows(pairs: &[(String, String)]) -> Vec<ShortcutRow> {
         .collect()
 }
 
-/// Whether a search box's text finds a row: in its name or in its keys, ignoring case. Keys
+/// Whether a search box's text finds a row: in its name, its group's label or its keys, ignoring case. Keys
 /// may be typed as the symbols (`⌘d`) or as words (`cmd d`, `cmd-d`).
 pub fn row_matches(row: &ShortcutRow, query: &str) -> bool {
     let query = query.trim().to_lowercase();
@@ -240,6 +240,7 @@ pub fn row_matches(row: &ShortcutRow, query: &str) -> bool {
     }
     let keys = row.keys.to_lowercase();
     row.name.to_lowercase().contains(&query)
+        || row.group.label().to_lowercase().contains(&query)
         || keys.contains(&query)
         || keys.contains(&key_label(&query.replace(' ', "-")).to_lowercase())
 }
@@ -323,6 +324,20 @@ mod tests {
         assert!(row_matches(split, "cmd-d"));
         assert!(row_matches(split, ""));
         assert!(!row_matches(split, "zzz"));
+    }
+
+    #[test]
+    fn rows_are_found_by_group() {
+        let rows = shortcut_rows(&pairs(&[
+            ("terminal::Copy", "cmd-c"),
+            ("browser_tab::Reload", "cmd-r"),
+        ]));
+        let copy = rows.iter().find(|r| r.name == "Copy").unwrap();
+        let reload = rows.iter().find(|r| r.name == "Reload").unwrap();
+        assert!(row_matches(copy, "Terminal"));
+        assert!(!row_matches(reload, "terminal"));
+        assert!(row_matches(reload, "browser pages"));
+        assert_eq!(ShortcutGroup::WindowAndApp.label(), "Window & app");
     }
 
     #[test]
