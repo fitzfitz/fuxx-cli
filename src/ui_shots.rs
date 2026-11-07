@@ -226,6 +226,7 @@ const SCENES: &[(&str, fn())] = &[
     ("help", help_scenes),
     ("panels", panel_scenes),
     ("preferences", preferences_scenes),
+    ("update-button", update_button_scenes),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -5108,4 +5109,173 @@ fn title_area_scenes() {
         slot.borrow_mut().take();
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
+}
+
+/// The Update Available button above the sidebar's footer, over `switcher_workspace`, in both
+/// themes:
+/// - `update-idle`: nothing known: no button;
+/// - `update-available`: a newer release known: the blue button, white "Update Available";
+/// - `update-hover`: the pointer on it: the darker blue;
+/// - `update-downloading`: "Downloading update…", with the pointer on it and a click: still
+///   the plain blue (no hover) and still downloading.
+///
+/// Panics unless the button shows exactly when there is something to say, is 28 px tall and
+/// 8 px above the footer's top edge, inset `ROW_INSET` each side, filled `#1F6FEB` (`#1A5FCC`
+/// hovered while clickable) with white text, and its downloading words run wider than
+/// "Update Available".
+fn update_button_scenes() {
+    use crate::sidebar::{FOOTER, ROW_INSET, UPDATE_BUTTON, UPDATE_FILL, UPDATE_GAP};
+    use crate::sidebar::{UPDATE_HOVER, UPDATE_RADIUS, UPDATE_TEXT};
+    use crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH;
+    use crate::update_release::{Release, Version};
+    use crate::updater::{UpdateState, Updates};
+    use gpui::Modifiers;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(760.0), px(420.0));
+    let (width, height) = (SIDEBAR_DEFAULT_WIDTH, f32::from(dims.height));
+    // Where the button should be, in points: its top and bottom, and its left and right edges
+    // (the sidebar's 1 px right border is outside its content).
+    let bottom = height - FOOTER - UPDATE_GAP;
+    let top = bottom - UPDATE_BUTTON;
+    let mid = (top + bottom) / 2.0;
+    let (left, right) = (ROW_INSET, width - 1.0 - ROW_INSET);
+    let release = Release {
+        version: Version(0, 3, 1),
+        page_url: "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.1".into(),
+        notes: "Faster startup".into(),
+        zip: None,
+    };
+    let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+        p.iter()
+            .zip([c.r, c.g, c.b])
+            .all(|(a, b)| a.abs_diff(b) <= 3)
+    };
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        // The white text's left and right ends, per scene, to compare the words' widths.
+        let mut ink = Vec::new();
+        for scene in [
+            "update-idle",
+            "update-available",
+            "update-hover",
+            "update-downloading",
+        ] {
+            let state = match scene {
+                "update-idle" => UpdateState::Idle,
+                "update-downloading" => UpdateState::Downloading,
+                _ => UpdateState::Available(release.clone()),
+            };
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                cx.set_global(Updates { state });
+                let ws = cx.new(|cx| {
+                    let mut ws = switcher_workspace(window, cx);
+                    ws.sidebar.width = width;
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let n = format!("{scene}-{slug}");
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let on = point(px(left + 12.0), px(mid));
+                    if matches!(scene, "update-hover" | "update-downloading") {
+                        cx.simulate_mouse_move(window, on, None, Modifiers::none());
+                    }
+                    if scene == "update-downloading" {
+                        cx.simulate_click(window, on, Modifiers::none());
+                        cx.run_until_parked();
+                        let state = cx.read(|cx| cx.global::<Updates>().state.clone());
+                        assert_eq!(state, UpdateState::Downloading, "{n}: the click is ignored");
+                        // And the pointer is put back over it, for the still.
+                        cx.simulate_mouse_move(window, on, None, Modifiers::none());
+                    }
+                    slot.borrow_mut().take();
+                }
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+            let path = dir.join(format!("{n}.png"));
+            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            println!("ui-shots: {}", path.display());
+
+            let scale = shot.width as f32 / f32::from(dims.width);
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            // The fill expected where the text isn't: near its left end, half-way down.
+            let fill = if scene == "update-hover" {
+                UPDATE_HOVER
+            } else {
+                UPDATE_FILL
+            };
+            // The device rows, down a line just inside its left end, that are either blue.
+            let x = left + 12.0;
+            let rows: Vec<f32> = (0..(height * scale) as usize)
+                .map(|dy| dy as f32 / scale)
+                .filter(|&y| near(at(x, y), UPDATE_FILL) || near(at(x, y), UPDATE_HOVER))
+                .collect();
+            if scene == "update-idle" {
+                assert!(rows.is_empty(), "{n}: no button, but blue at {rows:?}");
+                continue;
+            }
+            assert!(!rows.is_empty(), "{n}: no button");
+            let (first, last) = (rows[0], rows[rows.len() - 1] + 1.0 / scale);
+            println!("ui-shots: {n}: button rows {first}..{last}");
+            assert!(
+                (first - top).abs() <= 0.5 && (last - bottom).abs() <= 0.5,
+                "{n}: the button spans {first}..{last}, expected {top}..{bottom}"
+            );
+            assert_eq!(
+                rows.len(),
+                (UPDATE_BUTTON * scale) as usize,
+                "{n}: one unbroken 28 px run"
+            );
+            assert!(
+                near(at(x, mid), fill),
+                "{n}: filled {fill:?}: {:?}",
+                at(x, mid)
+            );
+            // Inset ROW_INSET each side: blue just inside each end, not just outside.
+            let half = 0.5 / scale;
+            assert!(near(at(left + half, mid), fill), "{n}: its left end");
+            assert!(near(at(right - half, mid), fill), "{n}: its right end");
+            assert!(!near(at(left - half, mid), fill), "{n}: nothing left of it");
+            assert!(
+                !near(at(right + half, mid), fill),
+                "{n}: nothing right of it"
+            );
+            // White words, centred on the button. Their ink is any pixel far brighter than the
+            // blue (red over 128; the fills' is 0x1F or 0x1A), so the anti-aliased "…" counts.
+            // Looked for between the corners' radii, where the sidebar doesn't show through.
+            let band = UPDATE_BUTTON - 2.0 * UPDATE_RADIUS;
+            let ys: Vec<f32> = (0..(band * scale) as usize)
+                .map(|dy| top + UPDATE_RADIUS + dy as f32 / scale)
+                .collect();
+            let column = |x: f32, hit: &dyn Fn([u8; 3]) -> bool| ys.iter().any(|&y| hit(at(x, y)));
+            let xs = (0..((right - left) * scale) as usize).map(|dx| left + dx as f32 / scale);
+            let white = |p: [u8; 3]| near(p, UPDATE_TEXT);
+            assert!(xs.clone().any(|x| column(x, &white)), "{n}: white text");
+            let inked: Vec<f32> = xs
+                .filter(|&x| column(x, &|p: [u8; 3]| p[0] > 128))
+                .collect();
+            let (w0, w1) = (inked[0], inked[inked.len() - 1]);
+            let (l, r) = (w0 - left, right - w1);
+            assert!(
+                (l - r).abs() <= 2.0,
+                "{n}: the words sit {l} from the left, {r} from the right"
+            );
+            ink.push((scene, w1 - w0));
+        }
+        let wide = |s: &str| ink.iter().find(|(n, _)| *n == s).map(|(_, w)| *w).unwrap();
+        assert!(
+            wide("update-downloading") > wide("update-available") + 10.0,
+            "{slug}: \"Downloading update…\" is wider than \"Update Available\": {ink:?}"
+        );
+    }
 }

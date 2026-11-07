@@ -128,8 +128,51 @@ pub fn up_to_date_title(v: Version) -> String {
 /// The manual check's sheet when it couldn't ask (the reason is its text).
 pub const CHECK_FAILED: &str = "Couldn't check for updates";
 
+/// The update offer's sheet: its title, its text, and its buttons in order (the first updates,
+/// or downloads from GitHub when `self_update` is false; the last is Later).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Offer {
+    pub title: String,
+    pub detail: String,
+    pub buttons: Vec<&'static str>,
+    pub self_update: bool,
+}
+
+/// How many lines of the release notes the offer shows.
+pub const OFFER_NOTE_LINES: usize = 6;
+
+/// The offer of `release` to the `running` app: the version you have, the notes' first lines,
+/// and how many sessions restarting ends (said only when some do). Update and Restart when fuxx
+/// can update itself, else Download from GitHub….
+pub fn offer(
+    release: &Release,
+    running: Version,
+    ending_sessions: usize,
+    can_self_update: bool,
+) -> Offer {
+    let mut parts = vec![format!("You have {running}.")];
+    let notes = notes_excerpt(&release.notes, OFFER_NOTE_LINES);
+    if !notes.is_empty() {
+        parts.push(notes);
+    }
+    if ending_sessions > 0 {
+        let s = if ending_sessions == 1 { "" } else { "s" };
+        parts.push(format!("Restarting ends {ending_sessions} session{s}."));
+    }
+    let first = if can_self_update {
+        "Update and Restart"
+    } else {
+        "Download from GitHub\u{2026}"
+    };
+    Offer {
+        title: format!("fuxx {} is available", release.version),
+        detail: parts.join("\n\n"),
+        buttons: vec![first, "Later"],
+        self_update: can_self_update,
+    }
+}
+
 /// The first `lines` non-empty lines of the release notes, joined by newlines.
-#[allow(dead_code)] // used by the Update Available offer from M11e Task 4
 pub fn notes_excerpt(body: &str, lines: usize) -> String {
     body.lines()
         .map(str::trim_end)
@@ -300,6 +343,73 @@ mod tests {
             check_outcome(Err("offline or unreachable".into()), running),
             CheckOutcome::Failed("offline or unreachable".into())
         );
+    }
+
+    fn offered(notes: &str, zip: bool) -> Release {
+        Release {
+            version: Version(0, 3, 1),
+            page_url: "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.1".into(),
+            notes: notes.into(),
+            zip: zip.then(|| Asset {
+                url: "https://x/fuxx-0.3.1.zip".into(),
+                sha256: Some(HEX64.into()),
+            }),
+        }
+    }
+
+    #[test]
+    fn the_offer_with_no_sessions_ending() {
+        let o = offer(&offered("Faster\n\nFixes", true), Version(0, 3, 0), 0, true);
+        assert_eq!(
+            o,
+            Offer {
+                title: "fuxx 0.3.1 is available".into(),
+                detail: "You have 0.3.0.\n\nFaster\nFixes".into(),
+                buttons: vec!["Update and Restart", "Later"],
+                self_update: true,
+            }
+        );
+    }
+
+    #[test]
+    fn the_offer_says_how_many_sessions_restarting_ends() {
+        let o = offer(&offered("Faster", true), Version(0, 3, 0), 4, true);
+        assert_eq!(
+            o.detail,
+            "You have 0.3.0.\n\nFaster\n\nRestarting ends 4 sessions."
+        );
+        let one = offer(&offered("Faster", true), Version(0, 3, 0), 1, true);
+        assert!(
+            one.detail.ends_with("\n\nRestarting ends 1 session."),
+            "{}",
+            one.detail
+        );
+        // No notes: no empty paragraph between.
+        let bare = offer(&offered("", true), Version(0, 3, 0), 2, true);
+        assert_eq!(
+            bare.detail,
+            "You have 0.3.0.\n\nRestarting ends 2 sessions."
+        );
+    }
+
+    #[test]
+    fn the_offer_downloads_from_github_when_it_cant_update_itself() {
+        let o = offer(&offered("Faster", true), Version(0, 3, 0), 3, false);
+        assert_eq!(o.buttons, vec!["Download from GitHub\u{2026}", "Later"]);
+        assert!(!o.self_update);
+        assert_eq!(o.title, "fuxx 0.3.1 is available");
+    }
+
+    #[test]
+    fn the_offer_cuts_the_notes_to_six_lines() {
+        let notes = (1..=9)
+            .map(|i| format!("- change {i}\n"))
+            .collect::<String>();
+        let o = offer(&offered(&notes, true), Version(0, 3, 0), 0, true);
+        assert_eq!(OFFER_NOTE_LINES, 6);
+        let lines: Vec<&str> = o.detail.lines().collect();
+        assert_eq!(lines.len(), 2 + 6, "{lines:?}");
+        assert_eq!(lines.last(), Some(&"- change 6"));
     }
 
     #[test]

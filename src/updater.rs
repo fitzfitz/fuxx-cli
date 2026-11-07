@@ -5,15 +5,26 @@
 // main thread. What to do with an answer is decided by the pure functions here and in
 // `update_release`; `fetch_latest` is the only part that touches the network.
 
+use std::ffi::{CString, c_char, c_int};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{App, Global, PromptLevel};
+use gpui::{App, Global, PromptLevel, Window};
 
 use crate::update_release::{self, CheckOutcome, Release};
+use crate::workspace::Workspace;
+
+unsafe extern "C" {
+    fn access(path: *const c_char, mode: c_int) -> c_int;
+}
+
+/// `access`'s "may write" mode.
+const W_OK: c_int = 2;
 
 /// GitHub's latest release of fuxx, as JSON. Public repo: no token.
 pub const API_URL: &str = "https://api.github.com/repos/fitzfitz/fuxx-cli/releases/latest";
-/// The latest release's page, for when the JSON gives none.
+/// The latest release's page, for when the JSON gives none (or one that isn't fuxx's).
 pub const RELEASES_PAGE: &str = "https://github.com/fitzfitz/fuxx-cli/releases/latest";
 /// The first automatic check, after launch.
 pub const FIRST_CHECK: Duration = Duration::from_secs(10);
@@ -29,6 +40,84 @@ pub enum UpdateState {
     /// Updating to it (Task 5 sets this).
     #[allow(dead_code)] // set by the download from M11e Task 5
     Downloading,
+}
+
+/// The sidebar's button for `state`: its words, and whether a click opens the offer. None
+/// while nothing newer is known.
+pub fn button(state: &UpdateState) -> Option<(&'static str, bool)> {
+    match state {
+        UpdateState::Idle => None,
+        UpdateState::Available(_) => Some(("Update Available", true)),
+        UpdateState::Downloading => Some(("Downloading update\u{2026}", false)),
+    }
+}
+
+/// Where a release link fuxx opens goes: the release's own page only when it is one of fuxx's
+/// on GitHub, else the latest release's (the JSON doesn't get to pick what the browser opens).
+pub fn release_link(release: &Release) -> &str {
+    if release
+        .page_url
+        .starts_with("https://github.com/fitzfitz/fuxx-cli/")
+    {
+        &release.page_url
+    } else {
+        RELEASES_PAGE
+    }
+}
+
+/// The `fuxx.app` to swap, for the running binary `exe`: the app three levels up
+/// (`fuxx.app/Contents/MacOS/fuxx`), unless it is on a disk image (`/Volumes/`), run from where
+/// macOS moved it (`/AppTranslocation/`), or in a folder that isn't `writable` (where the swap
+/// renames it). None means fuxx can't update itself.
+pub fn self_update_target(exe: &Path, writable: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    let named = |p: &Path, name: &str| p.file_name().is_some_and(|n| n == name);
+    if !(named(macos, "MacOS") && named(contents, "Contents") && named(app, "fuxx.app")) {
+        return None;
+    }
+    let text = app.to_string_lossy();
+    if text.starts_with("/Volumes/") || text.contains("/AppTranslocation/") {
+        return None;
+    }
+    writable(app.parent()?).then(|| app.to_path_buf())
+}
+
+/// Whether `release` can be installed in place: it has the `fuxx-{version}.zip` with a digest
+/// to check it by. Otherwise the offer sends you to GitHub.
+pub fn installable(release: &Release) -> bool {
+    release.zip.as_ref().is_some_and(|zip| zip.sha256.is_some())
+}
+
+/// Whether this process may write in `dir` (`access(2)`; one quick syscall).
+fn writable(dir: &Path) -> bool {
+    let Ok(path) = CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a valid NUL-terminated string that outlives the call.
+    unsafe { access(path.as_ptr(), W_OK) == 0 }
+}
+
+/// Whether this fuxx can update itself to `release`: run from a `fuxx.app` it may swap
+/// (`self_update_target`), and the release has a checked zip.
+fn can_self_update(release: &Release) -> bool {
+    crate::native_notify::is_bundled()
+        && installable(release)
+        && std::env::current_exe()
+            .ok()
+            .and_then(|exe| self_update_target(&exe, writable))
+            .is_some()
+}
+
+/// How many sessions restarting ends: every terminal session, unless they run in the
+/// background service (the new fuxx reattaches to those).
+fn ending_sessions(workspace: &Workspace) -> usize {
+    if workspace.persistent {
+        0
+    } else {
+        workspace.sessions.items().len()
+    }
 }
 
 /// The app's update state (a global, set at launch).
@@ -86,44 +175,29 @@ pub fn fetch_latest() -> Result<String, String> {
     curl_answer(out.status.success(), &String::from_utf8_lossy(&out.stdout))
 }
 
-/// A sheet: its title, its text, its buttons in order, and the button that opens a page.
+/// A sheet that only informs: its title, its text, and its buttons in order.
 #[derive(Clone, Debug, PartialEq)]
 struct Sheet {
     title: String,
     detail: Option<String>,
     buttons: Vec<&'static str>,
-    open: Option<(usize, String)>,
 }
 
-/// The manual check's sheet for what it found. (A newer release's is a stand-in until the
-/// Update Available offer, M11e Task 4.)
-fn manual_sheet(outcome: &CheckOutcome) -> Sheet {
+/// The manual check's sheet for what it found; None for a newer release, which gets the
+/// update offer (`show_offer`) the button opens.
+fn manual_sheet(outcome: &CheckOutcome) -> Option<Sheet> {
     match outcome {
-        CheckOutcome::Newer(release) => {
-            let page = if release.page_url.is_empty() {
-                RELEASES_PAGE.to_string()
-            } else {
-                release.page_url.clone()
-            };
-            Sheet {
-                title: format!("fuxx {} is available", release.version),
-                detail: None,
-                buttons: vec!["Download from GitHub\u{2026}", "Later"],
-                open: Some((0, page)),
-            }
-        }
-        CheckOutcome::UpToDate(v) => Sheet {
+        CheckOutcome::Newer(_) => None,
+        CheckOutcome::UpToDate(v) => Some(Sheet {
             title: update_release::up_to_date_title(*v),
             detail: None,
             buttons: vec!["OK"],
-            open: None,
-        },
-        CheckOutcome::Failed(reason) => Sheet {
+        }),
+        CheckOutcome::Failed(reason) => Some(Sheet {
             title: update_release::CHECK_FAILED.to_string(),
             detail: Some(reason.clone()),
             buttons: vec!["OK"],
-            open: None,
-        },
+        }),
     }
 }
 
@@ -158,11 +232,16 @@ fn found(outcome: CheckOutcome, manual: bool, cx: &mut App) {
         cx.refresh_windows();
     }
     if manual {
-        show_sheet(manual_sheet(&outcome), cx);
+        match manual_sheet(&outcome) {
+            Some(sheet) => show_sheet(sheet, cx),
+            None => crate::with_help_window(cx, |workspace, _, window, cx| {
+                show_offer(workspace, window, cx)
+            }),
+        }
     }
 }
 
-/// `sheet` on the main fuxx window; its page button opens the page.
+/// `sheet` on the main fuxx window.
 fn show_sheet(sheet: Sheet, cx: &mut App) {
     crate::with_help_window(cx, move |_, _, window, cx| {
         let answer = window.prompt(
@@ -172,16 +251,57 @@ fn show_sheet(sheet: Sheet, cx: &mut App) {
             sheet.buttons.as_slice(),
             cx,
         );
-        let open = sheet.open;
-        cx.spawn(async move |_, cx| {
-            if let Some((button, url)) = open
-                && answer.await.ok() == Some(button)
-            {
-                cx.update(|cx| cx.open_url(&url));
-            }
+        // Its only button closes it; the answer is waited for and dropped.
+        cx.spawn(async move |_, _| {
+            answer.await.ok();
         })
         .detach();
     });
+}
+
+/// The update offer (`update_release::offer`) as a sheet on `window`, for the release now
+/// `Available`; nothing in any other state (so a click while downloading does nothing). Update
+/// and Restart installs it; Download from GitHub… opens its page; Later just closes it. Both
+/// the Update Available button and fuxx → Check for Updates… show it.
+pub fn show_offer(workspace: &Workspace, window: &mut Window, cx: &mut App) {
+    let UpdateState::Available(release) = cx
+        .try_global::<Updates>()
+        .map_or(UpdateState::Idle, |u| u.state.clone())
+    else {
+        return;
+    };
+    let offer = update_release::offer(
+        &release,
+        update_release::current(),
+        ending_sessions(workspace),
+        can_self_update(&release),
+    );
+    let answer = window.prompt(
+        PromptLevel::Info,
+        &offer.title,
+        Some(&offer.detail),
+        offer.buttons.as_slice(),
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        if answer.await.ok() != Some(0) {
+            return; // Later, or the sheet went away
+        }
+        cx.update(|cx| {
+            if offer.self_update {
+                install(&release, cx);
+            } else {
+                cx.open_url(release_link(&release));
+            }
+        });
+    })
+    .detach();
+}
+
+/// Download `release`, check it, swap `fuxx.app` and reopen. For now (until M11e Task 5) it
+/// opens the release's page.
+pub fn install(release: &Release, cx: &mut App) {
+    cx.open_url(release_link(release));
 }
 
 /// The automatic checks, for a bundled fuxx only (never `cargo run`, the ui-shots or tests):
@@ -281,43 +401,107 @@ mod tests {
 
     #[test]
     fn the_manual_checks_sheets() {
+        // A newer release answers with the update offer (`show_offer`), not a sheet of its own.
         let page = "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.1";
-        let newer = manual_sheet(&CheckOutcome::Newer(release(Version(0, 3, 1), page)));
         assert_eq!(
-            newer,
-            Sheet {
-                title: "fuxx 0.3.1 is available".into(),
-                detail: None,
-                buttons: vec!["Download from GitHub\u{2026}", "Later"],
-                open: Some((0, page.into())),
-            }
-        );
-        // No page in the JSON: the latest release's page.
-        let no_page = manual_sheet(&CheckOutcome::Newer(release(Version(0, 3, 1), "")));
-        assert_eq!(
-            no_page.open,
-            Some((
-                0,
-                "https://github.com/fitzfitz/fuxx-cli/releases/latest".into()
-            ))
+            manual_sheet(&CheckOutcome::Newer(release(Version(0, 3, 1), page))),
+            None
         );
         assert_eq!(
             manual_sheet(&CheckOutcome::UpToDate(Version(0, 3, 0))),
-            Sheet {
+            Some(Sheet {
                 title: "fuxx 0.3.0 is the newest version.".into(),
                 detail: None,
                 buttons: vec!["OK"],
-                open: None,
-            }
+            })
         );
         assert_eq!(
             manual_sheet(&CheckOutcome::Failed("GitHub answered 403".into())),
-            Sheet {
+            Some(Sheet {
                 title: "Couldn't check for updates".into(),
                 detail: Some("GitHub answered 403".into()),
                 buttons: vec!["OK"],
-                open: None,
-            }
+            })
+        );
+    }
+
+    #[test]
+    fn opens_only_fuxxs_own_release_pages() {
+        let good = "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.1";
+        assert_eq!(release_link(&release(Version(0, 3, 1), good)), good);
+        for bad in [
+            "",
+            "javascript:alert(1)",
+            "https://evil.example/fitzfitz/fuxx-cli/releases",
+            "http://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.1",
+            "https://github.com/fitzfitz/fuxx-cli-evil/releases",
+            "https://github.com/other/fuxx-cli/releases/tag/v0.3.1",
+        ] {
+            assert_eq!(
+                release_link(&release(Version(0, 3, 1), bad)),
+                RELEASES_PAGE,
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn updates_itself_only_in_a_writable_fuxx_app() {
+        use std::path::{Path, PathBuf};
+        let yes = |_: &Path| true;
+        let no = |_: &Path| false;
+        let exe = Path::new("/Users/me/Applications/fuxx.app/Contents/MacOS/fuxx");
+        assert_eq!(
+            self_update_target(exe, yes),
+            Some(PathBuf::from("/Users/me/Applications/fuxx.app"))
+        );
+        // It is the app's folder (where `fuxx.app.previous` goes) that must be writable.
+        let asked = std::cell::RefCell::new(Vec::new());
+        self_update_target(exe, |p: &Path| {
+            asked.borrow_mut().push(p.to_path_buf());
+            true
+        });
+        assert_eq!(*asked.borrow(), [PathBuf::from("/Users/me/Applications")]);
+        assert_eq!(self_update_target(exe, no), None);
+        for exe in [
+            "/Volumes/fuxx 0.3.0/fuxx.app/Contents/MacOS/fuxx",
+            "/private/var/folders/x1/T/AppTranslocation/ABCD-1234/d/fuxx.app/Contents/MacOS/fuxx",
+            "/Users/me/code/fuxx-cli/target/debug/fuxx",
+            "/Applications/Other.app/Contents/MacOS/fuxx",
+            "/Applications/fuxx.app/Contents/Resources/fuxx",
+            "fuxx",
+        ] {
+            assert_eq!(self_update_target(Path::new(exe), yes), None, "{exe}");
+        }
+    }
+
+    #[test]
+    fn installs_only_a_release_with_a_checked_zip() {
+        let mut r = release(Version(0, 3, 1), "p");
+        assert!(!installable(&r), "no zip");
+        r.zip = Some(update_release::Asset {
+            url: "https://x/fuxx-0.3.1.zip".into(),
+            sha256: None,
+        });
+        assert!(!installable(&r), "no digest");
+        r.zip = Some(update_release::Asset {
+            url: "https://x/fuxx-0.3.1.zip".into(),
+            sha256: Some("ab".repeat(32)),
+        });
+        assert!(installable(&r));
+    }
+
+    #[test]
+    fn the_button_reads_by_the_state() {
+        let r = release(Version(0, 3, 1), "p");
+        assert_eq!(button(&UpdateState::Idle), None);
+        assert_eq!(
+            button(&UpdateState::Available(r)),
+            Some(("Update Available", true))
+        );
+        assert_eq!(
+            button(&UpdateState::Downloading),
+            Some(("Downloading update\u{2026}", false))
         );
     }
 
