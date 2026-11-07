@@ -109,6 +109,7 @@ pub fn describe(action: &str) -> Describe {
         "browser_tab::ResetZoom" => Listed(BrowserPages, "Actual size"),
 
         "fuxx::Quit" => Listed(WindowAndApp, "Quit fuxx"),
+        "fuxx::QuitAndEndSessions" => Listed(WindowAndApp, "Quit fuxx and End All Sessions"),
         "fuxx::OpenPreferences" => Listed(WindowAndApp, "Preferences\u{2026}"),
         "fuxx::Hide" => Listed(WindowAndApp, "Hide fuxx"),
         "window::Minimize" => Listed(WindowAndApp, "Minimize"),
@@ -345,7 +346,9 @@ mod tests {
 
     #[test]
     fn every_binding_is_listed_or_marked_unlisted() {
-        for (action, keystroke) in binding_pairs(&crate::key_bindings()) {
+        let mut bindings = crate::key_bindings();
+        bindings.extend(crate::persistent_bindings());
+        for (action, keystroke) in binding_pairs(&bindings) {
             assert_ne!(
                 describe(&action),
                 Describe::Unknown,
