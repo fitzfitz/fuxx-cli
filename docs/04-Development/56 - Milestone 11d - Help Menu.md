@@ -154,7 +154,7 @@ Where the build settled something the plan left open, or changed it:
 
 ## On-screen checklist (pending)
 
-Run the branch's `target/dist/fuxx.app` (built in `.worktrees/m11d-help-menu`) (the bundle, so notifications and the log behave as shipped).
+Run `target/dist/fuxx.app` (the bundle, so notifications and the log behave as shipped).
 
 1. The menu bar reads fuxx · File · Edit · Pane · View · Window · **Help**.
 2. Help has a search box at the top, and typing "split" in it highlights Pane → Split Right.

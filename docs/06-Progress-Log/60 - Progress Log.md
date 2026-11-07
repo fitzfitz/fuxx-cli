@@ -14,13 +14,24 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11d — Help menu 🟨 built and reviewed (2026-11-08, branch `m11d-help-menu`, not merged), on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11d — Help menu 🟨 built and reviewed (2026-11-08, merged into `master` locally, not pushed), on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-08 — M11e planned: Update Available
+- **Did:** You asked for an "Update Available" that updates fuxx itself, without M12. Findings: Homebrew is free, but
+  since Homebrew 5.0 its official casks need a Developer ID and notarization, and `--no-quarantine` is gone, so it
+  wouldn't avoid "Open Anyway". A download made by fuxx itself (curl) carries no quarantine mark, so a self-made
+  updater can work with the ad-hoc signature. You chose fuxx's own updater (not Sparkle), a blue rounded "Update
+  Available" above the bottom bar, and releases by GitHub Actions on a tag. You skipped the questions; the other
+  choices are AI's, in [[57 - Milestone 11e - Update Available]]. Plan: [[M11e Plan - Update Available]]: a spike on
+  your Mac first (no "Open Anyway", notification permission kept), then the workflow and v0.3.0, the check, the
+  button, the install. Scope updated ([[12 - Scope]]).
+- **Next:** your review of note 57 and the plan; then Task 0.
 
 ### 2026-11-08 — M11d built: the Help menu (on-screen check pending)
 - **Did:** Built on branch `m11d-help-menu` (worktree `.worktrees/m11d-help-menu`), 5 tasks, each reviewed, then a
@@ -32,7 +43,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   from Preferences or a popped-out page shows the panel rather than closing it; ⌥⌘Q is listed when it is bound; the
   MCP row quotes a path with spaces. The review also confirmed the screenshot runs never touch your saved sessions.
   786 tests pass, ui-shots ok, fmt and clippy clean; `target/dist/fuxx.app` built in the worktree.
-- **Next:** your on-screen check (17 items in note 56), then merge on your word. The M11c check is still open.
+- **Merged** into `master` locally on your word (2026-11-08, fast-forward; 786 tests pass on master); not pushed.
+- **Next:** your on-screen check (17 items in note 56). The M11c check is still open.
 
 ### 2026-11-07 — M11d planned: the Help menu
 - **Did:** You asked to plan the Help menu (requested 2026-11-06) and said "go" to skip the questions, so every
