@@ -24,6 +24,8 @@ mod fonts;
 mod git_branch;
 mod grid;
 mod groups;
+#[allow(dead_code)] // used by the Keyboard Shortcuts panel from M11d Task 3
+mod help_shortcuts;
 mod host_picker;
 mod keys;
 mod layout_model;
@@ -140,7 +142,7 @@ fn new_bindings() -> [KeyBinding; 2] {
 /// Every key binding but ⌘T / ⌘N (`new_bindings`). Order matters where two bindings of a key
 /// are equally deep in the focused element's key contexts: the later one wins. So a browser
 /// tab's page keys come after fuxx's own.
-fn key_bindings() -> Vec<KeyBinding> {
+pub(crate) fn key_bindings() -> Vec<KeyBinding> {
     let mut bindings = vec![
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-,", OpenPreferences, None),
