@@ -24,6 +24,8 @@ mod fonts;
 mod git_branch;
 mod grid;
 mod groups;
+#[allow(dead_code)] // used by the Command Reference panel from M11d Task 3
+mod help_commands;
 #[allow(dead_code)] // used by the Keyboard Shortcuts panel from M11d Task 3
 mod help_shortcuts;
 mod host_picker;

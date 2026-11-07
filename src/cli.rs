@@ -44,7 +44,7 @@ pub enum DaemonCommand {
     Stop { force: bool },
 }
 
-const USAGE: &str = "\
+pub(crate) const USAGE: &str = "\
 usage: fuxx [command]   (no command opens the app)
 
   ls                                   list sessions (#N* focused, #N+ on screen)
@@ -100,7 +100,7 @@ Exit codes: 0 ok, 1 refused or nothing to show, 2 bad arguments, 3 fuxx not reac
 ";
 
 /// Command name → protocol method.
-const COMMANDS: &[(&str, &str)] = &[
+pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("ls", "session.list"),
     ("new", "session.new"),
     ("close", "session.close"),
