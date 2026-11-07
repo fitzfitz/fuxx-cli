@@ -1,18 +1,21 @@
 // The self-updater's effects: asking GitHub for the latest release (at launch, daily, and from
-// fuxx → Check for Updates…), and what the app knows about it (`Updates`).
+// fuxx → Check for Updates…), what the app knows about it (`Updates`), and installing it
+// (download, check, swap and reopen).
 //
-// The fetch blocks (curl), so it runs on the background executor; the outcome is handled on the
-// main thread. What to do with an answer is decided by the pure functions here and in
-// `update_release`; `fetch_latest` is the only part that touches the network.
+// The fetch and the download block (curl, shasum, ditto, plutil, codesign), so they run on the
+// background executor; their outcomes are handled on the main thread. What to do with an answer
+// is decided by the pure functions here and in `update_release`; `fetch_latest` and
+// `download_and_check` are the only parts that touch the network.
 
-use std::ffi::{CString, c_char, c_int};
+use std::ffi::{CString, OsStr, OsString, c_char, c_int};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use gpui::{App, Global, PromptLevel, Window};
 
-use crate::update_release::{self, CheckOutcome, Release};
+use crate::update_release::{self, CheckOutcome, Release, Unpacked, Version};
 use crate::workspace::{Session, Workspace};
 use crate::workspace_daemon::Service;
 
@@ -38,8 +41,7 @@ pub enum UpdateState {
     Idle,
     /// A check found this newer release.
     Available(Release),
-    /// Updating to it (Task 5 sets this).
-    #[allow(dead_code)] // set by the download from M11e Task 5
+    /// Downloading and checking it (`install`), until fuxx quits for the swap or it fails.
     Downloading,
 }
 
@@ -297,7 +299,7 @@ pub fn show_offer(workspace: &Workspace, window: &mut Window, cx: &mut App) {
         }
         cx.update(|cx| {
             if offer.self_update {
-                install(&release, cx);
+                install(release, cx);
             } else {
                 cx.open_url(release_link(&release));
             }
@@ -306,10 +308,277 @@ pub fn show_offer(workspace: &Workspace, window: &mut Window, cx: &mut App) {
     .detach();
 }
 
-/// Download `release`, check it, swap `fuxx.app` and reopen. For now (until M11e Task 5) it
-/// opens the release's page.
-pub fn install(release: &Release, cx: &mut App) {
-    cx.open_url(release_link(release));
+/// Whether the sheet's Update and Restart for `release` still applies: it is the release on offer
+/// now (`state`). An answer can arrive after a second offer, or once an update is under way.
+fn should_install(state: &UpdateState, release: &Release) -> bool {
+    matches!(state, UpdateState::Available(offered) if offered.version == release.version)
+}
+
+/// The sheet for an update that couldn't be installed: the reason, Open Release Page and OK.
+fn install_failed_sheet(reason: String) -> Sheet {
+    Sheet {
+        title: update_release::INSTALL_FAILED.to_string(),
+        detail: Some(reason),
+        buttons: vec!["Open Release Page", "OK"],
+    }
+}
+
+/// The download folder, `~/Library/Caches/fuxx/update/` under `home`.
+fn cache_dir(home: &Path) -> PathBuf {
+    home.join("Library/Caches/fuxx/update")
+}
+
+/// curl's arguments for the download: fail on an HTTP error, follow redirects (GitHub's assets
+/// redirect), 10 minutes at most, into `zip`. The URL comes after `--url`, so it is never read as
+/// an option.
+fn download_args(url: &str, zip: &Path) -> [OsString; 7] {
+    [
+        "-fL".into(),
+        "--max-time".into(),
+        "600".into(),
+        "-o".into(),
+        zip.into(),
+        "--url".into(),
+        url.into(),
+    ]
+}
+
+/// The digest from `shasum -a 256`'s output (`<hex>  <path>`); empty when it printed none.
+fn digest_from_shasum(out: &str) -> String {
+    out.split_whitespace().next().unwrap_or("").to_string()
+}
+
+/// The `*.app` folders directly in `dir` (not files, not links), sorted; none when `dir` can't
+/// be read.
+fn apps_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut apps: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "app"))
+        .collect();
+    apps.sort();
+    apps
+}
+
+/// Run `program args…` and give its standard output, or None when it couldn't run or failed.
+fn output_of(program: &str, args: &[&OsStr]) -> Option<String> {
+    let out = Command::new(program).args(args).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `key` from `app`'s Info.plist (`plutil -extract <key> raw`), trimmed; empty when unreadable.
+fn plist_value(app: &Path, key: &str) -> String {
+    let plist = app.join("Contents/Info.plist");
+    let args = [
+        OsStr::new("-extract"),
+        OsStr::new(key),
+        OsStr::new("raw"),
+        OsStr::new("-o"),
+        OsStr::new("-"),
+        plist.as_os_str(),
+    ];
+    output_of("/usr/bin/plutil", &args).map_or_else(String::new, |v| v.trim().to_string())
+}
+
+/// What the unpacked zip in `dir` holds, for `update_release::verify`, and its one app if it
+/// holds exactly one. The app is read (Info.plist, `codesign --verify --deep --strict`) only then.
+fn read_unpacked(dir: &Path) -> (Unpacked, Option<PathBuf>) {
+    match apps_in(dir).as_slice() {
+        [app] => {
+            let verify = ["--verify", "--deep", "--strict"].map(OsStr::new);
+            let signature_ok = output_of(
+                "/usr/bin/codesign",
+                &[&verify[..], &[app.as_os_str()]].concat(),
+            )
+            .is_some();
+            let unpacked = Unpacked {
+                bundle_id: plist_value(app, "CFBundleIdentifier"),
+                version: plist_value(app, "CFBundleShortVersionString"),
+                signature_ok,
+                apps: 1,
+            };
+            (unpacked, Some(app.clone()))
+        }
+        apps => {
+            let unpacked = Unpacked {
+                bundle_id: String::new(),
+                version: String::new(),
+                signature_ok: false,
+                apps: apps.len(),
+            };
+            (unpacked, None)
+        }
+    }
+}
+
+/// Download the release `version`'s zip from `url` into `cache` (emptied first), and check it
+/// against its digest `sha256` and `update_release::verify`. Ok is the unpacked app, ready to
+/// swap in; Err is the reason for the error sheet. Nothing outside `cache` is touched. Blocks
+/// (the download may take up to 10 minutes): call it off the UI thread.
+fn download_and_check(
+    version: Version,
+    url: &str,
+    sha256: &str,
+    cache: &Path,
+) -> Result<PathBuf, String> {
+    // Emptied first, so nothing from an earlier try is checked or swapped in.
+    if cache.exists() {
+        std::fs::remove_dir_all(cache).map_err(|_| update_release::CACHE_FAILED)?;
+    }
+    std::fs::create_dir_all(cache).map_err(|_| update_release::CACHE_FAILED)?;
+    let zip = cache.join(format!("fuxx-{version}.zip"));
+    let args = download_args(url, &zip);
+    let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+    output_of("/usr/bin/curl", &args).ok_or(update_release::DOWNLOAD_FAILED)?;
+    let actual = output_of(
+        "/usr/bin/shasum",
+        &[OsStr::new("-a"), OsStr::new("256"), zip.as_os_str()],
+    )
+    .map_or_else(String::new, |out| digest_from_shasum(&out));
+    // A damaged download isn't even unpacked.
+    if !update_release::checksum_matches(sha256, &actual) {
+        return Err("the download is damaged (checksum)".into());
+    }
+    let unpacked = cache.join("unpacked");
+    let ditto = [
+        OsStr::new("-x"),
+        OsStr::new("-k"),
+        zip.as_os_str(),
+        unpacked.as_os_str(),
+    ];
+    let (facts, app) = match output_of("/usr/bin/ditto", &ditto) {
+        Some(_) => read_unpacked(&unpacked),
+        // It didn't unpack: count it as holding no app.
+        None => (
+            Unpacked {
+                bundle_id: String::new(),
+                version: String::new(),
+                signature_ok: false,
+                apps: 0,
+            },
+            None,
+        ),
+    };
+    update_release::verify(version, sha256, &actual, &facts)?;
+    app.ok_or_else(|| format!("the zip holds {} apps", facts.apps))
+}
+
+/// Write the swap script (`update_release::swap_script`, for this process) into `cache`, and
+/// start it detached with `/bin/sh`: its own session, stdin and output on `/dev/null`, no other
+/// file descriptors. It does the swap once fuxx has quit.
+fn start_swap(cache: &Path, app: &Path, new_app: &Path) -> Result<(), String> {
+    let script = cache.join("swap.sh");
+    let text = update_release::swap_script(std::process::id(), app, new_app, "/usr/bin/open");
+    std::fs::write(&script, text).map_err(|_| update_release::SWAP_FAILED)?;
+    let script = script.to_str().ok_or(update_release::SWAP_FAILED)?;
+    crate::daemon_client::spawn_detached(
+        Path::new("/bin/sh"),
+        &[script],
+        Path::new("/dev/null"),
+        &[],
+    )
+    .map_err(|_| update_release::SWAP_FAILED)?;
+    Ok(())
+}
+
+/// Update and Restart: install `release` if it is still the one on offer (`should_install`;
+/// else nothing). The button reads "Downloading update…" while, off the UI thread, the zip is
+/// downloaded and checked (`download_and_check`) and the swap script started; then fuxx quits
+/// and the script reopens it. When anything fails the installed fuxx is untouched: the release
+/// is on offer again and a sheet says why (`install_failed`).
+pub fn install(release: Release, cx: &mut App) {
+    let state = cx
+        .try_global::<Updates>()
+        .map_or(UpdateState::Idle, |u| u.state.clone());
+    if !should_install(&state, &release) {
+        return;
+    }
+    let app = std::env::current_exe()
+        .ok()
+        .and_then(|exe| self_update_target(&exe, writable))
+        .filter(|app| app.to_str().is_some());
+    let zip = release
+        .zip
+        .clone()
+        .and_then(|zip| Some((zip.url, zip.sha256?)));
+    let home = crate::workspace::home_dir();
+    let (Some(app), Some((url, sha256)), Some(home)) = (app, zip, home) else {
+        install_failed(release, update_release::CANT_UPDATE_HERE.into(), cx);
+        return;
+    };
+    eprintln!("[fuxx] updating to {}", release.version);
+    cx.set_global(Updates {
+        state: UpdateState::Downloading,
+    });
+    cx.refresh_windows();
+    let version = release.version;
+    let work = cx.background_executor().spawn(async move {
+        let cache = cache_dir(&home);
+        let new_app = download_and_check(version, &url, &sha256, &cache)?;
+        start_swap(&cache, &app, &new_app)
+    });
+    cx.spawn(async move |cx| {
+        let result = work.await;
+        cx.update(|cx| match result {
+            Ok(()) => {
+                eprintln!("[fuxx] update to {version} checked: quitting for the swap");
+                cx.quit();
+            }
+            Err(reason) => install_failed(release, reason, cx),
+        });
+    })
+    .detach();
+}
+
+/// The update didn't install (`reason`): `release` is on offer again (the button back to Update
+/// Available), and the error sheet goes on the main fuxx window. Open Release Page opens its
+/// page (`release_link`); OK closes it.
+fn install_failed(release: Release, reason: String, cx: &mut App) {
+    eprintln!("[fuxx] the update couldn't be installed: {reason}");
+    cx.set_global(Updates {
+        state: UpdateState::Available(release.clone()),
+    });
+    cx.refresh_windows();
+    let sheet = install_failed_sheet(reason);
+    crate::with_help_window(cx, move |_, _, window, cx| {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &sheet.title,
+            sheet.detail.as_deref(),
+            sheet.buttons.as_slice(),
+            cx,
+        );
+        cx.spawn(async move |_, cx| {
+            if answer.await.ok() == Some(0) {
+                cx.update(|cx| cx.open_url(release_link(&release)));
+            }
+        })
+        .detach();
+    });
+}
+
+/// At launch, delete the app the last update replaced (`<app>.previous`, kept beside `app` until
+/// the new fuxx has started). Nothing when there is none; a failure is only logged.
+pub fn clean_previous(app: &Path) {
+    let previous = update_release::previous_app(app);
+    let Ok(meta) = previous.symlink_metadata() else {
+        return;
+    };
+    let removed = if meta.is_dir() {
+        std::fs::remove_dir_all(&previous)
+    } else {
+        std::fs::remove_file(&previous)
+    };
+    match removed {
+        Ok(()) => eprintln!("[fuxx] removed {}", previous.display()),
+        Err(err) => eprintln!("[fuxx] couldn't remove {}: {err}", previous.display()),
+    }
 }
 
 /// The automatic checks, for a bundled fuxx only (never `cargo run`, the ui-shots or tests):
@@ -507,6 +776,98 @@ mod tests {
         // sessions running here end.
         assert_eq!(ending_sessions(false, 4), 4);
         assert_eq!(ending_sessions(false, 0), 0);
+    }
+
+    #[test]
+    fn installs_only_the_release_still_on_offer() {
+        let r = release(Version(0, 3, 1), "p");
+        assert!(should_install(&UpdateState::Available(r.clone()), &r));
+        // A second offer of another version came first: this answer is stale.
+        let other = release(Version(0, 3, 2), "p");
+        assert!(!should_install(&UpdateState::Available(other), &r));
+        // Already downloading (a second sheet answered), or nothing on offer.
+        assert!(!should_install(&UpdateState::Downloading, &r));
+        assert!(!should_install(&UpdateState::Idle, &r));
+    }
+
+    #[test]
+    fn the_install_failed_sheet() {
+        assert_eq!(
+            install_failed_sheet("the zip holds 2 apps".into()),
+            Sheet {
+                title: "The update couldn't be installed".into(),
+                detail: Some("the zip holds 2 apps".into()),
+                buttons: vec!["Open Release Page", "OK"],
+            }
+        );
+    }
+
+    #[test]
+    fn downloads_into_the_cache_with_curl() {
+        use std::path::Path;
+        assert_eq!(
+            cache_dir(Path::new("/Users/me")),
+            Path::new("/Users/me/Library/Caches/fuxx/update")
+        );
+        let zip = Path::new("/c/fuxx-0.3.1.zip");
+        assert_eq!(
+            download_args("https://x/fuxx-0.3.1.zip", zip),
+            [
+                "-fL",
+                "--max-time",
+                "600",
+                "-o",
+                "/c/fuxx-0.3.1.zip",
+                "--url",
+                "https://x/fuxx-0.3.1.zip",
+            ]
+            .map(std::ffi::OsString::from)
+        );
+    }
+
+    #[test]
+    fn reads_the_digest_shasum_prints() {
+        let hex = "ab".repeat(32);
+        assert_eq!(digest_from_shasum(&format!("{hex}  /c/My Zip.zip\n")), hex);
+        assert_eq!(digest_from_shasum(""), "");
+    }
+
+    /// A fresh folder for one test.
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fuxx-updater-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn counts_the_apps_the_zip_held() {
+        let dir = temp("count");
+        assert_eq!(apps_in(&dir), Vec::<PathBuf>::new());
+        std::fs::create_dir(dir.join("fuxx.app")).unwrap();
+        std::fs::write(dir.join("readme.txt"), "x").unwrap();
+        std::fs::create_dir(dir.join("__MACOSX")).unwrap();
+        assert_eq!(apps_in(&dir), vec![dir.join("fuxx.app")]);
+        std::fs::create_dir(dir.join("Other.app")).unwrap();
+        assert_eq!(apps_in(&dir).len(), 2);
+        // A missing folder (the zip didn't unpack) holds none.
+        assert!(apps_in(&dir.join("nope")).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn launch_removes_the_previous_app_only() {
+        let dir = temp("previous");
+        let app = dir.join("x.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::create_dir_all(dir.join("x.app.previous").join("Contents")).unwrap();
+        clean_previous(&app);
+        assert!(app.join("Contents").is_dir());
+        assert!(!dir.join("x.app.previous").exists());
+        // Nothing to remove: nothing happens.
+        clean_previous(&app);
+        assert!(app.join("Contents").is_dir());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

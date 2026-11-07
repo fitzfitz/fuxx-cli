@@ -1,7 +1,9 @@
-// Releases and versions for the self-updater: the version order, and GitHub's "latest release" JSON.
-// Pure: no network, no UI. The check that fetches the JSON is elsewhere.
+// Releases and versions for the self-updater: the version order, GitHub's "latest release" JSON,
+// the checks a download must pass, and the swap script's text.
+// Pure: no network, no UI. The check that fetches the JSON and the install are in `updater`.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 /// A release number: major, minor, patch. Compares field by field, so 0.10.0 is newer than 0.9.0.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -180,6 +182,131 @@ pub fn notes_excerpt(body: &str, lines: usize) -> String {
         .take(lines)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The error sheet's title when a download or a check fails (its text is the reason); its
+/// buttons are Open Release Page and OK.
+pub const INSTALL_FAILED: &str = "The update couldn't be installed";
+/// Why: fuxx no longer runs from a `fuxx.app` it may swap (or has no home folder to download to).
+pub const CANT_UPDATE_HERE: &str = "fuxx can't update itself here";
+/// Why: the download folder couldn't be emptied or made.
+pub const CACHE_FAILED: &str = "the download folder couldn't be emptied";
+/// Why: curl failed (offline, an HTTP error, or the 10 minutes ran out).
+pub const DOWNLOAD_FAILED: &str = "the download failed";
+/// Why: the swap script couldn't be written or started.
+pub const SWAP_FAILED: &str = "the swap couldn't be started";
+
+/// What the downloaded zip unpacked to: the one app's bundle identifier and version (from its
+/// Info.plist), whether `codesign --verify --deep --strict` passed, and how many `*.app` it held.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unpacked {
+    pub bundle_id: String,
+    pub version: String,
+    pub signature_ok: bool,
+    pub apps: usize,
+}
+
+/// Whether the download's digest, `actual` (from shasum), is the release's, `expected`: both
+/// exactly 64 hex digits, and the same.
+pub fn checksum_matches(expected: &str, actual: &str) -> bool {
+    let hex = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    hex(expected) && hex(actual) && expected.eq_ignore_ascii_case(actual)
+}
+
+/// Whether the download may replace the installed fuxx: its checksum, then exactly one app,
+/// that is fuxx (`native_notify::BUNDLE_ID`), at the `expected` version, with an intact
+/// signature. Err is the first check that failed, worded for the error sheet.
+pub fn verify(
+    expected: Version,
+    sha256_expected: &str,
+    sha256_actual: &str,
+    u: &Unpacked,
+) -> Result<(), String> {
+    if !checksum_matches(sha256_expected, sha256_actual) {
+        return Err("the download is damaged (checksum)".into());
+    }
+    if u.apps != 1 {
+        return Err(format!("the zip holds {} apps", u.apps));
+    }
+    if u.bundle_id != crate::native_notify::BUNDLE_ID {
+        return Err(format!("not fuxx ({})", u.bundle_id));
+    }
+    if parse_version(&u.version) != Some(expected) {
+        return Err(format!("version {} instead of {expected}", u.version));
+    }
+    if !u.signature_ok {
+        return Err("the app's signature is broken".into());
+    }
+    Ok(())
+}
+
+/// Where the swap keeps the app it replaced: `<app>.previous`, beside it.
+pub fn previous_app(app: &Path) -> PathBuf {
+    let mut name = app.as_os_str().to_os_string();
+    name.push(".previous");
+    PathBuf::from(name)
+}
+
+/// `path` as one shell word: in single quotes, each `'` inside written `'\''`.
+pub fn sh_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// How many times the swap script looks for the old fuxx, 0.2 s apart: 60 s in all.
+pub const SWAP_POLLS: u32 = 300;
+
+/// The swap script (POSIX sh, run detached by `/bin/sh` once every check has passed). It waits
+/// until fuxx's process `pid` has ended (at most 60 s; still running, it changes nothing), then
+/// renames `app` to `<app>.previous` (removing a leftover one first, so the rename can't land
+/// inside it) and moves `new_app` into its place. If that move fails it moves aside anything it
+/// half-moved and puts the previous app back. Either way it opens the app with `opener` (a
+/// command: `/usr/bin/open`, or `true` in tests). Every path is quoted, and the installed app is
+/// only ever renamed, never deleted.
+pub fn swap_script(pid: u32, app: &Path, new_app: &Path, opener: &str) -> String {
+    let mut incomplete = app.as_os_str().to_os_string();
+    incomplete.push(".incomplete");
+    format!(
+        r#"#!/bin/sh
+# fuxx's update: once fuxx (pid {pid}) has quit, swap the new fuxx.app in and open it.
+app={app}
+new={new}
+previous={previous}
+incomplete={incomplete}
+polls=0
+while kill -0 {pid} 2>/dev/null; do
+  if [ "$polls" -ge {SWAP_POLLS} ]; then
+    exit 1 # fuxx is still running after 60 s: change nothing
+  fi
+  sleep 0.2
+  polls=$((polls + 1))
+done
+# A leftover previous app goes first: renaming onto a folder would land inside it.
+rm -rf "$previous"
+if [ -e "$previous" ] || [ -L "$previous" ] || ! mv "$app" "$previous"; then
+  {opener} "$app"
+  exit 1
+fi
+if mv "$new" "$app"; then
+  /usr/bin/xattr -dr com.apple.quarantine "$app" 2>/dev/null
+  {opener} "$app"
+  exit 0
+fi
+# The new app couldn't be moved in: put the previous one back.
+if [ -e "$app" ] || [ -L "$app" ]; then
+  rm -rf "$incomplete"
+  mv "$app" "$incomplete"
+fi
+if [ ! -e "$app" ] && [ ! -L "$app" ]; then
+  mv "$previous" "$app"
+fi
+{opener} "$app"
+exit 1
+"#,
+        app = sh_quote(app),
+        new = sh_quote(new_app),
+        previous = sh_quote(&previous_app(app)),
+        incomplete = sh_quote(Path::new(&incomplete)),
+    )
 }
 
 #[cfg(test)]
@@ -410,6 +537,198 @@ mod tests {
         let lines: Vec<&str> = o.detail.lines().collect();
         assert_eq!(lines.len(), 2 + 6, "{lines:?}");
         assert_eq!(lines.last(), Some(&"- change 6"));
+    }
+
+    /// What a good download unpacks to, for 0.3.1.
+    fn unpacked() -> Unpacked {
+        Unpacked {
+            bundle_id: "io.github.fitzfitz.fuxx".into(),
+            version: "0.3.1".into(),
+            signature_ok: true,
+            apps: 1,
+        }
+    }
+
+    #[test]
+    fn a_good_download_passes_every_check() {
+        assert_eq!(verify(Version(0, 3, 1), HEX64, HEX64, &unpacked()), Ok(()));
+    }
+
+    #[test]
+    fn each_failed_check_says_why() {
+        let v = Version(0, 3, 1);
+        let other = "f".repeat(64);
+        let damaged = Err("the download is damaged (checksum)".to_string());
+        assert_eq!(verify(v, HEX64, &other, &unpacked()), damaged);
+        // No digest read at all (shasum failed) never matches, not even an empty one.
+        assert_eq!(verify(v, HEX64, "", &unpacked()), damaged);
+        assert_eq!(verify(v, "", "", &unpacked()), damaged);
+        for apps in [0, 2] {
+            let u = Unpacked { apps, ..unpacked() };
+            assert_eq!(
+                verify(v, HEX64, HEX64, &u),
+                Err(format!("the zip holds {apps} apps"))
+            );
+        }
+        let u = Unpacked {
+            bundle_id: "com.example.other".into(),
+            ..unpacked()
+        };
+        assert_eq!(
+            verify(v, HEX64, HEX64, &u),
+            Err("not fuxx (com.example.other)".into())
+        );
+        for version in ["0.3.0", "", "0.3.1-beta"] {
+            let u = Unpacked {
+                version: version.into(),
+                ..unpacked()
+            };
+            assert_eq!(
+                verify(v, HEX64, HEX64, &u),
+                Err(format!("version {version} instead of 0.3.1"))
+            );
+        }
+        let u = Unpacked {
+            signature_ok: false,
+            ..unpacked()
+        };
+        assert_eq!(
+            verify(v, HEX64, HEX64, &u),
+            Err("the app's signature is broken".into())
+        );
+        // The checksum is checked first: a damaged download says so, whatever else is wrong.
+        let all_wrong = Unpacked {
+            bundle_id: String::new(),
+            version: String::new(),
+            signature_ok: false,
+            apps: 0,
+        };
+        assert_eq!(verify(v, HEX64, &other, &all_wrong), damaged);
+    }
+
+    /// A fresh folder for one swap test, with a space and a quote in its name (as `~/My Apps`).
+    fn swap_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("fuxx swap 'test' {name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A directory standing in for an app, holding `which` = `content`.
+    fn fake_app(path: &std::path::Path, content: &str) {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("which"), content).unwrap();
+    }
+
+    fn which(app: &std::path::Path) -> String {
+        std::fs::read_to_string(app.join("which")).unwrap()
+    }
+
+    /// The pid of a process that has already exited (and been reaped).
+    fn gone_pid() -> u32 {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    /// Run `swap_script` for real, as fuxx does: written to a file, run by `/bin/sh`. True when
+    /// it says the new app went in (exit 0).
+    fn run_swap(
+        dir: &std::path::Path,
+        app: &std::path::Path,
+        new: &std::path::Path,
+        opener: &str,
+    ) -> bool {
+        let script = dir.join("swap.sh");
+        std::fs::write(&script, swap_script(gone_pid(), app, new, opener)).unwrap();
+        std::process::Command::new("/bin/sh")
+            .arg(&script)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[test]
+    fn the_swap_moves_the_new_app_in_and_keeps_the_old_beside_it() {
+        let dir = swap_dir("ok");
+        let app = dir.join("My Apps").join("fuxx.app");
+        let new = dir.join("cache it").join("fuxx.app");
+        fake_app(&app, "old");
+        fake_app(&new, "new");
+        assert!(run_swap(&dir, &app, &new, "true"));
+        assert_eq!(which(&app), "new");
+        assert_eq!(which(&dir.join("My Apps").join("fuxx.app.previous")), "old");
+        assert!(!new.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_swap_replaces_a_leftover_previous_app() {
+        let dir = swap_dir("leftover");
+        let app = dir.join("fuxx.app");
+        let previous = dir.join("fuxx.app.previous");
+        let new = dir.join("new").join("fuxx.app");
+        fake_app(&app, "old");
+        fake_app(&previous, "older");
+        fake_app(&new, "new");
+        assert!(run_swap(&dir, &app, &new, "true"));
+        assert_eq!(which(&app), "new");
+        // The running app took its place (not moved inside it).
+        assert_eq!(which(&previous), "old");
+        assert!(!previous.join("fuxx.app").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_move_puts_the_previous_app_back() {
+        let dir = swap_dir("fails");
+        let app = dir.join("My Apps").join("fuxx.app");
+        let new = dir.join("cache it").join("fuxx.app"); // never made: the move fails
+        fake_app(&app, "old");
+        assert!(!run_swap(&dir, &app, &new, "true"));
+        assert_eq!(which(&app), "old");
+        assert!(!dir.join("My Apps").join("fuxx.app.previous").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_swap_opens_the_app_either_way() {
+        use std::os::unix::fs::PermissionsExt;
+        for (name, make_new) in [("opens new", true), ("opens old", false)] {
+            let dir = swap_dir(name);
+            let app = dir.join("fuxx.app");
+            let new = dir.join("new").join("fuxx.app");
+            fake_app(&app, "old");
+            if make_new {
+                fake_app(&new, "new");
+            }
+            // An opener that writes down what it was asked to open.
+            let opened = dir.join("opened");
+            let opener = dir.join("open it.sh");
+            std::fs::write(
+                &opener,
+                format!("#!/bin/sh\nprintf %s \"$1\" > {}\n", sh_quote(&opened)),
+            )
+            .unwrap();
+            std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(run_swap(&dir, &app, &new, &sh_quote(&opener)), make_new);
+            assert_eq!(
+                std::fs::read_to_string(&opened).unwrap(),
+                app.to_string_lossy(),
+                "{name}"
+            );
+            assert_eq!(which(&app), if make_new { "new" } else { "old" });
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn quotes_paths_for_the_shell() {
+        use std::path::Path;
+        assert_eq!(sh_quote(Path::new("/a/b")), "'/a/b'");
+        assert_eq!(sh_quote(Path::new("/My Apps/it's")), "'/My Apps/it'\\''s'");
     }
 
     #[test]

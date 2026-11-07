@@ -657,7 +657,7 @@ const O_CREAT: c_int = 0x200;
 /// `/dev/null`, stdout and stderr appended to `log` (its folder is created), every other file
 /// descriptor closed (`POSIX_SPAWN_CLOEXEC_DEFAULT`), and fuxx's environment with `env`
 /// overriding. Returns the pid. The caller reaps it.
-fn spawn_detached(
+pub(crate) fn spawn_detached(
     exe: &Path,
     args: &[&str],
     log: &Path,

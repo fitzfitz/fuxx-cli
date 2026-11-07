@@ -686,6 +686,16 @@ fn main() {
     if let Some(home) = home_dir() {
         app_log::start(&home);
     }
+    // An updated fuxx deletes the app its update replaced (`fuxx.app.previous`), on its own
+    // thread so a big folder doesn't hold up the window. From the app bundle only, never
+    // `cargo run`.
+    if native_notify::is_bundled()
+        && let Some(app) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| updater::self_update_target(&exe, |_| true))
+    {
+        std::thread::spawn(move || updater::clean_previous(&app));
+    }
 
     // Clicks on fuxx's banners, heard from before the app runs (a click that opened fuxx comes
     // as it starts), wait here for the workspace (from the app bundle only).
