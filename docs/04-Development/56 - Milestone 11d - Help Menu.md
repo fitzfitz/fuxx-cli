@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: planned
+status: built
 ---
 
 # 56 - Milestone 11d - Help Menu
 
-**Status:: 🟦 Planned 2026-11-07; not started.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11d Plan - Help Menu]]
+**Status:: 🟨 Built and reviewed 2026-11-08 (786 tests); on-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11d Plan - Help Menu]]
 **Input:** [[M11d Input - Help Menu]] (your request and choices, 2026-11-06).
 
 ## Goal
@@ -68,7 +68,8 @@ Help
   answer, wait, events) · Sidebar and banners (note, progress, notify) · Layout (equalize, presets) · Browser
   (browser …) · fuxx itself (ping, version, mcp, daemon …, help).
 - **An "MCP setup" group at the end:** `claude mcp add fuxx -- <path>` with the path of the fuxx that is running
-  (e.g. `/Applications/fuxx.app/Contents/MacOS/fuxx`), so it can be copied with the mouse as it stands.
+  (e.g. `/Applications/fuxx.app/Contents/MacOS/fuxx`; single-quoted if the path has spaces), so it can be typed or
+  pasted as it stands. The panel's text can't be selected, so there is no copying from it (see Not in M11d).
 - The usage text's closing notes (`--json`, what TARGET is, the exit codes) are the page's footer.
 - Search matches the usage, the description or the group. Esc / click outside closes it. Unlike Keyboard Shortcuts,
   it has no key of its own.
@@ -123,6 +124,25 @@ fails it says "macOS unknown". Nothing else is sent: no logs and no settings.
   printing to the terminal. At launch, a `fuxx.log` over **1 MiB** is started fresh; otherwise new lines are appended.
   The first line of each run is `fuxx <version> started (pid N)`.
 
+## As built (2026-11-08)
+
+Where the build settled something the plan left open, or changed it:
+
+- **⌘/ from another window** (Preferences, a popped-out page) brings the main window forward with Keyboard Shortcuts
+  open; it closes the panel only when the main window was already in front. The Command Reference item follows the
+  same rule. (AI's call while building: pressing ⌘/ elsewhere means "show me".) So `open_help` also takes whether the
+  main window was key.
+- **⌥⌘Q** ("Quit fuxx and End All Sessions", bound only with persistent sessions on) is listed whenever it is bound.
+  Its binding moved into `persistent_bindings()`, which both the app and the list read. The list also reads ⌘N/⌘T
+  (`new_bindings()`), and the "every shortcut is listed" test covers all three tables.
+- Every Help item is an app-level action. The ones that need a window go to the main fuxx window (`help_target`), so
+  they work while Preferences or a popped-out page is in front. Report an Issue and Show Logs need no window.
+- An open Help panel hides the in-pane browser pages, as the other panels do (otherwise the web page would cover it).
+- `show_welcome_tips` takes the window, because it reuses Toggle Sidebar. The menu bar is built by `menu_bar()`, so
+  its order is tested on the real bar.
+- `fuxx.log` is written only for the window (`fuxx` with no command), never for `fuxx <command>`, `fuxx mcp` or the
+  background service.
+
 ## Not in M11d
 
 - Running a shortcut or copying a command from the panels. They are reference only.
@@ -134,7 +154,7 @@ fails it says "macOS unknown". Nothing else is sent: no logs and no settings.
 
 ## On-screen checklist (pending)
 
-Run `target/dist/fuxx.app` (the bundle, so notifications and the log behave as shipped).
+Run the branch's `target/dist/fuxx.app` (built in `.worktrees/m11d-help-menu`) (the bundle, so notifications and the log behave as shipped).
 
 1. The menu bar reads fuxx · File · Edit · Pane · View · Window · **Help**.
 2. Help has a search box at the top, and typing "split" in it highlights Pane → Split Right.
@@ -159,3 +179,6 @@ Run `target/dist/fuxx.app` (the bundle, so notifications and the log behave as s
 14. Show Logs opens `~/Library/Logs/fuxx/` in Finder. `fuxx.log` is there, and its last run starts with
     `fuxx <version> started`.
 15. Light and dark themes: both panels are readable (the ui-shots cover this too).
+16. With Preferences in front, ⌘/ brings the main window forward with Keyboard Shortcuts open; ⌘/ again (now in
+    front) closes it.
+17. With "keep sessions running" on, Keyboard Shortcuts lists ⌥⌘Q "Quit fuxx and End All Sessions".

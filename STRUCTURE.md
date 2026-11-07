@@ -143,7 +143,14 @@ src/
 │
 │   notifications
 ├── native_notify.rs      M11c · fuxx's own banners (UserNotifications, app bundle only), banner ids (terminal + run), the click delegate, PendingShow
-└── notifier.rs           M4 · picks fuxx's banner or the osascript one (M11c), escaping, focus-aware rule
+├── notifier.rs           M4 · picks fuxx's banner or the osascript one (M11c), escaping, focus-aware rule
+│
+│   the Help menu (M11d)
+├── help_menu.rs          M11d · the Help menu, which window a Help item goes to, NSApp's Help menu (macOS search), the status sheet's copy, the issue URL
+├── help_panel.rs         M11d · the panel over the window: Keyboard Shortcuts (⌘/) and the Command Reference pages, filter, scroll
+├── help_shortcuts.rs     M11d · the shortcut list from the real key bindings: names, groups, Mac key labels, search (pure)
+├── help_commands.rs      M11d · the command reference parsed from `fuxx help`'s text, plus the MCP setup row (pure)
+└── app_log.rs            M11d · the window's ~/Library/Logs/fuxx/fuxx.log when run from fuxx.app (1 MiB cap at launch)
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
