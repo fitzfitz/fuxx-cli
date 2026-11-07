@@ -73,8 +73,8 @@ mod title_area;
 #[cfg(feature = "ui-shots")]
 mod ui_shots;
 mod ui_tokens;
-#[allow(dead_code)] // used by the update check from M11e Task 3
 mod update_release;
+mod updater;
 mod vt_snapshot;
 mod workspace;
 mod workspace_api;
@@ -111,7 +111,16 @@ use workspace::{
     Workspace,
 };
 
-actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions, Hide]);
+actions!(
+    fuxx,
+    [
+        Quit,
+        OpenPreferences,
+        QuitAndEndSessions,
+        Hide,
+        CheckForUpdates
+    ]
+);
 
 // The Help menu (M11d): ⌘/ opens Keyboard Shortcuts; the other items have no key.
 actions!(
@@ -339,7 +348,7 @@ fn with_key_window(cx: &mut App, f: fn(&mut gpui::Window)) {
 /// Run `f` on the main fuxx window a Help item goes to (`help_menu::help_target`), brought to
 /// the front if another window (Preferences, a popped-out page) is key; nothing when there is
 /// none. `f` is told whether that window was already key. Deferred, as `with_key_window` is.
-fn with_help_window(
+pub(crate) fn with_help_window(
     cx: &mut App,
     f: impl FnOnce(&mut Workspace, bool, &mut gpui::Window, &mut gpui::Context<Workspace>) + 'static,
 ) {
@@ -423,19 +432,26 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
         .enumerate()
         .filter_map(|(n, preset)| preset_item(n, &preset.name))
         .collect();
-    let mut app_items = vec![
+    cx.set_menus(menu_bar(app_items(keep_running), preset_items));
+    help_menu::mark_help_menu();
+}
+
+/// The fuxx menu: Check for Updates…, Hide fuxx, then Quit (see `set_menus` for `keep_running`).
+fn app_items(keep_running: Option<usize>) -> Vec<MenuItem> {
+    let mut items = vec![
+        MenuItem::action("Check for Updates\u{2026}", CheckForUpdates),
+        MenuItem::separator(),
         MenuItem::action("Hide fuxx", Hide),
         MenuItem::separator(),
         MenuItem::action(quit_title(keep_running.unwrap_or(0)), Quit),
     ];
     if keep_running.is_some() {
-        app_items.push(MenuItem::action(
+        items.push(MenuItem::action(
             "Quit fuxx and End All Sessions",
             QuitAndEndSessions,
         ));
     }
-    cx.set_menus(menu_bar(app_items, preset_items));
-    help_menu::mark_help_menu();
+    items
 }
 
 /// The menu bar, left to right: fuxx · File · Edit · Pane · View · Window · Help.
@@ -707,6 +723,12 @@ fn main() {
                 preferences::step_font_size(cx, FontStep::ActualSize)
             });
             cx.on_action(|_: &Hide, cx: &mut App| cx.hide());
+            // Checks now, from any build; always answers in a sheet on the main window.
+            cx.on_action(|_: &CheckForUpdates, cx: &mut App| updater::check(true, cx));
+            // Before any window: the sidebar reads it.
+            cx.set_global(updater::Updates {
+                state: updater::UpdateState::Idle,
+            });
             // The Help panels go to the main fuxx window whatever window is key; asked for again,
             // the shown page closes only if that window was key.
             cx.on_action(|_: &ShowShortcuts, cx: &mut App| {
@@ -828,6 +850,8 @@ fn main() {
                 }
             })
             .detach();
+            // A bundled fuxx asks GitHub for a newer release 10 s from now, then daily.
+            updater::start_schedule(cx);
             cx.activate(true);
         });
 }
@@ -846,9 +870,10 @@ mod tests {
     use gpui::{MenuItem, OsAction};
 
     use super::{
-        ActualSize, Bigger, ReportIssue, ShowCommands, ShowLogs, ShowNotificationStatus,
-        ShowShortcuts, ShowWelcomeTips, Smaller, edit_menu, file_menu, key_bindings, menu_bar,
-        new_bindings, new_items, quit_title, view_menu, window_menu,
+        ActualSize, Bigger, CheckForUpdates, ReportIssue, ShowCommands, ShowLogs,
+        ShowNotificationStatus, ShowShortcuts, ShowWelcomeTips, Smaller, app_items, edit_menu,
+        file_menu, key_bindings, menu_bar, new_bindings, new_items, quit_title, view_menu,
+        window_menu,
     };
     use crate::browser_tab::{GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::terminal_view::{Copy, Paste};
@@ -901,6 +926,48 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Each item's name, "\u{2014}" for a separator.
+    fn names_and_separators(items: &[MenuItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Action { name, .. } => name.to_string(),
+                MenuItem::Separator => "\u{2014}".to_string(),
+                _ => panic!("only actions and separators"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_fuxx_menu_checks_for_updates_above_hide() {
+        let sep = "\u{2014}";
+        assert_eq!(
+            names_and_separators(&app_items(None)),
+            [
+                "Check for Updates\u{2026}",
+                sep,
+                "Hide fuxx",
+                sep,
+                "Quit fuxx"
+            ]
+        );
+        assert_eq!(
+            names_and_separators(&app_items(Some(2))),
+            [
+                "Check for Updates\u{2026}",
+                sep,
+                "Hide fuxx",
+                sep,
+                "Quit fuxx (2 sessions keep running)",
+                "Quit fuxx and End All Sessions"
+            ]
+        );
+        let MenuItem::Action { action, .. } = &app_items(None)[0] else {
+            panic!("an action first");
+        };
+        assert!(action.partial_eq(&CheckForUpdates));
     }
 
     #[test]

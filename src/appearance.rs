@@ -40,6 +40,9 @@ pub struct Appearance {
     /// `browser-keep-data = on|off`: browser windows opened from now on keep cookies, logins and
     /// site data on disk between runs (default off: each run starts from nothing).
     pub browser_keep_data: bool,
+    /// `check-updates = on|off`: whether a bundled fuxx asks GitHub for a newer release at launch
+    /// and once a day (default on). Fuxx → Check for Updates… works either way.
+    pub check_updates: bool,
 }
 
 impl Global for Appearance {}
@@ -128,6 +131,11 @@ fn browser_keep_data_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "browser-keep-data", false)
 }
 
+/// `check-updates`, on by default (see `switch_from_entries`).
+fn check_updates_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "check-updates", true)
+}
+
 /// Read fuxx's settings file and build the appearance. Never fails: anything missing or
 /// unreadable falls back to the defaults.
 pub fn load(cx: &App) -> Appearance {
@@ -202,6 +210,7 @@ pub fn load(cx: &App) -> Appearance {
     let (animations, animations_warnings) = animations_from_entries(&entries);
     let (browser_address_bar, address_bar_warnings) = browser_address_bar_from_entries(&entries);
     let (browser_keep_data, keep_data_warnings) = browser_keep_data_from_entries(&entries);
+    let (check_updates, check_updates_warnings) = check_updates_from_entries(&entries);
     for warning in preset_warnings
         .iter()
         .chain(&restore_warnings)
@@ -210,6 +219,7 @@ pub fn load(cx: &App) -> Appearance {
         .chain(&animations_warnings)
         .chain(&address_bar_warnings)
         .chain(&keep_data_warnings)
+        .chain(&check_updates_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
     }
@@ -229,6 +239,7 @@ pub fn load(cx: &App) -> Appearance {
         animations,
         browser_address_bar,
         browser_keep_data,
+        check_updates,
     }
 }
 
@@ -373,6 +384,29 @@ mod tests {
         assert_eq!(
             browser_keep_data_from_entries(&[entry("browser-address-bar", "on")]),
             (false, vec![])
+        );
+    }
+
+    #[test]
+    fn check_updates_setting_defaults_on_and_warns_on_junk() {
+        let check = |v: &str| entry("check-updates", v);
+        assert_eq!(check_updates_from_entries(&[]), (true, vec![]));
+        assert_eq!(check_updates_from_entries(&[check("off")]), (false, vec![]));
+        let (on, warnings) = check_updates_from_entries(&[check("daily")]);
+        assert!(on); // the bad value leaves the default in place
+        assert_eq!(
+            warnings,
+            vec!["check-updates \"daily\": expected on or off".to_string()]
+        );
+        // An empty value resets to the default (on).
+        assert_eq!(
+            check_updates_from_entries(&[check("off"), check("")]),
+            (true, vec![])
+        );
+        // Other keys are ignored.
+        assert_eq!(
+            check_updates_from_entries(&[entry("animations", "off")]),
+            (true, vec![])
         );
     }
 }
