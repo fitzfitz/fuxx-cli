@@ -116,12 +116,15 @@ pub fn describe(action: &str) -> Describe {
         "view::Bigger" => Listed(WindowAndApp, "Bigger"),
         "view::Smaller" => Listed(WindowAndApp, "Smaller"),
         "view::ActualSize" => Listed(WindowAndApp, "Actual Size"),
+        "help::ShowShortcuts" => Listed(WindowAndApp, "Keyboard Shortcuts"),
 
         "browser_tab::SuggestPrev"
         | "browser_tab::SuggestNext"
         | "tab_menu::Dismiss"
         | "edit::Cut"
-        | "edit::SelectAll" => Unlisted,
+        | "edit::SelectAll"
+        | "help_panel::ScrollUp"
+        | "help_panel::ScrollDown" => Unlisted,
         other if other.starts_with("name_input::") => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("switcher::") => Unlisted,

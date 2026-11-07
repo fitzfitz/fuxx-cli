@@ -38,6 +38,7 @@ use crate::daemon_client::{self, DaemonClient};
 use crate::drag_gap::Slides;
 use crate::git_branch::Places;
 use crate::groups::{self, GroupKey};
+use crate::help_panel::HelpPanel;
 use crate::host_picker::HostPicker;
 use crate::layout_model::{self, Model, PaneId, TabDrop, TabId, TabKind, WorkspaceId};
 use crate::mux_proto::{self, Create};
@@ -188,6 +189,7 @@ overlays!(
     TabMenu,
     PaneTabMenu,
     Notifications,
+    Help,
 );
 
 /// What the rename box names: a workspace (its sidebar row) or a terminal (its pane tab).
@@ -269,6 +271,8 @@ pub struct Workspace {
     pub(crate) host_picker: Option<Entity<HostPicker>>,
     /// The ⌘P session switcher, while it is open (M11).
     pub(crate) switcher: Option<Entity<Switcher>>,
+    /// The Help panel (Keyboard Shortcuts or the Command Reference), while it is open (M11d).
+    pub(crate) help: Option<Entity<HelpPanel>>,
     /// The browser tabs' views (M11b), by tab: one for each browser tab of the model (`sync`
     /// drops those whose tab has gone, and with them their pages).
     pub(crate) browser_tabs: HashMap<TabId, Entity<BrowserTab>>,
@@ -447,6 +451,7 @@ impl Workspace {
             drag_slides: RefCell::default(),
             host_picker: None,
             switcher: None,
+            help: None,
             browser_tabs: HashMap::new(),
             browser_titles: HashMap::new(),
             closed_browser_tabs: Vec::new(),
@@ -1872,6 +1877,9 @@ impl Workspace {
         if keep != Overlay::Notifications {
             self.notifications_popover = None;
         }
+        if keep != Overlay::Help {
+            self.help = None;
+        }
     }
 
     /// Open the rename box on a workspace's row (opening its group) and focus it.
@@ -2636,14 +2644,15 @@ impl Render for Workspace {
             )
             .children(sliding_sidebar)
             .child(button)
-            // The host picker, the switcher and the address box: over everything, centred near
-            // the top of the window.
+            // The host picker, the switcher, the Help panel and the address box: over
+            // everything, centred near the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {
                 root.child(top_panel(picker))
             })
             .when_some(self.switcher.clone(), |root, switcher| {
                 root.child(top_panel(switcher))
             })
+            .when_some(self.help.clone(), |root, help| root.child(top_panel(help)))
             .when_some(self.address_box.clone(), |root, address| {
                 root.child(top_panel(address))
             })

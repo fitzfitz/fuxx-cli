@@ -24,9 +24,9 @@ mod fonts;
 mod git_branch;
 mod grid;
 mod groups;
-#[allow(dead_code)] // used by the Command Reference panel from M11d Task 3
 mod help_commands;
-#[allow(dead_code)] // used by the Keyboard Shortcuts panel from M11d Task 3
+mod help_menu;
+mod help_panel;
 mod help_shortcuts;
 mod host_picker;
 mod keys;
@@ -92,6 +92,7 @@ use serde_json::{Value, json};
 
 use api_client::ClientError;
 use cli::Cli;
+use help_panel::HelpPage;
 use prefs::FontStep;
 use ui_tokens::size::TRAFFIC_LIGHTS;
 
@@ -108,6 +109,9 @@ use workspace::{
 };
 
 actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions, Hide]);
+
+// The Help menu's panels (M11d): ⌘/ opens Keyboard Shortcuts; the Command Reference has no key.
+actions!(help, [ShowShortcuts, ShowCommands]);
 
 // The View menu's font size items (every window: they change the setting) and the Window menu's
 // (the key fuxx window).
@@ -134,7 +138,7 @@ fn edit_menu() -> Menu {
 }
 
 /// ⌘T (a new tab in the focused pane) and ⌘N (a new workspace).
-fn new_bindings() -> [KeyBinding; 2] {
+pub(crate) fn new_bindings() -> [KeyBinding; 2] {
     [
         KeyBinding::new("cmd-t", NewTab, None),
         KeyBinding::new("cmd-n", NewWorkspace, None),
@@ -186,6 +190,7 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-shift-u", NextNeedingYou, None),
         KeyBinding::new("cmd-p", OpenSwitcher, None),
+        KeyBinding::new("cmd-/", ShowShortcuts, None),
         // The first binding is the one a menu shows: ⌘=, with ⌘+ (shift-=) as well.
         KeyBinding::new("cmd-=", Bigger, None),
         KeyBinding::new("cmd-+", Bigger, None),
@@ -227,6 +232,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // The session switcher: its box is a NameInput too; these keys move through it.
         KeyBinding::new("up", switcher::SelectPrev, Some("Switcher")),
         KeyBinding::new("down", switcher::SelectNext, Some("Switcher")),
+        // The Help panel: its box is a NameInput too; these keys scroll its list a row.
+        KeyBinding::new("up", help_panel::ScrollUp, Some("HelpPanel")),
+        KeyBinding::new("down", help_panel::ScrollDown, Some("HelpPanel")),
         // A sidebar row's tab menu: Escape closes it.
         KeyBinding::new("escape", tab_menu::Dismiss, Some("TabMenu")),
         // The browser's address box: its box is a NameInput too; an address is pasted.
@@ -309,6 +317,38 @@ fn with_key_window(cx: &mut App, f: fn(&mut gpui::Window)) {
     });
 }
 
+/// Run `f` on the main fuxx window a Help item goes to (`help_menu::help_target`), brought to
+/// the front if another window (Preferences, a popped-out page) is key; nothing when there is
+/// none. Deferred, as `with_key_window` is.
+fn with_help_window(
+    cx: &mut App,
+    f: impl FnOnce(&mut Workspace, &mut gpui::Window, &mut gpui::Context<Workspace>) + 'static,
+) {
+    cx.defer(move |cx| {
+        let key = cx.active_window();
+        let windows = cx.windows();
+        let facts: Vec<(bool, bool)> = windows
+            .iter()
+            .map(|w| (w.downcast::<Workspace>().is_some(), Some(*w) == key))
+            .collect();
+        let Some(at) = help_menu::help_target(&facts) else {
+            return;
+        };
+        let Some(handle) = windows[at].downcast::<Workspace>() else {
+            return;
+        };
+        let was_key = facts[at].1;
+        handle
+            .update(cx, |workspace, window, cx| {
+                if !was_key {
+                    window.activate_window();
+                }
+                f(workspace, window, cx)
+            })
+            .ok();
+    });
+}
+
 /// The File-menu item for preset `n` (0-based), bound to its `LaunchPresetN`.
 fn preset_item(n: usize, name: &str) -> Option<MenuItem> {
     let name = name.to_string();
@@ -349,7 +389,12 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
             QuitAndEndSessions,
         ));
     }
-    cx.set_menus([
+    cx.set_menus(menu_bar(app_items, preset_items));
+}
+
+/// The menu bar, left to right: fuxx · File · Edit · Pane · View · Window · Help.
+fn menu_bar(app_items: Vec<MenuItem>, preset_items: Vec<MenuItem>) -> [Menu; 7] {
+    [
         Menu::new("fuxx").items(app_items),
         file_menu(preset_items),
         edit_menu(),
@@ -368,7 +413,8 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
         ]),
         view_menu(),
         window_menu(),
-    ]);
+        help_menu::menu(),
+    ]
 }
 
 /// `$HOME`, unless unset or empty.
@@ -597,6 +643,17 @@ fn main() {
                 preferences::step_font_size(cx, FontStep::ActualSize)
             });
             cx.on_action(|_: &Hide, cx: &mut App| cx.hide());
+            // The Help panels go to the main fuxx window whatever window is key.
+            cx.on_action(|_: &ShowShortcuts, cx: &mut App| {
+                with_help_window(cx, |workspace, window, cx| {
+                    workspace.open_help(HelpPage::Shortcuts, window, cx)
+                })
+            });
+            cx.on_action(|_: &ShowCommands, cx: &mut App| {
+                with_help_window(cx, |workspace, window, cx| {
+                    workspace.open_help(HelpPage::Commands, window, cx)
+                })
+            });
             cx.on_action(|_: &Minimize, cx: &mut App| {
                 with_key_window(cx, |window| window.minimize_window())
             });
@@ -685,8 +742,8 @@ mod tests {
     use gpui::{MenuItem, OsAction};
 
     use super::{
-        ActualSize, Bigger, Smaller, edit_menu, file_menu, key_bindings, new_bindings, new_items,
-        quit_title, view_menu, window_menu,
+        ActualSize, Bigger, ShowCommands, ShowShortcuts, Smaller, edit_menu, file_menu,
+        key_bindings, menu_bar, new_bindings, new_items, quit_title, view_menu, window_menu,
     };
     use crate::browser_tab::{GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::terminal_view::{Copy, Paste};
@@ -748,6 +805,57 @@ mod tests {
             ["Toggle Sidebar", "Bigger", "Smaller", "Actual Size"]
         );
         assert_eq!(names(&window_menu()), ["Minimize", "Zoom"]);
+    }
+
+    #[test]
+    fn the_help_menu_comes_last_and_starts_with_the_panels() {
+        let bar = menu_bar(vec![], vec![]);
+        let menus: Vec<&str> = bar.iter().map(|m| m.name.as_ref()).collect();
+        assert_eq!(
+            menus,
+            ["fuxx", "File", "Edit", "Pane", "View", "Window", "Help"]
+        );
+        let help = crate::help_menu::menu();
+        assert_eq!(help.name.as_ref(), "Help");
+        let items: Vec<(String, bool, bool)> = help
+            .items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Action { name, action, .. } => (
+                    name.to_string(),
+                    action.partial_eq(&ShowShortcuts),
+                    action.partial_eq(&ShowCommands),
+                ),
+                _ => panic!("only actions so far"),
+            })
+            .collect();
+        assert_eq!(
+            items,
+            [
+                ("Keyboard Shortcuts".to_string(), true, false),
+                ("fuxx Command Reference".to_string(), false, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn command_slash_shows_the_shortcuts_wherever_the_focus_is() {
+        let keymap = keymap();
+        for stack in [
+            TERMINAL,
+            RENAME_BOX,
+            WORKSPACE,
+            PAGE,
+            ADDRESS_FIELD,
+            &["Workspace", "HelpPanel", "NameInput"][..],
+        ] {
+            let got = runs(&keymap, "cmd-/", stack);
+            assert!(
+                got.partial_eq(&ShowShortcuts),
+                "cmd-/ in {stack:?}: {}",
+                got.name()
+            );
+        }
     }
 
     #[test]
