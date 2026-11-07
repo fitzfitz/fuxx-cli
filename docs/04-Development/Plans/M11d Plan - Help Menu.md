@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11d
-status: planned
-updated: 2026-11-07
+status: built
+updated: 2026-11-08
 ---
 
 # M11d Plan — Help menu
@@ -12,9 +12,9 @@ updated: 2026-11-07
 | At a glance | |
 |---|---|
 | **Milestone note** | [[56 - Milestone 11d - Help Menu]] (the spec) |
-| **Status** | 🟦 Planned 2026-11-07; not started |
-| **Tasks done** | 0 / 7 |
-| **▶ Pick up here** | Your review of note 56 and this plan, then Task 1 |
+| **Status** | 🟨 Built and reviewed 2026-11-08 (786 tests); on-screen check pending |
+| **Tasks done** | 6 / 7 (Tasks 1–5, 7); Task 6 is your check |
+| **▶ Pick up here** | Task 6: your on-screen check — 17 items in [[56 - Milestone 11d - Help Menu]], "On-screen checklist (pending)" |
 | **Decisions used** | Yours (2026-11-06): a Help menu with searchable Shortcuts, plus all four extras. Yours (2026-11-07): "go", meaning skip the questions. Everything else is AI's call, set out in note 56. |
 | **Needs your eyes** | 👀 Task 6 (on screen) |
 
@@ -76,7 +76,7 @@ file.
 
 ---
 
-### Task 1: The shortcut list (pure)
+### Task 1: The shortcut list (pure) — ✅
 
 **Files:**
 - Create: `src/help_shortcuts.rs`
@@ -93,7 +93,7 @@ file.
   first-seen order within a group, the same `(group, name)` merged);
   `pub fn row_matches(row: &ShortcutRow, query: &str) -> bool`.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `key_label`: `"cmd-shift-d"` → `"⇧⌘D"`; `"ctrl-cmd-="` → `"⌃⌘="`; `"cmd-alt-left"` → `"⌥⌘←"`; `"cmd-}"` →
     `"⇧⌘]"`; `"cmd-{"` → `"⇧⌘["`; `"shift-pageup"` → `"⇧⇞"`; `"ctrl-shift-tab"` → `"⌃⇧⇥"`; `"cmd-\\"` → `"⌘\\"`;
     `"cmd-/"` → `"⌘/"`. Modifier order is always ⌃⌥⇧⌘.
@@ -105,18 +105,18 @@ file.
     not `Unknown`.
   - `groups_come_in_order`: the groups of `shortcut_rows(&binding_pairs(&key_bindings()))` are in enum order, none
     empty.
-- [ ] **Step 2: run** `cargo test --bin fuxx help_shortcuts` → FAIL (not defined).
-- [ ] **Step 3: implement.** `describe` is one `match` on the action name. `Unlisted`: every `name_input::*`,
+- [x] **Step 2: run** `cargo test --bin fuxx help_shortcuts` → FAIL (not defined).
+- [x] **Step 3: implement.** `describe` is one `match` on the action name. `Unlisted`: every `name_input::*`,
   `host_picker::*`, `switcher::*`, `browser_tab::Suggest*`, `tab_menu::Dismiss`, `edit::Cut`, `edit::SelectAll`.
   Listed names: the menu titles where a menu item exists (`Split Right`, `Rename Workspace…`, `Go to What Needs You`
   …). The rest: `Go to workspace 1–9`, `Start agent preset 1–9`, `Next workspace` / `Previous workspace`,
   `Next tab` / `Previous tab`, `Scroll up a page` / `Scroll down a page`, `Copy` / `Paste`, `Address field` (⌘L), and
   in Browser pages `Reload` / `Back` / `Forward` / `Zoom in` / `Zoom out` / `Actual size`. Collapsing: ≥ 3 keys →
   `"{first} – {last}"`; 2 → `" / "`.
-- [ ] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (and `--features ui-shots`), `cargo fmt --check` → ok.
-- [ ] **Step 5: commit** `feat(m11d): the shortcut list, built from the key-binding table`.
+- [x] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (and `--features ui-shots`), `cargo fmt --check` → ok.
+- [x] **Step 5: commit** `feat(m11d): the shortcut list, built from the key-binding table`.
 
-### Task 2: The command reference (pure)
+### Task 2: The command reference (pure) — ✅
 
 **Files:**
 - Create: `src/help_commands.rs`
@@ -136,7 +136,7 @@ file.
   `Every ` → a footer line; other indent-7 lines → added to the description. Description parts join with one space.
   The group comes from the usage's first word, per note 56.
 
-- [ ] **Step 1: failing tests** on `parse_usage(cli::USAGE)`:
+- [x] **Step 1: failing tests** on `parse_usage(cli::USAGE)`:
   - 35 entries; the first is `ls` with description `list sessions (#N* focused, #N+ on screen)`.
   - The first `new`: usage `["new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME]", "[--split right|down | --tab [--of TARGET]] [--background]"]`,
     description `open a session in a workspace of its own (--split: a pane beside TARGET's, --tab: a tab in it); prints its id`.
@@ -147,12 +147,12 @@ file.
     word, and each later word of the name is a word of that entry's usage (`browser fill` → `browser click REF | fill REF TEXT | press KEY`).
   - Groups in the Global Constraints' order; `mcp_entry(Path::new("/A/fuxx")).usage == ["claude mcp add fuxx -- /A/fuxx"]`.
   - `entry_matches`: "browser" matches every browser entry; "SNAPSHOT" matches `browser snapshot`; "zzz" none.
-- [ ] **Step 2: run** `cargo test --bin fuxx help_commands` → FAIL.
-- [ ] **Step 3: implement** per the parse rules.
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt → ok.
-- [ ] **Step 5: commit** `feat(m11d): the command reference, parsed from fuxx help's text`.
+- [x] **Step 2: run** `cargo test --bin fuxx help_commands` → FAIL.
+- [x] **Step 3: implement** per the parse rules.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt → ok.
+- [x] **Step 5: commit** `feat(m11d): the command reference, parsed from fuxx help's text`.
 
-### Task 3: The Help panel, ⌘/ and the Help menu
+### Task 3: The Help panel, ⌘/ and the Help menu — ✅
 
 **Files:**
 - Create: `src/help_panel.rs`, `src/help_menu.rs`
@@ -183,7 +183,7 @@ file.
   `text_dim`. ↑/↓ scroll one row. A click outside, losing focus or `NameInput` Cancel → `Close`. Confirm does
   nothing.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `main.rs` `the_help_menu_comes_last_and_starts_with_the_panels`: the last menu passed to `set_menus` is named
     `"Help"`, and its items so far are `Keyboard Shortcuts` (`ShowShortcuts`) and `fuxx Command Reference`
     (`ShowCommands`). Test `help_menu::menu()` directly, the way `file_menu` is tested.
@@ -194,13 +194,13 @@ file.
     switcher is open → `switcher` is `None` and the help box has focus; (f) `open_help(Shortcuts)` twice → closed,
     focus back on the active terminal.
   - `overlays` shot: an `Overlay::Help` arm (`ws.open_help(HelpPage::Shortcuts, window, cx)`).
-- [ ] **Step 2: run** `cargo test --bin fuxx help` and `cargo run --features ui-shots -- __ui-shots help` → FAIL.
-- [ ] **Step 3: implement.**
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, the full `__ui-shots` → all ok. Look at the help PNGs: rows
+- [x] **Step 2: run** `cargo test --bin fuxx help` and `cargo run --features ui-shots -- __ui-shots help` → FAIL.
+- [x] **Step 3: implement.**
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, the full `__ui-shots` → all ok. Look at the help PNGs: rows
   aligned and the keys right-aligned, in both themes.
-- [ ] **Step 5: commit** `feat(m11d): Help menu with Keyboard Shortcuts (⌘/) and the command reference`.
+- [x] **Step 5: commit** `feat(m11d): Help menu with Keyboard Shortcuts (⌘/) and the command reference`.
 
-### Task 4: Notifications Status, Show Welcome Tips, and the macOS Help search
+### Task 4: Notifications Status, Show Welcome Tips, and the macOS Help search — ✅
 
 **Files:**
 - Modify: `src/help_menu.rs`, `src/main.rs` (actions `ShowNotificationStatus`, `ShowWelcomeTips`, `ReportIssue`,
@@ -221,20 +221,20 @@ file.
   `window.prompt(PromptLevel::Info, title, Some(detail), buttons, cx)`; the settings button →
   `cx.open_url(NOTIFICATION_SETTINGS_URL)`.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `status_message` for (true, Some(Allowed)), (true, Some(Denied)), (true, Some(NotDetermined)), (false, None),
     (true, None), each checking the title, the buttons and `settings_button` (`None` only for (false, None)).
     (false, Some(Allowed)) gives the (false, None) message.
   - The help-menu test now lists all 8 items in the Global Constraints' order (6 actions, 2 separators).
   - ui-shot `help` (g): sidebar hidden and card dismissed → `show_welcome_tips` → sidebar shown,
     `hint_dismissed == false`.
-- [ ] **Step 2: run** → FAIL.
-- [ ] **Step 3: implement.** Report an Issue… and Show Logs are in the menu with their actions defined. Their
+- [x] **Step 2: run** → FAIL.
+- [x] **Step 3: implement.** Report an Issue… and Show Logs are in the menu with their actions defined. Their
   handlers come in Task 5, and the items are greyed until then.
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots` → ok; `scripts/bundle-mac.sh --app-only` builds.
-- [ ] **Step 5: commit** `feat(m11d): Notifications Status, Show Welcome Tips, and the Help menu's search`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots` → ok; `scripts/bundle-mac.sh --app-only` builds.
+- [x] **Step 5: commit** `feat(m11d): Notifications Status, Show Welcome Tips, and the Help menu's search`.
 
-### Task 5: Report an Issue…, Show Logs, and the window's log file
+### Task 5: Report an Issue…, Show Logs, and the window's log file — ✅
 
 **Files:**
 - Create: `src/app_log.rs`
@@ -256,7 +256,7 @@ file.
   `cx.open_url(&issue_url(env!("CARGO_PKG_VERSION"), os))`. `ShowLogs`: `create_dir_all(logs_dir(home))` →
   `cx.open_with_system(&dir)`. Neither needs a window.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `issue_body("0.4.0", Some("26.5"))` ends with `"---\nfuxx 0.4.0 · macOS 26.5"`; `None` gives `macOS unknown`.
   - `issue_url` starts with the base and has no raw space, `\n`, `&`, `#` or `·`. Percent-decoding what follows
     `body=` gives back `issue_body` exactly.
@@ -264,19 +264,19 @@ file.
     `Some(LOG_CAP + 1)` → Fresh.
   - `open_log` in a temp dir: a new file holds exactly the first line. An existing small file keeps its contents and
     gains the line. One over the cap holds only the line.
-- [ ] **Step 2: run** → FAIL.
-- [ ] **Step 3: implement.**
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots`, `scripts/bundle-mac.sh --app-only` → ok.
-- [ ] **Step 5: commit** `feat(m11d): Report an Issue, Show Logs, and the window's fuxx.log`.
+- [x] **Step 2: run** → FAIL.
+- [x] **Step 3: implement.**
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots`, `scripts/bundle-mac.sh --app-only` → ok.
+- [x] **Step 5: commit** `feat(m11d): Report an Issue, Show Logs, and the window's fuxx.log`.
 
-### Task 6: On screen — 👀 (you)
+### Task 6: On screen — 👀 pending (you)
 
-The 15 items in [[56 - Milestone 11d - Help Menu]] → "On-screen checklist", on `target/dist/fuxx.app`. A failed
+The 17 items in [[56 - Milestone 11d - Help Menu]] → "On-screen checklist", on `target/dist/fuxx.app`. A failed
 item goes back into the task that owns it.
 
-### Task 7: Docs
+### Task 7: Docs — ✅
 
-- [ ] Note 56: status, and any deviation from the plan recorded where it applies. This plan: ticks, status, tasks
+- [x] Note 56: status, and any deviation from the plan recorded where it applies. This plan: ticks, status, tasks
   done. `40 - Roadmap.md`: the M11d line. The Plan Tracker: Where we are, plus the M11d row. `60 - Progress Log.md`:
   a new entry, with the status snapshot corrected. `STRUCTURE.md` (repo root): the 5 new modules.
-- [ ] Commit `docs(m11d): …`.
+- [x] Commit `docs(m11d): …`.

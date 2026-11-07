@@ -14,13 +14,25 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11d — Help menu 🟦 planned (2026-11-07), build after your review. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11d — Help menu 🟨 built and reviewed (2026-11-08, branch `m11d-help-menu`, not merged), on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-08 — M11d built: the Help menu (on-screen check pending)
+- **Did:** Built on branch `m11d-help-menu` (worktree `.worktrees/m11d-help-menu`), 5 tasks, each reviewed, then a
+  whole-branch review ("ready to merge", no must-fix issues) and one polish round. Help after Window, marked as macOS's
+  Help menu (search box). Keyboard Shortcuts (⌘/) and the fuxx Command Reference share one panel, built from the real
+  key bindings and from `fuxx help`'s text; tests fail if either drifts. Notifications Status… (a sheet from macOS's
+  answer), Show Welcome Tips, Report an Issue… (prefilled GitHub issue), Show Logs (`~/Library/Logs/fuxx/`), and the
+  window now writes `fuxx.log` there when run from fuxx.app. AI's calls while building, now in note 56 "As built": ⌘/
+  from Preferences or a popped-out page shows the panel rather than closing it; ⌥⌘Q is listed when it is bound; the
+  MCP row quotes a path with spaces. The review also confirmed the screenshot runs never touch your saved sessions.
+  786 tests pass, ui-shots ok, fmt and clippy clean; `target/dist/fuxx.app` built in the worktree.
+- **Next:** your on-screen check (17 items in note 56), then merge on your word. The M11c check is still open.
 
 ### 2026-11-07 — M11d planned: the Help menu
 - **Did:** You asked to plan the Help menu (requested 2026-11-06) and said "go" to skip the questions, so every
