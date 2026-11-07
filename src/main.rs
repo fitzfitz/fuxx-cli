@@ -84,8 +84,8 @@ use std::path::{Path, PathBuf};
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, Bounds, Global, KeyBinding, Menu, MenuItem, OsAction, QuitMode, TitlebarOptions,
-    WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
+    App, Bounds, Global, KeyBinding, Menu, MenuItem, OsAction, PromptLevel, QuitMode,
+    TitlebarOptions, WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
 };
 use gpui_platform::application;
 use serde_json::{Value, json};
@@ -110,8 +110,18 @@ use workspace::{
 
 actions!(fuxx, [Quit, OpenPreferences, QuitAndEndSessions, Hide]);
 
-// The Help menu's panels (M11d): ⌘/ opens Keyboard Shortcuts; the Command Reference has no key.
-actions!(help, [ShowShortcuts, ShowCommands]);
+// The Help menu (M11d): ⌘/ opens Keyboard Shortcuts; the other items have no key.
+actions!(
+    help,
+    [
+        ShowShortcuts,
+        ShowCommands,
+        ShowNotificationStatus,
+        ShowWelcomeTips,
+        ReportIssue,
+        ShowLogs
+    ]
+);
 
 // The View menu's font size items (every window: they change the setting) and the Window menu's
 // (the key fuxx window).
@@ -254,6 +264,12 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
     bindings
 }
 
+/// ⌥⌘Q, "Quit fuxx and End All Sessions": bound only with persistent sessions on (`main`), and
+/// listed in Keyboard Shortcuts only then.
+pub(crate) fn persistent_bindings() -> [KeyBinding; 1] {
+    [KeyBinding::new("alt-cmd-q", QuitAndEndSessions, None)]
+}
+
 /// The File menu's first two items; the menu shows each one's binding.
 fn new_items() -> [MenuItem; 2] {
     [
@@ -319,10 +335,10 @@ fn with_key_window(cx: &mut App, f: fn(&mut gpui::Window)) {
 
 /// Run `f` on the main fuxx window a Help item goes to (`help_menu::help_target`), brought to
 /// the front if another window (Preferences, a popped-out page) is key; nothing when there is
-/// none. Deferred, as `with_key_window` is.
+/// none. `f` is told whether that window was already key. Deferred, as `with_key_window` is.
 fn with_help_window(
     cx: &mut App,
-    f: impl FnOnce(&mut Workspace, &mut gpui::Window, &mut gpui::Context<Workspace>) + 'static,
+    f: impl FnOnce(&mut Workspace, bool, &mut gpui::Window, &mut gpui::Context<Workspace>) + 'static,
 ) {
     cx.defer(move |cx| {
         let key = cx.active_window();
@@ -343,9 +359,35 @@ fn with_help_window(
                 if !was_key {
                     window.activate_window();
                 }
-                f(workspace, window, cx)
+                f(workspace, was_key, window, cx)
             })
             .ok();
+    });
+}
+
+/// Notifications Status…'s sheet (`help_menu::status_message`) on the main fuxx window, for what
+/// macOS said; its Open System Settings opens fuxx's page there.
+fn show_notification_status(
+    bundled: bool,
+    permission: Option<native_notify::Permission>,
+    cx: &mut App,
+) {
+    let message = help_menu::status_message(bundled, permission);
+    with_help_window(cx, move |_, _, window, cx| {
+        let answer = window.prompt(
+            PromptLevel::Info,
+            message.title,
+            Some(message.detail),
+            message.buttons,
+            cx,
+        );
+        let settings = message.settings_button;
+        cx.spawn(async move |_, cx| {
+            if settings.is_some() && answer.await.ok() == settings {
+                cx.update(|cx| cx.open_url(help_menu::NOTIFICATION_SETTINGS_URL));
+            }
+        })
+        .detach();
     });
 }
 
@@ -390,6 +432,7 @@ pub(crate) fn set_menus(cx: &App, keep_running: Option<usize>) {
         ));
     }
     cx.set_menus(menu_bar(app_items, preset_items));
+    help_menu::mark_help_menu();
 }
 
 /// The menu bar, left to right: fuxx · File · Edit · Pane · View · Window · Help.
@@ -630,7 +673,7 @@ fn main() {
             reduce_motion::watch(cx);
             let persistent = cx.global::<appearance::Appearance>().persistent;
             if persistent {
-                cx.bind_keys([KeyBinding::new("alt-cmd-q", QuitAndEndSessions, None)]);
+                cx.bind_keys(persistent_bindings());
             }
             cx.on_action(|_: &OpenPreferences, cx: &mut App| preferences::open_or_activate(cx));
             cx.on_action(|_: &Bigger, cx: &mut App| {
@@ -643,15 +686,33 @@ fn main() {
                 preferences::step_font_size(cx, FontStep::ActualSize)
             });
             cx.on_action(|_: &Hide, cx: &mut App| cx.hide());
-            // The Help panels go to the main fuxx window whatever window is key.
+            // The Help panels go to the main fuxx window whatever window is key; asked for again,
+            // the shown page closes only if that window was key.
             cx.on_action(|_: &ShowShortcuts, cx: &mut App| {
-                with_help_window(cx, |workspace, window, cx| {
-                    workspace.open_help(HelpPage::Shortcuts, window, cx)
+                with_help_window(cx, |workspace, was_key, window, cx| {
+                    workspace.open_help(HelpPage::Shortcuts, was_key, window, cx)
                 })
             });
             cx.on_action(|_: &ShowCommands, cx: &mut App| {
-                with_help_window(cx, |workspace, window, cx| {
-                    workspace.open_help(HelpPage::Commands, window, cx)
+                with_help_window(cx, |workspace, was_key, window, cx| {
+                    workspace.open_help(HelpPage::Commands, was_key, window, cx)
+                })
+            });
+            // Read off the UI thread (it waits up to 2 s for macOS), then asked on the main
+            // window in a sheet.
+            cx.on_action(|_: &ShowNotificationStatus, cx: &mut App| {
+                let read = cx
+                    .background_executor()
+                    .spawn(async { (native_notify::is_bundled(), native_notify::permission()) });
+                cx.spawn(async move |cx| {
+                    let (bundled, permission) = read.await;
+                    cx.update(|cx| show_notification_status(bundled, permission, cx));
+                })
+                .detach();
+            });
+            cx.on_action(|_: &ShowWelcomeTips, cx: &mut App| {
+                with_help_window(cx, |workspace, _, window, cx| {
+                    workspace.show_welcome_tips(window, cx)
                 })
             });
             cx.on_action(|_: &Minimize, cx: &mut App| {
@@ -742,8 +803,9 @@ mod tests {
     use gpui::{MenuItem, OsAction};
 
     use super::{
-        ActualSize, Bigger, ShowCommands, ShowShortcuts, Smaller, edit_menu, file_menu,
-        key_bindings, menu_bar, new_bindings, new_items, quit_title, view_menu, window_menu,
+        ActualSize, Bigger, ReportIssue, ShowCommands, ShowLogs, ShowNotificationStatus,
+        ShowShortcuts, ShowWelcomeTips, Smaller, edit_menu, file_menu, key_bindings, menu_bar,
+        new_bindings, new_items, quit_title, view_menu, window_menu,
     };
     use crate::browser_tab::{GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::terminal_view::{Copy, Paste};
@@ -808,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn the_help_menu_comes_last_and_starts_with_the_panels() {
+    fn the_help_menu_comes_last_with_its_eight_items() {
         let bar = menu_bar(vec![], vec![]);
         let menus: Vec<&str> = bar.iter().map(|m| m.name.as_ref()).collect();
         assert_eq!(
@@ -817,24 +879,58 @@ mod tests {
         );
         let help = crate::help_menu::menu();
         assert_eq!(help.name.as_ref(), "Help");
-        let items: Vec<(String, bool, bool)> = help
+        // Each item's name and action ("—" for a separator).
+        let actions: [Box<dyn Action>; 6] = [
+            Box::new(ShowShortcuts),
+            Box::new(ShowCommands),
+            Box::new(ShowNotificationStatus),
+            Box::new(ShowWelcomeTips),
+            Box::new(ReportIssue),
+            Box::new(ShowLogs),
+        ];
+        let items: Vec<(String, Option<usize>)> = help
             .items
             .iter()
             .map(|item| match item {
                 MenuItem::Action { name, action, .. } => (
                     name.to_string(),
-                    action.partial_eq(&ShowShortcuts),
-                    action.partial_eq(&ShowCommands),
+                    actions.iter().position(|a| action.partial_eq(&**a)),
                 ),
-                _ => panic!("only actions so far"),
+                MenuItem::Separator => ("\u{2014}".to_string(), None),
+                _ => panic!("only actions and separators"),
             })
             .collect();
-        assert_eq!(
-            items,
-            [
-                ("Keyboard Shortcuts".to_string(), true, false),
-                ("fuxx Command Reference".to_string(), false, true)
-            ]
+        let want: Vec<(String, Option<usize>)> = [
+            ("Keyboard Shortcuts", Some(0)),
+            ("fuxx Command Reference", Some(1)),
+            ("\u{2014}", None),
+            ("Notifications Status\u{2026}", Some(2)),
+            ("Show Welcome Tips", Some(3)),
+            ("\u{2014}", None),
+            ("Report an Issue\u{2026}", Some(4)),
+            ("Show Logs", Some(5)),
+        ]
+        .into_iter()
+        .map(|(name, at)| (name.to_string(), at))
+        .collect();
+        assert_eq!(items, want);
+    }
+
+    #[test]
+    fn up_and_down_scroll_the_help_panel_from_its_box() {
+        let keymap = keymap();
+        let stack = &["Workspace", "HelpPanel", "NameInput"][..];
+        let up = runs(&keymap, "up", stack);
+        assert!(
+            up.partial_eq(&crate::help_panel::ScrollUp),
+            "up: {}",
+            up.name()
+        );
+        let down = runs(&keymap, "down", stack);
+        assert!(
+            down.partial_eq(&crate::help_panel::ScrollDown),
+            "down: {}",
+            down.name()
         );
     }
 

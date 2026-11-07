@@ -100,11 +100,37 @@ impl Focusable for HelpPanel {
 }
 
 /// Keyboard Shortcuts' rows: from fuxx's whole key-binding table, ⌘N and ⌘T (`new_bindings`)
-/// first, as `main` binds them.
-pub(crate) fn shortcut_list() -> Vec<ShortcutRow> {
+/// first and ⌥⌘Q (`persistent_bindings`) last with persistent sessions on, as `main` binds them.
+pub(crate) fn shortcut_list(persistent: bool) -> Vec<ShortcutRow> {
     let mut bindings = crate::new_bindings().to_vec();
     bindings.extend(crate::key_bindings());
+    if persistent {
+        bindings.extend(crate::persistent_bindings());
+    }
     shortcut_rows(&binding_pairs(&bindings))
+}
+
+/// What a Help request for a page does to the panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpStep {
+    /// Show the page (opened, or in place of the other one).
+    Open,
+    /// Close the panel.
+    Close,
+    /// Leave it showing that page, its box with the keyboard.
+    Keep,
+}
+
+/// What asking for `asked` does, with `shown` the page the panel shows (none: closed) and
+/// `window_was_key` whether the main window was already the key window. The shown page asked
+/// for again closes (⌘/ twice), but only there: from Preferences or a popped-out page, ⌘/ means
+/// "show me the shortcuts", so the panel stays.
+pub fn help_step(shown: Option<HelpPage>, asked: HelpPage, window_was_key: bool) -> HelpStep {
+    match (shown == Some(asked), window_was_key) {
+        (false, _) => HelpStep::Open,
+        (true, true) => HelpStep::Close,
+        (true, false) => HelpStep::Keep,
+    }
 }
 
 /// The running fuxx's path, for the MCP setup row (as `fuxx` when it can't be found).
@@ -113,8 +139,14 @@ fn this_exe() -> PathBuf {
 }
 
 impl HelpPanel {
-    /// The panel on `page`, its box focused.
-    pub fn new(page: HelpPage, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// The panel on `page`, its box focused. `persistent`: persistent sessions are on, so ⌥⌘Q
+    /// is bound (and listed).
+    pub fn new(
+        page: HelpPage,
+        persistent: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input = cx.new(|cx| NameInput::new(String::new(), window, cx));
         let input_events = cx.subscribe_in(&input, window, |_, _, event, _, cx| match event {
             // Read only: Enter does nothing.
@@ -124,7 +156,7 @@ impl HelpPanel {
         let input_changes = cx.observe(&input, |this, _, cx| this.query_changed(cx));
         input.focus_handle(cx).focus(window, cx);
         let content = match page {
-            HelpPage::Shortcuts => Content::Shortcuts(shortcut_list()),
+            HelpPage::Shortcuts => Content::Shortcuts(shortcut_list(persistent)),
             HelpPage::Commands => Content::Commands(reference(&this_exe())),
         };
         Self {
@@ -198,10 +230,12 @@ impl HelpPanel {
     }
 
     /// ↑/↓: the line above or below the top one to the top of the list. ↑ with the top line cut
-    /// off (scrolled by the mouse) brings that line in whole first.
+    /// off (scrolled by the mouse) brings that line in whole first. Nothing while nothing is
+    /// found: the handle still counts the rows last drawn, and a scroll queued now would win
+    /// over the return to the top once the box is cleared.
     fn scroll_by(&mut self, delta: i32, cx: &mut Context<Self>) {
         let count = self.scroll.children_count();
-        if count == 0 {
+        if count == 0 || self.lines().is_empty() {
             return;
         }
         let (top, cut) = self.scroll.logical_scroll_top();
@@ -359,27 +393,36 @@ impl Render for HelpPanel {
 }
 
 impl Workspace {
-    /// ⌘/ or a Help item: the Help panel on `page`. Open on that page already, it closes (⌘/
-    /// again); open on the other, the new page takes its place. Any other box over the window
+    /// ⌘/ or a Help item: the Help panel on `page` (`help_step`). Open on that page already, it
+    /// closes when this window was key (⌘/ again) and stays otherwise, its box given the
+    /// keyboard; open on the other, the new page takes its place. Any other box over the window
     /// closes first.
     pub(crate) fn open_help(
         &mut self,
         page: HelpPage,
+        window_was_key: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .help
-            .as_ref()
-            .is_some_and(|h| h.read(cx).page() == page)
-        {
-            self.help = None;
-            self.focus_active(window, cx);
-            cx.notify();
-            return;
+        let shown = self.help.as_ref().map(|h| h.read(cx).page());
+        match help_step(shown, page, window_was_key) {
+            HelpStep::Close => {
+                self.help = None;
+                self.focus_active(window, cx);
+                cx.notify();
+                return;
+            }
+            HelpStep::Keep => {
+                if let Some(help) = &self.help {
+                    help.focus_handle(cx).focus(window, cx);
+                }
+                return;
+            }
+            HelpStep::Open => {}
         }
         self.close_overlays(Overlay::Help);
-        let help = cx.new(|cx| HelpPanel::new(page, window, cx));
+        let persistent = self.persistent;
+        let help = cx.new(|cx| HelpPanel::new(page, persistent, window, cx));
         cx.subscribe_in(&help, window, Self::on_help_event).detach();
         self.help = Some(help);
         cx.notify();
@@ -406,12 +449,16 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::shortcut_list;
+    use super::{HelpPage, HelpStep, help_step, shortcut_list};
     use crate::help_shortcuts::ShortcutGroup;
 
-    /// (name, keys) of each row in `group`, in order.
+    /// (name, keys) of each row in `group`, in order, with persistent sessions off.
     fn rows_of(group: ShortcutGroup) -> Vec<(&'static str, String)> {
-        shortcut_list()
+        rows_of_with(group, false)
+    }
+
+    fn rows_of_with(group: ShortcutGroup, persistent: bool) -> Vec<(&'static str, String)> {
+        shortcut_list(persistent)
             .into_iter()
             .filter(|r| r.group == group)
             .map(|r| (r.name, r.keys))
@@ -432,5 +479,30 @@ mod tests {
             rows_of(ShortcutGroup::WindowAndApp)
                 .contains(&("Keyboard Shortcuts", "\u{2318}/".to_string()))
         );
+    }
+
+    #[test]
+    fn quit_and_end_all_sessions_is_listed_only_while_it_is_bound() {
+        let row = (
+            "Quit fuxx and End All Sessions",
+            "\u{2325}\u{2318}Q".to_string(),
+        );
+        assert!(rows_of_with(ShortcutGroup::WindowAndApp, true).contains(&row));
+        assert!(!rows_of_with(ShortcutGroup::WindowAndApp, false).contains(&row));
+    }
+
+    #[test]
+    fn asking_again_closes_only_from_the_key_main_window() {
+        use HelpPage::{Commands, Shortcuts};
+        // The main window was key: the shown page toggles closed, another one replaces it.
+        assert_eq!(help_step(None, Shortcuts, true), HelpStep::Open);
+        assert_eq!(help_step(Some(Shortcuts), Shortcuts, true), HelpStep::Close);
+        assert_eq!(help_step(Some(Commands), Shortcuts, true), HelpStep::Open);
+        assert_eq!(help_step(Some(Commands), Commands, true), HelpStep::Close);
+        // From Preferences or a popped-out page: shown, never closed.
+        assert_eq!(help_step(None, Shortcuts, false), HelpStep::Open);
+        assert_eq!(help_step(Some(Shortcuts), Shortcuts, false), HelpStep::Keep);
+        assert_eq!(help_step(Some(Commands), Shortcuts, false), HelpStep::Open);
+        assert_eq!(help_step(Some(Commands), Commands, false), HelpStep::Keep);
     }
 }

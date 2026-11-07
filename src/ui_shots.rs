@@ -3921,7 +3921,9 @@ fn overlays() {
                 ws.update(cx, |ws, cx| match step {
                     "rename" => ws.start_rename(ws.model.display_order()[3], window, cx),
                     "address" => ws.open_address_box(window, cx),
-                    "help" => ws.open_help(crate::help_panel::HelpPage::Shortcuts, window, cx),
+                    "help" => {
+                        ws.open_help(crate::help_panel::HelpPage::Shortcuts, true, window, cx)
+                    }
                     _ => ws.open_switcher(window, cx),
                 })
             })
@@ -3961,7 +3963,7 @@ fn overlays() {
                         }
                         Overlay::Notifications => ws.open_notifications(window, cx),
                         Overlay::Help => {
-                            ws.open_help(crate::help_panel::HelpPage::Shortcuts, window, cx)
+                            ws.open_help(crate::help_panel::HelpPage::Shortcuts, true, window, cx)
                         }
                     }
                 })
@@ -4022,14 +4024,17 @@ fn overlays() {
 /// - `help-none`: "zzz" typed, which finds nothing ("No shortcut matches");
 /// - `help-commands`: the Command Reference with "browser" typed;
 /// - `help-over-switcher`: Keyboard Shortcuts opened while ⌘P's switcher is open;
-/// - `help-toggle`: Keyboard Shortcuts opened and opened again (as ⌘/ twice does).
+/// - `help-toggle`: Keyboard Shortcuts opened and opened again (as ⌘/ twice does);
+/// - `help-tips`: Help → Show Welcome Tips with the sidebar hidden and the tips card closed.
 ///
 /// Panics unless the rows shown are the ones the pure modules list for that text, the panel
 /// opened over the switcher closed it and has the keyboard, and the second open closed the panel
 /// and gave the keyboard back to the active terminal. `help-toggle` first checks the panel's
 /// keys: ↓ scrolls the list and ↑ scrolls it back, Enter leaves it open, Esc closes it (the
-/// keyboard back to the terminal), and Help → fuxx Command Reference over Keyboard Shortcuts
-/// replaces that page.
+/// keyboard back to the terminal), ↓ with nothing found leaves the list at the top once the box
+/// is cleared, Help → fuxx Command Reference over Keyboard Shortcuts replaces that page, and
+/// asking for the shown page from another key window keeps it open. `help-tips` panics unless
+/// the sidebar is shown again with the card back.
 fn help_scenes() {
     use crate::help_commands::{entry_matches, reference};
     use crate::help_panel::{HelpPage, ScrollDown, ScrollUp, shortcut_list};
@@ -4038,7 +4043,7 @@ fn help_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let shortcuts = shortcut_list();
+    let shortcuts = shortcut_list(false);
     let all_shortcuts = shortcuts.len();
     let split = shortcuts.iter().filter(|r| row_matches(r, "split")).count();
     let exe = std::env::current_exe().expect("this program's path");
@@ -4063,6 +4068,7 @@ fn help_scenes() {
             "help-commands",
             "help-over-switcher",
             "help-toggle",
+            "help-tips",
         ] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
@@ -4081,6 +4087,11 @@ fn help_scenes() {
                         KeyBinding::new("down", ScrollDown, Some("HelpPanel")),
                         KeyBinding::new("enter", crate::name_input::Confirm, Some("NameInput")),
                         KeyBinding::new("escape", crate::name_input::Cancel, Some("NameInput")),
+                        KeyBinding::new(
+                            "cmd-backspace",
+                            crate::name_input::Clear,
+                            Some("NameInput"),
+                        ),
                     ])
                 });
                 // Frames, so focus changes (and the boxes' blur events) and scrolls run.
@@ -4093,7 +4104,7 @@ fn help_scenes() {
                 };
                 let open = |cx: &mut VisualTestAppContext, page: HelpPage| {
                     cx.update_window(window, |_, window, cx| {
-                        ws.update(cx, |ws, cx| ws.open_help(page, window, cx))
+                        ws.update(cx, |ws, cx| ws.open_help(page, true, window, cx))
                     })
                     .expect("open the help");
                     frames(cx);
@@ -4166,6 +4177,31 @@ fn help_scenes() {
                             "{n}: the help has the keyboard"
                         );
                     }
+                    "help-tips" => {
+                        // Not saved: the shot's sessions aren't the user's.
+                        cx.update(|cx| {
+                            ws.update(cx, |ws, _| {
+                                ws.hold_saving = true;
+                                ws.sidebar.hidden = true;
+                                ws.sidebar.hint_dismissed = true;
+                            })
+                        });
+                        cx.update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| {
+                                ws.show_welcome_tips(window, cx);
+                                // The picture shows where the slide ends, not part way.
+                                ws.slide = None;
+                            })
+                        })
+                        .expect("show the tips");
+                        frames(cx);
+                        let (hidden, dismissed) = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            (ws.sidebar.hidden, ws.sidebar.hint_dismissed)
+                        });
+                        assert!(!hidden, "{n}: the sidebar is shown");
+                        assert!(!dismissed, "{n}: the tips card is back");
+                    }
                     _ => {
                         // The keys: ↓ scrolls a row, ↑ back; Enter does nothing; Esc closes.
                         open(cx, HelpPage::Shortcuts);
@@ -4203,6 +4239,31 @@ fn help_scenes() {
                         assert!(
                             matches!(help(cx), Some((HelpPage::Shortcuts, _, true))),
                             "{n}: opened"
+                        );
+                        // ↓ while nothing is found queues no scroll: cleared, the list is at
+                        // the top.
+                        cx.simulate_input(window, "zzz");
+                        frames(cx);
+                        press(cx, "down");
+                        press(cx, "cmd-backspace");
+                        assert_eq!(
+                            help(cx),
+                            Some((HelpPage::Shortcuts, all_shortcuts, true)),
+                            "{n}: cleared, every row"
+                        );
+                        assert_eq!(offset(cx), 0.0, "{n}: cleared, at the top");
+                        // From Preferences or a popped-out page (the main window not key),
+                        // asking for the shown page keeps it open.
+                        cx.update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| {
+                                ws.open_help(HelpPage::Shortcuts, false, window, cx)
+                            })
+                        })
+                        .expect("ask again from another window");
+                        frames(cx);
+                        assert!(
+                            matches!(help(cx), Some((HelpPage::Shortcuts, _, true))),
+                            "{n}: kept open, its box with the keyboard"
                         );
                         open(cx, HelpPage::Shortcuts);
                         assert_eq!(help(cx), None, "{n}: the second one closed it");
