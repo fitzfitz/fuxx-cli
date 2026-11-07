@@ -117,11 +117,27 @@ pub fn parse_usage(usage: &str) -> Reference {
     Reference { entries, footer }
 }
 
+/// `path` as one shell word: single-quoted when it has whitespace or shell metacharacters.
+fn shell_word(path: &str) -> String {
+    let plain = !path.is_empty()
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+=:,@%~".contains(c));
+    if plain {
+        path.to_string()
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
+}
+
 /// The entry for `claude mcp add`, which `fuxx help` does not list.
 pub fn mcp_entry(exe: &Path) -> CommandEntry {
     CommandEntry {
         group: "MCP setup",
-        usage: vec![format!("claude mcp add fuxx -- {}", exe.display())],
+        usage: vec![format!(
+            "claude mcp add fuxx -- {}",
+            shell_word(&exe.display().to_string())
+        )],
         description: "Lets Claude Code drive fuxx (scripting needs fuxx running).".to_string(),
     }
 }
@@ -299,6 +315,14 @@ mod tests {
             e.description,
             "Lets Claude Code drive fuxx (scripting needs fuxx running)."
         );
+    }
+
+    #[test]
+    fn mcp_entry_quotes_a_path_with_spaces() {
+        let e = mcp_entry(Path::new("/My Apps/fuxx"));
+        assert_eq!(e.usage, strs(&["claude mcp add fuxx -- '/My Apps/fuxx'"]));
+        let q = mcp_entry(Path::new("/It's/fuxx"));
+        assert_eq!(q.usage, strs(&["claude mcp add fuxx -- '/It'\\''s/fuxx'"]));
     }
 
     #[test]

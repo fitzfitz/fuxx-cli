@@ -4178,10 +4178,9 @@ fn help_scenes() {
                         );
                     }
                     "help-tips" => {
-                        // Not saved: the shot's sessions aren't the user's.
                         cx.update(|cx| {
                             ws.update(cx, |ws, _| {
-                                ws.hold_saving = true;
+                                // `Workspace::for_shots` already holds saving.
                                 ws.sidebar.hidden = true;
                                 ws.sidebar.hint_dismissed = true;
                             })

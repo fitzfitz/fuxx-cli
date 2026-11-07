@@ -348,6 +348,7 @@ mod tests {
     fn every_binding_is_listed_or_marked_unlisted() {
         let mut bindings = crate::key_bindings();
         bindings.extend(crate::persistent_bindings());
+        bindings.extend(crate::new_bindings());
         for (action, keystroke) in binding_pairs(&bindings) {
             assert_ne!(
                 describe(&action),
