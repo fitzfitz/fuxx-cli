@@ -223,6 +223,7 @@ const SCENES: &[(&str, fn())] = &[
     ("default-name", default_name),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
+    ("help", help_scenes),
     ("panels", panel_scenes),
     ("preferences", preferences_scenes),
 ];
@@ -3858,10 +3859,11 @@ fn switcher_scenes() {
     }
 }
 
-/// One box over the window at a time: opening the rename box, the switcher or the address box
-/// over another closes that one, and the new one keeps the keyboard (the old one's late "lost
-/// focus" must not take it back). Rename -> switcher -> rename -> address box -> switcher, each
-/// checked after frames have run the focus changes. Then every overlay (`Overlay::ALL`) is opened
+/// One box over the window at a time: opening the rename box, the switcher, the address box or
+/// the Help panel over another closes that one, and the new one keeps the keyboard (the old one's
+/// late "lost focus" must not take it back). Rename -> switcher -> rename -> address box ->
+/// switcher -> help -> rename -> help -> switcher, each checked after frames have run the focus
+/// changes. Then every overlay (`Overlay::ALL`) is opened
 /// in turn: each must count in the in-pane pages' hide signal (`overlays().any()`), and closing
 /// the overlays must clear it. Panics on the first that doesn't hold.
 fn overlays() {
@@ -3897,6 +3899,9 @@ fn overlays() {
                 if let Some(p) = &ws.host_picker {
                     open.push(("picker", p.focus_handle(cx).is_focused(window)));
                 }
+                if let Some(h) = &ws.help {
+                    open.push(("help", h.focus_handle(cx).is_focused(window)));
+                }
                 open
             })
             .expect("read the boxes")
@@ -3907,11 +3912,16 @@ fn overlays() {
             ("rename", "rename"),
             ("address", "address"),
             ("switcher", "switcher"),
+            ("help", "help"),
+            ("rename", "rename"),
+            ("help", "help"),
+            ("switcher", "switcher"),
         ] {
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| match step {
                     "rename" => ws.start_rename(ws.model.display_order()[3], window, cx),
                     "address" => ws.open_address_box(window, cx),
+                    "help" => ws.open_help(crate::help_panel::HelpPage::Shortcuts, window, cx),
                     _ => ws.open_switcher(window, cx),
                 })
             })
@@ -3950,6 +3960,9 @@ fn overlays() {
                             ws.open_pane_tab_menu(tab, at, window, cx)
                         }
                         Overlay::Notifications => ws.open_notifications(window, cx),
+                        Overlay::Help => {
+                            ws.open_help(crate::help_panel::HelpPage::Shortcuts, window, cx)
+                        }
                     }
                 })
             })
@@ -4001,6 +4014,208 @@ fn overlays() {
         );
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
+}
+
+/// The Help panel (M11d) over the switcher's workspace, in both themes:
+/// - `help-shortcuts`: Keyboard Shortcuts just opened, every listed binding in its group;
+/// - `help-split`: "split" typed, which leaves Split Right and Split Down;
+/// - `help-none`: "zzz" typed, which finds nothing ("No shortcut matches");
+/// - `help-commands`: the Command Reference with "browser" typed;
+/// - `help-over-switcher`: Keyboard Shortcuts opened while ⌘P's switcher is open;
+/// - `help-toggle`: Keyboard Shortcuts opened and opened again (as ⌘/ twice does).
+///
+/// Panics unless the rows shown are the ones the pure modules list for that text, the panel
+/// opened over the switcher closed it and has the keyboard, and the second open closed the panel
+/// and gave the keyboard back to the active terminal. `help-toggle` first checks the panel's
+/// keys: ↓ scrolls the list and ↑ scrolls it back, Enter leaves it open, Esc closes it (the
+/// keyboard back to the terminal), and Help → fuxx Command Reference over Keyboard Shortcuts
+/// replaces that page.
+fn help_scenes() {
+    use crate::help_commands::{entry_matches, reference};
+    use crate::help_panel::{HelpPage, ScrollDown, ScrollUp, shortcut_list};
+    use crate::help_shortcuts::row_matches;
+    use gpui::{Focusable, KeyBinding};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let shortcuts = shortcut_list();
+    let all_shortcuts = shortcuts.len();
+    let split = shortcuts.iter().filter(|r| row_matches(r, "split")).count();
+    let exe = std::env::current_exe().expect("this program's path");
+    let browser = reference(&exe)
+        .entries
+        .iter()
+        .filter(|e| entry_matches(e, "browser"))
+        .count();
+    assert_eq!(split, 2, "help: \"split\" finds Split Right and Split Down");
+    assert!(
+        browser >= 8,
+        "help: every browser command matches \"browser\""
+    );
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for scene in [
+            "help-shortcuts",
+            "help-split",
+            "help-none",
+            "help-commands",
+            "help-over-switcher",
+            "help-toggle",
+        ] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| switcher_workspace(window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let n = format!("{scene}-{slug}");
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                cx.update(|cx| {
+                    cx.bind_keys([
+                        KeyBinding::new("up", ScrollUp, Some("HelpPanel")),
+                        KeyBinding::new("down", ScrollDown, Some("HelpPanel")),
+                        KeyBinding::new("enter", crate::name_input::Confirm, Some("NameInput")),
+                        KeyBinding::new("escape", crate::name_input::Cancel, Some("NameInput")),
+                    ])
+                });
+                // Frames, so focus changes (and the boxes' blur events) and scrolls run.
+                let frames = |cx: &mut VisualTestAppContext| {
+                    for _ in 0..3 {
+                        cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+                            .expect("draw");
+                        cx.run_until_parked();
+                    }
+                };
+                let open = |cx: &mut VisualTestAppContext, page: HelpPage| {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| ws.open_help(page, window, cx))
+                    })
+                    .expect("open the help");
+                    frames(cx);
+                };
+                let press = |cx: &mut VisualTestAppContext, keys: &str| {
+                    for key in keys.split(' ') {
+                        cx.simulate_keystrokes(window, key);
+                        frames(cx);
+                    }
+                };
+                // (page, rows shown, whether its box has the keyboard), or none while closed.
+                let help = |cx: &mut VisualTestAppContext| {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.read(cx).help.clone().map(|h| {
+                            let panel = h.read(cx);
+                            let focused = panel.focus_handle(cx).is_focused(window);
+                            (panel.page(), panel.shown_rows(), focused)
+                        })
+                    })
+                    .expect("read the help")
+                };
+                let terminal_focused = |cx: &mut VisualTestAppContext| {
+                    cx.update_window(window, |_, window, cx| {
+                        let ws = ws.read(cx);
+                        let active = ws.sessions.active().expect("an active terminal");
+                        active.view.focus_handle(cx).is_focused(window)
+                    })
+                    .expect("read the focus")
+                };
+                match scene {
+                    "help-shortcuts" | "help-split" | "help-none" => {
+                        open(cx, HelpPage::Shortcuts);
+                        let (typed, rows) = match scene {
+                            "help-split" => ("split", split),
+                            "help-none" => ("zzz", 0),
+                            _ => ("", all_shortcuts),
+                        };
+                        if !typed.is_empty() {
+                            cx.simulate_input(window, typed);
+                        }
+                        assert_eq!(
+                            help(cx),
+                            Some((HelpPage::Shortcuts, rows, true)),
+                            "{n}: the rows for {typed:?}, the box with the keyboard"
+                        );
+                    }
+                    "help-commands" => {
+                        open(cx, HelpPage::Commands);
+                        cx.simulate_input(window, "browser");
+                        assert_eq!(
+                            help(cx),
+                            Some((HelpPage::Commands, browser, true)),
+                            "{n}: the browser commands"
+                        );
+                    }
+                    "help-over-switcher" => {
+                        cx.update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| ws.open_switcher(window, cx))
+                        })
+                        .expect("open the switcher");
+                        cx.run_until_parked();
+                        open(cx, HelpPage::Shortcuts);
+                        assert!(
+                            cx.read(|cx| ws.read(cx).switcher.is_none()),
+                            "{n}: the help closed the switcher"
+                        );
+                        assert_eq!(
+                            help(cx),
+                            Some((HelpPage::Shortcuts, all_shortcuts, true)),
+                            "{n}: the help has the keyboard"
+                        );
+                    }
+                    _ => {
+                        // The keys: ↓ scrolls a row, ↑ back; Enter does nothing; Esc closes.
+                        open(cx, HelpPage::Shortcuts);
+                        let offset = |cx: &mut VisualTestAppContext| {
+                            cx.read(|cx| {
+                                let help = ws.read(cx).help.clone().expect("the help is open");
+                                f32::from(help.read(cx).scroll_offset())
+                            })
+                        };
+                        assert_eq!(offset(cx), 0.0, "{n}: opens at the top");
+                        press(cx, "down");
+                        let one = offset(cx);
+                        assert!(one < 0.0, "{n}: ↓ scrolls the list ({one})");
+                        press(cx, "down");
+                        let two = offset(cx);
+                        assert!(two < one, "{n}: ↓ again scrolls a row more ({two})");
+                        press(cx, "up");
+                        assert_eq!(offset(cx), one, "{n}: ↑ scrolls a row back");
+                        press(cx, "up");
+                        assert_eq!(offset(cx), 0.0, "{n}: ↑ again, at the top");
+                        press(cx, "enter");
+                        assert!(help(cx).is_some(), "{n}: Enter leaves it open");
+                        press(cx, "escape");
+                        assert_eq!(help(cx), None, "{n}: Esc closes it");
+                        assert!(terminal_focused(cx), "{n}: Esc gives the terminal the keys");
+                        // The other page replaces the open one.
+                        open(cx, HelpPage::Shortcuts);
+                        open(cx, HelpPage::Commands);
+                        assert!(
+                            matches!(help(cx), Some((HelpPage::Commands, _, true))),
+                            "{n}: the Command Reference replaced Keyboard Shortcuts"
+                        );
+                        // ⌘/ twice: open, then closed, the keyboard back to the terminal.
+                        open(cx, HelpPage::Shortcuts);
+                        assert!(
+                            matches!(help(cx), Some((HelpPage::Shortcuts, _, true))),
+                            "{n}: opened"
+                        );
+                        open(cx, HelpPage::Shortcuts);
+                        assert_eq!(help(cx), None, "{n}: the second one closed it");
+                        assert!(terminal_focused(cx), "{n}: the terminal has the keys again");
+                    }
+                }
+                // Not kept past the window: a handle left over is reported as a leak.
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            println!("ui-shots: {}", path.display());
+        }
+    }
 }
 
 /// The host picker and the address box over the same workspace as the switcher shots, in both

@@ -35,10 +35,12 @@ actions!(switcher, [SelectPrev, SelectNext]);
 
 /// Wider than the host picker: a row holds a name, its group and a question.
 const PANEL_WIDTH: f32 = 520.0;
-/// The space between rows.
-const ROW_GAP: f32 = 2.0;
-/// Eight rows, two of them waiting ones, show before the list scrolls.
-const LIST_MAX_HEIGHT: f32 = 8.0 * (SIDEBAR_ROW + ROW_GAP) + 2.0 * (WAITING_ROW - SIDEBAR_ROW);
+/// The space between rows (the Help panel's too).
+pub(crate) const ROW_GAP: f32 = 2.0;
+/// Eight rows, two of them waiting ones, show before the list scrolls (the Help panel's list is
+/// as tall).
+pub(crate) const LIST_MAX_HEIGHT: f32 =
+    8.0 * (SIDEBAR_ROW + ROW_GAP) + 2.0 * (WAITING_ROW - SIDEBAR_ROW);
 /// The `#n` column, wide enough for two digits.
 const NUMBER_WIDTH: f32 = 26.0;
 const MARK_GAP: f32 = 8.0;

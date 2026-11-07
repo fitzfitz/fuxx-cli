@@ -91,6 +91,8 @@ pub struct Overlays {
     pub suggestions: bool,
     /// The title area's notifications popover.
     pub notifications: bool,
+    /// The Help panel (M11d).
+    pub help: bool,
 }
 
 impl Overlays {
@@ -105,6 +107,7 @@ impl Overlays {
             new_menu,
             suggestions,
             notifications,
+            help,
         } = *self;
         rename
             || host_picker
@@ -115,6 +118,7 @@ impl Overlays {
             || new_menu
             || suggestions
             || notifications
+            || help
     }
 }
 
@@ -576,6 +580,7 @@ mod tests {
                 notifications: true,
                 ..none
             },
+            Overlays { help: true, ..none },
         ];
         for overlays in each {
             assert!(overlays.any(), "{overlays:?}");
