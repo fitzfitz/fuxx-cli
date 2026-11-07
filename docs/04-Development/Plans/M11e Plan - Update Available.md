@@ -13,8 +13,8 @@ updated: 2026-11-08
 |---|---|
 | **Milestone note** | [[57 - Milestone 11e - Update Available]] (the spec) |
 | **Status** | 🟦 Planned 2026-11-08; not started |
-| **Tasks done** | 0 / 9 |
-| **▶ Pick up here** | Your review of note 57 and this plan, then Task 0 (the spike on your Mac) |
+| **Tasks done** | 1 / 9 (Task 0) |
+| **▶ Pick up here** | Task 1 (version 0.3.0 and the Release workflow) |
 | **Decisions used** | Yours (2026-11-08): an updater without M12; fuxx's own (not Sparkle); a blue rounded "Update Available" above the bottom bar; releases by GitHub Actions on a tag; skip the questions. The rest: AI's call, in note 57. |
 | **Needs your eyes** | 👀 Task 0 (spike), Task 7 (first release, your word), Task 8 (on screen) |
 
@@ -75,16 +75,16 @@ GPUI Global `Updates` with the state the sidebar draws. The check runs on the ba
 
 ---
 
-### Task 0: Spike on your Mac — no "Open Anyway", permission survives — 👀
+### Task 0: Spike on your Mac — no "Open Anyway", permission survives — ✅ (2026-11-08, both pass)
 
 Throwaway, run by Claude with you watching; it also installs the M11d build into `~/Applications`. Claude serves
 `target/dist/fuxx.app` zipped (with `ditto -c -k --keepParent`) from `python3 -m http.server` on localhost. It
 downloads that with `/usr/bin/curl` into a scratch folder, unzips it with `ditto -x -k`, checks
 `xattr -l` shows no `com.apple.quarantine`, renames `~/Applications/fuxx.app` to `fuxx.app.previous`, moves the new
 one in, and opens it.
-- [ ] You quit fuxx first; Claude runs the spike.
-- [ ] Check 1: it opens with no "Open Anyway" (note 57 item 1).
-- [ ] Check 2: Help → Notifications Status… says fuxx sends its own notifications, and macOS didn't ask again
+- [x] You quit fuxx first; Claude runs the spike.
+- [x] Check 1: it opens with no "Open Anyway" (note 57 item 1).
+- [x] Check 2: Help → Notifications Status… says fuxx sends its own notifications, and macOS didn't ask again
   (item 2).
 - [ ] Record the result in note 57. If a check fails, stop and redesign before Task 1. If both pass, delete
   `~/Applications/fuxx.app.previous` on your word.

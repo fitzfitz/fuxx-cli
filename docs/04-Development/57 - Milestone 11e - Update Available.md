@@ -34,6 +34,12 @@ with `ditto` and swaps it in, the new ad-hoc-signed app opens like a local build
 (Task 0)**, together with whether the notification permission survives the swap. If either fails, the design changes
 before anything else is built.
 
+**Task 0 result (2026-11-08, on your Mac): both pass.** The M11d build, zipped with `ditto`, served on localhost and
+downloaded with `/usr/bin/curl`, carried no `com.apple.quarantine` (only `com.apple.provenance`, which macOS adds to
+any created file); `codesign --verify --deep --strict` passed. Swapped into `~/Applications/fuxx.app` (the old 0.2.1
+kept as `fuxx.app.previous`) and opened: **no "Open Anyway"**, and Help → Notifications Status… said fuxx sends its
+own notifications **without asking again**. Confirmed by you. (Side effect: M11d is now the installed fuxx.)
+
 ## Releases (GitHub Actions)
 
 - Workflow `.github/workflows/release.yml`. It runs when a tag `v*` is pushed, on a GitHub-hosted macOS runner
@@ -126,9 +132,9 @@ before anything else is built.
 
 ## On-screen checklist (pending)
 
-1. **Task 0 (spike):** the M11d build, downloaded by `curl` and swapped into `~/Applications/fuxx.app` by the spike
+1. ✅ (2026-11-08) **Task 0 (spike):** the M11d build, downloaded by `curl` and swapped into `~/Applications/fuxx.app` by the spike
    script, opens with **no "Open Anyway"**.
-2. **Task 0 (spike):** Help → Notifications Status… says fuxx can send its own notifications without asking again
+2. ✅ (2026-11-08) **Task 0 (spike):** Help → Notifications Status… says fuxx can send its own notifications without asking again
    (the permission survived the swap).
 3. Pushing tag `v0.3.0` runs the Release workflow to green, and the release page shows `fuxx-0.3.0.zip`.
 4. With 0.3.0 installed and `v0.3.1` released, within about 10 s of opening fuxx the blue **Update Available** button
