@@ -1,0 +1,146 @@
+---
+tags: [development, milestone]
+status: planned
+---
+
+# 57 - Milestone 11e - Update Available
+
+**Status:: 🟦 Planned 2026-11-08; not started.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11e Plan - Update Available]]
+**Added to the plan 2026-11-08 by you** (see [[12 - Scope]]). It comes before M12 and doesn't need it.
+
+## Goal
+
+fuxx tells you when a newer version is out, with a blue **Update Available** button above the sidebar's footer.
+One click downloads it, swaps `fuxx.app` and reopens fuxx, with no "Open Anyway" and no paid Apple account. New
+versions are published as GitHub Releases, built by GitHub Actions when a version tag is pushed.
+
+## Why now (your words and choices, 2026-11-08)
+
+- "When I open fuxx in Applications, it's still the old version. Can we have 'Update Available', and clicking it
+  auto-updates?"
+- Without M12 (no $99/year Developer ID). Homebrew is free, but since Homebrew 5.0 the official cask repo takes only
+  signed and notarized apps, and `--no-quarantine` is gone, so Homebrew alone wouldn't avoid "Open Anyway".
+- You chose **fuxx's own updater** over Sparkle (no new dependency).
+- Your additions: the button sits **above the bottom bar** (the `+ 🔔 ⚙` row), reads **"Update Available"**, and
+  is **blue and rounded**. Releases are made by **GitHub Actions on a tag**.
+- You skipped the questions ("lewati pertanyaan"), so everything else below is AI's call. Correct anything that's
+  wrong before the build.
+
+## Why it can work without a Developer ID
+
+macOS asks "Open Anyway" only for apps carrying the **quarantine mark**, which browsers and similar apps put on
+files they download. `curl` doesn't add it. So when fuxx downloads the update itself with `/usr/bin/curl`, unpacks it
+with `ditto` and swaps it in, the new ad-hoc-signed app opens like a local build. **This is checked on your Mac first
+(Task 0)**, together with whether the notification permission survives the swap. If either fails, the design changes
+before anything else is built.
+
+## Releases (GitHub Actions)
+
+- Workflow `.github/workflows/release.yml`. It runs when a tag `v*` is pushed, on a GitHub-hosted macOS runner
+  (free for this public repo).
+- Steps:
+  1. **Refuses** unless the tag (without the `v`) equals `version` in `Cargo.toml`, so a release can't carry the wrong
+     number.
+  2. Runs `cargo test`.
+  3. Builds the universal app with the existing `scripts/bundle-mac.sh --app-only`.
+  4. Zips it with `ditto -c -k --keepParent` as `fuxx-<version>.zip`.
+  5. Creates the GitHub Release `v<version>` (title `fuxx <version>`) with that zip and notes made from the commits
+     since the last release (`gh release create --generate-notes`).
+- **How you release:** bump `version` in `Cargo.toml`, commit, then tag `v<version>` and push the tag. Claude pushes
+  a tag only when you say so, because releases are public.
+- The first release is **v0.3.0**: everything up to now, M11d included. The version goes from 0.2.0 to 0.3.0 in this
+  milestone.
+
+## Checking for updates
+
+- Only a fuxx running from `fuxx.app` checks; `cargo run` never does.
+- It checks 10 s after launch, then every 24 h while running. It asks
+  `https://api.github.com/repos/fitzfitz/fuxx-cli/releases/latest`, with no token (the repo is public), using `curl`
+  on a background thread. Nothing ever waits on it.
+- **Newer** means the release's `x.y.z` is greater than the running version, compared as numbers (`0.10.0` >
+  `0.9.0`). An older or equal release shows nothing.
+- When offline, rate-limited, or when GitHub answers with something unexpected, an automatic check stays **silent**
+  and tries again at the next 24 h.
+- **fuxx → Check for Updates…** (in the fuxx menu, above Hide fuxx) checks now and always answers with a sheet: the
+  update offer, "fuxx 0.3.0 is the newest version." (up to date), or "Couldn't check for updates" with the reason
+  (offline, GitHub's error).
+- **Preferences → General → "Check for updates"** switch, on by default (settings line `check-updates = off` turns
+  it off). Under it: "Asks GitHub once a day whether a newer fuxx is out." Off stops the automatic checks; the menu
+  item still works.
+
+## The Update Available button
+
+```
+│   ~/Kerja/proj                │
+│  ┌─────────────────────────┐  │
+│  │    Update Available     │  │   blue, rounded, clickable
+│  └─────────────────────────┘  │
+│  ─────────────────────────────│
+│  +                     🔔  ⚙  │
+```
+
+- It sits just above the footer row, inset like the footer (`ROW_INSET` each side), 8 px above the footer's top
+  edge. It is 28 px tall with an 8 px radius.
+- Colours: fill **`#1F6FEB`** (blue), hovered **`#1A5FCC`**, text white, centred, medium weight, the sidebar's
+  name size. These are fixed rather than themed, as you asked for blue. White on `#1F6FEB` meets the 4.5:1
+  contrast floor in both light and dark themes.
+- It shows only while a newer version is known. While the update downloads it reads **"Downloading update…"** and
+  can't be clicked. With the sidebar hidden, it shows once the sidebar is open again.
+- **Clicking it** opens a sheet on the window:
+  - Title: **"fuxx 0.3.0 is available"**.
+  - Text: "You have 0.2.0." Then the release notes' first 6 lines. Then, only if restarting ends sessions (the
+    background service is off and sessions are open): "Restarting ends 4 sessions."
+  - Buttons: **Update and Restart** · **Later**.
+- With the background service on, the sessions keep running, and the new fuxx reattaches to them after the restart.
+
+## Installing the update
+
+1. Download `fuxx-<version>.zip` (the release's asset with exactly that name) with `curl -fL` into
+   `~/Library/Caches/fuxx/update/`, which is emptied first.
+2. **Check it.** All four must hold, or nothing is swapped:
+   - its SHA-256 equals the asset's `digest` from GitHub;
+   - it unzips (with `ditto -x -k`) to exactly one `fuxx.app`;
+   - that app's bundle identifier is `io.github.fitzfitz.fuxx` and its version is the release's;
+   - `codesign --verify --deep --strict` passes.
+3. **Swap and reopen.** fuxx writes a small shell script to the cache folder, starts it detached and quits. The
+   script:
+   - waits until that fuxx's process has ended (at most 60 s);
+   - renames the running app to `fuxx.app.previous` beside it, and moves the new app into place;
+   - if the move fails, puts the previous app back;
+   - removes any quarantine mark (`xattr -dr com.apple.quarantine`, a no-op normally), then opens fuxx.
+4. The new fuxx, at launch, deletes `fuxx.app.previous` if it finds it. Until then the previous version stays beside
+   it, and you can open it by hand if the new one won't start.
+5. **Where it can't update itself**, fuxx opens the release page in your browser instead (the button and the sheet
+   say "Download from GitHub…" instead of Update and Restart). That covers a folder it can't write, running from a
+   disk image, or a release with no matching zip or no digest.
+6. **When the download or a check fails**, a sheet says "The update couldn't be installed", with the reason and
+   **Open Release Page** · **OK**. The installed fuxx is untouched.
+
+## Not in M11e
+
+- Installing without a click, background installs, or installing at quit.
+- Beta or nightly channels, skipping a version, release notes inside the app beyond the sheet's lines.
+- Developer ID signing and notarization (M12), and Homebrew (M13).
+- Delta updates; Intel- or Apple-Silicon-only downloads (the zip stays universal).
+- Updating the background service separately: it restarts from the new app the next time it's started, as today.
+
+## On-screen checklist (pending)
+
+1. **Task 0 (spike):** the M11d build, downloaded by `curl` and swapped into `~/Applications/fuxx.app` by the spike
+   script, opens with **no "Open Anyway"**.
+2. **Task 0 (spike):** Help → Notifications Status… says fuxx can send its own notifications without asking again
+   (the permission survived the swap).
+3. Pushing tag `v0.3.0` runs the Release workflow to green, and the release page shows `fuxx-0.3.0.zip`.
+4. With 0.3.0 installed and `v0.3.1` released, within about 10 s of opening fuxx the blue **Update Available** button
+   is above the footer.
+5. Clicking it shows "fuxx 0.3.1 is available", with "You have 0.3.0." and the notes.
+6. **Later** closes the sheet; the button stays.
+7. **Update and Restart:** the button reads "Downloading update…", then fuxx closes and reopens as 0.3.1 with no
+   "Open Anyway". `fuxx.app.previous` is gone afterwards.
+8. With the background service on, the sessions are still there after the restart. With it off, the sheet said how
+   many sessions would end.
+9. fuxx → Check for Updates… on 0.3.1 says "fuxx 0.3.1 is the newest version."
+10. Wi-Fi off, then fuxx → Check for Updates… → "Couldn't check for updates" with a reason. No button appears.
+11. Preferences → General → Check for updates off: no automatic check (no button for a newer release) until it is
+    on again; the menu item still works.
+12. Light and dark themes: the button is readable (the ui-shots cover this too).

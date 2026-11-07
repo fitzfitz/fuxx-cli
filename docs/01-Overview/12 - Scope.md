@@ -32,6 +32,9 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - macOS first (Linux capable via the Rust stack).
 - A **tester build** after the MVP (M4b, added 2026-10-26): an unsigned `.app` in a DMG. Signing,
   notarization and Homebrew stay later (M12, M13).
+- **Updating itself** (M11e, added 2026-11-08 by you): GitHub Releases built by GitHub Actions on a version tag,
+  and an "Update Available" button in the sidebar that downloads, swaps and reopens fuxx. No Developer ID needed.
+  See [[57 - Milestone 11e - Update Available]].
 
 ## Out of scope (for now — resist scope creep)
 
