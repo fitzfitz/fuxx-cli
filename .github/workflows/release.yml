@@ -1,0 +1,38 @@
+# Release (M11e): pushing a v* tag builds the universal ad-hoc-signed fuxx.app and publishes it as a
+# GitHub Release. The in-app updater reads the latest release's zip.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Check the tag matches Cargo.toml
+        run: scripts/check-release-tag.sh "$GITHUB_REF_NAME"
+      - name: Test
+        run: cargo test
+      - name: Build fuxx.app
+        run: scripts/bundle-mac.sh --app-only
+      - name: Zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          ditto -c -k --keepParent target/dist/fuxx.app "target/dist/fuxx-$V.zip"
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "target/dist/fuxx-$V.zip" --title "fuxx $V" --generate-notes
