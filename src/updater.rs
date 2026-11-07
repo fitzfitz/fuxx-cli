@@ -13,7 +13,8 @@ use std::time::Duration;
 use gpui::{App, Global, PromptLevel, Window};
 
 use crate::update_release::{self, CheckOutcome, Release};
-use crate::workspace::Workspace;
+use crate::workspace::{Session, Workspace};
+use crate::workspace_daemon::Service;
 
 unsafe extern "C" {
     fn access(path: *const c_char, mode: c_int) -> c_int;
@@ -110,14 +111,21 @@ fn can_self_update(release: &Release) -> bool {
             .is_some()
 }
 
-/// How many sessions restarting ends: every terminal session, unless they run in the
-/// background service (the new fuxx reattaches to those).
-fn ending_sessions(workspace: &Workspace) -> usize {
-    if workspace.persistent {
-        0
-    } else {
-        workspace.sessions.items().len()
-    }
+/// How many sessions restarting ends: none while the background service holds them (the new
+/// fuxx reattaches), else every terminal session running here, `local_sessions`. That covers
+/// persistence off, a service that couldn't start or is still starting, and a lost one.
+fn ending_sessions(service_on: bool, local_sessions: usize) -> usize {
+    if service_on { 0 } else { local_sessions }
+}
+
+/// `ending_sessions` for `workspace`, by its live background service (not the persistence
+/// asked for at startup). Its running sessions are counted as the Quit item counts them
+/// (`sync_quit_title`): not lost, and not a held SSH session that has ended.
+fn sessions_restart_ends(workspace: &Workspace) -> usize {
+    let service_on = matches!(workspace.service, Service::On(_));
+    let running = |s: &&Session| !s.lost && s.disconnected.is_none();
+    let local = workspace.sessions.items().iter().filter(running).count();
+    ending_sessions(service_on, local)
 }
 
 /// The app's update state (a global, set at launch).
@@ -273,7 +281,7 @@ pub fn show_offer(workspace: &Workspace, window: &mut Window, cx: &mut App) {
     let offer = update_release::offer(
         &release,
         update_release::current(),
-        ending_sessions(workspace),
+        sessions_restart_ends(workspace),
         can_self_update(&release),
     );
     let answer = window.prompt(
@@ -489,6 +497,16 @@ mod tests {
             sha256: Some("ab".repeat(32)),
         });
         assert!(installable(&r));
+    }
+
+    #[test]
+    fn restarting_ends_the_sessions_the_background_service_doesnt_hold() {
+        // The service holds them: the new fuxx reattaches.
+        assert_eq!(ending_sessions(true, 4), 0);
+        // Off (persistence off, or the service failed to start), still starting, or lost: the
+        // sessions running here end.
+        assert_eq!(ending_sessions(false, 4), 4);
+        assert_eq!(ending_sessions(false, 0), 0);
     }
 
     #[test]
