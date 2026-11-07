@@ -73,6 +73,8 @@ mod title_area;
 #[cfg(feature = "ui-shots")]
 mod ui_shots;
 mod ui_tokens;
+#[allow(dead_code)] // used by the update check from M11e Task 3
+mod update_release;
 mod vt_snapshot;
 mod workspace;
 mod workspace_api;
