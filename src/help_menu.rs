@@ -115,9 +115,36 @@ pub fn status_message(bundled: bool, permission: Option<Permission>) -> StatusMe
     }
 }
 
+/// The new-issue page for fuxx's public repo; the issue text follows `body=`.
+const ISSUE_URL_BASE: &str = "https://github.com/fitzfitz/fuxx-cli/issues/new?body=";
+
+/// The issue text filled in in advance. `os` is `sw_vers -productVersion`, or `None` if it failed.
+pub fn issue_body(version: &str, os: Option<&str>) -> String {
+    format!(
+        "**What happened**\n\n\n**What you expected**\n\n\n---\nfuxx {version} \u{b7} macOS {}",
+        os.unwrap_or("unknown")
+    )
+}
+
+/// `issue_body` after `ISSUE_URL_BASE`, everything but `A-Z a-z 0-9 - . _ ~` as UTF-8 `%XX`.
+pub fn issue_url(version: &str, os: Option<&str>) -> String {
+    let mut url = String::from(ISSUE_URL_BASE);
+    for byte in issue_body(version, os).bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            url.push(byte as char);
+        } else {
+            url.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    url
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{NOTIFICATION_SETTINGS_URL, help_target, status_message};
+    use super::{
+        ISSUE_URL_BASE, NOTIFICATION_SETTINGS_URL, help_target, issue_body, issue_url,
+        status_message,
+    };
     use crate::native_notify::Permission;
 
     #[test]
@@ -210,5 +237,41 @@ mod tests {
             NOTIFICATION_SETTINGS_URL,
             "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=io.github.fitzfitz.fuxx"
         );
+    }
+
+    fn percent_decode(s: &str) -> String {
+        let bytes = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn the_issue_body_ends_with_the_versions() {
+        assert!(issue_body("0.4.0", Some("26.5")).ends_with("---\nfuxx 0.4.0 \u{b7} macOS 26.5"));
+        assert!(issue_body("0.4.0", None).ends_with("---\nfuxx 0.4.0 \u{b7} macOS unknown"));
+        assert!(
+            issue_body("0.4.0", None).starts_with("**What happened**\n\n\n**What you expected**")
+        );
+    }
+
+    #[test]
+    fn the_issue_url_is_encoded_and_decodes_back() {
+        let url = issue_url("0.4.0", Some("26.5"));
+        assert!(url.starts_with(ISSUE_URL_BASE));
+        let encoded = &url[ISSUE_URL_BASE.len()..];
+        for c in [' ', '\n', '&', '#', '\u{b7}'] {
+            assert!(!encoded.contains(c), "raw {c:?}");
+        }
+        assert_eq!(percent_decode(encoded), issue_body("0.4.0", Some("26.5")));
     }
 }

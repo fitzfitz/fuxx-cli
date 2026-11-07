@@ -242,10 +242,15 @@ pub fn socket_path(home: &Path) -> PathBuf {
     home.join("Library/Application Support/fuxx/fuxxd.sock")
 }
 
+/// `~/Library/Logs/fuxx/`: where `daemon.log` and the window's `fuxx.log` go.
+pub fn logs_dir(home: &Path) -> PathBuf {
+    home.join("Library/Logs/fuxx")
+}
+
 /// `~/Library/Logs/fuxx/daemon.log`: the spawned daemon's stdout and stderr.
 #[allow(dead_code)] // used by the GUI's spawn from M10a Task 5
 pub fn log_path(home: &Path) -> PathBuf {
-    home.join("Library/Logs/fuxx/daemon.log")
+    logs_dir(home).join("daemon.log")
 }
 
 /// The daemon socket: `FUXX_DAEMON_SOCKET` when set and non-empty, else the one under home.

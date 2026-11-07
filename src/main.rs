@@ -7,6 +7,7 @@ mod api_client;
 mod api_events;
 mod api_server;
 mod app_icon;
+mod app_log;
 mod appearance;
 mod browser;
 mod browser_history;
@@ -467,6 +468,18 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// `sw_vers -productVersion`, trimmed; `None` if it fails or says nothing. Blocks: call it off the
+/// UI thread.
+fn macos_version() -> Option<String> {
+    let out = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
 /// Print an error the way every `fuxx` command does and return its exit code.
 fn fail(message: &str, code: i32) -> i32 {
     eprintln!("fuxx: {}", cli::plain_text(message));
@@ -650,6 +663,12 @@ fn main() {
         }
     }
 
+    // From the app bundle with no terminal, the window's output goes to fuxx.log. Only here: not
+    // for `fuxx <command>` or the daemon, which returned above.
+    if let Some(home) = home_dir() {
+        app_log::start(&home);
+    }
+
     // Clicks on fuxx's banners, heard from before the app runs (a click that opened fuxx comes
     // as it starts), wait here for the workspace (from the app bundle only).
     let (clicked, clicks) = futures::channel::mpsc::unbounded();
@@ -709,6 +728,28 @@ fn main() {
                     cx.update(|cx| show_notification_status(bundled, permission, cx));
                 })
                 .detach();
+            });
+            // Neither needs a window. The macOS version is read off the UI thread.
+            cx.on_action(|_: &ReportIssue, cx: &mut App| {
+                let read = cx.background_executor().spawn(async { macos_version() });
+                cx.spawn(async move |cx| {
+                    let os = read.await;
+                    cx.update(|cx| {
+                        cx.open_url(&help_menu::issue_url(
+                            env!("CARGO_PKG_VERSION"),
+                            os.as_deref(),
+                        ))
+                    });
+                })
+                .detach();
+            });
+            cx.on_action(|_: &ShowLogs, cx: &mut App| {
+                if let Some(home) = home_dir() {
+                    let dir = daemon::logs_dir(&home);
+                    if std::fs::create_dir_all(&dir).is_ok() {
+                        cx.open_with_system(&dir);
+                    }
+                }
             });
             cx.on_action(|_: &ShowWelcomeTips, cx: &mut App| {
                 with_help_window(cx, |workspace, _, window, cx| {
