@@ -22,6 +22,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — UI uplift requested: M11i–M11l
+- **Did:** From your screenshot ("I don't really like the current layout… a modern CLI with good UI/UX"), 11
+  suggestions; you chose all of them. Split into four milestones in your agreed order: **M11i UI uplift 2** (1–8),
+  then M11h (Changes, diff, Activity, already designed), then **M11j command palette**, **M11k first-run screen**,
+  **M11l command blocks**. Scope and roadmap updated.
+- **Next:** design M11i.
+
 ### 2026-11-08 — v0.4.1 released (download retries)
 - **Did:** On your word: merged the retry fix into `master`, version 0.4.1 (953 tests pass), pushed `master` and tag
   `v0.4.1`; the Release run went green (42470892331). GitHub's release downloads were still answering HTTP 504 right
