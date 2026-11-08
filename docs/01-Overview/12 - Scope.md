@@ -37,10 +37,16 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   See [[57 - Milestone 11e - Update Available]].
 - **A cursor with style** (M11f, added 2026-11-08 by you): a bar cursor that glides, breathes, follows the agent's
   status colour, with optional trail and sparks; set in Preferences. See [[58 - Milestone 11f - Cursor Style]].
+- **A right sidebar and read-only file tabs** (M11g–M11h, added 2026-11-08 by you): Files (tree with git markers),
+  Changes (since the last commit, with diffs) and Activity for the focused terminal; files open read-only in pane
+  tabs with syntax colours (syntect + two-face), line numbers and change bars. See
+  [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]].
 
 ## Out of scope (for now — resist scope creep)
 
-- Being a general IDE / editor.
+- Being a general IDE / **editor**. *(Changed 2026-11-08 by you: a **read-only file viewer** is now in scope
+  (the right sidebar's Files and file tabs, M11g–M11h, [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]).
+  Editing, autocomplete, language servers and debugging stay out.)*
 - A plugin ecosystem, themes marketplace, or a config *language* (scripting, conditionals) beyond the
   plain `key = value` settings file above.
 - Windows support (later).
