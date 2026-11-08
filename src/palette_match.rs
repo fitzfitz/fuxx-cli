@@ -167,7 +167,6 @@ pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
 
 /// As `fuzzy`, for a path from the root: every matched letter after the last `/` gains
 /// `NAME_BONUS`, so the file name outranks its directories.
-#[allow(dead_code)] // used by the palette files (M11j task 3)
 pub fn fuzzy_path(query: &str, rel: &str) -> Option<Match> {
     let name_from = rel
         .chars()

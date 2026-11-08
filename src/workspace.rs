@@ -328,6 +328,47 @@ impl Workspace {
     }
 }
 
+#[allow(dead_code)] // used by the palette (M11j task 5)
+impl Workspace {
+    /// The followed terminal's folder (as last looked up, else the one it started in) and
+    /// whether it is an SSH one; none with no terminal followed or no folder known.
+    pub(crate) fn palette_folder(&self) -> Option<(PathBuf, bool)> {
+        let id = self.right_sidebar.followed?;
+        let s = self.sessions.items().iter().find(|s| s.id == id)?;
+        let found = self.places.folder(id);
+        if s.ssh.is_some() {
+            return Some((found.map(Path::to_path_buf).unwrap_or_default(), true));
+        }
+        found
+            .or(s.project.as_deref())
+            .map(|f| (f.to_path_buf(), false))
+    }
+
+    /// List the followed terminal's files when they are due: one listing at a time, on the
+    /// background executor, then the cache is filled and the window redrawn.
+    pub(crate) fn list_palette_files(&mut self, cx: &mut Context<Self>) {
+        let Some((folder, false)) = self.palette_folder() else {
+            return;
+        };
+        if !self.palette_files.due(&folder, Instant::now()) {
+            return;
+        }
+        self.palette_files.started(&folder);
+        cx.spawn(async move |this, cx| {
+            let asked = folder.clone();
+            let answer = cx
+                .background_executor()
+                .spawn(async move { crate::palette_files::list_files(&asked) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.palette_files.finished(&folder, answer, Instant::now());
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
 impl Workspace {
     /// The followed terminal (`right_sidebar.followed`) if its ports can be looked up, with its
     /// shell's pid: a local one (not SSH, not a background service's, not lost) with a program
@@ -686,6 +727,9 @@ pub struct Workspace {
     pub(crate) places: Places,
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
     pub(crate) places_ticking: bool,
+    /// The palette's file listings (`palette_files`).
+    #[allow(dead_code)] // used by the palette (M11j task 5)
+    pub(crate) palette_files: crate::palette_files::PaletteFiles,
     /// What runs in each terminal, for its name (`Programs`).
     pub(crate) programs: Programs,
     /// Whether the programs' 3 s lookup is running (only while a name it gives can be seen).
@@ -831,6 +875,7 @@ impl Workspace {
             right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             places_ticking: false,
+            palette_files: Default::default(),
             programs: Programs::default(),
             programs_ticking: false,
             ports: Ports::default(),
