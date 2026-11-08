@@ -144,6 +144,16 @@ Where the build settled something the plan left open, or changed it:
   version until it stops by itself (as planned). A future release that changes the protocol's minimum would show
   the existing protocol message after updating, until the old service stops.
 
+## Amendment (2026-11-08, your request after seeing the button)
+
+"It needs a 'package' icon in the button." The button gets a line-drawn package icon (an isometric box with a tape
+line, like fuxx's other footer icons) in a 16 px box, white, 6 px left of the text, the pair centred. Then, your
+second ask: "also add the version it will update to". The button reads **`Update Available · v0.3.2`**, the
+` · v0.3.2` part in white at 75% opacity; while downloading it reads **`Downloading v0.3.2…`**. When the sidebar is
+too narrow for all of it, the version part is dropped first; the icon and "Update Available" always show. Built in
+[[M11f Plan - Cursor Style]] Task 1 and shipped in v0.3.2. On-screen item 4 was seen on your Mac before this: the
+button appears above the footer (2026-11-08).
+
 ## Not in M11e
 
 - Installing without a click, background installs, or installing at quit.
@@ -159,7 +169,7 @@ Where the build settled something the plan left open, or changed it:
 2. ✅ (2026-11-08) **Task 0 (spike):** Help → Notifications Status… says fuxx can send its own notifications without asking again
    (the permission survived the swap).
 3. ✅ (2026-11-08, run 42429479670, green on the first run) Pushing tag `v0.3.0` runs the Release workflow to green, and the release page shows `fuxx-0.3.0.zip`.
-4. With 0.3.0 installed and `v0.3.1` released, within about 10 s of opening fuxx the blue **Update Available** button
+4. ✅ (2026-11-08, seen by you) With 0.3.0 installed and `v0.3.1` released, within about 10 s of opening fuxx the blue **Update Available** button
    is above the footer.
 5. Clicking it shows "fuxx 0.3.1 is available", with "You have 0.3.0." and the notes.
 6. **Later** closes the sheet; the button stays.

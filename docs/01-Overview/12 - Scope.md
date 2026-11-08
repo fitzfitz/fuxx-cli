@@ -35,6 +35,8 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - **Updating itself** (M11e, added 2026-11-08 by you): GitHub Releases built by GitHub Actions on a version tag,
   and an "Update Available" button in the sidebar that downloads, swaps and reopens fuxx. No Developer ID needed.
   See [[57 - Milestone 11e - Update Available]].
+- **A cursor with style** (M11f, added 2026-11-08 by you): a bar cursor that glides, breathes, follows the agent's
+  status colour, with optional trail and sparks; set in Preferences. See [[58 - Milestone 11f - Cursor Style]].
 
 ## Out of scope (for now — resist scope creep)
 
