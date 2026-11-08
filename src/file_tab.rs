@@ -705,7 +705,8 @@ pub enum DiffState {
     /// "Not a git repository."
     NoRepo,
     /// The file on disk is over 20 MB or binary: git isn't asked (it would stream the whole old
-    /// blob), "This file is too large or binary to show".
+    /// blob); or its old blob in HEAD, or git's diff, is over 20 MB. "This file is too large or
+    /// binary to show".
     Refuse,
 }
 
@@ -3744,7 +3745,8 @@ mod tests {
         assert_eq!(d.doc.line(2), "");
         assert_eq!(d.doc.version, 4);
         assert!(d.doc.spans.is_none(), "no highlighter: uncoloured");
-        // Its gutter, worked out once: old numbers to 2, new to 3 (each at least 2 digits).
+        // Its gutter, worked out once: the largest old number is 2, the largest new 3, so each
+        // column is the 2-digit minimum.
         assert_eq!(
             d.gutter,
             Gutter::Diff {
@@ -3814,6 +3816,7 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(git_place(&plain.join("x.rs")), Some(None));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&plain);
     }
 
     #[test]
