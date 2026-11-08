@@ -162,6 +162,10 @@ src/
 ├── smart_name.rs         M11i · what a terminal is called: program · folder, the folder at a prompt, SSH host; secrets-safe words; the stable rule (pure)
 ├── pane_actions.rs       M11i · the ⋯ menu on a pane's tab bar: New Terminal Tab, New Browser Tab, Split Right, Split Down
 ├── status_bar.rs         M11i · the status bar: status word, branch, folder, port chips, the update pill; fitting by drop order (pure core)
+├── diff_view.rs          M11h · a file's whole diff against the last commit as rows, the dimmed inks, the copy (pure)
+├── changes_panel.rs      M11h · the right sidebar's Changes panel: files changed since the last commit, counts, click → diff
+├── activity.rs           M11h · each terminal's activity log: status changes, notes, progress (in memory, last 200; pure)
+├── activity_panel.rs     M11h · the right sidebar's Activity panel: header, the waiting question, the timeline
 ├── file_tab.rs           M11g · read-only file tabs: colours, line numbers, change bars, live reload, find, selection, Open in Editor
 ├── cursor_look.rs        M11f · the cursor's rules: shape (the HollowBlock marker = no program has chosen), colour, breathing, glide, trail, sparks, frames (pure)
 └── updater.rs            M11e · the check (curl, at launch + daily + the menu), the Updates state, the install (download, verify, swap, reopen)

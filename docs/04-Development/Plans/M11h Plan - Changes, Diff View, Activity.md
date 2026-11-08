@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11h
-status: planned
+status: built
 updated: 2026-11-08
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-11-08
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]] (the M11h parts, incl. "M11h settled before planning") |
-| **Status** | 🟦 Planned 2026-11-08, after M11i's merge; building next |
-| **Tasks done** | 0 / 9 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1089 tests); release with M11l; on-screen check pending |
+| **Tasks done** | 8 / 9 (Task 8, the release, is folded into the one release after M11l) |
+| **▶ Pick up here** | Nothing to build. Your 14-item on-screen check in note 59 after the combined release |
 | **Decisions used** | Yours (2026-11-08): note 59's design (Changes since the last commit, a diff mode for file tabs, Activity, two milestones), M11h after M11i. Everything else: AI's calls in note 59's "M11h settled before planning" (you skipped the design questions). |
 | **Needs your eyes** | 👀 Task 8 (folded into the one release after M11l), then the 14-item on-screen check in note 59 |
 
@@ -151,7 +151,7 @@ process. **No new crates** (so no Context7 look-up is needed: no new crate API i
 - `pub fn changes(git: &Path, root: &Path) -> Option<ChangeList>` (blocking; None when status fails or hits the cap,
   or outside a repo; a failed numstat with a good status → the tracked entries' counts `Unknown`)
 
-- [ ] **Step 1: failing tests** (temp repos as `temp_repo_end_to_end` / `repo` / `git_in` do):
+- [x] **Step 1: failing tests** (temp repos as `temp_repo_end_to_end` / `repo` / `git_in` do):
   - `numstat_counts_lines_and_binaries`: `parse_numstat(b"3\t1\tsrc/a.rs\0-\t-\tlogo.png\0")` →
     `{a.rs: Lines{3,1}, logo.png: Binary}`; `b"0\t0\tmode.sh\0"` → `Lines{0,0}`; `b"x\ty\0"` and `b""` → empty;
     `b"1\t0\ta\tb.txt\0"` → key `a\tb.txt`;
@@ -166,11 +166,11 @@ process. **No new crates** (so no Context7 look-up is needed: no new crate API i
   - `changes_without_commits`: a fresh repo with `x.txt` (2 lines, staged) and `y.txt` (untracked) → both A
     `Lines{2,0}` / their counts;
   - `changes_outside_a_repo_is_no_answer`: a plain temp folder → `None`.
-- [ ] **Step 2: run** `cargo test git_status` → FAIL (names undefined).
-- [ ] **Step 3: implement** the signatures above (`--no-renames` on both commands; `rev-parse --verify -q HEAD`
+- [x] **Step 2: run** `cargo test git_status` → FAIL (names undefined).
+- [x] **Step 3: implement** the signatures above (`--no-renames` on both commands; `rev-parse --verify -q HEAD`
   through `yes_or_no` decides whether numstat runs; sort, then cap, then count untracked within the cap).
-- [ ] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
-- [ ] **Step 5: commit** `feat(m11h): Changes core — files changed since the last commit, with line counts`.
+- [x] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
+- [x] **Step 5: commit** `feat(m11h): Changes core — files changed since the last commit, with line counts`.
 
 ### Task 2: Diff core — a file's whole diff as rows
 
@@ -203,7 +203,7 @@ diff_view`).
   - `pub const DIM_MIX: f32 = 0.35;` `pub fn dim(c: Rgb, background: Rgb) -> Rgb` (Global Constraints rule)
   - `pub const NO_CHANGES: &str`, `BINARY: &str`, `NO_REPO: &str` (exact copy in Global Constraints)
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `parse_diff_keeps_every_row_in_order`: headers (`diff --git`, `index`, `---`, `+++`) then
     `@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n` → text `"a\nb\nB\nc\nd"`, rows `(Same,1,1) (Removed,2,–) (Added,–,2)
     (Same,3,3) (Added,–,4)`;
@@ -225,10 +225,10 @@ diff_view`).
     `parse_diff` rows hold every old and new line once; an untracked file → `AllAdded`; a repo with no commits →
     `AllAdded`; a modified binary → `Binary`; an unchanged file → `Unified("")`; a deleted file → only Removed
     rows; a name with a space and a `*` works; a plain folder → `None`.
-- [ ] **Step 2: run** `cargo test diff_view git_status` → FAIL.
-- [ ] **Step 3: implement** (pure functions as specified; `file_diff` flags per Global Constraints).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt → green.
-- [ ] **Step 5: commit** `feat(m11h): diff core — a file's whole diff against the last commit, as rows`.
+- [x] **Step 2: run** `cargo test diff_view git_status` → FAIL.
+- [x] **Step 3: implement** (pure functions as specified; `file_diff` flags per Global Constraints).
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt → green.
+- [x] **Step 5: commit** `feat(m11h): diff core — a file's whole diff against the last commit, as rows`.
 
 ### Task 3: Diff mode in file tabs
 
@@ -260,7 +260,7 @@ toggle).
   highlighter is loaded), `pub fn diff_state_name(&self) -> &'static str` (`waiting`, `rows`, `same`, `binary`,
   `norepo`, `refuse`), `pub fn diff_doc(&self) -> Option<&DiffDoc>`.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `opening_a_file_sets_its_mode_and_keeps_one_tab`: open `/w/a.rs` Plain, then Diff → the same `TabId`, kind
     `File { mode: Diff }`; Plain again → same tab, Plain; another pane gets its own tab;
     `set_file_mode_is_false_for_a_terminal_or_the_same_mode`; a model with a Diff tab round-trips through
@@ -284,8 +284,8 @@ toggle).
       `card_selected`; a click on `File` → the tab's and the model's mode are Plain and the tab id unchanged;
       after `set_changes([(7, Changed)])`, a click on line 7's bar → Diff, with `reveal_row`'s row in view; a
       Files-panel click on the same file → the same tab, Plain.
-- [ ] **Step 2: run** `cargo test` → FAIL; `__ui-shots file-diff` → FAIL.
-- [ ] **Step 3: implement:** in Diff mode `look_up_changes` asks `file_diff(.., context_for(disk lines))` and builds
+- [x] **Step 2: run** `cargo test` → FAIL; `__ui-shots file-diff` → FAIL.
+- [x] **Step 3: implement:** in Diff mode `look_up_changes` asks `file_diff(.., context_for(disk lines))` and builds
   `DiffState` off the UI thread (`diff_outcome`, then `Doc::new(parsed.text)`; colours: highlight both `sides` with
   the shared highlighter and `diff_spans`; skipped when the disk text is plain-too-large); no git place → `NoRepo`;
   disk `Refuse` → `Refuse`. The answer carries the disk version and is taken as `accept_changes` takes bars.
@@ -293,9 +293,9 @@ toggle).
   diff. A press in the bar column (`bar_left − 2` to `bar_left + BAR_WIDTH + 2`) on a changed line or a ▸ edge
   emits `Mode(Diff)` with its change. Find and selection work on whichever `Doc` is shown; switching mode runs
   `find_again`.
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots file-diff`, `__ui-shots file-tab` and the full
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots file-diff`, `__ui-shots file-tab` and the full
   `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11h): diff mode in file tabs — old and new lines in one column, a File | Diff toggle`.
+- [x] **Step 5: commit** `feat(m11h): diff mode in file tabs — old and new lines in one column, a File | Diff toggle`.
 
 ### Task 4: Panel tabs and the Changes panel
 
@@ -328,7 +328,7 @@ check the old "Files" strip).
   `pub fn count_inks(theme: &Theme) -> (Rgb, Rgb)`; `impl Workspace { pub(crate) fn refresh_changes(&mut self, cx)
   ; pub(crate) fn render_changes_panel(&self, ui: UiColors, width: f32, cx) -> AnyElement }`.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `panels_are_files_changes_activity_and_load_by_key`: `ALL` order and labels; `from_key(Some("changes"))` →
     Changes; `from_key(None)` and `from_key(Some("bogus"))` → Files;
   - `the_right_sidebar_panel_round_trips_and_an_old_file_shows_files` (as
@@ -353,13 +353,13 @@ check the old "Files" strip).
       `Not a git repository.`; an SSH terminal followed → `Changes aren't shown for SSH terminals.`;
     - `changes-click`: a click on the M row → the focused pane shows a file tab for `root/rel` in Diff mode, and
       that row is drawn `card_selected`.
-- [ ] **Step 2: run** → FAIL.
-- [ ] **Step 3: implement** (`refresh_changes` mirrors `refresh_files`: a new folder looks its root up with
+- [x] **Step 2: run** → FAIL.
+- [x] **Step 3: implement** (`refresh_changes` mirrors `refresh_files`: a new folder looks its root up with
   `find_root`; then every `wait` while Changes shows, `changes` on the background executor; SSH and no-folder as
   the Files panel; the rows in a `uniform_list` with `ROW`).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots right-panels`, `__ui-shots changes`, then the
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots right-panels`, `__ui-shots changes`, then the
   full set (update `right-sidebar*`, `files*` checks of the strip).
-- [ ] **Step 5: commit** `feat(m11h): right sidebar panel tabs and the Changes panel`.
+- [x] **Step 5: commit** `feat(m11h): right sidebar panel tabs and the Changes panel`.
 
 ### Task 5: Activity — the per-terminal log
 
@@ -383,7 +383,7 @@ set_progress(&mut self, index: usize, progress: Option<(u8, Option<String>)>, cx
 - `pub fn clock_hm(unix_secs: i64, utc_offset_secs: i64) -> String`; `pub fn lasted_label(d: Duration) -> String`;
   `pub fn entry_text(kind: &Kind) -> String`
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `a_status_change_is_an_entry_with_how_long_the_last_lasted`;
   - `it_keeps_the_last_200`: 205 status entries → `len() == 200`, `newest_first().next()` is the 205th;
   - `progress_updates_in_a_row_are_one_entry`: progress 10 at t0, 20 at t1, 30 at t2 → one entry `Progress(30, _)`
@@ -398,11 +398,11 @@ set_progress(&mut self, index: usize, progress: Option<(u8, Option<String>)>, cx
     `Progress(42, Some("build"))` → `Progress 42% · build`; `Progress(42, None)` → `Progress 42%`; `Note("x")` →
     `x`.
   - (Recording through `set_status` / `set_note` / `set_progress` is checked in Task 6's `activity` scene.)
-- [ ] **Step 2: run** `cargo test activity` → FAIL.
-- [ ] **Step 3: implement** (`set_status`: when `old != new`, record `new` with `lasted = status_since.elapsed()`
+- [x] **Step 2: run** `cargo test activity` → FAIL.
+- [x] **Step 3: implement** (`set_status`: when `old != new`, record `new` with `lasted = status_since.elapsed()`
   read before it's reset and the new question; adopted/restored meta isn't routed through `set_note`).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt → green; the existing `workspace_api` note/progress tests pass.
-- [ ] **Step 5: commit** `feat(m11h): an activity log per terminal — status changes, notes and progress, in memory`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt → green; the existing `workspace_api` note/progress tests pass.
+- [x] **Step 5: commit** `feat(m11h): an activity log per terminal — status changes, notes and progress, in memory`.
 
 ### Task 6: The Activity panel
 
@@ -419,7 +419,7 @@ Vec<ActivityRow>` (newest first; tip = the words plus, for Waiting, the question
 note the whole note); `impl Workspace { pub(crate) fn render_activity_panel(&self, ui: UiColors, width: f32, cx)
 -> AnyElement }`.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `rows_are_newest_first_with_local_times_and_tips`: a log Working (t), Waiting with "Proceed? (y/n)" (t + 7 min),
     note "migrating", Done (lasted 11 min) with offset 0 → rows `Done — 11 min`, `migrating` (Dot), `Needs input`
     (tip contains the question), `Working`, times from `clock_hm`.
@@ -432,14 +432,14 @@ note the whole note); `impl Workspace { pub(crate) fn render_activity_panel(&sel
       the card is at least two text lines tall, `Needs input` pixels are `ring_waiting`;
     - `activity-empty`: a terminal with no entries → `No activity yet.`; no terminal followed →
       `No terminal to follow.`; with Reduce motion on, two frames 200 ms apart are pixel-identical in the panel.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement** (rows in a `uniform_list` of 22 pt; the header and the card as
+- [x] **Step 2: run** → FAIL. **Step 3: implement** (rows in a `uniform_list` of 22 pt; the header and the card as
   the constraints). **Step 4: run** `cargo test`, clippy (both), fmt, full `__ui-shots`, and
   `scripts/bundle-mac.sh --app-only` (a release build).
-- [ ] **Step 5: commit** `feat(m11h): the Activity panel — timeline, the waiting question, notes and progress`.
+- [x] **Step 5: commit** `feat(m11h): the Activity panel — timeline, the waiting question, notes and progress`.
 
 ### Task 7: Merge and push (pre-authorized, autonomous program)
 
-- [ ] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
+- [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
   full `__ui-shots` green; a whole-branch review; then merge `m11h-changes-activity` into `master` and push.
 
 ### Task 8: Release — folded into the one release after M11l
@@ -450,8 +450,8 @@ note the whole note); `impl Workspace { pub(crate) fn render_activity_panel(&sel
 
 ### Task 9: Docs
 
-- [ ] Note 59: status, an "M11h as built" section (what the build settled or changed), the checklist's state.
+- [x] Note 59: status, an "M11h as built" section (what the build settled or changed), the checklist's state.
   This plan (ticks, header). The roadmap (`40 - Roadmap.md`). The Plan Tracker. The Progress Log. `STRUCTURE.md`
   (`diff_view.rs`, `changes_panel.rs`, `activity.rs`, `activity_panel.rs`). `README.md` (Changes, the diff view,
   Activity).
-- [ ] Commit `docs(m11h): …`.
+- [x] Commit `docs(m11h): …`.

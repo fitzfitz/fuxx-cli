@@ -14,13 +14,25 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11i — UI uplift 2 🟨 built, reviewed, merged and pushed 2026-11-08 (release after M11l); next M11h. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (both release after M11l); next M11j. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-09 — M11h Changes, diff view, Activity built, reviewed, merged and pushed
+- **Did:** Planned M11h from note 59 (17 AI's calls added to the note), then built it task by task with a fresh
+  builder and reviewer each: the Changes git core; the diff core; diff mode in file tabs (File | Diff, two number
+  columns, red/green tints, change-bar clicks); the right sidebar's Files · Changes · Activity tabs and the Changes
+  panel; a per-terminal activity log (in memory, last 200); the Activity panel (header, the waiting question in a
+  card, a newest-first timeline). Reviews caught and fixed: non-UTF-8 files never showing a diff, wrong line numbers
+  under `diff.suppressBlankEmpty`, size limits that ignored a deleted file's old version, staged deletions and
+  deleted folders showing "no longer exists", a static Diff tab re-colouring every 5 s, `+`/`−` signs below 3:1.
+  1089 tests pass, clippy (both) adds no warnings, the full ui-shots set passes. What the build settled: note 59's
+  "M11h as built". Not released on its own (one release after M11l).
+- **Next:** your names change (╭∩╮ back as the default name, branch `m11i-names`), then M11j (command palette).
 
 ### 2026-11-08 — M11i UI uplift 2 built, reviewed, merged and pushed
 - **Did:** Built M11i autonomously (your "go ahead do them all autonomously"), task by task with a fresh builder
