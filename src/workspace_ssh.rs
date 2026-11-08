@@ -378,6 +378,7 @@ impl Workspace {
             preset: saved.preset,
             note: session.note.take(),
             progress: session.progress.take(),
+            activity: std::mem::take(&mut session.activity),
             lost: false,
             ssh: saved.ssh,
             disconnected: None,

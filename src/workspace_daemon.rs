@@ -426,6 +426,7 @@ impl Workspace {
             preset: saved.preset,
             note,
             progress,
+            activity: Default::default(),
             lost: false,
             ssh: saved.ssh,
             disconnected: None,

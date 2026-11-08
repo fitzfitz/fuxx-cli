@@ -437,6 +437,8 @@ pub struct Session {
     pub note: Option<String>,
     /// A bar under the row: percent and an optional label, set by a script (as `note`).
     pub progress: Option<(u8, Option<String>)>,
+    /// Its status changes, notes and progress, for the Activity panel (in memory, not saved).
+    pub activity: crate::activity::ActivityLog,
     /// The background service's connection was lost: the view shows the last screen it had
     /// and nothing reaches the session.
     pub lost: bool,
@@ -1377,6 +1379,7 @@ impl Workspace {
                 preset: saved.preset,
                 note: None,
                 progress: None,
+                activity: Default::default(),
                 lost: false,
                 ssh: saved.ssh,
                 disconnected: None,
@@ -1887,6 +1890,8 @@ impl Workspace {
         session.status = new;
         // The cursor takes the status colour (M11f).
         session.view.update(cx, |view, cx| view.set_status(new, cx));
+        // The log's `lasted` is read before `status_since` is reset.
+        let lasted = session.status_since.elapsed();
         if old != new {
             session.status_since = Instant::now();
         }
@@ -1905,6 +1910,11 @@ impl Workspace {
         };
         let id = session.id;
         let question = session.question.clone();
+        if old != new {
+            session
+                .activity
+                .status(new, lasted, question.clone(), std::time::SystemTime::now());
+        }
         let terminal = Some(id);
         let label = self.terminal_label(id);
         if old != new {
@@ -1944,6 +1954,38 @@ impl Workspace {
             }
         }
         self.check_waits(&[], cx);
+        cx.notify();
+    }
+
+    /// A script set (or cleared) session `index`'s note: keep it, log it, tell the background
+    /// service. (Notes restored or adopted from the service don't come through here.)
+    pub(crate) fn set_note(&mut self, index: usize, note: Option<String>, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
+        session
+            .activity
+            .note(note.as_deref(), std::time::SystemTime::now());
+        session.note = note;
+        self.push_meta(index, cx);
+        cx.notify();
+    }
+
+    /// A script set (or cleared) session `index`'s progress (as `set_note`).
+    pub(crate) fn set_progress(
+        &mut self,
+        index: usize,
+        progress: Option<(u8, Option<String>)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
+        session
+            .activity
+            .progress(progress.clone(), std::time::SystemTime::now());
+        session.progress = progress;
+        self.push_meta(index, cx);
         cx.notify();
     }
 

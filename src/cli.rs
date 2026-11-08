@@ -660,7 +660,7 @@ unsafe extern "C" {
 }
 
 /// The machine's UTC offset at that moment (seconds east), 0 if it can't be read.
-fn local_utc_offset(ms: u64) -> i64 {
+pub(crate) fn local_utc_offset(ms: u64) -> i64 {
     let t = (ms / 1000) as i64;
     let mut tm = std::mem::MaybeUninit::<Tm>::zeroed();
     // SAFETY: `t` and `tm` are valid for the call; localtime_r fills `tm` and returns it
