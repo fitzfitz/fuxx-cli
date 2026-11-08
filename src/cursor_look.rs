@@ -80,7 +80,8 @@ const BREATH_LOW: f32 = 0.35;
 
 /// The breathing opacity: 1.0 while the cursor changed less than 0.6 s ago, then a cosine
 /// between 1.0 and 0.35 with a 1.6 s period. `clock` is the time since the breath began, so
-/// 0 is full, 0.8 s is the trough and 1.6 s is full again.
+/// 0 is full, 0.8 s is the trough and 1.6 s is full again. The caller passes `clock` measured
+/// from the end of the hold (`since_change - 600 ms`) so the breath starts smoothly at full.
 pub fn breath_alpha(since_change: Duration, clock: Duration) -> f32 {
     if since_change < HOLD {
         return 1.0;
@@ -335,6 +336,8 @@ mod tests {
     #[test]
     fn breath_holds_then_cycles() {
         assert_eq!(breath_alpha(ms(300), ms(800)), 1.0);
+        assert_eq!(breath_alpha(ms(599), ms(800)), 1.0);
+        assert!((breath_alpha(ms(600), ms(800)) - 0.35).abs() < 1e-5);
         assert!((breath_alpha(ms(700), ms(0)) - 1.0).abs() < 1e-5);
         assert!((breath_alpha(ms(700), ms(800)) - 0.35).abs() < 1e-5);
         assert!((breath_alpha(ms(700), ms(1600)) - 1.0).abs() < 1e-5);
@@ -367,6 +370,8 @@ mod tests {
         assert!(glide_from_now(None, (0.0, 0.0), (0, 25), 25, false, t0).is_none());
         assert!(glide_from_now(None, (0.0, 0.0), (3, 1), 1, true, t0).is_none());
         assert!(glide_from_now(None, (0.0, 0.0), (3, 20), 20, false, t0).is_some());
+        assert!(glide_from_now(None, (0.0, 0.0), (0, 21), 21, false, t0).is_none());
+        assert!(glide_from_now(None, (3.0, 4.0), (3, 4), 0, false, t0).is_none());
     }
 
     #[test]
@@ -388,6 +393,14 @@ mod tests {
         let t0 = Instant::now();
         let g = glide(t0);
         assert_eq!(trail(&g, t0 + ms(30)).len(), 5);
+        let xs: Vec<f32> = trail(&g, t0 + ms(80)).iter().map(|c| c.0).collect();
+        assert!(xs.windows(2).all(|w| w[0] > w[1]), "{xs:?}");
+        assert!(xs[0] < g.position(t0 + ms(80)).0);
+        // 149 ms after the glide ends the copies are all but gone; at 150 ms they are.
+        let late = trail(&g, t0 + ms(239));
+        assert_eq!(late.len(), 5);
+        assert!(late.iter().all(|c| c.3 < 0.01));
+        assert!(trail(&g, t0 + ms(240)).is_empty());
         assert_eq!(trail(&g, t0 + ms(150)).len(), 5);
         assert!(trail(&g, t0 + ms(240)).is_empty());
         assert!(trail(&g, t0 + ms(400)).is_empty());
