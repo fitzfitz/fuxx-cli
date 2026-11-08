@@ -311,6 +311,34 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_file_of_file_tabs_only_comes_back_with_its_paths() {
+        // The terminal tab closed before quitting, a file tab stayed: no session is saved.
+        let mut state = a_terminal_and_pages();
+        state.sessions.clear();
+        state.workspaces.remove(0);
+        if let Node::Leaf(pane) = &mut state.workspaces[0].layout {
+            pane.tabs = vec![SavedTab::File {
+                path: "/w/api/src/main.rs".into(),
+                mode: crate::layout_model::FileMode::Plain,
+            }];
+        }
+        state.active_workspace = Some(0);
+        let text = encode(&state);
+        assert!(text.contains("\"kind\": \"file\""), "{text}");
+        let state = decode(&text).expect("it loads");
+        assert!(has_anything(&state));
+        let model = Model::from_state(&state, &[]);
+        model.check().unwrap();
+        assert!(shows_anything(&model, false), "no plain session instead");
+        let file = TabKind::File {
+            path: "/w/api/src/main.rs".into(),
+            mode: crate::layout_model::FileMode::Plain,
+        };
+        assert_eq!(shown(&model), [(Some("docs".into()), file.clone())]);
+        assert_eq!(model.tab(model.focused_tab().unwrap()).unwrap().kind, file);
+    }
+
     fn r(value: &str) -> Entry {
         Entry {
             key: "session-restore".into(),

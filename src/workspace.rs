@@ -36,6 +36,7 @@ use crate::appearance::Appearance;
 use crate::browser_tab::BrowserTab;
 use crate::daemon_client::{self, DaemonClient};
 use crate::drag_gap::Slides;
+use crate::file_tab::FileTab;
 use crate::git_branch::Places;
 use crate::groups::{self, GroupKey};
 use crate::help_panel::HelpPanel;
@@ -276,6 +277,9 @@ pub struct Workspace {
     /// The browser tabs' views (M11b), by tab: one for each browser tab of the model (`sync`
     /// drops those whose tab has gone, and with them their pages).
     pub(crate) browser_tabs: HashMap<TabId, Entity<BrowserTab>>,
+    /// The file tabs' views (M11g), by tab: one for each file tab of the model (`sync` drops
+    /// those whose tab has gone).
+    pub(crate) file_tabs: HashMap<TabId, Entity<FileTab>>,
     /// Each browser tab's title as its page last said (for the tab bar and a workspace's name).
     pub(crate) browser_titles: HashMap<TabId, String>,
     /// Browser tabs just closed whose pages still have to leave the window.
@@ -453,6 +457,7 @@ impl Workspace {
             switcher: None,
             help: None,
             browser_tabs: HashMap::new(),
+            file_tabs: HashMap::new(),
             browser_titles: HashMap::new(),
             closed_browser_tabs: Vec::new(),
             browser_clock: 0,
@@ -1146,6 +1151,13 @@ impl Workspace {
             }
         }
         self.browser_titles.retain(|tab, _| is_browser(tab));
+        // A file tab gone: its view goes.
+        let model = &self.model;
+        self.file_tabs.retain(|tab, _| {
+            model
+                .tab(*tab)
+                .is_some_and(|t| matches!(t.kind, TabKind::File { .. }))
+        });
         // Every op keeps the model's rules; a break is a bug, said where it can be found.
         if let Err(broken) = self.model.check() {
             eprintln!("[fuxx] layout: {broken}");
@@ -1157,11 +1169,11 @@ impl Workspace {
         self.terminal_of(self.model.focused_tab()?)
     }
 
-    /// The terminal a tab shows (none for a browser tab).
+    /// The terminal a tab shows (none for a browser or file tab).
     pub(crate) fn terminal_of(&self, tab: layout_model::TabId) -> Option<u64> {
         match self.model.tab(tab)?.kind {
             TabKind::Terminal(id) => Some(id),
-            TabKind::Browser { .. } => None,
+            TabKind::Browser { .. } | TabKind::File { .. } => None,
         }
     }
 
@@ -1248,6 +1260,14 @@ impl Workspace {
             .or_else(|| {
                 let tab = self.model.pane(w.focused)?.active;
                 Some(self.browser_titles.get(&tab)?.clone().into())
+            })
+            .or_else(|| {
+                // A workspace of file tabs only: the shown file's name.
+                let tab = self.model.pane(w.focused)?.active;
+                let TabKind::File { path, .. } = &self.model.tab(tab)?.kind else {
+                    return None;
+                };
+                Some(path.file_name()?.to_string_lossy().into_owned().into())
             })
             .unwrap_or_else(|| sidebar::BROWSER_NAME.into())
     }
@@ -2120,10 +2140,15 @@ impl Workspace {
         }
     }
 
-    /// The keyboard to the focused tab: its terminal, or a browser tab (GPUI's focus only: its
-    /// page takes AppKit's keyboard only on a click in it or a navigation the person started).
+    /// The keyboard to the focused tab: its terminal, a file tab, or a browser tab (GPUI's
+    /// focus only: its page takes AppKit's keyboard only on a click in it or a navigation the
+    /// person started).
     pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(tab) = self.focused_browser_tab() {
+            tab.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        if let Some(tab) = self.focused_file_tab() {
             tab.read(cx).focus_handle(cx).focus(window, cx);
             return;
         }
@@ -2163,6 +2188,9 @@ impl Workspace {
         let view = |id: PaneId| {
             if let Some(browser) = self.pane_browser_tab(id) {
                 return Some(browser.into_any_element());
+            }
+            if let Some(file) = self.pane_file_tab(id) {
+                return Some(file.into_any_element());
             }
             find(id).map(|view| {
                 if resplit.contains(&id) {
@@ -2429,6 +2457,7 @@ impl Render for Workspace {
             self.drag_slides.borrow_mut().clear();
         }
         self.ensure_browser_tabs(window, cx);
+        self.ensure_file_tabs(window, cx);
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
         // Before the rows are drawn, so a folder found now shows in this frame; at most once a

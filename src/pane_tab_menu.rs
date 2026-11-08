@@ -62,7 +62,8 @@ pub fn closes(action: PaneTabAction, pane: &Pane, tab: TabId) -> Vec<TabId> {
 }
 
 /// Whether `action` can be chosen from `tab`'s menu: Close Other Tabs needs another tab in the
-/// pane; Rename Tab… needs a terminal to name; Pop Out, a browser tab.
+/// pane; Rename Tab… needs a terminal to name; Pop Out, a browser tab (so a file tab has
+/// neither).
 pub fn enabled(action: PaneTabAction, pane: &Pane, tab: TabId) -> bool {
     match action {
         PaneTabAction::Close => pane.tabs.iter().any(|t| t.id == tab),
@@ -333,6 +334,20 @@ mod tests {
         // A tab not in the pane closes nothing.
         assert!(closes(Close, &p, TabId(9)).is_empty());
         assert!(closes(CloseOthers, &p, TabId(9)).is_empty());
+    }
+
+    #[test]
+    fn a_file_tab_closes_but_is_neither_renamed_nor_popped_out() {
+        let file = TabKind::File {
+            path: "/w/a.rs".into(),
+            mode: crate::layout_model::FileMode::Plain,
+        };
+        let p = pane(&[file, TabKind::Terminal(1)]);
+        assert!(enabled(Close, &p, TabId(1)));
+        assert!(enabled(CloseOthers, &p, TabId(1)));
+        assert!(!enabled(Rename, &p, TabId(1)));
+        assert!(!enabled(PopOut, &p, TabId(1)));
+        assert_eq!(closes(CloseOthers, &p, TabId(1)), [TabId(2)]);
     }
 
     #[test]

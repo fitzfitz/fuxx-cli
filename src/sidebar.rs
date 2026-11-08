@@ -922,7 +922,7 @@ impl Workspace {
             .flat_map(|p| &p.tabs)
             .filter_map(|t| match t.kind {
                 TabKind::Terminal(id) => self.index_of(id),
-                TabKind::Browser { .. } => None,
+                TabKind::Browser { .. } | TabKind::File { .. } => None,
             })
             .collect()
     }
