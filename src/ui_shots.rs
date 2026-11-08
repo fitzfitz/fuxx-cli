@@ -219,6 +219,7 @@ const SCENES: &[(&str, fn())] = &[
     ("tab-drag", tab_drag_scenes),
     ("browser-tab", browser_tab_scenes),
     ("file-tab", file_tab_scenes),
+    ("right-sidebar", right_sidebar_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
     ("default-name", default_name),
@@ -2201,6 +2202,15 @@ fn shown_panes(
     })
 }
 
+/// A bar's buttons (`tab_bar`): each 20 pt, 2 pt apart, 4 pt in from the ends; five of them
+/// (new terminal, new browser, split right, split down, the right sidebar's).
+const BAR_BUTTONS: f32 = 4.0 + 5.0 * 20.0 + 4.0 * 2.0 + 4.0;
+/// How far left of its pane's right edge the split-right button's centre is: past the right
+/// sidebar's and split down (each a button and a gap), then half a button.
+const SPLIT_RIGHT_FROM_EDGE: f32 = 4.0 + 2.0 * (20.0 + 2.0) + 10.0;
+/// The same for the right sidebar's button, the last.
+const RIGHT_SIDEBAR_FROM_EDGE: f32 = 4.0 + 10.0;
+
 /// Pane tab bars (M11b Task 3), from real workspaces in both themes:
 /// - `tab-bars`: two panes; the left (focused) one with api (active, accent line on top), claude
 ///   (waiting, tinted), codex (working) and a browser tab ("New tab", globe); the right one with
@@ -2279,9 +2289,9 @@ fn tab_bar_scenes() {
                     }
                     "tab-bars-button" => {
                         // The left pane's buttons sit at its right edge (half the 1040 px pane
-                        // area, less half the divider): split right is the third of four.
+                        // area, less half the divider): split right is the third of five.
                         let right = tabs[0].left() + px(519.5);
-                        let at = point(right - px(4.0 + 20.0 + 2.0 + 10.0), px(13.0));
+                        let at = point(right - px(SPLIT_RIGHT_FROM_EDGE), px(13.0));
                         cx.simulate_mouse_move(window, at, None, none);
                     }
                     "tab-bars-menu" => {
@@ -2389,7 +2399,7 @@ fn tab_bar_scenes() {
                     assert!(offset < 0.0, "{n}: scrolled to the last tab");
                     let last = tab_bounds(cx, &ws, panes[0], many - 1).expect("laid out");
                     assert!(
-                        f32::from(last.right()) <= 720.0 - 94.0 + 1.0,
+                        f32::from(last.right()) <= 720.0 - BAR_BUTTONS + 1.0,
                         "{n}: last in view"
                     );
                 }
@@ -2465,7 +2475,7 @@ fn tab_bar_scenes() {
             assert_eq!(codex_gone, None, "{n}: codex ended");
             // The left bar's split right: a third pane, focused, with one terminal tab.
             let right = api.left() + px(519.5);
-            let split = point(right - px(4.0 + 20.0 + 2.0 + 10.0), px(13.0));
+            let split = point(right - px(SPLIT_RIGHT_FROM_EDGE), px(13.0));
             cx.simulate_click(window, split, none);
             let panes_now = shown_panes(cx, &ws);
             assert_eq!(panes_now.len(), 3, "{n}: split right made a pane");
@@ -3209,6 +3219,271 @@ fn file_tab_scenes() {
         // Closing it (not shot).
         let (build, act) = scene(true);
         render_with(&theme, dims, build, act);
+    }
+}
+
+/// The right sidebar (M11g Task 4), over `tab_bar_workspace`'s two panes in a 1280 × 600
+/// window with the left sidebar shown (240 pt), in both themes:
+/// - `right-sidebar-closed`: as a first run has it: no right sidebar; each pane's right-sidebar
+///   icon (the far right of its bar) unlit.
+/// - `right-sidebar-open`: open, 300 pt wide at the window's right; the icon lit (`ui.text` on
+///   `ui.row_hover`) in every pane.
+/// - `right-sidebar-resize`: open, its left edge dragged from x to x − 80: 80 pt wider.
+///
+/// Not shot: ⌥⌘\ opens it with a slide and closes it, and with Reduce motion on, without; the
+/// icon in the right pane focuses that pane and opens it; it follows the focused terminal, and a
+/// browser tab keeps the last one; ⌘W closes a tab and leaves the sidebar as it was.
+fn right_sidebar_scenes() {
+    use crate::workspace::{CloseSession, ToggleRightSidebar};
+    use gpui::{KeyBinding, Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dims = size(px(1280.0), px(600.0));
+    let (left, window_right) = (240.0_f32, 1280.0_f32);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= 3)
+        };
+        assert_ne!(
+            ui.sidebar_background, theme.background,
+            "{slug}: told apart"
+        );
+        assert_ne!(ui.row_hover, ui.sidebar_background, "{slug}: told apart");
+        for scene in [
+            "right-sidebar-closed",
+            "right-sidebar-open",
+            "right-sidebar-resize",
+        ] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = tab_bar_workspace(true, 0, window, cx);
+                    ws.right_sidebar.hidden = scene == "right-sidebar-closed";
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            // Each pane's right edge, as laid out (the left one's: where the right one starts,
+            // less the divider).
+            let edges: Rc<RefCell<Vec<f32>>> = Rc::default();
+            let seen = edges.clone();
+            let acting = slot.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&acting);
+                let n = format!("{scene}-{slug}");
+                let none = Modifiers::none();
+                let open = scene != "right-sidebar-closed";
+                let panes = shown_panes(cx, &ws);
+                assert_eq!(panes.len(), 2, "{n}: two panes");
+                let second = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
+                let pane_right = if open {
+                    window_right - 300.0
+                } else {
+                    window_right
+                };
+                *seen.borrow_mut() = vec![f32::from(second.left()) - 1.0, pane_right];
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    assert_eq!(ws.right_sidebar.hidden, !open, "{n}");
+                    assert_eq!(ws.right_sidebar.width, 300.0, "{n}: 300 pt by default");
+                    assert!(ws.right_sidebar.slide.is_none(), "{n}: still");
+                });
+                if scene == "right-sidebar-resize" {
+                    // Its left edge (at 980) taken and moved 80 left, then let go.
+                    let (from, to) = (point(px(980.0), px(300.0)), point(px(900.0), px(300.0)));
+                    cx.simulate_mouse_down(window, from, MouseButton::Left, none);
+                    assert!(
+                        cx.read(|cx| ws.read(cx).right_sidebar.resizing),
+                        "{n}: taken"
+                    );
+                    cx.simulate_mouse_move(window, to, MouseButton::Left, none);
+                    cx.simulate_mouse_up(window, to, MouseButton::Left, none);
+                    cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        assert_eq!(ws.right_sidebar.width, 380.0, "{n}: 80 pt wider");
+                        assert!(!ws.right_sidebar.resizing, "{n}: let go");
+                    });
+                    seen.borrow_mut()[1] = window_right - 380.0;
+                    // The panes re-fit to the narrower area on the next frame.
+                    cx.update_window(window, |_, window, _| window.refresh())
+                        .expect("refresh");
+                    cx.run_until_parked();
+                    let second = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
+                    seen.borrow_mut()[0] = f32::from(second.left()) - 1.0;
+                }
+                acting.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let n = format!("{scene}-{slug}");
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let width = match scene {
+                "right-sidebar-closed" => 0.0,
+                "right-sidebar-open" => 300.0,
+                _ => 380.0,
+            };
+            // The sidebar's body, low in the window: its colour across its width, the
+            // terminal's just left of it.
+            let y = 400.0;
+            if width > 0.0 {
+                for x in [window_right - width + 6.0, window_right - 6.0] {
+                    let p = at(x, y);
+                    assert!(near(p, ui.sidebar_background), "{n}: sidebar at {x}: {p:?}");
+                }
+                let p = at(window_right - width - 6.0, y);
+                assert!(near(p, theme.background), "{n}: the pane left of it: {p:?}");
+            } else {
+                let p = at(window_right - 6.0, y);
+                assert!(near(p, theme.background), "{n}: no right sidebar: {p:?}");
+            }
+            // Every pane's icon: lit (the hover fill beside the glyph, the glyph's filled side
+            // in the text colour) while open; else on the bar, dim.
+            for (i, right) in edges.borrow().iter().enumerate() {
+                let centre = right - RIGHT_SIDEBAR_FROM_EDGE;
+                assert!(*right > left, "{n}: pane {i}'s edge {right}");
+                let (fill, glyph) = (at(centre - 8.0, 13.0), at(centre + 3.0, 13.0));
+                if width > 0.0 {
+                    assert!(near(fill, ui.row_hover), "{n}: pane {i} lit: {fill:?}");
+                    assert!(near(glyph, ui.text), "{n}: pane {i} glyph: {glyph:?}");
+                } else {
+                    let bar = ui.sidebar_background;
+                    assert!(near(fill, bar), "{n}: pane {i} unlit: {fill:?}");
+                    assert!(
+                        near(glyph, ui.text_dim),
+                        "{n}: pane {i} glyph dim: {glyph:?}"
+                    );
+                }
+            }
+        }
+
+        // Acting on it (not shot): the key, Reduce motion, the icon, following, ⌘W.
+        for still in [false, true] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.set_reduce_motion(still);
+                let ws = cx.new(|cx| tab_bar_workspace(true, 0, window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let n = format!(
+                    "right-sidebar-act-{slug}{}",
+                    if still { "-still" } else { "" }
+                );
+                let none = Modifiers::none();
+                // As main.rs binds them.
+                cx.update(|cx| {
+                    cx.bind_keys([
+                        KeyBinding::new("alt-cmd-\\", ToggleRightSidebar, None),
+                        KeyBinding::new("cmd-w", CloseSession, None),
+                    ])
+                });
+                let state = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| {
+                        let rs = &ws.read(cx).right_sidebar;
+                        (rs.hidden, rs.slide.map(|s| s.showing))
+                    })
+                };
+                let frame = |cx: &mut VisualTestAppContext| {
+                    cx.update_window(window, |_, window, _| window.refresh())
+                        .expect("refresh");
+                    cx.run_until_parked();
+                };
+                assert!(state(cx).0, "{n}: closed at first");
+                cx.simulate_keystrokes(window, "alt-cmd-\\");
+                let slide = if still { None } else { Some(true) };
+                assert_eq!(state(cx), (false, slide), "{n}: ⌥⌘\\ opens it");
+                cx.simulate_keystrokes(window, "alt-cmd-\\");
+                let slide = if still { None } else { Some(false) };
+                assert_eq!(state(cx), (true, slide), "{n}: and closes it");
+                // Once it has slid away, the right pane's icon: that pane takes the focus and
+                // the sidebar opens.
+                std::thread::sleep(crate::sidebar_toggle::SLIDE + Duration::from_millis(30));
+                frame(cx);
+                assert_eq!(state(cx), (true, None), "{n}: slid away");
+                let panes = shown_panes(cx, &ws);
+                let icon = point(px(window_right - RIGHT_SIDEBAR_FROM_EDGE), px(13.0));
+                cx.simulate_click(window, icon, none);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    assert_eq!(ws.model.focused_pane(), Some(panes[1]), "{n}: its pane");
+                    assert!(!ws.right_sidebar.hidden, "{n}: the icon opens it");
+                });
+                frame(cx);
+                // It follows the focused terminal: tests, in the right pane.
+                let id_of = |cx: &mut VisualTestAppContext, name: &str| {
+                    cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        ws.sessions
+                            .items()
+                            .iter()
+                            .find(|s| s.label() == name)
+                            .map(|s| s.id)
+                    })
+                };
+                let tests = id_of(cx, "tests");
+                let followed = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        (ws.right_sidebar.followed, ws.right_sidebar_folder(cx))
+                    })
+                };
+                let api_folder = Some((PathBuf::from(API), false));
+                assert_eq!(
+                    followed(cx),
+                    (tests, api_folder.clone()),
+                    "{n}: tests' folder"
+                );
+                // The left pane's browser tab shown (as a click on it does; the narrowed pane's
+                // row scrolls it under the buttons): still tests'.
+                let select = |cx: &mut VisualTestAppContext, i: usize| {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| {
+                            let tab = ws.model.pane(panes[0]).expect("the pane").tabs[i].id;
+                            ws.select_tab(tab, window, cx)
+                        })
+                    })
+                    .expect("select");
+                    frame(cx);
+                };
+                select(cx, 3);
+                let focused_terminal = cx.read(|cx| ws.read(cx).focused_terminal());
+                assert_eq!(focused_terminal, None, "{n}: the browser tab is shown");
+                assert_eq!(followed(cx).0, tests, "{n}: keeps the last terminal");
+                // api shown: it's followed.
+                select(cx, 0);
+                assert_eq!(followed(cx).0, id_of(cx, "api"), "{n}: follows api");
+                // ⌘W: api's tab closes; the sidebar stays open, as wide.
+                cx.simulate_keystrokes(window, "cmd-w");
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    assert_eq!(
+                        ws.sessions.position(|s| s.label() == "api"),
+                        None,
+                        "{n}: ⌘W"
+                    );
+                    assert!(!ws.right_sidebar.hidden, "{n}: still open");
+                    assert_eq!(ws.right_sidebar.width, 300.0, "{n}: as wide");
+                });
+                slot.borrow_mut().take();
+            };
+            render_with(&theme, dims, build, act);
+            let still = if still { "-still" } else { "" };
+            println!("ui-shots: right-sidebar-act-{slug}{still} ok");
+        }
     }
 }
 

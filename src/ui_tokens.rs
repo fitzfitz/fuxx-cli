@@ -37,6 +37,10 @@ pub mod size {
     pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
     pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
     pub const SIDEBAR_DEFAULT_WIDTH: f32 = 240.0;
+    /// The right sidebar's (M11g).
+    pub const RIGHT_SIDEBAR_MIN_WIDTH: f32 = 220.0;
+    pub const RIGHT_SIDEBAR_MAX_WIDTH: f32 = 560.0;
+    pub const RIGHT_SIDEBAR_DEFAULT_WIDTH: f32 = 300.0;
     /// The box a status mark is drawn in.
     pub const STATUS_MARK: f32 = 12.0;
     pub const DIVIDER: f32 = 1.0;

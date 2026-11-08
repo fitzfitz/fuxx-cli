@@ -4,7 +4,7 @@
 //! icon's place; × closes it (shown on hover). The active tab is filled and, in the focused pane,
 //! has an accent line along its top; a waiting tab is tinted. Too many tabs shrink to a minimum
 //! width, then the row scrolls sideways. On the right, pinned: new terminal tab, new browser tab
-//! split right, split down.
+//! split right, split down, and the right sidebar's (M11g; lit while it's open).
 //!
 //! A tab can be dragged (M11b Task 7): within its bar or into another pane's, or onto a sidebar
 //! row (into that workspace's focused pane, at the end). It is picked up (Task 7b): the pointer
@@ -213,21 +213,24 @@ pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> 
     }
 }
 
-/// The bar's buttons, right to left of the tabs.
+/// The bar's buttons, left to right after the tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarButton {
     NewTerminal,
     NewBrowser,
     SplitRight,
     SplitDown,
+    /// Opens or closes the right sidebar (M11g), at the far right; lit while it's open.
+    RightSidebar,
 }
 
 impl BarButton {
-    pub const ALL: [BarButton; 4] = [
+    pub const ALL: [BarButton; 5] = [
         BarButton::NewTerminal,
         BarButton::NewBrowser,
         BarButton::SplitRight,
         BarButton::SplitDown,
+        BarButton::RightSidebar,
     ];
 
     /// Whether it can be clicked (all can, since browser tabs exist).
@@ -242,6 +245,7 @@ impl BarButton {
             BarButton::NewBrowser => "New browser tab",
             BarButton::SplitRight => "Split right",
             BarButton::SplitDown => "Split down",
+            BarButton::RightSidebar => "Toggle right sidebar (⌥⌘\\)",
         }
     }
 }
@@ -407,7 +411,11 @@ impl Workspace {
             .h_full()
             .px(px(BUTTONS_PAD))
             .gap(px(BUTTON_GAP))
-            .children(BarButton::ALL.map(|b| render_button(pane, b, ui, cx)));
+            .children(BarButton::ALL.map(|b| {
+                // The right sidebar's is lit while the sidebar is open.
+                let lit = b == BarButton::RightSidebar && !self.right_sidebar.hidden;
+                render_button(pane, b, lit, ui, cx)
+            }));
         Some(
             div()
                 .flex()
@@ -844,25 +852,28 @@ pub(crate) fn hold_closed_hand(window: &Window, cx: &mut App) {
 }
 
 /// One of a bar's buttons: its icon, dim until hovered; a disabled one stays faint and only
-/// says why.
+/// says why. A `lit` one (the right sidebar's, while it's open) is drawn as hovered all the
+/// time: its icon in the text colour on the hover fill.
 fn render_button(
     pane: PaneId,
     button: BarButton,
+    lit_up: bool,
     ui: UiColors,
     cx: &mut Context<Workspace>,
 ) -> Div {
     let on = button.enabled();
     let group: SharedString = format!("tab-bar-button-{}-{}", pane.0, button as usize).into();
-    let (dim, lit) = if on {
-        (ui.text_dim, ui.text)
-    } else {
-        (ui.text_faint, ui.text_faint)
+    let (dim, lit) = match (on, lit_up) {
+        (true, true) => (ui.text, ui.text),
+        (true, false) => (ui.text_dim, ui.text),
+        (false, _) => (ui.text_faint, ui.text_faint),
     };
     let kind = match button {
         BarButton::NewTerminal => Glyph::Terminal,
         BarButton::NewBrowser => Glyph::Globe,
         BarButton::SplitRight => Glyph::SplitRight,
         BarButton::SplitDown => Glyph::SplitDown,
+        BarButton::RightSidebar => Glyph::RightSidebar,
     };
     let tip = button.tooltip();
     let icon = div()
@@ -888,6 +899,7 @@ fn render_button(
             .justify_center()
             .size(px(BUTTON))
             .rounded(px(4.0))
+            .when(on && lit_up, |b| b.bg(hsla(ui.row_hover)))
             .when(on, |b| {
                 b.cursor_pointer()
                     .hover(move |s| s.bg(hsla(ui.row_hover)))
@@ -897,6 +909,7 @@ fn render_button(
                             BarButton::NewBrowser => this.new_browser_tab(pane, window, cx),
                             BarButton::SplitRight => this.split_pane(pane, Axis::Row, window, cx),
                             BarButton::SplitDown => this.split_pane(pane, Axis::Column, window, cx),
+                            BarButton::RightSidebar => this.right_sidebar_button(pane, window, cx),
                         }),
                     )
             })
@@ -921,6 +934,8 @@ pub(crate) enum Glyph {
     /// A box split by a line down its middle, and by one across it.
     SplitRight,
     SplitDown,
+    /// The right sidebar's: a box with its right side filled.
+    RightSidebar,
     /// Chevrons left and right.
     Back,
     Forward,
@@ -1147,6 +1162,32 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         tape.line_to(p(to.0, to.1));
                         paths.push(tape);
                     }
+                    Glyph::RightSidebar => {
+                        // The split buttons' frame, and its right third filled.
+                        let (left, right, top, bottom, side) = (1.0, 11.0, 1.5, 10.5, 7.5);
+                        let mut frame = stroke();
+                        frame.add_polygon(
+                            &[
+                                p(left, top),
+                                p(right, top),
+                                p(right, bottom),
+                                p(left, bottom),
+                            ],
+                            true,
+                        );
+                        paths.push(frame);
+                        let mut filled = PathBuilder::fill();
+                        filled.add_polygon(
+                            &[
+                                p(side, top),
+                                p(right, top),
+                                p(right, bottom),
+                                p(side, bottom),
+                            ],
+                            true,
+                        );
+                        paths.push(filled);
+                    }
                     Glyph::SplitRight | Glyph::SplitDown => {
                         let mut frame = stroke();
                         frame.add_polygon(
@@ -1320,13 +1361,16 @@ mod tests {
                 "New terminal tab",
                 "New browser tab",
                 "Split right",
-                "Split down"
+                "Split down",
+                "Toggle right sidebar (⌥⌘\\)"
             ]
         );
         assert_eq!(
             BarButton::ALL.map(BarButton::enabled),
-            [true, true, true, true]
+            [true, true, true, true, true]
         );
+        // The right sidebar's is the far right one.
+        assert_eq!(BarButton::ALL.last(), Some(&BarButton::RightSidebar));
     }
 
     #[test]

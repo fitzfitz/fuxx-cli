@@ -130,6 +130,17 @@ pub struct SavedState {
     /// data may hold something; cleared once it has been deleted.
     #[serde(default)]
     pub browser_data_kept: bool,
+    /// The right sidebar was closed (M11g); a file from before it: closed.
+    #[serde(default = "closed")]
+    pub right_sidebar_hidden: bool,
+    /// The right sidebar's width as you left it; none: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_sidebar_width: Option<f32>,
+}
+
+/// The right sidebar's state in a file without it: closed.
+fn closed() -> bool {
+    true
 }
 
 impl Default for SavedState {
@@ -149,6 +160,8 @@ impl Default for SavedState {
             sidebar_hidden: false,
             hint_dismissed: false,
             browser_data_kept: false,
+            right_sidebar_hidden: true,
+            right_sidebar_width: None,
         }
     }
 }
@@ -494,6 +507,21 @@ mod tests {
         assert!(!old.sidebar_hidden);
         assert!(!old.hint_dismissed);
         assert_eq!(old.sessions.len(), 1);
+    }
+
+    #[test]
+    fn the_right_sidebar_round_trips_and_a_file_without_it_starts_it_closed() {
+        let state = SavedState {
+            right_sidebar_hidden: false,
+            right_sidebar_width: Some(410.0),
+            ..sample()
+        };
+        assert_eq!(decode(&encode(&state)), Some(state));
+        // A file from before M11g: the right sidebar closed, at its default width.
+        let old = decode(r#"{"version":2,"sessions":[{}]}"#).expect("an old file loads");
+        assert!(old.right_sidebar_hidden);
+        assert_eq!(old.right_sidebar_width, None);
+        assert!(SavedState::default().right_sidebar_hidden);
     }
 
     #[test]

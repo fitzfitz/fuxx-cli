@@ -53,6 +53,7 @@ use crate::presets::Preset;
 use crate::pty::ShellEnv;
 use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
+use crate::right_sidebar::RightSidebarState;
 use crate::session_list::SessionList;
 use crate::settings;
 use crate::sidebar::{self, RowGrab, SidebarState};
@@ -114,6 +115,7 @@ actions!(
         NextPane,
         EqualizePanes,
         ToggleSidebar,
+        ToggleRightSidebar,
         NextNeedingYou,
         OpenSwitcher,
         NextTab,
@@ -369,6 +371,9 @@ pub struct Workspace {
     pub(crate) band_pressed: bool,
     /// The sidebar sliding in or out (`sidebar_toggle`); none when it isn't moving.
     pub(crate) slide: Option<Slide>,
+    /// The right sidebar (M11g): open or closed (⌥⌘\), its width, its slide, the terminal it
+    /// follows and that terminal's folder (`right_sidebar`).
+    pub(crate) right_sidebar: RightSidebarState,
     /// Where each workspace is (its folder and git branch), for its row (`git_branch`).
     pub(crate) places: Places,
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
@@ -400,6 +405,7 @@ impl Workspace {
         this.wipe_saved_data_if_due(cx);
         if let Some(saved) = read_saved_quietly() {
             this.sidebar.load(&saved);
+            this.right_sidebar.load(&saved);
         }
         // While a quit ends sessions first, the red button waits for it.
         let me = cx.weak_entity();
@@ -505,6 +511,7 @@ impl Workspace {
             sidebar: SidebarState::new(),
             band_pressed: false,
             slide: None,
+            right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             places_ticking: false,
             notifications: NotificationList::default(),
@@ -811,6 +818,8 @@ impl Workspace {
             sidebar_hidden: self.sidebar.hidden,
             hint_dismissed: self.sidebar.hint_dismissed,
             browser_data_kept: self.browser_data_kept,
+            right_sidebar_hidden: self.right_sidebar.hidden,
+            right_sidebar_width: Some(self.right_sidebar.width),
         };
         let path = restore::state_path(&home);
         if let Err(err) = settings::write_atomic(&path, &restore::encode(&state)) {
@@ -2466,6 +2475,9 @@ impl Render for Workspace {
             self.refresh_places(cx);
             self.tick_places(cx);
         }
+        // The terminal the right sidebar follows, and its folder looked up where due.
+        self.refresh_right_sidebar(cx);
+        self.tick_right_sidebar(cx);
         let title = self
             .model
             .focused_workspace()
@@ -2516,6 +2528,10 @@ impl Render for Workspace {
             ),
             (node, _) => (node, None),
         };
+        // The right sidebar the same way, from the right.
+        let (right_sidebar, sliding_right_sidebar) = self.right_sidebar_layout(ui, window, cx);
+        let right_sliding_in = sliding_right_sidebar.is_some() && !self.right_sidebar.hidden;
+        let right_width = self.right_sidebar.width;
         let button = self.render_sidebar_button(ui, window, cx);
         let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
@@ -2607,6 +2623,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &EqualizePanes, _, cx| this.equalize_panes(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| this.toggle_sidebar(w, cx)))
             .on_action(
+                cx.listener(|this, _: &ToggleRightSidebar, w, cx| this.toggle_right_sidebar(w, cx)),
+            )
+            .on_action(
                 cx.listener(|this, _: &NextNeedingYou, w, cx| this.jump_to_needing_you(w, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenSwitcher, w, cx| this.open_switcher(w, cx)))
@@ -2662,6 +2681,7 @@ impl Render for Workspace {
                     .when(slide.is_some() && !self.sidebar.hidden, |column| {
                         column.ml(px(sidebar_width))
                     })
+                    .when(right_sliding_in, |column| column.mr(px(right_width)))
                     .children(pane_band)
                     .child(
                         div()
@@ -2673,7 +2693,9 @@ impl Render for Workspace {
                             .children(panes),
                     ),
             )
+            .children(right_sidebar)
             .children(sliding_sidebar)
+            .children(sliding_right_sidebar)
             .child(button)
             // The host picker, the switcher, the Help panel and the address box: over
             // everything, centred near the top of the window.
