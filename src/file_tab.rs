@@ -1457,31 +1457,38 @@ struct GitPlace {
 }
 
 /// `path`'s place for git (blocking): `Some(None)` outside a repo (git says so), without git,
-/// or with its folder gone; None when git gave no answer (it failed or took longer than the
-/// cap: asked again later). A deleted file's is its folder's (git still has its old lines:
-/// Diff mode shows them).
+/// or with no folder of it left; None when git gave no answer (it failed or took longer than
+/// the cap: asked again later). A deleted file's is found from its nearest folder still there
+/// (its own, or an ancestor after `rm -rf dir` or `git mv dir new`): git still has its old
+/// lines, and Diff mode shows them.
 fn git_place(path: &Path) -> Option<Option<GitPlace>> {
     let Some(git) = find_git() else {
         return Some(None);
     };
-    // git prints real paths (`/private/var`, not `/var`).
-    let real = match std::fs::canonicalize(path) {
-        Ok(real) => Some(real),
-        Err(_) => path
-            .parent()
-            .and_then(|dir| std::fs::canonicalize(dir).ok())
-            .zip(path.file_name())
-            .map(|(dir, name)| dir.join(name)),
-    };
-    let Some(real) = real else {
+    let Some((real, dir)) = real_path(path) else {
         return Some(None);
     };
-    let Some(root) = repo_root_at(&git, real.parent()?)? else {
+    let Some(root) = repo_root_at(&git, &dir)? else {
         return Some(None);
     };
     let root = std::fs::canonicalize(&root).unwrap_or(root);
     let rel = real.strip_prefix(&root).ok().map(Path::to_path_buf);
     Some(rel.map(|rel| GitPlace { git, root, rel }))
+}
+
+/// `path` as git prints it (real: `/private/var`, not `/var`) and the folder to ask git from:
+/// its own folder, or for a file that's gone, its nearest folder still there (canonical, the
+/// missing parts joined back on). None when no folder of it is left.
+fn real_path(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        let dir = real.parent()?.to_path_buf();
+        return Some((real, dir));
+    }
+    path.ancestors().skip(1).find_map(|up| {
+        let dir = std::fs::canonicalize(up).ok().filter(|d| d.is_dir())?;
+        let rest = path.strip_prefix(up).ok()?;
+        Some((dir.join(rest), dir))
+    })
 }
 
 /// The tab's place for git: the one `known`, else looked up (`look`: `git_place`). Only a
@@ -3808,15 +3815,66 @@ mod tests {
         assert_eq!(found.rel, PathBuf::from("src/gone.rs"));
         // Deleted (git still has its old lines): the same place, so its diff can show them.
         std::fs::remove_file(&file).unwrap();
+        assert_eq!(git_place(&file), Some(Some(found.clone())));
+        // Its folder gone too (`rm -rf src`): still its place, found from the nearest folder
+        // left.
+        std::fs::remove_dir_all(dir.join("src")).unwrap();
         assert_eq!(git_place(&file), Some(Some(found)));
-        // A folder that's gone too: no place (an answer, not "ask again").
-        assert_eq!(git_place(&dir.join("nowhere/x.rs")), Some(None));
-        // Outside any repo: git says so.
+        let deep = git_place(&dir.join("nowhere/deeper/x.rs"))
+            .expect("an answer")
+            .expect("a gone folder in a repo");
+        assert_eq!(deep.rel, PathBuf::from("nowhere/deeper/x.rs"));
+        // Outside any repo: git says so, for a gone folder too.
         let plain = std::env::temp_dir().join(format!("fuxx-no-repo-{}", std::process::id()));
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(git_place(&plain.join("x.rs")), Some(None));
+        assert_eq!(git_place(&plain.join("gone/x.rs")), Some(None));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&plain);
+    }
+
+    /// `git` in `root` with a throwaway identity; true when it succeeded.
+    fn git_ok(git: &Path, root: &Path, args: &[&str]) -> bool {
+        std::process::Command::new(git)
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    #[test]
+    fn a_moved_folders_old_files_keep_their_place_and_old_lines() {
+        let Some(git) = find_git() else {
+            return eprintln!("skipped: no git");
+        };
+        let dir = std::env::temp_dir().join(format!("fuxx-git-mv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("old/inner")).unwrap();
+        assert!(git_ok(&git, &dir, &["init", "-q"]));
+        std::fs::write(dir.join("old/a.rs"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.join("old/inner/b.rs"), "three\n").unwrap();
+        assert!(git_ok(&git, &dir, &["add", "-A"]));
+        assert!(git_ok(&git, &dir, &["commit", "-q", "-m", "first"]));
+        assert!(git_ok(&git, &dir, &["mv", "old", "new"]));
+        assert!(!dir.join("old").exists());
+        for (rel, lines) in [("old/a.rs", 2), ("old/inner/b.rs", 1)] {
+            let place = git_place(&dir.join(rel))
+                .expect("an answer")
+                .expect("a moved file keeps its place");
+            assert_eq!(place.rel, PathBuf::from(rel));
+            let Some(FileDiff::Unified(u)) =
+                file_diff(&place.git, &place.root, &place.rel, context_for(0))
+            else {
+                panic!("a unified diff for {rel}");
+            };
+            let rows = crate::diff_view::parse_diff(&u).rows;
+            assert_eq!(rows.len(), lines, "{rel}: {u}");
+            assert!(rows.iter().all(|r| r.kind == RowKind::Removed), "{rel}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
