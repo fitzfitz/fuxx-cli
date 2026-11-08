@@ -367,8 +367,9 @@ impl TerminalView {
     }
 
     /// Start the breathing timer unless it runs: a redraw every 33 ms while the last paint
-    /// asked for it (`Frames::Timer33ms`) and the terminal is focused in the key window. It
-    /// stops, without a redraw, as soon as any of that ends.
+    /// asked for it (`Frames::Timer33ms`) and the terminal is focused in the key window, except
+    /// while the breath holds (`breath_redraw`). It stops, without a redraw, as soon as any of
+    /// that ends.
     fn breathe(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.breathing {
             return;
@@ -379,12 +380,15 @@ impl TerminalView {
                 cx.background_executor().timer(BREATH_FRAME).await;
                 let go = this
                     .update_in(cx, |this, window, cx| {
-                        let go = this.motion.borrow().frames == Frames::Timer33ms
+                        let motion = this.motion.borrow();
+                        let go = motion.frames == Frames::Timer33ms
                             && this.focus_handle.is_focused(window)
                             && this.key_window(window);
-                        if go {
+                        let redraw = breath_redraw(motion.changed.elapsed());
+                        drop(motion);
+                        if go && redraw {
                             cx.notify();
-                        } else {
+                        } else if !go {
                             this.breathing = false;
                         }
                         go
@@ -989,17 +993,8 @@ impl Render for TerminalView {
                             let offset = paint_core.display_offset();
                             grid::underline_cells(&mut snap, link.start, link.end, offset);
                         }
-                        let screen = (
-                            paint_core.mode().contains(TermMode::ALT_SCREEN),
-                            paint_core.display_offset(),
-                        );
-                        let look = cursor.look(
-                            &snap,
-                            screen,
-                            &theme,
-                            &mut motion.borrow_mut(),
-                            Instant::now(),
-                        );
+                        let look =
+                            cursor.look(&snap, &theme, &mut motion.borrow_mut(), Instant::now());
                         paint_grid(snap, &theme, &metrics, bounds, origin, look, window, cx);
                         // The next redraw the cursor needs (none when still).
                         let frames = motion.borrow().frames;
@@ -1092,7 +1087,10 @@ pub fn paint_fixed_screen(
         metrics.line_height,
     );
     let snap = screen(grid.dims);
-    let look = snap.cursor.map(|c| CursorLook::outline(c, theme));
+    let look = snap
+        .cursor
+        .filter(|c| c.row < snap.rows && c.col < snap.cols)
+        .map(|c| CursorLook::outline(c, cursor_cells(&snap.lines[c.row], c.col), theme));
     paint_grid(snap, theme, &metrics, bounds, grid.origin, look, window, cx);
 }
 
@@ -1127,7 +1125,6 @@ impl CursorSettings {
     fn look(
         &self,
         snap: &GridSnapshot,
-        screen: (bool, usize),
         theme: &Theme,
         motion: &mut CursorMotion,
         now: Instant,
@@ -1149,7 +1146,7 @@ impl CursorSettings {
         let cell = c
             .filter(|_| style.is_some_and(|s| s.shape != PaintShape::Hidden))
             .map(|c| (c.col, c.row));
-        let at = motion.follow(cell, screen, moving && self.glide, now);
+        let at = motion.follow(cell, Screen::of(snap), moving && self.glide, now);
         if !moving {
             motion.sparks.clear();
         }
@@ -1176,9 +1173,10 @@ impl CursorSettings {
             motion.drawn = None;
             return None;
         };
+        let cells = cursor_cells(&snap.lines[c.row], c.col);
         if !live {
             motion.drawn = None;
-            return Some(CursorLook::outline(c, theme));
+            return Some(CursorLook::outline(c, cells, theme));
         }
         motion.drawn = Some((at, style.shape));
         let glow = glowing && self.motion;
@@ -1191,6 +1189,7 @@ impl CursorSettings {
         let own = theme.cursor.unwrap_or(theme.foreground);
         Some(CursorLook {
             cell: (c.col, c.row),
+            cells,
             at,
             shape: style.shape,
             color: self.color,
@@ -1215,6 +1214,8 @@ impl CursorSettings {
 struct CursorLook {
     /// The cell it is on (a block's letter there takes `text`).
     cell: (usize, usize),
+    /// How many cells wide it is: 2 on a wide (CJK) character (`cursor_cells`).
+    cells: usize,
     /// Where it is drawn, in cells (fractional mid-glide).
     at: (f32, f32),
     /// Never `Hidden`.
@@ -1234,9 +1235,10 @@ struct CursorLook {
 impl CursorLook {
     /// The still 1 px outline in the theme's cursor colour of a terminal that isn't focused
     /// in the key window.
-    fn outline(c: grid::CursorView, theme: &Theme) -> Self {
+    fn outline(c: grid::CursorView, cells: usize, theme: &Theme) -> Self {
         Self {
             cell: (c.col, c.row),
+            cells,
             at: (c.col as f32, c.row as f32),
             shape: PaintShape::Hollow,
             color: theme.cursor.unwrap_or(theme.foreground),
@@ -1250,9 +1252,9 @@ impl CursorLook {
 
     /// The shape's box with its cell's top-left at `at`, scaled about its middle by `scale`
     /// (the trail's copies): a 2 px bar at the left edge, a 2 px underline at the bottom, the
-    /// whole cell for a block or hollow.
+    /// whole cell for a block or hollow (both halves of a wide character).
     fn bounds(&self, at: gpui::Point<Pixels>, m: &CellMetrics, scale: f32) -> Bounds<Pixels> {
-        let (cw, lh) = (m.cell_width, m.line_height);
+        let (cw, lh) = (m.cell_width * self.cells as f32, m.line_height);
         match self.shape {
             PaintShape::Bar => Bounds::new(
                 point(at.x, at.y + lh * (1.0 - scale) / 2.0),
@@ -1300,14 +1302,53 @@ fn is_typed_text(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes).is_ok_and(|t| !t.is_empty() && !t.chars().any(char::is_control))
 }
 
+/// The screen the cursor is on, as its glide tells screens apart: a move onto another one
+/// (the alternate screen, the view scrolled back, a resize, a clear) appears at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Screen {
+    alt: bool,
+    offset: usize,
+    cols: usize,
+    rows: usize,
+    clears: u64,
+}
+
+impl Screen {
+    fn of(snap: &GridSnapshot) -> Self {
+        Self {
+            alt: snap.alt_screen,
+            offset: snap.display_offset,
+            cols: snap.cols,
+            rows: snap.rows,
+            clears: snap.clears,
+        }
+    }
+}
+
+/// How many cells the cursor at `col` of `line` covers: 2 on a wide character's left half
+/// (the next cell its spacer), else 1.
+fn cursor_cells(line: &[grid::CellView], col: usize) -> usize {
+    match (line.get(col), line.get(col + 1)) {
+        (Some(c), Some(next)) if c.wide && next.spacer => 2,
+        _ => 1,
+    }
+}
+
+/// Whether a breathing tick redraws: not while the breath holds at full strength after a
+/// change (`cursor_look::HOLD`; the cursor looks the same), so steady output or typing costs
+/// no idle repaints.
+fn breath_redraw(since_change: Duration) -> bool {
+    since_change >= cursor_look::HOLD
+}
+
 /// The cursor's motion between paints (M11f): the cell and screen it was last painted on, its
 /// glide, when it last changed (the breath holds after), the sparks in flight and how many
 /// keystrokes sparked (each burst's seed). Shared by the view and its canvas.
 struct CursorMotion {
     /// The cell it was last painted on; `None` while hidden.
     cell: Option<(usize, usize)>,
-    /// The screen of that cell: the alternate screen or not, and the scrollback offset.
-    screen: (bool, usize),
+    /// The screen of that cell.
+    screen: Screen,
     glide: Option<Glide>,
     /// When the cursor last moved, the program wrote or you typed.
     changed: Instant,
@@ -1323,7 +1364,7 @@ impl CursorMotion {
     fn new(now: Instant) -> Self {
         Self {
             cell: None,
-            screen: (false, 0),
+            screen: Screen::default(),
             glide: None,
             changed: now,
             sparks: Vec::new(),
@@ -1339,7 +1380,7 @@ impl CursorMotion {
     fn follow(
         &mut self,
         cell: Option<(usize, usize)>,
-        screen: (bool, usize),
+        screen: Screen,
         glide: bool,
         now: Instant,
     ) -> Option<(f32, f32)> {
@@ -1527,10 +1568,20 @@ mod tests {
 
     use gpui::{Bounds, point, px, size};
 
-    use super::{CursorMotion, GridLayout, inset, is_typed_text};
+    use super::{
+        CursorMotion, GridLayout, Screen, breath_redraw, cursor_cells, inset, is_typed_text,
+    };
+    use crate::grid::CellView;
+    use crate::theme::Theme;
 
-    /// The main screen, not scrolled back.
-    const MAIN: (bool, usize) = (false, 0);
+    /// The main screen of an 80x24 terminal, not scrolled back, never cleared.
+    const MAIN: Screen = Screen {
+        alt: false,
+        offset: 0,
+        cols: 80,
+        rows: 24,
+        clears: 0,
+    };
 
     #[test]
     fn first_sight_appears_at_once() {
@@ -1577,23 +1628,72 @@ mod tests {
         assert_eq!(m.follow(Some((9, 22)), MAIN, true, t0), Some((9.0, 22.0)));
         assert!(m.glide.is_none());
         // The alternate screen, or the view scrolled back.
-        assert_eq!(
-            m.follow(Some((0, 0)), (true, 0), true, t0),
-            Some((0.0, 0.0))
-        );
+        let alt = Screen { alt: true, ..MAIN };
+        assert_eq!(m.follow(Some((0, 0)), alt, true, t0), Some((0.0, 0.0)));
         assert!(m.glide.is_none());
-        assert_eq!(
-            m.follow(Some((0, 3)), (true, 3), true, t0),
-            Some((0.0, 3.0))
-        );
+        let back = Screen { offset: 3, ..alt };
+        assert_eq!(m.follow(Some((0, 3)), back, true, t0), Some((0.0, 3.0)));
         assert!(m.glide.is_none());
         // Hidden, then back elsewhere.
-        assert_eq!(m.follow(None, (true, 3), true, t0), None);
-        assert_eq!(
-            m.follow(Some((5, 5)), (true, 3), true, t0),
-            Some((5.0, 5.0))
-        );
+        assert_eq!(m.follow(None, back, true, t0), None);
+        assert_eq!(m.follow(Some((5, 5)), back, true, t0), Some((5.0, 5.0)));
         assert!(m.glide.is_none());
+    }
+
+    #[test]
+    fn no_glide_after_a_clear_or_a_resize_but_a_line_feed_glides() {
+        let t0 = Instant::now();
+        let mut m = CursorMotion::new(t0);
+        m.follow(Some((2, 10)), MAIN, true, t0);
+        // `clear` from a prompt 10 rows down: the cursor is home at once.
+        let cleared = Screen { clears: 1, ..MAIN };
+        assert_eq!(m.follow(Some((0, 0)), cleared, true, t0), Some((0.0, 0.0)));
+        assert!(m.glide.is_none());
+        // A resize reflows the cursor's row: no glide either, frame after frame of a drag.
+        m.follow(Some((0, 5)), cleared, true, t0);
+        let narrow = Screen {
+            cols: 60,
+            ..cleared
+        };
+        assert_eq!(m.follow(Some((0, 6)), narrow, true, t0), Some((0.0, 6.0)));
+        assert!(m.glide.is_none());
+        let shorter = Screen { rows: 20, ..narrow };
+        assert_eq!(m.follow(Some((0, 4)), shorter, true, t0), Some((0.0, 4.0)));
+        assert!(m.glide.is_none());
+        // A plain line feed on the same screen still glides.
+        assert_eq!(m.follow(Some((0, 5)), shorter, true, t0), Some((0.0, 4.0)));
+        assert_eq!(m.glide.map(|g| g.to), Some((0, 5)));
+    }
+
+    #[test]
+    fn the_breath_redraws_only_once_its_hold_is_over() {
+        assert!(!breath_redraw(Duration::ZERO));
+        assert!(!breath_redraw(Duration::from_millis(599)));
+        assert!(breath_redraw(Duration::from_millis(600)));
+        assert!(breath_redraw(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_block_on_a_wide_character_covers_both_halves() {
+        let theme = Theme::default();
+        let blank = CellView::blank(&theme);
+        let wide = CellView {
+            ch: '漢',
+            wide: true,
+            ..blank
+        };
+        let spacer = CellView {
+            ch: ' ',
+            spacer: true,
+            ..blank
+        };
+        let line = [blank, wide, spacer, blank];
+        assert_eq!(cursor_cells(&line, 1), 2);
+        assert_eq!(cursor_cells(&line, 0), 1);
+        assert_eq!(cursor_cells(&line, 3), 1);
+        // A wide character cut at the edge, or out of range: one cell.
+        assert_eq!(cursor_cells(&[blank, wide], 1), 1);
+        assert_eq!(cursor_cells(&line, 9), 1);
     }
 
     #[test]
