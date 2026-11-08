@@ -4954,6 +4954,8 @@ fn files_fixture() -> PathBuf {
     for folder in ["docs", "src/util"] {
         std::fs::create_dir_all(root.join(folder)).expect("the fixture's folders");
     }
+    // Made by the `files-keys` scene, which removes it; gone if a failed run left it.
+    std::fs::remove_file(root.join("src/zz.rs")).ok();
     for file in [
         "docs/guide.md",
         "src/main.rs",
@@ -5324,8 +5326,8 @@ fn files_scenes() {
                     })
                     .expect("read");
                 assert!(
-                    drawn.starts_with('\u{2026}') && drawn.ends_with("/fuxx-ui-shots-files"),
-                    "{n}: the path's start is cut at 300 pt: {drawn}"
+                    drawn.starts_with("\u{2026}/") && drawn.ends_with("/fuxx-ui-shots-files"),
+                    "{n}: the path's start is cut at 300 pt, at a folder boundary: {drawn}"
                 );
                 cx.simulate_click(window, button, none);
                 frame(cx, window);
@@ -5516,9 +5518,17 @@ fn files_scenes() {
                 !rows_of(cx, &ws).contains(&"src/main.rs".to_string()),
                 "{n}: Return closes src"
             );
+            // A file made in src while it was closed (by an agent, say): Return opens src from
+            // its kept listing and lists it again, so the file shows (Task 6 review).
+            let made = root_for.join("src/zz.rs");
+            std::fs::write(&made, "\n").expect("a file made while src was closed");
             cx.simulate_keystrokes(window, "enter");
             frame(cx, window);
-            assert_eq!(rows_of(cx, &ws), tree_rows, "{n}: and opens it");
+            let mut with_made = tree_rows.to_vec();
+            with_made.insert(5, "src/zz.rs");
+            let rows = rows_of(cx, &ws);
+            std::fs::remove_file(&made).ok();
+            assert_eq!(rows, with_made, "{n}: and opens it, listed again");
             // A click on main.rs: its file tab, in the focused pane, with the keyboard.
             cx.simulate_click(window, row_at(3), none);
             frame(cx, window);

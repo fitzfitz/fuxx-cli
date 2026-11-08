@@ -269,7 +269,8 @@ impl FileTree {
             return None;
         }
         self.expanded.insert(rel.clone());
-        let listed = self.listings.contains_key(&rel) && self.wanted().is_empty();
+        let listed =
+            self.listings.contains_key(&rel) && !self.wanted().iter().any(|w| w.starts_with(&rel));
         (!listed).then_some(Want::List(rel))
     }
 
@@ -1219,6 +1220,17 @@ mod tests {
         assert!(t.wanted().is_empty(), "util can't be seen");
         assert_eq!(t.toggle(Path::new("src")), Some(Want::List(p("src"))));
         assert_eq!(t.wanted(), vec![p("src/util")], "listed with it");
+    }
+
+    #[test]
+    fn reopening_a_listed_folder_ignores_unlisted_folders_elsewhere() {
+        let mut t = tree();
+        // docs opened, its listing not in yet; then src closed and opened again.
+        assert_eq!(t.toggle(Path::new("docs")), Some(Want::List(p("docs"))));
+        t.collapse(Path::new("src"));
+        assert_eq!(t.wanted(), vec![p("docs")]);
+        // src and everything under it is listed: docs is no reason to list src.
+        assert_eq!(t.toggle(Path::new("src")), None);
     }
 
     #[test]
