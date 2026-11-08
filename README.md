@@ -125,6 +125,14 @@ System Settings → Privacy & Security → **Open Anyway**. After that fuxx upda
 a blue **Update Available** button appears above the sidebar's footer, and one click downloads it, checks it and
 reopens fuxx. **fuxx → Check for Updates…** checks at any time; Preferences → General turns the daily check off.
 
+## The right sidebar and file tabs
+
+**⌥⌘\\** (or the icon at the right of any pane's tab bar) opens a right sidebar showing the focused terminal's repo:
+a file tree with git marks (**M** modified, **A** added, **D** deleted), a filter, and keyboard navigation. Click a
+file to open it as a **read-only tab** in the pane, with syntax colours, line numbers and change bars against the
+last commit; it updates live while an agent edits it. ⌘F finds; "Open in Editor" opens it in your text editor (it
+never runs a file). fuxx never changes your files.
+
 ## The cursor
 
 The terminal's cursor is a thin bar by default that glides to where it goes, breathes softly instead of blinking,

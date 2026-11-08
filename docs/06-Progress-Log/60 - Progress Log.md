@@ -22,6 +22,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — M11g built: the right sidebar, Files and read-only file tabs
+- **Did:** On branch `m11g-right-sidebar`, 6 tasks, each reviewed (several after fix rounds), a whole-branch review and
+  one final fix round. syntect + two-face highlighting (colours from the fuxx theme, 3:1 floor); git status, ignore
+  checks and line changes through the capped runner (a writer/reader thread, the process group stopped at the cap,
+  last good state kept with back-off); `TabKind::File`; the right sidebar (⌥⌘\\, a pane icon, resize, remembered in
+  sessions.json, follows the focused terminal); the Files panel (lazy tree, marks, filter, keyboard, cached rows); the
+  file view (line numbers, change bars, live reload, find off the UI thread with a 10,000 cap, selection and ⌘C).
+  The final review caught that "Open in Editor" (plain `open`) could **run** a script or binary; it now opens as text
+  (`open -t`), and binaries get Show in Finder. 953 tests pass; ui-shots ok. Calls made while building are in
+  note 59 "M11g as built".
+- **Next:** on your word (given: "7-8 go ahead"): merge, push, release v0.4.0; then note 59's 14-item checklist.
+
 ### 2026-11-08 — v0.3.3 released; the right sidebar designed and approved (M11g–M11h)
 - **Did:** On your word, released v0.3.3 (a version bump) to see the new Update Available button with its icon and
   version: "great! nice!". Then designed the right sidebar with you: what cmux (Files/Sessions/Feed) and Warp (code

@@ -62,7 +62,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M11d | Help menu and shortcut list | [[M11d Plan - Help Menu]] (spec: [[56 - Milestone 11d - Help Menu]]) | 🟨 built, check pending | 6/7 | A Help menu: searchable shortcuts, command reference, notifications status, welcome tips, report an issue / logs. |
 | M11e | Update Available | [[M11e Plan - Update Available]] (spec: [[57 - Milestone 11e - Update Available]]) | 🟨 released v0.3.0, check pending | 8/9 | GitHub Releases via Actions on a tag; a blue Update Available button; download, check, swap, reopen. |
 | M11f | Cursor style (+ M11e's package icon) | [[M11f Plan - Cursor Style]] (spec: [[58 - Milestone 11f - Cursor Style]]) | 🟨 built, v0.3.2 + check pending | 3/6 | Bar cursor: glide, breathing glow, status colour; Trail/Sparks as Fun; Preferences → Cursor. |
-| M11g | Right sidebar, Files, file tabs | [[M11g Plan - Right Sidebar and File Tabs]] (design: [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]) | 🟦 planned, building | 0/9 | One right sidebar; Files with git markers; read-only file tabs with colours, line numbers, change bars. |
+| M11g | Right sidebar, Files, file tabs | [[M11g Plan - Right Sidebar and File Tabs]] (design: [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]) | 🟨 built, v0.4.0 + check pending | 7/9 | One right sidebar; Files with git markers; read-only file tabs with colours, line numbers, change bars. |
 | M11h | Changes, diff view, Activity | — (same design) | 🟦 design approved | 0 | Changes since HEAD with diffs; a per-terminal activity log. |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach

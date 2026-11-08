@@ -154,6 +154,11 @@ src/
 │
 │   updating itself (M11e)
 ├── update_release.rs     M11e · versions, GitHub's latest-release JSON, the offer/sheet copy, the swap script's text, the checks (pure)
+├── highlight.rs          M11g · syntect + two-face: a syntax theme built from the fuxx theme (3:1 floor), file classification (pure)
+├── git_status.rs         M11g · repo root, status marks, ignore checks, per-file line changes (git, capped, last good kept)
+├── file_tree.rs          M11g · the Files panel's lazy tree model: rows (cached), marks, filter, keyboard selection (pure)
+├── right_sidebar.rs      M11g · the right sidebar: toggle, pane icon, resize, follows the focused terminal, the Files panel
+├── file_tab.rs           M11g · read-only file tabs: colours, line numbers, change bars, live reload, find, selection, Open in Editor
 ├── cursor_look.rs        M11f · the cursor's rules: shape (the HollowBlock marker = no program has chosen), colour, breathing, glide, trail, sparks, frames (pure)
 └── updater.rs            M11e · the check (curl, at launch + daily + the menu), the Updates state, the install (download, verify, swap, reopen)
 ```
