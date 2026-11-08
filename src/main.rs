@@ -268,10 +268,19 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("down", help_panel::ScrollDown, Some("HelpPanel")),
         // The right sidebar's Files panel (its tree and its filter box, a NameInput whose Enter
         // and Escape are above): move, open and close folders, open a file, back to the pane.
+        // ← → only in the tree: from the box they'd change it out of sight.
         KeyBinding::new("up", right_sidebar::SelectPrev, Some("FileTree")),
         KeyBinding::new("down", right_sidebar::SelectNext, Some("FileTree")),
-        KeyBinding::new("right", right_sidebar::ExpandSelected, Some("FileTree")),
-        KeyBinding::new("left", right_sidebar::CollapseSelected, Some("FileTree")),
+        KeyBinding::new(
+            "right",
+            right_sidebar::ExpandSelected,
+            Some("FileTree && !NameInput"),
+        ),
+        KeyBinding::new(
+            "left",
+            right_sidebar::CollapseSelected,
+            Some("FileTree && !NameInput"),
+        ),
         KeyBinding::new("enter", right_sidebar::OpenSelected, Some("FileTree")),
         KeyBinding::new("escape", right_sidebar::BackToPane, Some("FileTree")),
         // A sidebar row's tab menu: Escape closes it.
@@ -1241,15 +1250,21 @@ mod tests {
         assert!(runs(&keymap, "down", filter_box).partial_eq(&SelectNext));
         assert!(runs(&keymap, "enter", filter_box).partial_eq(&name_input::Confirm));
         assert!(runs(&keymap, "escape", filter_box).partial_eq(&name_input::Cancel));
+        let bound = |key: &str, stack: &[&str]| {
+            let contexts: Vec<KeyContext> = stack
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let (found, _) =
+                keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+            !found.is_empty()
+        };
+        // ← → don't open or close folders from the box (a filter's rows show every match's
+        // folder open, so it would change the tree out of sight).
+        assert!(!bound("left", filter_box), "← in the box");
+        assert!(!bound("right", filter_box), "→ in the box");
         // Not in a terminal.
-        let (found, _) = keymap.bindings_for_input(
-            &[Keystroke::parse("up").unwrap()],
-            &[
-                KeyContext::parse("Workspace").unwrap(),
-                KeyContext::parse("Terminal").unwrap(),
-            ],
-        );
-        assert!(found.is_empty(), "↑ stays the terminal's");
+        assert!(!bound("up", TERMINAL), "↑ stays the terminal's");
     }
 
     #[test]
