@@ -22,6 +22,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-09 — Names back to ╭∩╮ (your change to M11i)
+- **Did:** On your word ("I still want the ╭∩╮ to be my default terminal name. It's my signature." … "we go back as
+  before, unless its a process thing that auto rename the cli"), names are as before M11i: your name, else the
+  program's own title, else the preset, else ╭∩╮, for terminals and workspaces everywhere. `smart_name.rs` removed;
+  the `ps` look-up stays for the status bar, the port chips and the idle dot, and it and the folder look-up now run
+  only for what shows them. Your "I cannot rename them at all": a screenshot test now renames by typing (tab and
+  row double-click, ⌘R; idle and running; the program changing its title meanwhile) and the name sticks; no fault
+  found in the code, so it's on your on-screen list. Reviewed twice; 1086 tests pass; merged and pushed.
+- **Next:** M11j (command palette).
+
 ### 2026-11-09 — M11h Changes, diff view, Activity built, reviewed, merged and pushed
 - **Did:** Planned M11h from note 59 (17 AI's calls added to the note), then built it task by task with a fresh
   builder and reviewer each: the Changes git core; the diff core; diff mode in file tabs (File | Diff, two number

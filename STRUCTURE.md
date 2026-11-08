@@ -158,8 +158,7 @@ src/
 ├── git_status.rs         M11g · repo root, status marks, ignore checks, per-file line changes (git, capped, last good kept)
 ├── file_tree.rs          M11g · the Files panel's lazy tree model: rows (cached), marks, filter, keyboard selection (pure)
 ├── right_sidebar.rs      M11g · the right sidebar: toggle, pane icon, resize, follows the focused terminal, the Files panel   M11i · type icons, guides, root header, collapse all
-├── procs.rs              M11i · the `ps` table and `lsof` listening ports (absolute paths, capped, background), parsing (pure)
-├── smart_name.rs         M11i · what a terminal is called: program · folder, the folder at a prompt, SSH host; secrets-safe words; the stable rule (pure)
+├── procs.rs              M11i · the `ps` table and `lsof` listening ports (absolute paths, capped, background), parsing, what runs in a terminal and the stable rule (pure)
 ├── pane_actions.rs       M11i · the ⋯ menu on a pane's tab bar: New Terminal Tab, New Browser Tab, Split Right, Split Down
 ├── status_bar.rs         M11i · the status bar: status word, branch, folder, port chips, the update pill; fitting by drop order (pure core)
 ├── diff_view.rs          M11h · a file's whole diff against the last commit as rows, the dimmed inks, the copy (pure)
