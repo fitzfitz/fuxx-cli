@@ -145,6 +145,19 @@ pub enum FileKind {
     Plain,
 }
 
+impl FileKind {
+    /// Every kind, in order (`RowInks` indexes its tints by it).
+    pub const ALL: [FileKind; 7] = [
+        FileKind::Red,
+        FileKind::Green,
+        FileKind::Yellow,
+        FileKind::Blue,
+        FileKind::Magenta,
+        FileKind::Cyan,
+        FileKind::Plain,
+    ];
+}
+
 /// A file's kind from its extension, in any case (note 60 §4's table). Dotfiles, names
 /// without an extension and anything not in the table are `Plain`; only the last extension
 /// counts (`archive.tar.gz` is a `gz`).
@@ -192,11 +205,33 @@ pub fn guides(depth: usize) -> Vec<f32> {
         .collect()
 }
 
-/// The root's path as the header's second line shows it: home-relative, its start cut
-/// (`…/proj/fuxx-cli`) until it `fits`, never shorter than the folder's own name.
+/// The root's path as the header's second line shows it: home-relative; if it doesn't `fit`,
+/// its start cut at a folder boundary (`…/proj/fuxx-cli`, as many whole folders as fit); when
+/// not even `…/<name>` fits, cut by characters, never shorter than the folder's own name.
 pub fn root_path_line(root: &Path, home: Option<&Path>, fits: impl Fn(&str) -> bool) -> String {
     let path = crate::sidebar::home_relative(root, home);
-    crate::sidebar::fit_place(None, Some(&path), fits)
+    if fits(&path) {
+        return path;
+    }
+    let length = path.chars().count();
+    // From the most folders kept to the fewest; only cuts shorter than the path (not `~`'s or
+    // the leading `/`'s).
+    let cuts = path
+        .match_indices('/')
+        .map(|(at, _)| format!("\u{2026}{}", &path[at..]))
+        .filter(|cut| cut.chars().count() < length);
+    let mut last = None;
+    for cut in cuts {
+        if fits(&cut) {
+            return cut;
+        }
+        last = Some(cut);
+    }
+    match last {
+        // Not even `…/<name>`: by characters (`fit_place`, its own name kept).
+        Some(_) => crate::sidebar::fit_place(None, Some(&path), fits),
+        None => path,
+    }
 }
 
 /// The colours the tree's rows are drawn in, worked out once per frame (not per row): the
@@ -209,10 +244,9 @@ struct RowInks {
 
 impl RowInks {
     fn of(theme: &Theme) -> Self {
-        use FileKind::*;
         Self {
             ui: theme.ui(),
-            kinds: [Red, Green, Yellow, Blue, Magenta, Cyan, Plain].map(|k| kind_color(k, theme)),
+            kinds: FileKind::ALL.map(|k| kind_color(k, theme)),
             marks: [Mark::Modified, Mark::Added, Mark::Deleted].map(|m| mark_color(m, theme)),
         }
     }
@@ -275,7 +309,8 @@ fn file_row(
         .children(lines);
     if let Some(more) = row.more {
         return base
-            .pl(px(left + CHEVRON))
+            // Under the names: past the chevron column, the icon and its gap.
+            .pl(px(left + CHEVRON + ICON + ICON_GAP))
             .text_color(hsla(ui.text_faint))
             .child(format!("\u{2026} {more} more"))
             .into_any_element();
@@ -526,6 +561,36 @@ impl FilesPanel {
         }
         // Once for them all.
         tree.set_ignored(self.ignored.values().flatten().cloned().collect());
+    }
+
+    /// A key or click on the tree (`key`, with the filter's text): what it asked for, and the
+    /// folders to list off the UI thread. A folder the tree asks for comes with the folders
+    /// under it not listed yet; one opened from its kept listing shows that at once (the tree
+    /// asks for nothing) and is listed again all the same, so what changed in it while it was
+    /// closed shows without waiting for the next refresh (2 s, or up to 30 s backed off).
+    fn act(
+        &mut self,
+        key: impl FnOnce(&mut FileTree, &str) -> Option<Want>,
+    ) -> (Option<Want>, Vec<PathBuf>) {
+        let Some(tree) = self.tree.as_mut() else {
+            return (None, Vec::new());
+        };
+        let before = tree.expanded_set().expanded;
+        let want = key(tree, &self.query);
+        let mut list = Vec::new();
+        if let Some(Want::List(rel)) = &want {
+            list.push(rel.clone());
+            list.extend(tree.wanted().into_iter().filter(|f| f != rel));
+        }
+        let mut opened: Vec<PathBuf> = tree
+            .expanded_set()
+            .expanded
+            .into_iter()
+            .filter(|f| !before.contains(f) && !list.contains(f))
+            .collect();
+        opened.sort();
+        list.extend(opened);
+        (want, list)
     }
 
     /// What git last said it ignores in each of `folders`, for listing them again.
@@ -1098,6 +1163,8 @@ impl Workspace {
         let Some(tree) = files.tree.as_ref() else {
             return;
         };
+        // While the root is folded away (no rows), its open folders are still listed and
+        // marked: unfolding then shows a fresh tree at once, not one as stale as the fold.
         let (root, in_repo, folders) = (
             tree.root().to_path_buf(),
             files.in_repo,
@@ -1182,26 +1249,26 @@ impl Workspace {
         .detach();
     }
 
-    /// Do what a key or click asked of the tree: list a folder just opened, or open a file in a
-    /// tab in the focused pane (selected if that pane already has it).
-    fn files_want(&mut self, want: Option<Want>, window: &mut Window, cx: &mut Context<Self>) {
-        match want {
-            // With it, the folders inside it remembered open and not listed yet.
-            Some(Want::List(rel)) => {
-                let mut rels = vec![rel];
-                if let Some(tree) = &self.right_sidebar.files.tree {
-                    rels.extend(tree.wanted());
-                }
-                self.files_list(rels, cx)
-            }
-            Some(Want::Open(rel)) => {
-                let Some(root) = self.right_sidebar.files.tree.as_ref().map(|t| t.root()) else {
-                    return;
-                };
-                let path = root.join(rel);
-                self.open_file_tab(path, window, cx);
-            }
-            None => {}
+    /// A key or click on the tree (`FilesPanel::act`): list the folders it opened, off the UI
+    /// thread, or open a file in a tab in the focused pane (selected if that pane already has
+    /// it).
+    fn files_act(
+        &mut self,
+        key: impl FnOnce(&mut FileTree, &str) -> Option<Want>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.right_sidebar.files.tree.is_none() {
+            return;
+        }
+        let (want, list) = self.right_sidebar.files.act(key);
+        self.files_list(list, cx);
+        if let Some(Want::Open(rel)) = want {
+            let Some(root) = self.right_sidebar.files.tree.as_ref().map(|t| t.root()) else {
+                return;
+            };
+            let path = root.join(rel);
+            self.open_file_tab(path, window, cx);
         }
         self.right_sidebar.files.reveal = Some(ScrollStrategy::Nearest);
         cx.notify();
@@ -1214,12 +1281,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let files = &mut self.right_sidebar.files;
-        let Some(tree) = files.tree.as_mut() else {
-            return;
-        };
-        let want = key(tree, &files.query);
-        self.files_want(want, window, cx);
+        self.files_act(key, window, cx);
     }
 
     /// Return (in the tree or the filter box): open the selected file, or open or close the
@@ -1236,16 +1298,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tree) = self.right_sidebar.files.tree.as_mut() else {
-            return;
+        let key = |tree: &mut FileTree, _: &str| {
+            tree.select(rel);
+            if is_dir {
+                tree.toggle(rel)
+            } else {
+                Some(Want::Open(rel.to_path_buf()))
+            }
         };
-        tree.select(rel);
-        let want = if is_dir {
-            tree.toggle(rel)
-        } else {
-            Some(Want::Open(rel.to_path_buf()))
-        };
-        self.files_want(want, window, cx);
+        self.files_act(key, window, cx);
     }
 
     /// A click on the root header's name line: the root folds away (only the header shows) or
@@ -1804,6 +1865,46 @@ mod tests {
         assert_eq!(files.wait, REFRESH);
     }
 
+    /// Opening a folder by click, → or Return shows its kept listing at once and lists it
+    /// again in the background (the tree asks for nothing: Task 6 review), so a file made in
+    /// it while it was closed shows.
+    #[test]
+    fn opening_a_folder_with_a_kept_listing_lists_it_again() {
+        let mut files = FilesPanel::new();
+        files.rooted(PathBuf::from("/repo"), true, None);
+        let tree = files.tree.as_mut().unwrap();
+        tree.relist(
+            PathBuf::new(),
+            vec![entry("docs", true), entry("src", true)],
+            0,
+        );
+        tree.toggle(Path::new("src"));
+        tree.relist(PathBuf::from("src"), vec![entry("main.rs", false)], 0);
+        tree.collapse(Path::new("src"));
+        // Opened again (a click): no Want, its rows at once, and a re-list of it.
+        let (want, list) = files.act(|tree, _| tree.toggle(Path::new("src")));
+        assert_eq!(want, None);
+        assert_eq!(list, vec![PathBuf::from("src")]);
+        assert_eq!(shown(&files), ["docs", "src", "src/main.rs"]);
+        // Closed (Return): nothing to list.
+        let (want, list) = files.act(|tree, _| tree.toggle(Path::new("src")));
+        assert_eq!((want, list), (None, vec![]));
+        // → on it: opened again, listed again.
+        files.tree.as_mut().unwrap().select(Path::new("src"));
+        let (_, list) = files.act(|tree, query| tree.expand_selected(query));
+        assert_eq!(list, vec![PathBuf::from("src")]);
+        // A folder never listed: the tree asks, and it is listed once.
+        let (want, list) = files.act(|tree, _| tree.toggle(Path::new("docs")));
+        assert_eq!(want, Some(Want::List(PathBuf::from("docs"))));
+        assert_eq!(list, vec![PathBuf::from("docs")]);
+        // A move opens nothing: nothing to list.
+        let (want, list) = files.act(|tree, query| {
+            tree.select_next(query);
+            None
+        });
+        assert_eq!((want, list), (None, vec![]));
+    }
+
     #[test]
     fn a_collapsed_root_is_remembered_across_a_re_root() {
         let (repo, other) = (PathBuf::from("/repo"), PathBuf::from("/other"));
@@ -1885,16 +1986,7 @@ mod tests {
                 ("card_hover", ui.card_hover),
                 ("card_selected", ui.card_selected),
             ];
-            let kinds = [
-                FileKind::Red,
-                FileKind::Green,
-                FileKind::Yellow,
-                FileKind::Blue,
-                FileKind::Magenta,
-                FileKind::Cyan,
-                FileKind::Plain,
-            ];
-            let tints = kinds.map(|k| (format!("{k:?}"), kind_color(k, &theme)));
+            let tints = FileKind::ALL.map(|k| (format!("{k:?}"), kind_color(k, &theme)));
             let marks = [Mark::Modified, Mark::Added, Mark::Deleted]
                 .map(|m| (format!("{m:?}"), mark_color(m, &theme)));
             for (what, ink) in tints.iter().chain(&marks) {
@@ -1915,15 +2007,7 @@ mod tests {
     fn the_rows_inks_are_the_tints_and_marks() {
         for (name, theme) in crate::theme::every_theme() {
             let inks = RowInks::of(&theme);
-            for kind in [
-                FileKind::Red,
-                FileKind::Green,
-                FileKind::Yellow,
-                FileKind::Blue,
-                FileKind::Magenta,
-                FileKind::Cyan,
-                FileKind::Plain,
-            ] {
+            for kind in FileKind::ALL {
                 assert_eq!(
                     inks.kind(kind),
                     kind_color(kind, &theme),
@@ -1964,12 +2048,23 @@ mod tests {
         let root = Path::new("/Users/me/Kerja/proj/fuxx-cli");
         let all = |_: &str| true;
         assert_eq!(root_path_line(root, home, all), "~/Kerja/proj/fuxx-cli");
-        // Room for 15 characters: its start cut.
-        let short = |s: &str| s.chars().count() <= 15;
-        assert_eq!(root_path_line(root, home, short), "…/proj/fuxx-cli");
-        // Never shorter than the folder's own name.
+        // Room for 17 characters: its start cut at a folder boundary (not `…ja/proj/fuxx-cli`,
+        // which a cut by characters would give).
+        let room = |n: usize| move |s: &str| s.chars().count() <= n;
+        assert_eq!(root_path_line(root, home, room(17)), "…/proj/fuxx-cli");
+        assert_eq!(root_path_line(root, home, room(14)), "…/fuxx-cli");
+        assert_eq!(root_path_line(root, home, room(10)), "…/fuxx-cli");
+        // No whole folder fits: cut by characters, never shorter than the folder's own name.
+        assert_eq!(root_path_line(root, home, room(9)), "…fuxx-cli");
         let none = |_: &str| false;
         assert_eq!(root_path_line(root, home, none), "…fuxx-cli");
+        // A full path outside the home folder is cut the same way.
+        let long =
+            Path::new("/private/var/folders/5n96dq4xpg82l70gnjh0000gp/T/fuxx-ui-shots-files");
+        assert_eq!(
+            root_path_line(long, home, room(30)),
+            "…/T/fuxx-ui-shots-files"
+        );
         // Outside the home folder: the whole path; the home folder itself: ~.
         assert_eq!(root_path_line(Path::new("/tmp/x"), home, all), "/tmp/x");
         assert_eq!(root_path_line(Path::new("/Users/me"), home, all), "~");
