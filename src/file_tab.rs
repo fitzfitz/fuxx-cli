@@ -31,6 +31,16 @@
 //! sideways. A long line (over 1,000 cells) keeps checkpoints, made off the UI thread with the
 //! text: only its part in sight is sliced out, shaped and hit-tested, and only the matches over
 //! that part (and in sight) are drawn.
+//!
+//! **Diff mode (M11h).** A tab shows its file as it is (`FileMode::Plain`) or its whole diff
+//! against the last commit (`FileMode::Diff`): old and new lines in one column (`DiffDoc`, one
+//! line per row, so find and copy work on it unchanged), removed rows tinted red with a `−`,
+//! added rows green with a `+`, unchanged rows' colours dimmed, both line numbers in the gutter
+//! (`columns`). The toolbar's File | Diff toggle (`shows_toggle`) and a press on a change bar
+//! switch modes; each mode keeps its own scroll. In Diff mode the git look-up asks for the
+//! diff instead of the bars, on the same schedule, off the UI thread (`look_up_diff`); its
+//! answer carries the disk version, as the bars' does (`HeldDiff`). A refused file (over 20 MB
+//! or binary) never asks git.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -52,10 +62,14 @@ use gpui::{
 };
 
 use crate::appearance::Appearance;
+use crate::diff_view::{
+    BINARY, DiffRow, NO_CHANGES, NO_REPO, Outcome, Parsed, RowKind, context_for, diff_outcome,
+    diff_spans, dim, first_change, reveal_row, sides,
+};
 use crate::git_branch::find_git;
-use crate::git_status::{LineChange, line_changes, repo_root};
+use crate::git_status::{FileDiff, LineChange, file_diff, line_changes, repo_root};
 use crate::highlight::{Highlighter, REFUSE_ABOVE, Span, Viewable, classify};
-use crate::layout_model::{PaneId, TabId, TabKind};
+use crate::layout_model::{FileMode, PaneId, TabId, TabKind};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
@@ -75,6 +89,11 @@ pub const MISSING: &str = "This file no longer exists";
 pub const REFUSED: &str = "This file is too large or binary to show";
 pub const TOO_LARGE: &str = "Too large to colour";
 const OPEN_IN_EDITOR: &str = "Open in Editor";
+/// The toolbar's File | Diff toggle (M11h): its words and tooltips.
+const TOGGLE_FILE: &str = "File";
+const TOGGLE_DIFF: &str = "Diff";
+const TIP_FILE: &str = "Show the file";
+const TIP_DIFF: &str = "Show the changes since the last commit";
 const SHOW_IN_FINDER: &str = "Show in Finder";
 const FIND_PLACEHOLDER: &str = "Find in file";
 
@@ -118,6 +137,11 @@ const MATCH_TINT: f32 = 0.25;
 const CURRENT_TINT: f32 = 0.55;
 /// The deleted-lines ▸, larger than the text so it reads at a glance.
 const MARKER_SCALE: f32 = 1.3;
+/// A diff opens (and a change bar's click shows its change) this many rows from the top.
+const REVEAL_ABOVE: usize = 3;
+/// A diff row's sign: removed (U+2212) and added.
+const SIGN_REMOVED: &str = "\u{2212}";
+const SIGN_ADDED: &str = "+";
 
 /// A place in the file: a (0-based) line and a byte offset in it (the source text, tabs as tabs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -667,6 +691,91 @@ pub enum State {
     Missing,
 }
 
+/// What a file tab in Diff mode shows (M11h).
+#[derive(Default)]
+pub enum DiffState {
+    /// Not asked yet (or no answer yet).
+    #[default]
+    Waiting,
+    Rows(DiffDoc),
+    /// "No changes since the last commit."
+    Same,
+    /// "This file is binary: no diff to show."
+    Binary,
+    /// "Not a git repository."
+    NoRepo,
+    /// The file on disk is over 20 MB or binary: git isn't asked (it would stream the whole old
+    /// blob), "This file is too large or binary to show".
+    Refuse,
+}
+
+/// A diff's rows as a text to draw, find in and copy (one line per row, no signs or numbers).
+#[derive(Clone)]
+pub struct DiffDoc {
+    pub doc: Doc,
+    pub rows: Arc<Vec<DiffRow>>,
+}
+
+/// The diff held and the disk version it was asked for: an answer for an older version than
+/// the one held is dropped, as change bars are (`Doc::accept_changes`).
+#[derive(Default)]
+pub struct HeldDiff {
+    pub state: DiffState,
+    pub version: Option<u64>,
+}
+
+impl HeldDiff {
+    /// `state`, asked for disk version `version` while `shown` is the latest read: taken when
+    /// fresher than the one held (`fresher`).
+    pub fn accept(&mut self, version: u64, shown: u64, state: DiffState) -> bool {
+        if !fresher(version, shown, self.version) {
+            return false;
+        }
+        self.version = Some(version);
+        self.state = state;
+        true
+    }
+}
+
+/// A diff's rows coloured: the old and the new side each highlighted whole as `path`, each row
+/// taking its side's colours (blocking: the background executor's).
+fn colour_rows(h: &Highlighter, path: &Path, parsed: &Parsed) -> Vec<Vec<Span>> {
+    let (old, new) = sides(parsed);
+    diff_spans(
+        &parsed.rows,
+        &h.highlight(path, &old),
+        &h.highlight(path, &new),
+    )
+}
+
+/// What git's answer shows (blocking: the background executor's), its rows a `Doc` of `version`
+/// (one line per row: a last `\n` so a blank last row is a line), coloured with `colour` when
+/// given (none: a file over 2 MB, or the syntaxes not loaded yet) unless a line is too long.
+fn diff_state(
+    diff: FileDiff,
+    disk_text: Option<&str>,
+    version: u64,
+    colour: Option<(&Highlighter, &Path)>,
+) -> DiffState {
+    match diff_outcome(diff, disk_text) {
+        Outcome::Same => DiffState::Same,
+        Outcome::Binary => DiffState::Binary,
+        Outcome::Rows(parsed) => {
+            let mut doc = Doc::new(format!("{}\n", parsed.text), version);
+            if let Some((h, path)) = colour
+                && doc.longest <= COLOUR_LINE_MAX
+            {
+                doc.spans = Some(Arc::new(colour_rows(h, path, &parsed)));
+                doc.spans_version = Some(version);
+            }
+            DiffState::Rows(DiffDoc {
+                doc,
+                rows: Arc::new(parsed.rows),
+            })
+        }
+    }
+}
+
 /// A file's size and time, to tell whether it changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Stamp {
@@ -763,14 +872,107 @@ fn visible_rows(
     first.min(last)..last
 }
 
+/// The gutter's number columns: the file's line numbers, or a diff's old and new numbers (each
+/// as many digits as its largest number, at least 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gutter {
+    Plain {
+        digits: usize,
+    },
+    Diff {
+        old_digits: usize,
+        new_digits: usize,
+    },
+}
+
+impl Gutter {
+    /// The gutter for `count` lines of a file, or for a diff's `rows`.
+    fn of(count: usize, rows: Option<&[DiffRow]>) -> Gutter {
+        let digits = |n: usize| n.to_string().len().max(2);
+        match rows {
+            None => Gutter::Plain {
+                digits: digits(count),
+            },
+            Some(rows) => {
+                // The numbers rise down the rows: each side's last is its largest.
+                let last = |side: fn(&DiffRow) -> Option<usize>| {
+                    rows.iter().rev().find_map(side).unwrap_or(0)
+                };
+                Gutter::Diff {
+                    old_digits: digits(last(|r| r.old)),
+                    new_digits: digits(last(|r| r.new)),
+                }
+            }
+        }
+    }
+}
+
+/// Where the gutter's parts sit, in points from the body's left edge: the old numbers' right
+/// edge (a diff's), the (new) numbers' right edge, the change bar's left edge (a diff's sign
+/// column), the text's left edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Columns {
+    pub old_right: Option<f32>,
+    pub new_right: f32,
+    pub bar_left: f32,
+    pub text_left: f32,
+}
+
+/// The gutter laid out for cells `cell` wide: `GUTTER_LEFT`, the numbers (old, `NUMBER_GAP`,
+/// new, for a diff), `NUMBER_GAP`, the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
+pub fn columns(cell: f32, gutter: Gutter) -> Columns {
+    let (old_right, new_right, mark) = match gutter {
+        Gutter::Plain { digits } => (None, GUTTER_LEFT + cell * digits as f32, BAR_WIDTH),
+        Gutter::Diff {
+            old_digits,
+            new_digits,
+        } => {
+            let old = GUTTER_LEFT + cell * old_digits as f32;
+            (Some(old), old + NUMBER_GAP + cell * new_digits as f32, cell)
+        }
+    };
+    let bar_left = new_right + NUMBER_GAP;
+    Columns {
+        old_right,
+        new_right,
+        bar_left,
+        text_left: bar_left + mark + TEXT_GAP,
+    }
+}
+
+/// Whether the toolbar shows the File | Diff toggle: for a file in a repo, and always in Diff
+/// mode (so it can go back).
+pub fn shows_toggle(in_repo: bool, mode: FileMode) -> bool {
+    in_repo || mode == FileMode::Diff
+}
+
+/// The change under a press `y` points down the text (scroll included) in the bar column: a
+/// changed line's (1-based line, change), else the deleted-lines ▸ on the edge nearest to it.
+pub fn bar_at(y: f32, line_height: f32, changes: &Changes) -> Option<(usize, LineChange)> {
+    if y < 0.0 || line_height <= 0.0 {
+        return None;
+    }
+    let line = (y / line_height).floor() as usize;
+    if let Some(&change) = changes.by_line.get(&line) {
+        return Some((line + 1, change));
+    }
+    let edge = (y / line_height).round() as usize;
+    changes
+        .deleted
+        .contains(&edge)
+        .then_some((edge, LineChange::DeletedAfter))
+}
+
 /// Where the text body's parts sit, as last drawn (for the mouse, the wheel and find).
 #[derive(Clone, Copy, Debug)]
 pub struct Geom {
     pub bounds: Bounds<Pixels>,
     pub line_height: Pixels,
     pub cell_width: Pixels,
-    /// From the body's left edge: the line numbers' right edge, the change bar's left edge, the
-    /// text's left edge (before the sideways scroll).
+    /// From the body's left edge: a diff's old numbers' right edge, the (new) line numbers'
+    /// right edge, the change bar's left edge (a diff's sign column), the text's left edge
+    /// (before the sideways scroll).
+    pub old_numbers_right: Option<Pixels>,
     pub numbers_right: Pixels,
     pub bar_left: Pixels,
     pub text_left: Pixels,
@@ -784,13 +986,12 @@ impl Geom {
         bounds: Bounds<Pixels>,
         m: &CellMetrics,
         lines: usize,
+        gutter: Gutter,
         widest: usize,
         scroll: Point<Pixels>,
     ) -> Geom {
-        let digits = lines.to_string().len().max(2);
-        let numbers_right = px(GUTTER_LEFT) + m.cell_width * digits as f32;
-        let bar_left = numbers_right + px(NUMBER_GAP);
-        let text_left = bar_left + px(BAR_WIDTH + TEXT_GAP);
+        let c = columns(f32::from(m.cell_width), gutter);
+        let text_left = px(c.text_left);
         let max_scroll = point(
             (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD) - bounds.size.width)
                 .max(px(0.0)),
@@ -800,8 +1001,9 @@ impl Geom {
             bounds,
             line_height: m.line_height,
             cell_width: m.cell_width,
-            numbers_right,
-            bar_left,
+            old_numbers_right: c.old_right.map(px),
+            numbers_right: px(c.new_right),
+            bar_left: px(c.bar_left),
             text_left,
             scroll: Geom::clamp(scroll, max_scroll),
             max_scroll,
@@ -978,6 +1180,9 @@ fn plain_run(len: usize, m: &CellMetrics, color: Rgb) -> TextRun {
 /// Everything one frame of the text body draws, read in `render`.
 struct Frame {
     doc: Doc,
+    /// A diff's rows (Diff mode): tints, signs and two number columns, unchanged rows dimmed.
+    diff: Option<Arc<Vec<DiffRow>>>,
+    mode: FileMode,
     coloured: bool,
     scroll: Point<Pixels>,
     selection: Option<(Pos, Pos)>,
@@ -986,7 +1191,28 @@ struct Frame {
     theme: Theme,
 }
 
-/// Paint the text body: `f`'s lines in sight, laid out as `g`.
+/// A number in the gutter, right-aligned at `right` (a point at its line's top).
+fn paint_number(
+    n: usize,
+    right: Point<Pixels>,
+    m: &CellMetrics,
+    ink: Rgb,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let label = n.to_string();
+    let run = plain_run(label.len(), m, ink);
+    let number =
+        window
+            .text_system()
+            .shape_line(SharedString::from(label), m.font_size, &[run], None);
+    let at = point(right.x - number.width(), right.y);
+    let _ = number.paint(at, m.line_height, TextAlign::Left, None, window, cx);
+}
+
+/// Paint the text body: `f`'s lines in sight, laid out as `g`. A file: its numbers, change bars
+/// and tints, the deleted-lines ▸. A diff: each row's old and new numbers, its sign and tint
+/// (removed red, added green), unchanged rows' colours dimmed (`diff_view::dim`).
 fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mut App) {
     let ui = f.theme.ui();
     let bars = BarColours::of(&f.theme);
@@ -997,7 +1223,7 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
     let mask = ContentMask {
         bounds: Bounds::from_corners(
             point(
-                bounds.left() + g.bar_left + px(BAR_WIDTH + 1.0),
+                bounds.left() + g.text_left - px(TEXT_GAP - 1.0),
                 bounds.top(),
             ),
             bounds.bottom_right(),
@@ -1006,20 +1232,56 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
     let (seen_left, seen_right) = (mask.bounds.left(), mask.bounds.right());
     let spans = f.doc.spans.as_deref().filter(|_| f.coloured);
     let accent = hsla(ui.accent);
+    let bg = f.theme.background;
+    let sign = |s: &'static str, c: Rgb, window: &mut Window| {
+        window.text_system().shape_line(
+            SharedString::from(s),
+            m.font_size,
+            &[plain_run(s.len(), m, c)],
+            None,
+        )
+    };
+    let (removed_sign, added_sign) = (
+        sign(SIGN_REMOVED, bars.deleted, window),
+        sign(SIGN_ADDED, bars.added, window),
+    );
     for i in rows.clone() {
         let y = bounds.top() + lh * i as f32 - g.scroll.y;
         let line = f.doc.line(i);
-        let change = f.doc.changes.by_line.get(&i).copied();
-        if let Some(change) = change {
-            let row = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
-            window.paint_quad(fill(row, hsla(bars.of_change(change)).opacity(TINT)));
+        let row = f.diff.as_ref().and_then(|d| d.get(i)).copied();
+        let change = match f.mode {
+            FileMode::Plain => f.doc.changes.by_line.get(&i).copied(),
+            FileMode::Diff => None,
+        };
+        let tint = match (row.map(|r| r.kind), change) {
+            (Some(RowKind::Removed), _) => Some(bars.deleted),
+            (Some(RowKind::Added), _) => Some(bars.added),
+            (None, Some(change)) => Some(bars.of_change(change)),
+            _ => None,
+        };
+        if let Some(tint) = tint {
+            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+            window.paint_quad(fill(band, hsla(tint).opacity(TINT)));
         }
         let line_spans = spans.and_then(|s| s.get(i)).map(Vec::as_slice);
+        // An unchanged diff row: its colours mixed toward the background, still readable.
+        let same = row.is_some_and(|r| r.kind == RowKind::Same);
+        let dimmed: Option<Vec<Span>> = same.then(|| {
+            line_spans
+                .unwrap_or(&[])
+                .iter()
+                .map(|(r, c)| (r.clone(), dim(*c, bg)))
+                .collect()
+        });
+        let (line_spans, fg) = match &dimmed {
+            Some(d) => (Some(d.as_slice()), dim(f.theme.foreground, bg)),
+            None => (line_spans, f.theme.foreground),
+        };
         let laid = Laid::new(
             &f.doc,
             i,
             line_spans,
-            f.theme.foreground,
+            fg,
             m,
             g.scroll.x,
             bounds.size.width,
@@ -1067,21 +1329,42 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
                 let _ = shaped.paint(origin, lh, TextAlign::Left, None, window, cx);
             }
         });
-        let label = (i + 1).to_string();
-        let run = plain_run(label.len(), m, ui.text_faint);
-        let number =
-            window
-                .text_system()
-                .shape_line(SharedString::from(label), m.font_size, &[run], None);
-        let at = point(bounds.left() + g.numbers_right - number.width(), y);
-        let _ = number.paint(at, lh, TextAlign::Left, None, window, cx);
-        if let Some(change) = change {
-            let bar = Bounds::new(
-                point(bounds.left() + g.bar_left, y),
-                size(px(BAR_WIDTH), lh),
-            );
-            window.paint_quad(fill(bar, hsla(bars.of_change(change))));
+        match row {
+            None => {
+                let right = point(bounds.left() + g.numbers_right, y);
+                paint_number(i + 1, right, m, ui.text_faint, window, cx);
+                if let Some(change) = change {
+                    let bar = Bounds::new(
+                        point(bounds.left() + g.bar_left, y),
+                        size(px(BAR_WIDTH), lh),
+                    );
+                    window.paint_quad(fill(bar, hsla(bars.of_change(change))));
+                }
+            }
+            Some(row) => {
+                if let (Some(n), Some(right)) = (row.old, g.old_numbers_right) {
+                    let right = point(bounds.left() + right, y);
+                    paint_number(n, right, m, ui.text_faint, window, cx);
+                }
+                if let Some(n) = row.new {
+                    let right = point(bounds.left() + g.numbers_right, y);
+                    paint_number(n, right, m, ui.text_faint, window, cx);
+                }
+                let sign = match row.kind {
+                    RowKind::Removed => Some(&removed_sign),
+                    RowKind::Added => Some(&added_sign),
+                    RowKind::Same | RowKind::Gap => None,
+                };
+                if let Some(sign) = sign {
+                    // Centred in its one-cell column.
+                    let x = bounds.left() + g.bar_left + (g.cell_width - sign.width()) / 2.0;
+                    let _ = sign.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+                }
+            }
         }
+    }
+    if f.mode == FileMode::Diff {
+        return;
     }
     // Deleted lines: a red ▸ on the edge between two lines, over the bar's place (at the top
     // edge, just under it, so it isn't cut in half).
@@ -1108,6 +1391,9 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
 pub enum FileTabEvent {
     /// The Close button of a file that no longer exists.
     Close,
+    /// The tab now shows its file in this mode (the toolbar's toggle, a change bar's click):
+    /// the workspace saves it.
+    Mode(FileMode),
 }
 
 /// The find bar: its box and what it found.
@@ -1126,11 +1412,17 @@ struct GitPlace {
     rel: PathBuf,
 }
 
-/// `path`'s place for git (blocking): none outside a repo or without git.
+/// `path`'s place for git (blocking): none outside a repo or without git. A deleted file's is
+/// its folder's (git still has its old lines: Diff mode shows them).
 fn git_place(path: &Path) -> Option<GitPlace> {
     let git = find_git()?;
     // git prints real paths (`/private/var`, not `/var`).
-    let real = std::fs::canonicalize(path).ok()?;
+    let real = match std::fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(_) => std::fs::canonicalize(path.parent()?)
+            .ok()?
+            .join(path.file_name()?),
+    };
     let root = repo_root(&git, real.parent()?)?;
     let root = std::fs::canonicalize(&root).unwrap_or(root);
     let rel = real.strip_prefix(&root).ok()?.to_path_buf();
@@ -1174,6 +1466,13 @@ pub struct FileTab {
     pub since: Instant,
     focus: FocusHandle,
     state: State,
+    /// The file as it is, or its diff against the last commit (M11h).
+    mode: FileMode,
+    /// The diff, once asked (Diff mode asks for it instead of the change bars).
+    diff: HeldDiff,
+    /// Where Diff mode scrolls to when its rows are next drawn: their first change, or a
+    /// change bar's change.
+    reveal: Option<Reveal>,
     /// The size and time of the file as last read.
     stamp: Option<Stamp>,
     /// Reads so far (each one's `version`).
@@ -1182,6 +1481,7 @@ pub struct FileTab {
     reading: bool,
     /// The highlight, the git look-up and the search in flight (one of each at a time).
     colouring: OneAtATime,
+    colouring_diff: OneAtATime,
     looking: OneAtATime,
     searching: OneAtATime,
     /// Searches asked so far (each one's generation).
@@ -1191,13 +1491,16 @@ pub struct FileTab {
     /// When the last git look-up started, and whether one waits for its turn (`lookup_wait`).
     looked_at: Option<Instant>,
     lookup_waiting: bool,
-    /// The version last drawn: drawing a new one stores the scroll as it was kept in the text.
-    drawn: Rc<Cell<u64>>,
+    /// The mode and version last drawn: drawing a new one stores the scroll as it was kept in
+    /// the text.
+    drawn: Rc<Cell<(FileMode, u64)>>,
     /// The find bar closed by itself (the file went): the tab takes the keyboard back.
     refocus: bool,
     /// The theme the colours were asked in (another one: colour again).
     coloured_with: Option<Theme>,
+    /// Each mode's scroll: the file's, the diff's.
     scroll: Point<Pixels>,
+    diff_scroll: Point<Pixels>,
     geom: Rc<Cell<Option<Geom>>>,
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
@@ -1211,7 +1514,18 @@ pub struct FileTab {
     pub frozen: bool,
     /// The Close button's bounds (a missing file's), as last drawn.
     close_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The toggle's File and Diff segments, as last drawn.
+    toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
     _appearance: Subscription,
+}
+
+/// Where a diff scrolls to when its rows are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reveal {
+    /// Its first change (a diff opened, or its first rows).
+    First,
+    /// A change bar's change (`diff_view::reveal_row`; not found: the first change).
+    Change((usize, LineChange)),
 }
 
 impl EventEmitter<FileTabEvent> for FileTab {}
@@ -1224,7 +1538,12 @@ impl Focusable for FileTab {
 
 impl FileTab {
     /// A tab showing `path`: read at once, off the UI thread.
-    pub fn new(path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        mode: FileMode,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // A theme change colours the text again (bars and tints follow the theme each frame).
         // Drawn again at once for any change (the view is cached: it repaints when it says so).
         let appearance = cx.observe_global::<Appearance>(|this, cx| {
@@ -1239,10 +1558,14 @@ impl FileTab {
             since: Instant::now(),
             focus: cx.focus_handle(),
             state: State::Loading,
+            mode,
+            diff: HeldDiff::default(),
+            reveal: None,
             stamp: None,
             versions: 0,
             reading: false,
             colouring: OneAtATime::default(),
+            colouring_diff: OneAtATime::default(),
             looking: OneAtATime::default(),
             searching: OneAtATime::default(),
             searches: 0,
@@ -1253,6 +1576,7 @@ impl FileTab {
             refocus: false,
             coloured_with: None,
             scroll: Point::default(),
+            diff_scroll: Point::default(),
             geom: Rc::default(),
             selection: None,
             selecting: false,
@@ -1262,6 +1586,7 @@ impl FileTab {
             polls: 0,
             frozen: false,
             close_at: Rc::default(),
+            toggle_at: Rc::default(),
             _appearance: appearance,
         };
         tab.check_disk(cx);
@@ -1283,9 +1608,34 @@ impl FileTab {
         }
     }
 
-    /// The selected text (empty: none).
+    /// The text the body shows: the file's (Plain), or the diff's rows (Diff, once it has
+    /// them). Find, the selection and the scroll work on it.
+    fn shown_doc(&self) -> Option<&Doc> {
+        match (self.mode, &self.diff.state) {
+            (FileMode::Plain, _) => self.doc(),
+            (FileMode::Diff, DiffState::Rows(d)) => Some(&d.doc),
+            (FileMode::Diff, _) => None,
+        }
+    }
+
+    /// The scroll of the mode shown.
+    fn mode_scroll(&self) -> Point<Pixels> {
+        match self.mode {
+            FileMode::Plain => self.scroll,
+            FileMode::Diff => self.diff_scroll,
+        }
+    }
+
+    fn mode_scroll_mut(&mut self, mode: FileMode) -> &mut Point<Pixels> {
+        match mode {
+            FileMode::Plain => &mut self.scroll,
+            FileMode::Diff => &mut self.diff_scroll,
+        }
+    }
+
+    /// The selected text (empty: none): a diff's without its signs or numbers.
     pub fn selected_text(&self) -> String {
-        match (self.doc(), self.selection) {
+        match (self.shown_doc(), self.selection) {
             (Some(doc), Some((a, b))) => selection_text(&doc.text, &doc.lines, a, b),
             _ => String::new(),
         }
@@ -1364,18 +1714,25 @@ impl FileTab {
     fn loaded(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         match loaded {
             Loaded::Unchanged => return,
+            // Each look at the disk that finds something new is a version (a diff asked for an
+            // older one is dropped).
             Loaded::Missing => {
                 if matches!(self.state, State::Missing) {
                     return;
                 }
+                self.versions += 1;
                 self.state = State::Missing;
                 self.stamp = None;
                 self.refocus |= self.find.take().is_some();
+                // A deleted file's diff: its old lines, all removed.
+                self.look_up_changes(cx);
             }
             Loaded::Refuse(stamp) => {
+                self.versions += 1;
                 self.state = State::Refuse;
                 self.stamp = Some(stamp);
                 self.refocus |= self.find.take().is_some();
+                self.look_up_changes(cx);
             }
             Loaded::Text {
                 stamp,
@@ -1409,7 +1766,7 @@ impl FileTab {
 
     /// The selection within the new text (none without one).
     fn keep_selection(&mut self) {
-        let last = self.doc().map(|d| d.lines.len().saturating_sub(1));
+        let last = self.shown_doc().map(|d| d.lines.len().saturating_sub(1));
         self.selection = match (last, self.selection) {
             (Some(last), Some((a, b))) => {
                 let fit = |p: Pos| {
@@ -1431,53 +1788,62 @@ impl FileTab {
         }
     }
 
-    /// Colour the text (off the UI thread), in the current theme. The shared highlighter is
-    /// loaded first if it isn't yet.
+    /// The shared highlighter in the current theme, once its syntaxes are loaded. Not yet: this
+    /// tab waits for them (coloured once they are in, `colour`), and the first to ask loads them
+    /// in the background.
+    fn shared_highlighter(&mut self, cx: &mut Context<Self>) -> Option<Arc<Highlighter>> {
+        let theme = cx.global::<Appearance>().theme;
+        let me = cx.entity().downgrade();
+        let already_loading = {
+            let all = cx.default_global::<Highlighters>();
+            if let Some(h) = all.get(&theme) {
+                return Some(h);
+            }
+            if !all.waiting.iter().any(|w| w.entity_id() == me.entity_id()) {
+                all.waiting.push(me);
+            }
+            std::mem::replace(&mut all.loading, true)
+        };
+        if !already_loading {
+            cx.spawn(async move |_, cx| {
+                let loaded = cx
+                    .background_executor()
+                    .spawn(async move { Highlighter::load(&theme) })
+                    .await;
+                cx.update(|cx| {
+                    let all = cx.default_global::<Highlighters>();
+                    all.loading = false;
+                    all.ready = Some((Arc::new(loaded), theme));
+                    for tab in std::mem::take(&mut all.waiting) {
+                        tab.update(cx, |tab, cx| tab.colour(cx)).ok();
+                    }
+                });
+            })
+            .detach();
+        }
+        None
+    }
+
+    /// Colour the text and the diff's rows (off the UI thread), in the current theme.
     fn colour(&mut self, cx: &mut Context<Self>) {
+        self.colour_text(cx);
+        self.colour_diff(cx);
+    }
+
+    /// Colour the file's text (off the UI thread), in the current theme.
+    fn colour_text(&mut self, cx: &mut Context<Self>) {
         let State::Text(doc) = &self.state else {
             return;
         };
         let (version, text) = (doc.version, doc.text.clone());
-        let theme = cx.global::<Appearance>().theme;
-        let me = cx.entity().downgrade();
-        let got = {
-            let all = cx.default_global::<Highlighters>();
-            match all.get(&theme) {
-                Some(h) => Ok(h),
-                None => {
-                    all.waiting.push(me);
-                    Err(std::mem::replace(&mut all.loading, true))
-                }
-            }
-        };
-        let h = match got {
-            Ok(h) => h,
-            Err(already_loading) => {
-                if !already_loading {
-                    cx.spawn(async move |_, cx| {
-                        let loaded = cx
-                            .background_executor()
-                            .spawn(async move { Highlighter::load(&theme) })
-                            .await;
-                        cx.update(|cx| {
-                            let all = cx.default_global::<Highlighters>();
-                            all.loading = false;
-                            all.ready = Some((Arc::new(loaded), theme));
-                            for tab in std::mem::take(&mut all.waiting) {
-                                tab.update(cx, |tab, cx| tab.colour(cx)).ok();
-                            }
-                        });
-                    })
-                    .detach();
-                }
-                return;
-            }
+        let Some(h) = self.shared_highlighter(cx) else {
+            return;
         };
         if !self.colouring.start() {
             // It runs again, in the theme and on the text of then, when the running one ends.
             return;
         }
-        self.coloured_with = Some(theme);
+        self.coloured_with = Some(cx.global::<Appearance>().theme);
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
             let spans = cx
@@ -1491,7 +1857,7 @@ impl FileTab {
                     cx.notify();
                 }
                 if this.colouring.finish() {
-                    this.colour(cx);
+                    this.colour_text(cx);
                 }
             })
             .ok();
@@ -1499,13 +1865,75 @@ impl FileTab {
         .detach();
     }
 
-    /// Ask git for the change bars of the text shown (off the UI thread). Not when frozen. At
-    /// most one look-up every 2 s (`lookup_wait`): one asked sooner waits for its turn. The
-    /// git to run and the repo are kept once found (`lookup_place`). No answer from git (slow
-    /// or failing) leaves the bars shown.
-    fn look_up_changes(&mut self, cx: &mut Context<Self>) {
-        if self.frozen || self.doc().is_none() {
+    /// Colour the diff's rows held (off the UI thread), in the current theme: rows that came
+    /// before the syntaxes were loaded, or a new theme. Not for a file over 2 MB (or with a line
+    /// too long to colour).
+    fn colour_diff(&mut self, cx: &mut Context<Self>) {
+        let DiffState::Rows(d) = &self.diff.state else {
             return;
+        };
+        if matches!(self.state, State::PlainTooLarge(_)) || d.doc.longest > COLOUR_LINE_MAX {
+            return;
+        }
+        let (version, text, rows) = (d.doc.version, d.doc.text.clone(), d.rows.clone());
+        let Some(h) = self.shared_highlighter(cx) else {
+            return;
+        };
+        if !self.colouring_diff.start() {
+            return;
+        }
+        self.coloured_with = Some(cx.global::<Appearance>().theme);
+        let path = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let keep = rows.clone();
+            let spans = cx
+                .background_executor()
+                .spawn(async move {
+                    // The rows' text without the `Doc`'s last `\n`.
+                    let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
+                    let parsed = Parsed {
+                        text,
+                        rows: keep.to_vec(),
+                    };
+                    colour_rows(&h, &path, &parsed)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                // Only onto the rows it was made for.
+                if let DiffState::Rows(d) = &mut this.diff.state
+                    && Arc::ptr_eq(&d.rows, &rows)
+                    && d.doc.accept_spans(version, spans)
+                {
+                    cx.notify();
+                }
+                if this.colouring_diff.finish() {
+                    this.colour_diff(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Ask git about the text shown (off the UI thread): in Plain mode its change bars, in
+    /// Diff mode its diff (`look_up_diff`). Not when frozen. At most one look-up every 2 s
+    /// (`lookup_wait`): one asked sooner waits for its turn. The git to run and the repo are
+    /// kept once found (`lookup_place`). No answer from git (slow or failing) leaves the bars
+    /// (or the rows) shown.
+    fn look_up_changes(&mut self, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
+        match (self.mode, &self.state) {
+            (FileMode::Plain, State::Text(_) | State::PlainTooLarge(_)) => {}
+            (FileMode::Plain, _) | (FileMode::Diff, State::Loading) => return,
+            // Over 20 MB or binary: git isn't asked (it would read the whole old blob).
+            (FileMode::Diff, State::Refuse) => {
+                let version = self.versions;
+                self.accept_diff(version, DiffState::Refuse, cx);
+                return;
+            }
+            (FileMode::Diff, _) => {}
         }
         if let Some(wait) = lookup_wait(self.looked_at, Instant::now()) {
             if !self.lookup_waiting {
@@ -1526,6 +1954,10 @@ impl FileTab {
             return;
         }
         self.looked_at = Some(Instant::now());
+        if self.mode == FileMode::Diff {
+            self.look_up_diff(cx);
+            return;
+        }
         let Some(version) = self.doc().map(|d| d.version) else {
             return;
         };
@@ -1550,13 +1982,163 @@ impl FileTab {
                 {
                     cx.notify();
                 }
-                if this.looking.finish() {
-                    this.look_up_changes(cx);
-                }
+                this.looked_up(cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// A look-up ended: the next, if one was asked meanwhile.
+    fn looked_up(&mut self, cx: &mut Context<Self>) {
+        if self.looking.finish() {
+            self.look_up_changes(cx);
+        }
+    }
+
+    /// Diff mode's look-up (its turn taken): the file's whole diff against the last commit,
+    /// `git diff HEAD -U<lines on disk + 1>`, made into rows, coloured when the syntaxes are in
+    /// and the file is at most 2 MB; all off the UI thread. No repo: "Not a git repository."
+    /// The answer carries the disk version it was asked for (`HeldDiff::accept`).
+    fn look_up_diff(&mut self, cx: &mut Context<Self>) {
+        let version = self.versions;
+        let (disk, lines, colour) = match &self.state {
+            State::Text(doc) => (Some(doc.text.clone()), doc.lines.len(), true),
+            State::PlainTooLarge(doc) => (Some(doc.text.clone()), doc.lines.len(), false),
+            State::Missing => (None, 0, false),
+            State::Loading | State::Refuse => {
+                self.looked_up(cx);
+                return;
+            }
+        };
+        let h = if colour {
+            self.shared_highlighter(cx)
+        } else {
+            None
+        };
+        let (path, known) = (self.path.clone(), self.git_place.clone());
+        cx.spawn(async move |this, cx| {
+            let (place, state) = cx
+                .background_executor()
+                .spawn(async move {
+                    let place = lookup_place(known, || git_place(&path));
+                    let state = match &place {
+                        None => Some(DiffState::NoRepo),
+                        Some(p) => {
+                            file_diff(&p.git, &p.root, &p.rel, context_for(lines)).map(|diff| {
+                                let colour = h.as_deref().map(|h| (h, path.as_path()));
+                                diff_state(diff, disk.as_deref(), version, colour)
+                            })
+                        }
+                    };
+                    (place, state)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.git_place = place;
+                // No answer (git slow or failing): the rows shown stay.
+                if let Some(state) = state {
+                    this.accept_diff(version, state, cx);
+                }
+                this.looked_up(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A diff asked for disk version `version`: taken unless older than the one held. Its
+    /// first rows scroll to their first change; the same rows again keep theirs (and their
+    /// colours) as they are.
+    fn accept_diff(&mut self, version: u64, state: DiffState, cx: &mut Context<Self>) {
+        let unchanged = match (&self.diff.state, &state) {
+            (DiffState::Rows(held), DiffState::Rows(new)) => {
+                held.doc.text == new.doc.text
+                    && held.rows == new.rows
+                    && (held.doc.spans.is_some() || new.doc.spans.is_none())
+            }
+            _ => false,
+        };
+        let first_rows = !matches!(self.diff.state, DiffState::Rows(_));
+        if unchanged {
+            if fresher(version, self.versions, self.diff.version) {
+                self.diff.version = Some(version);
+            }
+            return;
+        }
+        if !self.diff.accept(version, self.versions, state) {
+            return;
+        }
+        if let DiffState::Rows(d) = &self.diff.state {
+            if first_rows && self.reveal.is_none() {
+                self.reveal = Some(Reveal::First);
+            }
+            if d.doc.spans.is_none() {
+                self.colour_diff(cx);
+            }
+        }
+        if self.mode == FileMode::Diff {
+            self.keep_selection();
+            self.find_again(cx);
+        }
+        cx.notify();
+    }
+
+    /// The file's mode now (M11h).
+    pub fn mode(&self) -> FileMode {
+        self.mode
+    }
+
+    /// Show the file as it is, or its diff (`reveal`: a change bar's change, shown when the
+    /// rows are). Each mode keeps its own scroll; the selection goes, find searches the text
+    /// now shown. A mode with nothing yet for the file as read asks git at once.
+    pub(crate) fn set_mode(
+        &mut self,
+        mode: FileMode,
+        reveal: Option<(usize, LineChange)>,
+        cx: &mut Context<Self>,
+    ) {
+        if mode == FileMode::Diff
+            && let Some(change) = reveal
+        {
+            self.reveal = Some(Reveal::Change(change));
+        }
+        if std::mem::replace(&mut self.mode, mode) == mode {
+            cx.notify();
+            return;
+        }
+        self.selection = None;
+        self.selecting = false;
+        // Find's current match: the first from the top of the text now shown.
+        if let Some(find) = self.find.as_mut() {
+            find.finds.from_top = true;
+        }
+        let current = match mode {
+            FileMode::Plain => self
+                .doc()
+                .is_some_and(|d| d.changes_version == Some(d.version)),
+            FileMode::Diff => self.diff.version == Some(self.versions),
+        };
+        if !current {
+            self.looked_at = None;
+            self.look_up_changes(cx);
+        }
+        self.find_again(cx);
+        cx.notify();
+    }
+
+    /// The toggle or a change bar: show `mode`, and tell the workspace (it saves the mode).
+    fn choose_mode(
+        &mut self,
+        mode: FileMode,
+        reveal: Option<(usize, LineChange)>,
+        cx: &mut Context<Self>,
+    ) {
+        let was = self.mode();
+        self.set_mode(mode, reveal, cx);
+        if was != mode {
+            cx.emit(FileTabEvent::Mode(mode));
+        }
     }
 
     /// Scroll to `to`, kept within the text (as last drawn).
@@ -1565,8 +2147,10 @@ impl FileTab {
             return;
         };
         let to = Geom::clamp(to, g.max_scroll);
-        if to != self.scroll {
-            self.scroll = to;
+        let mode = self.mode;
+        let scroll = self.mode_scroll_mut(mode);
+        if to != *scroll {
+            *scroll = to;
             cx.notify();
         }
     }
@@ -1583,7 +2167,7 @@ impl FileTab {
     /// its first or last line).
     fn pos_at(&self, p: Point<Pixels>, window: &mut Window, cx: &App) -> Option<Pos> {
         let g = self.geom.get()?;
-        let doc = self.doc()?;
+        let doc = self.shown_doc()?;
         let count = doc.lines.len();
         let y = p.y - g.bounds.top() + g.scroll.y;
         let line = if y < px(0.0) {
@@ -1620,11 +2204,31 @@ impl FileTab {
 
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
+        // A change bar (or a deleted-lines ▸) in a file: its diff, at that change.
+        if let Some(change) = self.bar_under(e.position) {
+            self.choose_mode(FileMode::Diff, Some(change), cx);
+            return;
+        }
         if let Some(pos) = self.pos_at(e.position, window, cx) {
             self.selection = Some((pos, pos));
             self.selecting = true;
             cx.notify();
         }
+    }
+
+    /// The change whose bar (or ▸) is under window point `p`, in Plain mode: a press from 2 pt
+    /// left of the bar column to 2 pt right of it.
+    fn bar_under(&self, p: Point<Pixels>) -> Option<(usize, LineChange)> {
+        if self.mode != FileMode::Plain {
+            return None;
+        }
+        let (g, doc) = (self.geom.get()?, self.doc()?);
+        let x = f32::from(p.x - g.bounds.left() - g.bar_left);
+        if !(-2.0..=BAR_WIDTH + 2.0).contains(&x) {
+            return None;
+        }
+        let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
+        bar_at(y, f32::from(g.line_height), &doc.changes)
     }
 
     fn mouse_drag(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1652,7 +2256,7 @@ impl FileTab {
     /// ⌘F: the find bar, its box taking the keyboard (its text selected, when open already).
     /// Nothing without a text (a missing or refused file, or one still loading).
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.doc().is_none() {
+        if self.shown_doc().is_none() {
             return;
         }
         if let Some(find) = &self.find {
@@ -1718,11 +2322,20 @@ impl FileTab {
     /// Run the latest search asked (off the UI thread), one at a time: asked again meanwhile, it
     /// runs once more when this one ends. Only the latest search's answer is taken (`Finds`).
     fn search(&mut self, cx: &mut Context<Self>) {
-        let (Some(find), Some(doc)) = (self.find.as_ref(), self.doc()) else {
+        let Some((text, lines)) = self.shown_doc().map(|d| (d.text.clone(), d.lines.clone()))
+        else {
+            // Nothing shown (a diff not in yet): nothing found, until it is.
+            if let Some(find) = self.find.as_mut() {
+                find.finds.matches = Arc::default();
+                find.finds.current = None;
+                find.finds.capped = false;
+            }
+            return;
+        };
+        let Some(find) = self.find.as_ref() else {
             return;
         };
         let (generation, query) = (find.finds.wanted, find.finds.query.clone());
-        let (text, lines) = (doc.text.clone(), doc.lines.clone());
         if !self.searching.start() {
             return;
         }
@@ -1790,7 +2403,7 @@ impl FileTab {
         else {
             return;
         };
-        let (Some(g), Some(doc)) = (self.geom.get(), self.doc()) else {
+        let (Some(g), Some(doc)) = (self.geom.get(), self.shown_doc()) else {
             return;
         };
         let (lh, h, w) = (g.line_height, g.bounds.size.height, g.bounds.size.width);
@@ -1879,12 +2492,91 @@ impl FileTab {
             .child(label)
     }
 
-    /// The toolbar: the file's path, a note, Open in Editor.
+    /// One of the toggle's two segments (`i`: 0 File, 1 Diff): the current one `card_selected`
+    /// in `text`, the other `panel` in `text_dim` (`panel_hover` on hover); a click shows its
+    /// mode.
+    fn mode_segment(
+        &self,
+        i: usize,
+        mode: FileMode,
+        ui: UiColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (id, label, tip) = match mode {
+            FileMode::Plain => ("file-mode-file", TOGGLE_FILE, TIP_FILE),
+            FileMode::Diff => ("file-mode-diff", TOGGLE_DIFF, TIP_DIFF),
+        };
+        let current = self.mode == mode;
+        let at = self.toggle_at.clone();
+        // Inside the 1 pt border: its 5 pt corners less the border.
+        let inner = px(4.0);
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h_full()
+            .px(px(10.0))
+            .map(|d| match i {
+                0 => d.rounded_l(inner),
+                _ => d
+                    .rounded_r(inner)
+                    .border_l_1()
+                    .border_color(hsla(ui.panel_border)),
+            })
+            .bg(hsla(if current { ui.card_selected } else { ui.panel }))
+            .text_color(hsla(if current { ui.text } else { ui.text_dim }))
+            .when(!current, |d| {
+                d.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
+            })
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| this.choose_mode(mode, None, cx)),
+            )
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            .child(label)
+            // Where it is (the scenes click it).
+            .child(
+                canvas(
+                    move |b, _, _| {
+                        let mut both = at.get();
+                        both[i] = Some(b);
+                        at.set(both);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+    }
+
+    /// The File | Diff toggle: two joined segments, a 1 pt border, 5 pt corners.
+    fn toggle(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_none()
+            .flex_row()
+            .h(px(BUTTON))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .text_size(px(text::NAME))
+            .child(self.mode_segment(0, FileMode::Plain, ui, cx))
+            .child(self.mode_segment(1, FileMode::Diff, ui, cx))
+            .into_any_element()
+    }
+
+    /// The toolbar: the file's path, a note, the File | Diff toggle (in a repo, or in Diff
+    /// mode), Open in Editor.
     fn toolbar(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let note = match self.state {
             State::PlainTooLarge(_) => Some(TOO_LARGE),
             _ => None,
         };
+        let toggle = shows_toggle(self.git_place.is_some(), self.mode).then(|| self.toggle(ui, cx));
         // A refused file has its button in the middle; a missing one has none.
         let open = matches!(
             self.state,
@@ -1928,6 +2620,7 @@ impl FileTab {
                     .text_color(hsla(ui.text_faint))
                     .child(note)
             }))
+            .children(toggle)
             .children(open)
             .into_any_element()
     }
@@ -2011,6 +2704,38 @@ impl FileTab {
         )
     }
 
+    /// The note the body shows instead of text: a missing or refused file's; in Diff mode,
+    /// without rows, the diff's (a deleted file's rows still show: git has its old lines).
+    fn body_note(&self) -> Option<&'static str> {
+        match (&self.state, self.mode, &self.diff.state) {
+            (State::Refuse, ..) => Some(REFUSED),
+            (_, FileMode::Diff, DiffState::Rows(_)) => None,
+            (State::Missing, ..) => Some(MISSING),
+            (_, FileMode::Plain, _) => None,
+            (_, FileMode::Diff, DiffState::Refuse) => Some(REFUSED),
+            (_, FileMode::Diff, DiffState::Same) => Some(NO_CHANGES),
+            (_, FileMode::Diff, DiffState::Binary) => Some(BINARY),
+            (_, FileMode::Diff, DiffState::NoRepo) => Some(NO_REPO),
+            (_, FileMode::Diff, DiffState::Waiting) => None,
+        }
+    }
+
+    /// A diff's note in the middle of the body (the toolbar keeps Open in Editor and the
+    /// toggle).
+    fn diff_note(words: &'static str, ui: UiColors) -> AnyElement {
+        div()
+            .flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .items_center()
+            .justify_center()
+            .px(px(24.0))
+            .text_size(px(text::NAME))
+            .text_color(hsla(ui.text))
+            .child(words)
+            .into_any_element()
+    }
+
     /// A note in the middle of the body, with its button: a missing or refused file.
     fn notice(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let missing = matches!(self.state, State::Missing);
@@ -2073,16 +2798,23 @@ impl FileTab {
     /// The text: a canvas drawing the lines in sight, the wheel scrolling it, the mouse
     /// selecting.
     fn body(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let Some(doc) = self.doc().cloned() else {
+        let Some(doc) = self.shown_doc().cloned() else {
             return div().flex_1().into_any_element();
         };
         let (matches, current) = self.find.as_ref().map_or((Arc::default(), None), |f| {
             (f.finds.matches.clone(), f.finds.current)
         });
+        let diff = match (self.mode, &self.diff.state) {
+            (FileMode::Diff, DiffState::Rows(d)) => Some(d.rows.clone()),
+            _ => None,
+        };
         let frame = Rc::new(Frame {
-            coloured: matches!(self.state, State::Text(_)),
+            // A diff's colours are only made when it may have them.
+            coloured: diff.is_some() || matches!(self.state, State::Text(_)),
+            diff,
+            mode: self.mode,
             doc,
-            scroll: self.scroll,
+            scroll: self.mode_scroll(),
             selection: self
                 .selection
                 .map(|(a, b)| if a <= b { (a, b) } else { (b, a) }),
@@ -2115,21 +2847,18 @@ impl FileTab {
                     canvas(
                         move |bounds, window, cx| {
                             let m = CellMetrics::measure(cx.global::<Appearance>(), window);
-                            let g = Geom::of(
-                                bounds,
-                                &m,
-                                laid.doc.lines.len(),
-                                laid.doc.widest,
-                                laid.scroll,
-                            );
+                            let count = laid.doc.lines.len();
+                            let gutter = Gutter::of(count, laid.diff.as_deref().map(Vec::as_slice));
+                            let g =
+                                Geom::of(bounds, &m, count, gutter, laid.doc.widest, laid.scroll);
                             geom.set(Some(g));
-                            // A new version drawn: the scroll as kept in it is the scroll (after a
-                            // shrink, the view doesn't jump back down when the file grows again).
-                            if drawn.replace(laid.doc.version) != laid.doc.version
-                                && g.scroll != laid.scroll
-                            {
-                                let kept = g.scroll;
-                                keep.update(cx, |this, _| this.scroll = kept);
+                            // A new version (or mode) drawn: the scroll as kept in it is the
+                            // scroll (after a shrink, the view doesn't jump back down when the
+                            // file grows again).
+                            let key = (laid.mode, laid.doc.version);
+                            if drawn.replace(key) != key && g.scroll != laid.scroll {
+                                let (kept, mode) = (g.scroll, laid.mode);
+                                keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = kept);
                             }
                             let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
                             (m, g, hitbox)
@@ -2188,8 +2917,60 @@ impl FileTab {
         self.geom.get()
     }
 
+    /// The scroll of the mode shown.
     pub fn scroll(&self) -> Point<Pixels> {
-        self.scroll
+        self.mode_scroll()
+    }
+
+    /// The note the body shows instead of text (`MISSING`, `REFUSED`, a diff's), if any.
+    pub fn shown_note(&self) -> Option<&'static str> {
+        self.body_note()
+    }
+
+    /// The toggle's File and Diff segments, as last drawn.
+    pub fn toggle_bounds(&self) -> [Option<Bounds<Pixels>>; 2] {
+        self.toggle_at.get()
+    }
+
+    /// "waiting", "rows", "same", "binary", "norepo" or "refuse".
+    pub fn diff_state_name(&self) -> &'static str {
+        match self.diff.state {
+            DiffState::Waiting => "waiting",
+            DiffState::Rows(_) => "rows",
+            DiffState::Same => "same",
+            DiffState::Binary => "binary",
+            DiffState::NoRepo => "norepo",
+            DiffState::Refuse => "refuse",
+        }
+    }
+
+    /// The diff's rows, once in.
+    pub fn diff_doc(&self) -> Option<&DiffDoc> {
+        match &self.diff.state {
+            DiffState::Rows(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// A diff as git would give it for the file as read (`unified`; a `Binary files` line and
+    /// no hunk: binary), made into rows at once, coloured when the shared highlighter is
+    /// loaded (and the file isn't over 2 MB).
+    pub fn set_diff_for_shots(&mut self, unified: &str, cx: &mut Context<Self>) {
+        let hunks = unified.lines().any(|l| l.starts_with("@@ "));
+        let diff = if !hunks && unified.lines().any(|l| l.starts_with("Binary files ")) {
+            FileDiff::Binary
+        } else {
+            FileDiff::Unified(unified.to_string())
+        };
+        let theme = cx.global::<Appearance>().theme;
+        let h = matches!(self.state, State::Text(_))
+            .then(|| cx.default_global::<Highlighters>().get(&theme))
+            .flatten();
+        let disk = self.doc().map(|d| d.text.clone());
+        let colour = h.as_deref().map(|h| (h, self.path.as_path()));
+        let state = diff_state(diff, disk.as_deref(), self.versions, colour);
+        let version = self.versions;
+        self.accept_diff(version, state, cx);
     }
 
     pub fn close_bounds(&self) -> Option<Bounds<Pixels>> {
@@ -2224,6 +3005,29 @@ impl FileTab {
     }
 }
 
+impl FileTab {
+    /// Diff mode with rows and a place to show: scroll it `REVEAL_ABOVE` rows from the top
+    /// (kept within the rows when drawn).
+    fn reveal_diff(&mut self, window: &mut Window, cx: &App) {
+        if self.mode != FileMode::Diff {
+            return;
+        }
+        let DiffState::Rows(d) = &self.diff.state else {
+            return;
+        };
+        let Some(reveal) = self.reveal.take() else {
+            return;
+        };
+        let row = match reveal {
+            Reveal::First => first_change(&d.rows),
+            Reveal::Change(change) => reveal_row(&d.rows, change).or_else(|| first_change(&d.rows)),
+        };
+        let m = CellMetrics::measure(cx.global::<Appearance>(), window);
+        let rows_up = row.unwrap_or(0).saturating_sub(REVEAL_ABOVE);
+        self.diff_scroll = point(px(0.0), m.line_height * rows_up as f32);
+    }
+}
+
 impl Render for FileTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The find bar went with the file: the keyboard back to the tab.
@@ -2232,11 +3036,13 @@ impl Render for FileTab {
         }
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
+        self.reveal_diff(window, cx);
         let toolbar = self.toolbar(ui, cx);
         let find_bar = self.find_bar(ui, cx);
-        let body = match self.state {
-            State::Missing | State::Refuse => self.notice(ui, cx),
-            _ => self.body(theme, cx),
+        let body = match self.body_note() {
+            Some(words) if words == MISSING || words == REFUSED => self.notice(ui, cx),
+            Some(words) => Self::diff_note(words, ui),
+            None => self.body(theme, cx),
         };
         div()
             .flex()
@@ -2264,23 +3070,26 @@ impl Render for FileTab {
 }
 
 impl Workspace {
-    /// Open file `path` in the focused pane (the sidebar's click): the pane's tab that already
-    /// shows it, else a new tab at the end of its bar. It is shown and takes the keyboard.
+    /// Open file `path` in the focused pane in `mode` (Files: Plain; Changes: Diff): the pane's
+    /// tab that already shows it (in either mode, now in `mode`), else a new tab at the end of
+    /// its bar. It is shown and takes the keyboard.
     pub(crate) fn open_file_tab(
         &mut self,
         path: PathBuf,
+        mode: FileMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(pane) = self.model.focused_pane() else {
             return;
         };
-        let Some(opened) = self.model.open_file(pane, path.clone()) else {
+        let Some(opened) = self.model.open_file(pane, path.clone(), mode) else {
             return;
         };
         self.sync();
-        if !self.file_tabs.contains_key(&opened.tab) {
-            self.make_file_tab(opened.tab, path, window, cx);
+        match self.file_tabs.get(&opened.tab) {
+            Some(view) => view.update(cx, |view, cx| view.set_mode(mode, None, cx)),
+            None => self.make_file_tab(opened.tab, path, mode, window, cx),
         }
         self.save();
         self.activate(window, cx);
@@ -2316,7 +3125,7 @@ impl Workspace {
     /// Every file tab of the model has its view (a restored one, one dragged in). A new view
     /// for the focused tab takes the keyboard.
     pub(crate) fn ensure_file_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let missing: Vec<(TabId, PathBuf)> = self
+        let missing: Vec<(TabId, PathBuf, FileMode)> = self
             .model
             .workspaces()
             .iter()
@@ -2324,14 +3133,14 @@ impl Workspace {
             .flat_map(|p| &p.tabs)
             .filter(|t| !self.file_tabs.contains_key(&t.id))
             .filter_map(|t| match &t.kind {
-                TabKind::File { path, .. } => Some((t.id, path.clone())),
+                TabKind::File { path, mode } => Some((t.id, path.clone(), *mode)),
                 TabKind::Terminal(_) | TabKind::Browser { .. } => None,
             })
             .collect();
         let focused = self.model.focused_tab();
         let mut focus_it = false;
-        for (tab, path) in missing {
-            self.make_file_tab(tab, path, window, cx);
+        for (tab, path, mode) in missing {
+            self.make_file_tab(tab, path, mode, window, cx);
             focus_it |= Some(tab) == focused;
         }
         if focus_it {
@@ -2339,26 +3148,32 @@ impl Workspace {
         }
     }
 
-    /// The view for file tab `tab`, showing `path`.
+    /// The view for file tab `tab`, showing `path` in `mode`.
     fn make_file_tab(
         &mut self,
         tab: TabId,
         path: PathBuf,
+        mode: FileMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let frozen = self.places.frozen;
         let view = cx.new(|cx| {
-            let mut view = FileTab::new(path, window, cx);
+            let mut view = FileTab::new(path, mode, window, cx);
             view.frozen = frozen;
             view
         });
-        // A missing file's Close button closes its tab.
+        // A missing file's Close button closes its tab; a new mode is the model's, saved.
         cx.subscribe_in(
             &view,
             window,
             move |this, _, event, window, cx| match event {
                 FileTabEvent::Close => this.close_file_tab(tab, window, cx),
+                FileTabEvent::Mode(mode) => {
+                    if this.model.set_file_mode(tab, *mode) {
+                        this.save();
+                    }
+                }
             },
         )
         .detach();
@@ -2737,5 +3552,132 @@ mod tests {
         assert_eq!(by_line.len(), 2);
         // Deleted after (1-based) line 5: the edge above 0-based line 5; after 0: the top.
         assert_eq!(deleted, [0, 5]);
+    }
+
+    #[test]
+    fn columns_lay_out_one_or_two_number_columns() {
+        let plain = columns(8.0, Gutter::Plain { digits: 2 });
+        assert_eq!(plain.old_right, None);
+        assert_eq!(plain.new_right, 28.0);
+        assert_eq!(plain.bar_left, 36.0);
+        assert_eq!(plain.text_left, 49.0);
+        let diff = columns(
+            8.0,
+            Gutter::Diff {
+                old_digits: 3,
+                new_digits: 2,
+            },
+        );
+        assert_eq!(diff.old_right, Some(36.0));
+        assert_eq!(diff.new_right, 60.0);
+        // The sign column's left, one cell wide, then the text.
+        assert_eq!(diff.bar_left, 68.0);
+        assert_eq!(diff.text_left, 86.0);
+    }
+
+    #[test]
+    fn the_toggle_shows_in_a_repo_or_in_diff_mode() {
+        assert!(!shows_toggle(false, FileMode::Plain));
+        assert!(shows_toggle(true, FileMode::Plain));
+        assert!(shows_toggle(false, FileMode::Diff));
+        assert!(shows_toggle(true, FileMode::Diff));
+    }
+
+    #[test]
+    fn a_press_on_a_bar_or_a_mark_finds_its_change() {
+        let (by_line, deleted) = bars(&[(3, LineChange::Changed), (6, LineChange::DeletedAfter)]);
+        let changes = Changes { by_line, deleted };
+        let lh = 10.0;
+        // 0-based line 2 is (1-based) line 3.
+        assert_eq!(bar_at(25.0, lh, &changes), Some((3, LineChange::Changed)));
+        assert_eq!(bar_at(20.0, lh, &changes), Some((3, LineChange::Changed)));
+        // The ▸ on the edge above 0-based line 6, from either side.
+        assert_eq!(
+            bar_at(57.0, lh, &changes),
+            Some((6, LineChange::DeletedAfter))
+        );
+        assert_eq!(
+            bar_at(63.0, lh, &changes),
+            Some((6, LineChange::DeletedAfter))
+        );
+        // A line without a change, away from the mark.
+        assert_eq!(bar_at(5.0, lh, &changes), None);
+        assert_eq!(bar_at(45.0, lh, &changes), None);
+        assert_eq!(bar_at(-3.0, lh, &changes), None);
+    }
+
+    #[test]
+    fn a_diff_doc_has_a_line_per_row() {
+        // A blank last row is still a line of its own.
+        let state = diff_state(
+            FileDiff::Unified("@@ -1,2 +1,3 @@\n a\n+b\n \n".into()),
+            None,
+            4,
+            None,
+        );
+        let DiffState::Rows(d) = state else {
+            panic!("rows");
+        };
+        assert_eq!(d.rows.len(), 3);
+        assert_eq!(d.doc.lines.len(), 3);
+        assert_eq!(d.doc.line(2), "");
+        assert_eq!(d.doc.version, 4);
+        assert!(d.doc.spans.is_none(), "no highlighter: uncoloured");
+        let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, None);
+        let DiffState::Rows(d) = all else {
+            panic!("rows");
+        };
+        assert_eq!((d.rows.len(), d.doc.lines.len()), (2, 2));
+        assert!(matches!(
+            diff_state(FileDiff::Unified(String::new()), None, 1, None),
+            DiffState::Same
+        ));
+        assert!(matches!(
+            diff_state(FileDiff::Binary, Some("x"), 1, None),
+            DiffState::Binary
+        ));
+    }
+
+    #[test]
+    fn a_diff_answer_for_an_older_disk_version_is_dropped() {
+        let rows = |v: u64| diff_state(FileDiff::AllAdded, Some("x\n"), v, None);
+        let mut held = HeldDiff::default();
+        assert!(matches!(held.state, DiffState::Waiting));
+        // Asked at version 2; version 3 was read and answered first: 2's answer is dropped.
+        assert!(held.accept(3, 3, rows(3)));
+        assert!(!held.accept(2, 3, rows(2)));
+        assert_eq!(held.version, Some(3));
+        // The same version again (a refresh after a commit): taken.
+        assert!(held.accept(3, 3, DiffState::Same));
+        assert!(matches!(held.state, DiffState::Same));
+        // Newer than the text read can't be, and is dropped.
+        assert!(!held.accept(4, 3, rows(4)));
+    }
+
+    #[test]
+    fn a_deleted_file_still_has_a_git_place() {
+        let Some(git) = find_git() else {
+            return eprintln!("skipped: no git");
+        };
+        let dir = std::env::temp_dir().join(format!("fuxx-git-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let ok = std::process::Command::new(&git)
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "git init");
+        let file = dir.join("src/gone.rs");
+        std::fs::write(&file, "x\n").unwrap();
+        let found = git_place(&file).expect("a file in a repo");
+        assert_eq!(found.rel, PathBuf::from("src/gone.rs"));
+        // Deleted (git still has its old lines): the same place, so its diff can show them.
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(git_place(&file), Some(found));
+        // A folder that's gone too: none.
+        assert_eq!(git_place(&dir.join("nowhere/x.rs")), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -33,7 +33,7 @@ pub enum TabKind {
 }
 
 /// How a file tab shows its file: as it is (with change bars), or as a diff against the last
-/// commit (M11h; M11g opens only `Plain`).
+/// commit (M11h: Files opens `Plain`, Changes `Diff`; the toolbar toggles it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileMode {
@@ -329,26 +329,46 @@ impl Model {
         })
     }
 
-    /// Open file `path` in `pane` (`Plain`): the pane's tab that already shows it, else a new
-    /// tab at the end of its bar. Either way it is shown and gets the focus. None when `pane`
-    /// is unknown.
-    pub fn open_file(&mut self, pane: PaneId, path: PathBuf) -> Option<Opened> {
-        let kind = TabKind::File {
-            path,
-            mode: FileMode::Plain,
-        };
+    /// Open file `path` in `pane` in `mode`: the pane's tab that already shows it (in either
+    /// mode), now in `mode`, else a new tab at the end of its bar. Either way it is shown and
+    /// gets the focus. None when `pane` is unknown.
+    pub fn open_file(&mut self, pane: PaneId, path: PathBuf, mode: FileMode) -> Option<Opened> {
         let w = self.index_of_pane(pane)?;
         let ws = &self.workspaces[w];
-        let Some(tab) = ws.pane(pane)?.tabs.iter().find(|t| t.kind == kind) else {
-            return self.add_tab(pane, kind);
+        let found = ws
+            .pane(pane)?
+            .tabs
+            .iter()
+            .find(|t| matches!(&t.kind, TabKind::File { path: p, .. } if *p == path));
+        let Some(tab) = found else {
+            return self.add_tab(pane, TabKind::File { path, mode });
         };
         let opened = Opened {
             workspace: ws.id,
             pane,
             tab: tab.id,
         };
+        self.set_file_mode(opened.tab, mode);
         self.select_tab(opened.tab);
         Some(opened)
+    }
+
+    /// Show file tab `tab` in `mode`. False when `tab` is unknown, not a file tab, or already
+    /// in `mode`.
+    pub fn set_file_mode(&mut self, tab: TabId, mode: FileMode) -> bool {
+        let found = self
+            .workspaces
+            .iter_mut()
+            .flat_map(|w| &mut w.panes)
+            .flat_map(|p| &mut p.tabs)
+            .find(|t| t.id == tab);
+        match found.map(|t| &mut t.kind) {
+            Some(TabKind::File { mode: m, .. }) if *m != mode => {
+                *m = mode;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Show something else in `tab` (a reconnected terminal, a browser's new page); returns
@@ -2805,24 +2825,113 @@ mod tests {
     fn opening_a_file_twice_in_one_pane_gives_one_tab_selected() {
         let mut m = Model::new();
         let a = m.new_workspace(0, term(1)).unwrap();
-        let first = m.open_file(a.pane, PathBuf::from("/w/a.rs")).unwrap();
+        let first = m
+            .open_file(a.pane, PathBuf::from("/w/a.rs"), FileMode::Plain)
+            .unwrap();
         assert_eq!(first.pane, a.pane);
         m.select_tab(a.tab);
-        let again = m.open_file(a.pane, PathBuf::from("/w/a.rs")).unwrap();
+        let again = m
+            .open_file(a.pane, PathBuf::from("/w/a.rs"), FileMode::Plain)
+            .unwrap();
         ok(&m);
         assert_eq!(again, first, "the tab it had");
         assert_eq!(tab_kinds(&m, a.pane), [term(1), file("/w/a.rs")]);
         assert_eq!(m.focused_tab(), Some(first.tab));
         // Another file is a new tab; the same file in another pane is that pane's own.
-        let other = m.open_file(a.pane, PathBuf::from("/w/b.rs")).unwrap();
+        let other = m
+            .open_file(a.pane, PathBuf::from("/w/b.rs"), FileMode::Plain)
+            .unwrap();
         assert_ne!(other.tab, first.tab);
         let b = m.split(a.pane, Axis::Row, term(2)).unwrap();
-        let there = m.open_file(b.pane, PathBuf::from("/w/a.rs")).unwrap();
+        let there = m
+            .open_file(b.pane, PathBuf::from("/w/a.rs"), FileMode::Plain)
+            .unwrap();
         ok(&m);
         assert_eq!(there.pane, b.pane);
         assert_ne!(there.tab, first.tab);
         assert_eq!(m.focused_tab(), Some(there.tab));
         // An unknown pane opens nothing.
-        assert_eq!(m.open_file(PaneId(999), PathBuf::from("/w/a.rs")), None);
+        assert_eq!(
+            m.open_file(PaneId(999), PathBuf::from("/w/a.rs"), FileMode::Plain),
+            None
+        );
+    }
+
+    fn diff_file(path: &str) -> TabKind {
+        TabKind::File {
+            path: PathBuf::from(path),
+            mode: FileMode::Diff,
+        }
+    }
+
+    #[test]
+    fn opening_a_file_sets_its_mode_and_keeps_one_tab() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let plain = m
+            .open_file(a.pane, PathBuf::from("/w/a.rs"), FileMode::Plain)
+            .unwrap();
+        // The same file in Diff: the same tab, now in Diff.
+        let diff = m
+            .open_file(a.pane, PathBuf::from("/w/a.rs"), FileMode::Diff)
+            .unwrap();
+        ok(&m);
+        assert_eq!(diff, plain, "the tab it had");
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), diff_file("/w/a.rs")]);
+        assert_eq!(m.focused_tab(), Some(plain.tab));
+        // Plain again: the same tab, Plain.
+        m.select_tab(a.tab);
+        let back = m
+            .open_file(a.pane, PathBuf::from("/w/a.rs"), FileMode::Plain)
+            .unwrap();
+        assert_eq!(back, plain);
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), file("/w/a.rs")]);
+        assert_eq!(m.focused_tab(), Some(plain.tab));
+        // Another pane gets its own tab, in its own mode.
+        let b = m.split(a.pane, Axis::Row, term(2)).unwrap();
+        let there = m
+            .open_file(b.pane, PathBuf::from("/w/a.rs"), FileMode::Diff)
+            .unwrap();
+        ok(&m);
+        assert_ne!(there.tab, plain.tab);
+        assert_eq!(tab_kinds(&m, b.pane), [term(2), diff_file("/w/a.rs")]);
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), file("/w/a.rs")]);
+    }
+
+    #[test]
+    fn set_file_mode_is_false_for_a_terminal_or_the_same_mode() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let f = m.add_tab(a.pane, file("/w/a.rs")).unwrap();
+        assert!(!m.set_file_mode(a.tab, FileMode::Diff), "a terminal");
+        assert!(!m.set_file_mode(TabId(999), FileMode::Diff), "unknown");
+        assert!(!m.set_file_mode(f.tab, FileMode::Plain), "the same mode");
+        assert!(m.set_file_mode(f.tab, FileMode::Diff));
+        assert_eq!(m.tab(f.tab).unwrap().kind, diff_file("/w/a.rs"));
+        assert!(!m.set_file_mode(f.tab, FileMode::Diff), "the same mode");
+        assert!(m.set_file_mode(f.tab, FileMode::Plain));
+        assert_eq!(m.tab(f.tab).unwrap().kind, file("/w/a.rs"));
+        ok(&m);
+    }
+
+    #[test]
+    fn a_diff_tab_round_trips_with_its_mode() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(11)).unwrap();
+        let f = m
+            .open_file(a.pane, PathBuf::from("/w/a.rs"), FileMode::Diff)
+            .unwrap();
+        let session = |id: u64| Some((id - 11) as usize);
+        let (saved, active) = m.to_saved(session);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""mode":"diff""#), "{json}");
+        let back: Vec<SavedWorkspace> = serde_json::from_str(&json).unwrap();
+        let m2 = Model::from_saved(&back, active, &[Some(11)]);
+        ok(&m2);
+        assert_eq!(
+            m2.tab(m2.focused_tab().unwrap()).unwrap().kind,
+            diff_file("/w/a.rs")
+        );
+        let _ = f;
     }
 }
