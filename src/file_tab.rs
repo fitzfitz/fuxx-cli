@@ -700,13 +700,13 @@ pub enum DiffState {
     Rows(DiffDoc),
     /// "No changes since the last commit."
     Same,
-    /// "This file is binary: no diff to show."
+    /// "This file is binary: no diff to show." (git's answer, or binary on disk.)
     Binary,
     /// "Not a git repository."
     NoRepo,
-    /// The file on disk is over 20 MB or binary: git isn't asked (it would stream the whole old
-    /// blob); or its old blob in HEAD, or git's diff, is over 20 MB. "This file is too large or
-    /// binary to show".
+    /// The file on disk is over 20 MB (or can't be read): git isn't asked (it would stream the
+    /// whole old blob); or its old blob in HEAD, or git's diff, is over 20 MB. "This file is too
+    /// large or binary to show". (Binary on disk is `Binary`: `refused_diff`.)
     Refuse,
 }
 
@@ -1470,6 +1470,34 @@ struct FindBar {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The note a tab's body shows instead of text: a missing or refused file's; in Diff mode,
+/// without rows, the diff's (a deleted file's rows still show: git has its old lines).
+fn note_of(state: &State, mode: FileMode, diff: &DiffState) -> Option<&'static str> {
+    match (state, mode, diff) {
+        // Refused on disk for being binary (`refused_diff`).
+        (State::Refuse, FileMode::Diff, DiffState::Binary) => Some(BINARY),
+        (State::Refuse, ..) => Some(REFUSED),
+        (_, FileMode::Diff, DiffState::Rows(_)) => None,
+        (State::Missing, ..) => Some(MISSING),
+        (_, FileMode::Plain, _) => None,
+        (_, FileMode::Diff, DiffState::Refuse) => Some(REFUSED),
+        (_, FileMode::Diff, DiffState::Same) => Some(NO_CHANGES),
+        (_, FileMode::Diff, DiffState::Binary) => Some(BINARY),
+        (_, FileMode::Diff, DiffState::NoRepo) => Some(NO_REPO),
+        (_, FileMode::Diff, DiffState::Waiting) => None,
+    }
+}
+
+/// The diff of a file refused on disk (`len` bytes when read): git isn't asked (it would read
+/// the whole old blob). At most 20 MB (`REFUSE_ABOVE`) it was refused for being binary: "This
+/// file is binary: no diff to show." Over: M11g's "too large or binary".
+fn refused_diff(len: Option<u64>) -> DiffState {
+    match len {
+        Some(len) if len <= REFUSE_ABOVE => DiffState::Binary,
+        _ => DiffState::Refuse,
+    }
+}
+
 /// Where a tab's file sits for git: the git to run, its repo's top folder, and the file's path
 /// in it. Looked up off the UI thread, and kept once found (`lookup_place`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1810,9 +1838,10 @@ impl FileTab {
                     return;
                 }
                 self.versions += 1;
+                let was_refused = matches!(self.state, State::Refuse);
                 self.state = State::Missing;
                 self.stamp = None;
-                self.unrefuse_diff();
+                self.unrefuse_diff(was_refused);
                 // A deleted file's diff: its old lines, all removed (the find bar stays on
                 // them).
                 self.look_up_changes(cx);
@@ -1841,12 +1870,13 @@ impl FileTab {
                     doc.changes_version = old.changes_version;
                 }
                 self.stamp = Some(stamp);
+                let was_refused = matches!(self.state, State::Refuse);
                 self.state = if plain {
                     State::PlainTooLarge(doc)
                 } else {
                     State::Text(doc)
                 };
-                self.unrefuse_diff();
+                self.unrefuse_diff(was_refused);
                 self.colour(cx);
                 self.look_up_changes(cx);
             }
@@ -1857,8 +1887,10 @@ impl FileTab {
     }
 
     /// The file isn't refused any more: its diff (refused without asking git) is to be asked.
-    fn unrefuse_diff(&mut self) {
-        if matches!(self.diff.state, DiffState::Refuse) {
+    /// A binary one too, when it came from the refusal (`was_refused`), not from git.
+    fn unrefuse_diff(&mut self, was_refused: bool) {
+        let from_disk = was_refused && matches!(self.diff.state, DiffState::Binary);
+        if from_disk || matches!(self.diff.state, DiffState::Refuse) {
             self.diff.state = DiffState::Waiting;
         }
     }
@@ -2039,7 +2071,8 @@ impl FileTab {
             // Over 20 MB or binary: git isn't asked (it would read the whole old blob).
             (FileMode::Diff, State::Refuse) => {
                 let version = self.versions;
-                self.accept_diff(version, DiffState::Refuse, cx);
+                let state = refused_diff(self.stamp.map(|s| s.len));
+                self.accept_diff(version, state, cx);
                 return;
             }
             (FileMode::Diff, _) => {}
@@ -2843,20 +2876,9 @@ impl FileTab {
         )
     }
 
-    /// The note the body shows instead of text: a missing or refused file's; in Diff mode,
-    /// without rows, the diff's (a deleted file's rows still show: git has its old lines).
+    /// The note the body shows instead of text (`note_of`).
     fn body_note(&self) -> Option<&'static str> {
-        match (&self.state, self.mode, &self.diff.state) {
-            (State::Refuse, ..) => Some(REFUSED),
-            (_, FileMode::Diff, DiffState::Rows(_)) => None,
-            (State::Missing, ..) => Some(MISSING),
-            (_, FileMode::Plain, _) => None,
-            (_, FileMode::Diff, DiffState::Refuse) => Some(REFUSED),
-            (_, FileMode::Diff, DiffState::Same) => Some(NO_CHANGES),
-            (_, FileMode::Diff, DiffState::Binary) => Some(BINARY),
-            (_, FileMode::Diff, DiffState::NoRepo) => Some(NO_REPO),
-            (_, FileMode::Diff, DiffState::Waiting) => None,
-        }
+        note_of(&self.state, self.mode, &self.diff.state)
     }
 
     /// A diff's note in the middle of the body (the toolbar keeps Open in Editor and the
@@ -3981,6 +4003,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_binary_file_on_disk_shows_the_binary_diff_note() {
+        // Refused on disk at most 20 MB: binary (a NUL in its head). Over: too large.
+        assert!(matches!(refused_diff(Some(12)), DiffState::Binary));
+        assert!(matches!(
+            refused_diff(Some(REFUSE_ABOVE)),
+            DiffState::Binary
+        ));
+        assert!(matches!(
+            refused_diff(Some(REFUSE_ABOVE + 1)),
+            DiffState::Refuse
+        ));
+        assert!(matches!(refused_diff(None), DiffState::Refuse));
+        // In Diff mode a refused file's binary diff says so; in Plain mode it's M11g's note.
+        let binary = DiffState::Binary;
+        let refused = DiffState::Refuse;
+        assert_eq!(
+            note_of(&State::Refuse, FileMode::Diff, &binary),
+            Some(BINARY)
+        );
+        assert_eq!(
+            note_of(&State::Refuse, FileMode::Diff, &refused),
+            Some(REFUSED)
+        );
+        assert_eq!(
+            note_of(&State::Refuse, FileMode::Plain, &binary),
+            Some(REFUSED)
+        );
     }
 
     #[test]
