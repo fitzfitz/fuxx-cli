@@ -51,6 +51,7 @@ mod native_notify;
 mod notification_list;
 mod notifier;
 mod overlay_panel;
+mod palette_files;
 mod palette_items;
 mod palette_match;
 mod pane_actions;

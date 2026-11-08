@@ -1044,7 +1044,12 @@ fn compose_kind_typed(s: &Sources, kind: Kind) -> Vec<Line> {
         (Kind::File, files) => return files_note(files).into_iter().collect(),
     };
     if found.is_empty() {
-        return Vec::new();
+        // A capped listing explains a miss: the file may be past the cap.
+        return if capped {
+            vec![Line::Note(CAPPED.into())]
+        } else {
+            Vec::new()
+        };
     }
     rank(&mut found, Some(s.recent));
     if kind == Kind::File {
@@ -1621,6 +1626,11 @@ mod tests {
                 [Line::Note(FAILED.into())]
             );
         }
+        assert_eq!(
+            compose(&f.sources(Scope::Files, "zzz", ready(&[], 0, true))),
+            [Line::Note(CAPPED.into())]
+        );
+        assert!(compose(&f.sources(Scope::Files, "zzz", ready(&[], 0, false))).is_empty());
         let lines = compose(&f.sources(Scope::Files, "x", ready(&many[..3], 3, true)));
         assert_eq!(keys(&lines).len(), 3);
         assert_eq!(lines.last(), Some(&Line::Note(CAPPED.into())));
