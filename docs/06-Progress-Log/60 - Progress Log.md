@@ -22,6 +22,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — v0.4.1 released (download retries)
+- **Did:** On your word: merged the retry fix into `master`, version 0.4.1 (953 tests pass), pushed `master` and tag
+  `v0.4.1`; the Release run went green (42470892331). GitHub's release downloads were still answering HTTP 504 right
+  after (for v0.4.0 and v0.4.1 alike), so updating has to wait until GitHub recovers.
+- **Next:** once downloads work, Update and Restart (your 0.3.2 goes straight to 0.4.1); then note 59's M11g checklist.
+
 ### 2026-11-08 — Updater: retries on a failed download
 - **Did:** You reported "The update couldn't be installed — the download failed" (0.3.2 → 0.4.0). Root cause, checked:
   GitHub's release-download server answered HTTP 504 for every release file (from its edge, `southeastasia`), not a
