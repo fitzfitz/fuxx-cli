@@ -686,17 +686,6 @@ fn main() {
     if let Some(home) = home_dir() {
         app_log::start(&home);
     }
-    // An updated fuxx deletes the app its update replaced (`fuxx.app.previous`), on its own
-    // thread so a big folder doesn't hold up the window. From the app bundle only, never
-    // `cargo run`.
-    if native_notify::is_bundled()
-        && let Some(app) = std::env::current_exe()
-            .ok()
-            .and_then(|exe| updater::self_update_target(&exe, |_| true))
-    {
-        std::thread::spawn(move || updater::clean_previous(&app));
-    }
-
     // Clicks on fuxx's banners, heard from before the app runs (a click that opened fuxx comes
     // as it starts), wait here for the workspace (from the app bundle only).
     let (clicked, clicks) = futures::channel::mpsc::unbounded();
@@ -862,6 +851,17 @@ fn main() {
             .detach();
             // A bundled fuxx asks GitHub for a newer release 10 s from now, then daily.
             updater::start_schedule(cx);
+            // Only now that the window has opened does an updated fuxx delete the app its
+            // update replaced (`fuxx.app.previous`), so a release that crashes opening its
+            // window leaves the old copy to open by hand. Its own thread, so a big folder
+            // doesn't hold up the window. From the app bundle only, never `cargo run`.
+            if native_notify::is_bundled()
+                && let Some(app) = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| updater::self_update_target(&exe, |_| true))
+            {
+                std::thread::spawn(move || updater::clean_previous(&app));
+            }
             cx.activate(true);
         });
 }
