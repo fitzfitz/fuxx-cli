@@ -22,6 +22,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — Updater: retries on a failed download
+- **Did:** You reported "The update couldn't be installed — the download failed" (0.3.2 → 0.4.0). Root cause, checked:
+  GitHub's release-download server answered HTTP 504 for every release file (from its edge, `southeastasia`), not a
+  fuxx bug. On your "yes", the download now retries 3 times, 2 s apart (`--retry-all-errors`, because curl 8 doesn't
+  count a 504 over HTTP/2 with `-f` as transient; verified on the live server). TDD: the args test failed first, then
+  passed; 953 tests pass. Branch `m11e-download-retry`. Details in note 57.
+- **Next:** merge and ship with the next release (your word); retry the update once GitHub's downloads work again.
+
 ### 2026-11-08 — v0.4.0 released (M11g)
 - **Did:** On your word ("7-8 go ahead"): merged `m11g-right-sidebar` into `master` (fast-forward; 953 tests pass),
   version 0.4.0, pushed `master` and tag `v0.4.0`; the Release run went green (42469390248), with the new git and

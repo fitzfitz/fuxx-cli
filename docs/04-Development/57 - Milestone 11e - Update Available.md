@@ -154,6 +154,16 @@ too narrow for all of it, the version part is dropped first; the icon and "Updat
 [[M11f Plan - Cursor Style]] Task 1 and shipped in v0.3.2. On-screen item 4 was seen on your Mac before this: the
 button appears above the footer (2026-11-08).
 
+## Fix: retries on a failed download (2026-11-08, your "yes")
+
+Your update from 0.3.2 to 0.4.0 showed "The update couldn't be installed — the download failed". Cause (checked): GitHub's
+release-download server answered **HTTP 504** for every release file (also v0.3.3's), from its own edge
+(`x-github-edge-region: southeastasia`); github.com and the API were fine, no proxy. fuxx behaved as designed (the sheet,
+nothing touched). The download now retries: `--retry 3 --retry-delay 2 --retry-all-errors` (plain `--retry` didn't
+help: with `-f` over HTTP/2, curl 8 reports a 504 as error 56, not a transient one; checked against the live server).
+It still fails after 3 retries if GitHub keeps failing; a half-written zip never gets past the checksum. Ships with
+the next release (your installed 0.3.2 still has the old code).
+
 ## Not in M11e
 
 - Installing without a click, background installs, or installing at quit.
