@@ -2,6 +2,7 @@
 //! theme is built from the fuxx terminal theme, so file colours follow the chosen theme.
 
 use crate::theme::Theme;
+use crate::ui_tokens::{MARK_MIN, ensure_contrast};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::Path;
 use std::str::FromStr;
@@ -70,6 +71,13 @@ impl Highlighter {
             .extension()
             .and_then(|e| e.to_str())
             .and_then(|e| self.syntaxes.find_syntax_by_extension(e));
+        // Files with no extension (`Makefile`, `Dockerfile`) are registered by name.
+        let by_name = || {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| self.syntaxes.find_syntax_by_extension(n))
+        };
+        let by_ext = by_ext.or_else(by_name);
         let first_line = text.split_inclusive('\n').next().unwrap_or("");
         let syntax = by_ext.or_else(|| self.syntaxes.find_syntax_by_first_line(first_line));
         let Some(syntax) = syntax else {
@@ -148,7 +156,9 @@ pub fn syntect_theme(theme: &Theme) -> syntect::highlighting::Theme {
             .map(|(scope, rgb)| ThemeItem {
                 scope: ScopeSelectors::from_str(scope).expect("a valid scope selector"),
                 style: StyleModifier {
-                    foreground: Some(color(*rgb)),
+                    // Pushed to 3:1 on the background, hue kept (a light theme's bright-black
+                    // comment would otherwise vanish).
+                    foreground: Some(color(ensure_contrast(*rgb, theme.background, MARK_MIN))),
                     ..StyleModifier::default()
                 },
             })
@@ -162,6 +172,7 @@ mod tests {
     use crate::settings::parse;
     use crate::theme::{apply, builtin_theme};
     use std::collections::HashSet;
+    use syntect::parsing::Scope;
 
     const MB: u64 = 1024 * 1024;
 
@@ -226,19 +237,65 @@ mod tests {
         assert!(lines[0].is_empty());
     }
 
+    fn style_fg(st: &syntect::highlighting::Theme, scope: &str) -> Rgb {
+        let h = syntect::highlighting::Highlighter::new(st);
+        let c = h.style_for_stack(&[Scope::new(scope).unwrap()]).foreground;
+        Rgb {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        }
+    }
+
     #[test]
-    fn theme_uses_the_fuxx_green_for_strings() {
+    fn strings_and_comments_take_the_fuxx_colours_pushed_to_3_to_1() {
         for name in ["Catppuccin Mocha", "Catppuccin Latte"] {
             let theme = named(name);
             let st = syntect_theme(&theme);
-            let item = st
-                .scopes
-                .iter()
-                .find(|i| format!("{:?}", i.scope).contains("string"))
-                .expect("a string rule");
-            let c = item.style.foreground.unwrap();
-            let g = theme.palette[2];
-            assert_eq!((c.r, c.g, c.b), (g.r, g.g, g.b), "{name}");
+            let string = style_fg(&st, "string.quoted.double");
+            let comment = style_fg(&st, "comment.line");
+            assert_eq!(
+                string,
+                ensure_contrast(theme.palette[2], theme.background, MARK_MIN),
+                "{name}"
+            );
+            assert_eq!(
+                comment,
+                ensure_contrast(theme.palette[8], theme.background, MARK_MIN),
+                "{name}"
+            );
+            assert_ne!(style_fg(&st, "source"), string);
         }
+    }
+
+    #[test]
+    fn every_rule_colour_reaches_3_to_1_on_the_background() {
+        for name in ["Catppuccin Mocha", "Catppuccin Latte"] {
+            let theme = named(name);
+            for item in &syntect_theme(&theme).scopes {
+                let c = item.style.foreground.unwrap();
+                let rgb = Rgb {
+                    r: c.r,
+                    g: c.g,
+                    b: c.b,
+                };
+                let ratio = crate::ui_tokens::contrast(rgb, theme.background);
+                assert!(ratio >= MARK_MIN - 0.01, "{name}: {rgb:?} {ratio}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_without_an_extension_is_found_by_name() {
+        let h = Highlighter::load(&named("Catppuccin Mocha"));
+        let text = "all:\n\techo hi\n";
+        let lines = h.highlight(Path::new("Makefile"), text);
+        let mut colours = HashSet::new();
+        for spans in &lines {
+            for (_, c) in spans {
+                colours.insert((c.r, c.g, c.b));
+            }
+        }
+        assert!(colours.len() >= 2, "{colours:?}");
     }
 }
