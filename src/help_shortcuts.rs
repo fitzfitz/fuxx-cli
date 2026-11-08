@@ -114,6 +114,7 @@ pub fn describe(action: &str) -> Describe {
         "fuxx::Hide" => Listed(WindowAndApp, "Hide fuxx"),
         "window::Minimize" => Listed(WindowAndApp, "Minimize"),
         "workspace::ToggleSidebar" => Listed(WindowAndApp, "Toggle Sidebar"),
+        "workspace::ToggleRightSidebar" => Listed(WindowAndApp, "Toggle Right Sidebar"),
         "view::Bigger" => Listed(WindowAndApp, "Bigger"),
         "view::Smaller" => Listed(WindowAndApp, "Smaller"),
         "view::ActualSize" => Listed(WindowAndApp, "Actual Size"),
@@ -302,6 +303,14 @@ mod tests {
         let rows = shortcut_rows(&pairs(&[("terminal::Copy", "cmd-c")]));
         assert_eq!(rows[0].group, ShortcutGroup::Terminal);
         assert_eq!(rows[0].name, "Copy");
+    }
+
+    #[test]
+    fn the_right_sidebar_is_under_window_and_app_with_its_keys() {
+        let rows = shortcut_rows(&pairs(&[("workspace::ToggleRightSidebar", "alt-cmd-\\")]));
+        assert_eq!(rows[0].group, ShortcutGroup::WindowAndApp);
+        assert_eq!(rows[0].name, "Toggle Right Sidebar");
+        assert_eq!(rows[0].keys, "\u{2325}\u{2318}\\");
     }
 
     #[test]

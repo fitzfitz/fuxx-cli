@@ -58,6 +58,7 @@ mod private_socket;
 mod pty;
 mod reduce_motion;
 mod restore;
+mod right_sidebar;
 mod session_list;
 mod settings;
 mod sidebar;
@@ -113,8 +114,8 @@ use workspace::{
     NewSessionInFolder, NewSshSession, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextSession,
     NextTab, OpenBrowser, OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession,
     SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6,
-    SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, ToggleSidebar,
-    Workspace,
+    SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, ToggleRightSidebar,
+    ToggleSidebar, Workspace,
 };
 
 actions!(
@@ -216,6 +217,7 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-]", NextPane, None),
         KeyBinding::new("ctrl-cmd-=", EqualizePanes, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
+        KeyBinding::new("alt-cmd-\\", ToggleRightSidebar, None),
         KeyBinding::new("cmd-shift-u", NextNeedingYou, None),
         KeyBinding::new("cmd-p", OpenSwitcher, None),
         KeyBinding::new("cmd-/", ShowShortcuts, None),
@@ -326,6 +328,7 @@ fn file_menu(preset_items: Vec<MenuItem>) -> Menu {
 fn view_menu() -> Menu {
     Menu::new("View").items([
         MenuItem::action("Toggle Sidebar", ToggleSidebar),
+        MenuItem::action("Toggle Right Sidebar", ToggleRightSidebar),
         MenuItem::separator(),
         MenuItem::action("Bigger", Bigger),
         MenuItem::action("Smaller", Smaller),
@@ -896,7 +899,7 @@ mod tests {
     use crate::workspace::{
         CloseSession, EqualizePanes, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextTab,
         OpenSwitcher, PrevPane, PrevTab, RenameSession, SelectSession1, SelectSession9, SplitDown,
-        SplitRight,
+        SplitRight, ToggleRightSidebar, ToggleSidebar,
     };
     use gpui::{Action, KeyContext, Keymap, Keystroke};
 
@@ -990,7 +993,13 @@ mod tests {
     fn the_view_and_window_menus() {
         assert_eq!(
             names(&view_menu()),
-            ["Toggle Sidebar", "Bigger", "Smaller", "Actual Size"]
+            [
+                "Toggle Sidebar",
+                "Toggle Right Sidebar",
+                "Bigger",
+                "Smaller",
+                "Actual Size"
+            ]
         );
         assert_eq!(names(&window_menu()), ["Minimize", "Zoom"]);
     }
@@ -1174,6 +1183,22 @@ mod tests {
             }
         }
         assert!(runs(&keymap, "ctrl-shift-tab", PAGE).partial_eq(&PrevTab));
+    }
+
+    #[test]
+    fn option_command_backslash_toggles_the_right_sidebar_wherever_the_focus_is() {
+        let keymap = keymap();
+        // A terminal, a browser page, a file tab (M11g; its key context is "FileTab").
+        for stack in [TERMINAL, PAGE, &["Workspace", "FileTab"][..]] {
+            let got = runs(&keymap, "alt-cmd-\\", stack);
+            assert!(
+                got.partial_eq(&ToggleRightSidebar),
+                "alt-cmd-\\ in {stack:?}: {}",
+                got.name()
+            );
+        }
+        // ⌘\ is still the left sidebar's.
+        assert!(runs(&keymap, "cmd-\\", TERMINAL).partial_eq(&ToggleSidebar));
     }
 
     #[test]
