@@ -223,7 +223,6 @@ pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, L
 }
 
 /// What git says about one file's change against the last commit.
-#[allow(dead_code)] // wired in M11h task 3/4
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileDiff {
     /// `git diff HEAD`'s output (empty: the file is unchanged).
@@ -237,7 +236,6 @@ pub enum FileDiff {
 /// Blocking: call it from background work. None outside a repo, or when git fails or takes
 /// longer than the cap (no answer, not "unchanged"). Non-UTF-8 text is decoded lossily. A `Binary files …` line with no hunk is
 /// `Binary`.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn file_diff(git: &Path, root: &Path, rel: &Path, context: usize) -> Option<FileDiff> {
     let (has_head, tracked) = head_and_tracked(git, root, rel)?;
     if !has_head || !tracked {

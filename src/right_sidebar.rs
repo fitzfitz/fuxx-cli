@@ -1282,7 +1282,7 @@ impl Workspace {
                 return;
             };
             let path = root.join(rel);
-            self.open_file_tab(path, window, cx);
+            self.open_file_tab(path, crate::layout_model::FileMode::Plain, window, cx);
         }
         self.right_sidebar.files.reveal = Some(ScrollStrategy::Nearest);
         cx.notify();

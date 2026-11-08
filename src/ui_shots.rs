@@ -224,6 +224,7 @@ const SCENES: &[(&str, fn())] = &[
     ("tab-drag", tab_drag_scenes),
     ("browser-tab", browser_tab_scenes),
     ("file-tab", file_tab_scenes),
+    ("file-diff", file_diff_scenes),
     ("right-sidebar", right_sidebar_scenes),
     ("files", files_scenes),
     ("api-background", api_background),
@@ -3895,7 +3896,14 @@ fn file_tab_scenes() {
                 let n = format!("file-tab-{slug}");
                 for _ in 0..2 {
                     cx.update_window(window, |_, window, cx| {
-                        ws.update(cx, |ws, cx| ws.open_file_tab(file.clone(), window, cx))
+                        ws.update(cx, |ws, cx| {
+                            ws.open_file_tab(
+                                file.clone(),
+                                crate::layout_model::FileMode::Plain,
+                                window,
+                                cx,
+                            )
+                        })
                     })
                     .expect("open the file");
                     cx.run_until_parked();
@@ -3990,7 +3998,14 @@ fn file_tab_scenes() {
             let ws = slotted(&slot);
             let n = format!("file-tab-close-{slug}");
             cx.update_window(window, |_, window, cx| {
-                ws.update(cx, |ws, cx| ws.open_file_tab(file.clone(), window, cx))
+                ws.update(cx, |ws, cx| {
+                    ws.open_file_tab(
+                        file.clone(),
+                        crate::layout_model::FileMode::Plain,
+                        window,
+                        cx,
+                    )
+                })
             })
             .expect("open the file");
             cx.run_until_parked();
@@ -4100,7 +4115,12 @@ fn file_view_scenes() {
                 cx.set_global(shot_appearance(theme, cx));
                 cx.bind_keys(crate::key_bindings());
                 let tab = cx.new(|cx| {
-                    let mut tab = FileTab::new(path.clone(), window, cx);
+                    let mut tab = FileTab::new(
+                        path.clone(),
+                        crate::layout_model::FileMode::Plain,
+                        window,
+                        cx,
+                    );
                     tab.frozen = true;
                     tab
                 });
@@ -4626,6 +4646,613 @@ fn file_view_scenes() {
             "release"
         }
     );
+}
+
+/// The diff fixture: `FILE_VIEW_FIXTURE` with line 7 changed (row 6 removed, row 7 added) and
+/// a line added after line 18 (row 19), as git prints it with the whole file as context.
+fn file_diff_fixture() -> String {
+    let old: Vec<&str> = FILE_VIEW_FIXTURE.lines().collect();
+    let mut u = format!(
+        "diff --git a/view.rs b/view.rs\n--- a/view.rs\n+++ b/view.rs\n@@ -1,{} +1,{} @@\n",
+        old.len(),
+        old.len() + 1
+    );
+    for (i, line) in old.iter().enumerate() {
+        if i == 6 {
+            u.push_str(&format!("-{line}\n+const NAME: &str = \"fuxx diff\";\n"));
+            continue;
+        }
+        u.push_str(&format!(" {line}\n"));
+        if i == 17 {
+            u.push_str("+    pub fn port(&self) -> u16 { self.port }\n");
+        }
+    }
+    u
+}
+
+/// The file tab's diff mode (M11h Task 3), in both themes:
+/// - `file-diff`: a tab on the `view.rs` fixture in Diff mode, given `file_diff_fixture`: its
+///   rows coloured; a removed row tinted red at 12 % with a `−` in the sign column, an added row
+///   green with a `+`, an unchanged row untinted; the old number column of an added row and the
+///   new number column of a removed row hold no number (the other one does); opened with its
+///   first change 3 rows from the top; ⌘F "fn" counts the diff text's matches; two rows dragged
+///   over and ⌘C copy their text without signs or numbers.
+/// - `file-diff-states-*`: `same` ("No changes since the last commit."), `binary` ("This file is
+///   binary: no diff to show."), `norepo` (a file outside any repo, looked up for real: "Not a
+///   git repository."), `missing-rows` (a deleted file's removed rows show, not "This file no
+///   longer exists"), `missing-same` (a deleted file with nothing to show: that note).
+/// - `file-diff-toggle`: a workspace with the Files panel; `open_file_tab(view.rs, Diff)`: the
+///   toolbar's toggle with Diff `card_selected` and File `panel`. Not shot: a click on File
+///   (the tab and the model Plain, the same tab); a click on line 7's change bar (Diff, its
+///   change scrolled into view, the model Diff); a Files click on view.rs (the same tab, Plain).
+fn file_diff_scenes() {
+    use crate::diff_view::{BINARY, NO_CHANGES, NO_REPO, RowKind, first_change, reveal_row};
+    use crate::file_tab::{FileTab, MISSING};
+    use crate::git_status::LineChange;
+    use crate::layout_model::{FileMode, TabKind};
+    use crate::right_sidebar::{FILTER_BAND, ROOT_HEADER, ROW};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use gpui::{Focusable, Modifiers, MouseButton};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-diff");
+    std::fs::create_dir_all(dir.join("src")).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let view_rs = dir.join("src/view.rs");
+    std::fs::write(&view_rs, FILE_VIEW_FIXTURE).expect("view.rs");
+    let missing = dir.join("src/gone.rs");
+    let _ = std::fs::remove_file(&missing);
+    let unified = Rc::new(file_diff_fixture());
+    // The fixture's rows (as `parse_diff` makes them): 6 removed, 7 and 19 added, 9 unchanged.
+    let (removed, added, same, added_late) = (6usize, 7usize, 9usize, 19usize);
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let dims = size(px(760.0), px(460.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let near = |p: [u8; 3], c: Rgb, by: u8| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= by)
+        };
+        let fit = |c: Rgb| ensure_contrast(c, theme.background, MARK_MIN);
+        let (green, red) = (fit(theme.palette[2]), fit(theme.palette[1]));
+        let build_for = |path: PathBuf, slot: TabSlot, frozen: bool| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Diff, window, cx);
+                    tab.frozen = frozen;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+        let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+        };
+
+        // The diff: rows, tints, signs, two number columns, the first change near the top,
+        // find and copy.
+        let n = format!("file-diff-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(view_rs.clone(), slot.clone(), true);
+        let copied: Rc<RefCell<Option<String>>> = Rc::default();
+        let seen = copied.clone();
+        let geom_seen: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
+        let keep_geom = geom_seen.clone();
+        let texts: Rc<RefCell<Vec<String>>> = Rc::default();
+        let keep_texts = texts.clone();
+        let act = {
+            let n = n.clone();
+            let unified = unified.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                frame(cx, window);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).diff_state_name()),
+                    "waiting",
+                    "{n}"
+                );
+                cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&unified, cx)));
+                frame(cx, window);
+                let (first, lines, fn_count) = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    assert_eq!(t.mode(), FileMode::Diff, "{n}");
+                    assert_eq!(t.diff_state_name(), "rows", "{n}");
+                    let d = t.diff_doc().expect("its rows");
+                    assert!(d.doc.spans.is_some(), "{n}: coloured");
+                    assert_eq!(d.rows[removed].kind, RowKind::Removed, "{n}");
+                    assert_eq!(d.rows[added].kind, RowKind::Added, "{n}");
+                    assert_eq!(d.rows[added_late].kind, RowKind::Added, "{n}");
+                    assert_eq!(d.rows[same].kind, RowKind::Same, "{n}");
+                    assert_eq!(d.doc.lines.len(), d.rows.len(), "{n}: a line per row");
+                    let lines: Vec<String> = (0..d.rows.len())
+                        .map(|i| d.doc.line(i).to_string())
+                        .collect();
+                    let fns = lines.iter().map(|l| l.to_lowercase().matches("fn").count());
+                    (first_change(&d.rows), lines.clone(), fns.sum::<usize>())
+                });
+                *keep_texts.borrow_mut() = lines;
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                let first = first.expect("a change");
+                assert_eq!(
+                    g.scroll.y,
+                    g.line_height * first.saturating_sub(3) as f32,
+                    "{n}: opened with its first change 3 rows from the top"
+                );
+                cx.update_window(window, |_, window, cx| {
+                    tab.read(cx).focus_handle(cx).focus(window, cx)
+                })
+                .expect("focus");
+                cx.simulate_keystrokes(window, "cmd-f");
+                cx.simulate_input(window, "fn");
+                frame(cx, window);
+                let label = cx.read(|cx| tab.read(cx).find_label());
+                assert_eq!(label, format!("1 of {fn_count}"), "{n}: ⌘F fn in the diff");
+                // From the removed row's start to the added row's 5th byte.
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                let at = |row: usize, x: f32| {
+                    point(
+                        g.bounds.left() + g.text_left + px(x),
+                        g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y,
+                    )
+                };
+                let cw = f32::from(g.cell_width);
+                let end = at(added, cw * 5.0 + 1.0);
+                cx.simulate_mouse_down(
+                    window,
+                    at(removed, 0.5),
+                    MouseButton::Left,
+                    Modifiers::none(),
+                );
+                cx.simulate_mouse_move(window, end, MouseButton::Left, Modifiers::none());
+                cx.simulate_mouse_up(window, end, MouseButton::Left, Modifiers::none());
+                cx.simulate_keystrokes(window, "cmd-c");
+                *seen.borrow_mut() = cx.read_from_clipboard().and_then(|c| c.text());
+                frame(cx, window);
+                keep_geom.set(cx.read(|cx| tab.read(cx).geom()));
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with("file-diff", slug, &theme, dims, build.clone(), act.clone());
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let texts = texts.borrow();
+        let expect = format!("{}\n{}", texts[removed], &texts[added][..5]);
+        assert_eq!(
+            copied.borrow().as_deref(),
+            Some(expect.as_str()),
+            "{n}: ⌘C, no signs"
+        );
+        let g = geom_seen.get().expect("drawn");
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let row_y = |row: usize| g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y;
+        // The tints, 6 pt inside the right edge.
+        let right = g.bounds.right() - px(6.0);
+        let red_tint = crate::theme::mix(theme.background, red, 0.12);
+        let green_tint = crate::theme::mix(theme.background, green, 0.12);
+        for (row, tint, what) in [
+            (removed, red_tint, "removed"),
+            (added, green_tint, "added"),
+            (added_late, green_tint, "added"),
+            (same, theme.background, "unchanged"),
+        ] {
+            let p = at(right, row_y(row));
+            assert!(
+                near(p, tint, 5),
+                "{n}: the {what} row's tint {p:?}, not {tint:?}"
+            );
+        }
+        // An unchanged row's colours dimmed (`diff_view::dim`), an added row's not: "pub" is a
+        // keyword on both.
+        let keyword = fit(theme.palette[5]);
+        let dimmed = crate::diff_view::dim(keyword, theme.background);
+        let ink_in = |row: usize, c: Rgb, by: u8| {
+            (0..300).any(|dx| {
+                (-4..=4).any(|dy| {
+                    let x = g.bounds.left() + g.text_left + px(dx as f32);
+                    near(at(x, row_y(row) + px(dy as f32)), c, by)
+                })
+            })
+        };
+        assert!(
+            ink_in(same, dimmed, 24),
+            "{n}: an unchanged row's keyword in {dimmed:?}"
+        );
+        assert!(
+            ink_in(added_late, keyword, 30),
+            "{n}: an added row's keyword in {keyword:?}"
+        );
+        if !near([dimmed.r, dimmed.g, dimmed.b], keyword, 40) {
+            assert!(
+                !ink_in(same, keyword, 16),
+                "{n}: an unchanged row's keyword not at full colour"
+            );
+        }
+        // The signs, in the one-cell sign column.
+        let sign_in = |row: usize, c: Rgb| {
+            let top = row_y(row) - g.line_height / 2.0;
+            (0..(f32::from(g.cell_width) as i32)).any(|dx| {
+                (2..(f32::from(g.line_height) as i32 - 2)).any(|dy| {
+                    near(
+                        at(
+                            g.bounds.left() + g.bar_left + px(dx as f32),
+                            top + px(dy as f32),
+                        ),
+                        c,
+                        40,
+                    )
+                })
+            })
+        };
+        assert!(sign_in(removed, red), "{n}: the − in red");
+        assert!(sign_in(added, green), "{n}: the + in green");
+        assert!(
+            !sign_in(same, red) && !sign_in(same, green),
+            "{n}: no sign on an unchanged row"
+        );
+        // The number columns: (left, right) edges.
+        let old_right = g.old_numbers_right.expect("two number columns");
+        let old_col = (px(12.0), old_right);
+        let new_col = (old_right + px(8.0), g.numbers_right);
+        let inked = |row: usize, (l, r): (Pixels, Pixels), base: Rgb| {
+            let top = row_y(row) - g.line_height / 2.0;
+            (f32::from(l) as i32..f32::from(r) as i32).any(|x| {
+                (2..(f32::from(g.line_height) as i32 - 2)).any(|dy| {
+                    !near(
+                        at(g.bounds.left() + px(x as f32), top + px(dy as f32)),
+                        base,
+                        6,
+                    )
+                })
+            })
+        };
+        assert!(
+            !inked(added, old_col, green_tint),
+            "{n}: no old number on an added row"
+        );
+        assert!(
+            inked(added, new_col, green_tint),
+            "{n}: the added row's new number"
+        );
+        assert!(
+            !inked(removed, new_col, red_tint),
+            "{n}: no new number on a removed row"
+        );
+        assert!(
+            inked(removed, old_col, red_tint),
+            "{n}: the removed row's old number"
+        );
+        assert!(
+            inked(same, old_col, theme.background) && inked(same, new_col, theme.background),
+            "{n}: both numbers on an unchanged row"
+        );
+
+        // The states: a note instead of rows, or a deleted file's rows.
+        let states = [
+            ("same", view_rs.clone(), Some(""), "same", Some(NO_CHANGES)),
+            (
+                "binary",
+                view_rs.clone(),
+                Some("diff --git a/v b/v\nindex 1..2 100644\nBinary files a/v and b/v differ\n"),
+                "binary",
+                Some(BINARY),
+            ),
+            // A file outside any repo, looked up for real (not frozen).
+            (
+                "norepo",
+                dir.join("src/view.rs"),
+                None,
+                "norepo",
+                Some(NO_REPO),
+            ),
+            (
+                "missing-rows",
+                missing.clone(),
+                Some("@@ -1,2 +0,0 @@\n-fn old() {}\n-// gone\n"),
+                "rows",
+                None,
+            ),
+            (
+                "missing-same",
+                missing.clone(),
+                Some(""),
+                "same",
+                Some(MISSING),
+            ),
+        ];
+        for (case, file, given, state, note) in states {
+            let n = format!("file-diff-states-{case}-{slug}");
+            let slot: TabSlot = Rc::default();
+            let build = build_for(file, slot.clone(), given.is_some());
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let tab = tab_of(&slot);
+                    frame(cx, window);
+                    if let Some(u) = given {
+                        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(u, cx)));
+                    }
+                    frame(cx, window);
+                    cx.read(|cx| {
+                        let t = tab.read(cx);
+                        assert_eq!(t.diff_state_name(), state, "{n}");
+                        assert_eq!(t.shown_note(), note, "{n}");
+                        if case.starts_with("missing") {
+                            assert_eq!(t.state_name(), "missing", "{n}");
+                        }
+                    });
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(
+                &format!("file-diff-states-{case}"),
+                slug,
+                &theme,
+                dims,
+                build.clone(),
+                act.clone(),
+            );
+            println!("ui-shots: {}", path.display());
+            // What the body shows: the note's words in the middle, or the removed rows' tint.
+            let shot = render_with(&theme, dims, build, act);
+            let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+            let middle = (0..(w as i32)).step_by(2).any(|x| {
+                // The body's middle, under the toolbar.
+                (-40..=40).any(|dy| {
+                    near(
+                        pixel_at(&shot, dims, x as f32, h / 2.0 + dy as f32),
+                        ui.text,
+                        40,
+                    )
+                })
+            });
+            if note.is_some() {
+                assert!(middle, "{n}: the note's words in the middle");
+            } else {
+                let red_tint = crate::theme::mix(theme.background, red, 0.12);
+                let p = pixel_at(&shot, dims, w - 6.0, 70.0);
+                assert!(
+                    near(p, red_tint, 5),
+                    "{n}: a removed row {p:?}, not {red_tint:?}"
+                );
+            }
+        }
+
+        // The toggle, in a workspace with the Files panel (as the files scenes lay it out).
+        let window_dims = size(px(1100.0), px(560.0));
+        let sidebar_left = 1100.0 - GAP - 300.0 + FOCUS_RING;
+        let list_top = GAP + FOCUS_RING + TAB_BAR + ROOT_HEADER + FILTER_BAND;
+        let build_ws = |slot: Slot| {
+            let dir = dir.clone();
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                use crate::file_tree::{CAP, FileTree};
+                use crate::git_status::list_dir;
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    ws.right_sidebar.hidden = false;
+                    let src = dir.join("src");
+                    ws.open_shot_session("api", &src, SHELL_TEXT, None, window, cx);
+                    let mut tree = FileTree::new(dir.clone(), Some(PathBuf::from("src")));
+                    for rel in tree.wanted() {
+                        let (entries, more) = list_dir(&dir.join(&rel), CAP);
+                        tree.expand(rel, entries, more);
+                    }
+                    ws.right_sidebar.files.show_for_shots(tree);
+                    ws
+                });
+                *slot.borrow_mut() = Some(ws.clone());
+                ws.into()
+            }
+        };
+        let open_diff = {
+            let view_rs = view_rs.clone();
+            let unified = unified.clone();
+            move |cx: &mut VisualTestAppContext,
+                  window: AnyWindowHandle,
+                  ws: &gpui::Entity<Workspace>| {
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        ws.open_file_tab(view_rs.clone(), FileMode::Diff, window, cx)
+                    })
+                })
+                .expect("open the diff");
+                frame(cx, window);
+                let view = cx.read(|cx| ws.read(cx).focused_file_tab().expect("its view").clone());
+                cx.update(|cx| view.update(cx, |t, cx| t.set_diff_for_shots(&unified, cx)));
+                frame(cx, window);
+                view
+            }
+        };
+        let n = format!("file-diff-toggle-{slug}");
+        let toggle: Rc<Cell<[Option<gpui::Bounds<Pixels>>; 2]>> = Rc::default();
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = build_ws(slot.clone());
+        let act = {
+            let n = n.clone();
+            let toggle = toggle.clone();
+            let view_rs = view_rs.clone();
+            let open_diff = open_diff.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                frame(cx, window);
+                let view = open_diff(cx, window, &ws);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let tab = ws.model.focused_tab().expect("a tab");
+                    let kind = ws.model.tab(tab).expect("known").kind.clone();
+                    assert_eq!(
+                        kind,
+                        TabKind::File {
+                            path: view_rs.clone(),
+                            mode: FileMode::Diff
+                        },
+                        "{n}"
+                    );
+                    assert_eq!(view.read(cx).diff_state_name(), "rows", "{n}");
+                });
+                toggle.set(cx.read(|cx| view.read(cx).toggle_bounds()));
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-diff-toggle",
+            slug,
+            &theme,
+            window_dims,
+            build.clone(),
+            act.clone(),
+        );
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, window_dims, build, act);
+        let [file_seg, diff_seg] = toggle.get();
+        let (file_seg, diff_seg) = (file_seg.expect("File drawn"), diff_seg.expect("Diff drawn"));
+        // Inside each segment's padding (no words there).
+        let fill_of = |b: gpui::Bounds<Pixels>| {
+            pixel_at(
+                &shot,
+                window_dims,
+                f32::from(b.left()) + 5.0,
+                f32::from(b.center().y),
+            )
+        };
+        let p = fill_of(diff_seg);
+        assert!(
+            near(p, ui.card_selected, 3),
+            "{n}: Diff is current {p:?}, not {:?}",
+            ui.card_selected
+        );
+        let p = fill_of(file_seg);
+        assert!(
+            near(p, ui.panel, 3),
+            "{n}: File is not {p:?}, not {:?}",
+            ui.panel
+        );
+        assert!(
+            file_seg.right() <= diff_seg.left() + px(1.0),
+            "{n}: File, then Diff"
+        );
+
+        // Clicks: File, a change bar, a Files row (not shot).
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = build_ws(slot.clone());
+        let act = {
+            let n = format!("file-diff-toggle-clicks-{slug}");
+            let view_rs = view_rs.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                frame(cx, window);
+                let view = open_diff(cx, window, &ws);
+                let tab = cx.read(|cx| ws.read(cx).model.focused_tab().expect("a tab"));
+                let modes = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        let model = match &ws.model.tab(tab).expect("the same tab").kind {
+                            TabKind::File { mode, .. } => *mode,
+                            other => panic!("not a file tab: {other:?}"),
+                        };
+                        assert_eq!(ws.model.focused_tab(), Some(tab), "the same tab");
+                        assert_eq!(ws.file_tabs.len(), 1, "one view");
+                        (view.read(cx).mode(), model)
+                    })
+                };
+                // Scrolled to the diff's end, away from its changes.
+                cx.update(|cx| {
+                    view.update(cx, |t, cx| t.set_scroll(point(px(0.0), px(1.0e5)), cx))
+                });
+                frame(cx, window);
+                let file_seg = cx
+                    .read(|cx| view.read(cx).toggle_bounds()[0])
+                    .expect("File");
+                cx.simulate_click(window, file_seg.center(), Modifiers::none());
+                frame(cx, window);
+                assert_eq!(modes(cx), (FileMode::Plain, FileMode::Plain), "{n}: File");
+                // Line 7's change bar: the diff, at that change.
+                cx.update(|cx| {
+                    view.update(cx, |t, cx| {
+                        t.set_changes(vec![(7, LineChange::Changed)], cx)
+                    })
+                });
+                frame(cx, window);
+                let g = cx.read(|cx| view.read(cx).geom()).expect("drawn");
+                let bar = point(
+                    g.bounds.left() + g.bar_left + px(1.5),
+                    g.bounds.top() + g.line_height * 6.5 - g.scroll.y,
+                );
+                cx.simulate_click(window, bar, Modifiers::none());
+                frame(cx, window);
+                assert_eq!(
+                    modes(cx),
+                    (FileMode::Diff, FileMode::Diff),
+                    "{n}: a bar's click"
+                );
+                let (row, g) = cx.read(|cx| {
+                    let t = view.read(cx);
+                    let rows = &t.diff_doc().expect("its rows").rows;
+                    (
+                        reveal_row(rows, (7, LineChange::Changed)).expect("line 7's row"),
+                        t.geom(),
+                    )
+                });
+                let g = g.expect("drawn");
+                let (top, h) = (g.line_height * row as f32, g.bounds.size.height);
+                assert!(
+                    top >= g.scroll.y && top + g.line_height <= g.scroll.y + h,
+                    "{n}: row {row} in view ({:?})",
+                    g.scroll
+                );
+                // A Files click on the same file: the same tab, Plain.
+                let row_at = |i: usize| {
+                    point(
+                        px(sidebar_left + 80.0),
+                        px(list_top + (i as f32 + 0.5) * ROW),
+                    )
+                };
+                let rows = cx.read(|cx| {
+                    let files = &ws.read(cx).right_sidebar.files;
+                    files
+                        .rows
+                        .iter()
+                        .map(|r| r.rel.display().to_string())
+                        .collect::<Vec<_>>()
+                });
+                let i = rows
+                    .iter()
+                    .position(|r| r == "src/view.rs")
+                    .expect("view.rs listed");
+                cx.simulate_click(window, row_at(i), Modifiers::none());
+                frame(cx, window);
+                assert_eq!(
+                    modes(cx),
+                    (FileMode::Plain, FileMode::Plain),
+                    "{n}: a Files click"
+                );
+                let path = cx.read(
+                    |cx| match &ws.read(cx).model.tab(tab).expect("known").kind {
+                        TabKind::File { path, .. } => path.clone(),
+                        _ => unreachable!(),
+                    },
+                );
+                assert_eq!(path, view_rs, "{n}");
+                slot.borrow_mut().take();
+            }
+        };
+        render_with(&theme, window_dims, build, act);
+        println!("ui-shots: file-diff-toggle-clicks-{slug} ok");
+    }
 }
 
 /// The file tab scenes' Rust fixture: comments, strings, numbers, keywords, types, functions,
@@ -8168,7 +8795,14 @@ fn status_bar_scenes() {
                     }
                     if scene == "status-bar-file" {
                         cx.update_window(window, |_, window, cx| {
-                            ws.update(cx, |ws, cx| ws.open_file_tab(file.clone(), window, cx))
+                            ws.update(cx, |ws, cx| {
+                                ws.open_file_tab(
+                                    file.clone(),
+                                    crate::layout_model::FileMode::Plain,
+                                    window,
+                                    cx,
+                                )
+                            })
                         })
                         .expect("open the file");
                         cx.run_until_parked();

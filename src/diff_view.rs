@@ -10,7 +10,6 @@ use crate::theme::mix;
 use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast};
 
 /// What a row is: unchanged, added, removed, or the gap between two hunks.
-#[allow(dead_code)] // wired in M11h task 3/4
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
     Same,
@@ -20,7 +19,6 @@ pub enum RowKind {
 }
 
 /// One row of the diff; the numbers are 1-based line numbers on each side (a Gap has neither).
-#[allow(dead_code)] // wired in M11h task 3/4
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiffRow {
     pub kind: RowKind,
@@ -29,7 +27,6 @@ pub struct DiffRow {
 }
 
 /// A parsed diff: `text` is one line per row (`\n`-joined, no `+`/`-` prefix, a Gap's line empty).
-#[allow(dead_code)] // wired in M11h task 3/4
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
     pub text: String,
@@ -37,7 +34,6 @@ pub struct Parsed {
 }
 
 /// What to show for a file's diff.
-#[allow(dead_code)] // wired in M11h task 3/4
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Rows(Parsed),
@@ -47,18 +43,13 @@ pub enum Outcome {
 }
 
 /// Fraction of the way unchanged rows' colours move toward the background.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub const DIM_MIX: f32 = 0.35;
-#[allow(dead_code)] // wired in M11h task 3/4
 pub const NO_CHANGES: &str = "No changes since the last commit.";
-#[allow(dead_code)] // wired in M11h task 3/4
 pub const BINARY: &str = "This file is binary: no diff to show.";
-#[allow(dead_code)] // wired in M11h task 3/4
 pub const NO_REPO: &str = "Not a git repository.";
 
 /// The context lines to ask git for: every line of the file, plus one (a missing file: 1), so
 /// the diff is the whole file.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn context_for(disk_lines: usize) -> usize {
     disk_lines.saturating_add(1)
 }
@@ -73,7 +64,6 @@ fn hunk_start(part: &str) -> Option<usize> {
 /// and `+++` lines) is skipped; after it every line is a row by its first character (` `, `-`,
 /// `+`; a `\ No newline` marker is skipped), so a `--- x` line inside a hunk is a removed `-- x`.
 /// A Gap row separates two hunks. A line's trailing CR is dropped.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn parse_diff(unified: &str) -> Parsed {
     let mut lines: Vec<&str> = Vec::new();
     let mut rows: Vec<DiffRow> = Vec::new();
@@ -141,7 +131,6 @@ pub fn parse_diff(unified: &str) -> Parsed {
 }
 
 /// Every line of `text` as an Added row, numbered from 1 (a new file).
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn all_added(text: &str) -> Parsed {
     let lines: Vec<&str> = text.lines().collect();
     Parsed {
@@ -158,7 +147,6 @@ pub fn all_added(text: &str) -> Parsed {
 
 /// What git's answer shows: `Unified` with no rows is `Same`; `AllAdded` shows `disk_text`
 /// (none, or empty: nothing to show, `Same`).
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn diff_outcome(diff: FileDiff, disk_text: Option<&str>) -> Outcome {
     let rows = |p: Parsed| {
         if p.rows.is_empty() {
@@ -176,7 +164,6 @@ pub fn diff_outcome(diff: FileDiff, disk_text: Option<&str>) -> Outcome {
 
 /// The old text (Same and Removed rows) and the new text (Same and Added), each line ending in
 /// `\n`, for highlighting each side as a file.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn sides(p: &Parsed) -> (String, String) {
     let (mut old, mut new) = (String::new(), String::new());
     for (line, row) in p.text.split('\n').zip(&p.rows) {
@@ -200,7 +187,6 @@ pub fn sides(p: &Parsed) -> (String, String) {
 
 /// Each row's colour spans: a Removed row's from `old`, a Same or Added row's from `new` (by
 /// line number); a Gap's, or a line out of range, none.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn diff_spans(rows: &[DiffRow], old: &[Vec<Span>], new: &[Vec<Span>]) -> Vec<Vec<Span>> {
     rows.iter()
         .map(|row| {
@@ -217,7 +203,6 @@ pub fn diff_spans(rows: &[DiffRow], old: &[Vec<Span>], new: &[Vec<Span>]) -> Vec
 }
 
 /// The first Added or Removed row.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn first_change(rows: &[DiffRow]) -> Option<usize> {
     rows.iter()
         .position(|r| matches!(r.kind, RowKind::Added | RowKind::Removed))
@@ -226,7 +211,6 @@ pub fn first_change(rows: &[DiffRow]) -> Option<usize> {
 /// The row to scroll to for a change bar's line: an Added or Changed line n is the row with
 /// new number n, moved back over the Removed rows right before it; a deletion after line c is
 /// the row after the row with new number c (c = 0: row 0). None when the line isn't there.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn reveal_row(rows: &[DiffRow], change: (usize, LineChange)) -> Option<usize> {
     let (n, kind) = change;
     match kind {
@@ -247,7 +231,6 @@ pub fn reveal_row(rows: &[DiffRow], change: (usize, LineChange)) -> Option<usize
 
 /// An unchanged row's colour: `c` mixed `DIM_MIX` toward `background`, held at
 /// `min(contrast(c, background), TEXT_MIN)`, never below `MARK_MIN`: dimmer, still readable.
-#[allow(dead_code)] // wired in M11h task 3/4
 pub fn dim(c: Rgb, background: Rgb) -> Rgb {
     let floor = contrast(c, background).clamp(MARK_MIN, TEXT_MIN);
     ensure_contrast(mix(c, background, DIM_MIX), background, floor)
