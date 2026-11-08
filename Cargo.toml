@@ -30,6 +30,10 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 block2 = "0.6.2"
 # Apple's UserNotifications framework: native banners from the app bundle (M11c).
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+# Syntax colours for the file tabs (M11g): the pure-Rust fancy-regex engine (no Oniguruma C library),
+# with two-face's bundled syntaxes (more languages than syntect's defaults, e.g. TOML, TypeScript).
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 
 [features]
 # Off-screen screenshots of UI scenes (M11): `cargo run --features ui-shots -- __ui-shots [filter]`.

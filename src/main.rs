@@ -30,6 +30,8 @@ mod help_commands;
 mod help_menu;
 mod help_panel;
 mod help_shortcuts;
+#[allow(dead_code)] // used by the file tab from M11g Task 6
+mod highlight;
 mod host_picker;
 mod keys;
 mod layout_model;
