@@ -235,6 +235,9 @@ const SCENES: &[(&str, fn())] = &[
     ("help", help_scenes),
     ("panels", panel_scenes),
     ("preferences", preferences_scenes),
+    ("status-bar", status_bar_scenes),
+    ("status-bar-ports", status_bar_ports_scenes),
+    ("status-bar-narrow", status_bar_narrow_scenes),
     ("update-button", update_button_scenes),
     ("cursor", cursor_scenes),
 ];
@@ -856,7 +859,7 @@ fn check_window(
     scene: &str,
     slug: &str,
 ) {
-    use ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR, TOP_BAND};
+    use ui_tokens::size::{CARD_RADIUS, FOCUS_RING, STATUS_BAR, TAB_BAR, TOP_BAND};
 
     let scale = shot.width as f32 / f32::from(dims.width);
     let bg = theme.background;
@@ -876,11 +879,11 @@ fn check_window(
         ui_tokens::size::TERMINAL_PADDING
     };
     // The cards start under the band (sidebar hidden) or the 6 pt strip, and end 6 pt short of
-    // the window's right and bottom; inside each card's 1 pt edge, its tab bar, then its
-    // terminal.
+    // the window's right and the status bar (M11i); inside each card's 1 pt edge, its tab bar,
+    // then its terminal.
     let card_top = if hidden { TOP_BAND } else { GAP };
     let top = card_top + FOCUS_RING + TAB_BAR;
-    let (right, bottom) = (w - GAP - FOCUS_RING, h - GAP - FOCUS_RING);
+    let (right, bottom) = (w - GAP - FOCUS_RING, h - STATUS_BAR - GAP - FOCUS_RING);
     // The right pane's right padding, down to where its card's corner starts to round.
     let mut y = top;
     while y < bottom - CARD_RADIUS {
@@ -913,7 +916,7 @@ fn check_window(
     for y in [top + 10.0, h / 2.0, bottom - 20.0] {
         canvas(w - GAP / 2.0, y);
     }
-    canvas(w * 0.75, h - GAP / 2.0);
+    canvas(w * 0.75, h - STATUS_BAR - GAP / 2.0);
     canvas(w * 0.75, card_top / 2.0);
     if hidden {
         for x in [w * 0.75, w - 20.0] {
@@ -1428,8 +1431,10 @@ fn sidebar_scenes() {
                         cx.simulate_mouse_move(window, at, None, none);
                     }
                     "sidebar-menu" => {
-                        // The footer's + (an icon now, no "New" label), at its left.
-                        let at = point(px(18.0), dims.height - px(18.0));
+                        // The footer's + (an icon now, no "New" label), at its left, over the
+                        // status bar (M11i).
+                        let bar = ui_tokens::size::STATUS_BAR;
+                        let at = point(px(18.0), dims.height - px(bar + 18.0));
                         cx.simulate_click(window, at, none);
                         assert!(cx.read(|cx| ws.read(cx).sidebar.new_menu), "menu opens");
                     }
@@ -2561,7 +2566,9 @@ fn card_corner_scenes() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    let (left, right, bottom) = (240.0 + GAP, 960.0 - GAP, 600.0 - GAP);
+    // The card ends 6 pt above the status bar (M11i).
+    let bar = ui_tokens::size::STATUS_BAR;
+    let (left, right, bottom) = (240.0 + GAP, 960.0 - GAP, 600.0 - bar - GAP);
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -7346,7 +7353,8 @@ fn sidebar_button_scenes() {
     use gpui::Modifiers;
     use std::time::{Duration, Instant};
 
-    let dims = size(px(360.0), px(100.0));
+    // Tall enough that the pane's terminal still shows above the status bar (M11i).
+    let dims = size(px(360.0), px(140.0));
     let (bx, by) = button_origin(false);
     // The hit area's left margin (inside it, outside the icon), and the icon's left edge.
     let (margin, edge) = (point(bx + 1.5, by + 12.0), point(bx + 4.75, by + 12.0));
@@ -7501,7 +7509,7 @@ fn title_area_scenes() {
         DOT, DOT_INSET, FOOTER_BUTTON, entry_top, footer_buttons, name_inset, popover_anchor,
         popover_width,
     };
-    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH};
+    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, STATUS_BAR};
     use gpui::{Focusable, KeyBinding, Modifiers, MouseButton};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -7545,7 +7553,8 @@ fn title_area_scenes() {
             let (height, width) = (f32::from(dims.height), f32::from(dims.width));
             let [plus_x, bell_x, gear_x] = footer_buttons(sidebar_width);
             // The footer's buttons sit centred in the footer under its 1 px edge.
-            let centre_y = height - FOOTER + 1.0 + (FOOTER - 1.0) / 2.0;
+            // The footer sits on the status bar (M11i).
+            let centre_y = height - STATUS_BAR - FOOTER + 1.0 + (FOOTER - 1.0) / 2.0;
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -7837,7 +7846,7 @@ fn title_area_scenes() {
             })
         };
         let [plus_x, bell_x, _] = footer_buttons(SIDEBAR_DEFAULT_WIDTH);
-        let foot_y = height - FOOTER / 2.0;
+        let foot_y = height - STATUS_BAR - FOOTER / 2.0;
         let bell = point(px(bell_x + FOOTER_BUTTON / 2.0), px(foot_y));
         let plus = point(px(plus_x + FOOTER_BUTTON / 2.0), px(foot_y));
         // A press on the 🔔 is its own (it doesn't arm a window drag) and, released, opens the
@@ -7993,50 +8002,584 @@ fn title_area_scenes() {
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
 }
 
-/// The Update Available button above the sidebar's footer, over `switcher_workspace`, in both
-/// themes, with v0.3.2 the newer release:
-/// - `update-idle`: nothing known: no button;
-/// - `update-available`: a newer release known: the blue button, a white package icon, then
-///   white "Update Available" and a fainter " · v0.3.2";
-/// - `update-hover`: the pointer on it: the darker blue;
-/// - `update-downloading`: "Downloading v0.3.2…", with the pointer on it and a click: still
-///   the plain blue (no hover) and still downloading;
-/// - `update-narrow`: the narrowest sidebar: the version left out, "Update Available" whole.
+/// The folder the status bar's terminals work in, a deep one, and a 40-character branch.
+const FUXX: &str = "/Users/me/Kerja/proj/fuxx-cli";
+const DEEP: &str =
+    "/Users/me/Kerja/clients/acme-corporation/platform/services/payments/api-gateway";
+const BRANCH_40: &str = "feature/status-bar-ports-and-update-pill";
+
+/// The status bar's two terminals: claude working 4 minutes in fuxx-cli (on `main`, running
+/// `claude`), agent waiting 2 minutes in web; claude active.
+const BAR_SESSIONS: [ShotSession; 2] = [
+    shot("claude", FUXX, Status::Working, 4 * 60 + 5, AGENT_TEXT),
+    shot("agent", WEB, Status::Waiting, 2 * 60 + 5, CLAUDE_PROMPT),
+];
+
+/// `BAR_SESSIONS`, `active` the one shown, claude found in `folder` on `branch` and running
+/// `claude`, the sidebar `width` wide; `ports`, claude's listening ports.
+fn bar_workspace(
+    active: usize,
+    width: f32,
+    (folder, branch): (&str, &str),
+    ports: &[u16],
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
+    let mut ws = sidebar_workspace(&BAR_SESSIONS, None, active, &[], window, cx);
+    ws.sidebar.hint_dismissed = true;
+    ws.sidebar.width = width;
+    let claude = ws.sessions.items()[0].id;
+    // As looked up (a folder no terminal is found in loses its branch on the next sync).
+    let found = Some(PathBuf::from(folder));
+    ws.places
+        .set_folder(claude, found, std::time::Instant::now());
+    ws.places
+        .set_branch(std::path::Path::new(folder), Some(branch.into()));
+    ws.programs
+        .set_for_shots(claude, ProgramState::Running("claude".into()));
+    ws.ports.set_for_shots(claude, ports.to_vec());
+    ws
+}
+
+/// `bar_workspace` short of room (Review Focus 4): claude in a deep folder on a 40-character
+/// branch, listening on 6 ports, beside the narrowest sidebar.
+fn narrow_bar_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
+    let ports = [3000, 3001, 5173, 6006, 8080, 9229];
+    let width = crate::ui_tokens::size::SIDEBAR_MIN_WIDTH;
+    bar_workspace(0, width, (DEEP, BRANCH_40), &ports, window, cx)
+}
+
+/// Whether pixel `p` is colour `c`, give or take `tol` a channel.
+fn near_by(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, tol: u8) -> bool {
+    p.iter()
+        .zip([c.r, c.g, c.b])
+        .all(|(a, b)| a.abs_diff(b) <= tol)
+}
+
+/// The runs of device pixels along the line `y` (points) that are colour `c`, 6 pt long or
+/// more (not text's anti-aliasing that happens to match): (start, end) in points, end
+/// exclusive.
+fn runs_of(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    y: f32,
+    c: alacritty_terminal::vte::ansi::Rgb,
+) -> Vec<(f32, f32)> {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let mut runs = Vec::new();
+    let mut start: Option<f32> = None;
+    for dx in 0..shot.width as usize {
+        let x = dx as f32 / scale;
+        let on = near_by(pixel_at(shot, dims, x, y), c, 3);
+        match (on, start) {
+            (true, None) => start = Some(x),
+            (false, Some(s)) => {
+                runs.push((s, x));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        runs.push((s, f32::from(dims.width)));
+    }
+    runs.retain(|(a, b)| b - a >= 6.0);
+    runs
+}
+
+/// How far in from a chip's end its fill starts 1.5 pt below its top (its corner's curve).
+fn chip_corner_inset() -> f32 {
+    use crate::status_bar::CHIP_RADIUS;
+    let r = CHIP_RADIUS;
+    r - (r * r - (r - 1.5) * (r - 1.5)).sqrt()
+}
+
+/// The status bar over a real workspace, in both themes:
+/// - `status-bar`: claude working: its mark, `Working · 4m` in `text_dim`, the branch glyph and
+///   `main`, `~/Kerja/proj/fuxx-cli` in `text_faint`;
+/// - `status-bar-waiting`: agent waiting: `Needs input · 2m` in `ring_waiting`;
+/// - `status-bar-file`: a file tab focused in claude's pane: the bar keeps claude's facts;
+/// - `status-bar-still`: Reduce motion on: claude's mark is the still one, its open quarter at
+///   the top left whatever the clock (moving, at a tenth of the beat, it has turned away).
 ///
-/// Panics unless the button shows exactly when there is something to say, is 28 px tall and
-/// 8 px above the footer's top edge, inset `ROW_INSET` each side, filled `#1F6FEB` (`#1A5FCC`
-/// hovered while clickable); its icon's ink is about 16 px wide and 6 px before the words, the
-/// pair centred; the words' ink is as wide as the text it should say (the package, the gap and
-/// that text, measured as the button draws it); and the version part is white at 75% (never
-/// full white) while the words are full white.
-fn update_button_scenes() {
-    use crate::sidebar::{FOOTER, ROW_INSET, UPDATE_BUTTON, UPDATE_FILL, UPDATE_GAP};
-    use crate::sidebar::{UPDATE_HOVER, UPDATE_ICON, UPDATE_ICON_GAP, UPDATE_RADIUS, UPDATE_TEXT};
-    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH};
-    use crate::update_release::{Release, Version};
-    use crate::updater::{UpdateState, Updates};
+/// Panics unless the bar is 22 pt of canvas along the window's whole bottom, under the cards
+/// (6 pt between), says what it should (`status_bar_facts`) and draws it: the left side's ink
+/// as wide as its pieces measured, in their colours.
+fn status_bar_scenes() {
+    use crate::status_bar::{
+        BRANCH_GAP, BRANCH_GLYPH, ITEM_GAP, MARK, MARK_GAP, PAD, StatusWord, text_width,
+    };
+    use crate::ui_tokens::size::{CARD_GAP, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
+    use gpui::FontWeight;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(1000.0), px(480.0));
+    let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+    let (top, mid) = (h - STATUS_BAR, h - STATUS_BAR / 2.0);
+    let file = PathBuf::from(format!("{FUXX}/src/main.rs"));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for scene in [
+            "status-bar",
+            "status-bar-waiting",
+            "status-bar-file",
+            "status-bar-still",
+        ] {
+            let n = format!("{scene}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let active = if scene == "status-bar-waiting" { 1 } else { 0 };
+            let still = scene == "status-bar-still";
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                cx.set_reduce_motion(still);
+                let ws = cx.new(|cx| {
+                    let mut ws = bar_workspace(
+                        active,
+                        SIDEBAR_DEFAULT_WIDTH,
+                        (FUXX, "main"),
+                        &[],
+                        window,
+                        cx,
+                    );
+                    // A tenth into the beat: a moving Working mark has turned 144°.
+                    ws.phase = 0.1;
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            // The left side's pieces as measured: the word, the branch and the folder.
+            let widths: Rc<Cell<(f32, f32, f32)>> = Rc::default();
+            let act = {
+                let n = n.clone();
+                let file = file.clone();
+                let widths = widths.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    let claude = cx.read(|cx| ws.read(cx).status_bar_facts());
+                    if scene == "status-bar" {
+                        // The marks' ticker counts the bar's mark: the two rows, claude's tab
+                        // and the bar.
+                        let marks = cx.read(|cx| ws.read(cx).visible_statuses().len());
+                        assert_eq!(marks, 4, "{n}: the bar's mark is on screen");
+                    }
+                    if scene == "status-bar-file" {
+                        cx.update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| ws.open_file_tab(file.clone(), window, cx))
+                        })
+                        .expect("open the file");
+                        cx.run_until_parked();
+                        let focused = cx.read(|cx| ws.read(cx).focused_terminal());
+                        assert_eq!(focused, None, "{n}: the file tab is focused");
+                    }
+                    let facts = cx
+                        .read(|cx| ws.read(cx).status_bar_facts())
+                        .expect("the bar's terminal");
+                    let (word, text, branch, folder) = match scene {
+                        "status-bar-waiting" => (
+                            StatusWord::NeedsInput,
+                            "Needs input \u{b7} 2m",
+                            None,
+                            "~/code/web",
+                        ),
+                        _ => (
+                            StatusWord::Working,
+                            "Working \u{b7} 4m",
+                            Some("main"),
+                            "~/Kerja/proj/fuxx-cli",
+                        ),
+                    };
+                    assert_eq!(facts.word, word, "{n}");
+                    assert_eq!(facts.text, text, "{n}");
+                    assert_eq!(facts.branch.as_deref(), branch, "{n}");
+                    let shown = facts
+                        .folder
+                        .as_deref()
+                        .map(|f| crate::sidebar::home_relative(f, Some("/Users/me".as_ref())));
+                    assert_eq!(shown.as_deref(), Some(folder), "{n}");
+                    if scene == "status-bar-file" {
+                        assert_eq!(Some(facts.clone()), claude, "{n}: claude's facts kept");
+                    }
+                    cx.update_window(window, |_, window, _| {
+                        let plain = |t: &str| text_width(t, FontWeight::NORMAL, false, window);
+                        widths.set((
+                            plain(text),
+                            branch.map_or(0.0, |b| BRANCH_GLYPH + BRANCH_GAP + plain(b)),
+                            plain(folder),
+                        ));
+                    })
+                    .expect("measure");
+                    slot.borrow_mut().take();
+                }
+            };
+            let shot = render_with(&theme, dims, build, act);
+            save_shot(scene, slug, &shot);
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let scale = shot.width as f32 / w;
+            let canvas = |p: [u8; 3]| near_by(p, ui.sidebar_background, 2);
+            // 22 pt of canvas along the whole bottom (between its pieces), the cards' bottom
+            // 6 pt above it.
+            for x in [2.0, w / 2.0 + 37.0, w - 2.0] {
+                assert!(canvas(at(x, top + 1.0)), "{n}: the bar's top at {x}");
+                assert!(canvas(at(x, h - 1.0)), "{n}: the bar's bottom at {x}");
+            }
+            // The card's inside (the terminal's background) stops at its 1 pt edge, 6 pt above
+            // the bar (its shadow shades the gap, so the gap isn't looked at).
+            let card_x = SIDEBAR_DEFAULT_WIDTH + 40.0;
+            let inside = (0..(top * scale) as usize)
+                .map(|dy| dy as f32 / scale)
+                .filter(|&y| near_by(at(card_x, y), ui.card, 2))
+                .fold(0.0, f32::max)
+                + 1.0 / scale;
+            assert!(
+                (top - inside - (CARD_GAP + 1.0)).abs() <= 0.75,
+                "{n}: the card's inside ends at {inside}, {} above the bar",
+                top - inside
+            );
+            // The left side's ink, from the mark to the folder's end, as wide as measured.
+            let (word_w, branch_w, folder_w) = widths.get();
+            let ys: Vec<f32> = (0..((STATUS_BAR - 4.0) * scale) as usize)
+                .map(|dy| top + 2.0 + dy as f32 / scale)
+                .collect();
+            let inked = |x: f32| ys.iter().any(|&y| !canvas(at(x, y)));
+            let xs: Vec<f32> = (0..(w / 2.0 * scale) as usize)
+                .map(|dx| dx as f32 / scale)
+                .collect();
+            let ink: Vec<f32> = xs.iter().copied().filter(|&x| inked(x)).collect();
+            let (first, last) = (ink[0], ink[ink.len() - 1] + 1.0 / scale);
+            let mut expected = MARK + MARK_GAP + word_w + ITEM_GAP + folder_w;
+            if branch_w > 0.0 {
+                expected += ITEM_GAP + branch_w;
+            }
+            println!(
+                "ui-shots: {n}: left ink {first}..{last}, expected {PAD}..{}",
+                PAD + expected
+            );
+            assert!(
+                (first - PAD).abs() <= 2.5,
+                "{n}: the mark starts at {first}"
+            );
+            assert!(
+                (last - (PAD + expected)).abs() <= 2.5,
+                "{n}: the left side ends at {last}, expected {}",
+                PAD + expected
+            );
+            // Each piece in its colour: some of its ink at full strength.
+            let any_in = |x0: f32, x1: f32, c, tol| {
+                xs.iter()
+                    .filter(|&&x| x >= x0 && x < x1)
+                    .any(|&x| ys.iter().any(|&y| near_by(at(x, y), c, tol)))
+            };
+            let word_x = PAD + MARK + MARK_GAP;
+            let word_color = if scene == "status-bar-waiting" {
+                ui.ring_waiting
+            } else {
+                ui.text_dim
+            };
+            assert!(
+                any_in(word_x, word_x + word_w, word_color, 12),
+                "{n}: the word in {word_color:?}"
+            );
+            let folder_x = PAD + expected - folder_w;
+            assert!(
+                any_in(folder_x, folder_x + folder_w, ui.text_faint, 12),
+                "{n}: the folder in text_faint"
+            );
+            // (In a theme where both are pushed to the same 4.5:1 floor, they're one colour.)
+            let faint = [ui.text_faint.r, ui.text_faint.g, ui.text_faint.b];
+            if !near_by(faint, ui.text_dim, 12) {
+                assert!(
+                    !any_in(folder_x, folder_x + folder_w, ui.text_dim, 4),
+                    "{n}: the folder not in text_dim"
+                );
+            }
+            if branch_w > 0.0 {
+                let branch_x = word_x + word_w + ITEM_GAP;
+                assert!(
+                    any_in(branch_x, branch_x + BRANCH_GLYPH, ui.text_dim, 12),
+                    "{n}: the branch glyph in text_dim"
+                );
+            }
+            // The Working mark: a three-quarter arc from the top, clockwise. Still, its open
+            // quarter is at the top left; moving, a tenth into the beat it has turned 144° and
+            // the arc is there.
+            if scene != "status-bar-waiting" {
+                let r = 4.25 * MARK / 12.0 * std::f32::consts::FRAC_1_SQRT_2;
+                let top_left = at(PAD + MARK / 2.0 - r, mid - r);
+                assert_eq!(
+                    canvas(top_left),
+                    still,
+                    "{n}: the mark's top left {top_left:?} (still: {still})"
+                );
+            }
+        }
+    }
+}
+
+/// The status bar's port chips, in both themes, claude listening on 5 ports:
+/// - `status-bar-ports`: `:3000`, `:5173`, `:8080` and `+2`, filled `row_hover`, at the bar's
+///   right end; the pointer on `:3000`: `row_active`;
+/// - `status-bar-ports-click`: `:3000` clicked: a browser tab at `http://localhost:3000`, split
+///   right of claude's pane and focused; the bar keeps claude's ports.
+fn status_bar_ports_scenes() {
+    use crate::layout_model::TabKind;
+    use crate::status_bar::{CHIP, CHIP_GAP, PAD};
+    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
     use gpui::Modifiers;
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let dims = size(px(760.0), px(420.0));
-    let height = f32::from(dims.height);
-    // Where the button should be, in points: its top and bottom.
-    let bottom = height - FOOTER - UPDATE_GAP;
-    let top = bottom - UPDATE_BUTTON;
-    let mid = (top + bottom) / 2.0;
-    let version = Version(0, 3, 2);
-    let release = Release {
-        version,
+    let dims = size(px(1000.0), px(480.0));
+    let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+    let mid = h - STATUS_BAR / 2.0;
+    // Inside the chips, above their words.
+    let line = mid - CHIP / 2.0 + 1.5;
+    let inset = chip_corner_inset();
+    let ports = [3000, 5173, 8080, 9000, 9229];
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        // Where the chips are, from a first shot with the pointer away.
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            cx.new(|cx| bar_workspace(0, SIDEBAR_DEFAULT_WIDTH, (FUXX, "main"), &ports, window, cx))
+                .into()
+        };
+        let plain = render(&theme, dims, build);
+        let chips = runs_of(&plain, dims, line, ui.row_hover);
+        println!("ui-shots: status-bar-ports-{slug}: chips {chips:?}");
+        assert_eq!(chips.len(), 4, "{slug}: three chips and +2: {chips:?}");
+        let last = chips[3].1;
+        assert!(
+            (last + inset - (w - PAD)).abs() <= 1.0,
+            "{slug}: the chips end at the bar's right end: {last}"
+        );
+        for pair in chips.windows(2) {
+            let gap = pair[1].0 - pair[0].1 - 2.0 * inset;
+            assert!((gap - CHIP_GAP).abs() <= 1.0, "{slug}: {gap} between chips");
+        }
+        let first = chips[0];
+        let on = point(px((first.0 + first.1) / 2.0), px(mid));
+        for scene in ["status-bar-ports", "status-bar-ports-click"] {
+            let n = format!("{scene}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    bar_workspace(0, SIDEBAR_DEFAULT_WIDTH, (FUXX, "main"), &ports, window, cx)
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    cx.simulate_mouse_move(window, on, None, Modifiers::none());
+                    if scene == "status-bar-ports-click" {
+                        cx.simulate_click(window, on, Modifiers::none());
+                        cx.run_until_parked();
+                        let (urls, focused) = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            let ws_id = ws.model.focused_workspace().expect("a workspace");
+                            let urls: Vec<Option<String>> = ws
+                                .model
+                                .tabs_of(ws_id)
+                                .into_iter()
+                                .filter_map(|t| match &ws.model.tab(t)?.kind {
+                                    TabKind::Browser { url } => Some(url.clone()),
+                                    _ => None,
+                                })
+                                .collect();
+                            let focused = ws
+                                .model
+                                .focused_tab()
+                                .and_then(|t| ws.model.tab(t))
+                                .map(|t| matches!(t.kind, TabKind::Browser { .. }));
+                            (urls, focused)
+                        });
+                        assert_eq!(
+                            urls,
+                            [Some("http://localhost:3000".to_string())],
+                            "{n}: one browser tab, at the port"
+                        );
+                        assert_eq!(focused, Some(true), "{n}: shown and focused");
+                        let facts = cx.read(|cx| ws.read(cx).status_bar_facts());
+                        assert_eq!(
+                            facts.map(|f| f.ports),
+                            Some(ports.to_vec()),
+                            "{n}: the bar keeps claude's ports"
+                        );
+                    }
+                    slot.borrow_mut().take();
+                }
+            };
+            let shot = render_with(&theme, dims, build, act);
+            save_shot(scene, slug, &shot);
+            if scene == "status-bar-ports" {
+                let x = (first.0 + first.1) / 2.0;
+                let hovered = pixel_at(&shot, dims, first.0 + 2.0, line);
+                assert!(
+                    near_by(hovered, ui.row_active, 3),
+                    "{n}: the hovered chip is row_active: {hovered:?}"
+                );
+                let other = pixel_at(&shot, dims, chips[1].0 + 2.0, line);
+                assert!(near_by(other, ui.row_hover, 3), "{n}: the others aren't");
+                let _ = x;
+            }
+        }
+    }
+}
+
+/// The status bar short of room (Review Focus 4), in both themes: a 720 pt window, the
+/// narrowest sidebar, a 40-character branch, a deep folder, 6 ports and an update pending.
+///
+/// Panics unless the update pill is whole at the bar's right end with its short label
+/// ("Update Available", the version dropped), the ports are one `6 ports` chip, and the left
+/// side's ink stops at least `ITEM_GAP` short of the right side (nothing overlaps).
+fn status_bar_narrow_scenes() {
+    use crate::status_bar::{
+        ITEM_GAP, PAD, PILL, PILL_GAP, PILL_ICON, PILL_PAD, UPDATE_FILL, text_width,
+    };
+    use crate::ui_tokens::size::STATUS_BAR;
+    use crate::updater::Updates;
+    use gpui::FontWeight;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(720.0), px(480.0));
+    let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+    let (top, mid) = (h - STATUS_BAR, h - STATUS_BAR / 2.0);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("status-bar-narrow-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            cx.set_global(Updates {
+                state: crate::updater::UpdateState::Available(shot_release()),
+            });
+            let ws = cx.new(|cx| narrow_bar_workspace(window, cx));
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let label = Rc::new(Cell::new((0.0, 0.0)));
+        let act = {
+            let label = label.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                cx.update_window(window, |_, window, _| {
+                    let medium = |t: &str| text_width(t, FontWeight::MEDIUM, false, window);
+                    label.set((
+                        medium("Update Available"),
+                        medium("Update Available \u{b7} v0.3.2"),
+                    ));
+                })
+                .expect("measure");
+                slot.borrow_mut().take();
+            }
+        };
+        let shot = render_with(&theme, dims, build, act);
+        save_shot("status-bar-narrow", slug, &shot);
+        let (short, long) = label.get();
+        // Along its middle the icon and words cut the run: its first start, its last end.
+        let pills = runs_of(&shot, dims, mid, UPDATE_FILL);
+        assert!(!pills.is_empty(), "{n}: the update pill");
+        let pill = (pills[0].0, pills[pills.len() - 1].1);
+        let expected = 2.0 * PILL_PAD + PILL_ICON + PILL_GAP + short;
+        println!("ui-shots: {n}: pill {pill:?}, expected {expected} wide (long {long})");
+        assert!(
+            (pill.1 - (w - PAD)).abs() <= 1.0,
+            "{n}: the pill ends at the bar's right end: {pill:?}"
+        );
+        assert!(
+            (pill.1 - pill.0 - expected).abs() <= 2.0,
+            "{n}: the pill is whole, its version dropped: {} wide, expected {expected}",
+            pill.1 - pill.0
+        );
+        // 16 pt tall, centred in the bar.
+        let scale = shot.width as f32 / w;
+        // Down the gap between its icon and its words.
+        let x = pill.0 + PILL_PAD + PILL_ICON + PILL_GAP / 2.0;
+        let rows = (0..(h * scale) as usize)
+            .map(|dy| dy as f32 / scale)
+            .filter(|&y| near_by(pixel_at(&shot, dims, x, y), UPDATE_FILL, 3))
+            .count();
+        assert_eq!(rows, (PILL * scale) as usize, "{n}: the pill is 16 pt tall");
+        // The ports, one chip.
+        let line = mid - crate::status_bar::CHIP / 2.0 + 1.5;
+        let chips = runs_of(&shot, dims, line, ui.row_hover);
+        assert_eq!(chips.len(), 1, "{n}: one `6 ports` chip: {chips:?}");
+        // Nothing overlaps: canvas from the left side's last ink to the right side's start.
+        let right = chips[0].0 - chip_corner_inset();
+        let canvas = |p: [u8; 3]| near_by(p, ui.sidebar_background, 2);
+        let ys: Vec<f32> = (0..((STATUS_BAR - 4.0) * scale) as usize)
+            .map(|dy| top + 2.0 + dy as f32 / scale)
+            .collect();
+        let clear = |x: f32| ys.iter().all(|&y| canvas(pixel_at(&shot, dims, x, y)));
+        let mut x = right - 1.0 / scale;
+        while x > 0.0 && clear(x) {
+            x -= 1.0 / scale;
+        }
+        let gap = right - x - 1.0 / scale;
+        println!("ui-shots: {n}: {gap} pt clear before the ports chip at {right}");
+        assert!(
+            gap >= ITEM_GAP - 2.0,
+            "{n}: only {gap} pt between the left side and the right"
+        );
+        assert!(
+            x > w / 3.0,
+            "{n}: the left side shows (its ink ends at {x})"
+        );
+    }
+}
+
+/// v0.3.2, the newer release in the update scenes.
+fn shot_release() -> crate::update_release::Release {
+    crate::update_release::Release {
+        version: crate::update_release::Version(0, 3, 2),
         page_url: "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.2".into(),
         notes: "Faster startup".into(),
         zip: None,
+    }
+}
+
+/// The update pill at the status bar's right end (M11i; it was above the sidebar's footer), over
+/// `switcher_workspace`, in both themes, with v0.3.2 the newer release:
+/// - `update-idle`: nothing known: no pill;
+/// - `update-available`: a newer release known: the blue pill, a white package icon, then
+///   white "Update Available" and a fainter " · v0.3.2";
+/// - `update-hover`: the pointer on it: the darker blue;
+/// - `update-downloading`: "Downloading v0.3.2…", with the pointer on it and a click: still
+///   the plain blue (no hover) and still downloading;
+/// - `update-narrow`: a 720 pt window short of room (`narrow_bar_workspace`): the version left
+///   out, "Update Available" whole.
+///
+/// Panics unless the pill shows exactly when there is something to say, and nowhere above the
+/// bar (not over the sidebar's footer any more); is 16 pt tall, centred in the bar, ending
+/// `PAD` from the window's right edge; filled `#1F6FEB` (`#1A5FCC` hovered while clickable);
+/// its icon's ink is about 12 pt wide and 6 pt before the words, the pair `PILL_PAD` from each
+/// end; the words' ink is as wide as the text it should say; and the version part is white at
+/// 75% (never full white) while the words are full white.
+fn update_button_scenes() {
+    use crate::status_bar::{
+        PAD, PILL, PILL_GAP, PILL_ICON, PILL_PAD, UPDATE_FILL, UPDATE_HOVER, UPDATE_TEXT,
+        text_width,
     };
-    let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
-        p.iter()
-            .zip([c.r, c.g, c.b])
-            .all(|(a, b)| a.abs_diff(b) <= 3)
-    };
+    use crate::ui_tokens::size::STATUS_BAR;
+    use crate::update_release::Version;
+    use crate::updater::{UpdateState, Updates};
+    use gpui::{FontWeight, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let version = Version(0, 3, 2);
+    let near = |p: [u8; 3], c| near_by(p, c, 3);
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         // The ink's width, per scene, to compare.
@@ -8048,19 +8591,21 @@ fn update_button_scenes() {
             "update-downloading",
             "update-narrow",
         ] {
-            let width = if scene == "update-narrow" {
-                SIDEBAR_MIN_WIDTH
+            let narrow = scene == "update-narrow";
+            let dims = if narrow {
+                size(px(720.0), px(480.0))
             } else {
-                SIDEBAR_DEFAULT_WIDTH
+                size(px(760.0), px(420.0))
             };
-            // Its left and right edges (the sidebar has no right border since M11i).
-            let (left, right) = (ROW_INSET, width - ROW_INSET);
+            let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+            let (top, bottom) = (h - (STATUS_BAR + PILL) / 2.0, h - (STATUS_BAR - PILL) / 2.0);
+            let mid = (top + bottom) / 2.0;
             let state = match scene {
                 "update-idle" => UpdateState::Idle,
                 "update-downloading" => UpdateState::Downloading(version),
-                _ => UpdateState::Available(release.clone()),
+                _ => UpdateState::Available(shot_release()),
             };
-            // What it should say, all of it (`None`: no button).
+            // What it should say, all of it (`None`: no pill).
             let says: Option<&str> = match scene {
                 "update-idle" => None,
                 "update-downloading" => Some("Downloading v0.3.2\u{2026}"),
@@ -8073,27 +8618,31 @@ fn update_button_scenes() {
                 cx.set_global(sidebar_appearance(theme, cx));
                 cx.set_global(Updates { state });
                 let ws = cx.new(|cx| {
-                    let mut ws = switcher_workspace(window, cx);
-                    ws.sidebar.width = width;
-                    ws
+                    if narrow {
+                        narrow_bar_workspace(window, cx)
+                    } else {
+                        switcher_workspace(window, cx)
+                    }
                 });
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
             let n = format!("{scene}-{slug}");
-            // The words' widths as the button draws them: what it says, and "Update Available".
+            // The words' widths as the pill draws them: what it says, and "Update Available".
             let widths: Rc<RefCell<(f32, f32)>> = Rc::default();
             let act = {
                 let n = n.clone();
                 let widths = widths.clone();
                 move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                     cx.update_window(window, |_, window, _| {
-                        let measure = |t: &str| crate::sidebar::update_text_width(t, window);
+                        let measure = |t: &str| text_width(t, FontWeight::MEDIUM, false, window);
                         *widths.borrow_mut() =
                             (measure(says.unwrap_or("")), measure("Update Available"));
                     })
                     .expect("measure the words");
-                    let on = point(px(left + 12.0), px(mid));
+                    let (said, _) = *widths.borrow();
+                    let pill_w = 2.0 * PILL_PAD + PILL_ICON + PILL_GAP + said;
+                    let on = point(px(w - PAD - pill_w / 2.0), px(mid));
                     if matches!(scene, "update-hover" | "update-downloading") {
                         cx.simulate_mouse_move(window, on, None, Modifiers::none());
                     }
@@ -8113,72 +8662,74 @@ fn update_button_scenes() {
                 }
             };
             let shot = render_with(&theme, dims, build, act);
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-            let path = dir.join(format!("{n}.png"));
-            std::fs::write(&path, png(&shot)).expect("write the PNG");
-            println!("ui-shots: {}", path.display());
+            save_shot(scene, slug, &shot);
 
-            let scale = shot.width as f32 / f32::from(dims.width);
+            let scale = shot.width as f32 / w;
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-            // The fill expected where the text isn't: near its left end, half-way down.
+            let blue = |p: [u8; 3]| near(p, UPDATE_FILL) || near(p, UPDATE_HOVER);
+            // Nowhere above the bar: not over the sidebar's footer, not anywhere.
+            let above = (0..((h - STATUS_BAR) * scale) as usize)
+                .step_by(2)
+                .any(|dy| {
+                    (0..shot.width as usize)
+                        .step_by(2)
+                        .any(|dx| blue(at(dx as f32 / scale, dy as f32 / scale)))
+                });
+            assert!(!above, "{n}: blue above the status bar");
+            let pills: Vec<(f32, f32)> = runs_of(&shot, dims, mid, UPDATE_FILL)
+                .into_iter()
+                .chain(runs_of(&shot, dims, mid, UPDATE_HOVER))
+                .collect();
+            let Some(says) = says else {
+                assert!(pills.is_empty(), "{n}: no pill, but blue at {pills:?}");
+                continue;
+            };
+            // Its ends along its middle (the icon and words cut the run: first start, last end).
+            let left = pills.iter().map(|r| r.0).fold(f32::MAX, f32::min);
+            let right = pills.iter().map(|r| r.1).fold(0.0, f32::max);
+            println!("ui-shots: {n}: pill {left}..{right}");
+            assert!(
+                (right - (w - PAD)).abs() <= 1.0,
+                "{n}: the pill ends {PAD} from the right edge: {right}"
+            );
+            // Down the gap between its icon and its words: one unbroken 16 pt run, centred in
+            // the bar.
+            let x = left + PILL_PAD + PILL_ICON + PILL_GAP / 2.0;
+            let rows: Vec<f32> = (0..(h * scale) as usize)
+                .map(|dy| dy as f32 / scale)
+                .filter(|&y| blue(at(x, y)))
+                .collect();
+            assert!(!rows.is_empty(), "{n}: no pill");
+            let (first, last) = (rows[0], rows[rows.len() - 1] + 1.0 / scale);
+            assert!(
+                (first - top).abs() <= 0.5 && (last - bottom).abs() <= 0.5,
+                "{n}: the pill spans {first}..{last}, expected {top}..{bottom}"
+            );
+            assert_eq!(rows.len(), (PILL * scale) as usize, "{n}: one 16 pt run");
             let fill = if scene == "update-hover" {
                 UPDATE_HOVER
             } else {
                 UPDATE_FILL
             };
-            // The device rows, down a line just inside its left end, that are either blue.
-            let x = left + 12.0;
-            let rows: Vec<f32> = (0..(height * scale) as usize)
-                .map(|dy| dy as f32 / scale)
-                .filter(|&y| near(at(x, y), UPDATE_FILL) || near(at(x, y), UPDATE_HOVER))
-                .collect();
-            let Some(says) = says else {
-                assert!(rows.is_empty(), "{n}: no button, but blue at {rows:?}");
-                continue;
-            };
-            assert!(!rows.is_empty(), "{n}: no button");
-            let (first, last) = (rows[0], rows[rows.len() - 1] + 1.0 / scale);
-            println!("ui-shots: {n}: button rows {first}..{last}");
-            assert!(
-                (first - top).abs() <= 0.5 && (last - bottom).abs() <= 0.5,
-                "{n}: the button spans {first}..{last}, expected {top}..{bottom}"
-            );
-            assert_eq!(
-                rows.len(),
-                (UPDATE_BUTTON * scale) as usize,
-                "{n}: one unbroken 28 px run"
-            );
             assert!(
                 near(at(x, mid), fill),
                 "{n}: filled {fill:?}: {:?}",
                 at(x, mid)
             );
-            // Inset ROW_INSET each side: blue just inside each end, not just outside.
-            let half = 0.5 / scale;
-            assert!(near(at(left + half, mid), fill), "{n}: its left end");
-            assert!(near(at(right - half, mid), fill), "{n}: its right end");
-            assert!(!near(at(left - half, mid), fill), "{n}: nothing left of it");
-            assert!(
-                !near(at(right + half, mid), fill),
-                "{n}: nothing right of it"
-            );
             // The ink: any pixel far brighter than the blue (red over 128; the fills' is 0x1F
-            // or 0x1A), so anti-aliased lines and the "…" count. Looked for between the
-            // corners' radii, where the sidebar doesn't show through.
-            let band = UPDATE_BUTTON - 2.0 * UPDATE_RADIUS;
-            let ys: Vec<f32> = (0..(band * scale) as usize)
-                .map(|dy| top + UPDATE_RADIUS + dy as f32 / scale)
+            // or 0x1A). Looked for inside the rounded ends, where the canvas doesn't show.
+            let ys: Vec<f32> = (0..((PILL - 4.0) * scale) as usize)
+                .map(|dy| top + 2.0 + dy as f32 / scale)
                 .collect();
             let brightest = |x: f32| ys.iter().map(|&y| at(x, y)[0]).max().unwrap_or(0);
-            let xs: Vec<f32> = (0..((right - left) * scale) as usize)
-                .map(|dx| left + dx as f32 / scale)
+            let xs: Vec<f32> = (0..((right - left - 12.0) * scale) as usize)
+                .map(|dx| left + 6.0 + dx as f32 / scale)
                 .collect();
             let inked: Vec<f32> = xs.iter().copied().filter(|&x| brightest(x) > 128).collect();
             assert!(!inked.is_empty(), "{n}: no icon or words");
             let step = 1.0 / scale;
             let (w0, w1) = (inked[0], inked[inked.len() - 1] + step);
-            // The icon: the first stretch of ink, up to the first clear gap of 3 px or more.
+            // The icon: the first stretch of ink, up to the first clear gap of 3 pt or more.
             let icon_end = inked
                 .windows(2)
                 .find(|w| w[1] - w[0] >= 3.0)
@@ -8188,37 +8739,34 @@ fn update_button_scenes() {
             let (icon, gap) = (icon_end - w0, words_start - icon_end);
             let (said, plain) = *widths.borrow();
             println!(
-                "ui-shots: {n}: icon {icon} px, gap {gap} px, ink {} px for {said} px of words, \
+                "ui-shots: {n}: icon {icon} pt, gap {gap} pt, ink {} pt for {said} pt of words, \
                  {} from the left, {} from the right",
                 w1 - w0,
                 w0 - left,
                 right - w1
             );
-            // The pair centred on the button: the icon's box starts where its ink does (to a
-            // pixel), and the pair runs on for the icon, the gap and the words as laid out (the
-            // words' last letter's ink stops short of its advance).
-            let (l, r) = (
-                w0 - left,
-                right - (w0 + UPDATE_ICON + UPDATE_ICON_GAP + said),
+            assert!(
+                (w0 - left - PILL_PAD).abs() <= 1.5,
+                "{n}: the icon starts {} in, expected {PILL_PAD}",
+                w0 - left
             );
             assert!(
-                (l - r).abs() <= 2.0,
-                "{n}: the icon and words sit {l} from the left, {r} from the right"
+                (right - (w0 + PILL_ICON + PILL_GAP + said) - PILL_PAD).abs() <= 2.0,
+                "{n}: the words end short of {PILL_PAD} from the right"
             );
             assert!(
-                (icon - UPDATE_ICON).abs() <= 1.0,
-                "{n}: the icon's ink is {icon} px wide, its box {UPDATE_ICON}"
+                (icon - PILL_ICON).abs() <= 1.0,
+                "{n}: the icon's ink is {icon} pt wide, its box {PILL_ICON}"
             );
             // The words' own side bearing adds a little to the gap.
             assert!(
-                (UPDATE_ICON_GAP - 0.5..=UPDATE_ICON_GAP + 1.5).contains(&gap),
-                "{n}: {gap} px between the icon and the words, expected {UPDATE_ICON_GAP}"
+                (PILL_GAP - 0.5..=PILL_GAP + 1.5).contains(&gap),
+                "{n}: {gap} pt between the icon and the words, expected {PILL_GAP}"
             );
-            // The words say what they should: as wide as that text (the icon, gap and words).
-            let expected = UPDATE_ICON + UPDATE_ICON_GAP + said;
+            let expected = PILL_ICON + PILL_GAP + said;
             assert!(
                 ((w1 - w0) - expected).abs() <= 2.0,
-                "{n}: ink {} px wide, expected {expected} for {says:?}",
+                "{n}: ink {} pt wide, expected {expected} for {says:?}",
                 w1 - w0
             );
             let white = |p: [u8; 3]| near(p, UPDATE_TEXT);
@@ -8253,7 +8801,7 @@ fn update_button_scenes() {
         let wide = |s: &str| ink.iter().find(|(n, _)| *n == s).map(|(_, w)| *w).unwrap();
         assert!(
             wide("update-narrow") + 20.0 < wide("update-available"),
-            "{slug}: the narrow button left its version out: {ink:?}"
+            "{slug}: the narrow pill left its version out: {ink:?}"
         );
     }
 }

@@ -46,7 +46,7 @@ pub enum UpdateState {
     Downloading(Version),
 }
 
-/// What the sidebar's Update Available button says.
+/// What the status bar's update pill says (M11i; it was the sidebar's button).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UpdateButton {
     /// In white, always shown.
@@ -64,8 +64,8 @@ impl UpdateButton {
     }
 }
 
-/// The sidebar's button for `state`, with the version it will update to when `fits_version`
-/// (the button is wide enough for it; the version is what goes first). None while nothing
+/// The update pill for `state`, with the version it will update to when `fits_version`
+/// (the status bar has room for it; the version is what goes first). None while nothing
 /// newer is known.
 pub fn button(state: &UpdateState, fits_version: bool) -> Option<UpdateButton> {
     let (words, version, clickable) = match state {

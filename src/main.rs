@@ -70,6 +70,7 @@ mod ssh_control;
 mod ssh_hosts;
 mod ssh_target;
 mod status;
+mod status_bar;
 mod status_mark;
 mod switcher;
 mod tab_bar;

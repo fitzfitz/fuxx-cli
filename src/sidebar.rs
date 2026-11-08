@@ -22,10 +22,9 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, Bounds, BoxShadow, ClickEvent, Context,
-    DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, HighlightStyle, Hsla, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString,
-    StyledText, Task, TextStyle, TruncateFrom, Window, canvas, div, point, prelude::*, px,
-    relative,
+    DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, TextStyle,
+    TruncateFrom, Window, canvas, div, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -40,8 +39,7 @@ use crate::sidebar_toggle::Tip;
 use crate::smart_name::{self, ProgramState};
 use crate::status::{self, Status};
 use crate::status_mark;
-use crate::tab_bar::{DraggedTab, hold_closed_hand};
-use crate::tab_bar::{Glyph, footer_glyph};
+use crate::tab_bar::{DraggedTab, Glyph, hold_closed_hand};
 use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
@@ -51,10 +49,9 @@ use crate::title_area::{
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SELECTION_BAR, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
-    SIDEBAR_MIN_WIDTH, SIDEBAR_ROW, SIDEBAR_ROW_TWO, STATUS_MARK,
+    SIDEBAR_MIN_WIDTH, SIDEBAR_ROW, SIDEBAR_ROW_TWO, STATUS_BAR, STATUS_MARK,
 };
 use crate::ui_tokens::text;
-use crate::updater;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
 
 /// What the sidebar needs to know of one workspace, in display order: its name, colour and
@@ -494,36 +491,6 @@ const SELECTION_BAR_INSET: f32 = 5.0;
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
 pub(crate) const FOOTER: f32 = 36.0;
-/// The Update Available button over the footer (M11e): its height, its corners' radius, and
-/// the space between it and the footer's top edge.
-pub(crate) const UPDATE_BUTTON: f32 = 28.0;
-pub(crate) const UPDATE_RADIUS: f32 = 8.0;
-pub(crate) const UPDATE_GAP: f32 = 8.0;
-/// Its colours, fixed whatever the theme (blue, as asked): the fill, hovered, and its words.
-pub(crate) const UPDATE_FILL: Rgb = Rgb {
-    r: 0x1F,
-    g: 0x6F,
-    b: 0xEB,
-};
-pub(crate) const UPDATE_HOVER: Rgb = Rgb {
-    r: 0x1A,
-    g: 0x5F,
-    b: 0xCC,
-};
-pub(crate) const UPDATE_TEXT: Rgb = Rgb {
-    r: 0xFF,
-    g: 0xFF,
-    b: 0xFF,
-};
-/// Its package icon's box, and the space between the icon and the words (the pair centred).
-pub(crate) const UPDATE_ICON: f32 = 16.0;
-pub(crate) const UPDATE_ICON_GAP: f32 = 6.0;
-/// Its line, as wide as the footer icons'.
-const UPDATE_ICON_STROKE: f32 = 1.5;
-/// The least room kept at each end of the button, inside it.
-pub(crate) const UPDATE_PAD: f32 = 10.0;
-/// The version part (` · v0.3.2`): white at this opacity.
-pub(crate) const UPDATE_VERSION_ALPHA: f32 = 0.75;
 const RESIZE_STRIP: f32 = 4.0;
 /// A row narrower than this leaves the age out, so the name keeps its room.
 const AGE_MIN_ROW: f32 = 220.0;
@@ -725,36 +692,6 @@ pub(crate) fn tabular() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }
 
-/// Whether the Update Available button, `button_width` wide, has room for its icon, the gap and
-/// words `text_width` wide, inside its padding at each end.
-pub(crate) fn update_fits(text_width: f32, button_width: f32) -> bool {
-    UPDATE_ICON + UPDATE_ICON_GAP + text_width + 2.0 * UPDATE_PAD <= button_width
-}
-
-/// How wide `text` is drawn in the Update Available button (the UI font, medium, at the name
-/// size).
-pub(crate) fn update_text_width(text: &str, window: &Window) -> f32 {
-    let font = gpui::Font {
-        weight: FontWeight::MEDIUM,
-        ..TextStyle::default().font()
-    };
-    let run = gpui::TextRun {
-        len: text.len(),
-        font,
-        color: hsla(UPDATE_TEXT),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let line = window.text_system().shape_line(
-        SharedString::from(text.to_string()),
-        px(text::NAME),
-        &[run],
-        None,
-    );
-    f32::from(line.width())
-}
-
 /// Every letter as a small capital (the system font has them): headers read as headers.
 pub(crate) fn small_caps() -> FontFeatures {
     FontFeatures(Arc::new(vec![("smcp".into(), 1), ("c2sc".into(), 1)]))
@@ -895,13 +832,18 @@ impl Workspace {
     }
 
     /// The marks on screen: each row in the scrolled view (a closed group's header shows its
-    /// sessions' most urgent; none with the sidebar hidden), and each terminal tab in the panes'
-    /// tab bars.
+    /// sessions' most urgent; none with the sidebar hidden), each terminal tab in the panes'
+    /// tab bars, and the status bar's terminal (the followed one, M11i).
     pub(crate) fn visible_statuses(&self) -> Vec<Status> {
+        let followed = self
+            .right_sidebar
+            .followed
+            .and_then(|id| self.sessions.items().iter().find(|s| s.id == id));
         let tabs = self
             .tab_sessions()
             .into_iter()
-            .map(|i| self.sessions.items()[i].status);
+            .map(|i| self.sessions.items()[i].status)
+            .chain(followed.map(|s| s.status));
         self.rows_in_view(Instant::now())
             .into_iter()
             .filter_map(|row| match row {
@@ -969,8 +911,17 @@ impl Workspace {
                     SidebarRow::Workspace(s) if s.age.is_some() => s.subject,
                     _ => None,
                 });
-            // (A tab shows its age only in its tooltip, read when it opens.)
-            let sinces = rows.map(|i| self.sessions.items()[i].status_since);
+            // (A tab shows its age only in its tooltip, read when it opens.) And the status
+            // bar's terminal (M11i), unless idle (its word has no age then).
+            let followed = self
+                .right_sidebar
+                .followed
+                .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
+                .filter(|s| s.status != Status::Idle)
+                .map(|s| s.status_since);
+            let sinces = rows
+                .map(|i| self.sessions.items()[i].status_since)
+                .chain(followed);
             // And the switcher's rows, while it's open.
             let switcher = self
                 .switcher_shown(cx)
@@ -1102,7 +1053,6 @@ impl Workspace {
             .child(list)
             .children(notice)
             .children(hint)
-            .children(self.render_update_button(window, cx))
             .child(self.render_footer(ui, cx))
             .child(self.render_resize_edge(ui, cx))
             .into_any_element()
@@ -1564,7 +1514,19 @@ impl Workspace {
         ui: UiColors,
         fill: Rgb,
     ) -> AnyElement {
-        let size = px(mark_size(session.status));
+        self.session_mark_sized(place, session, ui, fill, mark_size(session.status))
+    }
+
+    /// `session_mark` in a `size` box (the status bar's is smaller, M11i).
+    pub(crate) fn session_mark_sized(
+        &self,
+        place: &'static str,
+        session: &Session,
+        ui: UiColors,
+        fill: Rgb,
+        size: f32,
+    ) -> AnyElement {
+        let size = px(size);
         let popping = session
             .pop
             .filter(|(_, at)| session.status == Status::Done && at.elapsed() < POP_SHOWN);
@@ -1778,72 +1740,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The blue Update Available button over the footer, while a newer fuxx is known
-    /// (`updater::button`): a package icon, then "Update Available · v0.3.2", the version in
-    /// fainter white and left out when the button is too narrow for it (`update_fits`). A click
-    /// opens the update offer; while the update downloads it says so and takes no clicks.
-    fn render_update_button(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let state = &cx.try_global::<updater::Updates>()?.state;
-        let wide = updater::button(state, true)?;
-        // (The sidebar has no right border line since M11i: its content is its full width.)
-        let width = self.sidebar.width - 2.0 * ROW_INSET;
-        let label = if update_fits(update_text_width(&wide.text(), window), width) {
-            wide
-        } else {
-            updater::button(state, false)?
-        };
-        let clickable = label.clickable;
-        let words = label.text();
-        // The version in the same white, faded to `UPDATE_VERSION_ALPHA` (a highlight's colour
-        // is blended over the text's, so white at 75% over white would still be white).
-        let faint = label.version.as_ref().map(|v| {
-            let start = label.words.len();
-            let style = HighlightStyle {
-                fade_out: Some(1.0 - UPDATE_VERSION_ALPHA),
-                ..Default::default()
-            };
-            (start..start + v.len(), style)
-        });
-        Some(
-            div()
-                .id("sidebar-update")
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(UPDATE_ICON_GAP))
-                .h(px(UPDATE_BUTTON))
-                .mx(px(ROW_INSET))
-                .mb(px(UPDATE_GAP))
-                .rounded(px(UPDATE_RADIUS))
-                .bg(hsla(UPDATE_FILL))
-                .text_size(px(text::NAME))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(hsla(UPDATE_TEXT))
-                .child(footer_glyph(
-                    Glyph::Package,
-                    UPDATE_TEXT,
-                    UPDATE_ICON,
-                    UPDATE_ICON_STROKE,
-                ))
-                .child(
-                    div()
-                        .flex_none()
-                        .whitespace_nowrap()
-                        .child(StyledText::new(words).with_highlights(faint)),
-                )
-                .when(clickable, |button| {
-                    button
-                        .cursor_pointer()
-                        .hover(|style| style.bg(hsla(UPDATE_HOVER)))
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            updater::show_offer(this, window, cx)
-                        }))
-                })
-                .into_any_element(),
-        )
-    }
-
     /// The footer: a + (a menu of ways to start a session), then, at the right, the 🔔 (this
     /// run's notifications, with a dot while some are unseen) beside a gear for Preferences.
     fn render_footer(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
@@ -1981,7 +1877,8 @@ impl Workspace {
         let menu = div()
             .absolute()
             .left(px(ROW_INSET))
-            .bottom(px(FOOTER + 4.0))
+            // Above the footer, which sits on the status bar (M11i).
+            .bottom(px(STATUS_BAR + FOOTER + 4.0))
             .w(px(MENU_WIDTH))
             .p(px(4.0))
             .rounded(px(8.0))
@@ -2163,31 +2060,6 @@ fn group_id(key: &GroupKey) -> u64 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    #[test]
-    fn the_update_button_drops_the_version_when_it_does_not_fit() {
-        // A 16 px package icon, 6 px before the words, the pair inside the side padding.
-        assert_eq!((UPDATE_ICON, UPDATE_ICON_GAP), (16.0, 6.0));
-        assert_eq!(UPDATE_VERSION_ALPHA, 0.75);
-        let button = UPDATE_ICON + UPDATE_ICON_GAP + 100.0 + 2.0 * UPDATE_PAD;
-        assert!(update_fits(100.0, button));
-        assert!(update_fits(60.0, button));
-        assert!(!update_fits(100.5, button));
-    }
-
-    #[test]
-    fn the_update_button_is_blue_rounded_and_readable() {
-        let rgb = |r, g, b| Rgb { r, g, b };
-        assert_eq!(UPDATE_FILL, rgb(0x1F, 0x6F, 0xEB));
-        assert_eq!(UPDATE_HOVER, rgb(0x1A, 0x5F, 0xCC));
-        assert_eq!(UPDATE_TEXT, rgb(0xFF, 0xFF, 0xFF));
-        assert_eq!((UPDATE_BUTTON, UPDATE_RADIUS, UPDATE_GAP), (28.0, 8.0, 8.0));
-        // White text meets the 4.5:1 floor on both fills, whatever the theme.
-        for fill in [UPDATE_FILL, UPDATE_HOVER] {
-            let ratio = crate::ui_tokens::contrast(UPDATE_TEXT, fill);
-            assert!(ratio >= 4.5, "white on {fill:?} is {ratio:.2}");
-        }
-    }
 
     #[test]
     fn the_hint_and_the_new_menu_say_n_makes_a_workspace_and_t_a_tab() {

@@ -548,7 +548,7 @@ impl Workspace {
     /// `url`: its browser tab, or a new one split right of `pane`. `by_person`: the tab is shown
     /// and focused, and its page takes the keyboard; otherwise (an agent's) the person's focus
     /// stays exactly where it was. Its tab.
-    fn browser_in(
+    pub(crate) fn browser_in(
         &mut self,
         ws: WorkspaceId,
         pane: PaneId,
