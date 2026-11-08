@@ -27,9 +27,9 @@ use gpui::{
     MouseDownEvent, SharedString, StyledText, TextStyle, Window, div, prelude::*, px,
 };
 
+use crate::procs::ProgramState;
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::Tip;
-use crate::smart_name::{ProgramState, SEPARATOR};
 use crate::status::{Status, age_label};
 use crate::status_mark;
 use crate::tab_bar::{Glyph, glyph};
@@ -47,6 +47,9 @@ pub const PORTS_RETRY: Duration = Duration::from_secs(30);
 /// How often the refresh looks again while a lookup runs (capped at 2 s), so the next lookup
 /// lands `PORTS_REFRESH` after its answer.
 pub const PORTS_ASKING: Duration = Duration::from_secs(1);
+
+/// Between a status word and its age (`Working · 4m`), and a waiting row's status and question.
+pub const SEPARATOR: &str = " · ";
 
 /// The space at each end of the bar, and between its items.
 pub const PAD: f32 = 10.0;

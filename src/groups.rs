@@ -17,6 +17,12 @@ pub fn auto_name(user: Option<&str>, title: Option<&str>, preset: Option<&str>) 
         .to_string()
 }
 
+/// The program's title, when it says something `name` doesn't (shown under the name in a
+/// tooltip); none when it is blank or the same.
+pub fn extra_title<'a>(name: &str, title: Option<&'a str>) -> Option<&'a str> {
+    title.filter(|t| !t.trim().is_empty() && t.trim() != name.trim())
+}
+
 /// What a sidebar group is for: a folder (M7), or a host (M10b SSH sessions).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GroupKey {
@@ -152,6 +158,17 @@ pub fn rows(keys: &[Option<&GroupKey>], collapsed: &[GroupKey]) -> Vec<Row> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_title_shows_in_a_tooltip_only_when_it_says_more() {
+        assert_eq!(
+            extra_title("api", Some("me@mac:~/fuxx-cli")),
+            Some("me@mac:~/fuxx-cli")
+        );
+        assert_eq!(extra_title("fuxx-cli", Some("fuxx-cli")), None);
+        assert_eq!(extra_title("fuxx-cli", Some("  ")), None);
+        assert_eq!(extra_title("fuxx-cli", None), None);
+    }
 
     #[test]
     fn auto_name_prefers_user_then_title_then_preset() {

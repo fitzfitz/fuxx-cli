@@ -33,10 +33,10 @@ use crate::groups::{self, GroupKey, Row};
 use crate::layout_model::{Model, TabDrop, TabKind, WorkspaceId};
 use crate::preferences;
 use crate::presets::MAX_PRESETS;
+use crate::procs::ProgramState;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
 use crate::sidebar_toggle::Tip;
-use crate::smart_name::{self, ProgramState};
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_bar::{DraggedTab, Glyph, hold_closed_hand};
@@ -401,7 +401,7 @@ pub fn row_subjects(
 /// shows it cut to one); none when there is nothing past the name.
 pub fn row_tip(label: &str, title: Option<&str>, question: Option<&str>) -> Option<String> {
     let lines: Vec<&str> = [
-        crate::smart_name::extra_title(label, title),
+        groups::extra_title(label, title),
         question.filter(|q| !q.trim().is_empty()),
     ]
     .into_iter()
@@ -1349,7 +1349,10 @@ impl Workspace {
                         .child(NEEDS_INPUT),
                 )
                 .when_some(question.filter(|_| shows_question(row_width)), |line, q| {
-                    line.child(text(format!("{}{q}", smart_name::SEPARATOR), ui.text_dim))
+                    line.child(text(
+                        format!("{}{q}", crate::status_bar::SEPARATOR),
+                        ui.text_dim,
+                    ))
                 }),
             LineTwo::Note(note) => under().child(text(note, ui.text_faint)),
             // Short of room, the branch loses its end, then the folder its start (its own name

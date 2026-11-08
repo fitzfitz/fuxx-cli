@@ -51,7 +51,7 @@ use crate::pane_actions::PaneActionsMenu;
 use crate::pane_tab_menu::PaneTabMenu;
 use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
-use crate::procs::{self, Foreground, Proc};
+use crate::procs::{self, Foreground, Proc, ProgramState, Stable};
 use crate::pty::ShellEnv;
 use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
@@ -60,7 +60,6 @@ use crate::session_list::SessionList;
 use crate::settings;
 use crate::sidebar::{self, RowGrab, SidebarState};
 use crate::sidebar_toggle::{self, Slide};
-use crate::smart_name::{self, NameFacts, ProgramState, Stable};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
@@ -144,9 +143,10 @@ pub(crate) fn names_wait(ok: bool) -> Duration {
     if ok { NAMES_REFRESH } else { NAMES_RETRY }
 }
 
-/// What runs in each terminal (M11i), for its name (`terminal_label`): read from one `ps` table
-/// (`procs::ps_table`, on the background executor) at most every `NAMES_REFRESH`, and kept
-/// steady (`Stable`). A terminal never looked up is `Unknown`, not at its prompt.
+/// What runs in each terminal (M11i), for the status bar's word and ports and an idle row's dot
+/// (never its name): read from one `ps` table (`procs::ps_table`, on the background executor)
+/// at most every `NAMES_REFRESH`, and kept steady (`Stable`). A terminal never looked up is
+/// `Unknown`, not at its prompt.
 #[derive(Default)]
 pub(crate) struct Programs {
     by_terminal: HashMap<u64, Stable>,
@@ -197,7 +197,7 @@ impl Programs {
             let seen = match procs::foreground(&table, shell) {
                 Foreground::Prompt => ProgramState::Prompt,
                 Foreground::Program(args) => {
-                    let name = smart_name::program_name(&args);
+                    let name = procs::program_name(&args);
                     if name.is_empty() {
                         ProgramState::Unknown
                     } else {
@@ -1577,35 +1577,14 @@ impl Workspace {
             .or_else(|| self.model.terminals(ws).first().copied())
     }
 
-    /// Terminal `id`'s name as fuxx shows it (M11i, `smart_name`): yours, else what runs there
-    /// and where, else where, else (SSH) its host… The scripting API keeps `Session::label`.
+    /// Terminal `id`'s name as fuxx shows it: its `Session::label` (yours, else the program's
+    /// own title, else its preset's name, else ╭∩╮), as the scripting API names it.
     pub(crate) fn terminal_label(&self, id: u64) -> SharedString {
-        let Some(s) = self.sessions.items().iter().find(|s| s.id == id) else {
-            return groups::DEFAULT_NAME.into();
-        };
-        let host = s.ssh.as_ref().map(|t| t.host.as_str());
-        let found = self.places.folder(id);
-        // An SSH terminal's folder is only what its remote shell reported (not where it began).
-        let folder = if host.is_some() {
-            found
-        } else {
-            found.or(s.project.as_deref())
-        };
-        smart_name::smart_name(&NameFacts {
-            user: s.name.as_deref(),
-            // What runs over SSH is on the other machine: not looked up.
-            program: if host.is_some() {
-                ProgramState::Unknown
-            } else {
-                self.programs.state(id)
-            },
-            folder,
-            home: self.places.home.as_deref(),
-            ssh_host: host,
-            preset: s.preset.as_ref().map(|p| p.name.as_str()),
-            title: s.title.as_deref(),
-        })
-        .into()
+        self.sessions
+            .items()
+            .iter()
+            .find(|s| s.id == id)
+            .map_or_else(|| groups::DEFAULT_NAME.into(), Session::label)
     }
 
     /// A row's tooltip (`sidebar::row_tip`): its name and, under it, the program's own title
@@ -1624,7 +1603,7 @@ impl Workspace {
         sidebar::row_tip(&label, title, question)
     }
 
-    /// A workspace's name: yours, else its focused pane's terminal's (`terminal_label`), else
+    /// A workspace's name: yours, else its focused pane's terminal's (`Session::label`), else
     /// its first terminal's, else the shown page's title or file's name, else "Browser".
     pub(crate) fn workspace_label(&self, ws: WorkspaceId) -> SharedString {
         let Some(w) = self.model.workspace(ws) else {
@@ -1634,7 +1613,8 @@ impl Workspace {
             return name.to_string().into();
         }
         self.named_terminal(ws)
-            .map(|id| self.terminal_label(id))
+            .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
+            .map(Session::label)
             .or_else(|| {
                 let tab = self.model.pane(w.focused)?.active;
                 Some(self.browser_titles.get(&tab)?.clone().into())
@@ -2394,7 +2374,7 @@ impl Workspace {
         let renaming = *renaming;
         self.renaming = None;
         // What the box was opened with: confirmed unchanged, an automatic name stays automatic
-        // (and keeps following what runs there).
+        // (and keeps following the program's title).
         let opened_with = std::mem::take(&mut self.renamed_from);
         if let NameInputEvent::Confirm(text) = event {
             match renaming {
@@ -3476,10 +3456,9 @@ mod tests {
         scripting_env, session_env, starts_window_move, window_title,
     };
     use crate::presets::Preset;
-    use crate::procs::parse_ps;
+    use crate::procs::{ProgramState, parse_ps};
     use crate::pty::apply_env;
     use crate::restore::SavedSession;
-    use crate::smart_name::ProgramState;
     use gpui::MouseButton;
     use portable_pty::CommandBuilder;
     use std::collections::BTreeMap;
@@ -3502,7 +3481,7 @@ mod tests {
         assert!(programs.take(Some(parse_ps(ps)), &shells));
         assert_eq!(programs.state(1), ProgramState::Prompt);
         assert_eq!(programs.state(2), ProgramState::Running("claude".into()));
-        assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
+        assert_eq!(programs.state(3), ProgramState::Running("make".into()));
         // A shell not in the table, and one never asked about.
         assert_eq!(programs.state(4), ProgramState::Unknown);
         assert_eq!(programs.state(5), ProgramState::Unknown);
@@ -3510,7 +3489,7 @@ mod tests {
         // make ends: one answer isn't enough, two are.
         let after = "100 1 100 100 Ss -zsh\n300 1 300 300 Ss -zsh\n";
         assert!(!programs.take(Some(parse_ps(after)), &shells[2..3]));
-        assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
+        assert_eq!(programs.state(3), ProgramState::Running("make".into()));
         assert!(programs.take(Some(parse_ps(after)), &shells[2..3]));
         assert_eq!(programs.state(3), ProgramState::Prompt);
         // Terminals not asked about are kept as they were, never forgotten for it (the caller
@@ -3538,47 +3517,6 @@ mod tests {
         programs.retain(|id| id == 1);
         assert_eq!(programs.state(2), ProgramState::Unknown);
         assert_eq!(programs.state(1), ProgramState::Prompt);
-    }
-
-    /// ⌘P (and the notifications) name a workspace that isn't on screen by what runs there:
-    /// its terminal's program isn't forgotten while its name is out of view, so typing the
-    /// program finds it.
-    #[test]
-    fn a_workspace_out_of_view_keeps_its_program_in_its_switcher_label() {
-        use crate::smart_name::{NameFacts, smart_name};
-        use crate::status::Status;
-        use crate::switcher::{Entry, matches};
-        // s1 on screen (at its prompt); s2, in another workspace, runs claude.
-        let ps = "\
-            100 1 100 100 Ss -zsh\n\
-            200 1 200 210 Ss -zsh\n\
-            210 200 210 210 S+ claude\n";
-        let mut programs = Programs::default();
-        programs.take(Some(parse_ps(ps)), &[(1, 100), (2, 200)]);
-        // Its workspace leaves the view (the sidebar hidden, another workspace shown) and the
-        // next tables come.
-        programs.take(Some(parse_ps(ps)), &[(1, 100)]);
-        programs.take(Some(parse_ps(ps)), &[(1, 100)]);
-        let label = smart_name(&NameFacts {
-            user: None,
-            program: programs.state(2),
-            folder: Some(Path::new("/Users/me/proj/api")),
-            home: Some(Path::new("/Users/me")),
-            ssh_host: None,
-            preset: None,
-            title: None,
-        });
-        assert_eq!(label, "claude \u{b7} api");
-        let entry = Entry {
-            id: 2,
-            label,
-            group: None,
-            status: Status::Idle,
-            since: Instant::now(),
-            question: None,
-            color: None,
-        };
-        assert!(matches(2, &entry, "claude"), "typing the program finds it");
     }
 
     #[test]

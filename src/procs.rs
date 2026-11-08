@@ -10,6 +10,11 @@
 //! `/usr/sbin/lsof -nP -iTCP -sTCP:LISTEN -a -p <pids> -Fpn` run (capped at 2 s, off the UI
 //! thread).
 //!
+//! What runs in a terminal (`ProgramState`) drives the status bar's word (Running or Ready),
+//! its ports (looked up only while a program runs) and an idle row's dot or ring; never a
+//! name. `program_name` says which program it is (only to tell one from another) and `Stable`
+//! keeps the answer from flickering.
+//!
 //! `parse_ps`, `foreground`, `descendants`, `parse_lsof` and `read_lsof` are pure and tested on
 //! the tools' output as text; `ps_table` and `listening_ports` run them and block, so they are
 //! called on the background executor.
@@ -38,6 +43,117 @@ impl Proc {
     /// It has ended and waits for its parent to reap it (`Z`).
     pub fn is_zombie(&self) -> bool {
         self.stat.starts_with('Z')
+    }
+}
+
+/// What runs in a terminal, as far as is known.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProgramState {
+    /// A program other than the shell is in front: which (`program_name`).
+    Running(String),
+    /// The shell is at its prompt.
+    Prompt,
+    /// Not looked up (yet), or it can't be: an SSH or background-service terminal.
+    Unknown,
+}
+
+/// The coding agents fuxx knows, by the name they run as.
+const AGENTS: &[&str] = &[
+    "claude", "codex", "opencode", "aider", "gemini", "goose", "amp",
+];
+/// Agents run from an npm package (`node …/@anthropic-ai/claude-code/cli.js`): the package's
+/// path and the agent's name.
+const AGENT_PACKAGES: &[(&str, &str)] = &[
+    ("@anthropic-ai/claude-code", "claude"),
+    ("@openai/codex", "codex"),
+    ("@google/gemini-cli", "gemini"),
+];
+
+/// Which program a command line from `ps` runs: a known agent (by its name or its package's
+/// path, anywhere in it), else the program's file name. Cut at a newline (`ps` writes it
+/// `\012`). No argument is kept.
+pub fn program_name(args: &str) -> String {
+    let line = args.split("\\012").next().unwrap_or_default();
+    let line = line.split('\n').next().unwrap_or_default();
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let agent = words.iter().find_map(|word| {
+        let name = file_name(word);
+        AGENTS.iter().copied().find(|a| *a == name).or_else(|| {
+            AGENT_PACKAGES
+                .iter()
+                .find(|(package, _)| word.contains(package))
+                .map(|(_, agent)| *agent)
+        })
+    });
+    match (agent, words.first()) {
+        (Some(agent), _) => agent.to_string(),
+        (None, Some(first)) => file_name(first).to_string(),
+        (None, None) => String::new(),
+    }
+}
+
+/// A program's file name: the folder part and a login shell's leading `-` dropped.
+fn file_name(word: &str) -> &str {
+    let name = word.rsplit('/').next().unwrap_or(word);
+    name.trim_start_matches('-')
+}
+
+/// Whether `name` (a `program_name`) is one of the coding agents fuxx knows.
+pub fn is_known_agent(name: &str) -> bool {
+    AGENTS.contains(&name)
+}
+
+/// The program a terminal is shown running, kept steady: a new answer is taken only once it
+/// comes twice in a row. A known agent is taken at once, and so is the prompt after one; so is
+/// the first answer of all (nothing was known before it).
+#[derive(Clone, Debug)]
+pub struct Stable {
+    shown: ProgramState,
+    pending: Option<(ProgramState, u8)>,
+}
+
+impl Default for Stable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Stable {
+    /// Nothing known yet.
+    pub fn new() -> Stable {
+        Stable {
+            shown: ProgramState::Unknown,
+            pending: None,
+        }
+    }
+
+    /// A lookup saw `seen`; true when what's shown changed.
+    pub fn offer(&mut self, seen: ProgramState) -> bool {
+        if seen == self.shown {
+            self.pending = None;
+            return false;
+        }
+        let agent = |state: &ProgramState| matches!(state, ProgramState::Running(name) if is_known_agent(name));
+        let at_once = self.shown == ProgramState::Unknown
+            || agent(&seen)
+            || (seen == ProgramState::Prompt && agent(&self.shown));
+        let count = match &self.pending {
+            Some((pending, count)) if *pending == seen => count + 1,
+            _ => 1,
+        };
+        if at_once || count >= 2 {
+            self.shown = seen;
+            self.pending = None;
+            true
+        } else {
+            self.pending = Some((seen, count));
+            false
+        }
+    }
+
+    /// What's shown.
+    pub fn shown(&self) -> &ProgramState {
+        &self.shown
     }
 }
 
@@ -196,6 +312,102 @@ fn lsof_command(pids: &[u32]) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(name: &str) -> ProgramState {
+        ProgramState::Running(name.into())
+    }
+
+    #[test]
+    fn programs_are_known_by_an_agent_or_their_file_name() {
+        let cases = [
+            ("claude", "claude"),
+            (
+                "node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+                "claude",
+            ),
+            (
+                "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js",
+                "codex",
+            ),
+            ("node /x/@google/gemini-cli/dist/index.js", "gemini"),
+            ("/opt/homebrew/bin/aider --model x", "aider"),
+            ("codex --full-auto", "codex"),
+            ("node /usr/local/bin/npm run dev", "node"),
+            ("cargo test --release", "cargo"),
+            ("/usr/bin/vim src/main.rs", "vim"),
+            ("python3 manage.py runserver", "python3"),
+            ("-zsh", "zsh"),
+            ("/bin/zsh -l", "zsh"),
+            ("foo\\012bar", "foo"),
+            ("", ""),
+        ];
+        for (args, name) in cases {
+            assert_eq!(program_name(args), name, "{args}");
+        }
+    }
+
+    #[test]
+    fn no_argument_is_kept() {
+        for (args, hidden) in [
+            ("cargo run -- --token abc123", "abc123"),
+            ("docker run -e API_KEY=sk-live-0123456789 img", "sk-live"),
+            ("git -C /Users/me/repo status", "/Users"),
+        ] {
+            let name = program_name(args);
+            assert!(!name.contains(hidden), "{args} keeps {hidden}");
+            assert!(!name.contains(' '), "{args}: one word ({name})");
+        }
+    }
+
+    #[test]
+    fn the_known_agents_are_known() {
+        for agent in [
+            "claude", "codex", "opencode", "aider", "gemini", "goose", "amp",
+        ] {
+            assert!(is_known_agent(agent), "{agent}");
+        }
+        for other in ["make", "vim", "npm", "zsh", ""] {
+            assert!(!is_known_agent(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_new_program_shows_after_two_answers_in_a_row() {
+        let mut s = Stable::new();
+        assert!(s.offer(ProgramState::Prompt), "the first answer is taken");
+        assert!(!s.offer(run("make")));
+        assert_eq!(s.shown(), &ProgramState::Prompt);
+        assert!(s.offer(run("make")));
+        assert_eq!(s.shown(), &run("make"));
+        // The same answer again changes nothing.
+        assert!(!s.offer(run("make")));
+    }
+
+    #[test]
+    fn a_known_agent_and_the_prompt_after_it_show_at_once() {
+        let mut s = Stable::new();
+        s.offer(ProgramState::Prompt);
+        assert!(s.offer(run("claude")));
+        assert_eq!(s.shown(), &run("claude"));
+        assert!(s.offer(ProgramState::Prompt));
+        assert_eq!(s.shown(), &ProgramState::Prompt);
+    }
+
+    #[test]
+    fn alternating_answers_never_change_what_is_shown() {
+        let mut s = Stable::new();
+        s.offer(ProgramState::Prompt);
+        for _ in 0..4 {
+            assert!(!s.offer(run("ls")));
+            assert!(!s.offer(run("grep")));
+        }
+        assert_eq!(s.shown(), &ProgramState::Prompt);
+        // Nor does a one-off answer between two of the same.
+        assert!(!s.offer(run("make")));
+        assert!(!s.offer(ProgramState::Prompt));
+        assert!(!s.offer(run("make")));
+        assert_eq!(s.shown(), &ProgramState::Prompt);
+    }
 
     fn proc(pid: u32, ppid: u32, pgid: u32, tpgid: u32, stat: &str, args: &str) -> Proc {
         Proc {

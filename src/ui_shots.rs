@@ -19,8 +19,8 @@ use gpui::{
 use gpui_platform::current_platform;
 
 use crate::appearance::Appearance;
+use crate::procs::ProgramState;
 use crate::restore::RestoreMode;
-use crate::smart_name::ProgramState;
 use crate::split_tree::Axis;
 use crate::status::Status;
 use crate::status_mark::{self, BREATHS_PER_BEAT, TURNS_PER_BEAT};
@@ -233,7 +233,8 @@ const SCENES: &[(&str, fn())] = &[
     ("api-background", api_background),
     ("banner-click", banner_click),
     ("default-name", default_name),
-    ("smart-names", smart_names),
+    ("names", names),
+    ("renames", renames),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("help", help_scenes),
@@ -7559,11 +7560,10 @@ fn api_background() {
     render_with(&theme, size(px(960.0), px(560.0)), build, act);
 }
 
-/// New terminals with no name of yours (M11c Task 3b; M11i): one in a folder is called by the
-/// folder (`api`), and **╭∩╮** (`groups::DEFAULT_NAME`) is left for one that knows no folder
-/// (shown, so its tab and row draw it). Shot in both themes (`default-name-*.png`) to see that
-/// the glyphs draw (no missing-glyph boxes); panics unless the names are those, and the
-/// scripting API's name (`Session::label`) is still the default for both.
+/// New terminals with no name of yours (M11c Task 3b): **╭∩╮** (`groups::DEFAULT_NAME`), the
+/// user's signature, whether in a folder or not (the one shown draws it in its tab and row).
+/// Shot in both themes (`default-name-*.png`) to see that the glyphs draw (no missing-glyph
+/// boxes); panics unless both are called that, as `Session::label` (the scripting API's name).
 fn default_name() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -7591,15 +7591,19 @@ fn default_name() {
             cx.read(|cx| {
                 let ws = ws.read(cx);
                 let named = |folder: bool| {
-                    let s = ws.sessions.items().iter().find(|s| s.project.is_some() == folder);
+                    let s = ws
+                        .sessions
+                        .items()
+                        .iter()
+                        .find(|s| s.project.is_some() == folder);
                     let s = s.expect("both opened");
                     (ws.terminal_label(s.id).to_string(), s.label().to_string())
                 };
                 let default = crate::groups::DEFAULT_NAME.to_string();
                 assert_eq!(
                     named(true),
-                    ("api".to_string(), default.clone()),
-                    "default-name: a terminal in a folder is called by it (the API's name unchanged)"
+                    (default.clone(), default.clone()),
+                    "default-name: ╭∩╮ for a terminal in a folder too"
                 );
                 assert_eq!(
                     named(false),
@@ -7622,38 +7626,40 @@ fn default_name() {
     }
 }
 
-/// The folders of `smart_names`'s terminals.
+/// The folders of `names`'s terminals.
 const FUXX_CLI: &str = "/Users/me/Kerja/proj/fuxx-cli";
 const INVITEE: &str = "/Users/me/w/invitee";
 const SHOT_HOME: &str = "/Users/me";
 /// What devbox's remote shell reported (OSC 7).
 const DEVBOX_SRC: &str = "/home/me/src";
-/// A shell theme's title (OSC 2): no longer the name, only in the tooltips.
+/// A shell theme's title (OSC 2): the name of a terminal you haven't named.
 const SHELL_TITLE: &str = "me@mac:~/Kerja/proj/fuxx-cli";
+/// The title Claude Code sets (OSC 2): it names its terminal (the program renames it).
+const AGENT_TITLE: &str = "✳ Claude Code";
+/// The preset `names`'s at-home terminal was started from.
+const SHOT_PRESET: &str = "logs";
 
-/// The terminals of `smart_names`'s shown workspace, by id.
+/// The terminals of `names`'s shown workspace, by id.
 #[derive(Clone, Copy, Default)]
-struct SmartIds {
+struct NameIds {
     claude: u64,
     prompt: u64,
 }
 
-/// `smart_names`'s window. The shown workspace: claude (running `claude` in fuxx-cli, focused),
-/// a dev server (`npm run dev` in invitee) and api (renamed, running `claude`) in the left
-/// pane; the dashboard page, a shell at its prompt in fuxx-cli (with a shell theme's title), one
-/// at home and an SSH terminal to devbox in the right. Then a workspace each for: `npm run dev`
-/// in invitee, a prompt in fuxx-cli, a prompt at home, api, and devbox. Programs and folders are
-/// set, not looked up.
-fn smart_names_workspace(
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> (Workspace, SmartIds) {
+/// `names`'s window. The shown workspace: claude (running `claude` in fuxx-cli, its title
+/// Claude Code's, focused), a dev server (`npm run dev` in invitee, no title) and api (yours,
+/// running `claude`, with Claude Code's title) in the left pane; the dashboard page, a shell at
+/// its prompt in fuxx-cli (with a shell theme's title), one at home started from the `logs`
+/// preset and an SSH terminal to devbox in the right. Then a workspace each for: `npm run dev`
+/// in invitee, a prompt in fuxx-cli (titled), a prompt at home, api (titled too), and devbox. Programs and
+/// folders are set, not looked up.
+fn names_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> (Workspace, NameIds) {
     use std::path::Path;
     use std::time::Instant;
 
     use crate::browser_tab::BarState;
     use crate::layout_model::TabKind;
-    use crate::smart_name::ProgramState::{Prompt, Running};
+    use crate::procs::ProgramState::{Prompt, Running};
     use crate::workspace::At;
 
     let mut ws = Workspace::for_shots(window, cx);
@@ -7689,7 +7695,7 @@ fn smart_names_workspace(
     let devbox = ws.open_shot_at(None, None, SHELL_TEXT, right, window, cx);
     // A workspace of its own each.
     let rows = [
-        (None, invitee, Some(running("npm run dev"))),
+        (None, invitee, Some(running("npm"))),
         (None, fuxx, Some(Prompt)),
         (None, home, Some(Prompt)),
         (Some("api"), fuxx, Some(running("claude"))),
@@ -7703,11 +7709,10 @@ fn smart_names_workspace(
         }
         opened_rows.push(id);
     }
-    let row_prompt = opened_rows[1];
-    let row_devbox = opened_rows[4];
+    let (row_prompt, row_api, row_devbox) = (opened_rows[1], opened_rows[3], opened_rows[4]);
     for (id, state) in [
         (claude, running("claude")),
-        (npm, running("npm run dev")),
+        (npm, running("npm")),
         (api, running("claude")),
         (prompt, Prompt),
         (at_home, Prompt),
@@ -7724,44 +7729,60 @@ fn smart_names_workspace(
         ws.places
             .set_folder(id, Some(DEVBOX_SRC.into()), Instant::now());
     }
-    for id in [prompt, row_prompt] {
+    for (id, title) in [
+        (prompt, SHELL_TITLE),
+        (row_prompt, SHELL_TITLE),
+        (claude, AGENT_TITLE),
+        (api, AGENT_TITLE),
+        (row_api, AGENT_TITLE),
+    ] {
         let i = ws.index_of(id).expect("opened");
-        ws.sessions.get_mut(i).expect("opened").title = Some(SHELL_TITLE.into());
+        ws.sessions.get_mut(i).expect("opened").title = Some(title.into());
     }
+    let i = ws.index_of(at_home).expect("opened");
+    ws.sessions.get_mut(i).expect("opened").preset = Some(crate::presets::Preset {
+        name: SHOT_PRESET.into(),
+        command: "tail -f log".into(),
+    });
     ws.sync();
     ws.select(ws.index_of(claude).expect("claude"), window, cx);
-    (ws, SmartIds { claude, prompt })
+    (ws, NameIds { claude, prompt })
 }
 
-/// Smart names (M11i): every tab and row says what runs there and where, or where. In both
-/// themes (`smart-names-*.png`). Panics unless:
-/// - the tabs read `claude · fuxx-cli`, `npm run dev · invitee`, `api` (yours wins over what
-///   runs), the page's title, `fuxx-cli`, `~` and `devbox · src`; the rows read the shown
-///   workspace's focused terminal's name and `npm run dev · invitee`, `fuxx-cli`, `~`, `api`
-///   and `devbox · src`;
-/// - the shell theme's title is only in the tooltips (tab and row), on a second line;
-/// - the scripting API's names are as before (`Session::label`: the title, ╭∩╮, yours);
-/// - Enter on an untouched smart name, in the tab's rename box and the row's, keeps the
-///   terminal and the workspace automatic.
-fn smart_names() {
+/// Names (as before M11i, the user's call of 2026-11-09): every tab, row and the window title
+/// say a terminal's `Session::label`: your name, else the program's own title (a program that
+/// sets one renames its terminal), else its preset's name, else ╭∩╮, whatever runs there and
+/// wherever it is. In both themes (`names-*.png`). Panics unless:
+/// - the tabs read Claude Code's title, ╭∩╮ (the dev server: no title), `api` (yours wins
+///   over the title), the page's title, the shell theme's title, `logs` (the preset) and ╭∩╮
+///   (devbox); the rows read the shown workspace's focused terminal's name and ╭∩╮, the shell
+///   theme's title, ╭∩╮, `api` and ╭∩╮; the window title the shown workspace's;
+/// - each terminal's name is its `Session::label` (the scripting API's);
+/// - only a name that isn't its title has the title under it in a tooltip (api's tab and row);
+/// - Enter on an untouched automatic name, in the tab's rename box and the row's, keeps the
+///   terminal and the workspace automatic, also when the title changes while the box is open
+///   (the name then follows the new title).
+fn names() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Instant;
 
     use gpui::KeyBinding;
 
+    use crate::groups::DEFAULT_NAME;
     use crate::sidebar::SidebarRow;
+    use crate::workspace::window_title;
 
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
-        let ids = Rc::new(Cell::new(SmartIds::default()));
+        let ids = Rc::new(Cell::new(NameIds::default()));
         let set_ids = ids.clone();
         let build = move |window: &mut Window, cx: &mut App| -> AnyView {
             cx.set_global(shot_appearance(theme, cx));
             let ws = cx.new(|cx| {
-                let (ws, ids) = smart_names_workspace(window, cx);
+                let (ws, ids) = names_workspace(window, cx);
                 set_ids.set(ids);
                 ws
             });
@@ -7771,7 +7792,7 @@ fn smart_names() {
         let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
             let ws = slotted(&slot);
             let ids = ids.get();
-            let n = format!("smart-names-{slug}");
+            let n = format!("names-{slug}");
             cx.read(|cx| {
                 let ws = ws.read(cx);
                 let now = Instant::now();
@@ -7785,20 +7806,36 @@ fn smart_names() {
                 };
                 assert_eq!(
                     titles(&bars[0]),
-                    ["claude · fuxx-cli", "npm run dev · invitee", "api"],
+                    [AGENT_TITLE, DEFAULT_NAME, "api"],
                     "{n}: the left pane's tabs"
                 );
                 assert_eq!(
                     titles(&bars[1]),
-                    [PAGE_TITLE, "fuxx-cli", "~", "devbox · src"],
+                    [PAGE_TITLE, SHELL_TITLE, SHOT_PRESET, DEFAULT_NAME],
                     "{n}: the right pane's tabs"
                 );
-                let prompt_tab = bars[1].iter().find(|t| t.terminal == Some(ids.prompt));
+                let tips: Vec<&str> = bars
+                    .iter()
+                    .flatten()
+                    .filter(|t| t.terminal.is_some())
+                    .map(|t| t.tip.as_str())
+                    .collect();
                 assert_eq!(
-                    prompt_tab.expect("its tab").tip,
-                    format!("fuxx-cli\n{SHELL_TITLE}"),
-                    "{n}: the title is in the tab's tooltip, under the name"
+                    tips,
+                    [
+                        AGENT_TITLE,
+                        DEFAULT_NAME,
+                        &format!("api\n{AGENT_TITLE}"),
+                        SHELL_TITLE,
+                        SHOT_PRESET,
+                        DEFAULT_NAME,
+                    ],
+                    "{n}: the title is under a name only when it isn't the name"
                 );
+                // Every terminal's name is the scripting API's, whatever runs there.
+                for s in ws.sessions.items() {
+                    assert_eq!(ws.terminal_label(s.id), s.label(), "{n}: s{}", s.id);
+                }
                 let rows: Vec<(String, Option<String>)> = ws
                     .rows_in_view(now)
                     .into_iter()
@@ -7810,34 +7847,32 @@ fn smart_names() {
                 let mut labels: Vec<&str> = rows.iter().map(|(l, _)| l.as_str()).collect();
                 labels.sort();
                 let mut want = [
-                    "claude · fuxx-cli",
-                    "npm run dev · invitee",
-                    "fuxx-cli",
-                    "~",
+                    AGENT_TITLE,
+                    DEFAULT_NAME,
+                    SHELL_TITLE,
+                    DEFAULT_NAME,
                     "api",
-                    "devbox · src",
+                    DEFAULT_NAME,
                 ];
                 want.sort();
                 assert_eq!(labels, want, "{n}: the rows");
                 let tips: Vec<&str> = rows.iter().filter_map(|(_, t)| t.as_deref()).collect();
                 assert_eq!(
                     tips,
-                    [format!("fuxx-cli\n{SHELL_TITLE}").as_str()],
-                    "{n}: only the titled row has a tooltip, its title under the name"
+                    [format!("api\n{AGENT_TITLE}").as_str()],
+                    "{n}: only api's row has a tooltip, the title under the name"
                 );
-                // The scripting API's names are as they were.
-                let api_name = |id: u64| {
-                    let i = ws.index_of(id).expect("open");
-                    ws.sessions.items()[i].label().to_string()
-                };
+                let shown = ws.model.focused_workspace().expect("shown");
+                let number = ws.workspace_number(shown).expect("numbered");
                 assert_eq!(
-                    api_name(ids.claude),
-                    crate::groups::DEFAULT_NAME,
-                    "{n}: API"
+                    window_title(number, &ws.workspace_label(shown)),
+                    window_title(number, AGENT_TITLE),
+                    "{n}: the window title"
                 );
-                assert_eq!(api_name(ids.prompt), SHELL_TITLE, "{n}: API, the title");
+                let i = ws.index_of(ids.prompt).expect("open");
+                assert_eq!(ws.sessions.items()[i].label(), SHELL_TITLE, "{n}: API");
             });
-            // Enter on an untouched smart name: the tab's rename box, then the row's.
+            // Enter on an untouched automatic name: the tab's rename box, then the row's.
             cx.update(|cx| {
                 cx.bind_keys([KeyBinding::new(
                     "enter",
@@ -7846,15 +7881,20 @@ fn smart_names() {
                 )])
             });
             let shown_ws = cx.read(|cx| ws.read(cx).model.focused_workspace().expect("shown"));
-            // Each box twice: untouched; then with the smart name changing while it's open
-            // (claude quits to the prompt): Enter on the text it opened with still stores no
-            // name (Settled #14), and the name follows what runs.
-            let claude_state = |running: bool| {
-                if running {
-                    crate::smart_name::ProgramState::Running("claude".into())
-                } else {
-                    crate::smart_name::ProgramState::Prompt
-                }
+            // Each box twice: untouched; then with the title changing while it's open (claude
+            // says what it's at): Enter on the text it opened with still stores no name
+            // (Settled #14), and the name follows the title.
+            const NEW_TITLE: &str = "✳ Fix the tests";
+            let set_title = |cx: &mut VisualTestAppContext, title: &str| {
+                cx.update(|cx| {
+                    ws.update(cx, |ws, cx| {
+                        let i = ws.index_of(ids.claude).expect("open");
+                        ws.sessions.get_mut(i).expect("open").title =
+                            Some(title.to_string().into());
+                        cx.notify();
+                    })
+                });
+                cx.run_until_parked();
             };
             for (tab, changes) in [(true, false), (false, false), (true, true), (false, true)] {
                 cx.update_window(window, |_, window, cx| {
@@ -7873,18 +7913,12 @@ fn smart_names() {
                     let (_, input) = ws.renaming.as_ref().expect("the rename box is open");
                     assert_eq!(
                         input.read(cx).text(),
-                        "claude · fuxx-cli",
-                        "{n}: the box starts with the smart name"
+                        AGENT_TITLE,
+                        "{n}: the box starts with the name"
                     );
                 });
                 if changes {
-                    cx.update(|cx| {
-                        ws.update(cx, |ws, cx| {
-                            ws.programs.set_for_shots(ids.claude, claude_state(false));
-                            cx.notify();
-                        })
-                    });
-                    cx.run_until_parked();
+                    set_title(cx, NEW_TITLE);
                 }
                 cx.simulate_keystrokes(window, "enter");
                 cx.run_until_parked();
@@ -7896,29 +7930,295 @@ fn smart_names() {
                     assert_eq!(ws.sessions.items()[i].name, None, "{m}: still automatic");
                     let w = ws.model.workspace(shown_ws).expect("shown");
                     assert_eq!(w.name, None, "{m}: the workspace still automatic");
-                    let now = if changes {
-                        "fuxx-cli"
-                    } else {
-                        "claude · fuxx-cli"
-                    };
+                    let now = if changes { NEW_TITLE } else { AGENT_TITLE };
                     assert_eq!(ws.terminal_label(ids.claude).as_ref(), now, "{m}");
                     assert_eq!(ws.workspace_label(shown_ws).as_ref(), now, "{m}");
                 });
-                cx.update(|cx| {
-                    ws.update(cx, |ws, cx| {
-                        ws.programs.set_for_shots(ids.claude, claude_state(true));
-                        cx.notify();
-                    })
-                });
-                cx.run_until_parked();
+                set_title(cx, AGENT_TITLE);
             }
             slot.borrow_mut().take();
         };
         let path = shoot_with(
-            "smart-names",
+            "names",
             slug,
             &theme,
             size(px(1440.0), px(560.0)),
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// A made-up shell pid for terminal `id` in `renames`'s `ps` tables.
+fn shot_shell_pid(id: u64) -> u32 {
+    1000 + id as u32
+}
+
+/// One of the programs' lookups as the app runs it every 3 s (`Programs::take`, `ps` left out):
+/// each of `states`' terminals at its prompt (`false`) or running `make all` (`true`), offered
+/// twice so the steadying takes it. Then the clock moves past a lookup and a ports refresh.
+fn names_tick(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>, states: &[(u64, bool)]) {
+    use crate::procs::Proc;
+    let proc = |pid: u32, pgid: u32, tpgid: u32, args: &str| Proc {
+        pid,
+        ppid: 1,
+        pgid,
+        tpgid,
+        stat: "S".into(),
+        args: args.into(),
+    };
+    let mut table = Vec::new();
+    let mut shells = Vec::new();
+    for &(id, running) in states {
+        let shell = shot_shell_pid(id);
+        let job = shell + 500;
+        table.push(proc(
+            shell,
+            shell,
+            if running { job } else { shell },
+            "-zsh",
+        ));
+        if running {
+            table.push(proc(job, job, job, "make all"));
+        }
+        shells.push((id, shell));
+    }
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            ws.programs.take(Some(table.clone()), &shells);
+            ws.programs.take(Some(table), &shells);
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    cx.background_executor
+        .advance_clock(std::time::Duration::from_secs(6));
+    cx.run_until_parked();
+}
+
+/// The ids of `renames`'s terminals.
+#[derive(Clone, Copy, Default)]
+struct RenameIds {
+    prompt: u64,
+    running: u64,
+}
+
+/// Renaming by typing (the user's report, 2026-11-09: "I cannot rename them at all"), for a
+/// terminal at its prompt and one running a program, each in a workspace of its own:
+/// - a double-click on its tab opens the tab's rename box with the keyboard; a lookup of what
+///   runs (and the clock past a ports refresh) while it's open leaves it open and focused;
+///   a new name typed and Enter name the terminal, and after another lookup the tab, the row
+///   (its workspace has no name) and the window title all show it;
+/// - ⌘R opens the row's rename box the same way; a typed name and Enter name the workspace,
+///   and after a lookup the row and the window title show it, the tab still the terminal's.
+///
+/// Both start as ╭∩╮ (no title, no preset). In both themes (`renames-*.png`, the second
+/// workspace renamed). Panics on the first that doesn't hold.
+fn renames() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    use gpui::{Focusable, KeyBinding, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+
+    use crate::sidebar::SidebarRow;
+    use crate::workspace::{At, RenameSession, Renaming, window_title};
+
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let ids = Rc::new(Cell::new(RenameIds::default()));
+        let set_ids = ids.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                let fuxx = Some(std::path::Path::new(FUXX_CLI));
+                let prompt = ws.open_shot_at(None, fuxx, SHELL_TEXT, At::New, window, cx);
+                let running = ws.open_shot_at(None, fuxx, AGENT_TEXT, At::New, window, cx);
+                ws.programs.set_for_shots(prompt, ProgramState::Prompt);
+                ws.programs
+                    .set_for_shots(running, ProgramState::Running("claude".into()));
+                ws.sync();
+                set_ids.set(RenameIds { prompt, running });
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let ids = ids.get();
+            cx.update(|cx| {
+                cx.bind_keys([
+                    KeyBinding::new("enter", crate::name_input::Confirm, Some("NameInput")),
+                    KeyBinding::new("cmd-r", RenameSession, None),
+                ])
+            });
+            let none = Modifiers::none();
+            // Whether the rename box is open on `on`, with the keyboard.
+            let open_on = |cx: &mut VisualTestAppContext, on: Renaming| {
+                cx.update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    ws.renaming
+                        .as_ref()
+                        .filter(|(r, _)| *r == on)
+                        .map(|(_, input)| input.focus_handle(cx).is_focused(window))
+                })
+                .expect("read the box")
+            };
+            // What the tab, the row and the window title say about terminal `id`'s workspace.
+            let shown = |cx: &mut VisualTestAppContext, id: u64| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let now = Instant::now();
+                    let pane = ws.model.focused_pane().expect("a pane");
+                    let tabs = ws.pane_bar_tabs(ws.model.pane(pane).expect("its pane"), now);
+                    let tab = tabs
+                        .iter()
+                        .find(|t| t.terminal == Some(id))
+                        .expect("its tab");
+                    let w = ws.model.focused_workspace().expect("shown");
+                    let row = ws.rows_in_view(now).into_iter().find_map(|row| match row {
+                        SidebarRow::Workspace(r) if r.workspace == w => Some(r.label),
+                        _ => None,
+                    });
+                    let number = ws.workspace_number(w).expect("numbered");
+                    (
+                        tab.title.to_string(),
+                        row.expect("its row"),
+                        window_title(number, &ws.workspace_label(w)),
+                        number,
+                    )
+                })
+            };
+            for (id, running, typed, ws_typed) in [
+                (ids.prompt, false, "my-shell", "shell-work"),
+                (ids.running, true, "my-agent", "agent-work"),
+            ] {
+                let n = format!("renames-{slug} (running: {running})");
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        let i = ws.index_of(id).expect("open");
+                        ws.select(i, window, cx);
+                    })
+                })
+                .expect("show it");
+                cx.run_until_parked();
+                // The tab: a double-click on it.
+                let pane = shown_panes(cx, &ws)[0];
+                let at = tab_bounds(cx, &ws, pane, 0).expect("laid out").center();
+                for count in [1, 2] {
+                    cx.simulate_event(
+                        window,
+                        MouseDownEvent {
+                            position: at,
+                            modifiers: none,
+                            button: MouseButton::Left,
+                            click_count: count,
+                            first_mouse: false,
+                        },
+                    );
+                    cx.simulate_event(
+                        window,
+                        MouseUpEvent {
+                            position: at,
+                            modifiers: none,
+                            button: MouseButton::Left,
+                            click_count: count,
+                        },
+                    );
+                }
+                cx.run_until_parked();
+                assert_eq!(
+                    open_on(cx, Renaming::Terminal(id)),
+                    Some(true),
+                    "{n}: the tab's box is open with the keyboard"
+                );
+                let opened_with = cx.read(|cx| ws.read(cx).terminal_label(id).to_string());
+                let text = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let (_, input) = ws.renaming.as_ref().expect("open");
+                    input.read(cx).text().to_string()
+                });
+                assert_eq!(text, opened_with, "{n}: the box starts with the name");
+                assert_eq!(
+                    text,
+                    crate::groups::DEFAULT_NAME,
+                    "{n}: untitled and unnamed, ╭∩╮, at a prompt or running"
+                );
+                // A lookup while it's open (what runs changes): it stays open and focused.
+                names_tick(cx, &ws, &[(id, !running)]);
+                assert_eq!(
+                    open_on(cx, Renaming::Terminal(id)),
+                    Some(true),
+                    "{n}: still open with the keyboard after a lookup"
+                );
+                cx.simulate_input(window, typed);
+                cx.simulate_keystrokes(window, "enter");
+                cx.run_until_parked();
+                names_tick(cx, &ws, &[(id, running)]);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    assert!(ws.renaming.is_none(), "{n}: Enter closed the box");
+                    let i = ws.index_of(id).expect("open");
+                    let name = ws.sessions.items()[i].name.as_deref();
+                    assert_eq!(name, Some(typed), "{n}: the terminal is named");
+                    assert_eq!(ws.terminal_label(id).as_ref(), typed, "{n}: its name");
+                });
+                let (tab, row, title, number) = shown(cx, id);
+                assert_eq!(tab, typed, "{n}: the tab");
+                assert_eq!(row, typed, "{n}: the row (its workspace has no name)");
+                assert_eq!(title, window_title(number, typed), "{n}: the window title");
+
+                // The row: ⌘R.
+                cx.simulate_keystrokes(window, "cmd-r");
+                cx.run_until_parked();
+                let w = cx.read(|cx| ws.read(cx).model.focused_workspace().expect("shown"));
+                assert_eq!(
+                    open_on(cx, Renaming::Workspace(w)),
+                    Some(true),
+                    "{n}: the row's box is open with the keyboard"
+                );
+                names_tick(cx, &ws, &[(id, !running)]);
+                assert_eq!(
+                    open_on(cx, Renaming::Workspace(w)),
+                    Some(true),
+                    "{n}: the row's box still open after a lookup"
+                );
+                cx.simulate_input(window, ws_typed);
+                cx.simulate_keystrokes(window, "enter");
+                cx.run_until_parked();
+                names_tick(cx, &ws, &[(id, running)]);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    assert!(ws.renaming.is_none(), "{n}: Enter closed the row's box");
+                    let name = ws.model.workspace(w).and_then(|w| w.name.clone());
+                    assert_eq!(
+                        name.as_deref(),
+                        Some(ws_typed),
+                        "{n}: the workspace is named"
+                    );
+                });
+                let (tab, row, title, number) = shown(cx, id);
+                assert_eq!(tab, typed, "{n}: the tab keeps the terminal's name");
+                assert_eq!(row, ws_typed, "{n}: the row");
+                assert_eq!(
+                    title,
+                    window_title(number, ws_typed),
+                    "{n}: the window title"
+                );
+            }
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with(
+            "renames",
+            slug,
+            &theme,
+            size(px(960.0), px(360.0)),
             build,
             act,
         );
