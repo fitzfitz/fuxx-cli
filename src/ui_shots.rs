@@ -3107,9 +3107,11 @@ const PAGE_TITLE: &str = "Acme dashboard";
 
 /// A workspace for the browser tab scenes: api's terminal on the left; on the right, focused, a
 /// browser tab on `PAGE_URL` (`loading`: still loading, so its third button is stop).
-/// A file tab (M11g Task 3, its stub view) in a pane beside a terminal's tab: opened twice for
-/// one file it is one tab, shown, with the keyboard; its bar tab draws the file glyph; closing it
-/// leaves the terminal, which takes the keyboard back. Shot once per theme (opened).
+/// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
+/// shown, with the keyboard; its bar tab draws the file glyph; closing it leaves the terminal,
+/// which takes the keyboard back. Its file isn't on this Mac, so it shows "This file no longer
+/// exists", and its Close button closes the tab. Shot once per theme (opened). Then the viewer
+/// itself (`file_view_scenes`).
 fn file_tab_scenes() {
     use crate::layout_model::TabKind;
     use crate::tab_bar::look;
@@ -3220,8 +3222,479 @@ fn file_tab_scenes() {
         // Closing it (not shot).
         let (build, act) = scene(true);
         render_with(&theme, dims, build, act);
+        // Its file is gone (no such file here): its Close button closes the tab (not shot).
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                let project = std::path::Path::new(API);
+                ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let file = file.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let n = format!("file-tab-close-{slug}");
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.open_file_tab(file.clone(), window, cx))
+            })
+            .expect("open the file");
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+            let close = cx.read(|cx| {
+                let view = ws.read(cx).focused_file_tab().expect("the view").clone();
+                assert_eq!(view.read(cx).state_name(), "missing", "{n}");
+                view.read(cx).close_bounds().expect("its Close button")
+            });
+            cx.simulate_click(window, close.center(), gpui::Modifiers::none());
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                assert!(ws.file_tabs.is_empty(), "{n}: the tab closed");
+                let pane = ws.model.focused_pane().expect("a pane");
+                assert_eq!(ws.model.pane(pane).expect("known").tabs.len(), 1, "{n}");
+            });
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: file-tab-close-{slug} ok");
+    }
+    file_view_scenes();
+}
+
+/// The file tab's viewer (M11g Task 6), a tab on its own in a window, in both themes:
+/// - `file-tab-view`: a Rust fixture in colours with its line numbers; change bars from a given
+///   list (lines 3–4 added, green; line 7 changed, blue; a red ▸ under line 10 for lines
+///   deleted) with each changed line tinted 12 %; ⌘F "fn": "1 of N", the matches tinted, the
+///   current one stronger; lines 2–3 selected with the mouse (⌘C copies them).
+/// - `file-tab-long`: a 300-character line scrolled sideways by the wheel (its end shows).
+/// - `file-tab-missing`, `file-tab-refuse`, `file-tab-plain`: a file that is gone (its path, a
+///   Close button that asks to close the tab), a binary file (Open in Editor), a file over 2 MB
+///   (plain text, "Too large to colour").
+///
+/// Not shot: a reload with new text (the file rewritten, the disk checked again) keeps the
+/// scroll. Also prints how long colouring a 5,000-line Rust file takes (run with `--release`
+/// for the real number).
+fn file_view_scenes() {
+    use crate::file_tab::{FileTab, FileTabEvent, MISSING, REFUSED, TOO_LARGE};
+    use crate::git_status::LineChange;
+    use crate::highlight::Highlighter;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use gpui::{Focusable, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-tab");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let view_rs = dir.join("view.rs");
+    std::fs::write(&view_rs, FILE_VIEW_FIXTURE).expect("view.rs");
+    let long_rs = dir.join("long.rs");
+    let long_line = Rc::new(format!("let long = \"{}END\";", "abcdefghij".repeat(29)));
+    std::fs::write(
+        &long_rs,
+        format!("// one long line\n{long_line}\nfn after() {{}}\n"),
+    )
+    .expect("long.rs");
+    let missing = dir.join("gone.rs");
+    let _ = std::fs::remove_file(&missing);
+    let binary = dir.join("image.bin");
+    std::fs::write(&binary, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").expect("image.bin");
+    let big = dir.join("big.log");
+    let row = "2026-11-08 12:00:00 INFO request served in 12 ms, all fine\n";
+    std::fs::write(&big, row.repeat(2 * 1024 * 1024 / row.len() + 100)).expect("big.log");
+    let reload_rs = dir.join("reload.rs");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let dims = size(px(760.0), px(460.0));
+    let fixture_lines: Rc<Vec<&str>> = Rc::new(FILE_VIEW_FIXTURE.lines().collect());
+    let fn_count: usize = fixture_lines
+        .iter()
+        .map(|l| l.to_lowercase().matches("fn").count())
+        .sum();
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let near = |p: [u8; 3], c: Rgb, by: u8| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= by)
+        };
+        let build_for = |path: PathBuf, slot: TabSlot| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+        let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+        };
+
+        // The view: colours, numbers, change bars and tints, find, a selection and ⌘C.
+        let n = format!("file-tab-view-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(view_rs.clone(), slot.clone());
+        let copied: Rc<RefCell<Option<String>>> = Rc::default();
+        let seen = copied.clone();
+        let geom_seen: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
+        let keep_geom = geom_seen.clone();
+        let act = {
+            let n = n.clone();
+            let slot = slot.clone();
+            let fixture_lines = fixture_lines.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                frame(cx, window);
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    assert_eq!(t.state_name(), "text", "{n}");
+                    let doc = t.doc().expect("its text");
+                    assert_eq!(doc.lines.len(), fixture_lines.len(), "{n}");
+                    assert!(doc.spans.is_some(), "{n}: coloured");
+                });
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| {
+                        t.set_changes(
+                            vec![
+                                (3, LineChange::Added),
+                                (4, LineChange::Added),
+                                (7, LineChange::Changed),
+                                (10, LineChange::DeletedAfter),
+                            ],
+                            cx,
+                        )
+                    })
+                });
+                cx.update_window(window, |_, window, cx| {
+                    tab.read(cx).focus_handle(cx).focus(window, cx)
+                })
+                .expect("focus");
+                cx.simulate_keystrokes(window, "cmd-f");
+                cx.simulate_input(window, "fn");
+                frame(cx, window);
+                let label = cx.read(|cx| tab.read(cx).find_label());
+                assert_eq!(label, format!("1 of {fn_count}"), "{n}: ⌘F fn");
+                // Lines 2–3 (0-based 1–2), from line 2's start to line 3's 5th byte.
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                let at = |line: usize, x: f32| {
+                    point(
+                        g.bounds.left() + g.text_left + px(x),
+                        g.bounds.top() + g.line_height * (line as f32 + 0.5),
+                    )
+                };
+                let cw = f32::from(g.cell_width);
+                cx.simulate_mouse_down(window, at(1, 0.5), MouseButton::Left, Modifiers::none());
+                cx.simulate_mouse_move(
+                    window,
+                    at(2, cw * 5.0 + 1.0),
+                    MouseButton::Left,
+                    Modifiers::none(),
+                );
+                cx.simulate_mouse_up(
+                    window,
+                    at(2, cw * 5.0 + 1.0),
+                    MouseButton::Left,
+                    Modifiers::none(),
+                );
+                cx.simulate_keystrokes(window, "cmd-c");
+                *seen.borrow_mut() = cx.read_from_clipboard().and_then(|c| c.text());
+                frame(cx, window);
+                keep_geom.set(cx.read(|cx| tab.read(cx).geom()));
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-view",
+            slug,
+            &theme,
+            dims,
+            build.clone(),
+            act.clone(),
+        );
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let expect = format!("{}\n{}", fixture_lines[1], &fixture_lines[2][..5]);
+        assert_eq!(copied.borrow().as_deref(), Some(expect.as_str()), "{n}: ⌘C");
+        let g = geom_seen.get().expect("drawn");
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let row_y = |line: usize| g.bounds.top() + g.line_height * (line as f32 + 0.5);
+        let fit = |c: Rgb| ensure_contrast(c, theme.background, MARK_MIN);
+        let (green, blue, red) = (
+            fit(theme.palette[2]),
+            fit(theme.palette[4]),
+            fit(theme.palette[1]),
+        );
+        let bar_x = g.bounds.left() + g.bar_left + px(1.5);
+        // The bars: 0-based lines 2 and 3 green, 6 blue; none on line 0.
+        for (line, c) in [(2, green), (3, green), (6, blue)] {
+            let p = at(bar_x, row_y(line));
+            assert!(near(p, c, 12), "{n}: line {line}'s bar {p:?}, not {c:?}");
+        }
+        let p = at(bar_x, row_y(0));
+        assert!(near(p, theme.background, 6), "{n}: no bar on line 0: {p:?}");
+        // The tint at the far right of a changed line: its colour at 12 % over the background.
+        let right = g.bounds.right() - px(6.0);
+        let tint = crate::theme::mix(theme.background, green, 0.12);
+        let p = at(right, row_y(2));
+        assert!(near(p, tint, 6), "{n}: the tint {p:?}, not {tint:?}");
+        assert!(
+            near(at(right, row_y(0)), theme.background, 4),
+            "{n}: untinted"
+        );
+        // The ▸ under line 10 (the edge above 0-based line 10), red.
+        let edge = g.bounds.top() + g.line_height * 10.0;
+        let marked = (-6..=6).any(|dy| {
+            (-6..=10).any(|dx| near(at(bar_x + px(dx as f32), edge + px(dy as f32)), red, 40))
+        });
+        assert!(marked, "{n}: the deletion mark");
+        // The line numbers, faint, right-aligned before the bar.
+        let numbers = (0..(f32::from(g.numbers_right) as i32)).any(|dx| {
+            (-5..=5).any(|dy| {
+                near(
+                    at(g.bounds.left() + px(dx as f32), row_y(0) + px(dy as f32)),
+                    ui.text_faint,
+                    40,
+                )
+            })
+        });
+        assert!(numbers, "{n}: line numbers in text_faint");
+        // Several syntax colours in the text.
+        let inked = |c: Rgb| {
+            (0..12).any(|line| {
+                (0..400).any(|dx| {
+                    near(
+                        at(g.bounds.left() + g.text_left + px(dx as f32), row_y(line)),
+                        c,
+                        30,
+                    )
+                })
+            })
+        };
+        let keyword = fit(theme.palette[5]);
+        let string = fit(theme.palette[2]);
+        let comment = fit(theme.palette[8]);
+        for (what, c) in [
+            ("keyword", keyword),
+            ("string", string),
+            ("comment", comment),
+        ] {
+            assert!(inked(c), "{n}: a {what} in {c:?}");
+        }
+
+        // A long line, scrolled sideways by the wheel: its end shows.
+        let n = format!("file-tab-long-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(long_rs.clone(), slot.clone());
+        let act = {
+            let n = n.clone();
+            let long_line = long_line.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                frame(cx, window);
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                let over = g.bounds.center();
+                for _ in 0..3 {
+                    cx.simulate_event(
+                        window,
+                        ScrollWheelEvent {
+                            position: over,
+                            delta: ScrollDelta::Pixels(point(px(-1000.0), px(0.0))),
+                            modifiers: Modifiers::none(),
+                            touch_phase: TouchPhase::Moved,
+                        },
+                    );
+                }
+                frame(cx, window);
+                let (scroll, g) = cx.read(|cx| (tab.read(cx).scroll(), tab.read(cx).geom()));
+                let g = g.expect("drawn");
+                assert!(scroll.x > px(0.0), "{n}: scrolled sideways");
+                assert_eq!(scroll.y, px(0.0), "{n}");
+                // As far as it goes: the line's end at the right edge.
+                let widest = g.text_left + g.cell_width * long_line.chars().count() as f32;
+                assert!(
+                    scroll.x + g.bounds.size.width >= widest,
+                    "{n}: the end shows ({scroll:?})"
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with("file-tab-long", slug, &theme, dims, build, act);
+        println!("ui-shots: {}", path.display());
+
+        // The states: missing (and its Close), refused, plain.
+        for (scene, file, state, words) in [
+            ("file-tab-missing", missing.clone(), "missing", MISSING),
+            ("file-tab-refuse", binary.clone(), "refuse", REFUSED),
+            ("file-tab-plain", big.clone(), "plain", TOO_LARGE),
+        ] {
+            let n = format!("{scene}-{slug}");
+            let slot: TabSlot = Rc::default();
+            let build = build_for(file, slot.clone());
+            let closed = Rc::new(Cell::new(false));
+            let asked = closed.clone();
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let tab = tab_of(&slot);
+                    frame(cx, window);
+                    cx.read(|cx| {
+                        let t = tab.read(cx);
+                        assert_eq!(t.state_name(), state, "{n}");
+                        assert_eq!(t.note(), Some(words), "{n}");
+                        if state == "plain" {
+                            assert!(t.doc().expect("its text").spans.is_none(), "{n}");
+                        }
+                    });
+                    if state == "missing" {
+                        let flag = asked.clone();
+                        cx.update(|cx| {
+                            cx.subscribe(&tab, move |_, e: &FileTabEvent, _| {
+                                flag.set(matches!(e, FileTabEvent::Close))
+                            })
+                            .detach()
+                        });
+                        let b = cx.read(|cx| tab.read(cx).close_bounds()).expect("Close");
+                        cx.simulate_click(window, b.center(), Modifiers::none());
+                    }
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build, act);
+            println!("ui-shots: {}", path.display());
+            if state == "missing" {
+                assert!(closed.get(), "{n}: Close asks to close the tab");
+            }
+        }
+
+        // A reload with new text keeps the scroll (not shot).
+        let n = format!("file-tab-reload-{slug}");
+        let numbered = |count: usize, word: &str| -> String {
+            (1..=count)
+                .map(|i| format!("let {word}{i} = {i};\n"))
+                .collect()
+        };
+        std::fs::write(&reload_rs, numbered(200, "a")).expect("reload.rs");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(reload_rs.clone(), slot.clone());
+        let file = reload_rs.clone();
+        let label = n.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = tab_of(&slot);
+            frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 40.0), cx)
+                })
+            });
+            frame(cx, window);
+            let (before, version) = cx.read(|cx| {
+                (
+                    tab.read(cx).scroll(),
+                    tab.read(cx).doc().expect("text").version,
+                )
+            });
+            assert_eq!(before.y, g.line_height * 40.0, "{n}: scrolled");
+            std::fs::write(&file, numbered(220, "b")).expect("rewrite reload.rs");
+            cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+            frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let doc = t.doc().expect("text");
+                assert!(doc.version > version, "{n}: reloaded");
+                assert_eq!(doc.lines.len(), 220, "{n}: the new text");
+                assert!(doc.text.starts_with("let b1"), "{n}");
+                assert_eq!(t.scroll(), before, "{n}: the scroll kept");
+            });
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: {label} ok");
+    }
+
+    // How long colouring a 5,000-line Rust file takes (the loading of the syntaxes apart).
+    let theme = shot_theme("Catppuccin Mocha");
+    let started = std::time::Instant::now();
+    let h = Highlighter::load(&theme);
+    let loaded = started.elapsed();
+    let text: String = FILE_VIEW_FIXTURE
+        .lines()
+        .cycle()
+        .take(5000)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let started = std::time::Instant::now();
+    let lines = h.highlight(std::path::Path::new("big.rs"), &text);
+    let took = started.elapsed();
+    assert_eq!(lines.len(), 5000);
+    println!(
+        "ui-shots: file-tab highlight 5000 lines: {} ms (syntaxes loaded in {} ms; {} build)",
+        took.as_millis(),
+        loaded.as_millis(),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
+}
+
+/// The file tab scenes' Rust fixture: comments, strings, numbers, keywords, types, functions,
+/// and "fn" in several places (one in upper case).
+const FILE_VIEW_FIXTURE: &str = r#"// A small server, for the file tab's shots.
+use std::collections::HashMap;
+use std::time::Duration;
+
+/// How long a request may take.
+const TIMEOUT: Duration = Duration::from_secs(30);
+const NAME: &str = "fuxx";
+
+pub struct Server {
+    routes: HashMap<String, Route>,
+    port: u16,
+}
+
+impl Server {
+    pub fn new(port: u16) -> Self {
+        Self { routes: HashMap::new(), port }
+    }
+
+    /// Add a route; FN-style handlers only.
+    pub fn route(&mut self, path: &str, handler: fn() -> String) {
+        let route = Route { handler, hits: 0 };
+        self.routes.insert(path.to_string(), route);
     }
 }
+
+struct Route {
+	handler: fn() -> String,
+	hits: u64,
+}
+
+fn main() {
+    let mut server = Server::new(8080);
+    server.route("/health", || "ok".to_string());
+    println!("listening on {} (timeout {:?})", server.port, TIMEOUT);
+}
+"#;
 
 /// The right sidebar (M11g Task 4), over `tab_bar_workspace`'s two panes in a 1280 × 600
 /// window with the left sidebar shown (240 pt), in both themes:

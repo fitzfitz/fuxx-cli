@@ -84,6 +84,9 @@ pub fn describe(action: &str) -> Describe {
         "workspace::CloseSession" => Listed(Tabs, "Close Tab"),
         "workspace::NextTab" => Listed(Tabs, "Next tab"),
         "workspace::PrevTab" => Listed(Tabs, "Previous tab"),
+        "file_tab::Find" => Listed(Tabs, "Find in File\u{2026}"),
+        "file_tab::FindNext" => Listed(Tabs, "Find Next"),
+        "file_tab::FindPrev" => Listed(Tabs, "Find Previous"),
 
         "workspace::SplitRight" => Listed(Panes, "Split Right"),
         "workspace::SplitDown" => Listed(Panes, "Split Down"),
@@ -126,7 +129,9 @@ pub fn describe(action: &str) -> Describe {
         | "edit::Cut"
         | "edit::SelectAll"
         | "help_panel::ScrollUp"
-        | "help_panel::ScrollDown" => Unlisted,
+        | "help_panel::ScrollDown"
+        // A file tab's Esc (it closes the find bar).
+        | "file_tab::CloseFind" => Unlisted,
         other if other.starts_with("name_input::") => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("switcher::") => Unlisted,
@@ -313,6 +318,28 @@ mod tests {
         assert_eq!(rows[0].group, ShortcutGroup::WindowAndApp);
         assert_eq!(rows[0].name, "Toggle Right Sidebar");
         assert_eq!(rows[0].keys, "\u{2325}\u{2318}\\");
+    }
+
+    #[test]
+    fn a_file_tab_s_find_keys_are_under_tabs() {
+        let rows = shortcut_rows(&pairs(&[
+            ("file_tab::Find", "cmd-f"),
+            ("file_tab::FindNext", "cmd-g"),
+            ("file_tab::FindPrev", "cmd-shift-g"),
+            ("file_tab::CloseFind", "escape"),
+        ]));
+        let got: Vec<(ShortcutGroup, &str, &str)> = rows
+            .iter()
+            .map(|r| (r.group, r.name, r.keys.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (ShortcutGroup::Tabs, "Find in File\u{2026}", "\u{2318}F"),
+                (ShortcutGroup::Tabs, "Find Next", "\u{2318}G"),
+                (ShortcutGroup::Tabs, "Find Previous", "\u{21e7}\u{2318}G"),
+            ]
+        );
     }
 
     #[test]

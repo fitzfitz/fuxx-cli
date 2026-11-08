@@ -6,6 +6,7 @@ use crate::ui_tokens::{MARK_MIN, ensure_contrast};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
 use syntect::parsing::SyntaxSet;
@@ -37,7 +38,8 @@ pub fn classify(len: u64, head: &[u8]) -> Viewable {
 /// The syntax definitions and the colour theme. Loading the syntaxes takes tens of milliseconds, so
 /// call `load` off the UI thread.
 pub struct Highlighter {
-    syntaxes: SyntaxSet,
+    /// Shared by every theme's highlighter (`with_theme`): loaded once.
+    syntaxes: Arc<SyntaxSet>,
     theme: syntect::highlighting::Theme,
     foreground: Rgb,
 }
@@ -49,7 +51,17 @@ impl Highlighter {
     /// Blocking: loads the bundled syntaxes (the `extra_newlines` set, for line-by-line use).
     pub fn load(theme: &Theme) -> Highlighter {
         Highlighter {
-            syntaxes: two_face::syntax::extra_newlines(),
+            syntaxes: Arc::new(two_face::syntax::extra_newlines()),
+            theme: syntect_theme(theme),
+            foreground: theme.foreground,
+        }
+    }
+
+    /// The same syntaxes (shared, not loaded again) in `theme`'s colours. Cheap: for a theme
+    /// change while other highlights still use this one.
+    pub fn with_theme(&self, theme: &Theme) -> Highlighter {
+        Highlighter {
+            syntaxes: self.syntaxes.clone(),
             theme: syntect_theme(theme),
             foreground: theme.foreground,
         }
@@ -283,6 +295,27 @@ mod tests {
                 assert!(ratio >= MARK_MIN - 0.01, "{name}: {rgb:?} {ratio}");
             }
         }
+    }
+
+    #[test]
+    fn with_theme_recolours_and_keeps_the_syntaxes() {
+        let (mocha, latte) = (named("Catppuccin Mocha"), named("Catppuccin Latte"));
+        let dark = Highlighter::load(&mocha);
+        let light = dark.with_theme(&latte);
+        let text = "let s = \"x\";\n";
+        let string = |h: &Highlighter| {
+            let lines = h.highlight(Path::new("a.rs"), text);
+            let at = text.find('"').unwrap();
+            lines[0].iter().find(|(r, _)| r.contains(&at)).unwrap().1
+        };
+        assert_eq!(
+            string(&light),
+            ensure_contrast(latte.palette[2], latte.background, MARK_MIN)
+        );
+        assert_eq!(
+            string(&dark),
+            ensure_contrast(mocha.palette[2], mocha.background, MARK_MIN)
+        );
     }
 
     #[test]

@@ -246,6 +246,16 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-l", browser_tab::FocusAddress, Some("BrowserTab")),
         KeyBinding::new("ctrl-tab", NextTab, Some("BrowserTab")),
         KeyBinding::new("ctrl-shift-tab", PrevTab, Some("BrowserTab")),
+        // A file tab: ⌘F finds in the file, ⌘G / ⇧⌘G step through the matches, Esc closes the
+        // find bar (in its box, the box's Esc does), ⌘C copies the selection, ⌃Tab / ⌃⇧Tab as
+        // in a terminal. Its own keys, so terminals and browser tabs keep theirs.
+        KeyBinding::new("cmd-f", file_tab::Find, Some("FileTab")),
+        KeyBinding::new("cmd-g", file_tab::FindNext, Some("FileTab")),
+        KeyBinding::new("cmd-shift-g", file_tab::FindPrev, Some("FileTab")),
+        KeyBinding::new("escape", file_tab::CloseFind, Some("FileTab")),
+        KeyBinding::new("cmd-c", Copy, Some("FileTab")),
+        KeyBinding::new("ctrl-tab", NextTab, Some("FileTab")),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, Some("FileTab")),
         KeyBinding::new("up", browser_tab::SuggestPrev, Some("AddressField")),
         KeyBinding::new("down", browser_tab::SuggestNext, Some("AddressField")),
         KeyBinding::new("cmd-v", name_input::Paste, Some("AddressField > NameInput")),
@@ -1265,6 +1275,50 @@ mod tests {
         assert!(!bound("right", filter_box), "→ in the box");
         // Not in a terminal.
         assert!(!bound("up", TERMINAL), "↑ stays the terminal's");
+    }
+
+    #[test]
+    fn the_file_tab_keys_work_in_the_tab_and_its_find_box() {
+        use crate::file_tab::{CloseFind, Find, FindNext, FindPrev};
+        use crate::name_input;
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "FileTab"];
+        let find_box: &[&str] = &["Workspace", "FileTab", "NameInput"];
+        let keys: [(&str, Box<dyn Action>); 6] = [
+            ("cmd-f", Box::new(Find)),
+            ("cmd-g", Box::new(FindNext)),
+            ("cmd-shift-g", Box::new(FindPrev)),
+            ("cmd-c", Box::new(Copy)),
+            ("ctrl-tab", Box::new(NextTab)),
+            ("ctrl-shift-tab", Box::new(PrevTab)),
+        ];
+        for (key, action) in &keys {
+            for stack in [tab, find_box] {
+                let got = runs(&keymap, key, stack);
+                assert!(
+                    got.partial_eq(action.as_ref()),
+                    "{key} in {stack:?}: {}",
+                    got.name()
+                );
+            }
+        }
+        // Esc closes the find bar from the tab; in the box it is the box's (which closes it).
+        assert!(runs(&keymap, "escape", tab).partial_eq(&CloseFind));
+        assert!(runs(&keymap, "escape", find_box).partial_eq(&name_input::Cancel));
+        // ⌘F, ⌘G stay out of terminals and browser tabs.
+        let bound = |key: &str, stack: &[&str]| {
+            let contexts: Vec<KeyContext> = stack
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let (found, _) =
+                keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+            !found.is_empty()
+        };
+        for key in ["cmd-f", "cmd-g", "cmd-shift-g"] {
+            assert!(!bound(key, TERMINAL), "{key} in a terminal");
+            assert!(!bound(key, PAGE), "{key} in a browser tab");
+        }
     }
 
     #[test]
