@@ -41,6 +41,10 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   Changes (since the last commit, with diffs) and Activity for the focused terminal; files open read-only in pane
   tabs with syntax colours (syntect + two-face), line numbers and change bars. See
   [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]].
+- **A modern layout, a command palette, a first-run screen and command blocks** (M11i–M11l, added 2026-11-08 by you,
+  "I love all 1-11"): smart names, compact rows, a subtle selection, a richer Files tree, floating panels, terminal
+  padding, a status bar and a cleaner tab bar (M11i); a ⌘K palette for actions, workspaces, files and settings (M11j);
+  a first-run screen (M11k); Warp-style command blocks (M11l). Each is designed, planned and released on its own.
 
 ## Out of scope (for now — resist scope creep)
 
