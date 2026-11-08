@@ -320,7 +320,7 @@ pub fn fit_place(
 }
 
 /// Whether a waiting row `row_width` wide has room for its question after "Needs input" (else
-/// "Needs input" shows alone: the question is in the row's tooltip, ⌘P and the notification).
+/// "Needs input" shows alone: the question is in ⌘P and the notification).
 pub fn shows_question(row_width: f32) -> bool {
     row_width >= QUESTION_MIN_ROW
 }
@@ -1090,9 +1090,8 @@ impl Workspace {
             .flex_none()
             .w(px(self.sidebar.width))
             .h_full()
+            // On the canvas, no line at its right (M11i): the gap to the cards does that job.
             .bg(hsla(ui.sidebar_background))
-            .border_r_1()
-            .border_color(hsla(ui.sidebar_border))
             // A click in the sidebar gives focus back to the terminal, which cancels a rename
             // (the rename box keeps its own clicks).
             .on_mouse_down(
@@ -1357,7 +1356,7 @@ impl Workspace {
         let second = line_two(row).map(|line| match line {
             LineTwo::NotLive => under().child(text(NOT_LIVE.into(), ui.text_faint)),
             // "Needs input" in the waiting colour, then the question cut at its end (left out
-            // where the row is too narrow: it's in the tooltip, ⌘P and the banner).
+            // where the row is too narrow: it's in ⌘P and the notification).
             LineTwo::Waiting(question) => under()
                 .child(
                     div()
@@ -1786,7 +1785,8 @@ impl Workspace {
     fn render_update_button(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = &cx.try_global::<updater::Updates>()?.state;
         let wide = updater::button(state, true)?;
-        let width = self.sidebar.width - 1.0 - 2.0 * ROW_INSET;
+        // (The sidebar has no right border line since M11i: its content is its full width.)
+        let width = self.sidebar.width - 2.0 * ROW_INSET;
         let label = if update_fits(update_text_width(&wide.text(), window), width) {
             wide
         } else {

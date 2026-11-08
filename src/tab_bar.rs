@@ -34,7 +34,7 @@ use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::TAB_BAR;
+use crate::ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR};
 use crate::ui_tokens::text;
 use crate::workspace::{At, Renaming, Workspace};
 use crate::workspace_ssh::Place;
@@ -436,6 +436,8 @@ impl Workspace {
                 .w_full()
                 .h(px(TAB_BAR))
                 .bg(hsla(ui.sidebar_background))
+                // The top of its pane's card (M11i): rounded as the inside of the card's edge.
+                .rounded_t(px(CARD_RADIUS - FOCUS_RING))
                 // A press on the bar's empty part focuses its pane (a tab's own press selects it;
                 // one in a rename box stays there).
                 .on_mouse_down(

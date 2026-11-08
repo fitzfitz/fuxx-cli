@@ -63,6 +63,7 @@ use crate::sidebar_toggle::Tip;
 use crate::tab_bar::{Glyph, glyph, glyph_with};
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors};
+use crate::ui_tokens::size::CARD_RADIUS;
 use crate::ui_tokens::{MARK_MIN, ensure_contrast, text};
 use crate::workspace::Workspace;
 
@@ -101,6 +102,8 @@ const BUTTON: f32 = 24.0;
 const BUTTON_STROKE: f32 = 1.75;
 const FIND_BOX: f32 = 260.0;
 const GUTTER_LEFT: f32 = 12.0;
+/// The room above the first line (M11i: as the gutter's at its left).
+const TOP_ROOM: f32 = 12.0;
 const NUMBER_GAP: f32 = 8.0;
 const BAR_WIDTH: f32 = 3.0;
 const TEXT_GAP: f32 = 10.0;
@@ -2089,59 +2092,64 @@ impl FileTab {
         let view = cx.entity();
         let keep = view.clone();
         let laid = frame.clone();
+        // The text is clipped below the top room, so a line scrolled half out of sight doesn't
+        // show in it; a press or the wheel in the room still reaches the text.
+        let text = div().size_full().overflow_hidden();
         div()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
-            .overflow_hidden()
+            .pt(px(TOP_ROOM))
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.wheel(e, cx)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, window, cx| this.mouse_down(e, window, cx)),
             )
             .child(
-                canvas(
-                    move |bounds, window, cx| {
-                        let m = CellMetrics::measure(cx.global::<Appearance>(), window);
-                        let g = Geom::of(
-                            bounds,
-                            &m,
-                            laid.doc.lines.len(),
-                            laid.doc.widest,
-                            laid.scroll,
-                        );
-                        geom.set(Some(g));
-                        // A new version drawn: the scroll as kept in it is the scroll (after a
-                        // shrink, the view doesn't jump back down when the file grows again).
-                        if drawn.replace(laid.doc.version) != laid.doc.version
-                            && g.scroll != laid.scroll
-                        {
-                            let kept = g.scroll;
-                            keep.update(cx, |this, _| this.scroll = kept);
-                        }
-                        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                        (m, g, hitbox)
-                    },
-                    move |_, (m, g, hitbox), window, cx| {
-                        window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-                        paint_body(&frame, &g, &m, window, cx);
-                        // A drag keeps going outside the text; registered for this frame.
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |e: &MouseMoveEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    view.update(cx, |this, cx| this.mouse_drag(e, window, cx));
+                text.child(
+                    canvas(
+                        move |bounds, window, cx| {
+                            let m = CellMetrics::measure(cx.global::<Appearance>(), window);
+                            let g = Geom::of(
+                                bounds,
+                                &m,
+                                laid.doc.lines.len(),
+                                laid.doc.widest,
+                                laid.scroll,
+                            );
+                            geom.set(Some(g));
+                            // A new version drawn: the scroll as kept in it is the scroll (after a
+                            // shrink, the view doesn't jump back down when the file grows again).
+                            if drawn.replace(laid.doc.version) != laid.doc.version
+                                && g.scroll != laid.scroll
+                            {
+                                let kept = g.scroll;
+                                keep.update(cx, |this, _| this.scroll = kept);
+                            }
+                            let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                            (m, g, hitbox)
+                        },
+                        move |_, (m, g, hitbox), window, cx| {
+                            window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+                            paint_body(&frame, &g, &m, window, cx);
+                            // A drag keeps going outside the text; registered for this frame.
+                            window.on_mouse_event({
+                                let view = view.clone();
+                                move |e: &MouseMoveEvent, phase, window, cx| {
+                                    if phase == DispatchPhase::Bubble {
+                                        view.update(cx, |this, cx| this.mouse_drag(e, window, cx));
+                                    }
                                 }
-                            }
-                        });
-                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                            if phase == DispatchPhase::Bubble {
-                                view.update(cx, |this, _| this.selecting = false);
-                            }
-                        });
-                    },
-                )
-                .size_full(),
+                            });
+                            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    view.update(cx, |this, _| this.selecting = false);
+                                }
+                            });
+                        },
+                    )
+                    .size_full(),
+                ),
             )
             .into_any_element()
     }
@@ -2231,7 +2239,9 @@ impl Render for FileTab {
             .size_full()
             .track_focus(&self.focus)
             .key_context("FileTab")
+            // Its bottom corners rounded with its card's (M11i).
             .bg(hsla(theme.background))
+            .rounded_b(px(CARD_RADIUS))
             .text_color(hsla(ui.text))
             .on_action(cx.listener(|this, _: &Find, window, cx| this.open_find(window, cx)))
             .on_action(

@@ -103,7 +103,8 @@ pub struct UiColors {
     pub on_accent: Rgb,
     /// Meta text (numbers, times, the waiting question): quieter than `text_dim`, still readable.
     pub text_faint: Rgb,
-    /// A plain 1 px line between panes.
+    /// A plain 1 px line between panes (until M11i, whose cards have a 6 pt gap of canvas
+    /// between them instead; still shown on the tokens board).
     pub divider: Rgb,
     /// A waiting row's fill; `done_tint` is the same, subtler, for a finished one.
     pub waiting_tint: Rgb,
