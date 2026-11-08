@@ -59,7 +59,6 @@ impl Render for FileTab {
 impl Workspace {
     /// Open file `path` in the focused pane (the sidebar's click): the pane's tab that already
     /// shows it, else a new tab at the end of its bar. It is shown and takes the keyboard.
-    #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))] // the right sidebar's, Task 5
     pub(crate) fn open_file_tab(
         &mut self,
         path: PathBuf,

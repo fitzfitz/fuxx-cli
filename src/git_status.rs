@@ -38,6 +38,7 @@ pub enum LineChange {
 }
 
 /// A folder's entry, for the tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,

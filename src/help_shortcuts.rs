@@ -130,6 +130,8 @@ pub fn describe(action: &str) -> Describe {
         other if other.starts_with("name_input::") => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("switcher::") => Unlisted,
+        // The Files panel's arrows, Return and Escape (in the panel only).
+        other if other.starts_with("file_tree::") => Unlisted,
         _ => Describe::Unknown,
     }
 }

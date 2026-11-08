@@ -220,6 +220,7 @@ const SCENES: &[(&str, fn())] = &[
     ("browser-tab", browser_tab_scenes),
     ("file-tab", file_tab_scenes),
     ("right-sidebar", right_sidebar_scenes),
+    ("files", files_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
     ("default-name", default_name),
@@ -3484,6 +3485,390 @@ fn right_sidebar_scenes() {
             let still = if still { "-still" } else { "" };
             println!("ui-shots: right-sidebar-act-{slug}{still} ok");
         }
+    }
+}
+
+/// The Files panel's fixture folder (under the temp folder; written, never read back as the
+/// user's): docs/ (guide.md), src/ (main.rs, new.rs, util/a.rs), Cargo.toml, README.md and
+/// notes.txt. Its real path (the temp folder is a link on macOS).
+fn files_fixture() -> PathBuf {
+    let root = std::env::temp_dir().join("fuxx-ui-shots-files");
+    for folder in ["docs", "src/util"] {
+        std::fs::create_dir_all(root.join(folder)).expect("the fixture's folders");
+    }
+    for file in [
+        "docs/guide.md",
+        "src/main.rs",
+        "src/new.rs",
+        "src/util/a.rs",
+        "Cargo.toml",
+        "README.md",
+        "notes.txt",
+    ] {
+        std::fs::write(root.join(file), "fn main() {}\n").expect("the fixture's files");
+    }
+    std::fs::canonicalize(&root).unwrap_or(root)
+}
+
+/// The fixture's tree as the panel builds it for a terminal in its src/ (listed from the disk,
+/// no git): src open and selected, and a made-up mark map: main.rs and README.md modified,
+/// new.rs added, old.rs deleted (so not on the disk).
+fn files_tree(root: &std::path::Path) -> crate::file_tree::FileTree {
+    use crate::file_tree::{CAP, FileTree};
+    use crate::git_status::{Mark, list_dir};
+    use std::collections::HashMap;
+
+    let mut tree = FileTree::new(root.to_path_buf(), Some(PathBuf::from("src")));
+    for rel in tree.wanted() {
+        let (entries, more) = list_dir(&root.join(&rel), CAP);
+        tree.expand(rel, entries, more);
+    }
+    tree.set_marks(HashMap::from([
+        (PathBuf::from("src/main.rs"), Mark::Modified),
+        (PathBuf::from("src/new.rs"), Mark::Added),
+        (PathBuf::from("old.rs"), Mark::Deleted),
+        (PathBuf::from("README.md"), Mark::Modified),
+    ]));
+    tree
+}
+
+/// The Files panel (M11g Task 5) in the right sidebar, on `files_fixture` (no git: a made-up
+/// mark map), beside a terminal in its src/, in a 1100 × 560 window, in both themes:
+/// - `files`: the left sidebar shown. The tree: docs, src (open, selected, `M`: it holds a
+///   modified and an added file), util, main.rs (`M`, blue), new.rs (`A`, green), Cargo.toml,
+///   notes.txt, old.rs (`D`, red: gone from the disk), README.md (`M`). The panel's header row
+///   is level with the pane's tab bar, at the top.
+/// - `files-filter`: "main" typed in the filter box: src and main.rs only.
+/// - `files-bare`: the left sidebar hidden: the header row is still level with the tab bar,
+///   both under the 38 pt band.
+///
+/// Not shot: in the tree, ↓ → ← ↑ and Return move, open and close; a click on main.rs opens its
+/// file tab, which takes the keyboard; Esc in the tree gives the keyboard back to the pane;
+/// with the filter box focused, ⌥⌘\ closes the sidebar and the terminal takes the keyboard.
+fn files_scenes() {
+    use crate::git_status::Mark;
+    use crate::layout_model::{FileMode, TabKind};
+    use crate::right_sidebar::{FILTER_BAND, ROW, mark_color};
+    use crate::ui_tokens::size::{TAB_BAR, TOP_BAND};
+    use gpui::{Focusable, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let sidebar_left = window_right - 300.0;
+    let root = files_fixture();
+    let rows_of = |cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>| {
+        cx.read(|cx| {
+            let files = &ws.read(cx).right_sidebar.files;
+            let rows = files.rows.iter().filter(|r| r.more.is_none());
+            rows.map(|r| r.rel.display().to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, by: u8| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= by)
+        };
+        let build_for = |bare: bool, slot: Slot| {
+            let root = root.clone();
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    ws.sidebar.hidden = bare;
+                    ws.right_sidebar.hidden = false;
+                    let src = root.join("src");
+                    ws.open_shot_session("api", &src, SHELL_TEXT, None, window, cx);
+                    ws.right_sidebar.files.show_for_shots(files_tree(&root));
+                    ws
+                });
+                *slot.borrow_mut() = Some(ws.clone());
+                ws.into()
+            }
+        };
+        let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+        };
+        let tree_rows = [
+            "docs",
+            "src",
+            "src/util",
+            "src/main.rs",
+            "src/new.rs",
+            "Cargo.toml",
+            "notes.txt",
+            "old.rs",
+            "README.md",
+        ];
+
+        for scene in ["files", "files-filter", "files-bare"] {
+            let bare = scene == "files-bare";
+            // The header row's top: under the band with the left sidebar hidden.
+            let top = if bare { TOP_BAND } else { 0.0 };
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = build_for(bare, slot.clone());
+            let tab_top: Rc<RefCell<Option<f32>>> = Rc::default();
+            let seen = tab_top.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let n = format!("{scene}-{slug}");
+                frame(cx, window);
+                assert_eq!(rows_of(cx, &ws), tree_rows, "{n}: the tree");
+                let pane = cx.read(|cx| ws.read(cx).model.focused_pane().expect("a pane"));
+                let tab = tab_bounds(cx, &ws, pane, 0).expect("the tab laid out");
+                *seen.borrow_mut() = Some(f32::from(tab.top()));
+                if scene == "files-filter" {
+                    let field = point(
+                        px(sidebar_left + 60.0),
+                        px(top + TAB_BAR + FILTER_BAND / 2.0),
+                    );
+                    cx.simulate_click(window, field, Modifiers::none());
+                    let typing = cx
+                        .update_window(window, |_, window, cx| {
+                            let ws = ws.read(cx);
+                            let input = ws.right_sidebar.files.input.clone().expect("the box");
+                            input.focus_handle(cx).is_focused(window)
+                        })
+                        .expect("read");
+                    assert!(typing, "{n}: a click in the box focuses it");
+                    cx.simulate_input(window, "main");
+                    frame(cx, window);
+                    assert_eq!(
+                        rows_of(cx, &ws),
+                        ["src", "src/main.rs"],
+                        "{n}: main.rs with its folder"
+                    );
+                }
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let n = format!("{scene}-{slug}");
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            // The header row lines up with the pane's tab bar: same top, and its bottom edge
+            // where the bar ends.
+            let tab_top = tab_top.borrow().expect("the tab's top");
+            assert!(
+                (tab_top - top).abs() < 0.5,
+                "{n}: the tab bar at {tab_top}, not {top}"
+            );
+            let edge = at(sidebar_left + 150.0, top + TAB_BAR - 0.5);
+            assert!(
+                near(edge, ui.sidebar_border, 3),
+                "{n}: the header's edge: {edge:?}"
+            );
+            let inside = at(sidebar_left + 250.0, top + TAB_BAR / 2.0);
+            assert!(
+                near(inside, ui.sidebar_background, 3),
+                "{n}: the header: {inside:?}"
+            );
+            // Each row's mark colour, somewhere along it (its name and letter are drawn in it).
+            let list_top = top + TAB_BAR + FILTER_BAND;
+            let inked = |row: usize, c: alacritty_terminal::vte::ansi::Rgb| {
+                let y0 = list_top + row as f32 * ROW;
+                (4..(ROW as usize * 2 - 4)).any(|dy| {
+                    let y = y0 + dy as f32 * 0.5;
+                    (0..560).any(|dx| near(at(sidebar_left + 8.0 + dx as f32 * 0.5, y), c, 24))
+                })
+            };
+            let (m, a, d) = (
+                mark_color(Mark::Modified, &theme),
+                mark_color(Mark::Added, &theme),
+                mark_color(Mark::Deleted, &theme),
+            );
+            let expect: Vec<(usize, Option<alacritty_terminal::vte::ansi::Rgb>)> =
+                if scene == "files-filter" {
+                    vec![(0, Some(m)), (1, Some(m))]
+                } else {
+                    vec![
+                        (0, None),
+                        (1, Some(m)),
+                        (3, Some(m)),
+                        (4, Some(a)),
+                        (6, None),
+                        (7, Some(d)),
+                        (8, Some(m)),
+                    ]
+                };
+            for (row, colour) in expect {
+                match colour {
+                    Some(c) => assert!(inked(row, c), "{n}: row {row} in {c:?}"),
+                    None => {
+                        for c in [m, a, d] {
+                            assert!(!inked(row, c), "{n}: row {row} unmarked, has {c:?}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Keys, a click, Esc (not shot).
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = build_for(false, slot.clone());
+        let root_for = root.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let n = format!("files-keys-{slug}");
+            let none = Modifiers::none();
+            frame(cx, window);
+            let list_top = TAB_BAR + FILTER_BAND;
+            let row_at = |i: usize| {
+                point(
+                    px(sidebar_left + 80.0),
+                    px(list_top + (i as f32 + 0.5) * ROW),
+                )
+            };
+            let selected = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let files = &ws.read(cx).right_sidebar.files;
+                    let tree = files.tree.as_ref().expect("the tree");
+                    tree.selected().map(|s| s.display().to_string())
+                })
+            };
+            let panel_keys = |cx: &mut VisualTestAppContext| {
+                cx.update_window(window, |_, window, cx| {
+                    let focus = ws
+                        .read(cx)
+                        .right_sidebar
+                        .files
+                        .focus
+                        .clone()
+                        .expect("its focus");
+                    (focus.is_focused(window), focus.contains_focused(window, cx))
+                })
+                .expect("read")
+            };
+            // A click below the rows: the panel takes the keyboard.
+            cx.simulate_click(window, row_at(12), none);
+            assert_eq!(
+                panel_keys(cx),
+                (true, true),
+                "{n}: the tree has the keyboard"
+            );
+            assert_eq!(
+                selected(cx).as_deref(),
+                Some("src"),
+                "{n}: the terminal's folder"
+            );
+            cx.simulate_keystrokes(window, "down");
+            assert_eq!(selected(cx).as_deref(), Some("src/util"), "{n}: ↓");
+            cx.simulate_keystrokes(window, "right");
+            frame(cx, window);
+            let rows = rows_of(cx, &ws);
+            assert!(
+                rows.contains(&"src/util/a.rs".to_string()),
+                "{n}: → lists util: {rows:?}"
+            );
+            cx.simulate_keystrokes(window, "left");
+            frame(cx, window);
+            assert!(
+                !rows_of(cx, &ws).contains(&"src/util/a.rs".to_string()),
+                "{n}: ← closes it"
+            );
+            cx.simulate_keystrokes(window, "up enter");
+            frame(cx, window);
+            assert_eq!(selected(cx).as_deref(), Some("src"), "{n}: ↑");
+            assert!(
+                !rows_of(cx, &ws).contains(&"src/main.rs".to_string()),
+                "{n}: Return closes src"
+            );
+            cx.simulate_keystrokes(window, "enter");
+            frame(cx, window);
+            assert_eq!(rows_of(cx, &ws), tree_rows, "{n}: and opens it");
+            // A click on main.rs: its file tab, in the focused pane, with the keyboard.
+            cx.simulate_click(window, row_at(3), none);
+            frame(cx, window);
+            let main_rs = root_for.join("src/main.rs");
+            let (kind, tab_keys) = cx
+                .update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    let pane = ws.model.focused_pane().expect("a pane");
+                    let p = ws.model.pane(pane).expect("known");
+                    let active = p.tabs.iter().find(|t| t.id == p.active).expect("its tab");
+                    let view = ws.focused_file_tab().expect("the file tab's view");
+                    (
+                        active.kind.clone(),
+                        view.read(cx).focus_handle(cx).is_focused(window),
+                    )
+                })
+                .expect("read");
+            assert_eq!(
+                kind,
+                TabKind::File {
+                    path: main_rs,
+                    mode: FileMode::Plain
+                },
+                "{n}: the click opens main.rs"
+            );
+            assert!(tab_keys, "{n}: the file tab has the keyboard");
+            // Back in the tree, Esc: the pane's tab takes the keyboard back.
+            cx.simulate_click(window, row_at(12), none);
+            assert_eq!(panel_keys(cx), (true, true), "{n}: the tree again");
+            cx.simulate_keystrokes(window, "escape");
+            let back = cx
+                .update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    let view = ws.focused_file_tab().expect("the file tab's view");
+                    view.read(cx).focus_handle(cx).is_focused(window)
+                })
+                .expect("read");
+            assert!(back, "{n}: Esc gives the keyboard to the pane");
+            assert_eq!(panel_keys(cx), (false, false), "{n}: not the tree's");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: files-keys-{slug} ok");
+
+        // The filter box focused, ⌥⌘\: the sidebar closes, the terminal takes the keyboard.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = build_for(false, slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let n = format!("files-close-{slug}");
+            frame(cx, window);
+            let field = point(px(sidebar_left + 60.0), px(TAB_BAR + FILTER_BAND / 2.0));
+            cx.simulate_click(window, field, Modifiers::none());
+            let typing = cx
+                .update_window(window, |_, window, cx| {
+                    let input = ws
+                        .read(cx)
+                        .right_sidebar
+                        .files
+                        .input
+                        .clone()
+                        .expect("the box");
+                    input.focus_handle(cx).is_focused(window)
+                })
+                .expect("read");
+            assert!(typing, "{n}: the box has the keyboard");
+            cx.simulate_keystrokes(window, "alt-cmd-\\");
+            frame(cx, window);
+            let (hidden, terminal_keys) = cx
+                .update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    let s = ws.sessions.active().expect("the terminal");
+                    (
+                        ws.right_sidebar.hidden,
+                        s.view.focus_handle(cx).is_focused(window),
+                    )
+                })
+                .expect("read");
+            assert!(hidden, "{n}: closed");
+            assert!(terminal_keys, "{n}: the terminal has the keyboard");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: files-close-{slug} ok");
     }
 }
 
