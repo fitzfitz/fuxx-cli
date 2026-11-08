@@ -68,7 +68,6 @@ mod session_list;
 mod settings;
 mod sidebar;
 mod sidebar_toggle;
-mod smart_name;
 mod split_tree;
 mod ssh_control;
 mod ssh_hosts;

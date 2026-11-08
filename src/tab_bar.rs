@@ -103,7 +103,7 @@ pub fn tip(title: &str, osc: Option<&str>, status: Status, age: Duration) -> Str
         Status::Idle => title.to_string(),
         _ => format!("{title} — {} {}", status.as_str(), status::age_label(age)),
     };
-    match crate::smart_name::extra_title(title, osc) {
+    match crate::groups::extra_title(title, osc) {
         Some(osc) => format!("{line}\n{osc}"),
         None => line,
     }
@@ -1358,12 +1358,12 @@ mod tests {
         );
         assert_eq!(
             tip(
-                "claude · api",
+                "api",
                 Some("✳ Fix the tests"),
                 Status::Working,
                 Duration::from_secs(32)
             ),
-            "claude · api — working 32s\n✳ Fix the tests"
+            "api — working 32s\n✳ Fix the tests"
         );
         // The same as the name, or blank: nothing more.
         assert_eq!(tip("vim", Some("vim"), Status::Idle, idle), "vim");
