@@ -135,6 +135,15 @@ pub(crate) const POP_SHOWN: std::time::Duration = std::time::Duration::from_mill
 /// `ps`), at most.
 pub(crate) const NAMES_REFRESH: Duration = Duration::from_secs(3);
 
+/// How long after a `ps` that failed (or ran past its cap) the next one runs.
+pub(crate) const NAMES_RETRY: Duration = Duration::from_secs(30);
+
+/// The wait before the next `ps` after one that went `ok` (`NAMES_REFRESH`) or failed
+/// (`NAMES_RETRY`), from when it began.
+pub(crate) fn names_wait(ok: bool) -> Duration {
+    if ok { NAMES_REFRESH } else { NAMES_RETRY }
+}
+
 /// What runs in each terminal (M11i), for its name (`terminal_label`): read from one `ps` table
 /// (`procs::ps_table`, on the background executor) at most every `NAMES_REFRESH`, and kept
 /// steady (`Stable`). A terminal never looked up is `Unknown`, not at its prompt.
@@ -147,6 +156,8 @@ pub(crate) struct Programs {
     pub frozen: bool,
     /// When `ps` last ran.
     last_run: Option<Instant>,
+    /// The last `ps` failed (or ran past its cap): the next waits `NAMES_RETRY`.
+    failed: bool,
 }
 
 impl Programs {
@@ -170,18 +181,16 @@ impl Programs {
         self.by_terminal.insert(id, stable);
     }
 
-    /// A `ps` table (none: `ps` failed), read for `shells` (each terminal and its shell's pid;
-    /// any other is forgotten); true when a terminal's shown program changed. A failed `ps` forgets what was known, so
-    /// the names fall back to their folders rather than keep a stale program.
+    /// A `ps` table (none: `ps` failed), read for `shells` (each terminal and its shell's pid:
+    /// every local one, `ps -A` being system-wide; any other is kept as it was, and only a
+    /// closed one is forgotten, by `retain`); true when a terminal's shown program changed. A
+    /// failed `ps` keeps the last good names (and the next waits `NAMES_RETRY`); only the table
+    /// goes.
     pub fn take(&mut self, table: Option<Vec<Proc>>, shells: &[(u64, u32)]) -> bool {
+        self.failed = table.is_none();
         let Some(table) = table else {
             self.table = None;
-            let known = self
-                .by_terminal
-                .values()
-                .any(|s| *s.shown() != ProgramState::Unknown);
-            self.by_terminal.clear();
-            return known;
+            return false;
         };
         let mut changed = false;
         for &(id, shell) in shells {
@@ -199,19 +208,15 @@ impl Programs {
             };
             changed |= self.by_terminal.entry(id).or_default().offer(seen);
         }
-        // The terminals not asked about: their names left the screen. Forgotten, so they fall
-        // back to `preset · folder` rather than keep a stale program, and their first answer
-        // back is taken at once.
-        self.by_terminal
-            .retain(|id, _| shells.iter().any(|(shell_id, _)| shell_id == id));
         self.table = Some(Rc::new(table));
         changed
     }
 
-    /// How long until `ps` may run again (`NAMES_REFRESH` after the last run), from `now`.
+    /// How long until `ps` may run again (`names_wait` after the last run began: 3 s, 30 s
+    /// after a failed one), from `now`.
     pub fn wait(&self, now: Instant) -> Duration {
         self.last_run.map_or(Duration::ZERO, |at| {
-            NAMES_REFRESH.saturating_sub(now.saturating_duration_since(at))
+            names_wait(!self.failed).saturating_sub(now.saturating_duration_since(at))
         })
     }
 
@@ -222,19 +227,32 @@ impl Programs {
 }
 
 impl Workspace {
+    /// Session `i`'s terminal and its shell's pid, if its program can be looked up: a local
+    /// one. Not an SSH one (its programs run elsewhere) nor a background-service one (fuxx
+    /// doesn't have its shell's pid), nor a lost one.
+    fn program_shell(&self, i: usize, cx: &App) -> Option<(u64, u32)> {
+        let s = self.sessions.items().get(i)?;
+        if s.ssh.is_some() || s.lost {
+            return None;
+        }
+        Some((s.id, s.view.read(cx).working_folder().1?))
+    }
+
     /// The local terminals whose names are on screen (`named_on_screen`) with their shell's
-    /// pid. Not SSH ones (their programs run elsewhere) nor background-service ones (fuxx
-    /// doesn't have their shell's pid), nor lost ones.
+    /// pid (`program_shell`): while there are some, the programs' lookup runs.
     fn program_shells(&self, cx: &App) -> Vec<(u64, u32)> {
         self.named_on_screen()
             .into_iter()
-            .filter_map(|i| {
-                let s = &self.sessions.items()[i];
-                if s.ssh.is_some() || s.lost {
-                    return None;
-                }
-                Some((s.id, s.view.read(cx).working_folder().1?))
-            })
+            .filter_map(|i| self.program_shell(i, cx))
+            .collect()
+    }
+
+    /// Every local terminal with its shell's pid (`program_shell`): what each table is read
+    /// for, so a terminal whose name is out of view (another workspace, a row scrolled away,
+    /// the sidebar hidden) keeps its program for ⌘P, the notifications and the ports.
+    fn all_program_shells(&self, cx: &App) -> Vec<(u64, u32)> {
+        (0..self.sessions.items().len())
+            .filter_map(|i| self.program_shell(i, cx))
             .collect()
     }
 
@@ -247,9 +265,9 @@ impl Workspace {
 
     /// Start the programs' lookup unless it's running or nothing is wanted (`programs_wanted`):
     /// one `ps` on the background executor (capped at 2 s), at most every `NAMES_REFRESH` (also
-    /// across restarts), its answer read for the terminals on screen then. It stops once
-    /// nothing is wanted, so a hidden or covered window is never woken; `render` calls it, so
-    /// showing the window again starts it.
+    /// across restarts), its answer read for every local terminal (`all_program_shells`). It
+    /// stops once nothing is wanted, so a hidden or covered window is never woken; `render`
+    /// calls it, so showing the window again starts it.
     pub(crate) fn tick_programs(&mut self, cx: &mut Context<Self>) {
         if self.programs_ticking || !self.programs_wanted(cx) {
             return;
@@ -280,7 +298,7 @@ impl Workspace {
                     .spawn(async { procs::ps_table() })
                     .await;
                 let took = this.update(cx, |this, cx| {
-                    let shells = this.program_shells(cx);
+                    let shells = this.all_program_shells(cx);
                     if this.programs.take(table, &shells) {
                         cx.notify();
                     }
@@ -3397,8 +3415,8 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NAMES_REFRESH, Programs, daemon_create, notification_summary, scripting_env, session_env,
-        starts_window_move, window_title,
+        NAMES_REFRESH, NAMES_RETRY, Programs, daemon_create, names_wait, notification_summary,
+        scripting_env, session_env, starts_window_move, window_title,
     };
     use crate::presets::Preset;
     use crate::procs::parse_ps;
@@ -3438,34 +3456,72 @@ mod tests {
         assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
         assert!(programs.take(Some(parse_ps(after)), &shells[2..3]));
         assert_eq!(programs.state(3), ProgramState::Prompt);
-        // Terminals not asked about (their names left the screen) are forgotten: they fall back
-        // to `preset · folder`, and their first answer back is taken at once.
+        // Terminals not asked about are kept as they were, never forgotten for it (the caller
+        // asks about every local terminal, `ps -A` being system-wide): s2 still runs claude.
         assert_eq!(
             programs.state(2),
-            ProgramState::Unknown,
-            "s2 left the screen"
+            ProgramState::Running("claude".into()),
+            "s2 not asked about: kept"
         );
-        assert_eq!(programs.state(1), ProgramState::Unknown, "s1 too");
-        assert!(programs.take(Some(parse_ps(ps)), &shells));
-        assert_eq!(programs.state(1), ProgramState::Prompt);
-        assert_eq!(programs.state(2), ProgramState::Running("claude".into()));
-        // s3 stayed on screen: one sighting of make isn't enough...
+        assert_eq!(programs.state(1), ProgramState::Prompt, "s1 too");
+        // Each one answers from the table, its name on screen or not: claude ends in s2 (the
+        // prompt after an agent is taken at once).
+        let s2_done = "100 1 100 100 Ss -zsh\n200 1 200 200 Ss -zsh\n300 1 300 300 Ss -zsh\n";
+        assert!(programs.take(Some(parse_ps(s2_done)), &shells));
+        assert_eq!(programs.state(2), ProgramState::Prompt);
         assert_eq!(programs.state(3), ProgramState::Prompt);
-        // ...but after leaving the screen and coming back, its first answer is taken at once.
-        programs.take(Some(parse_ps(ps)), &shells[..1]);
-        assert_eq!(programs.state(3), ProgramState::Unknown);
-        assert!(programs.take(Some(parse_ps(ps)), &shells[2..3]));
-        assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
-        // ps failing: what was known is forgotten (the names fall back to their folders).
-        assert!(programs.take(None, &shells));
-        assert_eq!(programs.state(1), ProgramState::Unknown);
+        // ps failing: the last good names are kept (not wiped to their folders); the table
+        // goes (the ports lookup waits for a good one).
+        assert!(!programs.take(None, &shells), "nothing shown changed");
+        assert_eq!(programs.state(1), ProgramState::Prompt);
+        assert_eq!(programs.state(2), ProgramState::Prompt);
         assert!(programs.table().is_none());
-        assert!(!programs.take(None, &shells), "nothing more to forget");
         // Gone terminals are forgotten.
         programs.take(Some(parse_ps(ps)), &shells);
         programs.retain(|id| id == 1);
         assert_eq!(programs.state(2), ProgramState::Unknown);
         assert_eq!(programs.state(1), ProgramState::Prompt);
+    }
+
+    /// ⌘P (and the notifications) name a workspace that isn't on screen by what runs there:
+    /// its terminal's program isn't forgotten while its name is out of view, so typing the
+    /// program finds it.
+    #[test]
+    fn a_workspace_out_of_view_keeps_its_program_in_its_switcher_label() {
+        use crate::smart_name::{NameFacts, smart_name};
+        use crate::status::Status;
+        use crate::switcher::{Entry, matches};
+        // s1 on screen (at its prompt); s2, in another workspace, runs claude.
+        let ps = "\
+            100 1 100 100 Ss -zsh\n\
+            200 1 200 210 Ss -zsh\n\
+            210 200 210 210 S+ claude\n";
+        let mut programs = Programs::default();
+        programs.take(Some(parse_ps(ps)), &[(1, 100), (2, 200)]);
+        // Its workspace leaves the view (the sidebar hidden, another workspace shown) and the
+        // next tables come.
+        programs.take(Some(parse_ps(ps)), &[(1, 100)]);
+        programs.take(Some(parse_ps(ps)), &[(1, 100)]);
+        let label = smart_name(&NameFacts {
+            user: None,
+            program: programs.state(2),
+            folder: Some(Path::new("/Users/me/proj/api")),
+            home: Some(Path::new("/Users/me")),
+            ssh_host: None,
+            preset: None,
+            title: None,
+        });
+        assert_eq!(label, "claude \u{b7} api");
+        let entry = Entry {
+            id: 2,
+            label,
+            group: None,
+            status: Status::Idle,
+            since: Instant::now(),
+            question: None,
+            color: None,
+        };
+        assert!(matches(2, &entry, "claude"), "typing the program finds it");
     }
 
     #[test]
@@ -3481,6 +3537,26 @@ mod tests {
         );
         assert_eq!(programs.wait(now + Duration::from_secs(5)), Duration::ZERO);
         assert_eq!(NAMES_REFRESH, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_failed_ps_waits_30_s_and_a_good_one_3_s() {
+        assert_eq!(names_wait(true), NAMES_REFRESH);
+        assert_eq!(names_wait(false), Duration::from_secs(30));
+        assert_eq!(names_wait(false), NAMES_RETRY);
+        let now = Instant::now();
+        let s = Duration::from_secs;
+        let mut programs = Programs::default();
+        programs.last_run = Some(now);
+        // It fails (or runs past its cap): the next try 30 s after it began.
+        programs.take(None, &[(1, 100)]);
+        assert_eq!(programs.wait(now), s(30));
+        assert_eq!(programs.wait(now + s(10)), s(20));
+        assert_eq!(programs.wait(now + s(31)), Duration::ZERO);
+        // It works again: back to every 3 s.
+        programs.last_run = Some(now + s(31));
+        programs.take(Some(parse_ps("100 1 100 100 Ss -zsh\n")), &[(1, 100)]);
+        assert_eq!(programs.wait(now + s(31)), NAMES_REFRESH);
     }
 
     #[test]
