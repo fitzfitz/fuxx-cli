@@ -294,9 +294,16 @@ fn counts_element(added: Option<String>, removed: Option<String>, inks: &ChangeI
         .into_any_element()
 }
 
+/// Whether a click on `change`'s row opens its diff: not a folder (`?? vendor/x/`, a nested
+/// repo, a submodule), which is listed but has no file to show.
+pub fn opens_diff(change: &Change) -> bool {
+    !change.folder
+}
+
 /// Row `i`: the mark letter in its colour, the name, the folder (faint, cut at its end), the
 /// counts at the right; filled while `selected`, else `card_hover` on hover; the whole path in
-/// its tooltip. A click opens the file's diff (`changes_click`).
+/// its tooltip. A click opens the file's diff (`changes_click`). A folder entry's row
+/// (`opens_diff`) has no hover fill and opens nothing.
 fn change_row(
     i: usize,
     change: &Change,
@@ -322,6 +329,7 @@ fn change_row(
     let full: SharedString = change.path.display().to_string().into();
     let rel = change.path.clone();
     let hover = ui.card_hover;
+    let opens = opens_diff(change);
     div()
         .id(("change-row", i))
         .flex()
@@ -332,9 +340,9 @@ fn change_row(
         .pr(px(ROW_RIGHT))
         .gap(px(ROW_GAP))
         .text_size(px(text::NAME))
-        .cursor_pointer()
+        .when(opens, |r| r.cursor_pointer())
         .when(selected, |r| r.bg(hsla(ui.card_selected)))
-        .when(!selected, |r| r.hover(move |s| s.bg(hsla(hover))))
+        .when(!selected && opens, |r| r.hover(move |s| s.bg(hsla(hover))))
         .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(full.clone())).into() })
         .child(
             div()
@@ -362,11 +370,11 @@ fn change_row(
                 .child(folder),
         )
         .children(counts)
-        .on_click(
-            cx.listener(move |this, _: &ClickEvent, window, cx| {
+        .when(opens, |r| {
+            r.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.changes_click(&rel, window, cx)
-            }),
-        )
+            }))
+        })
         .into_any_element()
 }
 
@@ -651,7 +659,19 @@ mod tests {
             path: PathBuf::from(path),
             mark,
             counts,
+            folder: false,
         }
+    }
+
+    #[test]
+    fn a_folder_row_opens_nothing() {
+        let file = change("a.rs", Mark::Modified, Counts::Unknown);
+        let folder = Change {
+            folder: true,
+            ..change("vendor/x/", Mark::Added, Counts::Unknown)
+        };
+        assert!(opens_diff(&file));
+        assert!(!opens_diff(&folder), "no Diff tab on a folder");
     }
 
     fn list_of(entries: Vec<Change>, more: usize) -> ChangeList {
