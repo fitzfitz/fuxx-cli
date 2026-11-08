@@ -2,13 +2,14 @@
 //! glance, under its group's header (its first terminal's folder or host); pinned workspaces
 //! lead, above every header, with a 📌.
 //!
-//! `rows` is the pure view-model: what each row shows (its name in bold, its most urgent
-//! terminal's status and how long it has been in it, `branch • ~/folder` from `git_branch`, the
-//! waiting question with a 🔔 "Needs input" pill, focused, pinned, its colour), built from facts
-//! the Workspace hands over. The rest of the file draws it; the selected row is filled with the
-//! accent, everything on it in `on_accent`. Rows behave like tabs: a × on hover in the mark's
+//! `rows` is the pure view-model: what each row shows (its name in semibold, its most urgent
+//! terminal's status and how long it has been in it, whether a program runs there, focused,
+//! pinned, its colour, and one line under the name: `line_two`), built from facts the
+//! Workspace hands over. The rest of the file draws it (M11i: compact, 22 pt with one line and
+//! 32 pt with two); the selected row is a soft tint of the accent with a 2 pt accent bar at its
+//! left, everything on it in its own colours. Rows behave like tabs: a × on hover in the mark's
 //! place, a middle-click closes, a right-click opens the row's menu (`tab_menu`, with Pin /
-//! Unpin); on the right, the colour's dot and the ⌘1–⌘9 shortcut.
+//! Unpin); on the right, the colour's dot and, on hover, the ⌘1–⌘9 shortcut.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -36,6 +37,7 @@ use crate::presets::MAX_PRESETS;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
 use crate::sidebar_toggle::Tip;
+use crate::smart_name::{self, ProgramState};
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_bar::{DraggedTab, hold_closed_hand};
@@ -48,8 +50,8 @@ use crate::title_area::{
     BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, PREFERENCES_GROUP, footer_icon, unseen_dot,
 };
 use crate::ui_tokens::size::{
-    DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
-    SIDEBAR_ROW, STATUS_MARK, WAITING_ROW,
+    DIVIDER_ACTIVE, GROUP_HEADER, SELECTION_BAR, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
+    SIDEBAR_MIN_WIDTH, SIDEBAR_ROW, SIDEBAR_ROW_TWO, STATUS_MARK,
 };
 use crate::ui_tokens::text;
 use crate::updater;
@@ -80,6 +82,8 @@ pub struct WorkspaceFacts<'a> {
     pub branch: Option<&'a str>,
     /// Where its first terminal is, as shown (`home_relative`; an SSH one's host).
     pub folder: Option<String>,
+    /// A program other than the shell runs in `subject` (M11i: an idle row's filled dot).
+    pub running: bool,
 }
 
 /// One row of the sidebar.
@@ -131,6 +135,9 @@ pub struct WorkspaceRow {
     /// The second line, `branch • folder` (the branch only inside a git repo).
     pub branch: Option<String>,
     pub folder: Option<String>,
+    /// A program other than the shell runs in its subject: idle, its mark is a filled dot, not
+    /// a ring (M11i).
+    pub running: bool,
 }
 
 /// The line under a workspace's name.
@@ -140,8 +147,10 @@ pub enum Sub {
     Question(String),
     /// Waiting, but no question was found on screen (the "Needs input" pill alone).
     NeedsInput,
-    /// A script's note or progress label, or "not live".
+    /// A script's note or progress label.
     Note(String),
+    /// The background service's connection was lost (M10a).
+    NotLive,
 }
 
 /// The sidebar's rows: leading ungrouped workspaces, then each group under its header (a closed
@@ -199,6 +208,7 @@ pub fn rows(
                     pinned: s.pinned,
                     branch: s.branch.map(String::from),
                     folder: s.folder.clone(),
+                    running: s.running,
                 })
             }
         })
@@ -209,7 +219,7 @@ pub fn rows(
 /// one; a waiting one's question; else a script's progress label and note.
 fn sub(s: &WorkspaceFacts) -> Option<Sub> {
     if s.lost {
-        return Some(Sub::Note("not live".into()));
+        return Some(Sub::NotLive);
     }
     if s.status == Status::Waiting {
         return Some(match s.question {
@@ -309,8 +319,8 @@ pub fn fit_place(
     line(branch.as_deref(), Some(&cut_folder(n)))
 }
 
-/// Whether a waiting row `row_width` wide has room for its question beside the pill (else the
-/// pill shows alone: the question is in ⌘P and the notification).
+/// Whether a waiting row `row_width` wide has room for its question after "Needs input" (else
+/// "Needs input" shows alone: the question is in the row's tooltip, ⌘P and the notification).
 pub fn shows_question(row_width: f32) -> bool {
     row_width >= QUESTION_MIN_ROW
 }
@@ -333,12 +343,39 @@ pub fn remote_place(host: &str, folder: Option<&Path>) -> String {
     }
 }
 
-/// A row's height: the name line, and a line each for where it is and for what it's waiting
-/// on (or a script's note).
+/// A row's second line (M11i), the first that applies.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LineTwo {
+    /// A lost background session.
+    NotLive,
+    /// Waiting: "Needs input", then the question when one was found.
+    Waiting(Option<String>),
+    /// A script's note or progress label.
+    Note(String),
+    /// `branch • folder`.
+    Place,
+}
+
+/// What a row shows under its name (M11i), the first that applies: "not live" for a lost
+/// background session; waiting, "Needs input" and its question; a script's note; else where it
+/// is (`branch • folder`). None when there's nothing to say.
+pub fn line_two(row: &WorkspaceRow) -> Option<LineTwo> {
+    match &row.sub {
+        Some(Sub::NotLive) => Some(LineTwo::NotLive),
+        Some(Sub::Question(q)) => Some(LineTwo::Waiting(Some(q.clone()))),
+        Some(Sub::NeedsInput) => Some(LineTwo::Waiting(None)),
+        Some(Sub::Note(note)) => Some(LineTwo::Note(note.clone())),
+        None => (row.branch.is_some() || row.folder.is_some()).then_some(LineTwo::Place),
+    }
+}
+
+/// A row's height: its name line alone, or with the line under it (`line_two`).
 pub fn row_height(row: &WorkspaceRow) -> f32 {
-    let placed = row.branch.is_some() || row.folder.is_some();
-    let lines = usize::from(placed) + usize::from(row.sub.is_some());
-    SIDEBAR_ROW + lines as f32 * (WAITING_ROW - SIDEBAR_ROW)
+    if line_two(row).is_some() {
+        SIDEBAR_ROW_TWO
+    } else {
+        SIDEBAR_ROW
+    }
 }
 
 /// A workspace with no terminal (only browser tabs) is called this until you name it.
@@ -448,9 +485,11 @@ const GROUP_GAP: f32 = 10.0;
 pub(crate) const MARK_SLOT: f32 = 14.0;
 /// The space between the mark and the name, and before the age.
 const SLOT_GAP: f32 = 8.0;
-/// A row's name line, and the small line under it.
-const NAME_LINE: f32 = 18.0;
-const SUB_LINE: f32 = 15.0;
+/// A row's name line, and the small line under it (M11i).
+const NAME_LINE: f32 = 17.0;
+const SUB_LINE: f32 = 13.0;
+/// The selected row's accent bar: how far in from the row's top and bottom it stops.
+const SELECTION_BAR_INSET: f32 = 5.0;
 /// A header's + (a new workspace in the group), shown on hover.
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
@@ -495,13 +534,14 @@ const META_GAP: f32 = 6.0;
 const PLACE_SEP: &str = " • ";
 /// A long branch keeps this many characters before the folder gives way.
 const BRANCH_KEEP: usize = 8;
-/// A waiting row narrower than this leaves the question out (the pill alone).
+/// A waiting row narrower than this leaves the question out ("Needs input" alone).
 const QUESTION_MIN_ROW: f32 = 200.0;
 /// A pinned row's mark, right of its name.
 const PIN: &str = "📌";
-/// The "Needs input" pill: its height and words.
-const PILL: f32 = 15.0;
-const NEEDS_INPUT: &str = "🔔 Needs input";
+/// A waiting row's line 2 starts with this (in the waiting colour), and a lost one's says
+/// the other (M11i).
+const NEEDS_INPUT: &str = "Needs input";
+const NOT_LIVE: &str = "not live";
 /// A row's × (a little bigger than the mark slot it sits on), and the rows' hover group.
 const CLOSE_BUTTON: f32 = 16.0;
 const ROW_GROUP: &str = "sidebar-row";
@@ -619,6 +659,8 @@ struct DragPreview {
     /// Its place line, if it has one.
     place: Option<SharedString>,
     status: Status,
+    /// Idle, its mark is a dot (a program runs) or a ring.
+    running: bool,
     width: f32,
     /// As tall as the row (`row_height`), so it fills the gap the row leaves and opens.
     height: f32,
@@ -627,25 +669,25 @@ struct DragPreview {
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
+        let mark = match self.status {
+            Status::Idle => status_mark::idle_mark(self.running, &ui).into_any_element(),
+            status => {
+                let size = px(mark_size(status));
+                status_mark::mark_on(status, &ui, 0.0, None, size, ui.row_active).into_any_element()
+            }
+        };
         let name_line = div()
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(mark_slot(status_mark::mark_on(
-                self.status,
-                &ui,
-                0.0,
-                None,
-                px(mark_size(self.status)),
-                ui.row_active,
-            )))
+            .child(mark_slot(mark))
             .child(
                 div()
                     .flex_1()
                     .ml(px(SLOT_GAP))
                     .min_w(px(0.0))
                     .truncate()
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(self.label.clone()),
             );
         let place = self.place.clone().map(|place| {
@@ -737,49 +779,6 @@ pub(crate) fn mark_slot(mark: impl IntoElement) -> Div {
         .child(mark)
 }
 
-/// The colours a row's mark and × are drawn in: on the selected row (`active`, filled with the
-/// accent) every mark and the × are `on_accent` (the mark's shape still says its status), and
-/// the ×'s hover keeps the fill; elsewhere the theme's own.
-fn on_fill(ui: UiColors, active: bool) -> UiColors {
-    if !active {
-        return ui;
-    }
-    let ink = ui.on_accent;
-    UiColors {
-        ring_idle: ink,
-        ring_working: ink,
-        ring_waiting: ink,
-        ring_done: ink,
-        text: ink,
-        text_dim: ink,
-        panel_hover: ui.accent,
-        ..ui
-    }
-}
-
-/// A waiting row's 🔔 "Needs input" pill: outlined in the waiting colour (in `on_accent` on the
-/// selected row), its words in the row's text colour.
-fn needs_input_pill(ui: UiColors, active: bool) -> Div {
-    let (edge, ink) = if active {
-        (ui.on_accent, ui.on_accent)
-    } else {
-        (ui.ring_waiting, ui.text)
-    };
-    div()
-        .flex_none()
-        .flex()
-        .items_center()
-        .h(px(PILL))
-        .px(px(5.0))
-        .rounded_full()
-        .border_1()
-        .border_color(hsla(edge))
-        .text_color(hsla(ink))
-        .font_weight(FontWeight::MEDIUM)
-        .line_height(px(PILL - 2.0))
-        .child(NEEDS_INPUT)
-}
-
 /// A tab colour's dot.
 pub(crate) fn color_dot(color: TabColor, ui: UiColors) -> Div {
     div()
@@ -868,6 +867,9 @@ impl Workspace {
                     pinned: self.model.workspace(ws).is_some_and(|w| w.pinned),
                     branch,
                     folder,
+                    running: s.is_some_and(|s| {
+                        matches!(self.programs.state(s.id), ProgramState::Running(_))
+                    }),
                 }
             })
             .collect();
@@ -1222,13 +1224,15 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A workspace's row: its most urgent terminal's mark (a × in its place on hover), its name
-    /// in bold (or the rename box), age (when the row is wide enough), 📌 when pinned, on-screen
-    /// pip, colour dot and ⌘N shortcut; under them where it is (`branch • ~/folder`), then while
-    /// a terminal waits a 🔔 "Needs input" pill and its question (or a script's note); a
-    /// script's progress along the bottom. The selected row is filled with the accent, its text
-    /// and marks in `on_accent`. Click selects, double-click renames, the × or a middle-click
-    /// closes, a right-click opens its menu; it can be dragged within its run (`sidebar_run`).
+    /// A workspace's row (M11i: compact): its most urgent terminal's mark (idle: a dot while a
+    /// program runs, else a ring; a × in its place on hover), its name in semibold (or the
+    /// rename box), age (when the row is wide enough), 📌 when pinned, on-screen pip, colour dot
+    /// and, on hover, its ⌘N shortcut; under them one line (`line_two`): "not live", "Needs
+    /// input · question", a script's note, or where it is (`branch • ~/folder`); a script's
+    /// progress along the bottom. The selected row is a soft tint of the accent with a 2 pt
+    /// accent bar at its left, its text and marks in their own colours. Click selects,
+    /// double-click renames, the × or a middle-click closes, a right-click opens its menu; it
+    /// can be dragged within its run (`sidebar_run`).
     fn render_workspace_row(
         &self,
         row: &WorkspaceRow,
@@ -1240,10 +1244,11 @@ impl Workspace {
         let ws = row.workspace;
         let session = row.subject.and_then(|i| self.sessions.items().get(i));
         let waiting = row.status == Status::Waiting;
-        // The selected row is filled with the accent; a waiting one is tinted. Hover deepens an
-        // unselected one a little.
+        // The selected row is a soft tint of the accent (waiting or not); an unselected waiting
+        // one keeps its waiting tint. Hover deepens an unselected one a little; the selected
+        // one stays as it is.
         let fill = if row.active {
-            Some(ui.accent)
+            Some(ui.row_selected)
         } else if waiting {
             Some(ui.waiting_tint)
         } else {
@@ -1255,9 +1260,6 @@ impl Workspace {
             None => Some(ui.row_hover),
         };
         let surface = fill.unwrap_or(ui.sidebar_background);
-        // Everything on the accent is drawn in the one colour that reads on it.
-        let on = |c: Rgb| if row.active { ui.on_accent } else { c };
-        let marks = on_fill(ui, row.active);
         let rename_box = self
             .renaming
             .as_ref()
@@ -1276,7 +1278,7 @@ impl Workspace {
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
-                .font_weight(FontWeight::BOLD)
+                .font_weight(FontWeight::SEMIBOLD)
                 .child(row.label.clone())
                 .into_any_element(),
         };
@@ -1286,7 +1288,7 @@ impl Workspace {
                 .ml(px(META_GAP))
                 .text_size(px(text::META))
                 .font_features(tabular())
-                .text_color(hsla(on(ui.text_faint)))
+                .text_color(hsla(ui.text_faint))
                 .child(child)
         };
         // The age only where the name keeps its room.
@@ -1298,7 +1300,7 @@ impl Workspace {
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(self.close_slot(ws, session, marks, surface, cx))
+            .child(self.close_slot(ws, session, row.running, ui, surface, cx))
             .child(
                 div()
                     .flex_1()
@@ -1322,16 +1324,18 @@ impl Workspace {
                 )
             })
             .when_some(row.color, |line, color| {
-                // On the accent a dot of any colour keeps an edge that reads.
-                let dot = color_dot(color, ui).ml(px(META_GAP));
-                line.child(dot.when(row.active, |dot| {
-                    dot.border_1().border_color(hsla(ui.on_accent))
-                }))
+                line.child(color_dot(color, ui).ml(px(META_GAP)))
             })
+            // The shortcut only while the row is hovered, to keep the rows quiet (its room is
+            // kept, so the name doesn't shift); ⌘1–⌘9 work either way.
             .when_some(shortcut_label(row.index), |line, keys| {
-                line.child(meta(keys.into_any_element()))
+                line.child(
+                    meta(keys.into_any_element())
+                        .invisible()
+                        .group_hover(ROW_GROUP, |s| s.visible()),
+                )
             });
-        // Under the name, level with it: where it is, then what it waits on.
+        // Under the name, level with it: one line, the first that applies (`line_two`).
         let under = || {
             div()
                 .flex()
@@ -1341,44 +1345,47 @@ impl Workspace {
                 .text_size(px(text::META))
                 .line_height(px(SUB_LINE))
         };
-        // Short of room, the branch loses its end, then the folder its start (its own name
-        // stays): `fit_place`, measured as drawn.
+        let text = |line: String, color: Rgb| {
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_color(hsla(color))
+                .child(line)
+        };
         let row_width = self.sidebar.width - 2.0 * ROW_INSET;
-        let place = (row.branch.is_some() || row.folder.is_some()).then(|| {
-            let room = row_width - 2.0 * ROW_PAD - MARK_SLOT - SLOT_GAP;
-            let wrapper = std::cell::RefCell::new(
-                cx.text_system()
-                    .line_wrapper(TextStyle::default().font(), px(text::META)),
-            );
-            // As the drawn line decides whether to cut itself (`truncate`).
-            let fits = |s: &str| {
-                wrapper
-                    .borrow_mut()
-                    .should_truncate_line(s, px(room), "…", TruncateFrom::End)
-                    .is_none()
-            };
-            let line = fit_place(row.branch.as_deref(), row.folder.as_deref(), fits);
-            under()
-                .text_color(hsla(on(ui.text_faint)))
-                .child(div().flex_1().min_w(px(0.0)).truncate().child(line))
-        });
-        let status = row.sub.as_ref().map(|sub| {
-            let text = |line: String, color: Rgb| {
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_color(hsla(on(color)))
-                    .child(line)
-            };
-            match sub {
-                Sub::Question(q) => under()
-                    .child(needs_input_pill(ui, row.active))
-                    .when(shows_question(row_width), |line| {
-                        line.child(text(q.clone(), ui.text_dim).ml(px(6.0)))
-                    }),
-                Sub::NeedsInput => under().child(needs_input_pill(ui, row.active)),
-                Sub::Note(note) => under().child(text(note.clone(), ui.text_faint)),
+        let second = line_two(row).map(|line| match line {
+            LineTwo::NotLive => under().child(text(NOT_LIVE.into(), ui.text_faint)),
+            // "Needs input" in the waiting colour, then the question cut at its end (left out
+            // where the row is too narrow: it's in the tooltip, ⌘P and the banner).
+            LineTwo::Waiting(question) => under()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(hsla(ui.ring_waiting))
+                        .child(NEEDS_INPUT),
+                )
+                .when_some(question.filter(|_| shows_question(row_width)), |line, q| {
+                    line.child(text(format!("{}{q}", smart_name::SEPARATOR), ui.text_dim))
+                }),
+            LineTwo::Note(note) => under().child(text(note, ui.text_faint)),
+            // Short of room, the branch loses its end, then the folder its start (its own name
+            // stays): `fit_place`, measured as drawn.
+            LineTwo::Place => {
+                let room = row_width - 2.0 * ROW_PAD - MARK_SLOT - SLOT_GAP;
+                let wrapper = std::cell::RefCell::new(
+                    cx.text_system()
+                        .line_wrapper(TextStyle::default().font(), px(text::META)),
+                );
+                // As the drawn line decides whether to cut itself (`truncate`).
+                let fits = |s: &str| {
+                    wrapper
+                        .borrow_mut()
+                        .should_truncate_line(s, px(room), "…", TruncateFrom::End)
+                        .is_none()
+                };
+                let line = fit_place(row.branch.as_deref(), row.folder.as_deref(), fits);
+                under().child(text(line, ui.text_faint))
             }
         });
         let (source, tab_source) = (self.sidebar.drag_source.clone(), self.tab_drag.clone());
@@ -1387,6 +1394,7 @@ impl Workspace {
             place: (row.branch.is_some() || row.folder.is_some())
                 .then(|| fit_place(row.branch.as_deref(), row.folder.as_deref(), |_| true).into()),
             status: row.status,
+            running: row.running,
             width: self.sidebar.width,
             height: row_height(row),
         };
@@ -1405,7 +1413,7 @@ impl Workspace {
             .px(px(ROW_PAD))
             .rounded(px(6.0))
             .text_size(px(text::NAME))
-            .text_color(hsla(on(ui.text)))
+            .text_color(hsla(ui.text))
             .when_some(fill, |row, fill| row.bg(hsla(fill)))
             .when_some(hover, |row, hover| {
                 row.hover(move |style| style.bg(hsla(hover)))
@@ -1464,15 +1472,28 @@ impl Workspace {
                 let here = |at| at == TabDrop::Workspace(ws);
                 this.drop_tab(dragged.tab, here, window, cx);
             }))
+            // The selected row's accent bar, at its left edge.
+            .when(row.active, |row_el| {
+                row_el.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top(px(SELECTION_BAR_INSET))
+                        .bottom(px(SELECTION_BAR_INSET))
+                        .w(px(SELECTION_BAR))
+                        .rounded(px(1.0))
+                        .bg(hsla(ui.accent)),
+                )
+            })
             .child(name_line)
-            .children(place)
-            .children(status)
-            // The progress bar: along the bottom, as wide as the percent.
+            .children(second)
+            // The progress bar: along the bottom edge (a compact row has 1 pt under its line 2),
+            // as wide as the percent.
             .when_some(row.progress, |row_el, percent| {
                 row_el.child(
                     div()
                         .absolute()
-                        .bottom(px(1.0))
+                        .bottom_0()
                         .left(px(ROW_PAD))
                         .right(px(ROW_PAD))
                         .h(px(2.0))
@@ -1481,14 +1502,14 @@ impl Workspace {
                                 .h_full()
                                 .w(relative(f32::from(percent.min(100)) / 100.0))
                                 .rounded(px(1.0))
-                                .bg(hsla(on(ui.ring_working))),
+                                .bg(hsla(ui.ring_working)),
                         ),
                 )
             })
             // A pane tab over it: lit as on hover (GPUI draws no hover during a drag) and ringed
-            // in the accent (on the selected row, filled with it, in `on_accent`).
+            // in the accent.
             .when(tab_target, |row_el| {
-                let ring = if row.active { ui.on_accent } else { ui.accent };
+                let ring = ui.accent;
                 row_el.when_some(hover, |r, hover| r.bg(hsla(hover))).child(
                     div()
                         .absolute()
@@ -1575,28 +1596,23 @@ impl Workspace {
         }
     }
 
-    /// A row's mark slot: its session's status mark (an idle one for a workspace with no
-    /// terminal), or while the row is hovered a × in its place that closes the workspace
-    /// (asking first when it has 2+ terminals).
+    /// A row's mark slot: its session's status mark (idle, or a workspace with no terminal:
+    /// a dot while a program runs there, `running`, else a ring), or while the row is hovered
+    /// a × in its place that closes the workspace (asking first when it has 2+ terminals).
     fn close_slot(
         &self,
         ws: WorkspaceId,
         session: Option<&Session>,
+        running: bool,
         ui: UiColors,
         surface: Rgb,
         cx: &mut Context<Self>,
     ) -> Div {
         let mark = match session {
-            Some(session) => self.session_mark("row", session, ui, surface),
-            None => status_mark::mark_on(
-                Status::Idle,
-                &ui,
-                self.phase,
-                None,
-                px(mark_size(Status::Idle)),
-                surface,
-            )
-            .into_any_element(),
+            Some(session) if session.status != Status::Idle => {
+                self.session_mark("row", session, ui, surface)
+            }
+            _ => status_mark::idle_mark(running, &ui).into_any_element(),
         };
         let mark = div()
             .absolute()
@@ -2210,6 +2226,7 @@ mod tests {
             pinned: false,
             branch: None,
             folder: None,
+            running: false,
         }
     }
 
@@ -2307,7 +2324,7 @@ mod tests {
         s.question = Some("Proceed? (y/n)");
         s.lost = true;
         let rows = rows(&numbered(vec![s]), &[], None, &[], now);
-        assert_eq!(session(&rows[0]).sub, Some(Sub::Note("not live".into())));
+        assert_eq!(session(&rows[0]).sub, Some(Sub::NotLive));
     }
 
     #[test]
@@ -2684,7 +2701,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_grows_a_line_for_where_it_is_and_one_for_what_it_waits_on() {
+    fn a_row_grows_to_two_lines_for_where_it_is_or_what_it_waits_on() {
         let now = Instant::now();
         let mut placed = facts("api", Status::Idle, now, None);
         placed.folder = Some("~/api".into());
@@ -2701,7 +2718,96 @@ mod tests {
             now,
         );
         let heights: Vec<f32> = rows.iter().map(|r| row_height(session(r))).collect();
-        assert_eq!(heights, [SIDEBAR_ROW, WAITING_ROW, WAITING_ROW, 56.0]);
+        // Whatever is under the name, it's one line (the waiting one was 56 pt with both).
+        assert_eq!(
+            heights,
+            [
+                SIDEBAR_ROW,
+                SIDEBAR_ROW_TWO,
+                SIDEBAR_ROW_TWO,
+                SIDEBAR_ROW_TWO
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_is_22_with_one_line_and_32_with_two() {
+        assert_eq!((SIDEBAR_ROW, SIDEBAR_ROW_TWO), (22.0, 32.0));
+        assert_eq!((NAME_LINE, SUB_LINE), (17.0, 13.0));
+        let now = Instant::now();
+        let height = |f: WorkspaceFacts| {
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            row_height(session(&rows[0]))
+        };
+        // No place, nothing under the name: one line.
+        assert_eq!(height(facts("shell", Status::Idle, now, None)), 22.0);
+        // Its place only.
+        let mut placed = facts("api", Status::Idle, now, None);
+        placed.folder = Some("~/api".into());
+        assert_eq!(height(placed), 32.0);
+        // Waiting, with a place and a question: still two lines.
+        let mut waiting = facts("claude", Status::Waiting, now, None);
+        waiting.folder = Some("~/api".into());
+        waiting.branch = Some("main");
+        waiting.question = Some("Proceed? (y/n)");
+        assert_eq!(height(waiting), 32.0);
+        // Lost.
+        let mut lost = facts("api", Status::Idle, now, None);
+        lost.lost = true;
+        assert_eq!(height(lost), 32.0);
+    }
+
+    #[test]
+    fn line_two_prefers_not_live_then_waiting_then_note_then_place() {
+        let now = Instant::now();
+        let line = |f: WorkspaceFacts| {
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            line_two(session(&rows[0]))
+        };
+        let base = |status| {
+            let mut f = facts("api", status, now, None);
+            f.folder = Some("~/api".into());
+            f.branch = Some("main");
+            f.note = Some("3 of 7");
+            f.question = Some("Proceed? (y/n)");
+            f
+        };
+        // Lost beats everything, waiting included.
+        let mut lost = base(Status::Waiting);
+        lost.lost = true;
+        assert_eq!(line(lost), Some(LineTwo::NotLive));
+        // Waiting beats the note and the place; with its question, or without one.
+        assert_eq!(
+            line(base(Status::Waiting)),
+            Some(LineTwo::Waiting(Some("Proceed? (y/n)".into())))
+        );
+        let mut asking = base(Status::Waiting);
+        asking.question = None;
+        assert_eq!(line(asking), Some(LineTwo::Waiting(None)));
+        // A script's note beats the place.
+        assert_eq!(
+            line(base(Status::Working)),
+            Some(LineTwo::Note("3 of 7".into()))
+        );
+        // The place, else nothing.
+        let mut placed = base(Status::Idle);
+        placed.note = None;
+        assert_eq!(line(placed), Some(LineTwo::Place));
+        let mut branch_only = facts("api", Status::Idle, now, None);
+        branch_only.branch = Some("main");
+        assert_eq!(line(branch_only), Some(LineTwo::Place));
+        assert_eq!(line(facts("shell", Status::Idle, now, None)), None);
+    }
+
+    #[test]
+    fn an_idle_row_knows_whether_a_program_runs() {
+        let now = Instant::now();
+        let mut server = facts("server", Status::Idle, now, None);
+        server.running = true;
+        let shell = facts("shell", Status::Idle, now, None);
+        let rows = rows(&numbered(vec![server, shell]), &[], None, &[], now);
+        assert!(session(&rows[0]).running);
+        assert!(!session(&rows[1]).running);
     }
 
     #[test]

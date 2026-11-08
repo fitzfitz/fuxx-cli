@@ -26,7 +26,6 @@ use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_color::TabColor;
 use crate::terminal_view::hsla;
-use crate::ui_tokens::size::{SIDEBAR_ROW, WAITING_ROW};
 use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 
@@ -37,10 +36,13 @@ actions!(switcher, [SelectPrev, SelectNext]);
 const PANEL_WIDTH: f32 = 520.0;
 /// The space between rows (the Help panel's too).
 pub(crate) const ROW_GAP: f32 = 2.0;
+/// A row, and a waiting one with its question line (the Help panel's rows are `ROW` tall too).
+/// The sidebar's rows were these heights until M11i made them compact; the switcher keeps them.
+pub(crate) const ROW: f32 = 28.0;
+const WAITING_ROW: f32 = 42.0;
 /// Eight rows, two of them waiting ones, show before the list scrolls (the Help panel's list is
 /// as tall).
-pub(crate) const LIST_MAX_HEIGHT: f32 =
-    8.0 * (SIDEBAR_ROW + ROW_GAP) + 2.0 * (WAITING_ROW - SIDEBAR_ROW);
+pub(crate) const LIST_MAX_HEIGHT: f32 = 8.0 * (ROW + ROW_GAP) + 2.0 * (WAITING_ROW - ROW);
 /// The `#n` column, wide enough for two digits.
 const NUMBER_WIDTH: f32 = 26.0;
 const MARK_GAP: f32 = 8.0;
@@ -328,7 +330,7 @@ impl Switcher {
             .flex()
             .flex_col()
             .justify_center()
-            .h(px(if waiting { WAITING_ROW } else { SIDEBAR_ROW }))
+            .h(px(if waiting { WAITING_ROW } else { ROW }))
             .px(px(8.0))
             .rounded(px(6.0))
             .text_size(px(text::NAME))
