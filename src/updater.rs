@@ -102,15 +102,24 @@ fn writable(dir: &Path) -> bool {
     unsafe { access(path.as_ptr(), W_OK) == 0 }
 }
 
+/// The app an update would swap, for the running binary `exe`: `self_update_target`, and only
+/// when its path is UTF-8 (the swap script is handed it as text). The one condition both the
+/// offer (`can_self_update`) and the install (`install`) use, so they can't disagree.
+fn update_app_for(exe: &Path, writable: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    self_update_target(exe, writable).filter(|app| app.to_str().is_some())
+}
+
+/// `update_app_for` the running binary, by the real `writable`.
+fn running_update_app() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| update_app_for(&exe, writable))
+}
+
 /// Whether this fuxx can update itself to `release`: run from a `fuxx.app` it may swap
 /// (`self_update_target`), and the release has a checked zip.
 fn can_self_update(release: &Release) -> bool {
-    crate::native_notify::is_bundled()
-        && installable(release)
-        && std::env::current_exe()
-            .ok()
-            .and_then(|exe| self_update_target(&exe, writable))
-            .is_some()
+    crate::native_notify::is_bundled() && installable(release) && running_update_app().is_some()
 }
 
 /// How many sessions restarting ends: none while the background service holds them (the new
@@ -504,10 +513,7 @@ pub fn install(release: Release, cx: &mut App) {
     if !should_install(&state, &release) {
         return;
     }
-    let app = std::env::current_exe()
-        .ok()
-        .and_then(|exe| self_update_target(&exe, writable))
-        .filter(|app| app.to_str().is_some());
+    let app = running_update_app();
     let zip = release
         .zip
         .clone()
@@ -568,8 +574,8 @@ fn install_failed(release: Release, reason: String, cx: &mut App) {
     });
 }
 
-/// At launch, delete the app the last update replaced (`<app>.previous`, kept beside `app` until
-/// the new fuxx has started). Nothing when there is none; a failure is only logged.
+/// Once the window has opened, delete the app the last update replaced (`<app>.previous`, kept
+/// beside `app` until the new fuxx has shown it starts). Nothing when there is none; a failure is only logged.
 pub fn clean_previous(app: &Path) {
     let previous = update_release::previous_app(app);
     let Ok(meta) = previous.symlink_metadata() else {
@@ -755,6 +761,24 @@ mod tests {
         ] {
             assert_eq!(self_update_target(Path::new(exe), yes), None, "{exe}");
         }
+    }
+
+    #[test]
+    fn offer_and_install_share_the_utf8_app_condition() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::{Path, PathBuf};
+        let yes = |_: &Path| true;
+        let ok = Path::new("/Users/me/Applications/fuxx.app/Contents/MacOS/fuxx");
+        assert_eq!(
+            update_app_for(ok, yes),
+            Some(PathBuf::from("/Users/me/Applications/fuxx.app"))
+        );
+        let mut bytes = b"/Users/m\xFFe/fuxx.app/Contents/MacOS/fuxx".to_vec();
+        bytes.shrink_to_fit();
+        let bad = Path::new(OsStr::from_bytes(&bytes));
+        assert!(self_update_target(bad, yes).is_some());
+        assert_eq!(update_app_for(bad, yes), None);
     }
 
     #[test]
