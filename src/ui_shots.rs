@@ -3687,6 +3687,24 @@ fn file_view_scenes() {
             cx.simulate_input(window, "let");
             frame(cx, window);
             assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 220", "{n}");
+            // Scrolled away from the current match, the file changes: the view stays put.
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 100.0), cx)
+                })
+            });
+            frame(cx, window);
+            let away = cx.read(|cx| tab.read(cx).scroll());
+            assert_eq!(away.y, g.line_height * 100.0, "{n}: scrolled away");
+            std::fs::write(&file, numbered(230, "e")).expect("rewrite reload.rs");
+            cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+            frame(cx, window);
+            let (label, scroll) = cx.read(|cx| (tab.read(cx).find_label(), tab.read(cx).scroll()));
+            assert_eq!(label, "1 of 230", "{n}: found again in the new text");
+            assert_eq!(
+                scroll, away,
+                "{n}: a reload with the find bar open keeps the scroll"
+            );
             std::fs::remove_file(&file).expect("remove reload.rs");
             cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
             frame(cx, window);
