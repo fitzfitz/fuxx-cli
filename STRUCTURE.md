@@ -150,7 +150,11 @@ src/
 ├── help_panel.rs         M11d · the panel over the window: Keyboard Shortcuts (⌘/) and the Command Reference pages, filter, scroll
 ├── help_shortcuts.rs     M11d · the shortcut list from the real key bindings: names, groups, Mac key labels, search (pure)
 ├── help_commands.rs      M11d · the command reference parsed from `fuxx help`'s text, plus the MCP setup row (pure)
-└── app_log.rs            M11d · the window's ~/Library/Logs/fuxx/fuxx.log when run from fuxx.app (1 MiB cap at launch)
+├── app_log.rs            M11d · the window's ~/Library/Logs/fuxx/fuxx.log when run from fuxx.app (1 MiB cap at launch)
+│
+│   updating itself (M11e)
+├── update_release.rs     M11e · versions, GitHub's latest-release JSON, the offer/sheet copy, the swap script's text, the checks (pure)
+└── updater.rs            M11e · the check (curl, at launch + daily + the menu), the Updates state, the install (download, verify, swap, reopen)
 ```
 
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
@@ -188,7 +192,10 @@ keyboard ─► terminal_view ─► keys ─► pty ─► shell / agent
 scripts/
 ├── bundle-mac.sh         M4b · universal release build → fuxx.app (with its icon, M11c) → target/dist/fuxx-<version>.dmg
 ├── make_app_icon.py      M11c · the 3D Cyber logo → packaging/macos/fuxx.icns + the browser bar's mark (run by hand)
-└── check-dmg.sh          M4b · the test: asserts a DMG is installable (both CPUs, macOS 11.0, version, seal)
+├── check-dmg.sh          M4b · the test: asserts a DMG is installable (both CPUs, macOS 11.0, version, seal)
+└── check-release-tag.sh  M11e · refuses a release tag that isn't v + Cargo.toml's version
+.github/workflows/
+└── release.yml           M11e · on a pushed v* tag: test, build the universal app, zip it, publish the GitHub Release
 packaging/
 ├── macos/Info.plist      M4b · bundle metadata (id io.github.fitzfitz.fuxx, icon fuxx); @VERSION@ from Cargo.toml
 └── macos/fuxx.icns       M11c · the app icon (made by scripts/make_app_icon.py)
@@ -196,6 +203,9 @@ packaging/
 
 To make a new tester build: bump `version` in `Cargo.toml`, run `scripts/bundle-mac.sh`, then
 `scripts/check-dmg.sh target/dist/fuxx-<version>.dmg`.
+
+To release (M11e): bump `version` in `Cargo.toml`, commit, then push a tag `v<version>`. GitHub Actions builds and
+publishes the release, and every installed fuxx offers it through its Update Available button.
 
 ## Later (Phase 2–4)
 

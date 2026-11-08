@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: planned
+status: built
 ---
 
 # 57 - Milestone 11e - Update Available
 
-**Status:: 🟦 Planned 2026-11-08; not started.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11e Plan - Update Available]]
+**Status:: 🟨 Built and reviewed 2026-11-08 (834 tests); the first release and the on-screen check are pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11e Plan - Update Available]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]]). It comes before M12 and doesn't need it.
 
 ## Goal
@@ -122,6 +122,28 @@ own notifications **without asking again**. Confirmed by you. (Side effect: M11d
 6. **When the download or a check fails**, a sheet says "The update couldn't be installed", with the reason and
    **Open Release Page** · **OK**. The installed fuxx is untouched.
 
+## As built (2026-11-08)
+
+Where the build settled something the plan left open, or changed it:
+
+- **The digest must be `sha256:` plus exactly 64 hex characters**; anything else counts as no digest (the release
+  page fallback). Release links fuxx opens are used only under `https://github.com/fitzfitz/fuxx-cli/`.
+- **"Restarting ends N sessions"** follows the background service as it is running (on, off, failed, starting), not
+  only the setting fuxx started with.
+- **`install` acts only if the same version is still on offer** when the sheet's answer arrives.
+- **The swap script** uses absolute tool paths and its own `PATH`. It refuses to move the new app over anything at
+  `fuxx.app`, and never opens a half-moved app: if the old one can't be put back, it opens nothing and the old copy
+  stays as `fuxx.app.previous`. If the old fuxx hasn't quit within 60 s, it changes nothing.
+- **The zip must hold exactly one app, named `fuxx.app`.**
+- **`fuxx.app.previous` is removed once the new fuxx's window has opened** (not before), so a build that can't open
+  its window leaves the previous version in place.
+- Four failure reasons have their own wording: "the download failed", "the download folder couldn't be emptied",
+  "the swap couldn't be started", "fuxx can't update itself here".
+- Known limits, left as they are: the daily timer counts only time the Mac is awake (a laptop asleep overnight checks
+  less often); turning the setting on waits for the next daily tick; the background service keeps running the old
+  version until it stops by itself (as planned). A future release that changes the protocol's minimum would show
+  the existing protocol message after updating, until the old service stops.
+
 ## Not in M11e
 
 - Installing without a click, background installs, or installing at quit.
@@ -147,6 +169,6 @@ own notifications **without asking again**. Confirmed by you. (Side effect: M11d
    many sessions would end.
 9. fuxx → Check for Updates… on 0.3.1 says "fuxx 0.3.1 is the newest version."
 10. Wi-Fi off, then fuxx → Check for Updates… → "Couldn't check for updates" with a reason. No button appears.
-11. Preferences → General → Check for updates off: no automatic check (no button for a newer release) until it is
-    on again; the menu item still works.
+11. Preferences → General → Check for updates off: no automatic check (no button for a newer release); the menu
+    item still works. After turning it on again, restart fuxx to check at once (otherwise the next daily tick).
 12. Light and dark themes: the button is readable (the ui-shots cover this too).
