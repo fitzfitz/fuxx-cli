@@ -5712,7 +5712,7 @@ fn cursor_scenes() {
             );
             assert_eq!(
                 rig.read(|v| v.cursor_frames()),
-                Frames::Timer33ms,
+                Frames::Breath,
                 "{n}: breathing redraws on the ~30 fps timer"
             );
 

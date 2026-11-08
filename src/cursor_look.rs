@@ -230,16 +230,19 @@ pub fn spark_at(s: &Spark, now: Instant) -> Option<((f32, f32), f32)> {
     ))
 }
 
+/// The breathing glow's redraw interval: 20 a second (M11f).
+pub const BREATH_TICK: Duration = Duration::from_millis(50);
+
 /// How often the cursor needs a redraw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Frames {
     None,
-    Timer33ms,
+    Breath,
     EveryFrame,
 }
 
 /// Frames are wanted only for a focused pane in the key window with motion allowed:
-/// every frame while something moves, a ~30 fps timer for the breathing glow alone.
+/// every frame while something moves, a 20 fps timer for the breathing glow alone.
 pub fn needs_frames(
     focused: bool,
     key_window: bool,
@@ -252,7 +255,7 @@ pub fn needs_frames(
     } else if animating {
         Frames::EveryFrame
     } else if glowing {
-        Frames::Timer33ms
+        Frames::Breath
     } else {
         Frames::None
     }
@@ -440,10 +443,7 @@ mod tests {
         assert_eq!(needs_frames(false, true, true, true, true), Frames::None);
         assert_eq!(needs_frames(true, false, true, true, true), Frames::None);
         assert_eq!(needs_frames(true, true, false, true, true), Frames::None);
-        assert_eq!(
-            needs_frames(true, true, true, true, false),
-            Frames::Timer33ms
-        );
+        assert_eq!(needs_frames(true, true, true, true, false), Frames::Breath);
         assert_eq!(
             needs_frames(true, true, true, false, true),
             Frames::EveryFrame

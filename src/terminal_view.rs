@@ -49,8 +49,6 @@ actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
 /// How often to run housekeeping (flush stuck synchronized updates, re-evaluate status).
 const TICK: Duration = Duration::from_millis(50);
-/// The breathing glow's redraw interval: at most ~30 a second (M11f).
-const BREATH_FRAME: Duration = Duration::from_millis(33);
 /// The glow around the cursor: its blur and the share of the cursor's colour it takes.
 const GLOW_BLUR: f32 = 6.0;
 const GLOW_ALPHA: f32 = 0.30;
@@ -366,8 +364,8 @@ impl TerminalView {
         window.is_window_active()
     }
 
-    /// Start the breathing timer unless it runs: a redraw every 33 ms while the last paint
-    /// asked for it (`Frames::Timer33ms`) and the terminal is focused in the key window, except
+    /// Start the breathing timer unless it runs: a redraw every `BREATH_TICK` (50 ms) while the last paint
+    /// asked for it (`Frames::Breath`) and the terminal is focused in the key window, except
     /// while the breath holds (`breath_redraw`). It stops, without a redraw, as soon as any of
     /// that ends.
     fn breathe(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -377,11 +375,13 @@ impl TerminalView {
         self.breathing = true;
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor().timer(BREATH_FRAME).await;
+                cx.background_executor()
+                    .timer(cursor_look::BREATH_TICK)
+                    .await;
                 let go = this
                     .update_in(cx, |this, window, cx| {
                         let motion = this.motion.borrow();
-                        let go = motion.frames == Frames::Timer33ms
+                        let go = motion.frames == Frames::Breath
                             && this.focus_handle.is_focused(window)
                             && this.key_window(window);
                         let redraw = breath_redraw(motion.changed.elapsed());
@@ -1000,9 +1000,7 @@ impl Render for TerminalView {
                         let frames = motion.borrow().frames;
                         match frames {
                             Frames::EveryFrame => window.request_animation_frame(),
-                            Frames::Timer33ms => {
-                                view.update(cx, |this, cx| this.breathe(window, cx))
-                            }
+                            Frames::Breath => view.update(cx, |this, cx| this.breathe(window, cx)),
                             Frames::None => {}
                         }
 
@@ -1130,6 +1128,7 @@ impl CursorSettings {
         now: Instant,
     ) -> Option<CursorLook> {
         let live = self.focused && self.key_window;
+        motion.note_live(live, now);
         let moving = live && self.motion;
         let c = snap
             .cursor
@@ -1358,6 +1357,8 @@ struct CursorMotion {
     drawn: Option<((f32, f32), PaintShape)>,
     /// The redraws its last paint asked for.
     frames: Frames,
+    /// Whether the last paint was focused in the key window.
+    was_live: bool,
 }
 
 impl CursorMotion {
@@ -1371,7 +1372,16 @@ impl CursorMotion {
             seed: 0,
             drawn: None,
             frames: Frames::None,
+            was_live: false,
         }
+    }
+
+    /// Focus or the key window came back: the cursor returns solid, not mid-breath.
+    fn note_live(&mut self, live: bool, now: Instant) {
+        if live && !self.was_live {
+            self.changed = now;
+        }
+        self.was_live = live;
     }
 
     /// The cursor is on `cell` (`None`: hidden) of `screen` at `now`: start a glide from where
@@ -1589,6 +1599,23 @@ mod tests {
         let mut m = CursorMotion::new(t0);
         assert_eq!(m.follow(Some((2, 1)), MAIN, true, t0), Some((2.0, 1.0)));
         assert!(m.glide.is_none());
+    }
+
+    #[test]
+    fn the_cursor_returns_solid_when_focus_comes_back() {
+        let t0 = Instant::now();
+        let mut m = CursorMotion::new(t0);
+        let t1 = t0 + Duration::from_secs(5);
+        m.note_live(true, t1);
+        assert_eq!(m.changed, t1);
+        // Staying live leaves the breath alone; losing and regaining focus restarts it.
+        let t2 = t1 + Duration::from_secs(5);
+        m.note_live(true, t2);
+        assert_eq!(m.changed, t1);
+        m.note_live(false, t2);
+        let t3 = t2 + Duration::from_secs(1);
+        m.note_live(true, t3);
+        assert_eq!(m.changed, t3);
     }
 
     #[test]
