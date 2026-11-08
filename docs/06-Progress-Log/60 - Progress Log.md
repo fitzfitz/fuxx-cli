@@ -14,13 +14,28 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11i — UI uplift 2 🟨 built, reviewed, merged and pushed 2026-11-08 (release after M11l); next M11h. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-08 — M11i UI uplift 2 built, reviewed, merged and pushed
+- **Did:** Built M11i autonomously (your "go ahead do them all autonomously"), task by task with a fresh builder
+  and a fresh reviewer each: (1) design tokens and 16/12 pt terminal padding; (2) smart names (`claude · fuxx-cli`,
+  `npm run dev · api`, the folder at a prompt; flag values and paths never show); (3) compact 22/32 pt rows with a
+  tinted selection and an accent bar; (4) panes and the right sidebar as rounded cards with 6 pt gaps and a focus
+  ring; (5) a 30 pt tab bar with +, ⋯ (New Terminal Tab, New Browser Tab, Split Right, Split Down) and the sidebar
+  toggle; (6) Files type icons, indent guides, a root header and collapse all; (7) a status bar (status, branch,
+  folder, listening ports via `lsof`, the update pill moved there). The final whole-branch review found two things,
+  both fixed: names were forgotten when a terminal left the screen (names blinked, ⌘P lost them), and a waiting
+  row's question wasn't in its tooltip. 1019 tests pass, clippy (both) adds no warnings, the full ui-shots set
+  passes (Mocha and Latte). What the build settled is in note 60's "M11i as built". Not released on its own (your
+  rule: one release after M11l).
+- **Next:** M11h (Changes, diff view, Activity; designed in note 59), then M11j, M11k, M11l, then one release and
+  the combined on-screen test list.
 
 ### 2026-11-08 — UI uplift requested: M11i–M11l
 - **Did:** From your screenshot ("I don't really like the current layout… a modern CLI with good UI/UX"), 11
