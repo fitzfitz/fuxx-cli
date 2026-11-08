@@ -16,6 +16,8 @@ mod browser_tab;
 mod browser_url;
 mod cli;
 mod colors;
+#[allow(dead_code)] // used by the terminal view from M11f Task 3
+mod cursor_look;
 mod daemon;
 mod daemon_client;
 mod daemon_session;
