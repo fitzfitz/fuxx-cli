@@ -9,21 +9,28 @@
 //! **Live reload.** While the tab is on screen (the workspace says so every frame: `set_shown`)
 //! and the window can be seen, the disk is checked every second: its mtime and length, off the
 //! UI thread, and a changed file is read again. The scroll stays. Each read is a new `version`;
-//! a highlight or a git answer carries the version it was asked for and is dropped once another
-//! is loaded (`Doc::accept_spans`, `Doc::accept_changes`). One highlight and one git look-up run
-//! at a time per tab (`OneAtATime`): asked again meanwhile (a reload, a theme change), each runs
-//! once more when it ends, for the text then shown, so a file rewritten every second never piles
-//! up work. Until the new colours and bars come, the old ones stay (no flash of plain text on
-//! every reload). The UI screenshots freeze it (`frozen`): no polling,
-//! no git.
+//! a highlight or a git answer carries the version it was asked for: it is taken for the text
+//! shown, or when newer than the one held (old colours and bars are carried over a reload, so a
+//! file that grows faster than it's coloured still gets fresher colours), else dropped
+//! (`Doc::accept_spans`, `Doc::accept_changes`). One highlight and one git look-up run at a time
+//! per tab (`OneAtATime`): asked again meanwhile, each runs once more when it ends, for the text
+//! then shown. git runs at most once every 2 s per tab, its program and repo looked up once. Only
+//! plain files are read (a FIFO or a device is refused), never past 20 MB. The UI screenshots
+//! freeze it (`frozen`): no polling, no git.
+//!
+//! **Find** runs on the background executor too (one search at a time; only the latest search's
+//! answer is taken) and keeps at most 10,000 matches ("10,000+").
 //!
 //! **Drawing.** One canvas draws the lines in sight (not an element per line): the changed
 //! lines' tints, the selection, find's matches and the text (one shaped line per source line),
 //! then the gutter's numbers and change bars. Tabs show as four spaces; long lines scroll
-//! sideways, and a very long one is shaped only where it is in sight.
+//! sideways. A long line (over 1,000 cells) keeps checkpoints, made off the UI thread with the
+//! text: only its part in sight is sliced out, shaped and hit-tested, and only the matches over
+//! that part (and in sight) are drawn.
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -42,7 +49,7 @@ use gpui::{
 use crate::appearance::Appearance;
 use crate::git_branch::find_git;
 use crate::git_status::{LineChange, line_changes, repo_root};
-use crate::highlight::{Highlighter, Span, Viewable, classify};
+use crate::highlight::{Highlighter, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{PaneId, TabId, TabKind};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
@@ -76,8 +83,10 @@ const HEAD: usize = 8 * 1024;
 /// A line longer than this (bytes) is not coloured: syntect crawls on minified lines. The file
 /// shows as plain text, "Too large to colour".
 const COLOUR_LINE_MAX: usize = 20_000;
-/// A shown line longer than this (characters) is shaped only where it is in sight.
+/// A line wider than this (cells) is shaped only where it is in sight, and found from its
+/// checkpoints (one every `CHECKPOINT` cells), never scanned from its start each frame.
 const LONG_LINE: usize = 1_000;
+const CHECKPOINT: usize = 256;
 
 // The view's geometry, in points.
 const TOOLBAR: f32 = crate::browser_tab::BAR;
@@ -195,7 +204,20 @@ pub fn source_col(line: &str, display: usize) -> usize {
 
 /// `query`'s matches in `text`'s lines, in order, ignoring case; none across a line's end, none
 /// overlapping, none for an empty query.
-pub fn find_matches(text: &str, lines: &[Range<usize>], query: &str) -> Vec<Match> {
+pub fn find_matches(
+    text: &str,
+    lines: &[Range<usize>],
+    query: &str,
+    cap: usize,
+) -> (Vec<Match>, bool) {
+    let mut found = find_upto(text, lines, query, cap + 1);
+    let capped = found.len() > cap;
+    found.truncate(cap);
+    (found, capped)
+}
+
+/// At most `limit` of `query`'s matches.
+fn find_upto(text: &str, lines: &[Range<usize>], query: &str, limit: usize) -> Vec<Match> {
     let mut out = Vec::new();
     if query.is_empty() {
         return out;
@@ -213,6 +235,9 @@ pub fn find_matches(text: &str, lines: &[Range<usize>], query: &str) -> Vec<Matc
                         line: i,
                         cols: at..at + q.len(),
                     });
+                    if out.len() >= limit {
+                        return out;
+                    }
                     at += q.len();
                 } else {
                     at += 1;
@@ -232,6 +257,9 @@ pub fn find_matches(text: &str, lines: &[Range<usize>], query: &str) -> Vec<Matc
                         line: i,
                         cols: at..at + len,
                     });
+                    if out.len() >= limit {
+                        return out;
+                    }
                     at += len;
                 }
                 None => at += l[at..].chars().next().map_or(1, char::len_utf8),
@@ -280,15 +308,34 @@ pub fn first_from(matches: &[Match], line: usize) -> Option<usize> {
         .or_else(|| (!matches.is_empty()).then_some(0))
 }
 
-/// The find bar's count: "2 of 7", "No results", or nothing while the box is empty.
-pub fn find_label(query: &str, current: Option<usize>, count: usize) -> String {
+/// The find bar's count: "2 of 7", "1 of 10,000+" (`capped`: there are more), "No results", or
+/// nothing while the box is empty.
+pub fn find_label(query: &str, current: Option<usize>, count: usize, capped: bool) -> String {
     if query.is_empty() {
         String::new()
     } else if count == 0 {
         "No results".to_string()
     } else {
-        format!("{} of {count}", current.map_or(0, |c| c + 1))
+        let more = if capped { "+" } else { "" };
+        format!(
+            "{} of {}{more}",
+            thousands(current.map_or(0, |c| c + 1)),
+            thousands(count)
+        )
     }
+}
+
+/// `n` with commas between thousands.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Byte `col` of `line`, at most its end, back to a character boundary.
@@ -371,6 +418,62 @@ impl OneAtATime {
     }
 }
 
+/// The most matches find keeps; past that the count shows as "10,000+".
+pub const FIND_CAP: usize = 10_000;
+
+/// What the find bar found, and which search (by generation) it waits for.
+#[derive(Default, Debug)]
+pub struct Finds {
+    pub query: String,
+    pub matches: Arc<Vec<Match>>,
+    /// More than `FIND_CAP` matched.
+    pub capped: bool,
+    pub current: Option<usize>,
+    wanted: u64,
+    /// The query changed since the last answer: its current match is the first from the top.
+    from_top: bool,
+}
+
+impl Finds {
+    /// A search asked as `generation`: for a new query, or (`None`) the same one on new text.
+    pub fn ask(&mut self, generation: u64, query: Option<String>) {
+        if let Some(query) = query
+            && query != self.query
+        {
+            self.query = query;
+            self.from_top = true;
+        }
+        self.wanted = generation;
+    }
+
+    /// Search `generation`'s answer: taken only if it's the latest asked. A new query's current
+    /// match is the first from line `top`; the same query's is kept by number.
+    pub fn accept(&mut self, generation: u64, found: Vec<Match>, capped: bool, top: usize) -> bool {
+        if generation != self.wanted {
+            return false;
+        }
+        self.current = if std::mem::take(&mut self.from_top) {
+            first_from(&found, top)
+        } else {
+            self.current
+                .filter(|_| !found.is_empty())
+                .map(|c| c.min(found.len() - 1))
+        };
+        self.matches = Arc::new(found);
+        self.capped = capped;
+        true
+    }
+}
+
+/// The least time between two git look-ups of a tab.
+const LOOKUP_GAP: Duration = Duration::from_secs(2);
+
+/// How long a git look-up waits: none when the last one started 2 s ago or more.
+pub fn lookup_wait(last: Option<Instant>, now: Instant) -> Option<Duration> {
+    last.and_then(|at| LOOKUP_GAP.checked_sub(now.saturating_duration_since(at)))
+        .filter(|wait| !wait.is_zero())
+}
+
 /// The change bars of a loaded text.
 #[derive(Default, PartialEq, Debug)]
 pub struct Changes {
@@ -384,11 +487,18 @@ pub struct Doc {
     pub text: Arc<str>,
     pub lines: Arc<Vec<Range<usize>>>,
     pub spans: Option<Arc<Vec<Vec<Span>>>>,
+    /// The version the colours were made for (an older one's carried over a reload).
+    pub spans_version: Option<u64>,
     pub changes: Arc<Changes>,
+    /// The version the change bars were made for (an older one's carried over a reload).
+    pub changes_version: Option<u64>,
     /// Which read of the file this is (each reload, one more).
     pub version: u64,
-    /// The widest line as shown, in characters (tabs as four).
+    /// The widest line as shown, in cells (characters, tabs as four).
     pub widest: usize,
+    /// The long lines' checkpoints (`checkpoints`), by line: drawn and hit-tested from the
+    /// nearest one, not from the line's start.
+    long: Arc<HashMap<usize, Vec<(usize, usize)>>>,
     /// The longest line, in bytes.
     longest: usize,
 }
@@ -397,21 +507,51 @@ impl Doc {
     pub fn new(text: String, version: u64) -> Doc {
         let lines = line_ranges(&text);
         let (mut widest, mut longest) = (0, 0);
-        for r in &lines {
+        let mut long = HashMap::new();
+        for (i, r) in lines.iter().enumerate() {
             let l = &text[r.clone()];
             longest = longest.max(l.len());
-            let tabs = l.bytes().filter(|&b| b == b'\t').count();
-            widest = widest.max(l.chars().count() + tabs * (TAB_WIDTH - 1));
+            let cells = scan_cell(l, (0, 0), l.len());
+            widest = widest.max(cells);
+            if cells > LONG_LINE {
+                long.insert(i, checkpoints(l));
+            }
         }
         Doc {
             text: text.into(),
             lines: Arc::new(lines),
             spans: None,
+            spans_version: None,
             changes: Arc::default(),
+            changes_version: None,
             version,
             widest,
+            long: Arc::new(long),
             longest,
         }
+    }
+
+    /// Whether line `i` is long (drawn only where it is in sight).
+    fn is_long(&self, i: usize) -> bool {
+        self.long.contains_key(&i)
+    }
+
+    /// The cell (characters, tabs four wide) where byte `col` of line `i` starts (past the end:
+    /// the end).
+    pub fn cell_of(&self, i: usize, col: usize) -> usize {
+        let from = self.long.get(&i).map_or((0, 0), |marks| {
+            marks[marks.partition_point(|&(b, _)| b <= col).max(1) - 1]
+        });
+        scan_cell(self.line(i), from, col)
+    }
+
+    /// The byte of line `i` whose character holds cell `cell` (inside a tab: the tab; past the
+    /// end: the end), and the cell where that character starts.
+    pub fn byte_at_cell(&self, i: usize, cell: usize) -> (usize, usize) {
+        let from = self.long.get(&i).map_or((0, 0), |marks| {
+            marks[marks.partition_point(|&(_, c)| c <= cell).max(1) - 1]
+        });
+        scan_byte(self.line(i), from, cell)
     }
 
     /// Line `i` (without its ending); empty past the end.
@@ -419,21 +559,25 @@ impl Doc {
         self.lines.get(i).map_or("", |r| &self.text[r.clone()])
     }
 
-    /// Colours made for `version`: taken if that is still the text shown.
+    /// Colours made for `version`: taken if that is the text shown, or newer than the colours
+    /// held (an older version's, carried over: a file that grows faster than it's coloured
+    /// still gets fresher colours).
     pub fn accept_spans(&mut self, version: u64, spans: Vec<Vec<Span>>) -> bool {
-        if version != self.version {
+        if !fresher(version, self.version, self.spans_version) {
             return false;
         }
         self.spans = Some(Arc::new(spans));
+        self.spans_version = Some(version);
         true
     }
 
-    /// Change bars asked for `version`: taken if that is still the text shown. True when they
+    /// Change bars asked for `version`, taken as colours are (`accept_spans`). True when they
     /// changed.
     pub fn accept_changes(&mut self, version: u64, changes: &[(usize, LineChange)]) -> bool {
-        if version != self.version {
+        if !fresher(version, self.version, self.changes_version) {
             return false;
         }
+        self.changes_version = Some(version);
         let (by_line, deleted) = bars(changes);
         let changes = Changes { by_line, deleted };
         if *self.changes == changes {
@@ -442,6 +586,51 @@ impl Doc {
         self.changes = Arc::new(changes);
         true
     }
+}
+
+/// Whether an answer for `version` may replace one for `held` while `shown` is the text shown:
+/// it's for the text shown, or newer than what's held (never newer than the text).
+fn fresher(version: u64, shown: u64, held: Option<u64>) -> bool {
+    version == shown || held.is_some_and(|held| version > held && version < shown)
+}
+
+/// A character's width in cells: a tab is four.
+fn cell_width(c: char) -> usize {
+    if c == '\t' { TAB_WIDTH } else { 1 }
+}
+
+/// From `from` (a byte of `line` and its cell), the cell where byte `col` starts.
+fn scan_cell(line: &str, from: (usize, usize), col: usize) -> usize {
+    let col = clamp_col(line, col).max(from.0);
+    from.1 + line[from.0..col].chars().map(cell_width).sum::<usize>()
+}
+
+/// From `from`, the character of `line` holding cell `cell`: its byte and its first cell.
+fn scan_byte(line: &str, from: (usize, usize), cell: usize) -> (usize, usize) {
+    let (mut b, mut c) = from;
+    for ch in line[b..].chars() {
+        let w = cell_width(ch);
+        if c + w > cell {
+            break;
+        }
+        c += w;
+        b += ch.len_utf8();
+    }
+    (b, c)
+}
+
+/// A long line's checkpoints: (byte, cell) at its start and then every `CHECKPOINT` cells or so,
+/// each at a character's start.
+fn checkpoints(line: &str) -> Vec<(usize, usize)> {
+    let mut marks = vec![(0, 0)];
+    let mut cell = 0;
+    for (b, ch) in line.char_indices() {
+        if cell >= marks[marks.len() - 1].1 + CHECKPOINT {
+            marks.push((b, cell));
+        }
+        cell += cell_width(ch);
+    }
+    marks
 }
 
 /// What a file tab shows.
@@ -490,14 +679,20 @@ fn read_file(path: &Path, known: Option<Stamp>) -> Loaded {
     if known == Some(stamp) {
         return Loaded::Unchanged;
     }
-    if meta.is_dir() || classify(meta.len(), &[]) == Viewable::Refuse {
+    // Only a plain file: a FIFO or a device would block the read (or never end).
+    if !meta.is_file() || classify(meta.len(), &[]) == Viewable::Refuse {
         return Loaded::Refuse(stamp);
     }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Missing,
         Err(_) => return Loaded::Refuse(stamp),
     };
+    // One byte past the limit at most: a file that grew past it since the look is refused.
+    let mut bytes = Vec::new();
+    if file.take(REFUSE_ABOVE + 1).read_to_end(&mut bytes).is_err() {
+        return Loaded::Refuse(stamp);
+    }
     let head = &bytes[..bytes.len().min(HEAD)];
     let viewable = classify(bytes.len() as u64, head);
     if viewable == Viewable::Refuse {
@@ -508,17 +703,6 @@ fn read_file(path: &Path, known: Option<Stamp>) -> Loaded {
     let doc = Doc::new(text, 0);
     let plain = viewable == Viewable::PlainTooLarge || doc.longest > COLOUR_LINE_MAX;
     Loaded::Text { stamp, doc, plain }
-}
-
-/// The change bars for `path` against HEAD (blocking): none outside a repo or without git.
-fn changes_for(path: &Path) -> Option<Vec<(usize, LineChange)>> {
-    let git = find_git()?;
-    // git prints real paths (`/private/var`, not `/var`).
-    let real = std::fs::canonicalize(path).ok()?;
-    let root = repo_root(&git, real.parent()?)?;
-    let root = std::fs::canonicalize(&root).unwrap_or(root);
-    let rel = real.strip_prefix(&root).ok()?;
-    line_changes(&git, &root, rel)
 }
 
 /// The shared highlighter (a GPUI global): its syntaxes loaded once, in the background, by the
@@ -636,16 +820,29 @@ impl BarColours {
     }
 }
 
-/// A shown line's colour runs (shown bytes, colour), covering it: its spans (source bytes; the
-/// line's ending and anything past it dropped, tabs widened), the foreground between them.
-fn line_runs(line: &str, spans: Option<&[Span]>, fg: Rgb) -> Vec<(Range<usize>, Rgb)> {
-    let tabs = Tabs::of(line);
-    let shown_len = tabs.shown(line.len());
+/// The colour runs (shown bytes, colour) of bytes `range` of a line as shown, covering it: the
+/// line's spans (source bytes, sorted; the line's ending and anything outside `range` dropped,
+/// tabs widened), the foreground between them.
+fn line_runs(
+    line: &str,
+    spans: Option<&[Span]>,
+    fg: Rgb,
+    range: Range<usize>,
+) -> Vec<(Range<usize>, Rgb)> {
+    let slice = &line[range.clone()];
+    let tabs = Tabs::of(slice);
+    let shown_len = tabs.shown(slice.len());
+    let spans = spans.unwrap_or(&[]);
+    // Only the spans over `range` (a long line's part in sight).
+    let first = spans.partition_point(|(r, _)| r.end <= range.start);
+    let local = |b: usize| clamp_col(line, b).clamp(range.start, range.end) - range.start;
     let mut out = Vec::new();
     let mut at = 0;
-    for (r, c) in spans.unwrap_or(&[]) {
-        let (s, e) = (clamp_col(line, r.start), clamp_col(line, r.end));
-        let (s, e) = (tabs.shown(s).max(at), tabs.shown(e));
+    for (r, c) in spans[first..]
+        .iter()
+        .take_while(|(r, _)| r.start < range.end)
+    {
+        let (s, e) = (tabs.shown(local(r.start)).max(at), tabs.shown(local(r.end)));
         if s >= e {
             continue;
         }
@@ -661,91 +858,88 @@ fn line_runs(line: &str, spans: Option<&[Span]>, fg: Rgb) -> Vec<(Range<usize>, 
     out
 }
 
-/// A shown line laid out to draw: shaped whole, or (a long one) only the part in sight, from
-/// character `first`.
+/// A line laid out to draw: its bytes `from..to` (all of a short line; a long line's part in
+/// sight, found from its checkpoints) shaped, starting `x0` from the text's left edge.
 struct Laid {
     shaped: Option<gpui::ShapedLine>,
-    /// Long: measured in cells (the font is monospaced), the part in sight shaped from `first`.
-    long: bool,
-    first: usize,
+    /// Each glyph's shown byte and x in the shaped part, in order (for `x`).
+    xs: Vec<(usize, Pixels)>,
+    width: Pixels,
+    from: usize,
+    to: usize,
+    tabs: Tabs,
+    x0: Pixels,
 }
 
 impl Laid {
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        shown: &str,
-        runs: &[(Range<usize>, Rgb)],
+        doc: &Doc,
+        i: usize,
+        spans: Option<&[Span]>,
+        fg: Rgb,
         m: &CellMetrics,
         scroll_x: Pixels,
         width: Pixels,
         window: &mut Window,
     ) -> Laid {
-        let chars = shown.chars().count();
-        let long = chars > LONG_LINE;
-        let (first, range) = if long {
+        let line = doc.line(i);
+        let (from, to, cell) = if doc.is_long(i) {
             let cw = f32::from(m.cell_width).max(1.0);
             let first = ((f32::from(scroll_x) / cw).floor() as usize).saturating_sub(8);
             let count = (f32::from(width) / cw).ceil() as usize + 16;
-            let start = byte_at_char(shown, first);
-            let end = byte_at_char(shown, first + count);
-            (first, start..end)
+            let (from, cell) = doc.byte_at_cell(i, first);
+            let (to, _) = doc.byte_at_cell(i, first + count);
+            (from, to.max(from), cell)
         } else {
-            (0, 0..shown.len())
+            (0, line.len(), 0)
         };
+        let slice = &line[from..to];
+        let shown = expand_tabs(slice);
+        let runs = line_runs(line, spans, fg, from..to);
         let text_runs: Vec<TextRun> = runs
             .iter()
-            .filter_map(|(r, c)| {
-                let s = r.start.max(range.start);
-                let e = r.end.min(range.end);
-                (s < e).then(|| TextRun {
-                    len: e - s,
-                    font: m.font.clone(),
-                    color: hsla(*c),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                })
-            })
+            .map(|(r, c)| plain_run(r.len(), m, *c))
             .collect();
-        let shaped = (!range.is_empty()).then(|| {
+        let shaped = (!shown.is_empty()).then(|| {
             window.text_system().shape_line(
-                SharedString::from(shown[range.clone()].to_string()),
+                SharedString::from(shown),
                 m.font_size,
                 &text_runs,
                 None,
             )
         });
+        let xs = shaped.as_ref().map_or_else(Vec::new, |s| {
+            s.runs
+                .iter()
+                .flat_map(|run| &run.glyphs)
+                .map(|g| (g.index, g.position.x))
+                .collect()
+        });
         Laid {
+            width: shaped.as_ref().map_or(px(0.0), |s| s.width()),
             shaped,
-            long,
-            first,
+            xs,
+            from,
+            to,
+            tabs: Tabs::of(slice),
+            x0: m.cell_width * cell as f32,
         }
     }
 
-    /// The x of shown byte `b`, from the text's left edge.
-    fn x(&self, shown: &str, b: usize, cell_width: Pixels) -> Pixels {
-        if self.long {
-            let b = clamp_col(shown, b);
-            return cell_width * shown[..b].chars().count() as f32;
+    /// The x of source byte `col` from the text's left edge (before the shaped part: its start;
+    /// after it: its end, both out of sight on a long line).
+    fn x(&self, col: usize) -> Pixels {
+        if col <= self.from {
+            return self.x0;
         }
-        match &self.shaped {
-            Some(s) => s.x_for_index(b),
-            None => px(0.0),
+        if col >= self.to {
+            return self.x0 + self.width;
         }
+        let b = self.tabs.shown(col - self.from);
+        let k = self.xs.partition_point(|&(index, _)| index < b);
+        self.x0 + self.xs.get(k).map_or(self.width, |&(_, x)| x)
     }
-
-    /// The x where the shaped part starts, from the text's left edge.
-    fn x0(&self, cell_width: Pixels) -> Pixels {
-        if self.long {
-            cell_width * self.first as f32
-        } else {
-            px(0.0)
-        }
-    }
-}
-
-/// The byte where character `n` of `s` starts (its length past the end).
-fn byte_at_char(s: &str, n: usize) -> usize {
-    s.char_indices().nth(n).map_or(s.len(), |(i, _)| i)
 }
 
 /// A one-colour run of `len` bytes in `m`'s font.
@@ -788,6 +982,7 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
             bounds.bottom_right(),
         ),
     };
+    let (seen_left, seen_right) = (mask.bounds.left(), mask.bounds.right());
     let spans = f.doc.spans.as_deref().filter(|_| f.coloured);
     let accent = hsla(ui.accent);
     for i in rows.clone() {
@@ -798,15 +993,18 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
             let row = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
             window.paint_quad(fill(row, hsla(bars.of_change(change)).opacity(TINT)));
         }
-        let shown = expand_tabs(line);
-        let tabs = Tabs::of(line);
-        let runs = line_runs(
-            line,
-            spans.and_then(|s| s.get(i)).map(Vec::as_slice),
+        let line_spans = spans.and_then(|s| s.get(i)).map(Vec::as_slice);
+        let laid = Laid::new(
+            &f.doc,
+            i,
+            line_spans,
             f.theme.foreground,
+            m,
+            g.scroll.x,
+            bounds.size.width,
+            window,
         );
-        let laid = Laid::new(&shown, &runs, m, g.scroll.x, bounds.size.width, window);
-        let x_of = |col: usize| text_x + laid.x(&shown, tabs.shown(col), g.cell_width);
+        let x_of = |col: usize| text_x + laid.x(col);
         window.with_content_mask(Some(mask), |window| {
             if let Some((s, e)) = f.selection
                 && (s.line..=e.line).contains(&i)
@@ -822,23 +1020,29 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
                     window.paint_quad(fill(b, hsla(ui.selection)));
                 }
             }
-            let start = f.matches.partition_point(|m| m.line < i);
+            // This line's matches over the part laid out, and of those only the ones in sight.
+            let on_line = f.matches.partition_point(|m| m.line < i);
+            let start = on_line
+                + f.matches[on_line..].partition_point(|m| m.line == i && m.cols.end <= laid.from);
             for (k, hit) in f.matches[start..]
                 .iter()
-                .take_while(|m| m.line == i)
+                .take_while(|m| m.line == i && m.cols.start < laid.to)
                 .enumerate()
             {
+                let (x0, x1) = (x_of(hit.cols.start), x_of(hit.cols.end));
+                if x1 < seen_left || x0 > seen_right {
+                    continue;
+                }
                 let tint = if f.current == Some(start + k) {
                     CURRENT_TINT
                 } else {
                     MATCH_TINT
                 };
-                let (x0, x1) = (x_of(hit.cols.start), x_of(hit.cols.end));
                 let b = Bounds::from_corners(point(x0, y), point(x1, y + lh));
                 window.paint_quad(fill(b, accent.opacity(tint)));
             }
             if let Some(shaped) = &laid.shaped {
-                let origin = point(text_x + laid.x0(g.cell_width), y);
+                let origin = point(text_x + laid.x0, y);
                 let _ = shaped.paint(origin, lh, TextAlign::Left, None, window, cx);
             }
         });
@@ -858,7 +1062,8 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
             window.paint_quad(fill(bar, hsla(bars.of_change(change))));
         }
     }
-    // Deleted lines: a red ▸ on the edge between two lines, over the bar's place.
+    // Deleted lines: a red ▸ on the edge between two lines, over the bar's place (at the top
+    // edge, just under it, so it isn't cut in half).
     let glyph = "\u{25b8}";
     let run = plain_run(glyph.len(), m, bars.deleted);
     let marker = window.text_system().shape_line(
@@ -872,15 +1077,9 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
             continue;
         }
         let y = bounds.top() + lh * edge as f32 - g.scroll.y;
+        let top = if edge == 0 { y } else { y - lh / 2.0 };
         let x = bounds.left() + g.bar_left + px(BAR_WIDTH / 2.0) - marker.width() / 2.0;
-        let _ = marker.paint(
-            point(x, y - lh / 2.0),
-            lh,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
+        let _ = marker.paint(point(x, top), lh, TextAlign::Left, None, window, cx);
     }
 }
 
@@ -893,10 +1092,28 @@ pub enum FileTabEvent {
 /// The find bar: its box and what it found.
 struct FindBar {
     input: Entity<NameInput>,
-    query: String,
-    matches: Arc<Vec<Match>>,
-    current: Option<usize>,
+    finds: Finds,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Where a tab's file sits for git: the git to run, its repo's top folder, and the file's path
+/// in it. Looked up once per tab (off the UI thread).
+#[derive(Clone, Debug)]
+struct GitPlace {
+    git: PathBuf,
+    root: PathBuf,
+    rel: PathBuf,
+}
+
+/// `path`'s place for git (blocking): none outside a repo or without git.
+fn git_place(path: &Path) -> Option<GitPlace> {
+    let git = find_git()?;
+    // git prints real paths (`/private/var`, not `/var`).
+    let real = std::fs::canonicalize(path).ok()?;
+    let root = repo_root(&git, real.parent()?)?;
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    let rel = real.strip_prefix(&root).ok()?.to_path_buf();
+    Some(GitPlace { git, root, rel })
 }
 
 /// A file tab's view.
@@ -912,9 +1129,21 @@ pub struct FileTab {
     versions: u64,
     /// A read in flight.
     reading: bool,
-    /// The highlight and the git look-up in flight (one of each at a time).
+    /// The highlight, the git look-up and the search in flight (one of each at a time).
     colouring: OneAtATime,
     looking: OneAtATime,
+    searching: OneAtATime,
+    /// Searches asked so far (each one's generation).
+    searches: u64,
+    /// The file's place for git, once looked up (`Some(None)`: not in a repo).
+    git_place: Option<Option<GitPlace>>,
+    /// When the last git look-up started, and whether one waits for its turn (`lookup_wait`).
+    looked_at: Option<Instant>,
+    lookup_waiting: bool,
+    /// The version last drawn: drawing a new one stores the scroll as it was kept in the text.
+    drawn: Rc<Cell<u64>>,
+    /// The find bar closed by itself (the file went): the tab takes the keyboard back.
+    refocus: bool,
     /// The theme the colours were asked in (another one: colour again).
     coloured_with: Option<Theme>,
     scroll: Point<Pixels>,
@@ -962,6 +1191,13 @@ impl FileTab {
             reading: false,
             colouring: OneAtATime::default(),
             looking: OneAtATime::default(),
+            searching: OneAtATime::default(),
+            searches: 0,
+            git_place: None,
+            looked_at: None,
+            lookup_waiting: false,
+            drawn: Rc::default(),
+            refocus: false,
             coloured_with: None,
             scroll: Point::default(),
             geom: Rc::default(),
@@ -1081,10 +1317,12 @@ impl FileTab {
                 }
                 self.state = State::Missing;
                 self.stamp = None;
+                self.refocus |= self.find.take().is_some();
             }
             Loaded::Refuse(stamp) => {
                 self.state = State::Refuse;
                 self.stamp = Some(stamp);
+                self.refocus |= self.find.take().is_some();
             }
             Loaded::Text {
                 stamp,
@@ -1096,8 +1334,10 @@ impl FileTab {
                 if let Some(old) = self.doc() {
                     if !plain {
                         doc.spans = old.spans.clone();
+                        doc.spans_version = old.spans_version;
                     }
                     doc.changes = old.changes.clone();
+                    doc.changes_version = old.changes_version;
                 }
                 self.stamp = Some(stamp);
                 self.state = if plain {
@@ -1110,7 +1350,7 @@ impl FileTab {
             }
         }
         self.keep_selection();
-        self.find_again();
+        self.find_again(cx);
         cx.notify();
     }
 
@@ -1206,24 +1446,49 @@ impl FileTab {
         .detach();
     }
 
-    /// Ask git for the change bars of the text shown (off the UI thread). Not when frozen.
+    /// Ask git for the change bars of the text shown (off the UI thread). Not when frozen. At
+    /// most one look-up every 2 s (`lookup_wait`): one asked sooner waits for its turn. The
+    /// git to run and the repo are looked up once per tab.
     fn look_up_changes(&mut self, cx: &mut Context<Self>) {
-        if self.frozen {
+        if self.frozen || self.doc().is_none() {
             return;
         }
-        let Some(version) = self.doc().map(|d| d.version) else {
+        if let Some(wait) = lookup_wait(self.looked_at, Instant::now()) {
+            if !self.lookup_waiting {
+                self.lookup_waiting = true;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    this.update(cx, |this, cx| {
+                        this.lookup_waiting = false;
+                        this.look_up_changes(cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             return;
-        };
+        }
         if !self.looking.start() {
             return;
         }
-        let path = self.path.clone();
+        self.looked_at = Some(Instant::now());
+        let Some(version) = self.doc().map(|d| d.version) else {
+            return;
+        };
+        let (path, known) = (self.path.clone(), self.git_place.clone());
         cx.spawn(async move |this, cx| {
-            let changes = cx
+            let (place, changes) = cx
                 .background_executor()
-                .spawn(async move { changes_for(&path) })
+                .spawn(async move {
+                    let place = known.unwrap_or_else(|| git_place(&path));
+                    let changes = place
+                        .as_ref()
+                        .and_then(|p| line_changes(&p.git, &p.root, &p.rel));
+                    (place, changes)
+                })
                 .await;
             this.update(cx, |this, cx| {
+                this.git_place = Some(place);
                 let changes = changes.unwrap_or_default();
                 if let Some(doc) = this.doc_mut()
                     && doc.accept_changes(version, &changes)
@@ -1271,21 +1536,27 @@ impl FileTab {
         } else {
             ((y / g.line_height).floor() as usize).min(count.saturating_sub(1))
         };
+        let x = p.x - g.bounds.left() - g.text_left + g.scroll.x;
+        if x <= px(0.0) {
+            return Some(Pos { line, col: 0 });
+        }
+        if doc.is_long(line) {
+            // From its checkpoints, in cells (the font is monospaced): never the whole line.
+            let cell = (x / g.cell_width).round() as usize;
+            let (col, _) = doc.byte_at_cell(line, cell);
+            return Some(Pos { line, col });
+        }
         let l = doc.line(line);
         let shown = expand_tabs(l);
-        let x = p.x - g.bounds.left() - g.text_left + g.scroll.x;
-        let at = if x <= px(0.0) || shown.is_empty() {
-            0
-        } else if shown.chars().count() > LONG_LINE {
-            byte_at_char(&shown, (x / g.cell_width).round() as usize)
-        } else {
-            let m = CellMetrics::measure(cx.global::<Appearance>(), window);
-            let run = plain_run(shown.len(), &m, Rgb { r: 0, g: 0, b: 0 });
-            window
-                .text_system()
-                .shape_line(SharedString::from(shown), m.font_size, &[run], None)
-                .closest_index_for_x(x)
-        };
+        if shown.is_empty() {
+            return Some(Pos { line, col: 0 });
+        }
+        let m = CellMetrics::measure(cx.global::<Appearance>(), window);
+        let run = plain_run(shown.len(), &m, Rgb { r: 0, g: 0, b: 0 });
+        let at = window
+            .text_system()
+            .shape_line(SharedString::from(shown), m.font_size, &[run], None)
+            .closest_index_for_x(x);
         Some(Pos {
             line,
             col: Tabs::of(l).source(at),
@@ -1324,7 +1595,11 @@ impl FileTab {
     }
 
     /// ⌘F: the find bar, its box taking the keyboard (its text selected, when open already).
+    /// Nothing without a text (a missing or refused file, or one still loading).
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.doc().is_none() {
+            return;
+        }
         if let Some(find) = &self.find {
             let input = find.input.clone();
             input.update(cx, |input, cx| {
@@ -1353,50 +1628,72 @@ impl FileTab {
         input.read(cx).focus_handle(cx).focus(window, cx);
         self.find = Some(FindBar {
             input,
-            query: String::new(),
-            matches: Arc::default(),
-            current: None,
+            finds: Finds::default(),
             _subscriptions: vec![events, typed],
         });
         cx.notify();
     }
 
-    /// The find box's text changed: its matches, the first from the top line in sight.
+    /// The find box's text changed: search for it (off the UI thread).
     fn find_query(&mut self, query: String, cx: &mut Context<Self>) {
-        if self.find.as_ref().is_none_or(|f| f.query == query) {
+        if self.find.as_ref().is_none_or(|f| f.finds.query == query) {
             return;
         }
-        let top = self
-            .geom
-            .get()
-            .map_or(0, |g| (g.scroll.y / g.line_height).floor() as usize);
-        let found = self
-            .doc()
-            .map(|d| find_matches(&d.text, &d.lines, &query))
-            .unwrap_or_default();
+        self.searches += 1;
+        let generation = self.searches;
         if let Some(find) = self.find.as_mut() {
-            find.current = first_from(&found, top);
-            find.matches = Arc::new(found);
-            find.query = query;
+            find.finds.ask(generation, Some(query));
         }
-        self.reveal_current(cx);
-        cx.notify();
+        self.search(cx);
     }
 
-    /// The text changed under the find bar: its matches again, the current one kept (by
-    /// number) where it can be.
-    fn find_again(&mut self) {
-        let found = match (self.doc(), self.find.as_ref()) {
-            (Some(d), Some(f)) => find_matches(&d.text, &d.lines, &f.query),
-            _ => Vec::new(),
-        };
-        if let Some(find) = self.find.as_mut() {
-            find.current = find
-                .current
-                .filter(|_| !found.is_empty())
-                .map(|c| c.min(found.len() - 1));
-            find.matches = Arc::new(found);
+    /// The text changed under the find bar: search again (the current match kept by number).
+    fn find_again(&mut self, cx: &mut Context<Self>) {
+        if self.find.is_none() {
+            return;
         }
+        self.searches += 1;
+        let generation = self.searches;
+        if let Some(find) = self.find.as_mut() {
+            find.finds.ask(generation, None);
+        }
+        self.search(cx);
+    }
+
+    /// Run the latest search asked (off the UI thread), one at a time: asked again meanwhile, it
+    /// runs once more when this one ends. Only the latest search's answer is taken (`Finds`).
+    fn search(&mut self, cx: &mut Context<Self>) {
+        let (Some(find), Some(doc)) = (self.find.as_ref(), self.doc()) else {
+            return;
+        };
+        let (generation, query) = (find.finds.wanted, find.finds.query.clone());
+        let (text, lines) = (doc.text.clone(), doc.lines.clone());
+        if !self.searching.start() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let (found, capped) = cx
+                .background_executor()
+                .spawn(async move { find_matches(&text, &lines, &query, FIND_CAP) })
+                .await;
+            this.update(cx, |this, cx| {
+                let top = this
+                    .geom
+                    .get()
+                    .map_or(0, |g| (g.scroll.y / g.line_height).floor() as usize);
+                if let Some(find) = this.find.as_mut()
+                    && find.finds.accept(generation, found, capped, top)
+                {
+                    this.reveal_current(cx);
+                    cx.notify();
+                }
+                if this.searching.finish() {
+                    this.search(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// ⌘G / ⇧⌘G (and Return in the box): the next or previous match, round the ends. With the
@@ -1406,7 +1703,8 @@ impl FileTab {
             self.open_find(window, cx);
             return;
         };
-        find.current = step(find.current, find.matches.len(), forward);
+        let finds = &mut find.finds;
+        finds.current = step(finds.current, finds.matches.len(), forward);
         self.reveal_current(cx);
         cx.notify();
     }
@@ -1427,7 +1725,7 @@ impl FileTab {
         let Some(hit) = self
             .find
             .as_ref()
-            .and_then(|f| f.matches.get(f.current?).cloned())
+            .and_then(|f| f.finds.matches.get(f.finds.current?).cloned())
         else {
             return;
         };
@@ -1440,13 +1738,7 @@ impl FileTab {
         if top < to.y || top + lh > to.y + h {
             to.y = top - (h - lh) / 2.0;
         }
-        let line = doc.line(hit.line);
-        let shown = expand_tabs(line);
-        let tabs = Tabs::of(line);
-        let x = |col: usize| {
-            let b = clamp_col(&shown, tabs.shown(col));
-            g.cell_width * shown[..b].chars().count() as f32
-        };
+        let x = |col: usize| g.cell_width * doc.cell_of(hit.line, col) as f32;
         let (x0, x1) = (x(hit.cols.start), x(hit.cols.end));
         let room = w - g.text_left - px(RIGHT_PAD);
         if x0 < to.x || x1 > to.x + room {
@@ -1581,7 +1873,8 @@ impl FileTab {
         let find = self.find.as_ref()?;
         let input = find.input.clone();
         let empty = input.read(cx).text().is_empty();
-        let label = find_label(&find.query, find.current, find.matches.len());
+        let f = &find.finds;
+        let label = find_label(&f.query, f.current, f.matches.len(), f.capped);
         let focus_box = input.clone();
         let prev = Self::icon_button(
             "file-find-prev",
@@ -1719,10 +2012,9 @@ impl FileTab {
         let Some(doc) = self.doc().cloned() else {
             return div().flex_1().into_any_element();
         };
-        let (matches, current) = self
-            .find
-            .as_ref()
-            .map_or((Arc::default(), None), |f| (f.matches.clone(), f.current));
+        let (matches, current) = self.find.as_ref().map_or((Arc::default(), None), |f| {
+            (f.finds.matches.clone(), f.finds.current)
+        });
         let frame = Rc::new(Frame {
             coloured: matches!(self.state, State::Text(_)),
             doc,
@@ -1735,7 +2027,9 @@ impl FileTab {
             theme,
         });
         let geom = self.geom.clone();
+        let drawn = self.drawn.clone();
         let view = cx.entity();
+        let keep = view.clone();
         let laid = frame.clone();
         div()
             .flex_1()
@@ -1759,6 +2053,14 @@ impl FileTab {
                             laid.scroll,
                         );
                         geom.set(Some(g));
+                        // A new version drawn: the scroll as kept in it is the scroll (after a
+                        // shrink, the view doesn't jump back down when the file grows again).
+                        if drawn.replace(laid.doc.version) != laid.doc.version
+                            && g.scroll != laid.scroll
+                        {
+                            let kept = g.scroll;
+                            keep.update(cx, |this, _| this.scroll = kept);
+                        }
                         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
                         (m, g, hitbox)
                     },
@@ -1826,8 +2128,18 @@ impl FileTab {
     /// The find bar's count ("1 of 7"); empty with the bar closed.
     pub fn find_label(&self) -> String {
         self.find.as_ref().map_or_else(String::new, |f| {
-            find_label(&f.query, f.current, f.matches.len())
+            find_label(
+                &f.finds.query,
+                f.finds.current,
+                f.finds.matches.len(),
+                f.finds.capped,
+            )
         })
+    }
+
+    /// Whether the find bar is open.
+    pub fn find_open(&self) -> bool {
+        self.find.is_some()
     }
 
     /// Change bars from a list (git's answer; a scene's given list).
@@ -1842,7 +2154,11 @@ impl FileTab {
 }
 
 impl Render for FileTab {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The find bar went with the file: the keyboard back to the tab.
+        if std::mem::take(&mut self.refocus) {
+            self.focus.focus(window, cx);
+        }
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
         let toolbar = self.toolbar(ui, cx);
@@ -2055,7 +2371,7 @@ mod tests {
     fn find_matches_every_line_ignoring_case_and_steps_around() {
         let text = "fn main() {\n    FN x; fn y\n}\nnothing\n";
         let lines = line_ranges(text);
-        let found = find_matches(text, &lines, "fn");
+        let (found, _) = find_matches(text, &lines, "fn", FIND_CAP);
         assert_eq!(
             found,
             [
@@ -2073,14 +2389,14 @@ mod tests {
                 },
             ]
         );
-        assert!(find_matches(text, &lines, "").is_empty());
-        assert!(find_matches(text, &lines, "zzz").is_empty());
+        assert!(find_matches(text, &lines, "", FIND_CAP).0.is_empty());
+        assert!(find_matches(text, &lines, "zzz", FIND_CAP).0.is_empty());
         // Not across a line's end.
-        assert!(find_matches(text, &lines, "{\n").is_empty());
+        assert!(find_matches(text, &lines, "{\n", FIND_CAP).0.is_empty());
         // A non-ASCII query, any case.
         let text = "Ärger ärger\n";
         let lines = line_ranges(text);
-        assert_eq!(find_matches(text, &lines, "äR").len(), 2);
+        assert_eq!(find_matches(text, &lines, "äR", FIND_CAP).0.len(), 2);
         // Next and previous go round.
         assert_eq!(step(None, 3, true), Some(0));
         assert_eq!(step(None, 3, false), Some(2));
@@ -2091,13 +2407,13 @@ mod tests {
         // The first at or after a line, else the first of all.
         let text = "fn a\nb\nfn c\n";
         let lines = line_ranges(text);
-        let found = find_matches(text, &lines, "fn");
+        let (found, _) = find_matches(text, &lines, "fn", FIND_CAP);
         assert_eq!(first_from(&found, 1), Some(1));
         assert_eq!(first_from(&found, 3), Some(0));
         assert_eq!(first_from(&[], 0), None);
-        assert_eq!(find_label("fn", Some(0), 3), "1 of 3");
-        assert_eq!(find_label("fn", None, 0), "No results");
-        assert_eq!(find_label("", None, 0), "");
+        assert_eq!(find_label("fn", Some(0), 3, false), "1 of 3");
+        assert_eq!(find_label("fn", None, 0, false), "No results");
+        assert_eq!(find_label("", None, 0, false), "");
     }
 
     #[test]
@@ -2148,6 +2464,135 @@ mod tests {
         // That one ends with nothing asked meanwhile: done, and idle again.
         assert!(!work.finish());
         assert!(work.start());
+    }
+
+    #[test]
+    fn find_stops_at_ten_thousand_and_says_so() {
+        let text = "e".repeat(FIND_CAP + 500);
+        let lines = line_ranges(&text);
+        let (found, capped) = find_matches(&text, &lines, "e", FIND_CAP);
+        assert_eq!(found.len(), FIND_CAP);
+        assert!(capped);
+        assert_eq!(
+            find_label("e", Some(0), found.len(), capped),
+            "1 of 10,000+"
+        );
+        let (found, capped) = find_matches("e e e\n", &line_ranges("e e e\n"), "e", FIND_CAP);
+        assert_eq!((found.len(), capped), (3, false));
+        // Exactly the cap is not "more".
+        let text = "e".repeat(FIND_CAP);
+        let (found, capped) = find_matches(&text, &line_ranges(&text), "e", FIND_CAP);
+        assert_eq!((found.len(), capped), (FIND_CAP, false));
+        assert_eq!(find_label("e", Some(9), 1234, false), "10 of 1,234");
+    }
+
+    #[test]
+    fn a_search_for_an_older_query_is_dropped() {
+        let text = "fn a\nfx b\nfn c\n";
+        let lines = line_ranges(text);
+        let mut finds = Finds::default();
+        finds.ask(1, Some("fn".into()));
+        // Typed on before "fn"'s search came back.
+        finds.ask(2, Some("fx".into()));
+        let (old, _) = find_matches(text, &lines, "fn", FIND_CAP);
+        assert!(!finds.accept(1, old, false, 0));
+        assert!(finds.matches.is_empty());
+        let (new, _) = find_matches(text, &lines, "fx", FIND_CAP);
+        assert!(finds.accept(2, new, false, 0));
+        assert_eq!(finds.matches.len(), 1);
+        assert_eq!(finds.current, Some(0));
+        // The text reloads (same query): the current match is kept by number.
+        finds.ask(3, None);
+        let (again, _) = find_matches("fx\nfx\n", &line_ranges("fx\nfx\n"), "fx", FIND_CAP);
+        finds.current = Some(0);
+        assert!(finds.accept(3, again, false, 1));
+        assert_eq!(finds.current, Some(0));
+    }
+
+    #[test]
+    fn a_long_line_s_cells_map_like_a_full_scan() {
+        // Tabs, two-byte and three-byte characters, long enough for checkpoints.
+        let unit = "ab\tcé€d";
+        let line = unit.repeat(400);
+        let doc = Doc::new(format!("short\n{line}\n"), 1);
+        let full = |col: usize| -> usize {
+            line[..col]
+                .chars()
+                .map(|c| if c == '\t' { TAB_WIDTH } else { 1 })
+                .sum()
+        };
+        let cells = full(line.len());
+        assert!(cells > LONG_LINE);
+        for (col, _) in line.char_indices().chain([(line.len(), ' ')]) {
+            assert_eq!(doc.cell_of(1, col), full(col), "byte {col}");
+        }
+        for cell in 0..=cells + 3 {
+            let (b, at) = doc.byte_at_cell(1, cell);
+            assert!(line.is_char_boundary(b), "cell {cell}");
+            assert_eq!(at, full(b), "cell {cell}");
+            assert!(at <= cell.min(cells), "cell {cell}");
+            // The next character would start past it.
+            let next = line[b..]
+                .chars()
+                .next()
+                .map_or(usize::MAX, |c| at + if c == '\t' { TAB_WIDTH } else { 1 });
+            assert!(next > cell || b == line.len(), "cell {cell}");
+        }
+        // A short line maps the same way, without checkpoints.
+        assert_eq!(doc.cell_of(0, 3), 3);
+        assert_eq!(doc.byte_at_cell(0, 99), (5, 5));
+    }
+
+    #[test]
+    fn colours_newer_than_the_ones_held_are_taken() {
+        let spans = || vec![vec![(0..1, Rgb { r: 1, g: 2, b: 3 })]];
+        // Version 5 is shown with version 1's colours carried over (a fast-growing file).
+        let mut doc5 = Doc::new("x\n".into(), 5);
+        doc5.spans = Some(Arc::new(spans()));
+        doc5.spans_version = Some(1);
+        // Version 3's colours: newer than those held, so taken.
+        assert!(doc5.accept_spans(3, spans()));
+        assert_eq!(doc5.spans_version, Some(3));
+        // Version 2's: older than those held now.
+        assert!(!doc5.accept_spans(2, spans()));
+        // Newer than the text shown can't happen, and is dropped.
+        assert!(!doc5.accept_spans(6, spans()));
+        assert!(doc5.accept_spans(5, spans()));
+        assert_eq!(doc5.spans_version, Some(5));
+    }
+
+    #[test]
+    fn a_fifo_is_refused_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("fuxx-fifo-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let fifo = dir.join("pipe");
+        let _ = std::fs::remove_file(&fifo);
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("mkfifo unavailable: skipped");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let refused = matches!(read_file(&path, None), Loaded::Refuse(_));
+            let _ = tx.send(refused);
+        });
+        let got = rx.recv_timeout(Duration::from_secs(3));
+        let _ = std::fs::remove_file(&fifo);
+        assert_eq!(got, Ok(true), "the FIFO is refused at once");
+    }
+
+    #[test]
+    fn git_look_ups_are_at_most_one_per_two_seconds() {
+        let now = Instant::now();
+        assert_eq!(lookup_wait(None, now), None);
+        assert_eq!(lookup_wait(Some(now - Duration::from_secs(3)), now), None);
+        assert_eq!(lookup_wait(Some(now - Duration::from_secs(2)), now), None);
+        assert_eq!(
+            lookup_wait(Some(now - Duration::from_millis(500)), now),
+            Some(Duration::from_millis(1500))
+        );
     }
 
     #[test]

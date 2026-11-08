@@ -3274,13 +3274,19 @@ fn file_tab_scenes() {
 ///   list (lines 3–4 added, green; line 7 changed, blue; a red ▸ under line 10 for lines
 ///   deleted) with each changed line tinted 12 %; ⌘F "fn": "1 of N", the matches tinted, the
 ///   current one stronger; lines 2–3 selected with the mouse (⌘C copies them).
-/// - `file-tab-long`: a 300-character line scrolled sideways by the wheel (its end shows).
+/// - `file-tab-long`: a 1,200-character line (with two-byte characters: drawn from its
+///   checkpoints) scrolled sideways by the wheel (its end shows), and a ▸ for lines deleted above
+///   the first, drawn whole under the top edge.
 /// - `file-tab-missing`, `file-tab-refuse`, `file-tab-plain`: a file that is gone (its path, a
 ///   Close button that asks to close the tab), a binary file (Open in Editor), a file over 2 MB
 ///   (plain text, "Too large to colour").
 ///
+/// - `file-tab-minified`: a 1.5 MB one-line file, ⌘F "e": "1 of 10,000+", and a frame stays
+///   quick.
+///
 /// Not shot: a reload with new text (the file rewritten, the disk checked again) keeps the
-/// scroll. Also prints how long colouring a 5,000-line Rust file takes (run with `--release`
+/// scroll; a shrink to 10 lines and a growth back keep the view at the top; the file removed
+/// with the find bar open closes it, ⌘F then does nothing, and the tab has the keyboard. Also prints how long colouring a 5,000-line Rust file takes (run with `--release`
 /// for the real number).
 fn file_view_scenes() {
     use crate::file_tab::{FileTab, FileTabEvent, MISSING, REFUSED, TOO_LARGE};
@@ -3298,7 +3304,7 @@ fn file_view_scenes() {
     let view_rs = dir.join("view.rs");
     std::fs::write(&view_rs, FILE_VIEW_FIXTURE).expect("view.rs");
     let long_rs = dir.join("long.rs");
-    let long_line = Rc::new(format!("let long = \"{}END\";", "abcdefghij".repeat(29)));
+    let long_line = Rc::new(format!("let long = \"{}END\";", "abcdéfghij".repeat(120)));
     std::fs::write(
         &long_rs,
         format!("// one long line\n{long_line}\nfn after() {{}}\n"),
@@ -3312,6 +3318,8 @@ fn file_view_scenes() {
     let row = "2026-11-08 12:00:00 INFO request served in 12 ms, all fine\n";
     std::fs::write(&big, row.repeat(2 * 1024 * 1024 / row.len() + 100)).expect("big.log");
     let reload_rs = dir.join("reload.rs");
+    let minified = dir.join("min.js");
+    std::fs::write(&minified, "var e=1;".repeat(1_500_000 / 8)).expect("min.js");
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
@@ -3501,11 +3509,14 @@ fn file_view_scenes() {
 
         // A long line, scrolled sideways by the wheel: its end shows.
         let n = format!("file-tab-long-{slug}");
+        let long_geom: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
+        let keep_long = long_geom.clone();
         let slot: TabSlot = Rc::default();
         let build = build_for(long_rs.clone(), slot.clone());
         let act = {
             let n = n.clone();
             let long_line = long_line.clone();
+            let long_geom = keep_long.clone();
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
                 frame(cx, window);
@@ -3516,15 +3527,23 @@ fn file_view_scenes() {
                         window,
                         ScrollWheelEvent {
                             position: over,
-                            delta: ScrollDelta::Pixels(point(px(-1000.0), px(0.0))),
+                            delta: ScrollDelta::Pixels(point(px(-5000.0), px(0.0))),
                             modifiers: Modifiers::none(),
                             touch_phase: TouchPhase::Moved,
                         },
                     );
                 }
                 frame(cx, window);
+                // Lines deleted above the first: its ▸ on the top edge, drawn whole.
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| {
+                        t.set_changes(vec![(0, LineChange::DeletedAfter)], cx)
+                    })
+                });
+                frame(cx, window);
                 let (scroll, g) = cx.read(|cx| (tab.read(cx).scroll(), tab.read(cx).geom()));
                 let g = g.expect("drawn");
+                long_geom.set(Some(g));
                 assert!(scroll.x > px(0.0), "{n}: scrolled sideways");
                 assert_eq!(scroll.y, px(0.0), "{n}");
                 // As far as it goes: the line's end at the right edge.
@@ -3536,8 +3555,30 @@ fn file_view_scenes() {
                 slot.borrow_mut().take();
             }
         };
-        let path = shoot_with("file-tab-long", slug, &theme, dims, build, act);
+        let path = shoot_with(
+            "file-tab-long",
+            slug,
+            &theme,
+            dims,
+            build.clone(),
+            act.clone(),
+        );
         println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let g = long_geom.get().expect("drawn");
+        let red = fit(theme.palette[1]);
+        let bar_x = g.bounds.left() + g.bar_left + px(1.5);
+        let whole = (-6..=10).any(|dx| {
+            (0..=6).any(|dy| {
+                let y = g.bounds.top() + g.line_height * 0.4 + px(dy as f32 * 0.6);
+                let x = bar_x + px(dx as f32);
+                near(pixel_at(&shot, dims, f32::from(x), f32::from(y)), red, 40)
+            })
+        });
+        assert!(
+            whole,
+            "{n}: the top edge's ▸ is drawn whole, under the edge"
+        );
 
         // The states: missing (and its Close), refused, plain.
         for (scene, file, state, words) in [
@@ -3624,10 +3665,90 @@ fn file_view_scenes() {
                 assert!(doc.text.starts_with("let b1"), "{n}");
                 assert_eq!(t.scroll(), before, "{n}: the scroll kept");
             });
+            // It shrinks to 10 lines (the view to the top), then grows again: it stays at the top.
+            for (count, word) in [(10, "c"), (220, "d")] {
+                std::fs::write(&file, numbered(count, word)).expect("rewrite reload.rs");
+                cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+                frame(cx, window);
+                let (lines, scroll) = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.doc().expect("text").lines.len(), t.scroll())
+                });
+                assert_eq!(lines, count, "{n}");
+                assert_eq!(scroll.y, px(0.0), "{n}: {count} lines, at the top");
+            }
+            // ⌘F with the file there; then it goes: the bar closes, ⌘F does nothing, the tab has
+            // the keyboard.
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            cx.simulate_keystrokes(window, "cmd-f");
+            cx.simulate_input(window, "let");
+            frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 220", "{n}");
+            std::fs::remove_file(&file).expect("remove reload.rs");
+            cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+            frame(cx, window);
+            cx.simulate_keystrokes(window, "cmd-f");
+            frame(cx, window);
+            let (state, open, keys) = cx
+                .update_window(window, |_, window, cx| {
+                    let t = tab.read(cx);
+                    (
+                        t.state_name(),
+                        t.find_open(),
+                        t.focus_handle(cx).is_focused(window),
+                    )
+                })
+                .expect("read");
+            assert_eq!(state, "missing", "{n}");
+            assert!(!open, "{n}: no find bar for a missing file");
+            assert!(keys, "{n}: the tab has the keyboard back");
             slot.borrow_mut().take();
         };
         render_with(&theme, dims, build, act);
         println!("ui-shots: {label} ok");
+
+        // A minified file, one 1.5 MB line, and ⌘F "e": capped at 10,000, and drawing it stays
+        // quick (only the matches in sight are drawn).
+        let n = format!("file-tab-minified-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(minified.clone(), slot.clone());
+        let act = {
+            let n = n.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                frame(cx, window);
+                assert_eq!(cx.read(|cx| tab.read(cx).state_name()), "plain", "{n}");
+                cx.update_window(window, |_, window, cx| {
+                    tab.read(cx).focus_handle(cx).focus(window, cx)
+                })
+                .expect("focus");
+                cx.simulate_keystrokes(window, "cmd-f");
+                cx.simulate_input(window, "e");
+                frame(cx, window);
+                let label = cx.read(|cx| tab.read(cx).find_label());
+                assert_eq!(label, "1 of 10,000+", "{n}");
+                let started = std::time::Instant::now();
+                for _ in 0..5 {
+                    cx.update_window(window, |_, window, cx| {
+                        window.refresh();
+                        window.draw(cx).clear();
+                    })
+                    .expect("draw");
+                }
+                let each = started.elapsed() / 5;
+                println!("ui-shots: {n}: a frame in {} ms", each.as_millis());
+                assert!(
+                    each < std::time::Duration::from_secs(1),
+                    "{n}: {each:?} a frame"
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with("file-tab-minified", slug, &theme, dims, build, act);
+        println!("ui-shots: {}", path.display());
     }
 
     // How long colouring a 5,000-line Rust file takes (the loading of the syntaxes apart).
