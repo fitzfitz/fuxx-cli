@@ -417,6 +417,7 @@ impl Workspace {
             id,
             view,
             status,
+            // Adopted: its first Activity entry's `lasted` counts from now, the adopt time.
             status_since: Instant::now(),
             pop: None,
             question: None,

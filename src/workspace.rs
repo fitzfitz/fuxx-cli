@@ -17,7 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
@@ -1913,7 +1913,7 @@ impl Workspace {
         if old != new {
             session
                 .activity
-                .status(new, lasted, question.clone(), std::time::SystemTime::now());
+                .status(new, lasted, question.clone(), SystemTime::now());
         }
         let terminal = Some(id);
         let label = self.terminal_label(id);
@@ -1963,9 +1963,7 @@ impl Workspace {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
         };
-        session
-            .activity
-            .note(note.as_deref(), std::time::SystemTime::now());
+        session.activity.note(note.as_deref(), SystemTime::now());
         session.note = note;
         self.push_meta(index, cx);
         cx.notify();
@@ -1983,7 +1981,7 @@ impl Workspace {
         };
         session
             .activity
-            .progress(progress.clone(), std::time::SystemTime::now());
+            .progress(progress.clone(), SystemTime::now());
         session.progress = progress;
         self.push_meta(index, cx);
         cx.notify();
