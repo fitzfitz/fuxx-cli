@@ -6,8 +6,12 @@
 //!
 //! Status marks (porcelain v1, `-z`; X is the index column, Y the work tree's): `M` or `T` in
 //! either column is Modified; `A` or `??` is Added; `D` is Deleted; `R` or `C` is Added for the
-//! new path (the old path of a rename is not marked). Anything else (`U` conflicts, `!!`) is
-//! Modified if it is a tracked change, and `!!` is skipped.
+//! new path (the old path of a rename is not marked). A merge conflict (a `U` in either column,
+//! or `AA`/`DD`) is Modified: a change in progress. Anything else is Modified; `!!` is skipped.
+//!
+//! Paths are returned as git prints them (`-z`, so never quoted), not normalised: on macOS git
+//! stores and prints precomposed (NFC) names (`core.precomposeunicode`), so a caller comparing
+//! them with on-disk names (which may be decomposed) should normalise both.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -64,6 +68,7 @@ pub fn parse_porcelain(z: &[u8]) -> Vec<(PathBuf, Mark)> {
             (b'!', b'!') => continue,
             (b'?', b'?') => Mark::Added,
             _ if moved => Mark::Added,
+            (b'U', _) | (_, b'U') | (b'A', b'A') | (b'D', b'D') => Mark::Modified,
             (b'D', _) | (_, b'D') => Mark::Deleted,
             (b'A', _) => Mark::Added,
             _ => Mark::Modified,
@@ -142,10 +147,23 @@ pub fn parse_hunks(diff: &str) -> Vec<(usize, LineChange)> {
 /// `rel`'s (relative to `root`) lines changed on disk against HEAD. None outside a repo; an
 /// untracked file, or any file in a repo with no commits, has every line Added.
 pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, LineChange)>> {
-    run_git(git, root, &["rev-parse", "--is-inside-work-tree"])?;
+    // Names are literal, not pathspecs (`*`, `[`, a leading `:`).
+    let inside = run_git(git, root, &["rev-parse", "--is-inside-work-tree"])?;
+    (inside.trim() == "true").then_some(())?;
     let path = rel.to_string_lossy();
     let has_head = run_git(git, root, &["rev-parse", "--verify", "-q", "HEAD"]).is_some();
-    let tracked = run_git(git, root, &["ls-files", "--error-unmatch", "--", &path]).is_some();
+    let tracked = run_git(
+        git,
+        root,
+        &[
+            "--literal-pathspecs",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            &path,
+        ],
+    )
+    .is_some();
     if !has_head || !tracked {
         let bytes = std::fs::read(root.join(rel)).unwrap_or_default();
         let lines = bytes.iter().filter(|&&b| b == b'\n').count()
@@ -339,6 +357,97 @@ mod tests {
         );
         let new = line_changes(&git, &root, Path::new("new.txt")).unwrap();
         assert_eq!(new, vec![(1, LineChange::Added), (2, LineChange::Added)]);
+    }
+
+    #[test]
+    fn conflicts_are_modified() {
+        let z = b"UU c.rs\0AA d.rs\0DD e.rs\0DU f.rs\0UD g.rs\0";
+        assert!(parse_porcelain(z).iter().all(|(_, m)| *m == Mark::Modified));
+        assert_eq!(parse_porcelain(z).len(), 5);
+    }
+
+    /// A repo in a temp dir with `run` to call git in it.
+    fn repo(name: &str, git: &Path) -> PathBuf {
+        let root = temp(name);
+        git_in(git, &root, &["init", "-q"]);
+        root
+    }
+
+    fn git_in(git: &Path, root: &Path, args: &[&str]) {
+        let ok = Command::new(git)
+            .arg("-C")
+            .arg(root)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn spaces_unicode_and_a_real_rename() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("names", &git);
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("old name.txt"), "a\nb\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "first"]);
+        git_in(&git, &root, &["mv", "old name.txt", "new n\u{e4}me.txt"]);
+        fs::write(root.join("caf\u{e9} x.txt"), "x").unwrap();
+        fs::write(root.join("caf\u{e9} x.log"), "x").unwrap();
+        fs::write(root.join("sp ace.log"), "x").unwrap();
+        let marks = status(&git, &root);
+        assert_eq!(marks.get(&p("new n\u{e4}me.txt")), Some(&Mark::Added));
+        assert_eq!(marks.get(&p("caf\u{e9} x.txt")), Some(&Mark::Added));
+        assert!(!marks.contains_key(&p("old name.txt")));
+        let names = [p("caf\u{e9} x.log"), p("sp ace.log"), p("caf\u{e9} x.txt")];
+        assert_eq!(
+            ignored(&git, &root, &names),
+            HashSet::from([p("caf\u{e9} x.log"), p("sp ace.log")])
+        );
+        // Glob characters in a name are literal.
+        fs::write(root.join("a[1].txt"), "q\n").unwrap();
+        assert_eq!(
+            line_changes(&git, &root, Path::new("a[1].txt")),
+            Some(vec![(1, LineChange::Added)])
+        );
+    }
+
+    #[test]
+    fn ignored_in_one_batch_at_any_size() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("many", &git);
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        let names: Vec<PathBuf> = (0..3000)
+            .map(|i| {
+                let ext = if i % 3 == 0 { "log" } else { "txt" };
+                p(&format!(
+                    "a-rather-long-file-name-to-fill-the-pipe-{i:05}.{ext}"
+                ))
+            })
+            .collect();
+        for n in &names {
+            fs::write(root.join(n), "x").unwrap();
+        }
+        let want: HashSet<PathBuf> = names
+            .iter()
+            .filter(|n| n.extension().unwrap() == "log")
+            .cloned()
+            .collect();
+        assert!(names.len() * 60 > 100_000);
+        assert_eq!(ignored(&git, &root, &names), want);
     }
 
     fn temp(name: &str) -> PathBuf {

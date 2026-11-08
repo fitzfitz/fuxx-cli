@@ -138,8 +138,8 @@ pub(crate) fn run_git(git: &Path, dir: &Path, args: &[&str]) -> Option<String> {
     run_capped(git_command(git, dir, args), GIT_CAP)
 }
 
-/// `run_git` with `input` on git's stdin (`check-ignore --stdin`). `input` must fit a pipe
-/// (`STDIN_MAX`), as nothing reads git's output while it is written; larger gives none.
+/// `run_git` with `input` on git's stdin (`check-ignore --stdin`). Any size: it is written
+/// on a thread, within the cap.
 pub(crate) fn run_git_stdin(git: &Path, dir: &Path, args: &[&str], input: &[u8]) -> Option<String> {
     run_capped_with_stdin(git_command(git, dir, args), input, GIT_CAP)
 }
@@ -155,9 +155,6 @@ fn git_command(git: &Path, dir: &Path, args: &[&str]) -> Command {
     command
 }
 
-/// The most stdin `run_capped_with_stdin` sends: below a pipe's buffer, so the write never blocks.
-pub(crate) const STDIN_MAX: usize = 32 * 1024;
-
 unsafe extern "C" {
     fn setsid() -> c_int;
 }
@@ -168,14 +165,12 @@ pub(crate) fn run_capped(command: Command, cap: Duration) -> Option<String> {
     capped(command, None, cap)
 }
 
-/// `run_capped` with `input` written to the command's stdin (then closed). None when `input`
-/// is over `STDIN_MAX`.
+/// `run_capped` with `input` written to the command's stdin (then closed).
 pub(crate) fn run_capped_with_stdin(
     command: Command,
     input: &[u8],
     cap: Duration,
 ) -> Option<String> {
-    (input.len() <= STDIN_MAX).then_some(())?;
     capped(command, Some(input), cap)
 }
 
@@ -199,11 +194,20 @@ fn capped(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Option<S
         });
     }
     let mut child = command.spawn().ok()?;
-    if let Some(input) = input {
-        // Dropped at the end of the statement: git sees the end of its input. A write error
-        // (git exited early) is not one: its exit status says what happened.
-        let _ = child.stdin.take()?.write_all(input);
-    }
+    // Both pipes are served by threads so a big input or output never stalls git (a full pipe
+    // would hold it until the cap). They end by themselves: the writer when it is done or git's
+    // end closes (a broken pipe, as when the cap kills git), the reader at the end of stdout.
+    let writer = input.zip(child.stdin.take()).map(|(input, mut stdin)| {
+        let input = input.to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input); // dropped after: git sees the end of its input
+        })
+    });
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        stdout.read_to_string(&mut out).ok().map(|_| out)
+    });
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -216,8 +220,10 @@ fn capped(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Option<S
             }
         }
     };
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    let out = reader.join().ok()??;
     status.success().then_some(out)
 }
 
