@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11e
-status: planned
+status: built
 updated: 2026-11-08
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-11-08
 | At a glance | |
 |---|---|
 | **Milestone note** | [[57 - Milestone 11e - Update Available]] (the spec) |
-| **Status** | 🟦 Planned 2026-11-08; not started |
-| **Tasks done** | 1 / 9 (Task 0) |
-| **▶ Pick up here** | Task 1 (version 0.3.0 and the Release workflow) |
+| **Status** | 🟨 Tasks 0–5 built and reviewed 2026-11-08 (834 tests); Tasks 6–8 need your word / your eyes |
+| **Tasks done** | 6 / 9 (Tasks 0–5); Task 9 docs partly (built state) |
+| **▶ Pick up here** | Task 6: merge and push, on your word |
 | **Decisions used** | Yours (2026-11-08): an updater without M12; fuxx's own (not Sparkle); a blue rounded "Update Available" above the bottom bar; releases by GitHub Actions on a tag; skip the questions. The rest: AI's call, in note 57. |
 | **Needs your eyes** | 👀 Task 0 (spike), Task 7 (first release, your word), Task 8 (on screen) |
 
@@ -86,10 +86,10 @@ one in, and opens it.
 - [x] Check 1: it opens with no "Open Anyway" (note 57 item 1).
 - [x] Check 2: Help → Notifications Status… says fuxx sends its own notifications, and macOS didn't ask again
   (item 2).
-- [ ] Record the result in note 57. If a check fails, stop and redesign before Task 1. If both pass, delete
+- [x] Record the result in note 57. If a check fails, stop and redesign before Task 1. If both pass, delete
   `~/Applications/fuxx.app.previous` on your word.
 
-### Task 1: Version 0.3.0 and the Release workflow
+### Task 1: Version 0.3.0 and the Release workflow — ✅
 
 **Files:**
 - Create: `.github/workflows/release.yml`, `scripts/check-release-tag.sh`
@@ -108,17 +108,17 @@ one in, and opens it.
   7. `gh release create "$GITHUB_REF_NAME" "target/dist/fuxx-$V.zip" --title "fuxx $V" --generate-notes`, with
      `GH_TOKEN: ${{ github.token }}`.
 
-- [ ] **Step 1: failing check**: run `scripts/check-release-tag.sh v0.3.0` → fails (the script doesn't exist yet).
-- [ ] **Step 2: implement** the script, the version bump and the workflow.
-- [ ] **Step 3: verify**:
+- [x] **Step 1: failing check**: run `scripts/check-release-tag.sh v0.3.0` → fails (the script doesn't exist yet).
+- [x] **Step 2: implement** the script, the version bump and the workflow.
+- [x] **Step 3: verify**:
   - `scripts/check-release-tag.sh v0.3.0` exits 0;
   - `scripts/check-release-tag.sh v0.3.1` and `scripts/check-release-tag.sh 0.3.0` exit 1 with the message;
   - the workflow parses (`ruby -ryaml -e 'YAML.load_file(".github/workflows/release.yml")'`);
   - `cargo test` passes;
   - `scripts/bundle-mac.sh --app-only` builds an app whose `Info.plist` says `0.3.0`.
-- [ ] **Step 4: commit** `feat(m11e): version 0.3.0 and the Release workflow (GitHub Actions on a v* tag)`.
+- [x] **Step 4: commit** `feat(m11e): version 0.3.0 and the Release workflow (GitHub Actions on a v* tag)`.
 
-### Task 2: Releases and versions (pure)
+### Task 2: Releases and versions (pure) — ✅
 
 **Files:** Create `src/update_release.rs`; Modify `src/main.rs` (`mod`).
 
@@ -131,7 +131,7 @@ one in, and opens it.
   from `digest` `"sha256:…"`); `pub fn parse_latest(json: &str) -> Result<Release, String>` (uses `tag_name`,
   `html_url`, `body`, and the asset named exactly `fuxx-{version}.zip`);
   `pub fn notes_excerpt(body: &str, lines: usize) -> String` (first non-empty lines).
-- [ ] **Step 1: failing tests**:
+- [x] **Step 1: failing tests**:
   - `parse_version`: `"0.3.0"` and `"v0.3.0"` → `Version(0,3,0)`; `"v1.2"`, `"1.2.3-beta"`, `""`, `"x.y.z"` → `None`.
   - `is_newer`: `(0,10,0)` vs `(0,9,0)` is true; equal and older are false.
   - `parse_latest`: on a sample JSON (tag `v0.3.1`, two assets incl. `fuxx-0.3.1.zip` with
@@ -140,11 +140,11 @@ one in, and opens it.
   - Errors: GitHub's error JSON (`{"message":"API rate limit exceeded"}`) → `Err` containing that message; invalid
     JSON → `Err`; a bad tag → `Err("unrecognised version …")`.
   - `notes_excerpt`: 6 of 10 lines, blank lines skipped.
-- [ ] **Step 2: run** `cargo test --bin fuxx update_release` → FAIL.  **Step 3: implement.**  **Step 4: run**
+- [x] **Step 2: run** `cargo test --bin fuxx update_release` → FAIL.  **Step 3: implement.**  **Step 4: run**
   `cargo test`, clippy (both), fmt → ok.
-- [ ] **Step 5: commit** `feat(m11e): releases and versions — the GitHub JSON, version order (pure)`.
+- [x] **Step 5: commit** `feat(m11e): releases and versions — the GitHub JSON, version order (pure)`.
 
-### Task 3: Checking — automatic, the menu item, the setting
+### Task 3: Checking — automatic, the menu item, the setting — ✅
 
 **Files:** Create `src/updater.rs`; Modify `src/update_release.rs` (copy helpers), `src/main.rs` (action
 `CheckForUpdates` in `actions!(fuxx, ..)`, its menu item, the app-level handler, starting the schedule),
@@ -163,18 +163,18 @@ one in, and opens it.
   `pub fn check_outcome(result: Result<Release, String>, running: Version) -> CheckOutcome`;
   `pub fn up_to_date_title(v: Version) -> String` (`fuxx {v} is the newest version.`);
   `pub const CHECK_FAILED: &str = "Couldn't check for updates"`.
-- [ ] **Step 1: failing tests**:
+- [x] **Step 1: failing tests**:
   - `check_outcome` over a newer, an equal and an older release, and `Err("offline or unreachable")`.
   - The appearance setting: none → on; `off` → off; junk → on, with a warning, like `browser_keep_data`'s test.
   - `prefs::check_updates_values(true) == []` and `(false) == ["off"]`.
   - The menu test: the fuxx menu reads `Check for Updates…`, then `Hide fuxx` (with a separator after it, as the
     file's style has).
   - A Preferences ui-shot of General showing the switch and its note.
-- [ ] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt,
+- [x] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt,
   `__ui-shots preferences` → ok.
-- [ ] **Step 5: commit** `feat(m11e): check for updates — at launch, daily, and from the fuxx menu`.
+- [x] **Step 5: commit** `feat(m11e): check for updates — at launch, daily, and from the fuxx menu`.
 
-### Task 4: The Update Available button and its sheet
+### Task 4: The Update Available button and its sheet — ✅
 
 **Files:** Modify `src/sidebar.rs` (the button above `render_footer`), `src/update_release.rs` (offer copy),
 `src/updater.rs` (`show_offer`), `src/ui_shots.rs` (scene `update-button`).
@@ -192,7 +192,7 @@ one in, and opens it.
   `ending_sessions` is the number of open terminal sessions when persistence is off, and 0 when it is on.
   Update and Restart calls `updater::install(release, cx)` (Task 5; in this task it is a stub that opens the
   release page). Download from GitHub… opens `release.page_url`.
-- [ ] **Step 1: failing tests**:
+- [x] **Step 1: failing tests**:
   - `offer` with 0 and with 4 ending sessions (`Restarting ends 4 sessions.`), and 1 (`… 1 session.`).
   - `can_self_update` false gives `Download from GitHub…`.
   - `self_update_target`: `~/Applications/fuxx.app/Contents/MacOS/fuxx` with a writable parent → that app;
@@ -203,11 +203,11 @@ one in, and opens it.
     - `Idle` has no button;
     - `Available` shows the button, 28 px tall, 8 px above the footer, with fill `#1F6FEB`;
     - `Downloading` reads `Downloading update…` and ignores a click (the state is unchanged).
-- [ ] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`. Look at the PNGs.
-- [ ] **Step 5: commit** `feat(m11e): the blue Update Available button and the update sheet`.
+- [x] **Step 5: commit** `feat(m11e): the blue Update Available button and the update sheet`.
 
-### Task 5: Download, check, swap, reopen
+### Task 5: Download, check, swap, reopen — ✅
 
 **Files:** Modify `src/updater.rs`, `src/update_release.rs` (script text, pure checks), `src/main.rs` (launch cleanup
 of `fuxx.app.previous`).
@@ -226,16 +226,16 @@ of `fuxx.app.previous`).
   Then `verify`. On success: write the script, spawn `/bin/sh <script>` with `process_group(0)` and null stdio,
   then `cx.quit()`. On failure: state back to `Available`, plus the error sheet (`Open Release Page` · `OK`).
   `pub fn clean_previous(app: &Path)` (at launch: removes `<app>.previous` when it exists).
-- [ ] **Step 1: failing tests**:
+- [x] **Step 1: failing tests**:
   - `verify`: each failure reason, and Ok.
   - `swap_script` run for real with `/bin/sh` in a temp dir (directories stand in for the apps; the pid is one that
     has exited):
     - after it runs, `app` holds the new content, `app.previous` the old, and the new path is gone;
     - with `new_app` missing, the move fails, `app` is restored and `app.previous` is gone.
   - `clean_previous` removes `x.app.previous` and leaves `x.app`.
-- [ ] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt,
+- [x] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt,
   `__ui-shots`, `scripts/bundle-mac.sh --app-only` → ok.
-- [ ] **Step 5: commit** `feat(m11e): install the update — download, check, swap and reopen`.
+- [x] **Step 5: commit** `feat(m11e): install the update — download, check, swap and reopen`.
 
 ### Task 6: Merge and push (your word)
 

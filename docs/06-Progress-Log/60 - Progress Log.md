@@ -22,6 +22,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — M11e built: Update Available (release and on-screen check pending)
+- **Did:** Task 0's spike passed on your Mac (no quarantine via curl, no "Open Anyway", notification permission kept;
+  M11d is now the installed fuxx). Built on branch `m11e-update-available`, 5 tasks, each reviewed (Tasks 4 and 5
+  after a fix round), then a whole-branch review and one fix (keep `fuxx.app.previous` until the new window opens).
+  Version 0.3.0; `.github/workflows/release.yml` publishes a release on a pushed `v*` tag (refusing a tag that
+  doesn't match `Cargo.toml`); fuxx checks GitHub 10 s after launch and daily (bundled only), **fuxx → Check for
+  Updates…**, a Preferences switch; the blue **Update Available** button above the footer; the install downloads,
+  checks (digest, one `fuxx.app`, id, version, signature), swaps via a detached script and reopens. AI's calls while
+  building are in note 57 "As built". 834 tests pass; ui-shots ok; no new clippy warnings.
+- **Next:** on your word, merge and push (Task 6), then tag v0.3.0 (Task 7), then v0.3.1 and the on-screen check
+  (Task 8).
+
 ### 2026-11-08 — M11e planned: Update Available
 - **Did:** You asked for an "Update Available" that updates fuxx itself, without M12. Findings: Homebrew is free, but
   since Homebrew 5.0 its official casks need a Developer ID and notarization, and `--no-quarantine` is gone, so it

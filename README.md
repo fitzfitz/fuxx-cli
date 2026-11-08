@@ -117,6 +117,14 @@ every planned feature labeled by milestone. [`STRUCTURE.md`](STRUCTURE.md) maps 
 
 Rust · [GPUI](https://github.com/zed-industries/zed).
 
+## Install and updates
+
+Download `fuxx-<version>.zip` from [Releases](https://github.com/fitzfitz/fuxx-cli/releases/latest), unzip it and move
+`fuxx.app` to Applications. fuxx isn't signed with an Apple Developer ID yet, so macOS asks once: open it, then
+System Settings → Privacy & Security → **Open Anyway**. After that fuxx updates itself: when a newer version is out,
+a blue **Update Available** button appears above the sidebar's footer, and one click downloads it, checks it and
+reopens fuxx. **fuxx → Check for Updates…** checks at any time; Preferences → General turns the daily check off.
+
 ## Status
 
 Early and in active development. macOS first (Linux-capable via the Rust stack). The `docs/` folder
