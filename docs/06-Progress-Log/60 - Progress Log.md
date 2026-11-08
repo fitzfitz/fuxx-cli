@@ -22,6 +22,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — v0.4.0 released (M11g)
+- **Did:** On your word ("7-8 go ahead"): merged `m11g-right-sidebar` into `master` (fast-forward; 953 tests pass),
+  version 0.4.0, pushed `master` and tag `v0.4.0`; the Release run went green (42469390248), with the new git and
+  FIFO tests passing on GitHub's runner. https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.4.0
+- **Next:** update with the Update Available button, then note 59's M11g checklist (14 items). Then M11h (Changes,
+  diff view, Activity).
+
 ### 2026-11-08 — M11g built: the right sidebar, Files and read-only file tabs
 - **Did:** On branch `m11g-right-sidebar`, 6 tasks, each reviewed (several after fix rounds), a whole-branch review and
   one final fix round. syntect + two-face highlighting (colours from the fuxx theme, 3:1 floor); git status, ignore
