@@ -7,8 +7,8 @@
 use alacritty_terminal::event::{EventListener, VoidListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
-use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor, Rgb, StdSyncHandler};
 
 use crate::colors;
@@ -25,6 +25,8 @@ pub struct CellView {
     pub underline: bool,
     /// Right half of a wide (CJK/emoji) glyph: draws nothing itself.
     pub spacer: bool,
+    /// A wide glyph's left half (its right half is the next cell, a spacer).
+    pub wide: bool,
 }
 
 impl CellView {
@@ -37,6 +39,7 @@ impl CellView {
             italic: false,
             underline: false,
             spacer: false,
+            wide: false,
         }
     }
 }
@@ -58,6 +61,12 @@ pub struct GridSnapshot {
     pub lines: Vec<Vec<CellView>>,
     /// `None` when the program hid the cursor.
     pub cursor: Option<CursorView>,
+    /// The screen as the cursor's glide tells screens apart (M11f): the alternate screen or
+    /// not, and how far the view is scrolled back.
+    pub alt_screen: bool,
+    pub display_offset: usize,
+    /// How many times the screen was cleared (`TerminalCore::snapshot` fills it in; 0 here).
+    pub clears: u64,
 }
 
 /// The last `n` non-blank lines of the *live* screen (top to bottom), trailing spaces trimmed.
@@ -213,6 +222,7 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
             italic: flags.contains(Flags::ITALIC),
             underline: flags.intersects(Flags::ALL_UNDERLINES),
             spacer: flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+            wide: flags.contains(Flags::WIDE_CHAR),
         };
     }
 
@@ -233,6 +243,9 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
         rows,
         lines,
         cursor,
+        alt_screen: term.mode().contains(TermMode::ALT_SCREEN),
+        display_offset: content.display_offset,
+        clears: 0,
     }
 }
 

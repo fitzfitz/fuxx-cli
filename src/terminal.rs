@@ -160,6 +160,40 @@ struct Shared {
     processor: Processor<StdSyncHandler>,
     /// When the program first printed (not a snapshot, not `show_local`'s text).
     first_output: Option<Instant>,
+    /// The screen clears so far: the cursor doesn't glide over a cleared screen (M11f).
+    clears: ClearCounter,
+}
+
+/// Counts the screen clears in a terminal's output (`ESC [ 2 J`, `ESC [ 3 J`, `ESC c`), also
+/// when one is split over two reads. A fresh screen from a snapshot counts too (`bump`).
+#[derive(Default)]
+struct ClearCounter {
+    count: u64,
+    /// How much of a clear the bytes so far end with: 1 after ESC, 2 after `ESC [`, 3 after
+    /// `ESC [ 2` or `ESC [ 3`.
+    state: u8,
+}
+
+impl ClearCounter {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.state = match (self.state, b) {
+                (_, 0x1b) => 1,
+                (1, b'[') => 2,
+                (2, b'2' | b'3') => 3,
+                (1, b'c') | (3, b'J') => {
+                    self.count += 1;
+                    0
+                }
+                _ => 0,
+            };
+        }
+    }
+
+    fn bump(&mut self) {
+        self.count += 1;
+        self.state = 0;
+    }
 }
 
 /// Where a terminal's bytes come from and go to.
@@ -313,6 +347,7 @@ impl TerminalCore {
             term,
             processor: Processor::new(),
             first_output: None,
+            clears: ClearCounter::default(),
         }));
 
         let reader_shared = shared.clone();
@@ -337,9 +372,11 @@ impl TerminalCore {
                         term,
                         processor,
                         first_output,
+                        clears,
                     } = &mut *guard;
                     first_output.get_or_insert_with(Instant::now);
                     processor.advance(term, bytes);
+                    clears.feed(bytes);
                 } // lock released before waking the UI
                 let _ = events.unbounded_send(TermEvent::Output { notifications });
             },
@@ -430,6 +467,7 @@ impl TerminalCore {
             term,
             processor: Processor::new(),
             first_output: None,
+            clears: ClearCounter::default(),
         }));
         let (token, stream) = client.route(id);
         let (tx, pending) = std::sync::mpsc::channel();
@@ -596,9 +634,13 @@ impl TerminalCore {
     pub fn show_local(&self, text: &str) {
         let mut guard = self.shared.lock();
         let Shared {
-            term, processor, ..
+            term,
+            processor,
+            clears,
+            ..
         } = &mut *guard;
         processor.advance(term, text.as_bytes());
+        clears.feed(text.as_bytes());
     }
 
     /// User input: snap the view back to the live bottom, drop any selection, then send the
@@ -719,7 +761,12 @@ impl TerminalCore {
     pub fn snapshot(&self) -> GridSnapshot {
         // Copy the theme out first so its lock is not held while the terminal is locked.
         let theme = self.theme();
-        grid::snapshot(&self.shared.lock().term, &theme)
+        // Under one lock, so the clears match the screen.
+        let shared = self.shared.lock();
+        GridSnapshot {
+            clears: shared.clears.count,
+            ..grid::snapshot(&shared.term, &theme)
+        }
     }
 
     /// Color for an OSC 4/10/11/12 query reply.
@@ -811,6 +858,7 @@ impl Replica {
                     let mut guard = shared.lock();
                     guard.term = Term::new(term_config(), &dims, self.listener.clone());
                     guard.processor = Processor::new();
+                    guard.clears.bump();
                     let Shared {
                         term, processor, ..
                     } = &mut *guard;
@@ -836,9 +884,11 @@ impl Replica {
                         term,
                         processor,
                         first_output,
+                        clears,
                     } = &mut *guard;
                     first_output.get_or_insert_with(Instant::now);
                     processor.advance(term, &bytes);
+                    clears.feed(&bytes);
                 }
                 if let Some(dir) = self.reports.feed(&bytes) {
                     *self.cwd.lock().unwrap() = Some(dir);
@@ -1085,6 +1135,37 @@ mod tests {
         assert!(wait_for(&mut rx, |_| screen_text(&core).contains("hi")));
         let first = core.first_output().expect("printed");
         assert!(first.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn clears_are_counted_across_chunks() {
+        let mut c = ClearCounter::default();
+        c.feed(b"a\x1b[2Jb");
+        assert_eq!(c.count, 1);
+        // Split over reads, and the other two kinds.
+        c.feed(b"x\x1b[");
+        c.feed(b"3");
+        c.feed(b"J\x1bc");
+        assert_eq!(c.count, 3);
+        // Not a clear: erase below, erase line, a cursor move, a stray ESC before a clear.
+        c.feed(b"\x1b[J\x1b[K\x1b[2;3H\x1b[2K");
+        assert_eq!(c.count, 3);
+        c.feed(b"\x1b\x1b[2J");
+        assert_eq!(c.count, 4);
+    }
+
+    #[test]
+    fn a_local_program_clearing_the_screen_is_counted() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'one\\n'; printf '\\033[2J\\033[Hdone'; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("done")));
+        assert_eq!(core.snapshot().clears, 1);
     }
 
     #[test]
@@ -2018,6 +2099,30 @@ mod daemon_tests {
         assert_eq!(got, wanted, "{seen:?}");
         drop(core);
         assert_eq!(fake.join().unwrap(), 3);
+    }
+
+    #[test]
+    fn the_replica_counts_clears_and_snapshots() {
+        let path = temp_sock("t-clears");
+        let fake = scripted_daemon(
+            &path,
+            vec![vec![
+                snap(0, "a", None),
+                out(1, "\x1b[2J"),
+                out(2, "x\x1b["),
+                out(3, "3Jdone"),
+            ]],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        assert!(eventually(|| core
+            .text(grid::TextScope::All)
+            .contains("done")));
+        // The snapshot (a fresh screen) and both clears.
+        assert_eq!(core.snapshot().clears, 3);
+        drop(core);
+        fake.join().unwrap();
     }
 
     #[test]
