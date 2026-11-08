@@ -23,7 +23,7 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, EntityId,
-    FocusHandle, Focusable, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Stateful,
     StyleRefinement, Subscription, Task, Window, WindowControlArea, actions, canvas, div,
     prelude::*, px,
@@ -68,7 +68,7 @@ use crate::switcher::Switcher;
 use crate::tab_bar::TabGrab;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{TOP_BAND, UNFOCUSED_VEIL};
+use crate::ui_tokens::size::{CARD_GAP, TOP_BAND};
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -2598,6 +2598,22 @@ impl Workspace {
         Some(band.into_any_element())
     }
 
+    /// The 6 pt canvas strip above the cards (M11i): pressing it and moving drags the window,
+    /// as the top band does (not in full screen, where it is only a gap).
+    pub(crate) fn render_drag_strip(
+        &self,
+        id: &'static str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let strip = div().id(id).flex_none().w_full().h(px(CARD_GAP));
+        if window.is_fullscreen() {
+            strip.into_any_element()
+        } else {
+            self.drag_window_by(strip, cx).into_any_element()
+        }
+    }
+
     /// ⌘\: hide or show the sidebar. Hiding it during a rename gives the keyboard back to the
     /// terminal, which ends the rename (as clicking away from it does).
     pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2720,14 +2736,7 @@ impl Render for Workspace {
         window.set_window_title(&title);
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
-        let colors = PaneColors {
-            dim: Hsla {
-                a: UNFOCUSED_VEIL,
-                ..hsla(theme.background)
-            },
-            divider: hsla(ui.divider),
-            accent: hsla(ui.accent),
-        };
+        let colors = PaneColors::of(&ui);
         // The slide in progress: how much of the sidebar shows. It ends on the first frame past
         // its time; until then every frame asks for the next.
         self.slide = self
@@ -2769,14 +2778,14 @@ impl Render for Workspace {
         self.refresh_switcher(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
-        let pane_band = self
-            .sidebar
-            .hidden
-            .then(|| {
-                let name = self.render_workspace_name(ui, window);
-                self.render_top_band("pane-band", name, window, cx)
-            })
-            .flatten();
+        // Above the cards: with the sidebar hidden, the window's top band (the workspace's name
+        // in it); else the 6 pt canvas strip, which drags the window too (M11i).
+        let pane_band = if self.sidebar.hidden {
+            let name = self.render_workspace_name(ui, window);
+            self.render_top_band("pane-band", name, window, cx)
+        } else {
+            Some(self.render_drag_strip("pane-strip", window, cx))
+        };
         let panes = self.render_panes(colors, ui, window, cx);
         // Tabs or rows sliding out of a drag's way (the bars and rows were just drawn): every
         // frame until they're there.
@@ -2788,7 +2797,8 @@ impl Render for Workspace {
             .flex()
             .flex_row()
             .size_full()
-            .bg(hsla(theme.background))
+            // The canvas the cards float on (M11i): the left sidebar's colour.
+            .bg(hsla(ui.sidebar_background))
             .key_context("Workspace")
             // Esc during a tab drag cancels it, before the terminal (or a box) takes the key.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -2907,19 +2917,33 @@ impl Render for Workspace {
                     // Not wider than its share: a pane's tab row scrolls rather than widen it.
                     .min_w(px(0.0))
                     .h_full()
+                    // Clipped here, not round the cards, so their shadows show in the gaps.
+                    .overflow_hidden()
                     .when(slide.is_some() && !self.sidebar.hidden, |column| {
                         column.ml(px(sidebar_width))
                     })
-                    .when(right_sliding_in, |column| column.mr(px(right_width)))
+                    // The right sidebar's card and the gap at its right (M11i).
+                    .when(right_sliding_in, |column| {
+                        column.mr(px(right_width + CARD_GAP))
+                    })
                     .children(pane_band)
+                    // The cards, 6 pt from the sidebar (or the window's left edge), from the
+                    // right sidebar's card (or the window's right edge) and from the bottom.
                     .child(
                         div()
-                            .relative()
                             .flex_1()
+                            .min_h(px(0.0))
                             .w_full()
-                            .overflow_hidden()
-                            .child(self.render_pane_area(cx))
-                            .children(panes),
+                            .pl(px(CARD_GAP))
+                            .pr(px(CARD_GAP))
+                            .pb(px(CARD_GAP))
+                            .child(
+                                div()
+                                    .relative()
+                                    .size_full()
+                                    .child(self.render_pane_area(cx))
+                                    .children(panes),
+                            ),
                     ),
             )
             .children(right_sidebar)

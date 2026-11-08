@@ -941,13 +941,16 @@ impl Render for BrowserTab {
         let web = self.web.clone();
         let showing = self.showing.clone();
         let wants = self.wants_keyboard.clone();
-        // The page's place: the web view covers it each frame, or hides (`page_hidden`).
+        // The page's place: the web view covers it each frame, or hides (`page_hidden`). Its
+        // own background is rounded at the bottom with its card's (M11i); the web view, a
+        // native view, can't be, and stays square.
         let page = div()
             .relative()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
             .bg(hsla(theme.background))
+            .rounded_b(px(crate::ui_tokens::size::CARD_RADIUS))
             .child(
                 canvas(
                     move |bounds, window, _| {

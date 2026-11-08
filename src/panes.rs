@@ -1,17 +1,22 @@
-//! Drawing a split layout: nested flex rows/columns of panes (each its shown tab under its tab
-//! bar) with a 1 px line between panes, the unfocused ones dimmed, each line
-//! with a grab strip for resizing that lights it up as a 2 px accent line while hovered or
-//! dragged. Stateless; the tree, the tabs, the hover and the drag live in the workspace.
+//! Drawing a split layout: nested flex rows/columns of panes, each a raised card (M11i: its
+//! tab bar and shown tab on the card's fill, rounded, edged and shadowed) with a 6 pt gap of
+//! canvas between cards. In a split, the focused pane's edge is the accent (the focus ring)
+//! and the unfocused panes are dimmed. Each gap is the grab strip for resizing, lit by a 2 pt
+//! accent line in its middle while hovered or dragged. Stateless; the tree, the tabs, the
+//! hover and the drag live in the workspace.
 
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Hsla, MouseButton, MouseDownEvent, Window, div, prelude::*, px, relative,
+    AnyElement, App, BoxShadow, Div, Hsla, MouseButton, MouseDownEvent, Window, div, point,
+    prelude::*, px, relative,
 };
 
 use crate::layout_model::PaneId;
 use crate::split_tree::{Axis, Node};
-use crate::ui_tokens::size::DIVIDER_ACTIVE;
+use crate::terminal_view::hsla;
+use crate::theme::UiColors;
+use crate::ui_tokens::size::{CARD_GAP, CARD_RADIUS, DIVIDER_ACTIVE, FOCUS_RING, UNFOCUSED_VEIL};
 
 /// Called with a pane when it is clicked.
 pub type SelectPane = Rc<dyn Fn(PaneId, &mut Window, &mut App)>;
@@ -22,17 +27,73 @@ pub type StartDrag = Rc<dyn Fn(Vec<bool>, &mut Window, &mut App)>;
 /// Called with a split's path when the pointer enters (`true`) or leaves its line's grab strip.
 pub type HoverDivider = Rc<dyn Fn(Vec<bool>, bool, &mut Window, &mut App)>;
 
-/// Width of the invisible grab strip centred on each line (it covers 3 px of either pane).
-const GRAB: f32 = 6.0;
+/// Width of the invisible grab strip centred on each split's ratio: the gap between its cards.
+const GRAB: f32 = CARD_GAP;
+
+/// A card's shadow (M11i): straight down this far, blurred this much.
+const CARD_SHADOW_Y: f32 = 1.0;
+const CARD_SHADOW_BLUR: f32 = 6.0;
 
 /// The colors a layout is drawn with.
 #[derive(Clone, Copy)]
 pub struct PaneColors {
     /// Laid over an unfocused pane (the theme background, partly transparent).
     pub dim: Hsla,
-    pub divider: Hsla,
     /// A line under the pointer or being dragged.
     pub accent: Hsla,
+    /// A card's fill (the terminal background), its 1 pt edge, and the focused pane's edge in
+    /// a split.
+    pub card: Hsla,
+    pub card_border: Hsla,
+    pub focus: Hsla,
+    /// The cards' shadow: `shadow` at `shadow_alpha` (0-1).
+    pub shadow: Hsla,
+    pub shadow_alpha: f32,
+}
+
+impl PaneColors {
+    /// The layout's colours from the theme's UI colours.
+    pub fn of(ui: &UiColors) -> PaneColors {
+        PaneColors {
+            dim: Hsla {
+                a: UNFOCUSED_VEIL,
+                ..hsla(ui.card)
+            },
+            accent: hsla(ui.accent),
+            card: hsla(ui.card),
+            card_border: hsla(ui.card_border),
+            focus: hsla(ui.accent),
+            shadow: hsla(ui.shadow),
+            shadow_alpha: ui.card_shadow_alpha,
+        }
+    }
+}
+
+/// A raised card (M11i; each pane, the right sidebar): the card's fill, `CARD_RADIUS`
+/// corners, a `FOCUS_RING` edge (the accent while `focused_ring`, else `card_border`) drawn
+/// over its content, and its shadow. Its content is clipped to the inside of its edge (a
+/// rectangle: content that reaches a corner rounds its own background, see note 60 §5).
+pub fn card(colors: &PaneColors, focused_ring: bool) -> Div {
+    div()
+        .bg(colors.card)
+        .rounded(px(CARD_RADIUS))
+        .border(px(FOCUS_RING))
+        .border_color(if focused_ring {
+            colors.focus
+        } else {
+            colors.card_border
+        })
+        .shadow(vec![BoxShadow {
+            color: Hsla {
+                a: colors.shadow_alpha,
+                ..colors.shadow
+            },
+            offset: point(px(0.0), px(CARD_SHADOW_Y)),
+            blur_radius: px(CARD_SHADOW_BLUR),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .overflow_hidden()
 }
 
 /// What every pane of one layout is drawn with.
@@ -65,18 +126,27 @@ pub fn divider_active(path: &[bool], hovered: Option<&[bool]>, dragging: Option<
     hovered == Some(path) || dragging == Some(path)
 }
 
-/// `tree` filling its parent.
-pub fn render_layout(tree: &Node<PaneId>, panes: &Panes) -> AnyElement {
-    render_node(tree, Vec::new(), panes)
+/// Where the 2 pt accent line starts in a split's grab strip (`gap` wide, centred on the
+/// split's `ratio` of its width): the middle of the gap between the two cards. The sides give
+/// up the gap in proportion to their shares, so the gap's middle sits `gap * (0.5 - ratio)`
+/// past the strip's middle.
+pub fn accent_offset(ratio: f32, gap: f32) -> f32 {
+    gap / 2.0 + gap * (0.5 - ratio) - DIVIDER_ACTIVE / 2.0
 }
 
-/// `node`, reached from the root by `path`.
-fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElement {
+/// `tree` filling its parent. In a split, the focused pane's card has the focus ring.
+pub fn render_layout(tree: &Node<PaneId>, panes: &Panes) -> AnyElement {
+    let ring = matches!(tree, Node::Split { .. });
+    render_node(tree, Vec::new(), ring, panes)
+}
+
+/// `node`, reached from the root by `path`; `ring`: the focused pane's card is ringed.
+fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) -> AnyElement {
     match node {
         Node::Leaf(id) => {
             let id = *id;
             let select = panes.select.clone();
-            div()
+            card(&panes.colors, ring && id == panes.active)
                 .flex()
                 .flex_col()
                 .size_full()
@@ -95,7 +165,8 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElemen
                             select(id, window, cx)
                         })
                         .children((panes.view)(id))
-                        // No listeners, so no hitbox: clicks go through to the terminal underneath.
+                        // No listeners, so no hitbox: clicks go through to the terminal
+                        // underneath. Rounded at the bottom like the card.
                         .when(id != panes.active, |pane| {
                             pane.child(
                                 div()
@@ -103,6 +174,7 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElemen
                                     .top_0()
                                     .left_0()
                                     .size_full()
+                                    .rounded_b(px(CARD_RADIUS))
                                     .bg(panes.colors.dim),
                             )
                         }),
@@ -121,21 +193,25 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElemen
                 p.push(to_second);
                 p
             };
-            // Each side takes its share; they may shrink (in proportion) to make room for the line.
+            // Each side takes its share; they shrink (in proportion) to make room for the gap.
+            // Not clipped, so the cards' shadows show in the gaps; a side may still shrink
+            // below its content (`min_*` 0).
             let side = |node: &Node<PaneId>, share: f32, to_second: bool| {
                 div()
                     .flex_basis(relative(share))
                     .flex_grow_0()
                     .flex_shrink_1()
-                    .overflow_hidden()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
                     .map(|d| if row { d.h_full() } else { d.w_full() })
-                    .child(render_node(node, child_path(to_second), panes))
+                    .child(render_node(node, child_path(to_second), ring, panes))
             };
-            let line = div().flex_none().bg(panes.colors.divider).map(|d| {
+            // The gap between the two cards: the canvas shows through.
+            let line = div().flex_none().map(|d| {
                 if row {
-                    d.w(px(1.0)).h_full()
+                    d.w(px(CARD_GAP)).h_full()
                 } else {
-                    d.h(px(1.0)).w_full()
+                    d.h(px(CARD_GAP)).w_full()
                 }
             });
             // Last child, so it sits above both panes' terminals. It blocks their clicks under it
@@ -146,11 +222,9 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElemen
             let hover_path = path.clone();
             let active = divider_active(&path, panes.hovered, panes.dragging);
             // The accent line is drawn in the grab strip (the last child, so over both panes),
-            // centred on the 1 px line: the line sits `ratio` px short of the split's own
-            // proportion, since the sides shrink by it to make room.
-            let shift = 0.5 - *ratio;
+            // in the middle of the gap (`accent_offset`).
             let accent = div().absolute().bg(panes.colors.accent).map(|d| {
-                let from = GRAB / 2.0 + shift - DIVIDER_ACTIVE / 2.0;
+                let from = accent_offset(*ratio, CARD_GAP);
                 if row {
                     d.top_0().h_full().w(px(DIVIDER_ACTIVE)).left(px(from))
                 } else {
@@ -190,7 +264,8 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElemen
                 .flex()
                 .map(|d| if row { d.flex_row() } else { d.flex_col() })
                 .size_full()
-                .overflow_hidden()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
                 .child(side(first, *ratio, false))
                 .child(line)
                 .child(side(second, 1.0 - *ratio, true))
@@ -203,6 +278,35 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElemen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gap between the two cards in a split's grab strip coordinates: the strip is `gap`
+    /// wide and centred on the split's `ratio`; the first side gives up `ratio * gap` of its
+    /// share to the gap.
+    fn gap_in_strip(ratio: f32, gap: f32) -> (f32, f32) {
+        let start = gap / 2.0 - ratio * gap;
+        (start, start + gap)
+    }
+
+    #[test]
+    fn the_accent_line_is_centred_in_the_gap() {
+        // An even split: the strip is the gap, and the 2 pt line sits 2 pt in.
+        assert_eq!(accent_offset(0.5, 6.0), 2.0);
+        assert_eq!(gap_in_strip(0.5, 6.0), (0.0, 6.0));
+        for ratio in [0.1, 0.25, 0.5, 0.75, 0.9] {
+            let (from, to) = gap_in_strip(ratio, 6.0);
+            let line = accent_offset(ratio, 6.0);
+            assert!(
+                line >= from && line + DIVIDER_ACTIVE <= to,
+                "{ratio}: {line}"
+            );
+            // Centred: as much gap on either side of it.
+            let (before, after) = (line - from, to - line - DIVIDER_ACTIVE);
+            assert!(
+                (before - after).abs() < 1e-4,
+                "{ratio}: {before} vs {after}"
+            );
+        }
+    }
 
     #[test]
     fn a_divider_lights_up_on_hover_or_drag_only_for_its_own_split() {

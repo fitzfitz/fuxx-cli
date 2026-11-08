@@ -216,6 +216,9 @@ const SCENES: &[(&str, fn())] = &[
     ("title-area", title_area_scenes),
     ("tabs", tab_scenes),
     ("splits", split_scenes),
+    ("cards", card_scenes),
+    ("cards-split", card_split_scenes),
+    ("cards-corners", card_corner_scenes),
     ("workspaces", workspace_scenes),
     ("tab-bars", tab_bar_scenes),
     ("tab-drag", tab_drag_scenes),
@@ -806,8 +809,9 @@ const AGENT_TEXT: &str =
 /// The whole window, as the app draws it, from a real `Workspace` with plain sessions (each a
 /// fixed screen over a silent `cat`, so the shots don't depend on your shell): one session; the
 /// same split in two; and one session with the sidebar hidden. Checks that the terminal's
-/// padding and the top band are drawn in the terminal background (nothing painted in them).
-/// Off-screen windows have no traffic lights, so the band is empty in the shots.
+/// padding is drawn in the terminal background (nothing painted in it) inside its card, and
+/// the top band and the gaps in the canvas (M11i). Off-screen windows have no traffic lights,
+/// so the band is empty in the shots.
 fn window_scenes() {
     let dims = size(px(960.0), px(600.0));
     for (slug, name) in SHOT_THEMES {
@@ -840,9 +844,9 @@ fn window_scenes() {
     }
 }
 
-/// Panics unless the padding (and with the sidebar hidden, the top band) of the pane at the
-/// right edge is all terminal background, and the left pane's grid starts just inside its
-/// left padding.
+/// Panics unless the padding of the pane at the right (inside its card, M11i) is all terminal
+/// background, the gaps round the cards (and with the sidebar hidden, the top band) are the
+/// canvas, and the left pane's grid starts just inside its left padding.
 fn check_window(
     shot: &Shot,
     theme: &Theme,
@@ -852,8 +856,11 @@ fn check_window(
     scene: &str,
     slug: &str,
 ) {
+    use ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR, TOP_BAND};
+
     let scale = shot.width as f32 / f32::from(dims.width);
     let bg = theme.background;
+    let ui = theme.ui();
     let is_bg = |x: f32, y: f32| {
         let (x, y) = ((x * scale) as usize, (y * scale) as usize);
         let i = (y * shot.width as usize + x) * 4;
@@ -868,50 +875,62 @@ fn check_window(
     } else {
         ui_tokens::size::TERMINAL_PADDING
     };
-    let band = if hidden {
-        ui_tokens::size::TOP_BAND
-    } else {
-        0.0
-    };
-    // Every pane has a tab bar (not terminal background) above its terminal's padding.
-    let header = ui_tokens::size::TAB_BAR;
-    let top = band + header;
-    // The right pane's right and top padding (skipping its tab bar), and (hidden) the band above.
-    let in_header = |y: f32| y >= band && y < band + header;
-    let mut y = 0.0;
-    while y < h {
-        if in_header(y) {
-            y += 1.0;
-            continue;
-        }
+    // The cards start under the band (sidebar hidden) or the 6 pt strip, and end 6 pt short of
+    // the window's right and bottom; inside each card's 1 pt edge, its tab bar, then its
+    // terminal.
+    let card_top = if hidden { TOP_BAND } else { GAP };
+    let top = card_top + FOCUS_RING + TAB_BAR;
+    let (right, bottom) = (w - GAP - FOCUS_RING, h - GAP - FOCUS_RING);
+    // The right pane's right padding, down to where its card's corner starts to round.
+    let mut y = top;
+    while y < bottom - CARD_RADIUS {
         for dx in 0..pad_x as usize {
             assert!(
-                is_bg(w - 1.0 - dx as f32, y),
+                is_bg(right - 1.0 - dx as f32, y),
                 "{scene}-{slug}: right padding at y {y}"
             );
         }
         y += 1.0;
     }
-    // Right of a split's divider (the pane area starts after the sidebar, at most 1/4 in).
+    // Its top padding (right of a split's gap: the pane area starts after the sidebar, at most
+    // 1/4 in), short of the corner.
     let mut x = w * 0.75;
-    while x < w {
-        for dy in 0..(top + pad_y) as usize {
-            if in_header(dy as f32) {
-                continue;
-            }
-            assert!(is_bg(x, dy as f32), "{scene}-{slug}: top padding at x {x}");
+    while x < right - CARD_RADIUS {
+        for dy in 0..pad_y as usize {
+            let y = top + dy as f32;
+            assert!(is_bg(x, y), "{scene}-{slug}: top padding at ({x}, {y})");
         }
         x += 1.0;
     }
-    // The left pane's left padding: where the terminal background starts (after the sidebar),
-    // `pad_x` of background, then the grid's first column (its prompt and output) within a cell
-    // and a half (the grid's leftover width is shared by both sides).
+    // The canvas: right of the card and below it, and (hidden) the band above it.
+    let canvas = |x: f32, y: f32| {
+        let p = pixel_at(shot, dims, x, y);
+        assert!(
+            is_canvas(p, &ui),
+            "{scene}-{slug}: canvas at ({x}, {y}): {p:?}"
+        );
+    };
+    for y in [top + 10.0, h / 2.0, bottom - 20.0] {
+        canvas(w - GAP / 2.0, y);
+    }
+    canvas(w * 0.75, h - GAP / 2.0);
+    canvas(w * 0.75, card_top / 2.0);
+    if hidden {
+        for x in [w * 0.75, w - 20.0] {
+            canvas(x, 6.0);
+            canvas(x, TOP_BAND - GAP / 2.0);
+        }
+    }
+    // The left pane's left padding: where the terminal background starts (after the sidebar,
+    // the gap and the card's edge), `pad_x` of background, then the grid's first column (its
+    // prompt and output) within a cell and a half (the grid's leftover width is shared by both
+    // sides).
     let mid = (top + h) / 2.0;
     let left = (0..w as usize)
         .map(|x| x as f32)
         .find(|&x| is_bg(x, mid))
         .expect("a terminal");
-    let rows = (top + pad_y) as usize..(h - pad_y) as usize;
+    let rows = (top + pad_y) as usize..(bottom - pad_y) as usize;
     for y in rows.clone() {
         for dx in 0..pad_x as usize {
             assert!(
@@ -2185,15 +2204,16 @@ fn count_along(
         .count()
 }
 
-/// A 3-pane split in both themes, from a real `Workspace`:
+/// A 3-pane split in both themes, from a real `Workspace` (M11i: each pane a card, 6 pt gaps;
+/// the cards span 246–954 and 6–594):
 /// - `splits`: api focused (accent line along its tab's top), claude waiting (tinted tab),
-///   codex working; dividers quiet.
+///   codex working; gaps quiet.
 /// - `splits-waiting`: the waiting pane focused (tint and accent together).
-/// - `splits-hover`: the pointer over the vertical divider (2 px accent).
-/// - `splits-drag`: that divider dragged left (accent, the panes follow).
+/// - `splits-hover`: the pointer over the vertical gap (2 px accent in its middle).
+/// - `splits-drag`: that gap dragged left (accent, the panes follow).
 ///
 /// Panics unless each shows 3 tabs, their fills and the focus line are the right colours,
-/// and the divider is the plain colour except when hovered or dragged.
+/// and the gap shows the canvas except when hovered or dragged.
 fn split_scenes() {
     use gpui::{Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -2213,20 +2233,23 @@ fn split_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
-            let at = |ratio: f32| 240.0 + (960.0 - 240.0) * ratio - ratio;
+            // The middle of the vertical gap: the sides give it up in proportion.
+            let at = |ratio: f32| 246.0 + 708.0 * ratio + GAP * (0.5 - ratio);
             let acting = slot.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tabs = cx.read(|cx| slotted(&acting).read(cx).tab_sessions().len());
                 assert_eq!(tabs, 3, "{scene}-{slug}: a tab per pane");
                 let none = Modifiers::none();
                 let left = MouseButton::Left;
-                let on = point(px(at(0.5) + 0.5), px(300.0));
+                let on = point(px(at(0.5)), px(300.0));
                 match scene {
                     "splits-hover" => cx.simulate_mouse_move(window, on, None, none),
                     "splits-drag" => {
+                        // To 0.4 of the pane area (246 + 0.4 × 708).
+                        let to = point(px(246.0 + 0.4 * 708.0), px(300.0));
                         cx.simulate_mouse_down(window, on, left, none);
                         cx.simulate_mouse_move(window, on - point(px(40.0), px(0.0)), left, none);
-                        cx.simulate_mouse_move(window, on - point(px(72.0), px(0.0)), left, none);
+                        cx.simulate_mouse_move(window, to, left, none);
                     }
                     _ => {}
                 }
@@ -2237,10 +2260,11 @@ fn split_scenes() {
             let shot = render_with(&theme, dims, build, act);
             let n = format!("{scene}-{slug}");
             // Tab fills, away from the text: api (left), claude (top right), both their pane's
-            // active (and only) tab, 160 px into it (it is 200 wide; × sits at its end).
+            // active (and only) tab, 160 px into it (it is 200 wide; × sits at its end), in
+            // the bars that start inside the cards' 1 pt edges, 7 pt down.
             let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
             let right_tab = at(ratio) + 160.0;
-            let (left_header, right_header) = ((400.0, 13.0), (right_tab, 13.0));
+            let (left_header, right_header) = ((400.0, 20.0), (right_tab, 20.0));
             let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
                 p.iter()
                     .zip([c.r, c.g, c.b])
@@ -2252,8 +2276,9 @@ fn split_scenes() {
                 is(px_at(right_header), ui.waiting_hover),
                 "{n}: active waiting tab's tint"
             );
-            // The focus line: along the top of the focused pane's active tab only.
-            let (line_left, line_right) = (px_at((400.0, 1.0)), px_at((right_tab, 1.0)));
+            // The focus line: along the top of the focused pane's active tab only (under the
+            // card's edge, at 7–9).
+            let (line_left, line_right) = (px_at((400.0, 8.0)), px_at((right_tab, 8.0)));
             assert_eq!(
                 is(line_left, ui.accent),
                 focus == 0,
@@ -2264,22 +2289,283 @@ fn split_scenes() {
                 focus == 1,
                 "{n}: focus line, right"
             );
-            // The vertical divider, 1 px; the accent 2 px, only when hovered or dragged. Measured
-            // across at y = 450, in the lower panes: not at 300, where the right column's own
-            // divider (claude over codex, splitting the 600 px pane area) lies along the row,
-            // 299.5–300.5, and adds its width (or not, by how the half point is rasterised).
-            let (x0, x1) = (at(ratio) - 4.0, at(ratio) + 5.0);
+            // The vertical gap, 6 pt of canvas; the 2 px accent in its middle only when hovered
+            // or dragged. Measured across at y = 450, in the lower panes: not at 300, where the
+            // right column's own gap (claude over codex) lies along the row. Only the gap: the
+            // focused card's edge beside it is the accent too.
+            // (Half a point in from each side: at 0.4 the gap starts mid-pixel.)
+            let (x0, x1) = (at(ratio) - GAP / 2.0 + 0.5, at(ratio) + GAP / 2.0 - 0.5);
             let scale = shot.width as f32 / 960.0;
             let accent = count_along(&shot, dims, ui.accent, 450.0, x0, x1);
-            let plain = count_along(&shot, dims, ui.divider, 450.0, x0, x1);
             if matches!(scene, "splits-hover" | "splits-drag") {
-                assert_eq!(accent, (2.0 * scale) as usize, "{n}: 2 px accent divider");
+                assert_eq!(accent, (2.0 * scale) as usize, "{n}: 2 px accent line");
             } else {
-                assert_eq!(accent, 0, "{n}: no accent on a quiet divider");
-                assert_eq!(plain, scale as usize, "{n}: 1 px plain divider");
+                assert_eq!(accent, 0, "{n}: no accent in a quiet gap");
+                let p = px_at((at(ratio), 450.0));
+                assert!(is_canvas(p, &ui), "{n}: the gap is the canvas: {p:?}");
             }
             println!("ui-shots: {}", path.display());
         }
+    }
+}
+
+/// How far a gap's pixel may be from the canvas: the cards' shadows (`card_shadow_alpha`,
+/// blurred 6 pt) reach into the 6 pt gaps and darken them a little (M11i).
+const SHADOW_SLACK: u8 = 12;
+
+/// Whether pixel `p` shows the canvas (`sidebar_background`) between cards: within the
+/// shadow's reach of it, and nearer it than the card's fill.
+fn is_canvas(p: [u8; 3], ui: &UiColors) -> bool {
+    let canvas = gap(p, ui.sidebar_background);
+    canvas <= SHADOW_SLACK && canvas < gap(p, ui.card)
+}
+
+/// A workspace for the card scenes: `panes` terminals showing `text`, each split to the right
+/// of the one before (one: a lone pane), the first one focused; the sidebar shown (240 pt).
+fn card_workspace(
+    panes: usize,
+    text: &str,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
+    let mut ws = Workspace::for_shots(window, cx);
+    ws.sidebar.hint_dismissed = true;
+    let project = std::path::Path::new(API);
+    for i in 0..panes {
+        let axis = (i > 0).then_some(Axis::Row);
+        ws.open_shot_session(&format!("pane{i}"), project, text, axis, window, cx);
+    }
+    ws.select(0, window, cx);
+    ws
+}
+
+/// The 6 pt gap (M11i) all round the left sidebar's neighbours.
+const GAP: f32 = ui_tokens::size::CARD_GAP;
+
+/// M11i floating panels, from a real `Workspace` in both themes (1280 × 600, the sidebar 240
+/// wide):
+/// - `cards`: one pane and the right sidebar open (300 wide): both are cards on the canvas.
+///
+/// Panics unless the gaps (between the sidebar and the pane card, the pane card and the right
+/// sidebar's, the right card and the window's right edge, above and below the cards) show the
+/// canvas, 20 pt into each card shows its fill, and the left sidebar has no right border line.
+fn card_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1280.0), px(600.0));
+    let (left, right) = (240.0_f32, 1280.0_f32);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = card_workspace(1, "", window, cx);
+                ws.right_sidebar.hidden = false;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let acting = slot.clone();
+        let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let width = cx.read(|cx| slotted(&acting).read(cx).right_sidebar.width);
+            assert_eq!(width, 300.0, "cards-{slug}: the right sidebar is 300 wide");
+            acting.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        let path = save_shot("cards", slug, &shot);
+        let n = format!("cards-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        // The right card spans 974–1274: 6 pt from the window's edge, 300 wide.
+        let right_card = right - GAP - 300.0;
+        let pane_card_right = right_card - GAP;
+        for (what, x, y) in [
+            ("sidebar → pane card", left + GAP / 2.0, 100.0),
+            ("sidebar → pane card, low", left + GAP / 2.0, 500.0),
+            ("pane card → right card", pane_card_right + GAP / 2.0, 400.0),
+            ("right card → window edge", right - GAP / 2.0, 400.0),
+            ("above the pane card", 600.0, GAP / 2.0),
+            ("above the right card", 1100.0, GAP / 2.0),
+            ("below the pane card", 600.0, 600.0 - GAP / 2.0),
+            ("below the right card", 1100.0, 600.0 - GAP / 2.0),
+        ] {
+            let p = at(x, y);
+            assert!(is_canvas(p, &ui), "{n}: canvas {what} at ({x}, {y}): {p:?}");
+        }
+        for (what, x, y) in [
+            ("pane card", left + GAP + 20.0, 100.0),
+            ("pane card, right end", pane_card_right - 20.0, 400.0),
+            ("right card", right_card + 20.0, 400.0),
+            ("right card, right end", right - GAP - 20.0, 400.0),
+        ] {
+            let p = at(x, y);
+            assert!(near(p, ui.card), "{n}: {what} at ({x}, {y}): {p:?}");
+        }
+        // No line down the sidebar's right edge: its last column is its own colour.
+        let p = at(left - 0.5, 300.0);
+        assert!(
+            near(p, ui.sidebar_background),
+            "{n}: no sidebar border: {p:?}"
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11i floating panels, a split, in both themes (960 × 600, the sidebar 240 wide; the cards
+/// span 246–954 and 6–594, each split side 351 wide with the 6 pt gap between, 597–603):
+/// - `cards-split`: two panes, the left one focused: its card's edge is `accent` (the focus
+///   ring), the other's `card_border`; the gap between them is the canvas.
+/// - `cards-split-hover`: the pointer over the gap: the 2 pt accent line in its middle.
+/// - `cards-split-refocus`: a click in the right pane: the ring follows it.
+fn card_split_scenes() {
+    use gpui::Modifiers;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    let (left_card, right_end) = (240.0 + GAP, 960.0 - GAP);
+    let middle = (left_card + right_end) / 2.0;
+    let (first_right, second_left) = (middle - GAP / 2.0, middle + GAP / 2.0);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for scene in ["cards-split", "cards-split-hover", "cards-split-refocus"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| card_workspace(2, "", window, cx));
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let acting = slot.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&acting);
+                let panes = shown_panes(cx, &ws);
+                assert_eq!(panes.len(), 2, "{scene}-{slug}: two panes");
+                let none = Modifiers::none();
+                match scene {
+                    "cards-split-hover" => {
+                        let on = point(px(middle), px(300.0));
+                        cx.simulate_mouse_move(window, on, None, none);
+                    }
+                    "cards-split-refocus" => {
+                        let on = point(px(second_left + 100.0), px(300.0));
+                        cx.simulate_click(window, on, none);
+                        let focused = cx.read(|cx| ws.read(cx).model.focused_pane());
+                        assert_eq!(focused, Some(panes[1]), "{scene}-{slug}: focused");
+                    }
+                    _ => {}
+                }
+                acting.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let path = save_shot(scene, slug, &shot);
+            let n = format!("{scene}-{slug}");
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let p = at(middle, 450.0);
+            if scene == "cards-split-hover" {
+                let scale = shot.width as f32 / 960.0;
+                // In the gap only (the focused card's edge beside it is the accent too).
+                let accent = count_along(&shot, dims, ui.accent, 450.0, first_right, second_left);
+                assert_eq!(accent, (2.0 * scale) as usize, "{n}: the 2 pt accent line");
+                // In its middle: 2 pt of canvas either side.
+                for x in [first_right + 1.0, second_left - 1.0] {
+                    let p = at(x, 450.0);
+                    assert!(
+                        is_canvas(p, &ui),
+                        "{n}: canvas beside the line at {x}: {p:?}"
+                    );
+                }
+            } else {
+                assert!(is_canvas(p, &ui), "{n}: the gap is the canvas: {p:?}");
+                let accent = count_along(&shot, dims, ui.accent, 450.0, first_right, second_left);
+                assert_eq!(accent, 0, "{n}: no accent line in a quiet gap");
+            }
+            // Each card's outer edges, half a point in: the focused one's in `accent`.
+            let first_focused = scene != "cards-split-refocus";
+            for (which, x, focused) in [
+                ("left card's left edge", left_card + 0.5, first_focused),
+                ("left card's right edge", first_right - 0.5, first_focused),
+                ("right card's left edge", second_left + 0.5, !first_focused),
+                ("right card's right edge", right_end - 0.5, !first_focused),
+            ] {
+                let p = at(x, 300.0);
+                let want = if focused { ui.accent } else { ui.card_border };
+                assert!(near(p, want), "{n}: {which} ({focused}): {p:?}");
+            }
+            println!("ui-shots: {}", path.display());
+        }
+    }
+}
+
+/// M11i Review Focus 1, in both themes (960 × 600, the sidebar 240 wide): `cards-corners`, a
+/// lone pane whose program filled the screen with a blue background (`ESC [44m`, then clear).
+///
+/// Panics unless the pixel 2 pt inside each of the card's bottom corners is the canvas (the
+/// terminal's background and its cells stay inside the rounded corner), the grid is blue, and
+/// the lone card's edges are `card_border` with no focus ring.
+fn card_corner_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    let (left, right, bottom) = (240.0 + GAP, 960.0 - GAP, 600.0 - GAP);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let blue = theme.palette[4];
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| card_workspace(1, "", window, cx));
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        // Once the terminal has its size in the card: blue, then clear (every cell of the
+        // grid takes the blue, as a full-screen program's background does).
+        let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let view = cx.read(|cx| ws.read(cx).sessions.items()[0].view.clone());
+            cx.read(|cx| view.read(cx).show_text("\x1b[44m\x1b[2J"));
+            cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        let path = save_shot("cards-corners", slug, &shot);
+        let n = format!("cards-corners-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let p = at(600.0, 300.0);
+        assert!(near(p, blue), "{n}: the grid is blue: {p:?}");
+        for (which, x, y) in [
+            ("bottom left", left + 2.0, bottom - 2.0),
+            ("bottom right", right - 2.0, bottom - 2.0),
+        ] {
+            let p = at(x, y);
+            assert!(
+                is_canvas(p, &ui),
+                "{n}: {which} corner is the canvas: {p:?}"
+            );
+            assert!(!near(p, blue), "{n}: {which} corner isn't blue: {p:?}");
+        }
+        for (which, x, y) in [
+            ("left", left + 0.5, 300.0),
+            ("right", right - 0.5, 300.0),
+            ("bottom", 600.0, bottom - 0.5),
+        ] {
+            let p = at(x, y);
+            assert!(
+                !near(p, ui.accent),
+                "{n}: no ring on a lone pane, {which}: {p:?}"
+            );
+            assert!(near(p, ui.card_border), "{n}: {which} edge: {p:?}");
+        }
+        println!("ui-shots: {}", path.display());
     }
 }
 
@@ -2465,6 +2751,9 @@ const BAR_BUTTONS: f32 = 4.0 + 5.0 * 20.0 + 4.0 * 2.0 + 4.0;
 const SPLIT_RIGHT_FROM_EDGE: f32 = 4.0 + 2.0 * (20.0 + 2.0) + 10.0;
 /// The same for the right sidebar's button, the last.
 const RIGHT_SIDEBAR_FROM_EDGE: f32 = 4.0 + 10.0;
+/// The left pane's bar in the 1280 pt two-pane scenes (M11i): half the 1028 pt card area, less
+/// half the 6 pt gap and the card's 1 pt edge on either side.
+const LEFT_BAR_WIDTH: f32 = 1028.0 / 2.0 - 3.0 - 2.0;
 
 /// Pane tab bars (M11b Task 3), from real workspaces in both themes:
 /// - `tab-bars`: two panes; the left (focused) one with api (active, accent line on top), claude
@@ -2543,10 +2832,10 @@ fn tab_bar_scenes() {
                         cx.simulate_mouse_move(window, tabs[2].center(), None, none);
                     }
                     "tab-bars-button" => {
-                        // The left pane's buttons sit at its right edge (half the 1040 px pane
-                        // area, less half the divider): split right is the third of five.
-                        let right = tabs[0].left() + px(519.5);
-                        let at = point(right - px(SPLIT_RIGHT_FROM_EDGE), px(13.0));
+                        // The left pane's buttons sit at its right edge: split right is the
+                        // third of five.
+                        let right = tabs[0].left() + px(LEFT_BAR_WIDTH);
+                        let at = point(right - px(SPLIT_RIGHT_FROM_EDGE), tabs[0].center().y);
                         cx.simulate_mouse_move(window, at, None, none);
                     }
                     "tab-bars-menu" => {
@@ -2605,16 +2894,18 @@ fn tab_bar_scenes() {
             // Away from the text, the icon and the ×: near each tab's right end, low in the bar.
             let fill_at = |b: gpui::Bounds<Pixels>| (f32::from(b.right()) - 26.0, 20.0);
             if scene == "tab-bars" {
+                // The accent line: along the top of the bar, inside its card's edge (M11i).
+                let line = f32::from(api.top()) + 1.0;
                 let (x, y) = fill_at(api);
                 assert!(is(px_at(x, y), ui.panel), "{n}: api raised");
-                assert!(is(px_at(x, 1.0), ui.accent), "{n}: api's accent line");
+                assert!(is(px_at(x, line), ui.accent), "{n}: api's accent line");
                 let (x, y) = fill_at(claude);
                 assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
-                assert!(!is(px_at(x, 1.0), ui.accent), "{n}: no line on claude");
+                assert!(!is(px_at(x, line), ui.accent), "{n}: no line on claude");
                 // The right pane's tests: active, raised, but its pane isn't focused.
                 let x = f32::from(api.left()) + 520.0 + 150.0;
                 assert!(is(px_at(x, 20.0), ui.panel), "{n}: tests raised");
-                assert!(is(px_at(x, 1.0), ui.panel), "{n}: no line on tests");
+                assert!(is(px_at(x, line), ui.panel), "{n}: no line on tests");
             }
             println!("ui-shots: {}", path.display());
         }
@@ -2729,8 +3020,8 @@ fn tab_bar_scenes() {
             let codex_gone = cx.read(|cx| ws.read(cx).sessions.position(|s| s.label() == "codex"));
             assert_eq!(codex_gone, None, "{n}: codex ended");
             // The left bar's split right: a third pane, focused, with one terminal tab.
-            let right = api.left() + px(519.5);
-            let split = point(right - px(SPLIT_RIGHT_FROM_EDGE), px(13.0));
+            let right = api.left() + px(LEFT_BAR_WIDTH);
+            let split = point(right - px(SPLIT_RIGHT_FROM_EDGE), api.center().y);
             cx.simulate_click(window, split, none);
             let panes_now = shown_panes(cx, &ws);
             assert_eq!(panes_now.len(), 3, "{n}: split right made a pane");
@@ -2914,6 +3205,8 @@ fn tab_drag_scenes() {
             let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
             let g = geometry.borrow().clone();
             let tabs = &g.tabs;
+            // The bars' top: inside the cards' 1 pt edges, under the 6 pt strip (M11i).
+            let top = f32::from(tabs[0].top());
             let width = f32::from(tabs[0].size.width);
             let (chip_x, chip_y) = (f32::from(g.chip.x), f32::from(g.chip.y));
             // No insertion line: no accent in the left bar below the active tab's top line.
@@ -2921,14 +3214,14 @@ fn tab_drag_scenes() {
                 for x in (f32::from(tabs[0].left()) as i32..f32::from(tabs[3].right()) as i32)
                     .map(|x| x as f32 + 0.5)
                 {
-                    assert!(!is(px_at(x, 13.0), ui.accent), "{n}: no line at {x}");
+                    assert!(!is(px_at(x, top + 13.0), ui.accent), "{n}: no line at {x}");
                 }
             };
             // A place in the left bar with nothing drawn in it (a tab gone from there).
             let empty = |tab: gpui::Bounds<Pixels>, what: &str| {
                 let left = f32::from(tab.left());
                 for dx in [6.0, 20.0, 40.0, 60.0, 80.0] {
-                    for y in [7.0, 13.0, 19.0] {
+                    for y in [top + 7.0, top + 13.0, top + 19.0] {
                         let p = px_at(left + dx, y);
                         assert!(
                             is(p, ui.sidebar_background),
@@ -2940,24 +3233,24 @@ fn tab_drag_scenes() {
             match scene {
                 "tab-drag-gap" => {
                     // claude (tinted) slid left into api's place; the gap is where claude was.
-                    let claude = px_at(f32::from(tabs[0].center().x), 3.0);
+                    let claude = px_at(f32::from(tabs[0].center().x), top + 3.0);
                     assert!(
                         is(claude, ui.waiting_tint),
                         "{n}: claude slid left: {claude:?}"
                     );
-                    let gap = px_at(f32::from(tabs[1].right()) - 4.0, 3.0);
+                    let gap = px_at(f32::from(tabs[1].right()) - 4.0, top + 3.0);
                     assert!(is(gap, ui.sidebar_background), "{n}: the gap: {gap:?}");
                     // The chip is where api was taken: its left edge at the pointer less the
                     // grab, level with the bar (not under it).
-                    assert_eq!(chip_y, 0.0, "{n}: the chip's top is the bar's");
-                    let inside = px_at(chip_x + 3.0, 3.0);
+                    assert_eq!(chip_y, top, "{n}: the chip's top is the bar's");
+                    let inside = px_at(chip_x + 3.0, top + 3.0);
                     assert!(
                         is(inside, ui.panel),
                         "{n}: the chip's left edge: {inside:?}"
                     );
-                    let outside = px_at(chip_x - 3.0, 3.0);
+                    let outside = px_at(chip_x - 3.0, top + 3.0);
                     assert!(!is(outside, ui.panel), "{n}: left of the chip: {outside:?}");
-                    let low = px_at(chip_x + 10.0, 23.0);
+                    let low = px_at(chip_x + 10.0, top + 23.0);
                     assert!(is(low, ui.panel), "{n}: the chip down the bar: {low:?}");
                     assert!(
                         (chip_x - (f32::from(tabs[1].left()) - 10.0)).abs() <= 1.0,
@@ -2967,7 +3260,7 @@ fn tab_drag_scenes() {
                 }
                 "tab-drag-other" => {
                     // Its own bar closed up: claude in api's place, the last place empty.
-                    let claude = px_at(f32::from(tabs[0].center().x), 3.0);
+                    let claude = px_at(f32::from(tabs[0].center().x), top + 3.0);
                     assert!(
                         is(claude, ui.waiting_tint),
                         "{n}: claude slid left: {claude:?}"
@@ -2976,9 +3269,9 @@ fn tab_drag_scenes() {
                     // The right bar: tests (filled, as its pane's shown tab) slid right by
                     // api's width; the gap's end shows the bar.
                     let left = f32::from(g.right.left());
-                    let tests = px_at(left + width + 6.0, 3.0);
+                    let tests = px_at(left + width + 6.0, top + 3.0);
                     assert!(is(tests, ui.panel), "{n}: tests slid right: {tests:?}");
-                    let gap = px_at(left + width - 6.0, 3.0);
+                    let gap = px_at(left + width - 6.0, top + 3.0);
                     assert!(is(gap, ui.sidebar_background), "{n}: the gap: {gap:?}");
                     no_line();
                 }
@@ -4139,8 +4432,8 @@ fn right_sidebar_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
-            // Each pane's right edge, as laid out (the left one's: where the right one starts,
-            // less the divider).
+            // Each pane's bar's right end, as laid out (M11i: inside its card's 1 pt edge; the
+            // left one's: where the right one's bar starts, less both edges and the gap).
             let edges: Rc<RefCell<Vec<f32>>> = Rc::default();
             let seen = edges.clone();
             let acting = slot.clone();
@@ -4153,11 +4446,11 @@ fn right_sidebar_scenes() {
                 assert_eq!(panes.len(), 2, "{n}: two panes");
                 let second = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
                 let pane_right = if open {
-                    window_right - 300.0
+                    window_right - GAP - 300.0 - GAP - 1.0
                 } else {
-                    window_right
+                    window_right - GAP - 1.0
                 };
-                *seen.borrow_mut() = vec![f32::from(second.left()) - 1.0, pane_right];
+                *seen.borrow_mut() = vec![f32::from(second.left()) - 2.0 - GAP, pane_right];
                 cx.read(|cx| {
                     let ws = ws.read(cx);
                     assert_eq!(ws.right_sidebar.hidden, !open, "{n}");
@@ -4165,8 +4458,9 @@ fn right_sidebar_scenes() {
                     assert!(ws.right_sidebar.slide.is_none(), "{n}: still");
                 });
                 if scene == "right-sidebar-resize" {
-                    // Its left edge (at 980) taken and moved 80 left, then let go.
-                    let (from, to) = (point(px(980.0), px(300.0)), point(px(900.0), px(300.0)));
+                    // The gap at its left (971, between the pane card at 968 and its card at
+                    // 974) taken and moved 80 left, then let go.
+                    let (from, to) = (point(px(971.0), px(300.0)), point(px(891.0), px(300.0)));
                     cx.simulate_mouse_down(window, from, MouseButton::Left, none);
                     assert!(
                         cx.read(|cx| ws.read(cx).right_sidebar.resizing),
@@ -4179,13 +4473,13 @@ fn right_sidebar_scenes() {
                         assert_eq!(ws.right_sidebar.width, 380.0, "{n}: 80 pt wider");
                         assert!(!ws.right_sidebar.resizing, "{n}: let go");
                     });
-                    seen.borrow_mut()[1] = window_right - 380.0;
+                    seen.borrow_mut()[1] = window_right - GAP - 380.0 - GAP - 1.0;
                     // The panes re-fit to the narrower area on the next frame.
                     cx.update_window(window, |_, window, _| window.refresh())
                         .expect("refresh");
                     cx.run_until_parked();
                     let second = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
-                    seen.borrow_mut()[0] = f32::from(second.left()) - 1.0;
+                    seen.borrow_mut()[0] = f32::from(second.left()) - 2.0 - GAP;
                 }
                 acting.borrow_mut().take();
             };
@@ -4199,26 +4493,43 @@ fn right_sidebar_scenes() {
                 "right-sidebar-open" => 300.0,
                 _ => 380.0,
             };
-            // The sidebar's body, low in the window: its colour across its width, the
-            // terminal's just left of it.
+            // The sidebar's body, low in the window: a card (M11i) 6 pt from the window's
+            // right edge, its fill across its width; the 6 pt gap left of it, then the pane's
+            // card with the terminal.
             let y = 400.0;
+            let card_right = window_right - GAP;
             if width > 0.0 {
-                for x in [window_right - width + 6.0, window_right - 6.0] {
+                for x in [card_right - width + 6.0, card_right - 6.0] {
                     let p = at(x, y);
-                    assert!(near(p, ui.sidebar_background), "{n}: sidebar at {x}: {p:?}");
+                    assert!(near(p, ui.card), "{n}: sidebar at {x}: {p:?}");
                 }
-                let p = at(window_right - width - 6.0, y);
+                // (Beside its middle: after a resize the pointer is still there, lighting it.)
+                for x in [card_right - width - GAP + 1.0, window_right - GAP / 2.0] {
+                    let p = at(x, y);
+                    assert!(is_canvas(p, &ui), "{n}: the gap at {x}: {p:?}");
+                }
+                if scene == "right-sidebar-resize" {
+                    let p = at(card_right - width - GAP / 2.0, y);
+                    assert!(near(p, ui.accent), "{n}: the hovered gap's line: {p:?}");
+                }
+                let p = at(card_right - width - GAP - 6.0, y);
                 assert!(near(p, theme.background), "{n}: the pane left of it: {p:?}");
             } else {
-                let p = at(window_right - 6.0, y);
+                let p = at(card_right - 6.0, y);
                 assert!(near(p, theme.background), "{n}: no right sidebar: {p:?}");
+                let p = at(window_right - GAP / 2.0, y);
+                assert!(
+                    is_canvas(p, &ui),
+                    "{n}: the gap at the window's edge: {p:?}"
+                );
             }
             // Every pane's icon: lit (the hover fill beside the glyph, the glyph's filled side
             // in the text colour) while open; else on the bar, dim.
             for (i, right) in edges.borrow().iter().enumerate() {
                 let centre = right - RIGHT_SIDEBAR_FROM_EDGE;
                 assert!(*right > left, "{n}: pane {i}'s edge {right}");
-                let (fill, glyph) = (at(centre - 8.0, 13.0), at(centre + 3.0, 13.0));
+                // The bars run 7–33 (under the 6 pt strip and the cards' edges).
+                let (fill, glyph) = (at(centre - 8.0, 20.0), at(centre + 3.0, 20.0));
                 if width > 0.0 {
                     assert!(near(fill, ui.row_hover), "{n}: pane {i} lit: {fill:?}");
                     assert!(near(glyph, ui.text), "{n}: pane {i} glyph: {glyph:?}");
@@ -4282,7 +4593,10 @@ fn right_sidebar_scenes() {
                 frame(cx);
                 assert_eq!(state(cx), (true, None), "{n}: slid away");
                 let panes = shown_panes(cx, &ws);
-                let icon = point(px(window_right - RIGHT_SIDEBAR_FROM_EDGE), px(13.0));
+                let icon = point(
+                    px(window_right - GAP - 1.0 - RIGHT_SIDEBAR_FROM_EDGE),
+                    px(20.0),
+                );
                 cx.simulate_click(window, icon, none);
                 cx.read(|cx| {
                     let ws = ws.read(cx);
@@ -4415,14 +4729,17 @@ fn files_scenes() {
     use crate::git_status::Mark;
     use crate::layout_model::{FileMode, TabKind};
     use crate::right_sidebar::{FILTER_BAND, ROW, mark_color};
-    use crate::ui_tokens::size::{TAB_BAR, TOP_BAND};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR, TOP_BAND};
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - 300.0;
+    // Inside the right sidebar's card (M11i): 6 pt from the window's right, 300 wide, a 1 pt
+    // edge; its header 1 pt under the card's top (under the 6 pt strip, or the band).
+    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
+    let card_top = GAP + FOCUS_RING;
     let root = files_fixture();
     let rows_of = |cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>| {
         cx.read(|cx| {
@@ -4479,7 +4796,11 @@ fn files_scenes() {
         for scene in ["files", "files-filter", "files-bare"] {
             let bare = scene == "files-bare";
             // The header row's top: under the band with the left sidebar hidden.
-            let top = if bare { TOP_BAND } else { 0.0 };
+            let top = if bare {
+                TOP_BAND + FOCUS_RING
+            } else {
+                card_top
+            };
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = build_for(bare, slot.clone());
             let tab_top: Rc<RefCell<Option<f32>>> = Rc::default();
@@ -4534,10 +4855,7 @@ fn files_scenes() {
                 "{n}: the header's edge: {edge:?}"
             );
             let inside = at(sidebar_left + 250.0, top + TAB_BAR / 2.0);
-            assert!(
-                near(inside, ui.sidebar_background, 3),
-                "{n}: the header: {inside:?}"
-            );
+            assert!(near(inside, ui.card, 3), "{n}: the header: {inside:?}");
             // Each row's mark colour, somewhere along it (its name and letter are drawn in it).
             let list_top = top + TAB_BAR + FILTER_BAND;
             let inked = |row: usize, c: alacritty_terminal::vte::ansi::Rgb| {
@@ -4587,7 +4905,7 @@ fn files_scenes() {
             let n = format!("files-keys-{slug}");
             let none = Modifiers::none();
             frame(cx, window);
-            let list_top = TAB_BAR + FILTER_BAND;
+            let list_top = card_top + TAB_BAR + FILTER_BAND;
             let row_at = |i: usize| {
                 point(
                     px(sidebar_left + 80.0),
@@ -4702,7 +5020,10 @@ fn files_scenes() {
             let ws = slotted(&slot);
             let n = format!("files-close-{slug}");
             frame(cx, window);
-            let field = point(px(sidebar_left + 60.0), px(TAB_BAR + FILTER_BAND / 2.0));
+            let field = point(
+                px(sidebar_left + 60.0),
+                px(card_top + TAB_BAR + FILTER_BAND / 2.0),
+            );
             cx.simulate_click(window, field, Modifiers::none());
             let typing = cx
                 .update_window(window, |_, window, cx| {
@@ -5534,10 +5855,11 @@ fn browser_tab_scenes() {
                 }
                 let field = field.expect("the field is drawn");
                 typed.set(Some(field));
-                // Under the 26 px tab bar, centred in the 34 px bar.
+                // Under the 26 px tab bar, centred in the 34 px bar; the card (M11i) starts
+                // under the 6 pt strip, inside its 1 pt edge.
                 assert_eq!(f32::from(field.size.height), 24.0, "{n}: field height");
                 let top = f32::from(field.top());
-                assert!((29.0..=32.0).contains(&top), "{n}: field top {top}");
+                assert!((36.0..=39.0).contains(&top), "{n}: field top {top}");
                 if scene == "browser-tab-suggestions" {
                     cx.update(|cx| {
                         cx.bind_keys([KeyBinding::new("down", SuggestNext, Some("AddressField"))])
@@ -6511,9 +6833,10 @@ fn sidebar_button_scenes() {
             bg(ui.sidebar_background),
             "{slug}: icon shown"
         );
+        // (With the sidebar hidden the band is the canvas, the sidebar's colour, since M11i.)
         assert_ne!(
             at("hidden", edge),
-            bg(theme.background),
+            bg(ui.sidebar_background),
             "{slug}: icon hidden"
         );
         // Hover: the hit area is panel_hover, not the sidebar's colour.
@@ -6861,12 +7184,9 @@ fn title_area_scenes() {
                 assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
             }
             // The band holds no 🔔 or + where they were: only the sidebar background (or, with
-            // the sidebar hidden, the content's) between the sidebar button and the name.
-            let band_bg = if hidden {
-                bg(theme.background)
-            } else {
-                bg(ui.sidebar_background)
-            };
+            // the sidebar hidden, the canvas the cards sit on, the same colour since M11i)
+            // between the sidebar button and the name.
+            let band_bg = ui.sidebar_background;
             let inset = name_inset(false);
             if !matches!(
                 scene,
@@ -6880,12 +7200,18 @@ fn title_area_scenes() {
                 for y in [sy + 2.0, sy + HIT / 2.0, sy + HIT - 2.0] {
                     let mut x = sx + HIT + 2.0;
                     while x < stop {
-                        assert_eq!(at(x, y), band_bg, "{n}: the band is bare at ({x}, {y})");
+                        // (Near it: the cards' shadows reach a little way up into the band.)
+                        let p = at(x, y);
+                        assert!(
+                            near(p, band_bg),
+                            "{n}: the band is bare at ({x}, {y}): {p:?}"
+                        );
                         x += 1.0;
                     }
                 }
             }
-            // The name: ink in the band's middle with the sidebar hidden, none past its inset.
+            // The name: ink in the band's middle with the sidebar hidden, none past its inset
+            // (the band is the canvas, M11i).
             let band_ink = |x0: f32, x1: f32| -> usize {
                 (0..20)
                     .map(|k| 9.0 + k as f32)
@@ -6893,7 +7219,7 @@ fn title_area_scenes() {
                         let mut x = x0;
                         let mut inked = 0;
                         while x < x1 {
-                            inked += usize::from(at(x, y) != bg(theme.background));
+                            inked += usize::from(!near(at(x, y), band_bg));
                             x += 1.0;
                         }
                         inked
@@ -7163,8 +7489,8 @@ fn update_button_scenes() {
             } else {
                 SIDEBAR_DEFAULT_WIDTH
             };
-            // Its left and right edges (the sidebar's 1 px right border is outside its content).
-            let (left, right) = (ROW_INSET, width - 1.0 - ROW_INSET);
+            // Its left and right edges (the sidebar has no right border since M11i).
+            let (left, right) = (ROW_INSET, width - ROW_INSET);
             let state = match scene {
                 "update-idle" => UpdateState::Idle,
                 "update-downloading" => UpdateState::Downloading(version),
