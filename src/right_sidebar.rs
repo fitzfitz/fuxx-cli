@@ -28,6 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
@@ -38,7 +39,7 @@ use gpui::{
 };
 
 use crate::appearance::Appearance;
-use crate::file_tree::{self, FileTree, Row, Want};
+use crate::file_tree::{self, FileTree, Row, RowCache, Want};
 use crate::git_branch::{find_git, is_this_mac, process_cwd};
 use crate::git_status::{self, DirEntry, Mark};
 use crate::name_input::{NameInput, NameInputEvent};
@@ -179,24 +180,32 @@ fn file_row(
         .into_any_element()
 }
 
+/// A folder's listing as the background job hands it to the tree.
+struct Listed {
+    /// Shown entries, sorted, at most `file_tree::CAP`.
+    entries: Vec<DirEntry>,
+    more: usize,
+    /// What git ignores in it (paths from the root).
+    ignored: HashSet<PathBuf>,
+    /// Its folders holding a `.git`: nested repos and submodules (paths from the root).
+    nested: HashSet<PathBuf>,
+}
+
 /// Folder `rel`'s listing (from the `root`) as the tree shows it, read off the UI thread: its
-/// entries with names precomposed (as git prints them), what git ignores in it (one batch, in
-/// a repo only), then `file_tree::shown_entries` (the ignored and hidden left out before the
-/// cap). Also the ignored paths, for the tree.
-fn list_folder(
-    git: Option<&Path>,
-    root: &Path,
-    rel: &Path,
-    in_repo: bool,
-) -> (Vec<DirEntry>, usize, HashSet<PathBuf>) {
-    let (entries, _) = git_status::list_dir(&root.join(rel), usize::MAX);
-    let entries: Vec<DirEntry> = entries
+/// entries with names precomposed (as git prints them) and sorted; in a repo, what git ignores
+/// in it (one batch) and which of its folders are nested repos; then `file_tree::shown_entries`
+/// (the ignored and hidden left out before the cap).
+fn list_folder(git: Option<&Path>, root: &Path, rel: &Path, in_repo: bool) -> Listed {
+    let dir = root.join(rel);
+    let (entries, _) = git_status::list_dir(&dir, usize::MAX);
+    let mut entries: Vec<DirEntry> = entries
         .into_iter()
         .map(|e| DirEntry {
             name: file_tree::nfc(&e.name),
             is_dir: e.is_dir,
         })
         .collect();
+    file_tree::sort_entries(&mut entries);
     let ignored = match git.filter(|_| in_repo) {
         Some(git) => {
             let paths: Vec<PathBuf> = entries.iter().map(|e| rel.join(&e.name)).collect();
@@ -204,8 +213,18 @@ fn list_folder(
         }
         None => HashSet::new(),
     };
-    let (shown, more) = file_tree::shown_entries(rel, entries, &ignored, in_repo);
-    (shown, more, ignored)
+    let (entries, more) = file_tree::shown_entries(rel, entries, &ignored, in_repo);
+    let nested = entries
+        .iter()
+        .filter(|e| in_repo && e.is_dir && dir.join(&e.name).join(".git").exists())
+        .map(|e| rel.join(&e.name))
+        .collect();
+    Listed {
+        entries,
+        more,
+        ignored,
+        nested,
+    }
 }
 
 /// The tree's root for a terminal in `folder` (off the UI thread): the repo's top folder, else
@@ -234,8 +253,9 @@ pub(crate) struct FilesPanel {
     memory: HashMap<PathBuf, HashSet<PathBuf>>,
     /// What git ignores in each listed folder (all of it goes to the tree).
     ignored: HashMap<PathBuf, HashSet<PathBuf>>,
-    /// The rows drawn this frame.
-    pub(crate) rows: Vec<Row>,
+    /// The rows drawn, built again only when the tree or the filter changes.
+    pub(crate) rows: Rc<Vec<Row>>,
+    cache: RowCache,
     pub(crate) input: Option<Entity<NameInput>>,
     /// The panel's own focus (filter box and tree): the tree's keys, and what closing the
     /// sidebar checks.
@@ -262,7 +282,8 @@ impl FilesPanel {
             folder: None,
             memory: HashMap::new(),
             ignored: HashMap::new(),
-            rows: Vec::new(),
+            rows: Rc::default(),
+            cache: RowCache::default(),
             input: None,
             focus: None,
             query: String::new(),
@@ -287,39 +308,46 @@ impl FilesPanel {
 
     /// Re-root at `root` (a repo's, `in_repo`) for a terminal at `revealed` in it: the same root
     /// keeps its tree as it is; another remembers this one's open folders and starts afresh
-    /// (with that root's, if it was shown before).
+    /// (with that root's, if it was shown before). Work under way for the old root no longer
+    /// holds the new one up (its results are dropped).
     fn rooted(&mut self, root: PathBuf, in_repo: bool, revealed: Option<PathBuf>) {
         self.in_repo = in_repo;
         if self.tree.as_ref().is_some_and(|t| t.root() == root) {
             return;
         }
-        if let Some(old) = self.tree.take() {
-            self.memory
-                .insert(old.root().to_path_buf(), old.expanded_set());
-        }
+        self.forget();
         let mut tree = FileTree::new(root.clone(), revealed);
         if let Some(open) = self.memory.get(&root) {
             tree.restore_expanded(open.clone());
         }
         self.tree = Some(tree);
-        self.ignored.clear();
-        self.listing.clear();
         self.reveal = Some(ScrollStrategy::Center);
     }
 
-    /// Folder `rel`'s listing for the tree at `root` (dropped if the tree has moved on).
-    fn listed(
-        &mut self,
-        root: &Path,
-        rel: PathBuf,
-        (entries, more, ignored): (Vec<DirEntry>, usize, HashSet<PathBuf>),
-    ) {
+    /// No tree (an SSH terminal's, or no folder): this one's open folders are remembered, and
+    /// nothing under way for it holds a new one up.
+    fn forget(&mut self) {
+        if let Some(old) = self.tree.take() {
+            self.memory
+                .insert(old.root().to_path_buf(), old.expanded_set());
+        }
+        self.ignored.clear();
+        self.listing.clear();
+        self.refreshing = false;
+    }
+
+    /// Folders' listings for the tree at `root` (dropped if the tree has moved on).
+    fn listed(&mut self, root: &Path, listings: Vec<(PathBuf, Listed)>) {
         let Some(tree) = self.tree.as_mut().filter(|t| t.root() == root) else {
             return;
         };
-        self.listing.remove(&rel);
-        tree.relist(rel.clone(), entries, more);
-        self.ignored.insert(rel, ignored);
+        for (rel, listed) in listings {
+            self.listing.remove(&rel);
+            tree.relist(rel.clone(), listed.entries, listed.more);
+            tree.set_nested(&rel, listed.nested);
+            self.ignored.insert(rel, listed.ignored);
+        }
+        // Once for them all.
         tree.set_ignored(self.ignored.values().flatten().cloned().collect());
     }
 }
@@ -735,10 +763,11 @@ impl Workspace {
     fn update_file_rows(&mut self) {
         let files = &mut self.right_sidebar.files;
         let Some(tree) = files.tree.as_ref() else {
-            files.rows.clear();
+            files.rows = Rc::default();
             return;
         };
-        files.rows = tree.rows(&files.query);
+        // Built again only when the tree or the filter changed: not for a terminal's redraw.
+        files.rows = files.cache.rows(tree, &files.query);
         let Some(strategy) = files.reveal else {
             return;
         };
@@ -770,13 +799,18 @@ impl Workspace {
     /// when asked: shown, another terminal), the open folders are listed again and the marks
     /// read. All of it off the UI thread; an SSH terminal's files aren't looked at.
     fn refresh_files(&mut self, cx: &mut Context<Self>) {
-        let Some((folder, ssh)) = self.right_sidebar_folder(cx) else {
+        let folder = self.right_sidebar_folder(cx);
+        let files = &mut self.right_sidebar.files;
+        // An SSH terminal, or none with a folder: no tree, so no key or click acts on the last
+        // one's (its note shows instead).
+        let Some((folder, false)) = folder else {
+            if files.tree.is_some() || files.folder.is_some() {
+                files.forget();
+                files.folder = None;
+                cx.notify();
+            }
             return;
         };
-        if ssh {
-            return;
-        }
-        let files = &mut self.right_sidebar.files;
         if files.folder.as_ref() != Some(&folder) {
             files.folder = Some(folder.clone());
             files.rooting = true;
@@ -841,13 +875,13 @@ impl Workspace {
                 .await;
             this.update(cx, |this, cx| {
                 let files = &mut this.right_sidebar.files;
+                // Another root's refresh may be under way since (`forget`): not this one's to end.
+                let Some(tree) = files.tree.as_mut().filter(|t| t.root() == root) else {
+                    return;
+                };
+                tree.set_marks(marks);
                 files.refreshing = false;
-                for (rel, listing) in listings {
-                    files.listed(&root, rel, listing);
-                }
-                if let Some(tree) = files.tree.as_mut().filter(|t| t.root() == root) {
-                    tree.set_marks(marks);
-                }
+                files.listed(&root, listings);
                 cx.notify();
             })
             .ok();
@@ -885,9 +919,7 @@ impl Workspace {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                for (rel, listing) in listings {
-                    this.right_sidebar.files.listed(&root, rel, listing);
-                }
+                this.right_sidebar.files.listed(&root, listings);
                 cx.notify();
             })
             .ok();
@@ -899,7 +931,14 @@ impl Workspace {
     /// tab in the focused pane (selected if that pane already has it).
     fn files_want(&mut self, want: Option<Want>, window: &mut Window, cx: &mut Context<Self>) {
         match want {
-            Some(Want::List(rel)) => self.files_list(vec![rel], cx),
+            // With it, the folders inside it remembered open and not listed yet.
+            Some(Want::List(rel)) => {
+                let mut rels = vec![rel];
+                if let Some(tree) = &self.right_sidebar.files.tree {
+                    rels.extend(tree.wanted());
+                }
+                self.files_list(rels, cx)
+            }
             Some(Want::Open(rel)) => {
                 let Some(root) = self.right_sidebar.files.tree.as_ref().map(|t| t.root()) else {
                     return;

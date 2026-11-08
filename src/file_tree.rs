@@ -13,9 +13,15 @@
 //!   A deleted file, gone from the disk, still shows as a row in its listed folder.
 //! - The filter: rows whose name holds the text in any case, with their folders, from every
 //!   folder listed so far (open or not).
+//! - A nested repo or submodule (a folder holding a `.git`, `set_nested`) is marked by its own
+//!   state only; what's inside it isn't this repo's to mark.
+//! - Every change that can change the rows moves the tree's `generation` on; `RowCache` builds
+//!   the rows again only then (or for another filter), not on every frame.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::git_status::{DirEntry, Mark};
 
@@ -47,9 +53,52 @@ pub enum Want {
 }
 
 /// A folder's listing: its shown entries and how many it left out.
+#[derive(PartialEq)]
 struct Listing {
     entries: Vec<DirEntry>,
     more: usize,
+}
+
+/// A generation no tree has had: unique across trees, so rows cached for one tree are never
+/// taken for another's.
+fn next_generation() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A tree's rows for a filter, built again only when the tree's generation or the filter
+/// changed (the selection isn't in them).
+#[derive(Default)]
+pub struct RowCache {
+    key: Option<(u64, String)>,
+    rows: Rc<Vec<Row>>,
+    builds: usize,
+}
+
+impl RowCache {
+    pub fn rows(&mut self, tree: &FileTree, filter: &str) -> Rc<Vec<Row>> {
+        let fresh = self
+            .key
+            .as_ref()
+            .is_some_and(|(generation, f)| *generation == tree.generation && f == filter);
+        if !fresh {
+            self.rows = Rc::new(tree.rows(filter));
+            self.key = Some((tree.generation, filter.to_string()));
+            self.builds += 1;
+        }
+        self.rows.clone()
+    }
+
+    /// How many times the rows were built.
+    #[cfg(test)]
+    pub fn builds(&self) -> usize {
+        self.builds
+    }
+}
+
+/// Folders first, then files, each by name in any case (then as written, for a stable order).
+pub fn sort_entries(entries: &mut [DirEntry]) {
+    entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase(), e.name.clone()));
 }
 
 pub struct FileTree {
@@ -60,9 +109,18 @@ pub struct FileTree {
     /// git's marks by path, and each folder's from what it holds.
     marks: HashMap<PathBuf, Mark>,
     folder_marks: HashMap<PathBuf, Mark>,
+    /// The deleted files (gone from the disk) by folder: rows all the same.
+    deleted: HashMap<PathBuf, Vec<PathBuf>>,
     /// Paths git ignores, never shown.
     ignored: HashSet<PathBuf>,
+    /// Nested repos and submodules, by the folder they're in.
+    nested: HashMap<PathBuf, HashSet<PathBuf>>,
     selected: Option<PathBuf>,
+    /// Where the selection was last moved to among the rows: where a move starts when the
+    /// selected row has gone and none of its folders shows.
+    selected_at: Option<usize>,
+    /// Moved on by every change to what the rows show (`RowCache`).
+    generation: u64,
 }
 
 /// `p` rebuilt from its parts, so `new/` (as git prints a folder) and `new` are one key.
@@ -128,9 +186,18 @@ impl FileTree {
             expanded,
             marks: HashMap::new(),
             folder_marks: HashMap::new(),
+            deleted: HashMap::new(),
             ignored: HashSet::new(),
+            nested: HashMap::new(),
             selected: revealed,
+            selected_at: None,
+            generation: next_generation(),
         }
+    }
+
+    /// The rows may have changed.
+    fn changed(&mut self) {
+        self.generation = next_generation();
     }
 
     pub fn root(&self) -> &Path {
@@ -140,42 +207,67 @@ impl FileTree {
     /// Folder `rel` is open, listing `entries` (`more` left out). (The panel opens folders with
     /// `toggle` and hands listings in with `relist`, so one closed while it was listed stays
     /// closed.)
+    /// `entries` are sorted here (`sort_entries`).
     #[cfg_attr(not(any(test, feature = "ui-shots")), allow(dead_code))]
-    pub fn expand(&mut self, rel: PathBuf, entries: Vec<DirEntry>, more: usize) {
+    pub fn expand(&mut self, rel: PathBuf, mut entries: Vec<DirEntry>, more: usize) {
         let rel = key(&rel);
-        if !rel.as_os_str().is_empty() {
-            self.expanded.insert(rel.clone());
+        if !rel.as_os_str().is_empty() && self.expanded.insert(rel.clone()) {
+            self.changed();
         }
+        sort_entries(&mut entries);
         self.relist(rel, entries, more);
     }
 
-    /// Folder `rel`'s listing again (a refresh): open or closed as it was.
-    pub fn relist(&mut self, rel: PathBuf, mut entries: Vec<DirEntry>, more: usize) {
-        entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase(), e.name.clone()));
-        self.listings.insert(key(&rel), Listing { entries, more });
+    /// Folder `rel`'s listing again (a refresh), in the order given (the panel sorts it off the
+    /// UI thread): open or closed as it was. The same listing changes nothing.
+    pub fn relist(&mut self, rel: PathBuf, entries: Vec<DirEntry>, more: usize) {
+        let listing = Listing { entries, more };
+        let rel = key(&rel);
+        if self.listings.get(&rel) != Some(&listing) {
+            self.listings.insert(rel, listing);
+            self.changed();
+        }
     }
 
     /// Close folder `rel`; its listing is kept for opening it again.
     pub fn collapse(&mut self, rel: &Path) {
-        self.expanded.remove(&key(rel));
+        if self.expanded.remove(&key(rel)) {
+            self.changed();
+        }
     }
 
     /// Open folder `rel` if closed (asking for its listing, which also catches a kept one up),
     /// else close it.
     pub fn toggle(&mut self, rel: &Path) -> Option<Want> {
         let rel = key(rel);
-        if rel.as_os_str().is_empty() || self.expanded.remove(&rel) {
+        if rel.as_os_str().is_empty() {
+            return None;
+        }
+        self.changed();
+        if self.expanded.remove(&rel) {
             return None;
         }
         self.expanded.insert(rel.clone());
         Some(Want::List(rel))
     }
 
-    /// git's marks (paths from the root, as `git_status::status` gives them).
+    /// git's marks (paths from the root, as `git_status::status` gives them). The same marks
+    /// change nothing.
     pub fn set_marks(&mut self, marks: HashMap<PathBuf, Mark>) {
-        self.marks = marks.into_iter().map(|(p, m)| (key(&p), m)).collect();
+        let marks: HashMap<PathBuf, Mark> = marks.into_iter().map(|(p, m)| (key(&p), m)).collect();
+        if marks == self.marks {
+            return;
+        }
+        self.marks = marks;
         self.folder_marks.clear();
+        self.deleted.clear();
         for (path, &mark) in &self.marks {
+            if mark == Mark::Deleted
+                && let Some(folder) = path.parent()
+            {
+                let files = self.deleted.entry(folder.to_path_buf()).or_default();
+                files.push(path.clone());
+            }
             for folder in path.ancestors().skip(1) {
                 if folder.as_os_str().is_empty() {
                     break;
@@ -187,11 +279,41 @@ impl FileTree {
                 *entry = combine(*entry, mark);
             }
         }
+        self.changed();
     }
 
-    /// Paths (from the root) git ignores: never rows, whatever a listing says.
+    /// Paths (from the root) git ignores: never rows, whatever a listing says. The same set
+    /// changes nothing.
     pub fn set_ignored(&mut self, ignored: HashSet<PathBuf>) {
-        self.ignored = ignored.iter().map(|p| key(p)).collect();
+        let ignored: HashSet<PathBuf> = ignored.iter().map(|p| key(p)).collect();
+        if ignored != self.ignored {
+            self.ignored = ignored;
+            self.changed();
+        }
+    }
+
+    /// The nested repos and submodules (folders holding a `.git`, paths from the root) directly
+    /// in `folder`, as its listing found them.
+    pub fn set_nested(&mut self, folder: &Path, repos: HashSet<PathBuf>) {
+        let folder = key(folder);
+        let repos: HashSet<PathBuf> = repos.iter().map(|p| key(p)).collect();
+        let before = self.nested.get(&folder);
+        if before.map_or(repos.is_empty(), |b| *b == repos) {
+            return;
+        }
+        if repos.is_empty() {
+            self.nested.remove(&folder);
+        } else {
+            self.nested.insert(folder, repos);
+        }
+        self.changed();
+    }
+
+    /// Whether `rel` is a nested repo or submodule.
+    fn is_nested(&self, rel: &Path) -> bool {
+        rel.parent()
+            .and_then(|folder| self.nested.get(folder))
+            .is_some_and(|repos| repos.contains(rel))
     }
 
     /// The open folders, for remembering this root's (`restore_expanded`).
@@ -201,7 +323,11 @@ impl FileTree {
 
     /// Open what was open when this root was last shown.
     pub fn restore_expanded(&mut self, expanded: HashSet<PathBuf>) {
+        let before = self.expanded.len();
         self.expanded.extend(expanded);
+        if self.expanded.len() != before {
+            self.changed();
+        }
     }
 
     /// The folders whose children can be seen: the root, and each open folder whose folders are
@@ -237,6 +363,7 @@ impl FileTree {
 
     pub fn select(&mut self, rel: &Path) {
         self.selected = Some(key(rel));
+        self.selected_at = None;
     }
 
     /// The row after the selected one (the first with none); the last stays put.
@@ -263,11 +390,21 @@ impl FileTree {
             .selected
             .as_ref()
             .and_then(|s| rows.iter().position(|r| &r.rel == s));
+        let last = rows.len() - 1;
         let to = match at {
-            Some(at) => at.saturating_add_signed(delta).min(rows.len() - 1),
-            None => 0,
+            Some(at) => at.saturating_add_signed(delta).min(last),
+            // Its row has gone (its folder closed, the file deleted, the filter): its nearest
+            // folder that shows, else the row now where it was; the top only with neither.
+            None => self
+                .selected
+                .iter()
+                .flat_map(|s| s.ancestors().skip(1))
+                .find_map(|a| rows.iter().position(|r| r.rel == a))
+                .or(self.selected_at.map(|i| i.min(last)))
+                .unwrap_or(0),
         };
         self.selected = Some(rows[to].rel.clone());
+        self.selected_at = Some(to);
     }
 
     /// The selected row as shown with `filter`.
@@ -348,14 +485,12 @@ impl FileTree {
             .filter(|(rel, _)| !self.ignored.contains(rel))
             .collect();
         let deleted: Vec<(PathBuf, bool)> = self
-            .marks
-            .iter()
-            .filter(|(path, mark)| {
-                **mark == Mark::Deleted
-                    && path.parent() == Some(dir)
-                    && !children.iter().any(|(rel, _)| rel == *path)
-            })
-            .map(|(path, _)| (path.clone(), false))
+            .deleted
+            .get(dir)
+            .into_iter()
+            .flatten()
+            .filter(|path| !children.iter().any(|(rel, _)| rel == *path))
+            .map(|path| (path.clone(), false))
             .collect();
         if !deleted.is_empty() {
             children.extend(deleted);
@@ -367,14 +502,25 @@ impl FileTree {
         Some(children)
     }
 
-    /// Entry `rel`'s mark: its own; a folder's from what it holds; else that of an untracked
-    /// folder it is in.
+    /// Entry `rel`'s mark: its own; a folder's from what it holds; else Added when it is in an
+    /// untracked folder (git lists only the folder, `new/`). None inside a nested repo or
+    /// submodule: its own state isn't this repo's (`set_nested`), and a modified submodule's
+    /// ` M sub` isn't passed down.
     fn mark_of(&self, rel: &Path, is_dir: bool) -> Option<Mark> {
-        self.marks
+        let mut folders = rel.ancestors().skip(1);
+        if folders.clone().any(|a| self.is_nested(a)) {
+            return None;
+        }
+        let own = self
+            .marks
             .get(rel)
-            .or_else(|| is_dir.then(|| self.folder_marks.get(rel)).flatten())
-            .or_else(|| rel.ancestors().skip(1).find_map(|a| self.marks.get(a)))
-            .copied()
+            .or_else(|| is_dir.then(|| self.folder_marks.get(rel)).flatten());
+        own.copied().or_else(|| {
+            folders
+                .find_map(|a| self.marks.get(a))
+                .filter(|&&m| m == Mark::Added)
+                .copied()
+        })
     }
 
     fn row(&self, rel: PathBuf, depth: usize, is_dir: bool, expanded: bool) -> Row {
@@ -445,6 +591,7 @@ mod tests {
     use crate::git_status::{DirEntry, Mark};
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
@@ -477,7 +624,8 @@ mod tests {
     /// A repo: src/ (main.rs, util/ (a.rs)), docs/, README.md, Cargo.toml; root and src listed.
     fn tree() -> FileTree {
         let mut t = FileTree::new(p("/repo"), None);
-        // Given out of order: the tree sorts folders first, then by name in any case.
+        // Given out of order: `expand` sorts folders first, then by name in any case (the
+        // panel's listings come sorted from the background; `relist` keeps their order).
         t.expand(
             p(""),
             vec![
@@ -842,5 +990,170 @@ mod tests {
         // prints it.
         assert_eq!(nfc("caf\u{65}\u{301}.txt"), "caf\u{e9}.txt");
         assert_eq!(nfc("plain.txt"), "plain.txt");
+    }
+
+    #[test]
+    fn rows_are_built_again_only_when_the_tree_or_the_filter_changes() {
+        let mut t = tree();
+        let mut cache = RowCache::default();
+        let first = cache.rows(&t, "");
+        assert!(Rc::ptr_eq(&first, &cache.rows(&t, "")), "nothing changed");
+        assert_eq!(cache.builds(), 1);
+        // The selection isn't in the rows.
+        t.select(Path::new("src/main.rs"));
+        t.select_next("");
+        assert!(Rc::ptr_eq(&first, &cache.rows(&t, "")));
+        // A refresh that finds the same: still the same rows.
+        t.relist(p("src"), vec![dir("util"), file("main.rs")], 0);
+        t.set_marks(HashMap::new());
+        t.set_ignored(HashSet::new());
+        t.set_nested(Path::new("src"), HashSet::new());
+        t.restore_expanded(HashSet::from([p("src")]));
+        t.collapse(Path::new("docs")); // already closed
+        assert!(
+            Rc::ptr_eq(&first, &cache.rows(&t, "")),
+            "a refresh with no change"
+        );
+        assert_eq!(cache.builds(), 1);
+        // Each change builds them again: another filter, and each change to the tree.
+        cache.rows(&t, "main");
+        assert_eq!(cache.builds(), 2);
+        let changes: [&dyn Fn(&mut FileTree); 7] = [
+            &|t| {
+                t.toggle(Path::new("docs"));
+            },
+            &|t| t.collapse(Path::new("docs")),
+            &|t| t.relist(p("src"), vec![file("main.rs")], 0),
+            &|t| t.set_marks(HashMap::from([(p("src/main.rs"), Mark::Modified)])),
+            &|t| t.set_ignored(HashSet::from([p("README.md")])),
+            &|t| t.restore_expanded(HashSet::from([p("docs")])),
+            &|t| t.set_nested(Path::new(""), HashSet::from([p("docs")])),
+        ];
+        for (i, change) in changes.iter().enumerate() {
+            let before = cache.rows(&t, "");
+            change(&mut t);
+            let after = cache.rows(&t, "");
+            assert!(!Rc::ptr_eq(&before, &after), "change {i} builds them again");
+        }
+        // A new tree (another root) never takes an old tree's rows.
+        let other = FileTree::new(p("/other"), None);
+        assert!(cache.rows(&other, "").is_empty());
+    }
+
+    #[test]
+    fn a_submodule_or_nested_repo_marks_only_itself() {
+        let mut t = tree();
+        t.expand(p("docs"), vec![dir("sub"), dir("nest"), dir("plain")], 0);
+        t.expand(p("docs/sub"), vec![file("x.rs")], 0);
+        t.expand(p("docs/nest"), vec![file("y.rs")], 0);
+        t.expand(p("docs/plain"), vec![file("z.md")], 0);
+        // docs/sub is a submodule (` M docs/sub`), docs/nest an untracked repo inside this one
+        // (`?? docs/nest/`, as git prints a plain untracked folder too): both hold a `.git`.
+        t.set_nested(
+            Path::new("docs"),
+            HashSet::from([p("docs/sub"), p("docs/nest")]),
+        );
+        t.set_marks(HashMap::from([
+            (p("docs/sub"), Mark::Modified),
+            (p("docs/nest/"), Mark::Added),
+            (p("docs/plain/"), Mark::Added),
+        ]));
+        let rows = t.rows("");
+        let mark = |rel: &str| rows.iter().find(|r| r.rel == p(rel)).and_then(|r| r.mark);
+        assert_eq!(mark("docs/sub"), Some(Mark::Modified), "its own state");
+        assert_eq!(mark("docs/sub/x.rs"), None, "its contents: not this repo's");
+        assert_eq!(mark("docs/nest"), Some(Mark::Added));
+        assert_eq!(mark("docs/nest/y.rs"), None);
+        assert_eq!(
+            mark("docs/plain/z.md"),
+            Some(Mark::Added),
+            "an untracked folder's"
+        );
+        // Only an untracked folder passes its mark down: a modified one (not known to be a
+        // repo) doesn't.
+        let mut t = tree();
+        t.expand(p("docs"), vec![dir("sub")], 0);
+        t.expand(p("docs/sub"), vec![file("x.rs")], 0);
+        t.set_marks(HashMap::from([(p("docs/sub"), Mark::Modified)]));
+        let rows = t.rows("");
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.rel == p("docs/sub/x.rs"))
+                .and_then(|r| r.mark),
+            None
+        );
+    }
+
+    #[test]
+    fn the_selection_stays_near_when_its_row_goes() {
+        let mut t = FileTree::new(p("/big"), None);
+        let root = vec![
+            dir("app"),
+            dir("lib"),
+            file("a.js"),
+            file("b.js"),
+            file("c.js"),
+        ];
+        t.expand(p(""), root, 0);
+        t.expand(p("lib"), vec![file("x.js")], 0);
+        for _ in 0..3 {
+            t.select_next("");
+        }
+        assert_eq!(t.selected(), Some(Path::new("lib/x.js")));
+        // Its folder closed: the next move lands on that folder, not the top.
+        t.collapse(Path::new("lib"));
+        t.select_next("");
+        assert_eq!(t.selected(), Some(Path::new("lib")));
+        // b.js (the fourth row) gone from the disk: a move lands where it was.
+        t.select_next("");
+        t.select_next("");
+        assert_eq!(t.selected(), Some(Path::new("b.js")));
+        t.relist(
+            p(""),
+            vec![dir("app"), dir("lib"), file("a.js"), file("c.js")],
+            0,
+        );
+        t.select_prev("");
+        assert_eq!(
+            t.selected(),
+            Some(Path::new("c.js")),
+            "the row now in its place"
+        );
+    }
+
+    #[test]
+    fn relist_on_a_closed_folder_keeps_it_closed() {
+        let mut t = tree();
+        t.collapse(Path::new("src"));
+        t.relist(
+            p("src"),
+            vec![dir("util"), file("main.rs"), file("lib.rs")],
+            0,
+        );
+        assert!(!t.expanded_set().contains(Path::new("src")));
+        assert!(
+            !t.rows("")
+                .iter()
+                .any(|r| r.rel.starts_with("src") && r.depth > 0)
+        );
+    }
+
+    #[test]
+    fn reopening_a_folder_wants_its_remembered_open_folders_too() {
+        let mut t = tree();
+        // util opened, then src closed before util's listing came.
+        t.toggle(Path::new("src/util"));
+        t.collapse(Path::new("src"));
+        assert!(t.wanted().is_empty(), "util can't be seen");
+        assert_eq!(t.toggle(Path::new("src")), Some(Want::List(p("src"))));
+        assert_eq!(t.wanted(), vec![p("src/util")], "listed with it");
+    }
+
+    #[test]
+    fn sorting_entries_puts_folders_first_then_names_in_any_case() {
+        let mut entries = vec![file("b.rs"), dir("Zed"), file("A.rs"), dir("api")];
+        sort_entries(&mut entries);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["api", "Zed", "A.rs", "b.rs"]);
     }
 }

@@ -3851,6 +3851,19 @@ fn files_scenes() {
                 })
                 .expect("read");
             assert!(typing, "{n}: the box has the keyboard");
+            // ← → from the box don't touch the tree.
+            let tree_state = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let tree = ws.read(cx).right_sidebar.files.tree.as_ref().map(|t| {
+                        let selected = t.selected().map(|s| s.to_path_buf());
+                        (t.expanded_set(), selected)
+                    });
+                    tree.expect("the tree")
+                })
+            };
+            let before = tree_state(cx);
+            cx.simulate_keystrokes(window, "right left left");
+            assert_eq!(tree_state(cx), before, "{n}: ← → in the box change nothing");
             cx.simulate_keystrokes(window, "alt-cmd-\\");
             frame(cx, window);
             let (hidden, terminal_keys) = cx
