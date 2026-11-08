@@ -47,6 +47,8 @@ the focused terminal is doing; the **tab bar** is clean; the **Files** tree has 
 
 ## 1. Smart names everywhere
 
+> [!warning] **Reverted by you on 2026-11-09** ("I still want the ╭∩╮ to be my default terminal name. It's my signature." … "we go back as before, unless its a process thing that auto rename the cli"). A terminal is called **your name, else the program's own title, else its preset, else ╭∩╮**; a workspace, your name, else its focused terminal's name, as before M11i. The `ps` look-up stays for the status bar, the port chips and the idle dot/ring only. The rules below are kept for the record.
+
 ### What a terminal is called (AI's call: the rules and their order)
 
 The first that applies wins:
@@ -331,13 +333,14 @@ reads at 4.5:1 on every built-in theme, light or dark.
 
 ## On-screen checklist (pending, after the combined release)
 
-1. A new terminal at a prompt in `~/Kerja/proj/fuxx-cli` is called `fuxx-cli` in its tab and its sidebar row; in
-   your home folder, `~`. ╭∩╮ shows at most for a moment.
-2. Run `claude`: within a few seconds the tab and the row say `claude · fuxx-cli`; quit it and they go back to
-   `fuxx-cli`.
-3. Run `npm run dev` (or `cargo test`, `vim`): the names read `npm run dev · <folder>` (`cargo test · …`, `vim · …`).
-4. Rename a tab and a workspace: your names stay whatever runs; clearing a name brings the smart one back.
-5. An SSH terminal reads `<host>`, then `<host> · <folder>` once the remote shell reports its folder.
+1. A new terminal at a prompt is called `╭∩╮` in its tab and its sidebar row (your names change, 2026-11-09).
+2. A program that sets its own terminal title (e.g. Claude Code) shows that title; when it stops, the name goes
+   back to `╭∩╮` (or the preset's name for a preset terminal).
+3. `npm run dev`, `cargo test` or `vim` that don't set a title leave the name as it was; the status bar still says
+   `Running`, and the row's idle dot is filled.
+4. Rename a tab (double-click it, or right-click → Rename Tab…) and a workspace (double-click its row, or ⌘R),
+   on an idle terminal and on one running a program: the name sticks; clearing it brings the automatic one back.
+5. An SSH terminal reads as its title or `╭∩╮`; the status bar shows `ssh <host>`.
 6. The sidebar rows are two tight lines (name, then `branch • folder`); a waiting row's second line reads
    `Needs input · <question>`.
 7. An idle row's mark: a hollow ring at a prompt, a filled dot while a quiet program (a dev server) runs.
@@ -366,8 +369,8 @@ reads at 4.5:1 on every built-in theme, light or dark.
 19. Animations off or macOS Reduce motion on: the status bar's mark is still, nothing slides that didn't before.
 20. Activity Monitor: fuxx idle in front uses no noticeably more CPU than v0.4.1 (the 3 s names lookup and the 5 s
     ports lookup are the only new work).
-21. Switch workspaces and back: a background tab's `npm run dev · <folder>` name doesn't blink back to the folder.
-22. Hide the left sidebar, press ⌘P and type `claude`: the workspace running claude is found.
+21. Switch workspaces and back: names don't change by themselves (no blinking).
+22. Hide the left sidebar, press ⌘P and type a name you gave a workspace: it's found.
 
 ## Settled before planning (AI's calls after a builder's read, 2026-11-08)
 
@@ -418,10 +421,14 @@ task's review and the final whole-branch review):
   when it comes *right after* the tool and is a clean word (letters, digits, `. _ : -`, at most 32 characters, no
   `=`, `/`, `~`, leading `+` or `.`), and never after `--`. Otherwise the tool's name stands alone
   (`docker run -e TOKEN=…` → `docker`). Window titles and banners are therefore safe to show.
-- **`ps`** runs with `LC_ALL=en_US.UTF-8`, reads its output as lossy UTF-8 and skips zombies (`stat=`). It reads
-  **every local terminal** from each table (the table is system-wide, so this costs nothing), so names stay steady
-  when a terminal leaves the screen, and ⌘P and the notification list keep program names with the sidebar hidden.
-  A failed or timed-out `ps` waits 30 s and keeps the last good names.
+- **`ps`** runs with `LC_ALL=en_US.UTF-8`, reads its output as lossy UTF-8 and skips zombies (`stat=`), only for
+  what shows it (each visible row's terminal and the followed one); a failed or timed-out `ps` waits 30 s and keeps
+  the last answer. **Names no longer come from it** (your revert, 2026-11-09, below).
+- **Names reverted by you (2026-11-09):** your name, else the program's own title, else the preset, else `╭∩╮`
+  (`Session::label`), everywhere: tabs, rows, the window title, banners, ⌘P. `smart_name.rs` is gone. The folder
+  look-up runs only for each visible row's first terminal and the followed one. Renaming was checked by a
+  screenshot test that types a new name (double-click a tab, double-click a row, ⌘R; idle and running; the
+  program changing its title meanwhile): the name sticks; no fault was found in the code, so check it on screen.
 - **`ring_waiting`** is pushed to 4.5:1 on the waiting tints and the selection, in every theme (hue kept).
 - **A waiting row's whole question** is in the row's tooltip (line 2 cuts it; below 200 pt it isn't drawn).
 - **The card shadow's blur of 6 is a GPUI Gaussian sigma**, about CSS `0 1px 12px`: soft and wide, subtle in the

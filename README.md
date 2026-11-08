@@ -91,8 +91,7 @@ Preferences (⌘,) has sections down the left (General, Appearance, Sessions, Br
 
 ## The 2026 look (M11i)
 
-Terminals name themselves after what runs in them: `claude · fuxx-cli`, `npm run dev · api`, or just the folder at a
-prompt (flag values and paths never show). Sidebar rows are two compact lines with a soft tinted selection. Panes
+A new terminal is called `╭∩╮` until you rename it (or a program gives it a title). Sidebar rows are two compact lines with a soft tinted selection. Panes
 and the right sidebar float as rounded cards with small gaps; the focused split has an accent edge. The tab bar has
 only **+**, **⋯** (New Terminal Tab, New Browser Tab, Split Right, Split Down) and the right-sidebar toggle. The Files
 tree has coloured file icons, indent guides, a root header and collapse all. A **status bar** along the bottom shows
