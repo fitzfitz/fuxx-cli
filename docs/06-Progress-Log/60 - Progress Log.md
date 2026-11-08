@@ -14,13 +14,22 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11d — Help menu 🟨 built and reviewed (2026-11-08, merged into `master` locally, not pushed), on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-08 — v0.3.0 released; installed on your Mac
+- **Did:** On your word: merged `m11e-update-available` into `master` (fast-forward; 834 tests pass on master), pushed
+  `master` (M11d and M11e, 20 commits), and pushed tag `v0.3.0`. The Release workflow went green on its first run
+  (run 42429479670): https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.0 with `fuxx-0.3.0.zip` and its digest.
+  Downloaded it with curl and checked it the updater's way (digest, one `fuxx.app`, id, version 0.3.0, signature, no
+  quarantine), then installed it into `~/Applications` (the last manual install). It opened, and removed
+  `fuxx.app.previous` itself once its window was up.
+- **Next:** on your word, release v0.3.1 (a version bump) and run note 57's checklist items 4–12 on screen.
 
 ### 2026-11-08 — M11e built: Update Available (release and on-screen check pending)
 - **Did:** Task 0's spike passed on your Mac (no quarantine via curl, no "Open Anyway", notification permission kept;

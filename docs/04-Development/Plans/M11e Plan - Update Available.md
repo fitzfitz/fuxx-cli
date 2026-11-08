@@ -13,8 +13,8 @@ updated: 2026-11-08
 |---|---|
 | **Milestone note** | [[57 - Milestone 11e - Update Available]] (the spec) |
 | **Status** | 🟨 Tasks 0–5 built and reviewed 2026-11-08 (834 tests); Tasks 6–8 need your word / your eyes |
-| **Tasks done** | 6 / 9 (Tasks 0–5); Task 9 docs partly (built state) |
-| **▶ Pick up here** | Task 6: merge and push, on your word |
+| **Tasks done** | 8 / 9 (Tasks 0–7); Task 9 docs partly |
+| **▶ Pick up here** | Task 8: release v0.3.1 on your word, then the on-screen checklist |
 | **Decisions used** | Yours (2026-11-08): an updater without M12; fuxx's own (not Sparkle); a blue rounded "Update Available" above the bottom bar; releases by GitHub Actions on a tag; skip the questions. The rest: AI's call, in note 57. |
 | **Needs your eyes** | 👀 Task 0 (spike), Task 7 (first release, your word), Task 8 (on screen) |
 
@@ -237,16 +237,16 @@ of `fuxx.app.previous`).
   `__ui-shots`, `scripts/bundle-mac.sh --app-only` → ok.
 - [x] **Step 5: commit** `feat(m11e): install the update — download, check, swap and reopen`.
 
-### Task 6: Merge and push (your word)
+### Task 6: Merge and push (your word) — ✅ (2026-11-08)
 
 After the whole-branch review: merge to `master` and push `master` to origin. Both only on your word.
 
-### Task 7: The first release, v0.3.0 — 👀 (your word)
+### Task 7: The first release, v0.3.0 — ✅ (2026-11-08)
 
-- [ ] On your word, Claude tags `v0.3.0` on `master` and pushes the tag. Then it watches the Release run
+- [x] On your word, Claude tags `v0.3.0` on `master` and pushes the tag. Then it watches the Release run
   (`gh run watch`). If the run is red, the fix goes into Task 1's files with a new commit and a new patch version, so
   the tag is never moved.
-- [ ] Install 0.3.0 into `~/Applications` by Task 0's route, from the release's zip this time (the last manual
+- [x] Install 0.3.0 into `~/Applications` by Task 0's route, from the release's zip this time (the last manual
   install).
 
 ### Task 8: On screen — 👀 (you)

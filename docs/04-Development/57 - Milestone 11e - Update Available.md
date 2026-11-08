@@ -5,7 +5,7 @@ status: built
 
 # 57 - Milestone 11e - Update Available
 
-**Status:: 🟨 Built and reviewed 2026-11-08 (834 tests); the first release and the on-screen check are pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11e Plan - Update Available]]
+**Status:: 🟨 Built, merged and released as v0.3.0 (2026-11-08); the on-screen check of the update itself (v0.3.1) is pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11e Plan - Update Available]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]]). It comes before M12 and doesn't need it.
 
 ## Goal
@@ -158,7 +158,7 @@ Where the build settled something the plan left open, or changed it:
    script, opens with **no "Open Anyway"**.
 2. ✅ (2026-11-08) **Task 0 (spike):** Help → Notifications Status… says fuxx can send its own notifications without asking again
    (the permission survived the swap).
-3. Pushing tag `v0.3.0` runs the Release workflow to green, and the release page shows `fuxx-0.3.0.zip`.
+3. ✅ (2026-11-08, run 42429479670, green on the first run) Pushing tag `v0.3.0` runs the Release workflow to green, and the release page shows `fuxx-0.3.0.zip`.
 4. With 0.3.0 installed and `v0.3.1` released, within about 10 s of opening fuxx the blue **Update Available** button
    is above the footer.
 5. Clicking it shows "fuxx 0.3.1 is available", with "You have 0.3.0." and the notes.
