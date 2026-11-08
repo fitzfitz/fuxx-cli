@@ -5,7 +5,7 @@ status: approved
 
 # 59 - Milestones 11g–11h - Right Sidebar and File Tabs (design)
 
-**Status:: ✅ Design approved by you 2026-11-08 ("lets go"). 🟨 M11g built and reviewed 2026-11-08 (953 tests), releasing as v0.4.0; on-screen check pending. M11h next.**  ·  **Phase 4: M11 extensions.**
+**Status:: ✅ Design approved by you 2026-11-08 ("lets go"). 🟨 M11g built and reviewed 2026-11-08 (953 tests), releasing as v0.4.0; on-screen check pending. 🟦 M11h planned 2026-11-08 (after M11i; every gap AI's call, below): [[M11h Plan - Changes, Diff View, Activity]].**  ·  **Phase 4: M11 extensions.**
 **Changes the scope** (your decision, 2026-11-08): [[12 - Scope]] says "Being a general IDE / editor" is out. This
 design brings in a **read-only file viewer**, but **not an editor**. If you approve, Scope is updated before
 planning.
@@ -208,6 +208,113 @@ Where the build settled something the plan left open, or changed it (rulings mad
 12. Delete an open file: its tab says "This file no longer exists". Quit and reopen fuxx: file tabs come back.
 13. Switch themes (light and dark): the file tab's colours follow and stay readable.
 14. With the sidebar and a file tab open next to an agent streaming output, fuxx stays smooth (Activity Monitor).
+
+## M11h settled before planning (AI's calls, 2026-11-08)
+
+You skipped the design questions. Re-reading "Changes", "Activity" and "Diff view" as the builder who must plan
+them, inside M11i's new look, these were the places they would have had to guess:
+
+1. **The panel tabs.** The "Files" strip at the top of the right sidebar's card becomes a row of three text tabs,
+   **Files · Changes · Activity**, drawn like M11i's pane tab bar: the 30 pt strip in `tab_bar`, tabs 4 pt from
+   its top with 6 pt top corners, the active one filled with `card` (merging into the panel) in `text`, the others
+   unfilled in `text_dim`, `tab_hover` on hover. No counts or badges on them. The strip's empty part still drags
+   the window. The last panel shown is remembered in `sessions.json` (`right_sidebar_panel`: `files`, `changes`
+   or `activity`; missing or unknown: Files), like the sidebar's open state and width.
+2. **Only the panel on screen does work.** Files lists and marks only while Files shows; Changes asks git only while
+   Changes shows; Activity asks nothing. Switching panels brings the new one up to date at once. Leaving Files
+   while its filter box or tree has the keyboard gives the keyboard to the focused tab (as closing the sidebar
+   does).
+3. **Changes and Activity don't take the keyboard** (no new key bindings): they are clicked. A click on a Changes
+   row opens the diff, and that tab takes the keyboard. Files keeps its M11g keys.
+4. **What Changes lists.** Every file that differs from `HEAD`, staged or not, from one
+   `git status --porcelain=v1 -z --untracked-files=all --no-renames` and one
+   `git diff HEAD --numstat -z --no-renames`. Untracked files are listed one by one (not as a folder). A rename
+   shows as the old path **D** and the new one **A**. A conflict is **M**. In a repo with no commits yet, every file
+   is **A**. Sorted by path, case-insensitive. At most **1,000** rows, then a `… N more` row (as the Files tree).
+5. **Line counts.** From `--numstat`. An untracked file (and every file before the first commit) is counted by
+   reading it: only a plain text file of at most 2 MB, and at most 200 such files per refresh; others show no count.
+   A binary file shows `binary`. Counts show as `+12 −3` (a zero side left out), in the theme's green and red,
+   pushed to 4.5:1 (they are text) on the card, its hover and its selection.
+6. **A Changes row (22 pt):** the mark letter in its Files colour, the file's name (13 pt, `text`), its folder
+   (11 pt, `text_faint`, cut at its end; the whole path in the tooltip), and the counts at the right. The row of the
+   file whose diff tab is focused is drawn selected (`card_selected`). **Header** (40 pt, the Files root header's
+   style): the repo's name (13 pt semibold) with `N files` at the right (11 pt, `text_faint`), and under it the
+   totals `+120 −34`. Empty states: "No changes since the last commit.", "Not a git repository.", and for an SSH
+   terminal "Changes aren't shown for SSH terminals." The root is found as the Files tree's (the repo's top
+   folder). Refreshed every 2 s while shown; a failed or slow git keeps the last list and backs off 2 → 30 s, as
+   Files does.
+7. **One tab per file per pane, whatever its mode.** Opening a file that already has a tab in the pane selects that
+   tab and sets its mode: from Files, **Plain**; from Changes, **Diff**. The toggle changes the tab's mode in place.
+   The mode is saved with the tab (`TabKind::File { path, mode }`, already in M11g's save format).
+8. **Where the diff comes from.** git's whole-file diff against `HEAD` with every line as context
+   (`git diff HEAD -U<lines on disk + 1>`), parsed into rows: unchanged, removed, added. An untracked file, or any
+   file before the first commit, is all added. A deleted file shows its old lines, all removed (its tab is not
+   "This file no longer exists" while git has its old lines). Notes instead of rows: an unchanged file, "No
+   changes since the last commit."; a binary one, "This file is binary: no diff to show."; outside a repo, "Not a
+   git repository."; over 20 MB, M11g's "too large or binary". Over 2 MB, the diff is shown uncoloured.
+9. **How the diff looks.** One column. The gutter: the old line number, the new line number (both `text_faint`,
+   right-aligned, 8 pt apart), then a sign column one character wide (`−` in the change bars' red, `+` in their
+   green), then the text. Removed rows are tinted red and added rows green at the change bars' 12 %. Unchanged
+   rows are **dimmed**: each colour mixed 35 % toward the background, but never below 4.5:1 (or its own contrast, if
+   that was lower; never below 3:1). Syntax colours stay on: the old and the new side are each coloured whole, and
+   each row takes its side's colours.
+10. **The toggle.** Two joined buttons in the file tab's toolbar, **File | Diff**, before Open in Editor; the current
+    one filled with `card_selected` in `text`, the other in `text_dim`. Shown for a file inside a repo, and always
+    while the tab is in Diff mode (so it can go back). Tooltips: "Show the file" and "Show the changes since the
+    last commit".
+11. **From a change bar.** Clicking a change bar (or a deleted-lines ▸) in a plain file tab switches it to Diff,
+    showing that change. A changed line's change starts at its first removed row.
+12. **Scroll, find, copy.** The diff opens with its first change 3 rows from the top. Each mode keeps its own scroll
+    while the tab is open. ⌘F searches the rows' text; ⌘C copies it without the signs or numbers.
+13. **Live diff.** As the change bars: looked up when the file changes on disk, every 5 s while shown, at most once
+    every 2 s; a failed or slow git keeps the rows shown.
+14. **What Activity records.** Every status change (Idle too) with its time and how long the status before it
+    lasted; a Waiting entry keeps its question. Each `fuxx note` (a blank note, a cleared one, or the same note again
+    isn't a new entry). Each `fuxx progress` (cleared progress isn't an entry; updates in a row are **one** entry,
+    the latest, so a script reporting ten times a second fills nothing). Notes put back after a relaunch aren't
+    entries. The last **200** per terminal, in memory, for the run; a terminal's log goes when it closes. Not shown
+    to scripts.
+15. **"Done 14:20 — 11 min".** The minutes are how long the status before Done lasted, which is what note 59's
+    example adds up to (Waiting 14:09 → Done 14:20). After Working it is how long it worked. Durations read
+    `45 s`, `11 min`, `1 h 5 min`, `2 h`. Times are this Mac's local 24-hour `HH:MM`.
+16. **The Activity panel.** Header (40 pt, the Files root header's style): the terminal's name (13 pt semibold),
+    and under it the status bar's words (`Working · 4m`, `Needs input · 2m` in `ring_waiting`, …). While it waits,
+    a card under the header (`waiting_tint`, 6 pt corners, 8 pt padding, 6 pt from the sides): `Needs input` (11 pt,
+    `ring_waiting`) and the whole question, wrapped. Then the timeline, **newest first**, 22 pt rows: the time
+    (11 pt, `text_faint`), the status's still mark (10 pt; a 4 pt dot for a note or progress), and the words
+    (`Working`, `Needs input`, `Done — 11 min`, `Idle`, the note, `Progress 42% · build`); a long row is cut, its
+    whole text (and a Waiting entry's question) in the tooltip. Empty states: "No activity yet." and "No terminal
+    to follow." Nothing in it animates.
+17. **Nothing new besides.** No new crates, settings, key bindings or menu items; the scripting API is unchanged.
+    Released in the one release after M11l (your rule), not on its own.
+
+## M11h on-screen checklist (pending)
+
+1. The right sidebar's top shows three tabs, **Files · Changes · Activity**; the active one merges into the panel.
+   Switch to Changes, quit and reopen fuxx: Changes is still shown.
+2. At the narrowest sidebar (220 pt) all three tabs fit.
+3. In a repo with edits: Changes lists each changed file with **M**/**A**/**D**, its folder, and `+N −M`; a new
+   untracked file is **A** with its line count; a binary file says `binary`. The header shows the repo's name,
+   `N files` and the totals.
+4. Commit everything: Changes says "No changes since the last commit." within a few seconds. `cd` out of any
+   repo: "Not a git repository." An SSH terminal: "Changes aren't shown for SSH terminals."
+5. Let an agent edit files: new entries appear within about 2 s, without the window stuttering.
+6. Click a Changes row: the file opens as a tab in **diff mode**: removed lines red with `−`, added lines green with
+   `+`, unchanged lines dimmer, two line-number columns, syntax colours on, the first change near the top. The
+   row stays highlighted while that tab is focused.
+7. The toolbar's **File | Diff** switches the same tab between the file and the diff; quit and reopen: the tab
+   comes back in the mode you left it.
+8. In a plain file tab, click a change bar: it switches to the diff at that change.
+9. A deleted file's row opens a diff of its old lines, all removed. An unchanged file in Diff mode says "No
+   changes since the last commit."
+10. ⌘F in a diff finds text in it; select some lines and ⌘C: the paste has no `+`/`−` signs or numbers.
+11. Activity shows the focused terminal's timeline, newest first: `Working 14:02`, `Needs input 14:09`, `Done — 11
+    min 14:20`; switching terminals switches it.
+12. While an agent waits, Activity shows its whole question in a card under the header.
+13. `fuxx note "migrating"` and `fuxx progress 40 --label build` appear as entries; a loop of `fuxx progress` updates
+    stays one entry.
+14. Light and dark themes (Latte, Mocha and one other of each): tabs, counts, diff tints and dimmed lines read
+    clearly; Reduce motion on: nothing in the panels moves.
 
 ## Left to the builder
 
