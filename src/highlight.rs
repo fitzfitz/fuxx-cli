@@ -67,11 +67,6 @@ impl Highlighter {
         }
     }
 
-    pub fn set_theme(&mut self, theme: &Theme) {
-        self.theme = syntect_theme(theme);
-        self.foreground = theme.foreground;
-    }
-
     /// One `Vec` per line (a line keeps its `\n`, so the ranges cover every byte). The syntax is
     /// found by file extension, then by the first line; otherwise the text is plain. An empty text
     /// is one empty line.

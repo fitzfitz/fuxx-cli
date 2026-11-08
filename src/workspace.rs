@@ -2191,15 +2191,19 @@ impl Workspace {
                 }
             }
         }
-        // Cached: a terminal repaints only when it says it changed (or its bounds do), not each
-        // time the workspace redraws (the marks' ticker, the sidebar). One whose padding just
-        // changed is drawn afresh this frame: it can't notify itself mid-frame.
+        // Cached: a terminal or a file tab repaints only when it says it changed (or its bounds
+        // do), not each time the workspace redraws (the marks' ticker, the sidebar). A terminal
+        // whose padding just changed is drawn afresh this frame: it can't notify itself
+        // mid-frame.
         let view = |id: PaneId| {
             if let Some(browser) = self.pane_browser_tab(id) {
                 return Some(browser.into_any_element());
             }
             if let Some(file) = self.pane_file_tab(id) {
-                return Some(file.into_any_element());
+                return Some(
+                    file.cached(StyleRefinement::default().size_full())
+                        .into_any_element(),
+                );
             }
             find(id).map(|view| {
                 if resplit.contains(&id) {

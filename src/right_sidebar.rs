@@ -8,23 +8,25 @@
 //! window draws it narrower (`drawn_width`) so the panes keep 200 pt.
 //!
 //! It follows the focused terminal (with a browser or file tab focused, the last terminal it
-//! followed): that terminal's folder, found like a sidebar row's (`git_branch::refresh_places`:
-//! its OSC 7 report, else the kernel's answer, else the folder it started in; an SSH terminal's
-//! only as reported). The lookup runs off the UI thread, on a focus change and every 2 s while
-//! the sidebar can be seen (`tick_right_sidebar`, which stops once it can't).
+//! followed; none yet, as after a relaunch, the focused workspace's first terminal): that
+//! terminal's folder, found like a sidebar row's (`git_branch::refresh_places`: its OSC 7
+//! report, else the kernel's answer, else the folder it started in; an SSH terminal's only as
+//! reported). The lookup runs off the UI thread, on a focus change and every 2 s while the
+//! sidebar can be seen (`tick_right_sidebar`, which stops once it can't).
 //!
 //! The Files panel (under a "Files" header level with the tab bars): the tree of that folder's
 //! repo (`file_tree::FileTree`), rooted at the repo's top folder with the terminal's folder
 //! open and selected, else at the folder itself. Folders are listed one at a time as they open,
 //! each with one `git check-ignore` batch; marks come from `git status`. All of it runs on the
 //! background executor, again when the sidebar is shown, when the terminal or its folder
-//! changes, and every 2 s while it can be seen. A filter box above it; ↑ ↓ → ← Return and Esc
-//! in it (key context `FileTree`); a click on a file opens it in a file tab. The panel has its
-//! own focus: closing the sidebar while it has the keyboard gives the keyboard to the focused
-//! tab. An SSH terminal's files aren't shown.
+//! changes, and every 2 s while it can be seen (`back_off`: longer, up to 30 s, while git status
+//! fails or hits its cap; a failed git answer keeps the marks and ignored files shown). A filter
+//! box above it; ↑ ↓ → ← Return and Esc in it (key context `FileTree`); a click on a file opens
+//! it in a file tab. The panel has its own focus: closing the sidebar while it has the keyboard
+//! gives the keyboard to the focused tab. An SSH terminal's files aren't shown.
 //!
-//! `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder` and `lookup_due` are pure and
-//! tested, as is the tree.
+//! `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder`, `lookup_due` and `back_off` are
+//! pure and tested, as is the tree.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -185,8 +187,9 @@ struct Listed {
     /// Shown entries, sorted, at most `file_tree::CAP`.
     entries: Vec<DirEntry>,
     more: usize,
-    /// What git ignores in it (paths from the root).
-    ignored: HashSet<PathBuf>,
+    /// What git ignores in it (paths from the root); none: git didn't answer (the folder's last
+    /// answer stays, and filtered these entries).
+    ignored: Option<HashSet<PathBuf>>,
     /// Its folders holding a `.git`: nested repos and submodules (paths from the root).
     nested: HashSet<PathBuf>,
 }
@@ -194,8 +197,15 @@ struct Listed {
 /// Folder `rel`'s listing (from the `root`) as the tree shows it, read off the UI thread: its
 /// entries with names precomposed (as git prints them) and sorted; in a repo, what git ignores
 /// in it (one batch) and which of its folders are nested repos; then `file_tree::shown_entries`
-/// (the ignored and hidden left out before the cap).
-fn list_folder(git: Option<&Path>, root: &Path, rel: &Path, in_repo: bool) -> Listed {
+/// (the ignored and hidden left out before the cap). When git doesn't answer (slow or failing),
+/// the folder's last answer (`last`) filters it, so `target/` doesn't show until the next one.
+fn list_folder(
+    git: Option<&Path>,
+    root: &Path,
+    rel: &Path,
+    in_repo: bool,
+    last: Option<HashSet<PathBuf>>,
+) -> Listed {
     let dir = root.join(rel);
     let (entries, _) = git_status::list_dir(&dir, usize::MAX);
     let mut entries: Vec<DirEntry> = entries
@@ -211,9 +221,11 @@ fn list_folder(git: Option<&Path>, root: &Path, rel: &Path, in_repo: bool) -> Li
             let paths: Vec<PathBuf> = entries.iter().map(|e| rel.join(&e.name)).collect();
             git_status::ignored(git, root, &paths)
         }
-        None => HashSet::new(),
+        None => Some(HashSet::new()),
     };
-    let (entries, more) = file_tree::shown_entries(rel, entries, &ignored, in_repo);
+    let filter = ignored.as_ref().or(last.as_ref());
+    let none = HashSet::new();
+    let (entries, more) = file_tree::shown_entries(rel, entries, filter.unwrap_or(&none), in_repo);
     let nested = entries
         .iter()
         .filter(|e| in_repo && e.is_dir && dir.join(&e.name).join(".git").exists())
@@ -271,6 +283,9 @@ pub(crate) struct FilesPanel {
     listing: HashSet<PathBuf>,
     /// When the last refresh started; none: refresh now.
     refreshed: Option<Instant>,
+    /// How long after it the next one starts: `REFRESH`, longer while git status fails or is
+    /// slow (`back_off`).
+    wait: Duration,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -293,6 +308,7 @@ impl FilesPanel {
             refreshing: false,
             listing: HashSet::new(),
             refreshed: None,
+            wait: REFRESH,
             _subscriptions: Vec::new(),
         }
     }
@@ -334,9 +350,11 @@ impl FilesPanel {
         self.ignored.clear();
         self.listing.clear();
         self.refreshing = false;
+        self.wait = REFRESH;
     }
 
-    /// Folders' listings for the tree at `root` (dropped if the tree has moved on).
+    /// Folders' listings for the tree at `root` (dropped if the tree has moved on). A folder
+    /// git didn't answer for keeps what it ignored last.
     fn listed(&mut self, root: &Path, listings: Vec<(PathBuf, Listed)>) {
         let Some(tree) = self.tree.as_mut().filter(|t| t.root() == root) else {
             return;
@@ -345,11 +363,50 @@ impl FilesPanel {
             self.listing.remove(&rel);
             tree.relist(rel.clone(), listed.entries, listed.more);
             tree.set_nested(&rel, listed.nested);
-            self.ignored.insert(rel, listed.ignored);
+            if let Some(ignored) = listed.ignored {
+                self.ignored.insert(rel, ignored);
+            }
         }
         // Once for them all.
         tree.set_ignored(self.ignored.values().flatten().cloned().collect());
     }
+
+    /// What git last said it ignores in each of `folders`, for listing them again.
+    fn last_ignored(&self, folders: &[PathBuf]) -> HashMap<PathBuf, HashSet<PathBuf>> {
+        folders
+            .iter()
+            .filter_map(|rel| Some((rel.clone(), self.ignored.get(rel)?.clone())))
+            .collect()
+    }
+
+    /// A refresh's answer for the tree at `root`: the listings, and git status's marks (none:
+    /// git failed or was slow, so the marks shown stay and the next refresh waits longer,
+    /// `back_off`). False, and nothing done, when the tree has moved on to another root.
+    fn apply_refresh(
+        &mut self,
+        root: &Path,
+        listings: Vec<(PathBuf, Listed)>,
+        marks: Option<HashMap<PathBuf, Mark>>,
+    ) -> bool {
+        // Another root's refresh may be under way since (`forget`): not this one's to end.
+        let Some(tree) = self.tree.as_mut().filter(|t| t.root() == root) else {
+            return false;
+        };
+        self.wait = back_off(self.wait, marks.is_some());
+        if let Some(marks) = marks {
+            tree.set_marks(marks);
+        }
+        self.refreshing = false;
+        self.listed(root, listings);
+        true
+    }
+}
+
+/// The wait before the next refresh, after one that waited `wait`: `REFRESH` after a good git
+/// status; after a failed or slow one, twice as long, up to 30 s (2 → 4 → 8 → 16 → 30 s).
+pub fn back_off(wait: Duration, ok: bool) -> Duration {
+    const MOST: Duration = Duration::from_secs(30);
+    if ok { REFRESH } else { (wait * 2).min(MOST) }
 }
 
 /// A width it can take: within 220–560 pt (the default for a missing or odd one).
@@ -526,7 +583,16 @@ impl Workspace {
     /// and bring the Files panel up to date. `render` calls it on every frame, the 2 s refresh
     /// between frames.
     pub(crate) fn refresh_right_sidebar(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.focused_terminal()
+        // None followed yet (relaunched with a file or browser tab focused): the focused
+        // workspace's first terminal, else the active one.
+        let id = self.focused_terminal().or_else(|| {
+            self.right_sidebar
+                .followed
+                .is_none()
+                .then(|| self.first_terminal_to_follow())
+                .flatten()
+        });
+        if let Some(id) = id
             && self.right_sidebar.followed.replace(id) != Some(id)
         {
             // Another terminal: its files at once.
@@ -537,6 +603,15 @@ impl Workspace {
         }
         self.look_up_right_sidebar_folder(cx);
         self.refresh_files(cx);
+    }
+
+    /// The terminal to follow when none has been: the focused workspace's first, else the
+    /// active session's.
+    fn first_terminal_to_follow(&self) -> Option<u64> {
+        let workspace = self.model.focused_workspace();
+        workspace
+            .and_then(|w| self.model.terminals(w).first().copied())
+            .or_else(|| self.sessions.active().map(|s| s.id))
     }
 
     /// Look the followed terminal's folder up, where due, off the UI thread.
@@ -840,7 +915,7 @@ impl Workspace {
         let now = Instant::now();
         let due = files
             .refreshed
-            .is_none_or(|at| now.saturating_duration_since(at) >= REFRESH);
+            .is_none_or(|at| now.saturating_duration_since(at) >= files.wait);
         if files.rooting || files.refreshing || !due {
             return;
         }
@@ -852,6 +927,7 @@ impl Workspace {
             files.in_repo,
             tree.open_folders(),
         );
+        let mut last = files.last_ignored(&folders);
         files.refreshing = true;
         files.refreshed = Some(now);
         cx.spawn(async move |this, cx| {
@@ -863,26 +939,27 @@ impl Workspace {
                     let listings: Vec<_> = folders
                         .into_iter()
                         .map(|rel| {
-                            let listing = list_folder(git.as_deref(), &at, &rel, in_repo);
+                            let was = last.remove(&rel);
+                            let listing = list_folder(git.as_deref(), &at, &rel, in_repo, was);
                             (rel, listing)
                         })
                         .collect();
-                    let marks = git
-                        .map(|git| git_status::status(&git, &at))
-                        .unwrap_or_default();
+                    // Outside a repo (or with no git): nothing to mark, an answer all the same.
+                    let marks = match git {
+                        Some(git) => git_status::status(&git, &at),
+                        None => Some(HashMap::new()),
+                    };
                     (listings, marks)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 let files = &mut this.right_sidebar.files;
-                // Another root's refresh may be under way since (`forget`): not this one's to end.
-                let Some(tree) = files.tree.as_mut().filter(|t| t.root() == root) else {
-                    return;
-                };
-                tree.set_marks(marks);
-                files.refreshing = false;
-                files.listed(&root, listings);
-                cx.notify();
+                let before = files.tree.as_ref().map(FileTree::generation);
+                if files.apply_refresh(&root, listings, marks)
+                    && files.tree.as_ref().map(FileTree::generation) != before
+                {
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -904,6 +981,7 @@ impl Workspace {
         if rels.is_empty() {
             return;
         }
+        let mut last = files.last_ignored(&rels);
         cx.spawn(async move |this, cx| {
             let at = root.clone();
             let listings: Vec<_> = cx
@@ -912,7 +990,8 @@ impl Workspace {
                     let git = in_repo.then(find_git).flatten();
                     rels.into_iter()
                         .map(|rel| {
-                            let listing = list_folder(git.as_deref(), &at, &rel, in_repo);
+                            let was = last.remove(&rel);
+                            let listing = list_folder(git.as_deref(), &at, &rel, in_repo, was);
                             (rel, listing)
                         })
                         .collect()
@@ -1315,5 +1394,79 @@ mod tests {
             now + Duration::from_millis(1999)
         ));
         assert!(lookup_due(Some((7, now)), 7, now + REFRESH));
+    }
+
+    #[test]
+    fn a_failed_status_backs_off_to_30_s_and_a_good_one_resets_it() {
+        let mut wait = REFRESH;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            wait = back_off(wait, false);
+            seen.push(wait.as_secs());
+        }
+        assert_eq!(seen, [4, 8, 16, 30, 30, 30]);
+        assert_eq!(back_off(wait, true), REFRESH);
+        assert_eq!(back_off(REFRESH, true), REFRESH);
+    }
+
+    fn entry(name: &str, is_dir: bool) -> DirEntry {
+        DirEntry {
+            name: name.into(),
+            is_dir,
+        }
+    }
+
+    fn mark_of(files: &FilesPanel, rel: &str) -> Option<Mark> {
+        let tree = files.tree.as_ref().unwrap();
+        tree.rows("")
+            .into_iter()
+            .find(|r| r.rel == Path::new(rel))
+            .and_then(|r| r.mark)
+    }
+
+    fn shown(files: &FilesPanel) -> Vec<String> {
+        let tree = files.tree.as_ref().unwrap();
+        tree.rows("")
+            .into_iter()
+            .map(|r| r.rel.display().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_git_answer_keeps_the_last_marks_and_ignored_files() {
+        let root = PathBuf::from("/repo");
+        let mut files = FilesPanel::new();
+        files.rooted(root.clone(), true, None);
+        let good = Listed {
+            entries: vec![entry("a.rs", false)],
+            more: 0,
+            ignored: Some(HashSet::from([PathBuf::from("target")])),
+            nested: HashSet::new(),
+        };
+        let marks = HashMap::from([(PathBuf::from("a.rs"), Mark::Modified)]);
+        files.refreshing = true;
+        assert!(files.apply_refresh(&root, vec![(PathBuf::new(), good)], Some(marks)));
+        assert_eq!(mark_of(&files, "a.rs"), Some(Mark::Modified));
+        assert_eq!(files.wait, REFRESH);
+        // git timed out on both: the listing shows `target` (unfiltered), status said nothing.
+        let failed = Listed {
+            entries: vec![entry("target", true), entry("a.rs", false)],
+            more: 0,
+            ignored: None,
+            nested: HashSet::new(),
+        };
+        files.refreshing = true;
+        assert!(files.apply_refresh(&root, vec![(PathBuf::new(), failed)], None));
+        assert!(!files.refreshing);
+        assert_eq!(mark_of(&files, "a.rs"), Some(Mark::Modified), "marks kept");
+        assert_eq!(shown(&files), ["a.rs"], "target stays hidden");
+        assert_eq!(files.wait, Duration::from_secs(4), "backed off");
+        // A good answer again: applied, and the wait is 2 s again.
+        assert!(files.apply_refresh(&root, Vec::new(), Some(HashMap::new())));
+        assert_eq!(mark_of(&files, "a.rs"), None);
+        assert_eq!(files.wait, REFRESH);
+        // Another root's answer is dropped.
+        assert!(!files.apply_refresh(Path::new("/other"), Vec::new(), None));
+        assert_eq!(files.wait, REFRESH);
     }
 }
