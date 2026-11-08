@@ -99,7 +99,7 @@ pub struct UiColors {
     pub ring_done: Rgb,
     /// The one accent: the selected row's fill, focus, drop lines, a hovered divider.
     pub accent: Rgb,
-    /// Text and marks on the accent (the selected sidebar row): `on_accent`.
+    /// Text and marks on the accent (the selected sidebar row's until M11i): `on_accent`.
     pub on_accent: Rgb,
     /// Meta text (numbers, times, the waiting question): quieter than `text_dim`, still readable.
     pub text_faint: Rgb,
@@ -277,8 +277,13 @@ impl Theme {
             text_dim,
             ring_idle: text_dim,
             ring_working: mark(self.palette[3]),
-            // Also the browser panel's error text on the sidebar, so it reads as text there.
-            ring_waiting: ensure_contrast(mark(waiting), sidebar, TEXT_MIN),
+            // Also text: the browser panel's error on the sidebar, and a waiting row's "Needs
+            // input" on its tint (hovered or not) or, selected, on the selection's (M11i).
+            ring_waiting: readable(
+                mark(waiting),
+                &[sidebar, waiting_tint, waiting_hover, row_selected],
+                TEXT_MIN,
+            ),
             ring_done: mark(done),
             accent,
             on_accent: on_accent(accent, bg, fg),
@@ -387,7 +392,7 @@ impl Theme {
                 }
             }
         }
-        // The selected sidebar row: its text and marks on the accent.
+        // Text and marks on the accent (the selected sidebar row until M11i gave it a tint).
         pairs.push(pair(
             ("on_accent", ui.on_accent),
             ("accent", ui.accent),
@@ -405,6 +410,15 @@ impl Theme {
             surfaces[0],
             TEXT_MIN,
         ));
+        // A waiting sidebar row's "Needs input" (M11i), as text on its tint, hovered or not,
+        // and on the selection's tint when it's selected.
+        for on in [
+            ("waiting_tint", ui.waiting_tint),
+            ("waiting_hover", ui.waiting_hover),
+            row_selected,
+        ] {
+            pairs.push(pair(("ring_waiting", ui.ring_waiting), on, TEXT_MIN));
+        }
         let terminal = ("terminal", self.background);
         let lines = [
             // Also the line between pane tabs (M11b), drawn on the bar's colour only.

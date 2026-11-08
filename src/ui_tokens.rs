@@ -20,10 +20,10 @@ pub const QUIET_LINE_MIN: f32 = 1.4;
 pub mod size {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
 
-    /// A sidebar row's name line; each line under it (where it is, what it waits on) grows it by
-    /// `WAITING_ROW - SIDEBAR_ROW` (M11b: `sidebar::row_height`).
-    pub const SIDEBAR_ROW: f32 = 28.0;
-    pub const WAITING_ROW: f32 = 42.0;
+    /// A sidebar row with its name line only, and one with a second line under it (where it
+    /// is, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
+    pub const SIDEBAR_ROW: f32 = 22.0;
+    pub const SIDEBAR_ROW_TWO: f32 = 32.0;
     pub const GROUP_HEADER: f32 = 24.0;
     /// A pane's tab bar (M11b; it replaced M11's 22 px pane header).
     pub const TAB_BAR: f32 = 26.0;

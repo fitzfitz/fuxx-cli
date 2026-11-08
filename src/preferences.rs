@@ -36,15 +36,15 @@ use crate::sidebar::small_caps;
 use crate::terminal::TermDims;
 use crate::terminal_view::{hsla, paint_fixed_screen};
 use crate::theme::{self, Theme, UiColors};
-use crate::ui_tokens::{size::SIDEBAR_ROW, text};
+use crate::ui_tokens::text;
 use crate::workspace::{CloseSession, Workspace};
 
 /// The section list down the left, its 1 px edge included.
 pub(crate) const SECTIONS_WIDTH: f32 = 160.0;
 /// Inside the section list, around its rows.
 const SECTIONS_INSET: f32 = 8.0;
-/// A section's row in the list, as tall as a sidebar row, and the gap between rows.
-const SECTION_ROW: f32 = SIDEBAR_ROW;
+/// A section's row in the list (a sidebar row's height before M11i), and the gap between rows.
+const SECTION_ROW: f32 = 28.0;
 const SECTION_ROW_GAP: f32 = 2.0;
 /// Where the first row starts: its name lines up with the section's title beside it.
 const SECTIONS_TOP: f32 = PAD - (SECTION_ROW - 16.0) / 2.0;

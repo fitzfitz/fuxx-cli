@@ -20,10 +20,9 @@ use crate::help_commands::{CommandEntry, Reference, entry_matches, reference};
 use crate::help_shortcuts::{ShortcutRow, binding_pairs, row_matches, shortcut_rows};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
-use crate::switcher::{LIST_MAX_HEIGHT, ROW_GAP};
+use crate::switcher::{LIST_MAX_HEIGHT, ROW, ROW_GAP};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::SIDEBAR_ROW;
 use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 
@@ -269,7 +268,7 @@ impl HelpPanel {
             .flex_none()
             .flex()
             .items_center()
-            .h(px(SIDEBAR_ROW))
+            .h(px(ROW))
             .px(px(8.0))
             .text_size(px(text::NAME))
             .child(div().flex_1().min_w(px(0.0)).truncate().child(row.name))

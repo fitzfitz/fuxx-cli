@@ -1,6 +1,7 @@
 //! Status marks (M11): the shape in front of every session, so its state reads by shape and
 //! motion as well as by colour (also to colour-blind eyes):
-//! - **Idle:** a hollow ring.
+//! - **Idle:** a hollow ring. In a sidebar row (M11i, `idle_mark`) it says one thing more: a
+//!   filled dot while a program runs there but is quiet, a hollow ring at the shell's prompt.
 //! - **Working:** a 270° arc that turns once every 1.2 s.
 //! - **Waiting:** a solid dot with a halo that breathes, once every 1.6 s.
 //! - **Done:** a solid dot with a check, which pops once when the agent finishes.
@@ -20,7 +21,7 @@ use std::time::Duration;
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     App, Bounds, FillOptions, FillRule, Hsla, IntoElement, PathBuilder, PathStyle, Pixels, Point,
-    Window, canvas, point, prelude::*, px,
+    Window, canvas, div, point, prelude::*, px,
 };
 
 use crate::status::Status;
@@ -115,6 +116,22 @@ pub fn mark_on(
     )
     .flex_none()
     .size(size)
+}
+
+/// A sidebar row's Idle mark (M11i): 6 pt across; the ring's line as wide as the other marks'.
+const IDLE_MARK: f32 = 6.0;
+const IDLE_RING: f32 = 1.5;
+
+/// A sidebar row's Idle mark (M11i): a filled 6 pt dot in `text_dim` while a program other than
+/// the shell runs there but is quiet (a server, an idle agent); a hollow 6 pt ring in
+/// `text_faint` when the shell is at its prompt, or what runs isn't known.
+pub fn idle_mark(running: bool, ui: &UiColors) -> impl IntoElement {
+    let mark = div().flex_none().size(px(IDLE_MARK)).rounded_full();
+    if running {
+        mark.bg(hsla(ui.text_dim))
+    } else {
+        mark.border(px(IDLE_RING)).border_color(hsla(ui.text_faint))
+    }
 }
 
 /// Line width, in a 12 px box.
