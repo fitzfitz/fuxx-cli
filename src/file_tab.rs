@@ -10,16 +10,17 @@
 //! and the window can be seen, the disk is checked every second: its mtime and length, off the
 //! UI thread, and a changed file is read again. The scroll stays. Each read is a new `version`;
 //! a highlight or a git answer carries the version it was asked for: it is taken for the text
-//! shown, or when newer than the one held (old colours and bars are carried over a reload, so a
-//! file that grows faster than it's coloured still gets fresher colours), else dropped
-//! (`Doc::accept_spans`, `Doc::accept_changes`). One highlight and one git look-up run at a time
+//! shown, when nothing is held yet, or when newer than the one held (old colours and bars are
+//! carried over a reload, so a file that grows faster than it's coloured still gets fresher
+//! colours), else dropped (`Doc::accept_spans`, `Doc::accept_changes`). One highlight and one git look-up run at a time
 //! per tab (`OneAtATime`): asked again meanwhile, each runs once more when it ends, for the text
 //! then shown. git runs at most once every 2 s per tab, its program and repo looked up once. Only
 //! plain files are read (a FIFO or a device is refused), never past 20 MB. The UI screenshots
 //! freeze it (`frozen`): no polling, no git.
 //!
 //! **Find** runs on the background executor too (one search at a time; only the latest search's
-//! answer is taken) and keeps at most 10,000 matches ("10,000+").
+//! answer is taken) and keeps at most 10,000 matches ("10,000+"). It scrolls to a match for a new
+//! query or a step (⌘G, ⇧⌘G, Return), never when a reload searches again.
 //!
 //! **Drawing.** One canvas draws the lines in sight (not an element per line): the changed
 //! lines' tints, the selection, find's matches and the text (one shaped line per source line),
@@ -446,13 +447,21 @@ impl Finds {
         self.wanted = generation;
     }
 
-    /// Search `generation`'s answer: taken only if it's the latest asked. A new query's current
-    /// match is the first from line `top`; the same query's is kept by number.
-    pub fn accept(&mut self, generation: u64, found: Vec<Match>, capped: bool, top: usize) -> bool {
+    /// Search `generation`'s answer: taken only if it's the latest asked (else `None`). A new
+    /// query's current match is the first from line `top`, and it's to be scrolled to
+    /// (`Some(true)`); a reload's keeps it by number, and the view stays put (`Some(false)`).
+    pub fn accept(
+        &mut self,
+        generation: u64,
+        found: Vec<Match>,
+        capped: bool,
+        top: usize,
+    ) -> Option<bool> {
         if generation != self.wanted {
-            return false;
+            return None;
         }
-        self.current = if std::mem::take(&mut self.from_top) {
+        let new_query = std::mem::take(&mut self.from_top);
+        self.current = if new_query {
             first_from(&found, top)
         } else {
             self.current
@@ -461,7 +470,7 @@ impl Finds {
         };
         self.matches = Arc::new(found);
         self.capped = capped;
-        true
+        Some(new_query)
     }
 }
 
@@ -589,9 +598,10 @@ impl Doc {
 }
 
 /// Whether an answer for `version` may replace one for `held` while `shown` is the text shown:
-/// it's for the text shown, or newer than what's held (never newer than the text).
+/// never newer than the text; with nothing held, any (a file that changes faster than its first
+/// colouring still gets colours); else newer than what's held.
 fn fresher(version: u64, shown: u64, held: Option<u64>) -> bool {
-    version == shown || held.is_some_and(|held| version > held && version < shown)
+    version <= shown && held.is_none_or(|held| version > held || version == shown)
 }
 
 /// A character's width in cells: a tab is four.
@@ -1681,10 +1691,16 @@ impl FileTab {
                     .geom
                     .get()
                     .map_or(0, |g| (g.scroll.y / g.line_height).floor() as usize);
-                if let Some(find) = this.find.as_mut()
-                    && find.finds.accept(generation, found, capped, top)
-                {
-                    this.reveal_current(cx);
+                // Scrolled to its current match only for a new query (⌘G, ⇧⌘G and Return scroll
+                // by themselves): a reload's search leaves the view where it is.
+                let taken = this
+                    .find
+                    .as_mut()
+                    .and_then(|find| find.finds.accept(generation, found, capped, top));
+                if let Some(new_query) = taken {
+                    if new_query {
+                        this.reveal_current(cx);
+                    }
                     cx.notify();
                 }
                 if this.searching.finish() {
@@ -2440,13 +2456,13 @@ mod tests {
     #[test]
     fn a_highlight_for_an_older_version_is_dropped() {
         let spans = || vec![vec![(0..10, Rgb { r: 1, g: 2, b: 3 })]];
-        // Version 3 was asked to be coloured; the text changed on disk and version 4 is loaded
-        // before version 3's colours arrive.
+        // Version 3 was asked to be coloured; the text changed on disk, version 4 is loaded and
+        // coloured before version 3's colours arrive: those are dropped.
         let asked = Doc::new("fn a() {}\n".into(), 3).version;
         let mut doc = Doc::new("fn b() {}\n".into(), 4);
-        assert!(!doc.accept_spans(asked, spans()));
-        assert!(doc.spans.is_none());
         assert!(doc.accept_spans(4, spans()));
+        assert!(!doc.accept_spans(asked, vec![]));
+        assert_eq!(doc.spans_version, Some(4));
         assert_eq!(doc.spans.as_deref().map(Vec::len), Some(1));
     }
 
@@ -2495,17 +2511,19 @@ mod tests {
         // Typed on before "fn"'s search came back.
         finds.ask(2, Some("fx".into()));
         let (old, _) = find_matches(text, &lines, "fn", FIND_CAP);
-        assert!(!finds.accept(1, old, false, 0));
+        assert_eq!(finds.accept(1, old, false, 0), None);
         assert!(finds.matches.is_empty());
         let (new, _) = find_matches(text, &lines, "fx", FIND_CAP);
-        assert!(finds.accept(2, new, false, 0));
+        // A new query's answer: shown (scrolled to its current match).
+        assert_eq!(finds.accept(2, new, false, 0), Some(true));
         assert_eq!(finds.matches.len(), 1);
         assert_eq!(finds.current, Some(0));
         // The text reloads (same query): the current match is kept by number.
         finds.ask(3, None);
         let (again, _) = find_matches("fx\nfx\n", &line_ranges("fx\nfx\n"), "fx", FIND_CAP);
         finds.current = Some(0);
-        assert!(finds.accept(3, again, false, 1));
+        // A reload's: taken, but not scrolled to.
+        assert_eq!(finds.accept(3, again, false, 1), Some(false));
         assert_eq!(finds.current, Some(0));
     }
 
@@ -2559,6 +2577,14 @@ mod tests {
         assert!(!doc5.accept_spans(6, spans()));
         assert!(doc5.accept_spans(5, spans()));
         assert_eq!(doc5.spans_version, Some(5));
+        // Nothing held yet (it changed faster than its first colouring): any older version's
+        // colours are taken, none newer than the text.
+        let mut fresh = Doc::new("x\n".into(), 7);
+        assert!(!fresh.accept_spans(8, spans()));
+        assert!(fresh.accept_spans(2, spans()));
+        assert_eq!(fresh.spans_version, Some(2));
+        let mut bars = Doc::new("x\n".into(), 7);
+        assert!(bars.accept_changes(2, &[(1, LineChange::Added)]));
     }
 
     #[test]
