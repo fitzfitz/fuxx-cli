@@ -147,7 +147,7 @@ impl Section {
         Section::Browser,
     ];
 
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Section::General => "General",
             Section::Appearance => "Appearance",
@@ -195,6 +195,33 @@ impl Section {
     }
 }
 
+/// A Preferences control as the ⌘K palette lists it (M11j): a name that reads alone, its section,
+/// and the words it is found by too (a switch's settings-file key first).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PaletteSetting {
+    pub name: &'static str,
+    pub section: Section,
+    pub keywords: Vec<&'static str>,
+}
+
+/// Every control the palette can open Preferences at, section by section, top to bottom (the
+/// Cursor heading isn't one), so a control added later is listed by itself.
+#[allow(dead_code)] // used by the palette view (M11j task 4)
+pub(crate) fn palette_settings() -> Vec<PaletteSetting> {
+    Section::ALL
+        .into_iter()
+        .flat_map(|section| {
+            section.controls().iter().filter_map(move |&control| {
+                Some(PaletteSetting {
+                    name: control.palette_name()?,
+                    section,
+                    keywords: control.keywords(),
+                })
+            })
+        })
+        .collect()
+}
+
 /// One row of a section's form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
@@ -235,6 +262,47 @@ impl Control {
             Control::Switch(OnOff::CursorGlow) => "Breathing glow",
             Control::Switch(OnOff::CursorColor) => "Colour follows the agent",
         }
+    }
+
+    /// Its name in the ⌘K palette, which reads without its section (`Cursor glide`); none for
+    /// the Cursor heading, which sets nothing.
+    fn palette_name(self) -> Option<&'static str> {
+        Some(match self {
+            Control::Size => "Font size",
+            Control::CursorHeading => return None,
+            Control::CursorStyle => "Cursor style",
+            Control::CursorFun => "Cursor fun",
+            Control::Switch(OnOff::CursorGlide) => "Cursor glide",
+            Control::Switch(OnOff::CursorGlow) => "Cursor breathing glow",
+            Control::Switch(OnOff::CursorColor) => "Cursor colour follows the agent",
+            other => other.label(),
+        })
+    }
+
+    /// The words the palette also finds it by: a switch's settings-file key first, then a few
+    /// more.
+    fn keywords(self) -> Vec<&'static str> {
+        let (key, more): (Option<&'static str>, &[&'static str]) = match self {
+            Control::Switch(s) => (
+                Some(s.key()),
+                match s {
+                    OnOff::Animations => &["motion"],
+                    OnOff::CursorGlow => &["blink"],
+                    OnOff::CursorColor => &["color"],
+                    _ => &[],
+                },
+            ),
+            Control::Theme => (None, &["theme", "colours", "dark", "light"]),
+            Control::Font => (None, &["font-family"]),
+            Control::Size => (None, &["font-size"]),
+            Control::Ligatures => (None, &["font-feature"]),
+            Control::Restore => (None, &["session-restore"]),
+            Control::TipsCard => (None, &["tips", "welcome"]),
+            Control::CursorHeading => (None, &[]),
+            Control::CursorStyle => (None, &["cursor-style", "bar", "block", "underline"]),
+            Control::CursorFun => (None, &["cursor-fun", "trail", "sparks"]),
+        };
+        key.into_iter().chain(more.iter().copied()).collect()
     }
 
     /// The lines under the control.
@@ -1463,6 +1531,41 @@ fn write_font_step(path: &Path, size: f32, step: prefs::FontStep) -> Result<(), 
 mod tests {
     use super::*;
     use crate::prefs::FontStep;
+
+    #[test]
+    fn palette_settings_cover_every_control() {
+        let all = palette_settings();
+        assert_eq!(all.len(), 16);
+        let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 16, "names unique");
+        let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
+        assert!(
+            all.windows(2)
+                .all(|w| order(w[0].section) <= order(w[1].section))
+        );
+        let glow = all
+            .iter()
+            .find(|s| s.name == "Cursor breathing glow")
+            .expect("glow listed");
+        assert_eq!(glow.section, Section::Appearance);
+        assert!(glow.keywords.contains(&"cursor-glow"));
+        assert!(all.iter().all(|s| s.name != "Cursor"));
+        assert_eq!(all[0].name, "Animations");
+        assert_eq!(all[15].name, "Keep history and data");
+        for section in Section::ALL {
+            for control in section.controls() {
+                if let Control::Switch(switch) = control {
+                    assert!(
+                        all.iter()
+                            .any(|s| s.keywords.first() == Some(&switch.key())),
+                        "{switch:?}"
+                    );
+                }
+            }
+        }
+    }
 
     /// `text` without its escape sequences (CSI `ESC [ ... letter`), as it shows on screen.
     fn visible(text: &str) -> String {

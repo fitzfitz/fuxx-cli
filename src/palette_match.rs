@@ -1,5 +1,4 @@
 //! The ⌘K palette's fuzzy matcher (M11j). Pure: no GPUI, no I/O.
-#![allow(dead_code)] // used by the palette (M11j tasks 2+)
 
 use std::ops::Range;
 
@@ -168,6 +167,7 @@ pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
 
 /// As `fuzzy`, for a path from the root: every matched letter after the last `/` gains
 /// `NAME_BONUS`, so the file name outranks its directories.
+#[allow(dead_code)] // used by the palette files (M11j task 3)
 pub fn fuzzy_path(query: &str, rel: &str) -> Option<Match> {
     let name_from = rel
         .chars()
@@ -187,6 +187,7 @@ pub fn loose(query: &str, rest: &[&str]) -> bool {
 }
 
 /// Byte ranges of the chars at `positions` (sorted char indices); adjacent chars merge.
+#[allow(dead_code)] // used by the palette view (M11j task 4)
 pub fn byte_ranges(text: &str, positions: &[usize]) -> Vec<Range<usize>> {
     let mut out: Vec<Range<usize>> = Vec::new();
     let mut wanted = positions.iter().copied().peekable();
@@ -284,6 +285,20 @@ mod tests {
         assert_eq!(byte_ranges("Split Right", &[0, 1, 6]), vec![0..2, 6..7]);
         assert_eq!(byte_ranges("ü.txt", &[0]), vec![0..2]);
         assert_eq!(byte_ranges("aüb", &[1, 2]), vec![1..4]);
+    }
+
+    #[test]
+    fn palette_fuzzy_takes_the_best_placement() {
+        // "a_ab": a@0 (start, 40), a@2 (after `_`: 40, gap -1), b@3 (16, run +16) = 111. The
+        // only placement: b must be 3, and the one `a` between 0 and 3 is 2.
+        let m = fuzzy("aab", "a_ab").unwrap();
+        assert_eq!(m.positions, vec![0, 2, 3]);
+        assert_eq!(m.score, 40 + (40 - 1) + (16 + 16));
+        // "xa_ab": the leftmost a@1 (16, lead -1) then b@4 (gap -2) is 29; a@3 (start, 40, lead
+        // -3) then b@4 (run) is 69, so the later `a` wins.
+        let m = fuzzy("ab", "xa_ab").unwrap();
+        assert_eq!(m.positions, vec![3, 4]);
+        assert_eq!(m.score, (40 - 3) + (16 + 16));
     }
 
     #[test]

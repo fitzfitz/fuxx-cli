@@ -232,15 +232,34 @@ pub fn shortcut_rows(pairs: &[(String, String)]) -> Vec<ShortcutRow> {
     merged.sort_by_key(|m| m.0);
     merged
         .into_iter()
-        .map(|(group, name, keystrokes)| {
-            let labels: Vec<String> = keystrokes.iter().map(|k| key_label(k)).collect();
-            let keys = match labels.as_slice() {
-                [first, .., last] if labels.len() >= 3 => format!("{first} \u{2013} {last}"),
-                _ => labels.join(" / "),
-            };
-            ShortcutRow { group, name, keys }
+        .map(|(group, name, keystrokes)| ShortcutRow {
+            group,
+            name,
+            keys: join_keys(&keystrokes),
         })
         .collect()
+}
+
+/// Keystroke texts as one row writes them: two joined with a slash, three or more as a range
+/// (`⌘1 – ⌘9`).
+fn join_keys(keystrokes: &[&str]) -> String {
+    let labels: Vec<String> = keystrokes.iter().map(|k| key_label(k)).collect();
+    match labels.as_slice() {
+        [first, .., last] if labels.len() >= 3 => format!("{first} \u{2013} {last}"),
+        _ => labels.join(" / "),
+    }
+}
+
+/// An action's keys as its shortcut row shows them: each keystroke bound to it, first-seen order,
+/// as `key_label` writes it, joined. None when it is unbound.
+pub fn keys_for(pairs: &[(String, String)], action: &str) -> Option<String> {
+    let mut keystrokes: Vec<&str> = Vec::new();
+    for (a, keystroke) in pairs {
+        if a == action && !keystrokes.contains(&keystroke.as_str()) {
+            keystrokes.push(keystroke);
+        }
+    }
+    (!keystrokes.is_empty()).then(|| join_keys(&keystrokes))
 }
 
 /// Whether a search box's text finds a row: in its name, its group's label or its keys, ignoring case. Keys
@@ -394,6 +413,32 @@ mod tests {
                 "{action} ({keystroke})"
             );
         }
+    }
+
+    #[test]
+    fn keys_for_matches_the_help_rows() {
+        let mut bindings = crate::new_bindings().to_vec();
+        bindings.extend(crate::key_bindings());
+        let pairs = binding_pairs(&bindings);
+        assert_eq!(
+            keys_for(&pairs, "view::Bigger").as_deref(),
+            Some("\u{2318}= / \u{2318}+")
+        );
+        assert_eq!(keys_for(&pairs, "workspace::MoveSessionUp"), None);
+        let mut checked = 0;
+        for row in crate::help_panel::shortcut_list(false) {
+            let mut actions: Vec<&str> = pairs
+                .iter()
+                .filter(|(a, _)| describe(a) == Describe::Listed(row.group, row.name))
+                .map(|(a, _)| a.as_str())
+                .collect();
+            actions.dedup();
+            if let [action] = actions.as_slice() {
+                assert_eq!(keys_for(&pairs, action).as_deref(), Some(row.keys.as_str()));
+                checked += 1;
+            }
+        }
+        assert!(checked > 30, "only {checked} rows checked");
     }
 
     #[test]
