@@ -402,6 +402,9 @@ fn read_unpacked(dir: &Path) -> (Unpacked, Option<PathBuf>) {
                 version: plist_value(app, "CFBundleShortVersionString"),
                 signature_ok,
                 apps: 1,
+                app_name: app
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
             };
             (unpacked, Some(app.clone()))
         }
@@ -411,6 +414,7 @@ fn read_unpacked(dir: &Path) -> (Unpacked, Option<PathBuf>) {
                 version: String::new(),
                 signature_ok: false,
                 apps: apps.len(),
+                app_name: String::new(),
             };
             (unpacked, None)
         }
@@ -461,6 +465,7 @@ fn download_and_check(
                 version: String::new(),
                 signature_ok: false,
                 apps: 0,
+                app_name: String::new(),
             },
             None,
         ),
@@ -852,6 +857,22 @@ mod tests {
         assert_eq!(apps_in(&dir).len(), 2);
         // A missing folder (the zip didn't unpack) holds none.
         assert!(apps_in(&dir.join("nope")).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_the_one_apps_name() {
+        let dir = temp("unpacked");
+        let (u, app) = read_unpacked(&dir);
+        assert_eq!((u.apps, u.app_name.as_str(), app), (0, "", None));
+        // Not a real app: no Info.plist to read, no signature.
+        std::fs::create_dir(dir.join("Other.app")).unwrap();
+        let (u, app) = read_unpacked(&dir);
+        assert_eq!(u.apps, 1);
+        assert_eq!(u.app_name, "Other.app");
+        assert_eq!(u.bundle_id, "");
+        assert!(!u.signature_ok);
+        assert_eq!(app, Some(dir.join("Other.app")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
