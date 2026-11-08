@@ -64,7 +64,7 @@ use crate::smart_name::{self, NameFacts, ProgramState, Stable};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
-use crate::status_bar::{self, Ports};
+use crate::status_bar::Ports;
 use crate::status_mark;
 use crate::switcher::Switcher;
 use crate::tab_bar::TabGrab;
@@ -367,7 +367,11 @@ impl Workspace {
                 .spawn(async move { procs::listening_ports(&pids) })
                 .await;
             this.update(cx, |this, cx| {
-                if this.ports.take(id, found, Instant::now()) {
+                let now = Instant::now();
+                let changed = this.ports.take(id, found, now);
+                // Another terminal followed meanwhile: the redraw asks it at once.
+                let followed = this.ports_subject(cx).map(|(followed, _)| followed);
+                if this.ports.redraw_after_answer(changed, followed, now) {
                     cx.notify();
                 }
             })
@@ -378,10 +382,10 @@ impl Workspace {
     }
 
     /// Start the ports' refresh unless it's running or nothing is wanted (`ports_wanted`): it
-    /// wakes when the next lookup is due (at most every `PORTS_REFRESH`, never sooner than a
-    /// second) and stops once nothing is wanted, so a hidden window, or a terminal at its
-    /// prompt, is never woken for it. `render` calls it, so a program starting (its name
-    /// found) or the window shown again starts it.
+    /// wakes when the next lookup is due (`Ports::sleep`: `PORTS_REFRESH` after the last
+    /// answer, never sooner than a second) and stops once nothing is wanted, so a hidden
+    /// window, or a terminal at its prompt, is never woken for it. `render` calls it, so a
+    /// program starting (its name found) or the window shown again starts it.
     pub(crate) fn tick_ports(&mut self, cx: &mut Context<Self>) {
         if self.ports.ticking || !self.ports_wanted(cx) {
             return;
@@ -396,14 +400,13 @@ impl Workspace {
                             cx.notify();
                         }
                         this.ports.ticking = this.ports_wanted(cx);
-                        this.ports.ticking.then(|| this.ports.wait(Instant::now()))
+                        this.ports.ticking.then(|| this.ports.sleep(Instant::now()))
                     })
                     .ok()
                     .flatten();
                 let Some(wait) = wait else {
                     break;
                 };
-                let wait = wait.clamp(Duration::from_secs(1), status_bar::PORTS_RETRY);
                 cx.background_executor().timer(wait).await;
             }
         })
@@ -3554,8 +3557,10 @@ mod tests {
         assert_eq!(names_wait(false), NAMES_RETRY);
         let now = Instant::now();
         let s = Duration::from_secs;
-        let mut programs = Programs::default();
-        programs.last_run = Some(now);
+        let mut programs = Programs {
+            last_run: Some(now),
+            ..Default::default()
+        };
         // It fails (or runs past its cap): the next try 30 s after it began.
         programs.take(None, &[(1, 100)]);
         assert_eq!(programs.wait(now), s(30));

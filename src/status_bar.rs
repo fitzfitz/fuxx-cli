@@ -44,6 +44,9 @@ use crate::workspace::Workspace;
 pub const PORTS_REFRESH: Duration = Duration::from_secs(5);
 /// The wait after a failed (or missing, or slow) `lsof`.
 pub const PORTS_RETRY: Duration = Duration::from_secs(30);
+/// How often the refresh looks again while a lookup runs (capped at 2 s), so the next lookup
+/// lands `PORTS_REFRESH` after its answer.
+pub const PORTS_ASKING: Duration = Duration::from_secs(1);
 
 /// The space at each end of the bar, and between its items.
 pub const PAD: f32 = 10.0;
@@ -360,14 +363,28 @@ impl Ports {
         shown
     }
 
-    /// How long the refresh sleeps from `now`: until the next lookup is due (`PORTS_REFRESH`
-    /// while one runs).
+    /// How long until the refresh should look again, from `now`: until the next lookup is due
+    /// (`PORTS_ASKING` while one runs, so it wakes soon after the answer).
     pub fn wait(&self, now: Instant) -> Duration {
         if self.asking.is_some() {
-            return PORTS_REFRESH;
+            return PORTS_ASKING;
         }
         self.next
             .map_or(Duration::ZERO, |next| next.saturating_duration_since(now))
+    }
+
+    /// How long the refresh (`Workspace::tick_ports`) sleeps from `now`: `wait`, never sooner
+    /// than a second nor later than `PORTS_RETRY`.
+    pub fn sleep(&self, now: Instant) -> Duration {
+        self.wait(now).clamp(Duration::from_secs(1), PORTS_RETRY)
+    }
+
+    /// Whether an answer (`take`, which said whether what is shown `changed`) redraws at once:
+    /// what is shown changed, or the terminal followed `now` (`followed`) isn't the one
+    /// answered and its own lookup is due, so the redraw asks it at once (one lookup runs at a
+    /// time, so it waited for this answer).
+    pub fn redraw_after_answer(&self, changed: bool, followed: Option<u64>, now: Instant) -> bool {
+        changed || followed.is_some_and(|id| self.due(id, now))
     }
 
     /// Show `found` for terminal `id` (the screenshots; nothing is looked up there).
@@ -1001,7 +1018,7 @@ mod tests {
         assert!(ports.due(7, t), "never looked up: at once");
         ports.ask(7);
         assert!(!ports.due(7, t), "not while it runs");
-        assert_eq!(ports.wait(t), PORTS_REFRESH, "asleep while it runs");
+        assert_eq!(ports.wait(t), PORTS_ASKING, "a short sleep while it runs");
         // It fails: nothing shown, and the next try 30 s on.
         assert!(!ports.take(7, None, t));
         assert_eq!(ports.of(7), &[] as &[u16]);
@@ -1050,5 +1067,56 @@ mod tests {
         ports.clear();
         assert!(!ports.take(7, Some(vec![3000]), t));
         assert_eq!(ports.of(7), &[] as &[u16]);
+    }
+
+    /// The refresh (`Workspace::tick_ports`) sleeps `Ports::sleep` between looks: the next
+    /// lookup lands 5 s after the last answer, not a clamp's second later.
+    #[test]
+    fn the_next_lookup_lands_5_s_after_the_answer() {
+        let t = Instant::now();
+        let ms = Duration::from_millis;
+        assert!(PORTS_ASKING <= Duration::from_secs(1));
+        let mut ports = Ports::default();
+        ports.ask(7);
+        // Asleep while lsof runs; it answers 300 ms in.
+        let first = ports.sleep(t);
+        assert!(ports.take(7, Some(vec![3000]), t + ms(300)));
+        let mut now = t + first;
+        while !ports.due(7, now) {
+            now += ports.sleep(now);
+        }
+        assert_eq!(now, t + ms(300) + PORTS_REFRESH);
+        // Never sooner than a second, never later than the retry.
+        let mut idle = Ports::default();
+        assert_eq!(idle.sleep(t), Duration::from_secs(1));
+        idle.ask(7);
+        idle.take(7, None, t);
+        assert_eq!(idle.sleep(t), PORTS_RETRY);
+    }
+
+    /// Note 60 §7: the followed terminal's ports are looked up at once when it changes. One
+    /// lookup runs at a time, so a terminal followed while another's runs is asked when that
+    /// answer comes: the answer redraws, and the redraw asks.
+    #[test]
+    fn an_answer_for_a_terminal_no_longer_followed_asks_the_followed_one_at_once() {
+        let t = Instant::now();
+        let mut ports = Ports::default();
+        ports.ask(7);
+        // Terminal 8 is followed while 7's lookup runs: not asked yet.
+        assert!(!ports.due(8, t));
+        let changed = ports.take(7, Some(vec![]), t);
+        assert!(!changed, "nothing shown changed");
+        assert!(ports.due(8, t));
+        assert!(
+            ports.redraw_after_answer(changed, Some(8), t),
+            "8 is asked at once"
+        );
+        // Still 7 (or nothing followed): nothing to redraw for.
+        assert!(!ports.redraw_after_answer(changed, Some(7), t));
+        assert!(!ports.redraw_after_answer(changed, None, t));
+        assert!(
+            ports.redraw_after_answer(true, Some(7), t),
+            "what's shown changed"
+        );
     }
 }
