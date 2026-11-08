@@ -169,12 +169,10 @@ pub fn parse_hunks(diff: &str) -> Vec<(usize, LineChange)> {
     out
 }
 
-/// `rel`'s (relative to `root`) lines changed on disk against HEAD. An untracked file, or any
-/// file in a repo with no commits, has every line Added (only a plain file, at most
-/// `REFUSE_ABOVE` bytes: else no bars). None outside a repo, or when git fails or takes longer
-/// than the cap: no answer, not "nothing changed" (the caller keeps the bars it has).
-pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, LineChange)>> {
-    // Names are literal, not pathspecs (`*`, `[`, a leading `:`).
+/// Whether `root` is a work tree (else None), has a `HEAD`, and tracks `rel`: the questions
+/// `line_changes` and `file_diff` share. None too when git fails or takes longer than the cap.
+/// Names are literal, not pathspecs (`*`, `[`, a leading `:`).
+fn head_and_tracked(git: &Path, root: &Path, rel: &Path) -> Option<(bool, bool)> {
     let inside = run_git(git, root, &["rev-parse", "--is-inside-work-tree"])?;
     (inside.trim() == "true").then_some(())?;
     let path = rel.to_string_lossy();
@@ -194,6 +192,16 @@ pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, L
             &path,
         ],
     ))?;
+    Some((has_head, tracked))
+}
+
+/// `rel`'s (relative to `root`) lines changed on disk against HEAD. An untracked file, or any
+/// file in a repo with no commits, has every line Added (only a plain file, at most
+/// `REFUSE_ABOVE` bytes: else no bars). None outside a repo, or when git fails or takes longer
+/// than the cap: no answer, not "nothing changed" (the caller keeps the bars it has).
+pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, LineChange)>> {
+    let (has_head, tracked) = head_and_tracked(git, root, rel)?;
+    let path = rel.to_string_lossy();
     if !has_head || !tracked {
         return Some(all_added(&root.join(rel)));
     }
@@ -212,6 +220,50 @@ pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, L
         ],
     )?;
     Some(parse_hunks(&diff))
+}
+
+/// What git says about one file's change against the last commit.
+#[allow(dead_code)] // wired in M11h task 3/4
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileDiff {
+    /// `git diff HEAD`'s output (empty: the file is unchanged).
+    Unified(String),
+    /// Untracked, or no commits yet: the whole file is new (the caller reads it from disk).
+    AllAdded,
+    Binary,
+}
+
+/// `rel`'s (relative to `root`) whole diff against HEAD with `context` lines around each hunk.
+/// Blocking: call it from background work. None outside a repo, or when git fails or takes
+/// longer than the cap (no answer, not "unchanged"). A `Binary files …` line with no hunk is
+/// `Binary`.
+#[allow(dead_code)] // wired in M11h task 3/4
+pub fn file_diff(git: &Path, root: &Path, rel: &Path, context: usize) -> Option<FileDiff> {
+    let (has_head, tracked) = head_and_tracked(git, root, rel)?;
+    if !has_head || !tracked {
+        return Some(FileDiff::AllAdded);
+    }
+    let path = rel.to_string_lossy();
+    let unified = format!("-U{context}");
+    let out = run_git(
+        git,
+        root,
+        &[
+            "--literal-pathspecs",
+            "diff",
+            "HEAD",
+            &unified,
+            "--no-color",
+            "--no-ext-diff",
+            "--",
+            &path,
+        ],
+    )?;
+    let hunks = out.lines().any(|l| l.starts_with("@@ "));
+    if !hunks && out.lines().any(|l| l.starts_with("Binary files ")) {
+        return Some(FileDiff::Binary);
+    }
+    Some(FileDiff::Unified(out))
 }
 
 /// Every line of the file at `path` Added: only a plain file (never a FIFO or a device, which
@@ -326,6 +378,36 @@ pub fn count_lines(path: &Path) -> Counts {
     }
 }
 
+/// The changes' counts: from `numstat` when it has the file; else, for an Added (untracked or
+/// new) file or before the first commit, counted from disk by `count` (`COUNT_FILES_MAX` per
+/// call, then `Unknown`); else `Unknown`. A failed `numstat` is None.
+fn assemble(
+    marks: Vec<(PathBuf, Mark)>,
+    numstat: Option<HashMap<PathBuf, Counts>>,
+    fresh: bool,
+    mut count: impl FnMut(&Path) -> Counts,
+) -> Vec<Change> {
+    let mut counted = 0;
+    marks
+        .into_iter()
+        .map(|(path, mark)| {
+            let counts = match numstat.as_ref().and_then(|n| n.get(&path)) {
+                Some(&counts) => counts,
+                None if mark == Mark::Added || fresh => {
+                    if counted < COUNT_FILES_MAX {
+                        counted += 1;
+                        count(&path)
+                    } else {
+                        Counts::Unknown
+                    }
+                }
+                None => Counts::Unknown,
+            };
+            Change { path, mark, counts }
+        })
+        .collect()
+}
+
 /// The files changed since the last commit, with their line counts. Blocking: call it from
 /// background work. None outside a repo, or when git fails or takes longer than the cap (no
 /// answer, not "nothing changed"). A failed `numstat` with a good status leaves the tracked
@@ -347,7 +429,9 @@ pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
     marks.sort_by_cached_key(|(path, _)| (path.to_string_lossy().to_lowercase(), path.clone()));
     let more = marks.len().saturating_sub(CHANGES_CAP);
     marks.truncate(CHANGES_CAP);
-    // None: git's diff failed. Empty and `fresh`: no commits yet, so every file is new.
+    // `fresh`: no commits yet, so there is no diff and every file is new. An unknown HEAD
+    // probe (git failed) is not fresh: it falls through to `diff HEAD`, which fails the same way
+    // and leaves the tracked entries' counts `Unknown`.
     let fresh = match yes_or_no(run_git_outcome(
         git,
         root,
@@ -374,26 +458,7 @@ pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
         )
         .map(|out| parse_numstat(out.as_bytes()))
     };
-    let mut counted = 0;
-    let entries = marks
-        .into_iter()
-        .map(|(path, mark)| {
-            let counts = match numstat.as_ref().and_then(|n| n.get(&path)) {
-                Some(&counts) => counts,
-                // Not in the diff: untracked or new, counted from disk within the budget.
-                None if mark == Mark::Added || fresh => {
-                    if counted < COUNT_FILES_MAX {
-                        counted += 1;
-                        count_lines(&root.join(&path))
-                    } else {
-                        Counts::Unknown
-                    }
-                }
-                None => Counts::Unknown,
-            };
-            Change { path, mark, counts }
-        })
-        .collect();
+    let entries = assemble(marks, numstat, fresh, |path| count_lines(&root.join(path)));
     Some(ChangeList { entries, more })
 }
 
@@ -850,6 +915,88 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_failed_numstat_counts_added_files_from_disk_and_leaves_the_rest_unknown() {
+        let marks = vec![
+            (p("a.txt"), Mark::Added),
+            (p("m.txt"), Mark::Modified),
+            (p("d.txt"), Mark::Deleted),
+        ];
+        let got = assemble(marks, None, false, |_| Counts::Lines {
+            added: 7,
+            removed: 0,
+        });
+        let counts: Vec<_> = got.iter().map(|c| c.counts).collect();
+        assert_eq!(
+            counts,
+            vec![
+                Counts::Lines {
+                    added: 7,
+                    removed: 0
+                },
+                Counts::Unknown,
+                Counts::Unknown
+            ]
+        );
+    }
+
+    #[test]
+    fn a_staged_new_file_counts_the_same_from_disk_as_git_does() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("staged-new", &git);
+        git_in(
+            &git,
+            &root,
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+        );
+        fs::write(root.join("n.txt"), "1\n2\n3\n").unwrap();
+        git_in(&git, &root, &["add", "n.txt"]);
+        let numstat = run_git(
+            &git,
+            &root,
+            &["diff", "HEAD", "--numstat", "-z", "--no-renames"],
+        )
+        .unwrap();
+        assert_eq!(
+            parse_numstat(numstat.as_bytes()).get(&p("n.txt")),
+            Some(&count_lines(&root.join("n.txt")))
+        );
+    }
+
+    #[test]
+    fn a_merge_conflict_is_one_modified_row() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("conflict", &git);
+        fs::write(root.join("c.txt"), "base\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "base"]);
+        git_in(&git, &root, &["checkout", "-q", "-b", "other"]);
+        fs::write(root.join("c.txt"), "theirs\n").unwrap();
+        git_in(&git, &root, &["commit", "-q", "-am", "theirs"]);
+        git_in(&git, &root, &["checkout", "-q", "-"]);
+        fs::write(root.join("c.txt"), "ours\n").unwrap();
+        git_in(&git, &root, &["commit", "-q", "-am", "ours"]);
+        // The merge itself fails (a conflict): that is the point.
+        let merged = Command::new(&git)
+            .arg("-C")
+            .arg(&root)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["merge", "other"])
+            .output()
+            .unwrap();
+        assert!(!merged.status.success());
+        let status = run_git(&git, &root, &["status", "--porcelain=v1"]).unwrap();
+        assert!(status.starts_with("UU c.txt"), "{status}");
+        let got = changes(&git, &root).unwrap();
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].path, p("c.txt"));
+        assert_eq!(got.entries[0].mark, Mark::Modified);
     }
 
     #[test]
