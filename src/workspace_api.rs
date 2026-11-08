@@ -399,23 +399,13 @@ impl Workspace {
             "session.note" => {
                 let note = note_param(p)?;
                 let i = self.target_index(p, "target")?;
-                self.sessions
-                    .get_mut(i)
-                    .expect("target_index is in range")
-                    .note = note;
-                self.push_meta(i, cx);
-                cx.notify();
+                self.set_note(i, note, cx);
                 Ok(json!({}))
             }
             "session.progress" => {
                 let progress = progress_param(p)?;
                 let i = self.target_index(p, "target")?;
-                self.sessions
-                    .get_mut(i)
-                    .expect("target_index is in range")
-                    .progress = progress;
-                self.push_meta(i, cx);
-                cx.notify();
+                self.set_progress(i, progress, cx);
                 Ok(json!({}))
             }
             other => Err(ApiError::unknown_method(format!(
