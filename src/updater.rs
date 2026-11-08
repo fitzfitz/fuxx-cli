@@ -370,13 +370,22 @@ fn cache_dir(home: &Path) -> PathBuf {
 }
 
 /// curl's arguments for the download: fail on an HTTP error, follow redirects (GitHub's assets
-/// redirect), 10 minutes at most, into `zip`. The URL comes after `--url`, so it is never read as
-/// an option.
-fn download_args(url: &str, zip: &Path) -> [OsString; 7] {
+/// redirect), 10 minutes at most, into `zip`. A failure is tried again up to 3 times, 2 s apart,
+/// within those 10 minutes: GitHub's download server sometimes answers 504 for a while, and with
+/// `-f` over HTTP/2 curl 8 reports that as error 56, which plain `--retry` doesn't count as
+/// transient, hence `--retry-all-errors` (found 2026-11-08, when 0.3.2 → 0.4.0 failed). A
+/// half-written zip from a failed try never gets past the checksum. The URL comes after `--url`,
+/// so it is never read as an option.
+fn download_args(url: &str, zip: &Path) -> [OsString; 12] {
     [
         "-fL".into(),
         "--max-time".into(),
         "600".into(),
+        "--retry".into(),
+        "3".into(),
+        "--retry-delay".into(),
+        "2".into(),
+        "--retry-all-errors".into(),
         "-o".into(),
         zip.into(),
         "--url".into(),
@@ -875,6 +884,11 @@ mod tests {
                 "-fL",
                 "--max-time",
                 "600",
+                "--retry",
+                "3",
+                "--retry-delay",
+                "2",
+                "--retry-all-errors",
                 "-o",
                 "/c/fuxx-0.3.1.zip",
                 "--url",
