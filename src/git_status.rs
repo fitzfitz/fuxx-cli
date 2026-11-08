@@ -321,7 +321,6 @@ fn all_added(path: &Path) -> Vec<(usize, LineChange)> {
 }
 
 /// A changed file's line counts.
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Counts {
     Lines {
@@ -334,7 +333,6 @@ pub enum Counts {
 }
 
 /// A file changed since the last commit (`path` relative to the repo root).
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     pub path: PathBuf,
@@ -343,7 +341,6 @@ pub struct Change {
 }
 
 /// The changed files, sorted, at most `CHANGES_CAP`; `more` is how many were left out.
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChangeList {
     pub entries: Vec<Change>,
@@ -351,16 +348,13 @@ pub struct ChangeList {
 }
 
 /// Most rows a `ChangeList` holds.
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 pub const CHANGES_CAP: usize = 1_000;
 /// Most files counted from disk (untracked, or before the first commit) per `changes` call.
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 pub const COUNT_FILES_MAX: usize = 200;
 
 /// `git diff --numstat -z`'s entries (`added\tremoved\tpath\0`, split on the first two tabs
 /// only, so a path may hold one) as counts; `-\t-` is a binary file. Malformed entries are
 /// skipped.
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 pub fn parse_numstat(z: &[u8]) -> HashMap<PathBuf, Counts> {
     let mut out = HashMap::new();
     for entry in z.split(|&b| b == 0) {
@@ -388,7 +382,6 @@ pub fn parse_numstat(z: &[u8]) -> HashMap<PathBuf, Counts> {
 /// The lines of the plain file at `path`, all counted as added (it is new). Blocking. Only a
 /// plain file (never a FIFO or a device, which could block), read through a bound: `Binary`
 /// with a NUL in its first 8 KB, `Unknown` past `PLAIN_ABOVE` bytes or when unreadable.
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 pub fn count_lines(path: &Path) -> Counts {
     use std::io::Read;
     if !path.is_file() {
@@ -448,7 +441,6 @@ fn assemble(
 /// background work. None outside a repo, or when git fails or takes longer than the cap (no
 /// answer, not "nothing changed"). A failed `numstat` with a good status leaves the tracked
 /// entries' counts `Unknown`.
-#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
 pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
     let status = run_git(
         git,

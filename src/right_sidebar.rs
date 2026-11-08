@@ -16,7 +16,13 @@
 //! reported). The lookup runs off the UI thread, on a focus change and every 2 s while the
 //! sidebar can be seen (`tick_right_sidebar`, which stops once it can't).
 //!
-//! The Files panel (under a "Files" header level with the tab bars): the tree of that folder's
+//! M11h: the card's top strip, level with the pane tab bars and drawn like them, holds the
+//! panel tabs, Files · Changes · Activity (`Panel`; the last one shown is saved). Only the shown
+//! panel does any work: Files lists and marks, Changes (`changes_panel`) asks git, Activity
+//! asks nothing; switching brings the new one up to date at once, and leaving Files while it has
+//! the keyboard gives the keyboard to the focused tab (`show_right_panel`).
+//!
+//! The Files panel: the tree of that folder's
 //! repo (`file_tree::FileTree`), rooted at the repo's top folder with the terminal's folder
 //! open and selected, else at the folder itself. Folders are listed one at a time as they open,
 //! each with one `git check-ignore` batch; marks come from `git status`. All of it runs on the
@@ -30,9 +36,10 @@
 //! guides (`guides`). The panel has its own focus: closing the sidebar while it has the
 //! keyboard gives the keyboard to the focused tab. An SSH terminal's files aren't shown.
 //!
-//! `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder`, `lookup_due`, `back_off`,
+//! `Panel`, `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder`, `lookup_due`, `back_off`,
 //! `file_kind`, `kind_color`, `guides` and `root_path_line` are pure and tested, as is the tree.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -40,13 +47,14 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, Context, DispatchPhase, Entity, FocusHandle, Focusable,
-    FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollStrategy,
-    SharedString, Subscription, TextStyle, TruncateFrom, UniformListScrollHandle, Window, actions,
-    canvas, div, prelude::*, px, uniform_list,
+    AnyElement, AnyView, App, Bounds, ClickEvent, Context, DispatchPhase, Entity, FocusHandle,
+    Focusable, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    ScrollStrategy, SharedString, Subscription, TextStyle, TruncateFrom, UniformListScrollHandle,
+    Window, actions, canvas, div, prelude::*, px, uniform_list,
 };
 
 use crate::appearance::Appearance;
+use crate::changes_panel::ChangesPanel;
 use crate::file_tree::{self, FileTree, Row, RowCache, TreeMemory, Want};
 use crate::git_branch::{find_git, is_this_mac, process_cwd};
 use crate::git_status::{self, DirEntry, Mark};
@@ -60,8 +68,8 @@ use crate::tab_bar::{self, Glyph, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::size::{
-    CARD_GAP, DIVIDER_ACTIVE, FOCUS_RING, RIGHT_SIDEBAR_DEFAULT_WIDTH, RIGHT_SIDEBAR_MAX_WIDTH,
-    RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TOP_BAND,
+    CARD_GAP, CARD_RADIUS, DIVIDER_ACTIVE, FOCUS_RING, RIGHT_SIDEBAR_DEFAULT_WIDTH,
+    RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TAB_TOP_GAP, TOP_BAND,
 };
 use crate::ui_tokens::{MARK_MIN, text};
 use crate::workspace::Workspace;
@@ -80,10 +88,13 @@ actions!(
 );
 
 /// How often the followed terminal's folder is looked up again while the sidebar can be seen,
-/// and the Files panel refreshed.
+/// and the shown panel (Files or Changes) refreshed.
 pub const REFRESH: Duration = Duration::from_secs(2);
-/// The panel's name, in its header.
-const PANEL: &str = "Files";
+/// The panel tabs in the card's strip (M11h): the first's room from the strip's left, the
+/// room between them, each one's side padding; their top corners are the pane tabs'.
+const PANEL_TABS_LEFT: f32 = 6.0;
+const PANEL_TAB_GAP: f32 = 2.0;
+const PANEL_TAB_PAD: f32 = 10.0;
 /// A tree row's height.
 pub(crate) const ROW: f32 = 22.0;
 /// The band holding the filter box, under the header.
@@ -98,17 +109,59 @@ const ICON: f32 = 12.0;
 const ICON_GAP: f32 = 6.0;
 /// The root header above the filter (M11i): its name line and its path line.
 pub(crate) const ROOT_HEADER: f32 = 40.0;
-const ROOT_LINE: f32 = 20.0;
-const PATH_LINE: f32 = 14.0;
-const ROOT_PAD_LEFT: f32 = 10.0;
-const ROOT_PAD_RIGHT: f32 = 6.0;
+pub(crate) const ROOT_LINE: f32 = 20.0;
+pub(crate) const PATH_LINE: f32 = 14.0;
+pub(crate) const ROOT_PAD_LEFT: f32 = 10.0;
+pub(crate) const ROOT_PAD_RIGHT: f32 = 6.0;
 /// Between the root's chevron and its name.
 const ROOT_CHEVRON_GAP: f32 = 4.0;
 const COLLAPSE_ALL_TIP: &str = "Collapse all folders";
 const FILTER_PLACEHOLDER: &str = "Filter files";
 const SSH_NOTE: &str = "Files aren't shown for SSH terminals.";
-const NO_FOLDER: &str = "No terminal folder to show.";
+pub(crate) const NO_FOLDER: &str = "No terminal folder to show.";
+/// The Activity panel's body until it is drawn (M11h Task 6).
+const NO_ACTIVITY: &str = "No activity yet.";
 const NO_MATCH: &str = "No file matches.";
+
+/// A panel the right sidebar shows (M11h), chosen with the tabs in its strip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Panel {
+    #[default]
+    Files,
+    Changes,
+    Activity,
+}
+
+impl Panel {
+    /// Every panel, in the strip's order.
+    pub const ALL: [Panel; 3] = [Panel::Files, Panel::Changes, Panel::Activity];
+
+    /// Its tab's words.
+    pub fn label(self) -> &'static str {
+        match self {
+            Panel::Files => "Files",
+            Panel::Changes => "Changes",
+            Panel::Activity => "Activity",
+        }
+    }
+
+    /// How the sessions file names it (`right_sidebar_panel`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Panel::Files => "files",
+            Panel::Changes => "changes",
+            Panel::Activity => "activity",
+        }
+    }
+
+    /// The panel saved as `key`; missing or unknown: Files.
+    pub fn from_key(key: Option<&str>) -> Panel {
+        Panel::ALL
+            .into_iter()
+            .find(|p| Some(p.key()) == key)
+            .unwrap_or_default()
+    }
+}
 
 /// A mark's colour on the Files tree: the theme's ANSI blue (M), green (A) or red (D), pushed
 /// to read as status marks do (`on_rows`).
@@ -119,7 +172,7 @@ pub(crate) fn mark_color(mark: Mark, theme: &Theme) -> Rgb {
 }
 
 /// `mark_color` with the theme's chrome colours (`ui`) already worked out.
-fn mark_ink(mark: Mark, theme: &Theme, ui: &UiColors) -> Rgb {
+pub(crate) fn mark_ink(mark: Mark, theme: &Theme, ui: &UiColors) -> Rgb {
     let ansi = match mark {
         Mark::Modified => theme.palette[4],
         Mark::Added => theme.palette[2],
@@ -448,7 +501,7 @@ fn list_folder(
 /// The tree's root for a terminal in `folder` (off the UI thread): the repo's top folder, else
 /// the folder; both by their real paths (git prints them so: `/private/var`, not `/var`). Also
 /// whether it's a repo, and the folder from the root (to open and select).
-fn find_root(folder: &Path) -> (PathBuf, bool, Option<PathBuf>) {
+pub(crate) fn find_root(folder: &Path) -> (PathBuf, bool, Option<PathBuf>) {
     let real = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
     let top = find_git().and_then(|git| git_status::repo_root(&git, &real));
     let in_repo = top.is_some();
@@ -638,6 +691,17 @@ impl FilesPanel {
     }
 }
 
+/// A panel's note in place of its rows (an empty state): 13 pt, dim, 12 pt in from the left.
+pub(crate) fn note(ui: &UiColors, text: &'static str) -> AnyElement {
+    div()
+        .px(px(12.0))
+        .py(px(8.0))
+        .text_size(px(text::NAME))
+        .text_color(hsla(ui.text_dim))
+        .child(text)
+        .into_any_element()
+}
+
 /// The wait before the next refresh, after one that waited `wait`: `REFRESH` after a good git
 /// status; after a failed or slow one, twice as long, up to 30 s (2 → 4 → 8 → 16 → 30 s).
 pub fn back_off(wait: Duration, ok: bool) -> Duration {
@@ -713,8 +777,14 @@ pub struct RightSidebarState {
     looked: Option<(u64, Instant)>,
     /// Whether the 2 s refresh is running (only while the sidebar can be seen).
     ticking: bool,
+    /// The panel shown (M11h; saved).
+    pub(crate) panel: Panel,
     /// The Files panel.
     pub(crate) files: FilesPanel,
+    /// The Changes panel (M11h).
+    pub(crate) changes: ChangesPanel,
+    /// The panel tabs, as last drawn (the screenshots click them).
+    tabs_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
 }
 
 impl RightSidebarState {
@@ -729,14 +799,33 @@ impl RightSidebarState {
             found: None,
             looked: None,
             ticking: false,
+            panel: Panel::Files,
             files: FilesPanel::new(),
+            changes: ChangesPanel::new(),
+            tabs_at: Rc::default(),
         }
     }
 
-    /// Take its open state and width from the sessions file.
+    /// Take its open state, width and panel from the sessions file.
     pub fn load(&mut self, saved: &SavedState) {
         self.hidden = saved.right_sidebar_hidden;
         self.width = clamp(saved.right_sidebar_width);
+        self.panel = Panel::from_key(saved.right_sidebar_panel.as_deref());
+    }
+
+    /// The Files, Changes and Activity tabs, as last drawn.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) fn panel_tab_bounds(&self) -> [Option<Bounds<Pixels>>; 3] {
+        self.tabs_at.get()
+    }
+
+    /// The shown panel brings itself up to date at once (shown, another terminal).
+    fn refresh_now(&mut self) {
+        match self.panel {
+            Panel::Files => self.files.refreshed = None,
+            Panel::Changes => self.changes.refreshed = None,
+            Panel::Activity => {}
+        }
     }
 }
 
@@ -746,7 +835,7 @@ impl Workspace {
     /// The keyboard stays where it is, unless the Files panel (its filter box or tree) has it:
     /// closing then gives it to the focused tab. (Asked of the panel's own focus, as last drawn:
     /// `Window::focused` keeps answering with a handle no longer drawn, so it can't tell.)
-    /// Shown again, the panel refreshes.
+    /// Shown again, the shown panel refreshes.
     pub(crate) fn toggle_right_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = &mut self.right_sidebar;
         state.hidden = !state.hidden;
@@ -759,10 +848,44 @@ impl Workspace {
                 self.focus_active(window, cx);
             }
         } else {
-            state.files.refreshed = None;
+            state.refresh_now();
         }
         self.save();
         cx.notify();
+    }
+
+    /// A panel tab's click: show `panel` (saved), brought up to date at once. Leaving Files
+    /// while its filter box or tree has the keyboard gives the keyboard to the focused tab (as
+    /// closing the sidebar does): Changes and Activity take no keys.
+    pub(crate) fn show_right_panel(
+        &mut self,
+        panel: Panel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = &mut self.right_sidebar;
+        if state.panel == panel {
+            return;
+        }
+        let files_keys = state.panel == Panel::Files
+            && state
+                .files
+                .focus
+                .as_ref()
+                .is_some_and(|f| f.contains_focused(window, cx));
+        state.panel = panel;
+        state.refresh_now();
+        if files_keys {
+            self.focus_active(window, cx);
+        }
+        self.save();
+        self.refresh_right_sidebar(cx);
+        cx.notify();
+    }
+
+    /// Whether `panel` may do its work now: it is the one shown, in a sidebar that can be seen.
+    pub(crate) fn right_panel_works(&self, panel: Panel, cx: &App) -> bool {
+        self.right_sidebar.panel == panel && self.right_sidebar_wanted(cx)
     }
 
     /// A pane's right-sidebar icon: that pane takes the focus, then the sidebar opens or closes.
@@ -818,8 +941,8 @@ impl Workspace {
 
     /// Follow the focused terminal (a browser or file tab focused: keep the last one), look its
     /// folder up where due (`lookup_due`: at once for a newly followed terminal, else every 2 s)
-    /// and bring the Files panel up to date. `render` calls it on every frame, the 2 s refresh
-    /// between frames.
+    /// and bring the shown panel up to date (only that one: Files or Changes; Activity asks
+    /// nothing). `render` calls it on every frame, the 2 s refresh between frames.
     pub(crate) fn refresh_right_sidebar(&mut self, cx: &mut Context<Self>) {
         // None followed yet (relaunched with a file or browser tab focused): the focused
         // workspace's first terminal, else the active one.
@@ -833,14 +956,18 @@ impl Workspace {
         if let Some(id) = id
             && self.right_sidebar.followed.replace(id) != Some(id)
         {
-            // Another terminal: its files at once.
-            self.right_sidebar.files.refreshed = None;
+            // Another terminal: its files or changes at once.
+            self.right_sidebar.refresh_now();
         }
         if !self.right_sidebar_wanted(cx) {
             return;
         }
         self.look_up_right_sidebar_folder(cx);
-        self.refresh_files(cx);
+        match self.right_sidebar.panel {
+            Panel::Files => self.refresh_files(cx),
+            Panel::Changes => self.refresh_changes(cx),
+            Panel::Activity => {}
+        }
     }
 
     /// The terminal to follow when none has been: the focused workspace's first, else the
@@ -979,8 +1106,8 @@ impl Workspace {
     /// The right sidebar: a card `width` wide (M11i), with the 6 pt gap at its right and the
     /// one at its bottom. Above it, with the left sidebar hidden, the window's top band (as over
     /// the panes, so its header lines up with their tab bars), else the 6 pt strip that drags
-    /// the window. In the card: its panel's name on a strip as tall as the tab bars (the window
-    /// can be dragged by it) and the Files panel. The gap at its left resizes it.
+    /// the window. In the card: the panel tabs on a strip drawn like the pane tab bars (M11h;
+    /// its empty part drags the window), then the shown panel. The gap at its left resizes it.
     fn render_right_sidebar(
         &self,
         ui: UiColors,
@@ -999,23 +1126,42 @@ impl Workspace {
                 CARD_GAP,
             )
         };
+        // What the tabs leave empty: it drags the window (not in full screen).
+        let empty = div()
+            .id("right-sidebar-band-empty")
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full();
+        let empty = if window.is_fullscreen() {
+            empty
+        } else {
+            self.drag_window_by(empty, cx)
+        };
         let strip = div()
             .id("right-sidebar-band")
             .flex()
+            .flex_row()
             .flex_none()
-            .items_center()
             .w_full()
             .h(px(TAB_BAR))
-            .px(px(10.0))
-            .border_b_1()
-            .border_color(hsla(ui.sidebar_border))
-            .text_size(px(text::NAME))
-            .text_color(hsla(ui.text))
-            .child(PANEL);
-        let strip = if window.is_fullscreen() {
-            strip
-        } else {
-            self.drag_window_by(strip, cx)
+            .bg(hsla(ui.tab_bar))
+            // The card's top, rounded as the inside of its edge (as a pane's tab bar).
+            .rounded_t(px(CARD_RADIUS - FOCUS_RING))
+            // The tabs float 4 pt under its top, flush with its bottom.
+            .pt(px(TAB_TOP_GAP))
+            .pl(px(PANEL_TABS_LEFT))
+            .gap(px(PANEL_TAB_GAP))
+            .children(Panel::ALL.map(|p| self.render_panel_tab(p, ui, cx)))
+            .child(empty);
+        let body = match self.right_sidebar.panel {
+            Panel::Files => self.render_files_panel(ui, width, cx),
+            Panel::Changes => self.render_changes_panel(ui, width, cx),
+            Panel::Activity => div()
+                .flex_1()
+                .min_h(px(0.0))
+                .w_full()
+                .child(note(&ui, NO_ACTIVITY))
+                .into_any_element(),
         };
         let card = panes::card(&PaneColors::of(&ui), false)
             .flex()
@@ -1025,7 +1171,7 @@ impl Workspace {
             .mr(px(CARD_GAP))
             .mb(px(CARD_GAP))
             .child(strip)
-            .child(self.render_files_panel(ui, width, cx));
+            .child(body);
         div()
             .id("right-sidebar")
             .relative()
@@ -1037,6 +1183,49 @@ impl Workspace {
             .children(band)
             .child(card)
             .child(self.render_right_resize_edge(ui, above, cx))
+            .into_any_element()
+    }
+
+    /// `panel`'s tab in the strip (M11h), drawn as a pane's tab: 13 pt words, 10 pt each side,
+    /// top corners rounded; the shown panel's filled with the card (merging into it) in the
+    /// text colour, the others unfilled, dim, `tab_hover` on hover. A click shows its panel.
+    fn render_panel_tab(&self, panel: Panel, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.right_sidebar.panel == panel;
+        let (at, i) = (self.right_sidebar.tabs_at.clone(), panel as usize);
+        div()
+            .id(("right-panel-tab", i))
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h_full()
+            .px(px(PANEL_TAB_PAD))
+            .rounded_t(px(tab_bar::TAB_RADIUS))
+            .text_size(px(text::NAME))
+            .text_color(hsla(if active { ui.text } else { ui.text_dim }))
+            .when(active, |t| t.bg(hsla(ui.card)))
+            .when(!active, |t| {
+                t.cursor_pointer().hover(move |s| s.bg(hsla(ui.tab_hover)))
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.show_right_panel(panel, window, cx)
+            }))
+            .child(panel.label())
+            // Where it is (the screenshots click it).
+            .child(
+                canvas(
+                    move |b, _, _| {
+                        let mut all = at.get();
+                        all[i] = Some(b);
+                        at.set(all);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             .into_any_element()
     }
 
@@ -1116,7 +1305,7 @@ impl Workspace {
     }
 
     /// Whether the followed terminal is an SSH one.
-    fn followed_ssh(&self) -> bool {
+    pub(crate) fn followed_ssh(&self) -> bool {
         let id = self.right_sidebar.followed;
         self.sessions
             .items()
@@ -1159,7 +1348,10 @@ impl Workspace {
                     files.rooting = false;
                     files.rooted(root, in_repo, revealed);
                     files.refreshed = None;
-                    this.refresh_files(cx);
+                    // Not while another panel shows: it refreshes when shown again.
+                    if this.right_panel_works(Panel::Files, cx) {
+                        this.refresh_files(cx);
+                    }
                     cx.notify();
                 })
                 .ok();
@@ -1463,21 +1655,13 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The Files panel under the "Files" strip: the root header, the filter box, then the tree
+    /// The Files panel under the strip: the root header, the filter box, then the tree
     /// (or what stands in for it: an SSH terminal's note, no folder, no match); with the root
     /// folded away, the header alone. It has its own focus, and the tree's keys (key context
     /// `FileTree`, the box included: ↑ ↓ move through the rows while typing).
     fn render_files_panel(&self, ui: UiColors, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let files = &self.right_sidebar.files;
-        let note = |text: &'static str| {
-            div()
-                .px(px(12.0))
-                .py(px(8.0))
-                .text_size(px(text::NAME))
-                .text_color(hsla(ui.text_dim))
-                .child(text)
-                .into_any_element()
-        };
+        let note = |text: &'static str| note(&ui, text);
         let ssh = self.followed_ssh();
         let tree = files.tree.as_ref().filter(|_| !ssh);
         let folded = tree.is_some_and(FileTree::root_collapsed);
@@ -1720,6 +1904,31 @@ mod tests {
         state.load(&saved);
         assert!(!state.hidden);
         assert_eq!(state.width, 560.0);
+    }
+
+    #[test]
+    fn panels_are_files_changes_activity_and_load_by_key() {
+        assert_eq!(Panel::ALL, [Panel::Files, Panel::Changes, Panel::Activity]);
+        let labels = Panel::ALL.map(Panel::label);
+        assert_eq!(labels, ["Files", "Changes", "Activity"]);
+        let keys = Panel::ALL.map(Panel::key);
+        assert_eq!(keys, ["files", "changes", "activity"]);
+        for panel in Panel::ALL {
+            assert_eq!(Panel::from_key(Some(panel.key())), panel);
+        }
+        assert_eq!(Panel::from_key(Some("changes")), Panel::Changes);
+        // Missing or unknown (a newer or hand-edited file): Files.
+        assert_eq!(Panel::from_key(None), Panel::Files);
+        assert_eq!(Panel::from_key(Some("bogus")), Panel::Files);
+        assert_eq!(Panel::from_key(Some("Changes")), Panel::Files);
+        assert_eq!(Panel::default(), Panel::Files);
+        // Loaded with the rest of the sidebar's state.
+        let mut state = RightSidebarState::new();
+        let saved = decode(r#"{"version":2,"right_sidebar_panel":"activity"}"#).expect("loads");
+        state.load(&saved);
+        assert_eq!(state.panel, Panel::Activity);
+        state.load(&decode(r#"{"version":2}"#).expect("loads"));
+        assert_eq!(state.panel, Panel::Files);
     }
 
     #[test]
