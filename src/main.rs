@@ -523,6 +523,28 @@ fn menu_bar(app_items: Vec<MenuItem>, preset_items: Vec<MenuItem>) -> [Menu; 7] 
     ]
 }
 
+/// Every action item's action name in the menu bar, submenus included (each agent preset's item
+/// as if all nine were set, "Quit fuxx and End All Sessions" as with persistent sessions on): what
+/// the palette's parity test checks against.
+#[cfg(test)]
+pub(crate) fn menu_action_names() -> Vec<String> {
+    fn walk(items: &[MenuItem], names: &mut Vec<String>) {
+        for item in items {
+            match item {
+                MenuItem::Action { action, .. } => names.push(action.name().to_string()),
+                MenuItem::Submenu(menu) => walk(&menu.items, names),
+                MenuItem::Separator | MenuItem::SystemMenu(_) => {}
+            }
+        }
+    }
+    let presets = (0..9).filter_map(|n| preset_item(n, "preset")).collect();
+    let mut names = Vec::new();
+    for menu in menu_bar(app_items(Some(0)), presets) {
+        walk(&menu.items, &mut names);
+    }
+    names
+}
+
 /// `$HOME`, unless unset or empty.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
