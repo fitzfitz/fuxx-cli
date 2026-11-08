@@ -26,7 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use portable_pty::CommandBuilder;
 
@@ -36,7 +36,7 @@ use crate::grid::{self, TextScope};
 use crate::mux_proto::{self, Dims, Frame, MAX_FRAME, SessionInfo, SetMeta, Snapshot};
 use crate::pty::{self, Pty};
 use crate::status::{Status, StatusTracker, TAIL_LINES};
-use crate::terminal::{CellPx, TermDims, query_reply, window_size};
+use crate::terminal::{CellPx, TermDims, query_reply, term_config, window_size};
 use crate::theme::Theme;
 use crate::vt_snapshot;
 
@@ -590,7 +590,7 @@ impl DaemonSession {
             .map_or(0, |d| d.as_secs());
         let state = Arc::new(FairMutex::new(State {
             id,
-            term: Term::new(Config::default(), &dims, Listener(events_tx)),
+            term: Term::new(term_config(), &dims, Listener(events_tx)),
             processor: Processor::new(),
             events,
             seq: 0,
@@ -930,7 +930,7 @@ mod tests {
                 rows: snap.dims.rows as usize,
             };
             let mut r = Replica {
-                term: Term::new(Config::default(), &dims, VoidListener),
+                term: Term::new(term_config(), &dims, VoidListener),
                 processor: Processor::new(),
             };
             r.processor.advance(&mut r.term, &snap.vt_bytes);
@@ -1140,7 +1140,7 @@ mod tests {
     #[test]
     fn an_oversized_snapshot_drops_the_oldest_history() {
         let dims = TermDims { cols: 20, rows: 4 };
-        let mut term = Term::new(Config::default(), &dims, VoidListener);
+        let mut term = Term::new(term_config(), &dims, VoidListener);
         let mut processor: Processor<StdSyncHandler> = Processor::new();
         for i in 0..500 {
             processor.advance(&mut term, format!("line {i}\r\n").as_bytes());
@@ -1150,7 +1150,7 @@ mod tests {
         let budget = full.len() / 4;
         let bytes = bounded_snapshot(&mut term, budget);
         assert!(bytes.len() <= budget, "{} > {budget}", bytes.len());
-        let mut rebuilt = Term::new(Config::default(), &dims, VoidListener);
+        let mut rebuilt = Term::new(term_config(), &dims, VoidListener);
         Processor::<StdSyncHandler>::new().advance(&mut rebuilt, &bytes);
         assert!(rebuilt.grid().history_size() < term.grid().history_size());
         assert!(rebuilt.grid().history_size() > 0, "kept what fits");
@@ -1300,6 +1300,28 @@ mod tests {
     }
 
     #[test]
+    fn a_new_session_s_term_starts_with_the_marker() {
+        use crate::terminal::CURSOR_UNSET;
+        use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
+        let s = DaemonSession::spawn(ID, sh_spec("sleep 30", 40, 6)).unwrap();
+        let mut state = s.state.lock();
+        assert_eq!(state.term.cursor_style(), CURSOR_UNSET);
+        let State {
+            term, processor, ..
+        } = &mut *state;
+        processor.advance(term, b"\x1b[6 q");
+        assert_eq!(
+            term.cursor_style(),
+            CursorStyle {
+                shape: CursorShape::Beam,
+                blinking: false
+            }
+        );
+        processor.advance(term, b"\x1b[0 q");
+        assert_eq!(term.cursor_style(), CURSOR_UNSET);
+    }
+
+    #[test]
     fn sizes_are_clamped() {
         let s = DaemonSession::spawn(ID, sh_spec("sleep 30", 5000, 2000)).unwrap();
         let max = Dims {
@@ -1331,7 +1353,7 @@ mod tests {
             cols: MAX_COLS,
             rows: MAX_ROWS,
         };
-        let mut term = Term::new(Config::default(), &dims, VoidListener);
+        let mut term = Term::new(term_config(), &dims, VoidListener);
         let mut bytes = Vec::new();
         for i in 0..MAX_COLS * MAX_ROWS {
             let (r, g, b) = (i % 251, i % 241, i % 239);
@@ -1341,7 +1363,7 @@ mod tests {
         let budget = MAX_FRAME - SNAPSHOT_HEADROOM;
         let snap = bounded_snapshot(&mut term, budget);
         assert!(snap.len() <= budget, "{}", snap.len());
-        let mut rebuilt = Term::new(Config::default(), &dims, VoidListener);
+        let mut rebuilt = Term::new(term_config(), &dims, VoidListener);
         Processor::<StdSyncHandler>::new().advance(&mut rebuilt, &snap);
         let screen = |t: &Term<VoidListener>| grid::text_lines(t, TextScope::Screen);
         assert_eq!(screen(&rebuilt), screen(&term));
@@ -1350,7 +1372,7 @@ mod tests {
     #[test]
     fn a_screen_too_big_for_any_frame_falls_back_to_a_blank_snapshot() {
         let dims = TermDims { cols: 20, rows: 4 };
-        let mut term = Term::new(Config::default(), &dims, VoidListener);
+        let mut term = Term::new(term_config(), &dims, VoidListener);
         // Combining marks are unbounded per cell, so no size limit alone can cap a screen.
         let marks = "e".to_string() + &"\u{301}".repeat(500);
         Processor::<StdSyncHandler>::new().advance(&mut term, marks.as_bytes());

@@ -41,18 +41,50 @@ pub enum UpdateState {
     Idle,
     /// A check found this newer release.
     Available(Release),
-    /// Downloading and checking it (`install`), until fuxx quits for the swap or it fails.
-    Downloading,
+    /// Downloading and checking this version (`install`), until fuxx quits for the swap or it
+    /// fails.
+    Downloading(Version),
 }
 
-/// The sidebar's button for `state`: its words, and whether a click opens the offer. None
-/// while nothing newer is known.
-pub fn button(state: &UpdateState) -> Option<(&'static str, bool)> {
-    match state {
-        UpdateState::Idle => None,
-        UpdateState::Available(_) => Some(("Update Available", true)),
-        UpdateState::Downloading => Some(("Downloading update\u{2026}", false)),
+/// What the sidebar's Update Available button says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateButton {
+    /// In white, always shown.
+    pub words: String,
+    /// The version it will update to, after the words in fainter white (` · v0.3.2`).
+    pub version: Option<String>,
+    /// Whether a click opens the offer.
+    pub clickable: bool,
+}
+
+impl UpdateButton {
+    /// All of it, as one line.
+    pub fn text(&self) -> String {
+        format!("{}{}", self.words, self.version.as_deref().unwrap_or(""))
     }
+}
+
+/// The sidebar's button for `state`, with the version it will update to when `fits_version`
+/// (the button is wide enough for it; the version is what goes first). None while nothing
+/// newer is known.
+pub fn button(state: &UpdateState, fits_version: bool) -> Option<UpdateButton> {
+    let (words, version, clickable) = match state {
+        UpdateState::Idle => return None,
+        UpdateState::Available(release) => (
+            "Update Available".to_string(),
+            fits_version.then(|| format!(" \u{b7} v{}", release.version)),
+            true,
+        ),
+        UpdateState::Downloading(version) if fits_version => {
+            (format!("Downloading v{version}\u{2026}"), None, false)
+        }
+        UpdateState::Downloading(_) => ("Downloading\u{2026}".to_string(), None, false),
+    };
+    Some(UpdateButton {
+        words,
+        version,
+        clickable,
+    })
 }
 
 /// Where a release link fuxx opens goes: the release's own page only when it is one of fuxx's
@@ -150,7 +182,7 @@ impl Global for Updates {}
 /// under way. Up to date or failed changes nothing.
 fn next_state(current: &UpdateState, outcome: &CheckOutcome) -> UpdateState {
     match (current, outcome) {
-        (UpdateState::Downloading, _) => UpdateState::Downloading,
+        (UpdateState::Downloading(v), _) => UpdateState::Downloading(*v),
         (_, CheckOutcome::Newer(release)) => UpdateState::Available(release.clone()),
         (state, _) => state.clone(),
     }
@@ -502,7 +534,7 @@ fn start_swap(cache: &Path, app: &Path, new_app: &Path) -> Result<(), String> {
 }
 
 /// Update and Restart: install `release` if it is still the one on offer (`should_install`;
-/// else nothing). The button reads "Downloading update…" while, off the UI thread, the zip is
+/// else nothing). The button reads "Downloading v0.3.2…" while, off the UI thread, the zip is
 /// downloaded and checked (`download_and_check`) and the swap script started; then fuxx quits
 /// and the script reopens it. When anything fails the installed fuxx is untouched: the release
 /// is on offer again and a sheet says why (`install_failed`).
@@ -525,7 +557,7 @@ pub fn install(release: Release, cx: &mut App) {
     };
     eprintln!("[fuxx] updating to {}", release.version);
     cx.set_global(Updates {
-        state: UpdateState::Downloading,
+        state: UpdateState::Downloading(release.version),
     });
     cx.refresh_windows();
     let version = release.version;
@@ -670,10 +702,8 @@ mod tests {
             next_state(&UpdateState::Available(older), &newer),
             UpdateState::Available(r.clone())
         );
-        assert_eq!(
-            next_state(&UpdateState::Downloading, &newer),
-            UpdateState::Downloading
-        );
+        let downloading = UpdateState::Downloading(Version(8, 0, 0));
+        assert_eq!(next_state(&downloading, &newer), downloading);
         // Up to date or failed: what was known stays.
         for outcome in [
             CheckOutcome::UpToDate(Version(0, 3, 0)),
@@ -815,7 +845,7 @@ mod tests {
         let other = release(Version(0, 3, 2), "p");
         assert!(!should_install(&UpdateState::Available(other), &r));
         // Already downloading (a second sheet answered), or nothing on offer.
-        assert!(!should_install(&UpdateState::Downloading, &r));
+        assert!(!should_install(&UpdateState::Downloading(r.version), &r));
         assert!(!should_install(&UpdateState::Idle, &r));
     }
 
@@ -917,16 +947,35 @@ mod tests {
 
     #[test]
     fn the_button_reads_by_the_state() {
-        let r = release(Version(0, 3, 1), "p");
-        assert_eq!(button(&UpdateState::Idle), None);
+        let v = Version(0, 3, 2);
+        let r = release(v, "p");
+        assert_eq!(button(&UpdateState::Idle, true), None);
+        assert_eq!(button(&UpdateState::Idle, false), None);
+        // Room for it: the version it will update to, as its own (fainter) part.
+        let wide = button(&UpdateState::Available(r.clone()), true).unwrap();
         assert_eq!(
-            button(&UpdateState::Available(r)),
-            Some(("Update Available", true))
+            wide,
+            UpdateButton {
+                words: "Update Available".into(),
+                version: Some(" \u{b7} v0.3.2".into()),
+                clickable: true,
+            }
         );
-        assert_eq!(
-            button(&UpdateState::Downloading),
-            Some(("Downloading update\u{2026}", false))
-        );
+        assert_eq!(wide.text(), "Update Available \u{b7} v0.3.2");
+        // Too narrow: the version goes first; "Update Available" always shows.
+        let narrow = button(&UpdateState::Available(r), false).unwrap();
+        assert_eq!(narrow.words, "Update Available");
+        assert_eq!(narrow.version, None);
+        assert_eq!(narrow.text(), "Update Available");
+        assert!(narrow.clickable);
+        // Downloading: the version in the words, no clicks.
+        let down = button(&UpdateState::Downloading(v), true).unwrap();
+        assert_eq!(down.text(), "Downloading v0.3.2\u{2026}");
+        assert_eq!(down.version, None);
+        assert!(!down.clickable);
+        let down_narrow = button(&UpdateState::Downloading(v), false).unwrap();
+        assert_eq!(down_narrow.text(), "Downloading\u{2026}");
+        assert!(!down_narrow.clickable);
     }
 
     #[test]

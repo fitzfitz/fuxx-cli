@@ -28,7 +28,7 @@
 //!   translated, only later output would differ);
 //! - the kitty keyboard mode **stack**: only its top entry is restored, pushed with `CSI > n u`
 //!   (the study said `CSI = n u`, which sets the top entry; on a fresh Term, whose stack is
-//!   empty, a push is what recreates it). In fuxx this is moot: `Config::default()` has
+//!   empty, a push is what recreates it). In fuxx this is moot: `terminal::term_config()` has
 //!   `kitty_keyboard: false`, so the flags are never set.
 //!
 //! Also not restored: the saved cursor's pending-wrap flag and charsets; OSC 4/10/11 colour
@@ -45,6 +45,8 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, NamedColor};
+
+use crate::terminal::CURSOR_UNSET;
 
 /// Cell flags that SGR sets (the rest are layout: wraps and wide-char spacers).
 const SGR_FLAGS: Flags = Flags::BOLD
@@ -272,16 +274,23 @@ impl Encoder {
         }
     }
 
-    /// DECSCUSR, unless the shape is the default (left to the rebuilding Term's own config).
+    /// DECSCUSR, unless it is the marker `CURSOR_UNSET` ("no program has chosen"), which the
+    /// rebuilding Term's own config (`term_config`) gives. A steady block is a program's choice
+    /// like any other. The marker with its blinking stopped (`ESC [ ? 12 l`) is written as that.
     fn cursor_style(&mut self, style: CursorStyle) {
-        if style == CursorStyle::default() {
+        if style == CURSOR_UNSET {
             return;
         }
         let steady = match style.shape {
             CursorShape::Block => 2,
             CursorShape::Underline => 4,
             CursorShape::Beam => 6,
-            CursorShape::HollowBlock | CursorShape::Hidden => return, // not settable by DECSCUSR
+            // Not settable by DECSCUSR: only the marker has this shape, here not blinking.
+            CursorShape::HollowBlock => {
+                self.out.extend_from_slice(b"\x1b[?12l");
+                return;
+            }
+            CursorShape::Hidden => return, // never a Term's style, only how it renders
         };
         let _ = write!(self.out, "\x1b[{} q", steady - u8::from(style.blinking));
     }
@@ -420,12 +429,13 @@ fn is_blank(cell: &Cell) -> bool {
 mod tests {
     use super::*;
     use crate::terminal::TermDims;
+    use crate::terminal::term_config;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line, Point};
+    use alacritty_terminal::term::TermMode;
     use alacritty_terminal::term::cell::{Cell, Flags};
-    use alacritty_terminal::term::{Config, TermMode};
-    use alacritty_terminal::vte::ansi::{Color, CursorStyle, Processor, StdSyncHandler};
+    use alacritty_terminal::vte::ansi::{Color, Processor, StdSyncHandler};
 
     /// One cell, with everything `Cell` carries flattened (so `extra: None` and an empty
     /// `extra` compare equal).
@@ -502,8 +512,10 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    /// A Term as fuxx makes them (the daemon's and the window's): its default cursor style is
+    /// the marker.
     fn term(cols: usize, rows: usize) -> Term<VoidListener> {
-        Term::new(Config::default(), &TermDims { cols, rows }, VoidListener)
+        Term::new(term_config(), &TermDims { cols, rows }, VoidListener)
     }
 
     fn feed(term: &mut Term<VoidListener>, bytes: &[u8]) {
@@ -527,6 +539,52 @@ mod tests {
         feed(&mut b, &snapshot);
         assert_same(&state(&a), &state(&b));
         (a, b)
+    }
+
+    #[test]
+    fn the_marker_restores_to_the_marker() {
+        // No program has chosen a shape: nothing is written, and the rebuilt Term has the
+        // marker from its own config.
+        let (a, b) = round_trip(b"$ ", 20, 4);
+        assert_eq!(a.cursor_style(), CURSOR_UNSET);
+        assert_eq!(b.cursor_style(), CURSOR_UNSET);
+        let mut fresh = term(20, 4);
+        let snapshot = encode(&mut fresh);
+        assert!(
+            !snapshot.windows(2).any(|w| w == b" q"),
+            "the marker writes no DECSCUSR: {snapshot:?}"
+        );
+    }
+
+    #[test]
+    fn a_programs_cursor_style_restores_as_it_was() {
+        use alacritty_terminal::vte::ansi::CursorShape;
+        // A steady block was alacritty's own default, so it used to be left out; it is a
+        // program's choice now, and must come back as one rather than as the marker.
+        for (bytes, shape, blinking) in [
+            ("\x1b[2 q", CursorShape::Block, false),
+            ("\x1b[1 q", CursorShape::Block, true),
+            ("\x1b[4 q", CursorShape::Underline, false),
+            ("\x1b[5 q", CursorShape::Beam, true),
+        ] {
+            let (_, b) = round_trip(bytes.as_bytes(), 20, 4);
+            assert_eq!(
+                b.cursor_style(),
+                CursorStyle { shape, blinking },
+                "{bytes:?}"
+            );
+        }
+        // `ESC [ ? 12 l` (part of xterm's "cursor normal", sent by curses programs as they
+        // leave) stops the marker blinking without choosing a shape: still the marker's
+        // shape, steady.
+        let (_, b) = round_trip(b"\x1b[?12l", 20, 4);
+        assert_eq!(
+            b.cursor_style(),
+            CursorStyle {
+                shape: CursorShape::HollowBlock,
+                blinking: false
+            }
+        );
     }
 
     #[test]
