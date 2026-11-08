@@ -125,6 +125,14 @@ System Settings → Privacy & Security → **Open Anyway**. After that fuxx upda
 a blue **Update Available** button appears above the sidebar's footer, and one click downloads it, checks it and
 reopens fuxx. **fuxx → Check for Updates…** checks at any time; Preferences → General turns the daily check off.
 
+## The cursor
+
+The terminal's cursor is a thin bar by default that glides to where it goes, breathes softly instead of blinking,
+and takes the colour of what the agent in that terminal is doing (working, waiting for you, done). Preferences →
+Appearance → Cursor changes the shape (Bar, Underline, Hollow, Block), turns each effect off, or adds a Fun one
+(a comet trail, or sparks as you type). Programs that set their own cursor, like vim, still choose their shape, and
+Animations off or macOS Reduce motion keeps it still.
+
 ## Status
 
 Early and in active development. macOS first (Linux-capable via the Rust stack). The `docs/` folder

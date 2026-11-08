@@ -20,7 +20,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M11c — Native notifications** (Phase 4, an M11 extension): built and reviewed 2026-11-06 (742 tests), on-screen check pending: [[M11c Plan - Native Notifications]]. Next: M11d (Help menu). M10b, M10c, M11, the follow-up and M11b are merged and pushed; their on-screen checks are still to come. |
-| **Status** | 🟨 M11c built and reviewed (app icon added 2026-11-07); 🟨 M11d built and reviewed 2026-11-08 (merged into `master` locally, not pushed; 786 tests). 🟨 M11e released as v0.3.0 and v0.3.1 2026-11-08 (button seen on your Mac). 🟦 M11f planned 2026-11-08. 🟨 M10b, M10c, M11, the follow-up and M11b built, reviewed and merged; on-screen checks pending. M10a ✅ done 2026-11-05. |
+| **Status** | 🟨 M11c built and reviewed (app icon added 2026-11-07); 🟨 M11d built and reviewed 2026-11-08 (merged into `master` locally, not pushed; 786 tests). 🟨 M11e released as v0.3.0 and v0.3.1 2026-11-08 (button seen on your Mac). 🟨 M11f built and reviewed 2026-11-08 (868 tests). 🟨 M10b, M10c, M11, the follow-up and M11b built, reviewed and merged; on-screen checks pending. M10a ✅ done 2026-11-05. |
 | **▶ Next action** | Your M11d on-screen check (17 items in [[56 - Milestone 11d - Help Menu]]); your M11c on-screen check (19 items in [[55 - Milestone 11c - Native Notifications]]); the batched checks for notes 51–54 and the follow-up plan stay open. |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-11-08 |
@@ -61,7 +61,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M11c | Native notifications | [[M11c Plan - Native Notifications]] | 🟨 built, check pending | 6/7 | Banners from fuxx; a click shows the terminal that raised it; osascript fallback; default name ╭∩╮. |
 | M11d | Help menu and shortcut list | [[M11d Plan - Help Menu]] (spec: [[56 - Milestone 11d - Help Menu]]) | 🟨 built, check pending | 6/7 | A Help menu: searchable shortcuts, command reference, notifications status, welcome tips, report an issue / logs. |
 | M11e | Update Available | [[M11e Plan - Update Available]] (spec: [[57 - Milestone 11e - Update Available]]) | 🟨 released v0.3.0, check pending | 8/9 | GitHub Releases via Actions on a tag; a blue Update Available button; download, check, swap, reopen. |
-| M11f | Cursor style (+ M11e's package icon) | [[M11f Plan - Cursor Style]] (spec: [[58 - Milestone 11f - Cursor Style]]) | 🟦 planned | 0/6 | Bar cursor: glide, breathing glow, status colour; Trail/Sparks as Fun; Preferences → Cursor. |
+| M11f | Cursor style (+ M11e's package icon) | [[M11f Plan - Cursor Style]] (spec: [[58 - Milestone 11f - Cursor Style]]) | 🟨 built, v0.3.2 + check pending | 3/6 | Bar cursor: glide, breathing glow, status colour; Trail/Sparks as Fun; Preferences → Cursor. |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).

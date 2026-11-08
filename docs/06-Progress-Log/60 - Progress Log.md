@@ -22,6 +22,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — M11f built: the cursor; M11e's button gets the icon and version
+- **Did:** Built on branch `m11f-cursor-style`, 3 tasks, each reviewed (Tasks 2 and 3 after a fix round), then a
+  whole-branch review (ready, nothing critical) and one fix round. The Update Available button has a package icon
+  and reads `Update Available · v0.3.2` (`Downloading v0.3.2…` while downloading). The cursor: a 2 px bar by
+  default, a 90 ms glide, breathing at 20 fps with a 0.6 s solid hold, the agent's status colour, Trail/Sparks as Fun,
+  all set in Preferences → Appearance → Cursor and still under Animations / Reduce motion. AI's calls while building
+  are in note 58 "As built". 868 tests pass; ui-shots ok.
+- **Next:** on your word (given): merge, push, release v0.3.2; then note 58's on-screen checklist (12 items).
+
 ### 2026-11-08 — v0.3.1 released; the button seen; M11f planned (cursor style + package icon)
 - **Did:** On your word, released v0.3.1 (a version bump; Release run green). On your Mac, fuxx 0.3.0 showed the
   blue **Update Available** button (note 57 item 4). Your asks: a "package" icon on the button (note 57 amendment) and

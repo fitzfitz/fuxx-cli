@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone]
-status: planned
+status: built
 ---
 
 # 58 - Milestone 11f - Cursor Style
 
-**Status:: 🟦 Planned 2026-11-08; not started.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11f Plan - Cursor Style]]
+**Status:: 🟨 Built and reviewed 2026-11-08 (868 tests); release v0.3.2 and the on-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11f Plan - Cursor Style]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]]). The same plan carries M11e's package icon (see
 [[57 - Milestone 11e - Update Available]] "Amendment").
 
@@ -87,6 +87,27 @@ cursor is drawn still and solid. The status colour still applies, since it isn't
 Settings lines (only non-defaults are written): `cursor-style = underline|hollow|block`, `cursor-glide = off`,
 `cursor-glow = off`, `cursor-color = theme`, `cursor-fun = trail|sparks`.
 
+## As built (2026-11-08)
+
+Where the build settled something the plan left open, or changed it:
+
+- **"No program has chosen" is any `HollowBlock`, whatever its blinking flag.** Curses programs (vim, less, htop)
+  send `ESC[?12l` when they exit, which would otherwise stop the breathing after each of them. Only a program's
+  explicit `ESC [ n q` shape decides steady or breathing.
+- **The breathing redraws 20 times a second**, not 30 (still smooth for a 1.6 s breath). Each redraw re-renders
+  the window, so a fuxx left idle in front costs less this way.
+- **The cursor comes back solid** when its pane gets focus or fuxx becomes the active window again, instead of
+  resuming mid-breath.
+- **No redraws during the 0.6 s hold**, so an agent printing steadily causes no extra repaints.
+- **Clears and resizes don't glide.** A clear is counted from `ESC[2J`, `ESC[3J` and `ESC c` in the output, on both
+  the local and the background-service paths. `ESC[H ESC[J` and `ESC[0;2J` still glide (up to 20 rows, 90 ms).
+- **A block cursor spans both cells of a wide (CJK) character.**
+- **fuxx in the background or another window in front** (Preferences, a popped-out page) shows the still outline,
+  so live Style changes from Preferences show once you click back into the terminal.
+- **Upgrading with a background service from v0.3.1 or earlier:** a program's steady block in a terminal it owns may
+  show your setting until that program sets its cursor again. No crash, no protocol change.
+- The Preferences window grew to 698 pt tall for the new rows.
+
 ## Not in M11f
 
 - Custom cursor colours or sizes beyond the theme and the status colours; images or emoji as a cursor.
@@ -108,4 +129,8 @@ Settings lines (only non-defaults are written): `cursor-style = underline|hollow
 7. Animations off (or macOS Reduce motion): no glide, glow, trail or sparks; the colour still follows the agent.
 8. A split pane that isn't focused shows a still outline; switching focus moves the live cursor.
 9. Activity Monitor: fuxx idle in the background uses no more CPU than before M11f.
+11. Activity Monitor: fuxx idle **in front** at a prompt, Breathing glow on vs off. Note the CPU of each; if the
+    difference is noticeable, say so (the breath rate can go lower).
+12. In Claude Code: if it hides the terminal's cursor and draws its own, the status colour shows only outside it
+    (at the shell prompt, or in other agents). Note what you see.
 10. Light and dark themes: every shape and colour is visible (the ui-shots cover this too).

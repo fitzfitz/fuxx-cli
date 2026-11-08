@@ -90,7 +90,7 @@ own notifications **without asking again**. Confirmed by you. (Side effect: M11d
 - Colours: fill **`#1F6FEB`** (blue), hovered **`#1A5FCC`**, text white, centred, medium weight, the sidebar's
   name size. These are fixed rather than themed, as you asked for blue. White on `#1F6FEB` meets the 4.5:1
   contrast floor in both light and dark themes.
-- It shows only while a newer version is known. While the update downloads it reads **"Downloading update…"** and
+- It shows only while a newer version is known. While the update downloads it reads **"Downloading v0.3.2…"** (see the Amendment) and
   can't be clicked. With the sidebar hidden, it shows once the sidebar is open again.
 - **Clicking it** opens a sheet on the window:
   - Title: **"fuxx 0.3.0 is available"**.
@@ -173,7 +173,7 @@ button appears above the footer (2026-11-08).
    is above the footer.
 5. Clicking it shows "fuxx 0.3.1 is available", with "You have 0.3.0." and the notes.
 6. **Later** closes the sheet; the button stays.
-7. **Update and Restart:** the button reads "Downloading update…", then fuxx closes and reopens as 0.3.1 with no
+7. **Update and Restart:** the button reads "Downloading v…" (the target version), then fuxx closes and reopens as 0.3.1 with no
    "Open Anyway". `fuxx.app.previous` is gone afterwards.
 8. With the background service on, the sessions are still there after the restart. With it off, the sheet said how
    many sessions would end.
