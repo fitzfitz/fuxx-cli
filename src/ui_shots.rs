@@ -8421,7 +8421,6 @@ fn status_bar_ports_scenes() {
             let shot = render_with(&theme, dims, build, act);
             save_shot(scene, slug, &shot);
             if scene == "status-bar-ports" {
-                let x = (first.0 + first.1) / 2.0;
                 let hovered = pixel_at(&shot, dims, first.0 + 2.0, line);
                 assert!(
                     near_by(hovered, ui.row_active, 3),
@@ -8429,7 +8428,6 @@ fn status_bar_ports_scenes() {
                 );
                 let other = pixel_at(&shot, dims, chips[1].0 + 2.0, line);
                 assert!(near_by(other, ui.row_hover, 3), "{n}: the others aren't");
-                let _ = x;
             }
         }
     }

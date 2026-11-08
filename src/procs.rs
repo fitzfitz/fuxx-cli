@@ -173,21 +173,24 @@ pub(crate) fn read_lsof(ran: Ran) -> Option<Vec<u16>> {
 /// `GIT_CAP` (2 s). No pids: none listen, and nothing is run. Blocks: call it off the UI
 /// thread.
 pub fn listening_ports(pids: &[u32]) -> Option<Vec<u16>> {
-    if pids.is_empty() {
+    let Some(lsof) = lsof_command(pids) else {
         return Some(Vec::new());
-    }
-    read_lsof(run_capped_outcome(lsof_command(pids), None, GIT_CAP))
+    };
+    read_lsof(run_capped_outcome(lsof, None, GIT_CAP))
 }
 
 /// The `lsof` run for `pids`: listening TCP sockets (`-a`: and) of those processes, numbers
-/// left as numbers (`-nP`), one field per line (`-Fpn`).
-fn lsof_command(pids: &[u32]) -> Command {
+/// left as numbers (`-nP`), one field per line (`-Fpn`); none for no pids (nothing to run).
+fn lsof_command(pids: &[u32]) -> Option<Command> {
+    if pids.is_empty() {
+        return None;
+    }
     let list: Vec<String> = pids.iter().map(u32::to_string).collect();
     let mut lsof = Command::new("/usr/sbin/lsof");
     lsof.args(["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p"])
         .arg(list.join(","))
         .arg("-Fpn");
-    lsof
+    Some(lsof)
 }
 
 #[cfg(test)]
@@ -380,15 +383,15 @@ mod tests {
 
     #[test]
     fn no_pids_listen_on_nothing_and_run_nothing() {
-        // Some, not None (a failure): and at once, with no lsof run.
-        let at = std::time::Instant::now();
+        // No lsof run for no pids...
+        assert!(lsof_command(&[]).is_none());
+        // ...and Some, not None (a failure).
         assert_eq!(listening_ports(&[]), Some(vec![]));
-        assert!(at.elapsed() < std::time::Duration::from_millis(5));
     }
 
     #[test]
     fn lsof_asks_for_the_pids_listening_tcp_sockets_by_absolute_path() {
-        let lsof = lsof_command(&[200, 300, 400]);
+        let lsof = lsof_command(&[200, 300, 400]).expect("pids: a run");
         assert_eq!(lsof.get_program(), "/usr/sbin/lsof");
         let args: Vec<_> = lsof.get_args().collect();
         assert_eq!(
