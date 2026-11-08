@@ -11,7 +11,7 @@
 //! word, the folder, the branch. The mark and the update pill always show.
 //!
 //! The ports come from one `lsof` (`procs::listening_ports`) over the shell's descendants in the
-//! names' last `ps` table, off the UI thread, at most every `PORTS_REFRESH`, only while a
+//! programs' last `ps` table, off the UI thread, at most every `PORTS_REFRESH`, only while a
 //! program runs in a local followed terminal and the window can be seen; a failed `lsof` waits
 //! `PORTS_RETRY` (`Ports`).
 //!

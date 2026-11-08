@@ -37,7 +37,7 @@ use crate::browser_tab::BrowserTab;
 use crate::daemon_client::{self, DaemonClient};
 use crate::drag_gap::Slides;
 use crate::file_tab::FileTab;
-use crate::git_branch::Places;
+use crate::git_branch::{self, Places};
 use crate::groups::{self, GroupKey};
 use crate::help_panel::HelpPanel;
 use crate::host_picker::HostPicker;
@@ -58,7 +58,7 @@ use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::right_sidebar::RightSidebarState;
 use crate::session_list::SessionList;
 use crate::settings;
-use crate::sidebar::{self, RowGrab, SidebarState};
+use crate::sidebar::{self, RowGrab, SidebarRow, SidebarState};
 use crate::sidebar_toggle::{self, Slide};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
@@ -130,22 +130,22 @@ actions!(
 /// frame it starts on. After that the mark is drawn plain, so the pop never plays twice.
 pub(crate) const POP_SHOWN: std::time::Duration = std::time::Duration::from_millis(450);
 
-/// How often what runs in the terminals whose names are on screen is looked up again (one
-/// `ps`), at most.
-pub(crate) const NAMES_REFRESH: Duration = Duration::from_secs(3);
+/// How often what runs in the terminals (`program_subjects`) is looked up again (one `ps`), at
+/// most.
+pub(crate) const PROGRAMS_REFRESH: Duration = Duration::from_secs(3);
 
 /// How long after a `ps` that failed (or ran past its cap) the next one runs.
-pub(crate) const NAMES_RETRY: Duration = Duration::from_secs(30);
+pub(crate) const PROGRAMS_RETRY: Duration = Duration::from_secs(30);
 
-/// The wait before the next `ps` after one that went `ok` (`NAMES_REFRESH`) or failed
-/// (`NAMES_RETRY`), from when it began.
-pub(crate) fn names_wait(ok: bool) -> Duration {
-    if ok { NAMES_REFRESH } else { NAMES_RETRY }
+/// The wait before the next `ps` after one that went `ok` (`PROGRAMS_REFRESH`) or failed
+/// (`PROGRAMS_RETRY`), from when it began.
+pub(crate) fn programs_wait(ok: bool) -> Duration {
+    if ok { PROGRAMS_REFRESH } else { PROGRAMS_RETRY }
 }
 
 /// What runs in each terminal (M11i), for the status bar's word and ports and an idle row's dot
 /// (never its name): read from one `ps` table (`procs::ps_table`, on the background executor)
-/// at most every `NAMES_REFRESH`, and kept steady (`Stable`). A terminal never looked up is
+/// at most every `PROGRAMS_REFRESH`, and kept steady (`Stable`). A terminal never looked up is
 /// `Unknown`, not at its prompt.
 #[derive(Default)]
 pub(crate) struct Programs {
@@ -156,7 +156,7 @@ pub(crate) struct Programs {
     pub frozen: bool,
     /// When `ps` last ran.
     last_run: Option<Instant>,
-    /// The last `ps` failed (or ran past its cap): the next waits `NAMES_RETRY`.
+    /// The last `ps` failed (or ran past its cap): the next waits `PROGRAMS_RETRY`.
     failed: bool,
 }
 
@@ -184,8 +184,8 @@ impl Programs {
     /// A `ps` table (none: `ps` failed), read for `shells` (each terminal and its shell's pid:
     /// every local one, `ps -A` being system-wide; any other is kept as it was, and only a
     /// closed one is forgotten, by `retain`); true when a terminal's shown program changed. A
-    /// failed `ps` keeps the last good names (and the next waits `NAMES_RETRY`); only the table
-    /// goes.
+    /// failed `ps` keeps the last good answers (and the next waits `PROGRAMS_RETRY`); only the
+    /// table goes.
     pub fn take(&mut self, table: Option<Vec<Proc>>, shells: &[(u64, u32)]) -> bool {
         self.failed = table.is_none();
         let Some(table) = table else {
@@ -212,11 +212,11 @@ impl Programs {
         changed
     }
 
-    /// How long until `ps` may run again (`names_wait` after the last run began: 3 s, 30 s
+    /// How long until `ps` may run again (`programs_wait` after the last run began: 3 s, 30 s
     /// after a failed one), from `now`.
     pub fn wait(&self, now: Instant) -> Duration {
         self.last_run.map_or(Duration::ZERO, |at| {
-            names_wait(!self.failed).saturating_sub(now.saturating_duration_since(at))
+            programs_wait(!self.failed).saturating_sub(now.saturating_duration_since(at))
         })
     }
 
@@ -238,18 +238,34 @@ impl Workspace {
         Some((s.id, s.view.read(cx).working_folder().1?))
     }
 
-    /// The local terminals whose names are on screen (`named_on_screen`) with their shell's
-    /// pid (`program_shell`): while there are some, the programs' lookup runs.
+    /// The sessions (by place in the list) whose program shows, each once
+    /// (`git_branch::subjects`): each row in view's named terminal (an idle row's dot or ring
+    /// is its; none with the sidebar hidden), then the terminal the status bar follows (its
+    /// status word, and its ports only while a program runs).
+    fn program_subjects(&self) -> Vec<usize> {
+        let rows = self.rows_in_view(Instant::now());
+        let named = rows.iter().map(|row| match row {
+            SidebarRow::Workspace(w) => self.named_terminal(w.workspace),
+            SidebarRow::Header(_) => None,
+        });
+        git_branch::subjects(named, self.right_sidebar.followed)
+            .into_iter()
+            .filter_map(|id| self.index_of(id))
+            .collect()
+    }
+
+    /// The local ones of `program_subjects` with their shell's pid (`program_shell`): while
+    /// there are some, the programs' lookup runs.
     fn program_shells(&self, cx: &App) -> Vec<(u64, u32)> {
-        self.named_on_screen()
+        self.program_subjects()
             .into_iter()
             .filter_map(|i| self.program_shell(i, cx))
             .collect()
     }
 
     /// Every local terminal with its shell's pid (`program_shell`): what each table is read
-    /// for, so a terminal whose name is out of view (another workspace, a row scrolled away,
-    /// the sidebar hidden) keeps its program for ⌘P, the notifications and the ports.
+    /// for (`ps -A` is system-wide, so it costs nothing more), so a terminal out of view keeps
+    /// its program and shows it at once when it's followed or its row comes into view.
     fn all_program_shells(&self, cx: &App) -> Vec<(u64, u32)> {
         (0..self.sessions.items().len())
             .filter_map(|i| self.program_shell(i, cx))
@@ -257,14 +273,14 @@ impl Workspace {
     }
 
     /// Whether the programs' lookup should run: the window can be seen (not hidden, minimised
-    /// or covered), it isn't frozen, and a local terminal's name is on screen.
+    /// or covered), it isn't frozen, and a local terminal's program shows (`program_shells`).
     fn programs_wanted(&self, cx: &App) -> bool {
         let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
         seen && !self.programs.frozen && !self.program_shells(cx).is_empty()
     }
 
     /// Start the programs' lookup unless it's running or nothing is wanted (`programs_wanted`):
-    /// one `ps` on the background executor (capped at 2 s), at most every `NAMES_REFRESH` (also
+    /// one `ps` on the background executor (capped at 2 s), at most every `PROGRAMS_REFRESH` (also
     /// across restarts), its answer read for every local terminal (`all_program_shells`). It
     /// stops once nothing is wanted, so a hidden or covered window is never woken; `render`
     /// calls it, so showing the window again starts it.
@@ -342,7 +358,7 @@ impl Workspace {
 
     /// Look the followed terminal's listening ports up where due (`Ports::due`: at once for a
     /// newly followed terminal, else every `PORTS_REFRESH`, 30 s after a failure): its shell's
-    /// descendants in the names' last `ps` table, then one `lsof` on the background executor
+    /// descendants in the programs' last `ps` table, then one `lsof` on the background executor
     /// (capped at 2 s). With no program running there any more, its ports go. True when what
     /// the bar shows changed now (an answer redraws when it comes). `render` calls it on every
     /// frame, the refresh (`tick_ports`) between frames.
@@ -3452,8 +3468,8 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NAMES_REFRESH, NAMES_RETRY, Programs, daemon_create, names_wait, notification_summary,
-        scripting_env, session_env, starts_window_move, window_title,
+        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, daemon_create, notification_summary,
+        programs_wait, scripting_env, session_env, starts_window_move, window_title,
     };
     use crate::presets::Preset;
     use crate::procs::{ProgramState, parse_ps};
@@ -3525,20 +3541,20 @@ mod tests {
         let mut programs = Programs::default();
         assert_eq!(programs.wait(now), Duration::ZERO, "never run: at once");
         programs.last_run = Some(now);
-        assert_eq!(programs.wait(now), NAMES_REFRESH);
+        assert_eq!(programs.wait(now), PROGRAMS_REFRESH);
         assert_eq!(
             programs.wait(now + Duration::from_secs(1)),
             Duration::from_secs(2)
         );
         assert_eq!(programs.wait(now + Duration::from_secs(5)), Duration::ZERO);
-        assert_eq!(NAMES_REFRESH, Duration::from_secs(3));
+        assert_eq!(PROGRAMS_REFRESH, Duration::from_secs(3));
     }
 
     #[test]
     fn a_failed_ps_waits_30_s_and_a_good_one_3_s() {
-        assert_eq!(names_wait(true), NAMES_REFRESH);
-        assert_eq!(names_wait(false), Duration::from_secs(30));
-        assert_eq!(names_wait(false), NAMES_RETRY);
+        assert_eq!(programs_wait(true), PROGRAMS_REFRESH);
+        assert_eq!(programs_wait(false), Duration::from_secs(30));
+        assert_eq!(programs_wait(false), PROGRAMS_RETRY);
         let now = Instant::now();
         let s = Duration::from_secs;
         let mut programs = Programs {
@@ -3553,7 +3569,7 @@ mod tests {
         // It works again: back to every 3 s.
         programs.last_run = Some(now + s(31));
         programs.take(Some(parse_ps("100 1 100 100 Ss -zsh\n")), &[(1, 100)]);
-        assert_eq!(programs.wait(now + s(31)), NAMES_REFRESH);
+        assert_eq!(programs.wait(now + s(31)), PROGRAMS_REFRESH);
     }
 
     #[test]
