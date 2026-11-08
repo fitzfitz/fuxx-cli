@@ -396,6 +396,37 @@ pub fn row_subjects(
         .collect()
 }
 
+/// A row's tooltip (note 60 §2): its name, then the program's own title when it says more
+/// (`extra_title`), then, while the row waits, its whole `question` on its own line (the row
+/// shows it cut to one); none when there is nothing past the name.
+pub fn row_tip(label: &str, title: Option<&str>, question: Option<&str>) -> Option<String> {
+    let lines: Vec<&str> = [
+        crate::smart_name::extra_title(label, title),
+        question.filter(|q| !q.trim().is_empty()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!lines.is_empty()).then(|| format!("{label}\n{}", lines.join("\n")))
+}
+
+/// Whether a row's idle mark is a dot (a program runs there) rather than a ring: for an idle
+/// row, terminal `named`'s (the one it is named after), so its mark and its name describe the
+/// same terminal; otherwise the rollup `subject`'s (its mark isn't the idle one then).
+pub fn row_running(
+    status: Status,
+    subject: Option<u64>,
+    named: Option<u64>,
+    running: impl Fn(u64) -> bool,
+) -> bool {
+    let id = if status == Status::Idle {
+        named
+    } else {
+        subject
+    };
+    id.is_some_and(running)
+}
+
 /// The shortcut that selects the workspace in sidebar place `index` (0-based): "⌘1" to "⌘9" for the first nine, none
 /// after.
 pub fn shortcut_label(index: usize) -> Option<String> {
@@ -804,9 +835,12 @@ impl Workspace {
                     pinned: self.model.workspace(ws).is_some_and(|w| w.pinned),
                     branch,
                     folder,
-                    running: s.is_some_and(|s| {
-                        matches!(self.programs.state(s.id), ProgramState::Running(_))
-                    }),
+                    running: row_running(
+                        s.map_or(Status::Idle, |s| s.status),
+                        s.map(|s| s.id),
+                        self.named_terminal(ws),
+                        |id| matches!(self.programs.state(id), ProgramState::Running(_)),
+                    ),
                 }
             })
             .collect();
@@ -2751,5 +2785,49 @@ mod tests {
             .collect();
         // deploy, review | shell (gap), [api] (its own), claude.
         assert_eq!(gaps, [false, false, true, false, false]);
+    }
+
+    /// Note 60 §2: a waiting row shows its question cut to one line; the whole question is in
+    /// the row's tooltip, on its own line under the name (and the title, when it says more).
+    #[test]
+    fn a_waiting_rows_tooltip_has_its_whole_question() {
+        let question = "Do you want to make this edit to src/auth/session_store.rs? (y/n)";
+        assert_eq!(
+            row_tip("claude \u{b7} api", None, Some(question)).as_deref(),
+            Some(format!("claude \u{b7} api\n{question}").as_str())
+        );
+        assert_eq!(
+            row_tip("claude \u{b7} api", Some("Editing auth"), Some(question)).as_deref(),
+            Some(format!("claude \u{b7} api\nEditing auth\n{question}").as_str())
+        );
+        // Not waiting (no question): as before, the title only when it says more.
+        assert_eq!(
+            row_tip("fuxx-cli", Some("zsh \u{2014} fuxx-cli"), None).as_deref(),
+            Some("fuxx-cli\nzsh \u{2014} fuxx-cli")
+        );
+        assert_eq!(row_tip("fuxx-cli", Some("fuxx-cli"), None), None);
+        assert_eq!(
+            row_tip("fuxx-cli", None, Some("  ")),
+            None,
+            "a blank question"
+        );
+    }
+
+    /// An idle row's mark (dot or ring) and its name describe the same terminal: the one it is
+    /// named after, not the rollup's (any idle one); a busier row's mark is the rollup's.
+    #[test]
+    fn an_idle_rows_dot_is_its_named_terminals() {
+        // Terminal 1 (the rollup's pick, at its prompt) and 2 (focused, named after, runs a
+        // server) are both idle.
+        let running = |id: u64| id == 2;
+        assert!(row_running(Status::Idle, Some(1), Some(2), running));
+        assert!(!row_running(Status::Idle, Some(2), Some(1), running));
+        // Not idle: the subject's (the mark there isn't the idle one).
+        assert!(row_running(Status::Working, Some(2), Some(1), running));
+        assert!(!row_running(Status::Waiting, Some(1), Some(2), running));
+        assert!(
+            !row_running(Status::Idle, None, None, running),
+            "no terminal"
+        );
     }
 }

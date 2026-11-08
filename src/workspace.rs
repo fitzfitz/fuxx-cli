@@ -1596,12 +1596,20 @@ impl Workspace {
         .into()
     }
 
-    /// A row's tooltip: its name and, under it, the program's own title when it says more.
+    /// A row's tooltip (`sidebar::row_tip`): its name and, under it, the program's own title
+    /// when it says more, then a waiting row's whole question (its most urgent terminal's).
     pub(crate) fn workspace_tip(&self, ws: WorkspaceId) -> Option<String> {
         let label = self.workspace_label(ws);
-        let id = self.named_terminal(ws)?;
-        let s = self.sessions.items().iter().find(|s| s.id == id)?;
-        smart_name::extra_title(&label, s.title.as_deref()).map(|title| format!("{label}\n{title}"))
+        let title = self
+            .named_terminal(ws)
+            .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
+            .and_then(|s| s.title.as_deref());
+        let question = self
+            .rollup_session(ws)
+            .map(|i| &self.sessions.items()[i])
+            .filter(|s| s.status == Status::Waiting)
+            .and_then(|s| s.question.as_deref());
+        sidebar::row_tip(&label, title, question)
     }
 
     /// A workspace's name: yours, else its focused pane's terminal's (`terminal_label`), else
