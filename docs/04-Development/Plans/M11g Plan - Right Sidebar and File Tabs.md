@@ -13,7 +13,7 @@ updated: 2026-11-08
 |---|---|
 | **Design (the spec)** | [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]] (M11g parts; "Settled after a builder's read") |
 | **Status** | 🟨 Built and reviewed 2026-11-08 (953 tests); merging and releasing v0.4.0 (your "7-8 go ahead") |
-| **Tasks done** | 7 / 9 (Tasks 1–6, 9); Tasks 7–8 under way |
+| **Tasks done** | 8 / 9; v0.4.0 released; your on-screen check pending |
 | **▶ Pick up here** | Task 8: your on-screen check (14 items in note 59) after v0.4.0 |
 | **Decisions used** | Yours (2026-11-08): the right sidebar, a file explorer opening files in the middle (read-only), syntect + two-face, line numbers and change bars, an icon on every pane; approved "lets go". The rest: AI's calls in note 59. |
 | **Needs your eyes** | 👀 Tasks 7–8 (merge/push/release on your word, then on screen) |
@@ -278,11 +278,11 @@ Option<..>, changes, version }`, `PlainTooLarge`, `Refuse`, `Missing`. A 1 s vis
   test and check that the highlighting finishes in a reasonable time; report the number).
 - [x] **Step 5: commit** `feat(m11g): read-only file tabs — colours, line numbers, change bars, live reload, find, copy`.
 
-### Task 7: Merge and push (your word)
+### Task 7: Merge and push (your word) — ✅ (2026-11-08)
 
 ### Task 8: Release (your word) and on screen — 👀
 
-- [ ] On your word: version **0.4.0** (a new feature), commit, push, tag, and watch the Release run.
+- [x] On your word: version **0.4.0** (a new feature), commit, push, tag, and watch the Release run. (green)
 - [ ] You: on-screen checklist (written into note 59 in Task 9).
 
 ### Task 9: Docs — ✅
