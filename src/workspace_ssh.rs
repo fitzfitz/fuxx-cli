@@ -364,6 +364,12 @@ impl Workspace {
         let Some(session) = self.sessions.get_mut(index) else {
             return false;
         };
+        idle_on_reconnect(
+            &mut session.activity,
+            session.status,
+            session.status_since.elapsed(),
+            std::time::SystemTime::now(),
+        );
         // Dropping the held session's view (and with it its timer).
         *session = Session {
             id: session_id,
@@ -649,19 +655,55 @@ impl Workspace {
     }
 }
 
+/// A reconnect rebuilds the session at Idle, keeping its log: from another status that is a
+/// real change, logged with how long the old status `lasted`.
+fn idle_on_reconnect(
+    log: &mut crate::activity::ActivityLog,
+    old: Status,
+    lasted: Duration,
+    now: std::time::SystemTime,
+) {
+    if old != Status::Idle {
+        log.status(Status::Idle, lasted, None, now);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ExitAction, Held, RETRIES_FORGOTTEN, argv_for, capture_login_env, check_restored,
-        checked_launches, disconnect_banner, drop_is_news, held_line, held_screen, on_exit,
-        parse_env, reconnect_delay, session_target, was_up,
+        checked_launches, disconnect_banner, drop_is_news, held_line, held_screen,
+        idle_on_reconnect, on_exit, parse_env, reconnect_delay, session_target, was_up,
     };
+    use crate::activity::{ActivityLog, Kind};
     use crate::restore::{Launch, SavedSession};
     use crate::ssh_target::{Effective, SshTarget};
+    use crate::status::Status;
     use crate::terminal::{TermDims, TerminalCore};
     use crate::theme::Theme;
     use alacritty_terminal::term::TermMode;
     use std::time::{Duration, Instant};
+
+    /// A reconnect rebuilds the session Idle: a log that last said otherwise records the real
+    /// change to Idle (with how long the old status lasted); one already Idle records nothing.
+    #[test]
+    fn a_reconnect_from_a_busy_status_logs_the_change_to_idle() {
+        let at = std::time::UNIX_EPOCH + Duration::from_secs(100);
+        let mut log = ActivityLog::default();
+        log.status(Status::Working, Duration::ZERO, None, at);
+        idle_on_reconnect(&mut log, Status::Working, Duration::from_secs(90), at);
+        assert_eq!(log.len(), 2);
+        assert_eq!(
+            log.newest_first().next().unwrap().kind,
+            Kind::Status {
+                status: Status::Idle,
+                lasted: Duration::from_secs(90),
+                question: None
+            }
+        );
+        idle_on_reconnect(&mut log, Status::Idle, Duration::from_secs(5), at);
+        assert_eq!(log.len(), 2, "already Idle: no change");
+    }
 
     fn tmux(host: &str, name: Option<&str>) -> SshTarget {
         SshTarget {
