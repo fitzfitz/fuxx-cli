@@ -7,8 +7,8 @@
 use alacritty_terminal::event::{EventListener, VoidListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor, Rgb, StdSyncHandler};
 
 use crate::colors;
@@ -243,7 +243,7 @@ pub fn fixed_screen(text: &str, dims: TermDims, theme: &Theme) -> GridSnapshot {
         cols: dims.cols.max(FIXED_SCREEN_COLS),
         rows: dims.rows,
     };
-    let mut term = Term::new(Config::default(), &wide, VoidListener);
+    let mut term = Term::new(crate::terminal::term_config(), &wide, VoidListener);
     let mut processor: Processor<StdSyncHandler> = Processor::new();
     // Auto-wrap off (DECAWM) for lines wider still.
     processor.advance(&mut term, b"\x1b[?7l");
@@ -373,6 +373,7 @@ mod tests {
     use alacritty_terminal::grid::Scroll;
     use alacritty_terminal::index::Side;
     use alacritty_terminal::selection::{Selection, SelectionType};
+    use alacritty_terminal::term::Config;
 
     fn term_with(bytes: &[u8]) -> Term<VoidListener> {
         let mut term = Term::new(

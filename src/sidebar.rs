@@ -21,9 +21,10 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, Bounds, BoxShadow, ClickEvent, Context,
-    DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, TextStyle,
-    TruncateFrom, Window, canvas, div, point, prelude::*, px, relative,
+    DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, HighlightStyle, Hsla, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString,
+    StyledText, Task, TextStyle, TruncateFrom, Window, canvas, div, point, prelude::*, px,
+    relative,
 };
 
 use crate::appearance::Appearance;
@@ -37,8 +38,8 @@ use crate::restore::SavedState;
 use crate::sidebar_toggle::Tip;
 use crate::status::{self, Status};
 use crate::status_mark;
-use crate::tab_bar::Glyph;
 use crate::tab_bar::{DraggedTab, hold_closed_hand};
+use crate::tab_bar::{Glyph, footer_glyph};
 use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
@@ -475,6 +476,15 @@ pub(crate) const UPDATE_TEXT: Rgb = Rgb {
     g: 0xFF,
     b: 0xFF,
 };
+/// Its package icon's box, and the space between the icon and the words (the pair centred).
+pub(crate) const UPDATE_ICON: f32 = 16.0;
+pub(crate) const UPDATE_ICON_GAP: f32 = 6.0;
+/// Its line, as wide as the footer icons'.
+const UPDATE_ICON_STROKE: f32 = 1.5;
+/// The least room kept at each end of the button, inside it.
+pub(crate) const UPDATE_PAD: f32 = 10.0;
+/// The version part (` · v0.3.2`): white at this opacity.
+pub(crate) const UPDATE_VERSION_ALPHA: f32 = 0.75;
 const RESIZE_STRIP: f32 = 4.0;
 /// A row narrower than this leaves the age out, so the name keeps its room.
 const AGE_MIN_ROW: f32 = 220.0;
@@ -671,6 +681,36 @@ impl Render for DragPreview {
 /// Tabular figures, so numbers and times line up.
 pub(crate) fn tabular() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
+}
+
+/// Whether the Update Available button, `button_width` wide, has room for its icon, the gap and
+/// words `text_width` wide, inside its padding at each end.
+pub(crate) fn update_fits(text_width: f32, button_width: f32) -> bool {
+    UPDATE_ICON + UPDATE_ICON_GAP + text_width + 2.0 * UPDATE_PAD <= button_width
+}
+
+/// How wide `text` is drawn in the Update Available button (the UI font, medium, at the name
+/// size).
+pub(crate) fn update_text_width(text: &str, window: &Window) -> f32 {
+    let font = gpui::Font {
+        weight: FontWeight::MEDIUM,
+        ..TextStyle::default().font()
+    };
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: hsla(UPDATE_TEXT),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window.text_system().shape_line(
+        SharedString::from(text.to_string()),
+        px(text::NAME),
+        &[run],
+        None,
+    );
+    f32::from(line.width())
 }
 
 /// Every letter as a small capital (the system font has them): headers read as headers.
@@ -1061,7 +1101,7 @@ impl Workspace {
             .child(list)
             .children(notice)
             .children(hint)
-            .children(self.render_update_button(cx))
+            .children(self.render_update_button(window, cx))
             .child(self.render_footer(ui, cx))
             .child(self.render_resize_edge(ui, cx))
             .into_any_element()
@@ -1719,11 +1759,30 @@ impl Workspace {
     }
 
     /// The blue Update Available button over the footer, while a newer fuxx is known
-    /// (`updater::button`). A click opens the update offer; while the update downloads it says
-    /// so and takes no clicks.
-    fn render_update_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// (`updater::button`): a package icon, then "Update Available · v0.3.2", the version in
+    /// fainter white and left out when the button is too narrow for it (`update_fits`). A click
+    /// opens the update offer; while the update downloads it says so and takes no clicks.
+    fn render_update_button(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = &cx.try_global::<updater::Updates>()?.state;
-        let (words, clickable) = updater::button(state)?;
+        let wide = updater::button(state, true)?;
+        let width = self.sidebar.width - 1.0 - 2.0 * ROW_INSET;
+        let label = if update_fits(update_text_width(&wide.text(), window), width) {
+            wide
+        } else {
+            updater::button(state, false)?
+        };
+        let clickable = label.clickable;
+        let words = label.text();
+        // The version in the same white, faded to `UPDATE_VERSION_ALPHA` (a highlight's colour
+        // is blended over the text's, so white at 75% over white would still be white).
+        let faint = label.version.as_ref().map(|v| {
+            let start = label.words.len();
+            let style = HighlightStyle {
+                fade_out: Some(1.0 - UPDATE_VERSION_ALPHA),
+                ..Default::default()
+            };
+            (start..start + v.len(), style)
+        });
         Some(
             div()
                 .id("sidebar-update")
@@ -1731,6 +1790,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
+                .gap(px(UPDATE_ICON_GAP))
                 .h(px(UPDATE_BUTTON))
                 .mx(px(ROW_INSET))
                 .mb(px(UPDATE_GAP))
@@ -1739,7 +1799,18 @@ impl Workspace {
                 .text_size(px(text::NAME))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(hsla(UPDATE_TEXT))
-                .child(words)
+                .child(footer_glyph(
+                    Glyph::Package,
+                    UPDATE_TEXT,
+                    UPDATE_ICON,
+                    UPDATE_ICON_STROKE,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(StyledText::new(words).with_highlights(faint)),
+                )
                 .when(clickable, |button| {
                     button
                         .cursor_pointer()
@@ -2071,6 +2142,17 @@ fn group_id(key: &GroupKey) -> u64 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_update_button_drops_the_version_when_it_does_not_fit() {
+        // A 16 px package icon, 6 px before the words, the pair inside the side padding.
+        assert_eq!((UPDATE_ICON, UPDATE_ICON_GAP), (16.0, 6.0));
+        assert_eq!(UPDATE_VERSION_ALPHA, 0.75);
+        let button = UPDATE_ICON + UPDATE_ICON_GAP + 100.0 + 2.0 * UPDATE_PAD;
+        assert!(update_fits(100.0, button));
+        assert!(update_fits(60.0, button));
+        assert!(!update_fits(100.5, button));
+    }
 
     #[test]
     fn the_update_button_is_blue_rounded_and_readable() {

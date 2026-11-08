@@ -26,7 +26,7 @@ use gpui::{
     uniform_list,
 };
 
-use crate::appearance::{self, Appearance};
+use crate::appearance::{self, Appearance, CursorFun, CursorShapeSetting};
 use crate::fonts;
 use crate::grid::{self, GridSnapshot};
 use crate::prefs::{self, DEFAULT_CHOICE};
@@ -118,6 +118,10 @@ fn window_height() -> f32 {
 const ANIMATIONS_NOTE: &str = "Also off when macOS Reduce motion is on.";
 const CHECK_UPDATES_NOTE: &str = "Asks GitHub once a day whether a newer fuxx is out.";
 const KEEP_NOTE: &str = "Takes effect the next time fuxx starts.";
+const CURSOR_NOTE: &str =
+    "Programs that set their own cursor (vim, for example) still choose their shape.";
+/// A group's heading inside a section (Appearance's "Cursor"): one 16 px line.
+const GROUP_HEADER: f32 = 16.0;
 /// One sentence a line, so it never wraps on its own.
 const KEEP_DATA_NOTE: [&str; 2] = [
     "Turning this off deletes saved browser data.",
@@ -162,7 +166,18 @@ impl Section {
                 Switch(OnOff::CheckUpdates),
                 TipsCard,
             ],
-            Section::Appearance => &[Theme, Font, Size, Ligatures],
+            Section::Appearance => &[
+                Theme,
+                Font,
+                Size,
+                Ligatures,
+                CursorHeading,
+                CursorStyle,
+                Switch(OnOff::CursorGlide),
+                Switch(OnOff::CursorGlow),
+                Switch(OnOff::CursorColor),
+                CursorFun,
+            ],
             Section::Sessions => &[Restore, Switch(OnOff::KeepRunning)],
             Section::Browser => &[Switch(OnOff::AddressBar), Switch(OnOff::KeepData)],
         }
@@ -190,6 +205,12 @@ enum Control {
     Restore,
     /// "Show the tips card again": not a setting, the sidebar's card (`hint_dismissed`).
     TipsCard,
+    /// The "Cursor" group's heading, over the cursor's rows (M11f).
+    CursorHeading,
+    /// The cursor's shape: Bar, Underline, Hollow or Block (`cursor-style`).
+    CursorStyle,
+    /// Off, Trail or Sparks (`cursor-fun`).
+    CursorFun,
     Switch(OnOff),
 }
 
@@ -202,11 +223,26 @@ impl Control {
             Control::Ligatures => "Ligatures",
             Control::Restore => "Restore sessions",
             Control::TipsCard => "Tips card",
+            Control::CursorHeading => "Cursor",
+            Control::CursorStyle => "Style",
+            Control::CursorFun => "Fun",
             Control::Switch(OnOff::Animations) => "Animations",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
             Control::Switch(OnOff::AddressBar) => "Show address bar",
             Control::Switch(OnOff::KeepData) => "Keep history and data",
+            Control::Switch(OnOff::CursorGlide) => "Glide",
+            Control::Switch(OnOff::CursorGlow) => "Breathing glow",
+            Control::Switch(OnOff::CursorColor) => "Colour follows the agent",
+        }
+    }
+
+    /// The lines under the control.
+    fn note(self) -> &'static [&'static str] {
+        match self {
+            Control::Switch(s) => s.note(),
+            Control::CursorStyle => &[CURSOR_NOTE],
+            _ => &[],
         }
     }
 
@@ -216,8 +252,12 @@ impl Control {
             Control::Theme => THEME_LIST,
             Control::Font => FONT_LIST,
             Control::Size | Control::TipsCard => SIZE_ROW,
-            Control::Ligatures | Control::Restore => SWITCH,
-            Control::Switch(s) => match s.note().len() {
+            Control::CursorHeading => GROUP_HEADER,
+            Control::Ligatures
+            | Control::Restore
+            | Control::CursorStyle
+            | Control::CursorFun
+            | Control::Switch(_) => match self.note().len() {
                 0 => SWITCH,
                 lines => SWITCH + NOTE + NOTE_LINE * (lines - 1) as f32,
             },
@@ -229,7 +269,12 @@ impl Control {
         match self {
             Control::Theme | Control::Font => LIST_ROW + 2.0 * (1.0 + LIST_INSET),
             Control::Size | Control::TipsCard => SIZE_ROW,
-            Control::Ligatures | Control::Restore | Control::Switch(_) => SWITCH,
+            Control::CursorHeading => GROUP_HEADER,
+            Control::Ligatures
+            | Control::Restore
+            | Control::CursorStyle
+            | Control::CursorFun
+            | Control::Switch(_) => SWITCH,
         }
     }
 }
@@ -242,6 +287,10 @@ enum OnOff {
     KeepRunning,
     AddressBar,
     KeepData,
+    CursorGlide,
+    CursorGlow,
+    /// "Colour follows the agent": on is `cursor-color = status` (the default).
+    CursorColor,
 }
 
 impl OnOff {
@@ -253,6 +302,9 @@ impl OnOff {
             OnOff::KeepRunning => "persistent-sessions",
             OnOff::AddressBar => "browser-address-bar",
             OnOff::KeepData => "browser-keep-data",
+            OnOff::CursorGlide => "cursor-glide",
+            OnOff::CursorGlow => "cursor-glow",
+            OnOff::CursorColor => "cursor-color",
         }
     }
 
@@ -264,6 +316,9 @@ impl OnOff {
             OnOff::KeepRunning => prefs::persistence_values(on),
             OnOff::AddressBar => prefs::browser_address_bar_values(on),
             OnOff::KeepData => prefs::browser_keep_data_values(on),
+            OnOff::CursorGlide => prefs::cursor_glide_values(on),
+            OnOff::CursorGlow => prefs::cursor_glow_values(on),
+            OnOff::CursorColor => prefs::cursor_color_values(on),
         }
     }
 
@@ -275,6 +330,9 @@ impl OnOff {
             OnOff::KeepRunning => a.persistent,
             OnOff::AddressBar => a.browser_address_bar,
             OnOff::KeepData => a.browser_keep_data,
+            OnOff::CursorGlide => a.cursor_glide,
+            OnOff::CursorGlow => a.cursor_glow,
+            OnOff::CursorColor => a.cursor_follows_status,
         }
     }
 
@@ -286,6 +344,7 @@ impl OnOff {
             OnOff::KeepRunning => &[KEEP_NOTE],
             OnOff::AddressBar => &[],
             OnOff::KeepData => &KEEP_DATA_NOTE,
+            OnOff::CursorGlide | OnOff::CursorGlow | OnOff::CursorColor => &[],
         }
     }
 }
@@ -670,14 +729,15 @@ impl PreferencesView {
             Control::Ligatures => ligature_switch(ui, cx).into_any_element(),
             Control::Restore => restore_switch(ui, cx).into_any_element(),
             Control::TipsCard => self.tips_card_button(ui, cx).into_any_element(),
-            Control::Switch(s) => {
-                let switch = on_off_switch(s, ui, cx);
-                if s.note().is_empty() {
-                    switch.into_any_element()
-                } else {
-                    with_note(switch, s.note(), ui).into_any_element()
-                }
-            }
+            Control::CursorHeading => return group_heading(control.label(), ui),
+            Control::CursorStyle => cursor_style_switch(ui, cx).into_any_element(),
+            Control::CursorFun => cursor_fun_switch(ui, cx).into_any_element(),
+            Control::Switch(s) => on_off_switch(s, ui, cx).into_any_element(),
+        };
+        let element = if control.note().is_empty() {
+            element
+        } else {
+            with_note(element, control.note(), ui).into_any_element()
         };
         field(
             control.label(),
@@ -775,22 +835,34 @@ impl Render for PreferencesView {
         let theme = appearance.theme;
         let ui = theme.ui();
 
-        let form = div().flex().flex_col().gap(px(FIELD_GAP)).children(
-            self.section
-                .controls()
+        let controls = self.section.controls();
+        let rows = |controls: &[Control]| {
+            controls
                 .iter()
-                .map(|&control| self.form_row(control, ui, cx)),
-        );
-        // Appearance has the preview beside its lists.
+                .map(|&control| self.form_row(control, ui, cx))
+                .collect::<Vec<_>>()
+        };
+        let column = || div().flex().flex_col().gap(px(FIELD_GAP));
+        // Appearance has the preview beside its lists; its Cursor group runs under both.
         let body = if self.section == Section::Appearance {
-            div()
-                .flex()
-                .flex_row()
-                .gap(px(PREVIEW_GAP))
-                .child(form)
-                .child(self.preview(theme, ui))
+            let group = controls
+                .iter()
+                .position(|&c| c == Control::CursorHeading)
+                .unwrap_or(controls.len());
+            let (top, below) = controls.split_at(group);
+            column()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap(px(PREVIEW_GAP))
+                        .child(column().children(rows(top)))
+                        .child(self.preview(theme, ui)),
+                )
+                .children(rows(below))
         } else {
-            form
+            column().children(rows(controls))
         };
 
         div()
@@ -896,6 +968,40 @@ fn restore_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
             "Layout + agents",
             RestoreMode::Agents,
         ))
+}
+
+/// The cursor's shape when no program has chosen one: Bar, Underline, Hollow or Block.
+fn cursor_style_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+    let now = cx.global::<Appearance>().cursor_style;
+    switch(ui).children(
+        CursorShapeSetting::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, style)| {
+                option(("cursor-style", i), style == now, ui)
+                    .child(style.label())
+                    .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        // Clicking the option already chosen changes nothing.
+                        if cx.global::<Appearance>().cursor_style != style {
+                            apply(cx, "cursor-style", &prefs::cursor_style_values(style));
+                        }
+                    }))
+            }),
+    )
+}
+
+/// The cursor's Fun: Off, Trail or Sparks.
+fn cursor_fun_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+    let now = cx.global::<Appearance>().cursor_fun;
+    switch(ui).children(CursorFun::ALL.into_iter().enumerate().map(|(i, fun)| {
+        option(("cursor-fun", i), fun == now, ui)
+            .child(fun.label())
+            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                if cx.global::<Appearance>().cursor_fun != fun {
+                    apply(cx, "cursor-fun", &prefs::cursor_fun_values(fun));
+                }
+            }))
+    }))
 }
 
 /// An On / Off switch for `setting`.
@@ -1088,6 +1194,37 @@ fn heading(title: &'static str, ui: UiColors) -> Div {
                 .flex()
                 .items_center()
                 .child(div().w_full().h(px(1.0)).bg(hsla(ui.sidebar_border))),
+        )
+}
+
+/// A group's heading inside a section ("Cursor"): its name over the labels' column, in the
+/// section title's small capitals but quieter, then a quiet line across the controls.
+fn group_heading(title: &'static str, ui: UiColors) -> Div {
+    div()
+        .flex_none()
+        .h(px(GROUP_HEADER))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(LABEL_GAP))
+        .child(
+            div()
+                .flex_none()
+                .w(px(LABEL_WIDTH))
+                .flex()
+                .justify_end()
+                .text_size(px(text::GROUP_HEADER))
+                .font_weight(FontWeight::SEMIBOLD)
+                .font_features(small_caps())
+                .text_color(hsla(ui.text_faint))
+                .child(title),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(CONTROL_WIDTH))
+                .h(px(1.0))
+                .bg(hsla(ui.sidebar_border)),
         )
 }
 
@@ -1452,7 +1589,18 @@ mod tests {
         );
         assert_eq!(
             Section::Appearance.controls(),
-            [Theme, Font, Size, Ligatures]
+            [
+                Theme,
+                Font,
+                Size,
+                Ligatures,
+                CursorHeading,
+                CursorStyle,
+                Switch(OnOff::CursorGlide),
+                Switch(OnOff::CursorGlow),
+                Switch(OnOff::CursorColor),
+                CursorFun,
+            ]
         );
         assert_eq!(
             Section::Sessions.controls(),
@@ -1470,11 +1618,17 @@ mod tests {
             Ligatures,
             Restore,
             TipsCard,
+            CursorHeading,
+            CursorStyle,
+            CursorFun,
             Switch(OnOff::Animations),
             Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),
             Switch(OnOff::AddressBar),
             Switch(OnOff::KeepData),
+            Switch(OnOff::CursorGlide),
+            Switch(OnOff::CursorGlow),
+            Switch(OnOff::CursorColor),
         ];
         let listed: Vec<Control> = Section::ALL
             .iter()
@@ -1510,6 +1664,109 @@ mod tests {
         }
         assert_eq!(OnOff::Animations.note(), [ANIMATIONS_NOTE]);
         assert_eq!(OnOff::KeepRunning.note(), [KEEP_NOTE]);
+    }
+
+    #[test]
+    fn appearance_lists_the_cursor_rows_in_order() {
+        use crate::appearance::{CursorFun, CursorShapeSetting};
+        // The "Cursor" group (note 58): its heading, then Style, Glide, Breathing glow,
+        // Colour follows the agent and Fun, under the theme, font, size and ligatures.
+        let labels: Vec<&str> = Section::Appearance
+            .controls()
+            .iter()
+            .map(|c| c.label())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Theme",
+                "Font",
+                "Size",
+                "Ligatures",
+                "Cursor",
+                "Style",
+                "Glide",
+                "Breathing glow",
+                "Colour follows the agent",
+                "Fun",
+            ]
+        );
+        // The choices, in order, under their own names.
+        assert_eq!(
+            CursorShapeSetting::ALL.map(CursorShapeSetting::label),
+            ["Bar", "Underline", "Hollow", "Block"]
+        );
+        assert_eq!(
+            CursorFun::ALL.map(CursorFun::label),
+            ["Off", "Trail", "Sparks"]
+        );
+        // The note, word for word, under Style.
+        assert_eq!(
+            Control::CursorStyle.note(),
+            ["Programs that set their own cursor (vim, for example) still choose their shape."]
+        );
+        assert_eq!(Control::CursorStyle.height(), SWITCH + NOTE);
+        assert!(Control::CursorFun.note().is_empty());
+        assert_eq!(Control::CursorFun.height(), SWITCH);
+        // The switches write their lines, only when not the default.
+        assert_eq!(OnOff::CursorGlide.key(), "cursor-glide");
+        assert_eq!(OnOff::CursorGlow.key(), "cursor-glow");
+        assert_eq!(OnOff::CursorColor.key(), "cursor-color");
+        for s in [OnOff::CursorGlide, OnOff::CursorGlow, OnOff::CursorColor] {
+            assert!(s.values(true).is_empty(), "{s:?}");
+            assert!(s.note().is_empty(), "{s:?}");
+        }
+        assert_eq!(OnOff::CursorGlide.values(false), ["off"]);
+        assert_eq!(OnOff::CursorGlow.values(false), ["off"]);
+        assert_eq!(OnOff::CursorColor.values(false), ["theme"]);
+        // Through the file: only that key's line changes, and the default removes it.
+        let dir = std::env::temp_dir().join(format!("fuxx-cursor-values-{}", std::process::id()));
+        let path = dir.join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "theme = Nord\n").unwrap();
+        let read = || std::fs::read_to_string(&path).unwrap();
+        write_setting(
+            &path,
+            "cursor-style",
+            &prefs::cursor_style_values(CursorShapeSetting::Hollow),
+        )
+        .unwrap();
+        write_setting(
+            &path,
+            "cursor-fun",
+            &prefs::cursor_fun_values(CursorFun::Sparks),
+        )
+        .unwrap();
+        write_setting(
+            &path,
+            OnOff::CursorColor.key(),
+            &OnOff::CursorColor.values(false),
+        )
+        .unwrap();
+        assert_eq!(
+            read(),
+            "theme = Nord\ncursor-style = hollow\ncursor-fun = sparks\ncursor-color = theme\n"
+        );
+        write_setting(
+            &path,
+            "cursor-style",
+            &prefs::cursor_style_values(CursorShapeSetting::Bar),
+        )
+        .unwrap();
+        write_setting(
+            &path,
+            "cursor-fun",
+            &prefs::cursor_fun_values(CursorFun::Off),
+        )
+        .unwrap();
+        write_setting(
+            &path,
+            OnOff::CursorColor.key(),
+            &OnOff::CursorColor.values(true),
+        )
+        .unwrap();
+        assert_eq!(read(), "theme = Nord\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1570,8 +1827,11 @@ mod tests {
         // Appearance: its title, the theme list (seven rows, so every built-in shows without
         // scrolling) and the font list (five), each with its border and inset (2 x 3 px), the
         // size buttons and the ligatures switch, with a gap between fields.
+        // Then the Cursor group: its 16 px heading, Style with its note, three switches and Fun.
         let (theme_list, font_list) = (7.0 * LIST_ROW + 6.0, 5.0 * LIST_ROW + 6.0);
-        let appearance = HEADER + theme_list + font_list + SIZE_ROW + SWITCH + 3.0 * FIELD_GAP;
+        let cursor = 16.0 + (SWITCH + NOTE) + 4.0 * SWITCH;
+        let appearance =
+            HEADER + theme_list + font_list + SIZE_ROW + SWITCH + cursor + 9.0 * FIELD_GAP;
         assert_eq!(body_height(Section::Appearance), appearance);
         // Every section fits; the tallest sets the height, and it is Appearance.
         let inside = window_height() - 2.0 * PAD;
@@ -1589,6 +1849,11 @@ mod tests {
         // The preview and its caption stand beside the lists, within the section.
         assert_eq!(PREVIEW_HEIGHT, theme_list + FIELD_GAP + font_list);
         assert!(HEADER + PREVIEW_HEIGHT + CAPTION <= appearance);
+        // The preview stands beside the controls above the Cursor group, not beside the group.
+        assert!(
+            PREVIEW_HEIGHT + CAPTION
+                <= theme_list + font_list + SIZE_ROW + SWITCH + 3.0 * FIELD_GAP
+        );
         // The section list fits too.
         assert!(SECTIONS_TOP + 4.0 * (SECTION_ROW + SECTION_ROW_GAP) <= window_height());
         // As wide as the list and the old one-page form; the preview keeps its width.
@@ -1596,7 +1861,7 @@ mod tests {
         assert_eq!(WIDTH, SECTIONS_WIDTH + FORM_WIDTH);
         assert_eq!(PREVIEW_WIDTH, 270.0);
         // As the constants are today.
-        assert_eq!((WIDTH, window_height()), (920.0, 452.0));
+        assert_eq!((WIDTH, window_height()), (920.0, 698.0));
     }
 
     #[test]

@@ -909,6 +909,9 @@ pub(crate) enum Glyph {
     Plus,
     Bell,
     Gear,
+    /// The Update Available button's (a 16 px box, as the footer's): a package, an isometric box
+    /// (its outline, the edges meeting at its front corner) with a tape line across its top.
+    Package,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1066,6 +1069,36 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                             tooth.line_to(p(c.0 + dx * 5.5, c.1 + dy * 5.5));
                             paths.push(tooth);
                         }
+                    }
+                    Glyph::Package => {
+                        // The box's six outer corners, clockwise from the top; its front corner.
+                        let (top, right_up, right_down) = ((6.0, 0.75), (11.25, 3.4), (11.25, 8.6));
+                        let (bottom, left_down, left_up) = ((6.0, 11.25), (0.75, 8.6), (0.75, 3.4));
+                        let front = (6.0, 6.0);
+                        let mut outline = stroke();
+                        outline.add_polygon(
+                            &[top, right_up, right_down, bottom, left_down, left_up]
+                                .map(|(x, y)| p(x, y)),
+                            true,
+                        );
+                        paths.push(outline);
+                        // The top face's front edges, and the edge down the front corner.
+                        let mut edges = stroke();
+                        edges.move_to(p(left_up.0, left_up.1));
+                        edges.line_to(p(front.0, front.1));
+                        edges.line_to(p(right_up.0, right_up.1));
+                        edges.move_to(p(front.0, front.1));
+                        edges.line_to(p(bottom.0, bottom.1));
+                        paths.push(edges);
+                        // The tape: from the middle of the back left edge to the middle of the
+                        // front right one.
+                        let mid =
+                            |a: (f32, f32), b: (f32, f32)| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+                        let (from, to) = (mid(top, left_up), mid(front, right_up));
+                        let mut tape = stroke();
+                        tape.move_to(p(from.0, from.1));
+                        tape.line_to(p(to.0, to.1));
+                        paths.push(tape);
                     }
                     Glyph::SplitRight | Glyph::SplitDown => {
                         let mut frame = stroke();

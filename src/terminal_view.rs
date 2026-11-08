@@ -935,7 +935,8 @@ fn paint_grid(
 
     // A focused block cursor is drawn by inverting its cell, so the glyph stays readable.
     let mut outline_cursor = None;
-    if let Some(c) = snap.cursor {
+    if let Some(mut c) = snap.cursor {
+        c.shape = painted_shape(c.shape);
         if c.row < snap.rows && c.col < snap.cols {
             if focused && c.shape == CursorShape::Block {
                 let cell = &mut snap.lines[c.row][c.col];
@@ -1028,11 +1029,35 @@ fn paint_grid(
     }
 }
 
+/// The shape drawn for a Term's cursor `shape`: the marker (`terminal::CURSOR_UNSET`, "no
+/// program has chosen") as the steady block it looked like before M11f; any other as itself.
+fn painted_shape(shape: CursorShape) -> CursorShape {
+    match shape {
+        CursorShape::HollowBlock => CursorShape::Block,
+        shape => shape,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::{Bounds, point, px, size};
 
-    use super::{GridLayout, inset};
+    use super::{GridLayout, inset, painted_shape};
+    use alacritty_terminal::vte::ansi::CursorShape;
+
+    #[test]
+    fn the_marker_is_painted_as_todays_steady_block() {
+        // Until M11f Task 3 draws the setting, "no program has chosen" looks as it did.
+        assert_eq!(painted_shape(CursorShape::HollowBlock), CursorShape::Block);
+        for shape in [
+            CursorShape::Block,
+            CursorShape::Beam,
+            CursorShape::Underline,
+            CursorShape::Hidden,
+        ] {
+            assert_eq!(painted_shape(shape), shape);
+        }
+    }
 
     #[test]
     fn inset_balances_leftover() {

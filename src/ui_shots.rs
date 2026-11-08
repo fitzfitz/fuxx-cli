@@ -765,6 +765,11 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         browser_address_bar: true,
         browser_keep_data: false,
         check_updates: true,
+        cursor_style: Default::default(),
+        cursor_glide: true,
+        cursor_glow: true,
+        cursor_follows_status: true,
+        cursor_fun: Default::default(),
     }
 }
 
@@ -5112,21 +5117,25 @@ fn title_area_scenes() {
 }
 
 /// The Update Available button above the sidebar's footer, over `switcher_workspace`, in both
-/// themes:
+/// themes, with v0.3.2 the newer release:
 /// - `update-idle`: nothing known: no button;
-/// - `update-available`: a newer release known: the blue button, white "Update Available";
+/// - `update-available`: a newer release known: the blue button, a white package icon, then
+///   white "Update Available" and a fainter " · v0.3.2";
 /// - `update-hover`: the pointer on it: the darker blue;
-/// - `update-downloading`: "Downloading update…", with the pointer on it and a click: still
-///   the plain blue (no hover) and still downloading.
+/// - `update-downloading`: "Downloading v0.3.2…", with the pointer on it and a click: still
+///   the plain blue (no hover) and still downloading;
+/// - `update-narrow`: the narrowest sidebar: the version left out, "Update Available" whole.
 ///
 /// Panics unless the button shows exactly when there is something to say, is 28 px tall and
 /// 8 px above the footer's top edge, inset `ROW_INSET` each side, filled `#1F6FEB` (`#1A5FCC`
-/// hovered while clickable) with white text, and its downloading words run wider than
-/// "Update Available".
+/// hovered while clickable); its icon's ink is about 16 px wide and 6 px before the words, the
+/// pair centred; the words' ink is as wide as the text it should say (the package, the gap and
+/// that text, measured as the button draws it); and the version part is white at 75% (never
+/// full white) while the words are full white.
 fn update_button_scenes() {
     use crate::sidebar::{FOOTER, ROW_INSET, UPDATE_BUTTON, UPDATE_FILL, UPDATE_GAP};
-    use crate::sidebar::{UPDATE_HOVER, UPDATE_RADIUS, UPDATE_TEXT};
-    use crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH;
+    use crate::sidebar::{UPDATE_HOVER, UPDATE_ICON, UPDATE_ICON_GAP, UPDATE_RADIUS, UPDATE_TEXT};
+    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH};
     use crate::update_release::{Release, Version};
     use crate::updater::{UpdateState, Updates};
     use gpui::Modifiers;
@@ -5134,16 +5143,15 @@ fn update_button_scenes() {
     use std::rc::Rc;
 
     let dims = size(px(760.0), px(420.0));
-    let (width, height) = (SIDEBAR_DEFAULT_WIDTH, f32::from(dims.height));
-    // Where the button should be, in points: its top and bottom, and its left and right edges
-    // (the sidebar's 1 px right border is outside its content).
+    let height = f32::from(dims.height);
+    // Where the button should be, in points: its top and bottom.
     let bottom = height - FOOTER - UPDATE_GAP;
     let top = bottom - UPDATE_BUTTON;
     let mid = (top + bottom) / 2.0;
-    let (left, right) = (ROW_INSET, width - 1.0 - ROW_INSET);
+    let version = Version(0, 3, 2);
     let release = Release {
-        version: Version(0, 3, 1),
-        page_url: "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.1".into(),
+        version,
+        page_url: "https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.2".into(),
         notes: "Faster startup".into(),
         zip: None,
     };
@@ -5154,18 +5162,33 @@ fn update_button_scenes() {
     };
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
-        // The white text's left and right ends, per scene, to compare the words' widths.
+        // The ink's width, per scene, to compare.
         let mut ink = Vec::new();
         for scene in [
             "update-idle",
             "update-available",
             "update-hover",
             "update-downloading",
+            "update-narrow",
         ] {
+            let width = if scene == "update-narrow" {
+                SIDEBAR_MIN_WIDTH
+            } else {
+                SIDEBAR_DEFAULT_WIDTH
+            };
+            // Its left and right edges (the sidebar's 1 px right border is outside its content).
+            let (left, right) = (ROW_INSET, width - 1.0 - ROW_INSET);
             let state = match scene {
                 "update-idle" => UpdateState::Idle,
-                "update-downloading" => UpdateState::Downloading,
+                "update-downloading" => UpdateState::Downloading(version),
                 _ => UpdateState::Available(release.clone()),
+            };
+            // What it should say, all of it (`None`: no button).
+            let says: Option<&str> = match scene {
+                "update-idle" => None,
+                "update-downloading" => Some("Downloading v0.3.2\u{2026}"),
+                "update-narrow" => Some("Update Available"),
+                _ => Some("Update Available \u{b7} v0.3.2"),
             };
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
@@ -5181,9 +5204,18 @@ fn update_button_scenes() {
                 ws.into()
             };
             let n = format!("{scene}-{slug}");
+            // The words' widths as the button draws them: what it says, and "Update Available".
+            let widths: Rc<RefCell<(f32, f32)>> = Rc::default();
             let act = {
                 let n = n.clone();
+                let widths = widths.clone();
                 move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    cx.update_window(window, |_, window, _| {
+                        let measure = |t: &str| crate::sidebar::update_text_width(t, window);
+                        *widths.borrow_mut() =
+                            (measure(says.unwrap_or("")), measure("Update Available"));
+                    })
+                    .expect("measure the words");
                     let on = point(px(left + 12.0), px(mid));
                     if matches!(scene, "update-hover" | "update-downloading") {
                         cx.simulate_mouse_move(window, on, None, Modifiers::none());
@@ -5192,7 +5224,11 @@ fn update_button_scenes() {
                         cx.simulate_click(window, on, Modifiers::none());
                         cx.run_until_parked();
                         let state = cx.read(|cx| cx.global::<Updates>().state.clone());
-                        assert_eq!(state, UpdateState::Downloading, "{n}: the click is ignored");
+                        assert_eq!(
+                            state,
+                            UpdateState::Downloading(version),
+                            "{n}: the click is ignored"
+                        );
                         // And the pointer is put back over it, for the still.
                         cx.simulate_mouse_move(window, on, None, Modifiers::none());
                     }
@@ -5220,10 +5256,10 @@ fn update_button_scenes() {
                 .map(|dy| dy as f32 / scale)
                 .filter(|&y| near(at(x, y), UPDATE_FILL) || near(at(x, y), UPDATE_HOVER))
                 .collect();
-            if scene == "update-idle" {
+            let Some(says) = says else {
                 assert!(rows.is_empty(), "{n}: no button, but blue at {rows:?}");
                 continue;
-            }
+            };
             assert!(!rows.is_empty(), "{n}: no button");
             let (first, last) = (rows[0], rows[rows.len() - 1] + 1.0 / scale);
             println!("ui-shots: {n}: button rows {first}..{last}");
@@ -5250,32 +5286,97 @@ fn update_button_scenes() {
                 !near(at(right + half, mid), fill),
                 "{n}: nothing right of it"
             );
-            // White words, centred on the button. Their ink is any pixel far brighter than the
-            // blue (red over 128; the fills' is 0x1F or 0x1A), so the anti-aliased "…" counts.
-            // Looked for between the corners' radii, where the sidebar doesn't show through.
+            // The ink: any pixel far brighter than the blue (red over 128; the fills' is 0x1F
+            // or 0x1A), so anti-aliased lines and the "…" count. Looked for between the
+            // corners' radii, where the sidebar doesn't show through.
             let band = UPDATE_BUTTON - 2.0 * UPDATE_RADIUS;
             let ys: Vec<f32> = (0..(band * scale) as usize)
                 .map(|dy| top + UPDATE_RADIUS + dy as f32 / scale)
                 .collect();
-            let column = |x: f32, hit: &dyn Fn([u8; 3]) -> bool| ys.iter().any(|&y| hit(at(x, y)));
-            let xs = (0..((right - left) * scale) as usize).map(|dx| left + dx as f32 / scale);
-            let white = |p: [u8; 3]| near(p, UPDATE_TEXT);
-            assert!(xs.clone().any(|x| column(x, &white)), "{n}: white text");
-            let inked: Vec<f32> = xs
-                .filter(|&x| column(x, &|p: [u8; 3]| p[0] > 128))
+            let brightest = |x: f32| ys.iter().map(|&y| at(x, y)[0]).max().unwrap_or(0);
+            let xs: Vec<f32> = (0..((right - left) * scale) as usize)
+                .map(|dx| left + dx as f32 / scale)
                 .collect();
-            let (w0, w1) = (inked[0], inked[inked.len() - 1]);
-            let (l, r) = (w0 - left, right - w1);
+            let inked: Vec<f32> = xs.iter().copied().filter(|&x| brightest(x) > 128).collect();
+            assert!(!inked.is_empty(), "{n}: no icon or words");
+            let step = 1.0 / scale;
+            let (w0, w1) = (inked[0], inked[inked.len() - 1] + step);
+            // The icon: the first stretch of ink, up to the first clear gap of 3 px or more.
+            let icon_end = inked
+                .windows(2)
+                .find(|w| w[1] - w[0] >= 3.0)
+                .map(|w| w[0] + step)
+                .expect("a gap between the icon and the words");
+            let words_start = inked.iter().copied().find(|&x| x > icon_end).unwrap();
+            let (icon, gap) = (icon_end - w0, words_start - icon_end);
+            let (said, plain) = *widths.borrow();
+            println!(
+                "ui-shots: {n}: icon {icon} px, gap {gap} px, ink {} px for {said} px of words, \
+                 {} from the left, {} from the right",
+                w1 - w0,
+                w0 - left,
+                right - w1
+            );
+            // The pair centred on the button: the icon's box starts where its ink does (to a
+            // pixel), and the pair runs on for the icon, the gap and the words as laid out (the
+            // words' last letter's ink stops short of its advance).
+            let (l, r) = (
+                w0 - left,
+                right - (w0 + UPDATE_ICON + UPDATE_ICON_GAP + said),
+            );
             assert!(
                 (l - r).abs() <= 2.0,
-                "{n}: the words sit {l} from the left, {r} from the right"
+                "{n}: the icon and words sit {l} from the left, {r} from the right"
             );
+            assert!(
+                (icon - UPDATE_ICON).abs() <= 1.0,
+                "{n}: the icon's ink is {icon} px wide, its box {UPDATE_ICON}"
+            );
+            // The words' own side bearing adds a little to the gap.
+            assert!(
+                (UPDATE_ICON_GAP - 0.5..=UPDATE_ICON_GAP + 1.5).contains(&gap),
+                "{n}: {gap} px between the icon and the words, expected {UPDATE_ICON_GAP}"
+            );
+            // The words say what they should: as wide as that text (the icon, gap and words).
+            let expected = UPDATE_ICON + UPDATE_ICON_GAP + said;
+            assert!(
+                ((w1 - w0) - expected).abs() <= 2.0,
+                "{n}: ink {} px wide, expected {expected} for {says:?}",
+                w1 - w0
+            );
+            let white = |p: [u8; 3]| near(p, UPDATE_TEXT);
+            let any_white = |x0: f32, x1: f32| {
+                xs.iter()
+                    .filter(|&&x| x >= x0 && x < x1)
+                    .any(|&x| ys.iter().any(|&y| white(at(x, y))))
+            };
+            assert!(any_white(w0, icon_end), "{n}: the icon is white");
+            assert!(
+                any_white(words_start, words_start + plain),
+                "{n}: the words are white"
+            );
+            if scene != "update-narrow" && scene != "update-downloading" {
+                // The version part, after "Update Available": white at 75% over the blue, never
+                // full white, but plainly drawn.
+                let from = words_start + plain + 1.0;
+                let faint: Vec<u8> = xs
+                    .iter()
+                    .filter(|&&x| x >= from && x < w1)
+                    .map(|&x| brightest(x))
+                    .collect();
+                let most = faint.iter().copied().max().unwrap_or(0);
+                println!("ui-shots: {n}: the version's brightest red {most}");
+                assert!(
+                    (150..=225).contains(&most),
+                    "{n}: the version part's brightest red is {most}, expected about 199 (75% white)"
+                );
+            }
             ink.push((scene, w1 - w0));
         }
         let wide = |s: &str| ink.iter().find(|(n, _)| *n == s).map(|(_, w)| *w).unwrap();
         assert!(
-            wide("update-downloading") > wide("update-available") + 10.0,
-            "{slug}: \"Downloading update…\" is wider than \"Update Available\": {ink:?}"
+            wide("update-narrow") + 20.0 < wide("update-available"),
+            "{slug}: the narrow button left its version out: {ink:?}"
         );
     }
 }

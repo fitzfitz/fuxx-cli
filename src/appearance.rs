@@ -43,9 +43,93 @@ pub struct Appearance {
     /// `check-updates = on|off`: whether a bundled fuxx asks GitHub for a newer release at launch
     /// and once a day (default on). Fuxx → Check for Updates… works either way.
     pub check_updates: bool,
+    /// `cursor-style = bar|underline|hollow|block`: the terminal cursor's shape when no program
+    /// has chosen one (default bar).
+    pub cursor_style: CursorShapeSetting,
+    /// `cursor-glide = on|off`: the cursor slides to where it goes (default on).
+    pub cursor_glide: bool,
+    /// `cursor-glow = on|off`: the cursor breathes instead of blinking (default on).
+    pub cursor_glow: bool,
+    /// `cursor-color = status|theme`: the cursor takes its terminal's status colour (`status`,
+    /// the default, true) or always the theme's cursor colour (`theme`, false).
+    pub cursor_follows_status: bool,
+    /// `cursor-fun = off|trail|sparks`: an optional effect on the cursor (default off).
+    pub cursor_fun: CursorFun,
 }
 
 impl Global for Appearance {}
+
+/// The `cursor-style` setting: the shape fuxx draws when no program has chosen one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CursorShapeSetting {
+    #[default]
+    Bar,
+    Underline,
+    Hollow,
+    Block,
+}
+
+impl CursorShapeSetting {
+    /// In Preferences' order.
+    pub const ALL: [CursorShapeSetting; 4] = [
+        CursorShapeSetting::Bar,
+        CursorShapeSetting::Underline,
+        CursorShapeSetting::Hollow,
+        CursorShapeSetting::Block,
+    ];
+
+    /// As written in the settings file.
+    pub fn value(self) -> &'static str {
+        match self {
+            CursorShapeSetting::Bar => "bar",
+            CursorShapeSetting::Underline => "underline",
+            CursorShapeSetting::Hollow => "hollow",
+            CursorShapeSetting::Block => "block",
+        }
+    }
+
+    /// As Preferences shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            CursorShapeSetting::Bar => "Bar",
+            CursorShapeSetting::Underline => "Underline",
+            CursorShapeSetting::Hollow => "Hollow",
+            CursorShapeSetting::Block => "Block",
+        }
+    }
+}
+
+/// The `cursor-fun` setting: an optional effect on the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CursorFun {
+    #[default]
+    Off,
+    Trail,
+    Sparks,
+}
+
+impl CursorFun {
+    /// In Preferences' order.
+    pub const ALL: [CursorFun; 3] = [CursorFun::Off, CursorFun::Trail, CursorFun::Sparks];
+
+    /// As written in the settings file.
+    pub fn value(self) -> &'static str {
+        match self {
+            CursorFun::Off => "off",
+            CursorFun::Trail => "trail",
+            CursorFun::Sparks => "sparks",
+        }
+    }
+
+    /// As Preferences shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            CursorFun::Off => "Off",
+            CursorFun::Trail => "Trail",
+            CursorFun::Sparks => "Sparks",
+        }
+    }
+}
 
 /// An environment variable as a path; unset or empty counts as absent.
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -136,6 +220,76 @@ fn check_updates_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "check-updates", true)
 }
 
+/// The last valid `key` entry wins: one of `choices`, named by `value` (any case); an empty value
+/// resets to `default`. Returns the setting and a warning per invalid value (the previous value
+/// stays), naming the choices.
+fn choice_from_entries<T: Copy>(
+    entries: &[Entry],
+    key: &str,
+    default: T,
+    choices: &[T],
+    value: fn(T) -> &'static str,
+) -> (T, Vec<String>) {
+    let mut chosen = default;
+    let mut warnings = Vec::new();
+    for entry in entries.iter().filter(|e| e.key == key) {
+        let given = entry.value.trim().to_lowercase();
+        if given.is_empty() {
+            chosen = default;
+        } else if let Some(&c) = choices.iter().find(|&&c| value(c) == given) {
+            chosen = c;
+        } else {
+            let names: Vec<&str> = choices.iter().map(|&c| value(c)).collect();
+            let (last, rest) = names.split_last().expect("at least one choice");
+            warnings.push(format!(
+                "{key} \"{}\": expected {} or {last}",
+                entry.value,
+                rest.join(", ")
+            ));
+        }
+    }
+    (chosen, warnings)
+}
+
+/// `cursor-style`, bar by default (see `choice_from_entries`).
+fn cursor_style_from_entries(entries: &[Entry]) -> (CursorShapeSetting, Vec<String>) {
+    choice_from_entries(
+        entries,
+        "cursor-style",
+        CursorShapeSetting::default(),
+        &CursorShapeSetting::ALL,
+        CursorShapeSetting::value,
+    )
+}
+
+/// `cursor-glide`, on by default (see `switch_from_entries`).
+fn cursor_glide_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "cursor-glide", true)
+}
+
+/// `cursor-glow`, on by default (see `switch_from_entries`).
+fn cursor_glow_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "cursor-glow", true)
+}
+
+/// `cursor-color = status|theme` as "follows the status": `status` (the default) is true.
+fn cursor_color_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    choice_from_entries(entries, "cursor-color", true, &[true, false], |follows| {
+        if follows { "status" } else { "theme" }
+    })
+}
+
+/// `cursor-fun`, off by default (see `choice_from_entries`).
+fn cursor_fun_from_entries(entries: &[Entry]) -> (CursorFun, Vec<String>) {
+    choice_from_entries(
+        entries,
+        "cursor-fun",
+        CursorFun::default(),
+        &CursorFun::ALL,
+        CursorFun::value,
+    )
+}
+
 /// Read fuxx's settings file and build the appearance. Never fails: anything missing or
 /// unreadable falls back to the defaults.
 pub fn load(cx: &App) -> Appearance {
@@ -211,6 +365,11 @@ pub fn load(cx: &App) -> Appearance {
     let (browser_address_bar, address_bar_warnings) = browser_address_bar_from_entries(&entries);
     let (browser_keep_data, keep_data_warnings) = browser_keep_data_from_entries(&entries);
     let (check_updates, check_updates_warnings) = check_updates_from_entries(&entries);
+    let (cursor_style, cursor_style_warnings) = cursor_style_from_entries(&entries);
+    let (cursor_glide, cursor_glide_warnings) = cursor_glide_from_entries(&entries);
+    let (cursor_glow, cursor_glow_warnings) = cursor_glow_from_entries(&entries);
+    let (cursor_follows_status, cursor_color_warnings) = cursor_color_from_entries(&entries);
+    let (cursor_fun, cursor_fun_warnings) = cursor_fun_from_entries(&entries);
     for warning in preset_warnings
         .iter()
         .chain(&restore_warnings)
@@ -220,6 +379,11 @@ pub fn load(cx: &App) -> Appearance {
         .chain(&address_bar_warnings)
         .chain(&keep_data_warnings)
         .chain(&check_updates_warnings)
+        .chain(&cursor_style_warnings)
+        .chain(&cursor_glide_warnings)
+        .chain(&cursor_glow_warnings)
+        .chain(&cursor_color_warnings)
+        .chain(&cursor_fun_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
     }
@@ -240,6 +404,11 @@ pub fn load(cx: &App) -> Appearance {
         browser_address_bar,
         browser_keep_data,
         check_updates,
+        cursor_style,
+        cursor_glide,
+        cursor_glow,
+        cursor_follows_status,
+        cursor_fun,
     }
 }
 
@@ -408,5 +577,128 @@ mod tests {
             check_updates_from_entries(&[entry("animations", "off")]),
             (true, vec![])
         );
+    }
+
+    #[test]
+    fn cursor_settings_default_to_a_breathing_gliding_bar_in_the_status_colour() {
+        assert_eq!(
+            cursor_style_from_entries(&[]),
+            (CursorShapeSetting::Bar, vec![])
+        );
+        assert_eq!(cursor_glide_from_entries(&[]), (true, vec![]));
+        assert_eq!(cursor_glow_from_entries(&[]), (true, vec![]));
+        assert_eq!(cursor_color_from_entries(&[]), (true, vec![]));
+        assert_eq!(cursor_fun_from_entries(&[]), (CursorFun::Off, vec![]));
+    }
+
+    #[test]
+    fn cursor_settings_read_each_value() {
+        let style = |v: &str| cursor_style_from_entries(&[entry("cursor-style", v)]).0;
+        assert_eq!(style("bar"), CursorShapeSetting::Bar);
+        assert_eq!(style("underline"), CursorShapeSetting::Underline);
+        assert_eq!(style(" Hollow "), CursorShapeSetting::Hollow);
+        assert_eq!(style("BLOCK"), CursorShapeSetting::Block);
+        assert_eq!(
+            cursor_glide_from_entries(&[entry("cursor-glide", "off")]),
+            (false, vec![])
+        );
+        assert_eq!(
+            cursor_glow_from_entries(&[entry("cursor-glow", "off")]),
+            (false, vec![])
+        );
+        assert_eq!(
+            cursor_color_from_entries(&[entry("cursor-color", "theme")]),
+            (false, vec![])
+        );
+        assert_eq!(
+            cursor_color_from_entries(&[
+                entry("cursor-color", "theme"),
+                entry("cursor-color", "status")
+            ]),
+            (true, vec![])
+        );
+        let fun = |v: &str| cursor_fun_from_entries(&[entry("cursor-fun", v)]).0;
+        assert_eq!(fun("off"), CursorFun::Off);
+        assert_eq!(fun("trail"), CursorFun::Trail);
+        assert_eq!(fun("Sparks"), CursorFun::Sparks);
+        // An empty value resets to the default; the last valid line wins.
+        assert_eq!(
+            cursor_style_from_entries(&[entry("cursor-style", "block"), entry("cursor-style", "")]),
+            (CursorShapeSetting::Bar, vec![])
+        );
+        // Other keys are ignored.
+        assert_eq!(
+            cursor_fun_from_entries(&[entry("cursor-style", "trail")]),
+            (CursorFun::Off, vec![])
+        );
+    }
+
+    #[test]
+    fn cursor_settings_warn_on_junk_and_keep_the_previous_value() {
+        assert_eq!(
+            cursor_style_from_entries(&[entry("cursor-style", "beam")]),
+            (
+                CursorShapeSetting::Bar,
+                vec!["cursor-style \"beam\": expected bar, underline, hollow or block".to_string()]
+            )
+        );
+        assert_eq!(
+            cursor_style_from_entries(&[
+                entry("cursor-style", "block"),
+                entry("cursor-style", "x")
+            ])
+            .0,
+            CursorShapeSetting::Block
+        );
+        assert_eq!(
+            cursor_glide_from_entries(&[entry("cursor-glide", "fast")]),
+            (
+                true,
+                vec!["cursor-glide \"fast\": expected on or off".to_string()]
+            )
+        );
+        assert_eq!(
+            cursor_glow_from_entries(&[entry("cursor-glow", "dim")]),
+            (
+                true,
+                vec!["cursor-glow \"dim\": expected on or off".to_string()]
+            )
+        );
+        assert_eq!(
+            cursor_color_from_entries(&[entry("cursor-color", "red")]),
+            (
+                true,
+                vec!["cursor-color \"red\": expected status or theme".to_string()]
+            )
+        );
+        assert_eq!(
+            cursor_fun_from_entries(&[entry("cursor-fun", "confetti")]),
+            (
+                CursorFun::Off,
+                vec!["cursor-fun \"confetti\": expected off, trail or sparks".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn cursor_choices_name_their_settings_values() {
+        assert_eq!(
+            CursorShapeSetting::ALL.map(CursorShapeSetting::value),
+            ["bar", "underline", "hollow", "block"]
+        );
+        assert_eq!(
+            CursorShapeSetting::ALL.map(CursorShapeSetting::label),
+            ["Bar", "Underline", "Hollow", "Block"]
+        );
+        assert_eq!(
+            CursorFun::ALL.map(CursorFun::value),
+            ["off", "trail", "sparks"]
+        );
+        assert_eq!(
+            CursorFun::ALL.map(CursorFun::label),
+            ["Off", "Trail", "Sparks"]
+        );
+        assert_eq!(CursorShapeSetting::default(), CursorShapeSetting::Bar);
+        assert_eq!(CursorFun::default(), CursorFun::Off);
     }
 }

@@ -20,7 +20,7 @@ use alacritty_terminal::index::{Boundary, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor, Rgb, StdSyncHandler};
 use futures::channel::mpsc::UnboundedSender;
 use portable_pty::CommandBuilder;
 
@@ -33,6 +33,26 @@ use crate::mux_proto::{Frame, SetMeta};
 use crate::pty::{self, Pty};
 use crate::status::Status;
 use crate::theme::Theme;
+
+/// Every terminal's default cursor style: "no program has chosen a shape". Programs can't ask
+/// for a hollow block (`ESC [ n q` gives block, underline or bar), so a Term reporting this
+/// shape has not been told one (or was reset with `ESC [ 0 q`), and the window draws the
+/// `cursor-style` setting in its place (M11f). A program's `ESC [ ? 12 l` (curses' "cursor
+/// normal") can clear its `blinking`; the shape still says "not chosen".
+pub const CURSOR_UNSET: CursorStyle = CursorStyle {
+    shape: CursorShape::HollowBlock,
+    blinking: true,
+};
+
+/// The config every Term fuxx makes starts from, the window's and the background service's
+/// alike (so a snapshot rebuilds the same): alacritty's defaults with `CURSOR_UNSET` as the
+/// default cursor style.
+pub fn term_config() -> Config {
+    Config {
+        default_cursor_style: CURSOR_UNSET,
+        ..Config::default()
+    }
+}
 
 /// Terminal size in cells. Implements alacritty's `Dimensions` so `Term` can use it directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,7 +308,7 @@ impl TerminalCore {
             events: events.clone(),
             replica: false,
         };
-        let term = Term::new(Config::default(), &dims, listener);
+        let term = Term::new(term_config(), &dims, listener);
         let shared = Arc::new(FairMutex::new(Shared {
             term,
             processor: Processor::new(),
@@ -400,12 +420,12 @@ impl TerminalCore {
             events: events.clone(),
             replica: true,
         };
-        // The daemon's Term has the same `Config::default()` (and so the same history).
+        // The daemon's Term has the same `term_config()` (and so the same history and cursor).
         let start = match asked.0 {
             TermDims { cols: 0, .. } | TermDims { rows: 0, .. } => TermDims { cols: 80, rows: 24 },
             dims => dims,
         };
-        let term = Term::new(Config::default(), &start, listener.clone());
+        let term = Term::new(term_config(), &start, listener.clone());
         let shared = Arc::new(FairMutex::new(Shared {
             term,
             processor: Processor::new(),
@@ -789,7 +809,7 @@ impl Replica {
                     // A fresh Term and parser: an old parser could be inside a synchronized
                     // update (DEC 2026) or an escape sequence, and would swallow the snapshot.
                     let mut guard = shared.lock();
-                    guard.term = Term::new(Config::default(), &dims, self.listener.clone());
+                    guard.term = Term::new(term_config(), &dims, self.listener.clone());
                     guard.processor = Processor::new();
                     let Shared {
                         term, processor, ..
@@ -1294,6 +1314,42 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_config_starts_every_term_with_the_marker() {
+        use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
+        assert_eq!(
+            CURSOR_UNSET,
+            CursorStyle {
+                shape: CursorShape::HollowBlock,
+                blinking: true
+            }
+        );
+        let config = term_config();
+        assert_eq!(config.default_cursor_style, CURSOR_UNSET);
+        // Everything else is alacritty's default (the same history as before).
+        assert_eq!(
+            config.scrolling_history,
+            Config::default().scrolling_history
+        );
+    }
+
+    #[test]
+    fn a_local_terminal_has_the_marker_until_a_program_sets_a_shape() {
+        use alacritty_terminal::vte::ansi::CursorShape;
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'a'; sleep 0.5; printf '\\033[6 q'; sleep 1"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains('a')));
+        let shape = || core.snapshot().cursor.map(|c| c.shape);
+        assert_eq!(shape(), Some(CursorShape::HollowBlock));
+        assert!(wait_for(&mut rx, |_| shape() == Some(CursorShape::Beam)));
+    }
+
+    #[test]
     fn app_cursor_mode_is_visible_to_the_ui() {
         let (tx, mut rx) = unbounded();
         let core = TerminalCore::spawn(
@@ -1498,6 +1554,27 @@ mod daemon_tests {
             _ => false,
         }));
         assert_eq!(code, Some(Some(255)));
+    }
+
+    #[test]
+    fn a_daemon_replica_has_the_marker_and_follows_a_programs_shape() {
+        use alacritty_terminal::vte::ansi::CursorShape;
+        let (_d, path) = daemon("t-marker");
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core =
+            TerminalCore::create_daemon(client, sh_create(40, 5), tx, Theme::default()).unwrap();
+        let shape = || core.snapshot().cursor.map(|c| c.shape);
+        core.input(b"echo READY\r");
+        assert!(eventually(|| screen_lines(&core)
+            .iter()
+            .any(|l| l == "READY")));
+        assert_eq!(shape(), Some(CursorShape::HollowBlock));
+        // A steady block (`ESC [ 2 q`) is a program's choice, not the marker.
+        core.input(b"printf '\\033[2 q'\r");
+        assert!(eventually(|| shape() == Some(CursorShape::Block)));
+        core.input(b"printf '\\033[0 q'\r");
+        assert!(eventually(|| shape() == Some(CursorShape::HollowBlock)));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 use alacritty_terminal::vte::ansi::Rgb;
 
+use crate::appearance::{CursorFun, CursorShapeSetting};
 use crate::fonts;
 use crate::settings::Entry;
 use crate::theme::{self, BUILTIN_THEMES, Theme};
@@ -125,6 +126,44 @@ pub fn browser_keep_data_values(on: bool) -> Vec<String> {
 /// `check-updates` values to write: nothing when on (the default, so no line), `off` otherwise.
 pub fn check_updates_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
+}
+
+/// `cursor-style` values to write: nothing for bar (the default, so no line), else its name.
+pub fn cursor_style_values(style: CursorShapeSetting) -> Vec<String> {
+    if style == CursorShapeSetting::default() {
+        vec![]
+    } else {
+        vec![style.value().to_string()]
+    }
+}
+
+/// `cursor-glide` values to write: nothing when on (the default, so no line), `off` otherwise.
+pub fn cursor_glide_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
+/// `cursor-glow` values to write: nothing when on (the default, so no line), `off` otherwise.
+pub fn cursor_glow_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
+/// `cursor-color` values to write: nothing when following the status (the default, so no
+/// line), `theme` otherwise.
+pub fn cursor_color_values(follows_status: bool) -> Vec<String> {
+    if follows_status {
+        vec![]
+    } else {
+        vec!["theme".to_string()]
+    }
+}
+
+/// `cursor-fun` values to write: nothing for off (the default, so no line), else its name.
+pub fn cursor_fun_values(fun: CursorFun) -> Vec<String> {
+    if fun == CursorFun::default() {
+        vec![]
+    } else {
+        vec![fun.value().to_string()]
+    }
 }
 
 /// The theme a list choice stands for, on its own (without the user's other colour lines):
@@ -303,5 +342,27 @@ mod tests {
     fn check_updates_line_is_written_only_when_off() {
         assert!(check_updates_values(true).is_empty());
         assert_eq!(check_updates_values(false), vec!["off".to_string()]);
+    }
+
+    #[test]
+    fn cursor_lines_are_written_only_when_not_the_default() {
+        use crate::appearance::{CursorFun, CursorShapeSetting};
+        assert!(cursor_style_values(CursorShapeSetting::Bar).is_empty());
+        assert_eq!(
+            cursor_style_values(CursorShapeSetting::Underline),
+            ["underline"]
+        );
+        assert_eq!(cursor_style_values(CursorShapeSetting::Hollow), ["hollow"]);
+        assert_eq!(cursor_style_values(CursorShapeSetting::Block), ["block"]);
+        assert!(cursor_glide_values(true).is_empty());
+        assert_eq!(cursor_glide_values(false), ["off"]);
+        assert!(cursor_glow_values(true).is_empty());
+        assert_eq!(cursor_glow_values(false), ["off"]);
+        // Following the status is the default (`status`): only `theme` is written.
+        assert!(cursor_color_values(true).is_empty());
+        assert_eq!(cursor_color_values(false), ["theme"]);
+        assert!(cursor_fun_values(CursorFun::Off).is_empty());
+        assert_eq!(cursor_fun_values(CursorFun::Trail), ["trail"]);
+        assert_eq!(cursor_fun_values(CursorFun::Sparks), ["sparks"]);
     }
 }
