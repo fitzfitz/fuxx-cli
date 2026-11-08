@@ -121,6 +121,22 @@ pub struct UiColors {
     pub selection: Rgb,
     /// The tab colours (`TabColor::ALL` order), fitted to stand out on every surface as marks do.
     pub tab_colors: [Rgb; 11],
+    /// A raised card (each pane, the right sidebar; M11i): the terminal's own background.
+    pub card: Rgb,
+    /// A card's 1 px edge, quiet on the canvas (the sidebar colour) and on the card.
+    pub card_border: Rgb,
+    /// The card's shadow: `shadow` at this opacity (0-1).
+    pub card_shadow_alpha: f32,
+    /// The selected sidebar row's soft tint of the accent (its text keeps its own colours).
+    pub row_selected: Rgb,
+    /// A hovered and a selected row on a card (the right sidebar's rows).
+    pub card_hover: Rgb,
+    pub card_selected: Rgb,
+    /// A pane's tab bar, halfway between the card and the canvas, and a hovered inactive tab.
+    pub tab_bar: Rgb,
+    pub tab_hover: Rgb,
+    /// The Files tree's 1 px indent guides, quiet on the card.
+    pub guide: Rgb,
 }
 
 impl UiColors {
@@ -209,10 +225,41 @@ impl Theme {
             done_tint,
             waiting_hover,
         ];
-        let text = |c: Rgb| readable(c, &surfaces, TEXT_MIN);
         let mark = |c: Rgb| readable(c, &surfaces, MARK_MIN);
-        let text_dim = text(mix(sidebar, fg, 0.72));
         let accent = mark(self.palette[4]);
+        // M11i's cards and tab bars. The card is the terminal; the tab bar sits halfway between
+        // it and the canvas (the sidebar colour) so it reads as the card's top.
+        let card = bg;
+        let card_hover = mix(card, fg, 0.06);
+        let tab_bar = mix(bg, sidebar, 0.5);
+        let tab_hover = mix(tab_bar, fg, 0.06);
+        // A selection is a soft wash of the accent over its surface, lowered in 2 % steps while
+        // the text (as it reads on the other surfaces) would fall below 4.5:1 on it. At 0 it is
+        // the surface itself, which the text reads on.
+        let plain_text = readable(
+            fg,
+            &[&surfaces[..], &[card_hover, tab_bar, tab_hover]].concat(),
+            TEXT_MIN,
+        );
+        // 18 % on dark themes, 12 % on light ones, in 2 % steps.
+        let steps: u8 = if dark { 9 } else { 6 };
+        let tint = |on: Rgb| {
+            (1..=steps)
+                .rev()
+                .map(|n| mix(on, accent, 0.02 * n as f32))
+                .find(|&s| contrast(plain_text, s) >= TEXT_MIN)
+                .unwrap_or(on)
+        };
+        let row_selected = tint(sidebar);
+        let card_selected = tint(card);
+        // Text reads on every surface, the new ones too.
+        let text_surfaces = [
+            &surfaces[..],
+            &[card_hover, tab_bar, tab_hover, row_selected, card_selected],
+        ]
+        .concat();
+        let text = |c: Rgb| readable(c, &text_surfaces, TEXT_MIN);
+        let text_dim = text(mix(sidebar, fg, 0.72));
         let quiet = |c: Rgb, on: &[Rgb]| readable(c, on, QUIET_LINE_MIN);
         let ink = text(fg);
         // The accent over the box (drawn on the sidebar colour), 30 % or less: as much as keeps
@@ -248,6 +295,18 @@ impl Theme {
             shadow: if dark { black } else { mix(fg, black, 0.5) },
             selection,
             tab_colors: TabColor::ALL.map(|c| mark(c.base())),
+            card,
+            card_border: quiet(
+                mix(bg, fg, if dark { 0.10 } else { 0.12 }),
+                &[sidebar, card],
+            ),
+            card_shadow_alpha: if dark { 0.30 } else { 0.08 },
+            row_selected,
+            card_hover,
+            card_selected,
+            tab_bar,
+            tab_hover,
+            guide: quiet(mix(card, fg, 0.12), &[card]),
         }
     }
 }
@@ -305,14 +364,25 @@ impl Theme {
         };
         // Tab colours are drawn as dots wherever a mark is (rows, switcher, menu).
         let tabs: Vec<(&'static str, Rgb)> = TabColor::ALL.map(|c| (c.name(), ui.tab(c))).into();
+        // M11i's surfaces. The selected sidebar row keeps its marks and tab dot in their own
+        // colours, so they are checked there too; the rest carry text.
+        let row_selected = ("row_selected", ui.row_selected);
+        let text_only = [
+            ("card_selected", ui.card_selected),
+            ("card_hover", ui.card_hover),
+            ("tab_bar", ui.tab_bar),
+            ("tab_hover", ui.tab_hover),
+        ];
+        let marked: Vec<_> = surfaces.iter().copied().chain([row_selected]).collect();
+        let written: Vec<_> = marked.iter().copied().chain(text_only).collect();
         let mut pairs = vec![];
-        for (fgs, min) in [
-            (&text[..], TEXT_MIN),
-            (&marks[..], MARK_MIN),
-            (&tabs[..], MARK_MIN),
+        for (fgs, min, on) in [
+            (&text[..], TEXT_MIN, &written),
+            (&marks[..], MARK_MIN, &marked),
+            (&tabs[..], MARK_MIN, &marked),
         ] {
             for &fg in fgs {
-                for &bg in &surfaces {
+                for &bg in on {
                     pairs.push(pair(fg, bg, min));
                 }
             }
@@ -343,6 +413,10 @@ impl Theme {
             (("divider", ui.divider), terminal),
             (("panel_border", ui.panel_border), ("panel", ui.panel)),
             (("panel_border", ui.panel_border), terminal),
+            // A card's edge on the canvas and on the card; the Files tree's guides on the card.
+            (("card_border", ui.card_border), surfaces[0]),
+            (("card_border", ui.card_border), ("card", ui.card)),
+            (("guide", ui.guide), ("card", ui.card)),
         ];
         for (line, bg) in lines {
             pairs.push(pair(line, bg, QUIET_LINE_MIN));
@@ -696,6 +770,72 @@ mod tests {
                 "{name}: text on the selection is {reads:.2}"
             );
         }
+    }
+
+    #[test]
+    fn new_surfaces_keep_text_readable_on_every_theme() {
+        let mut failures = vec![];
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let surfaces = [
+                ("row_selected", ui.row_selected),
+                ("card_selected", ui.card_selected),
+                ("card_hover", ui.card_hover),
+                ("tab_bar", ui.tab_bar),
+                ("tab_hover", ui.tab_hover),
+            ];
+            for (token, fg) in [("text", ui.text), ("text_dim", ui.text_dim)] {
+                for (surface, bg) in surfaces {
+                    let ratio = contrast(fg, bg);
+                    if ratio < TEXT_MIN {
+                        failures.push(format!("{name}: {token} on {surface} is {ratio:.2}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn card_edges_and_guides_are_quiet_but_visible() {
+        let (_, mocha) = every_theme()
+            .into_iter()
+            .find(|(name, _)| *name == "Catppuccin Mocha")
+            .expect("Mocha is built in");
+        let ui = mocha.ui();
+        for (what, ratio) in [
+            (
+                "card_border on the canvas",
+                contrast(ui.card_border, ui.sidebar_background),
+            ),
+            (
+                "card_border on the card",
+                contrast(ui.card_border, mocha.background),
+            ),
+            ("guide on the card", contrast(ui.guide, mocha.background)),
+        ] {
+            assert!(ratio >= QUIET_LINE_MIN, "{what} is {ratio:.2}: invisible");
+            assert!(ratio < MARK_MIN, "{what} is {ratio:.2}: too loud");
+        }
+        // The card is the terminal's own background.
+        assert_eq!(ui.card, mocha.background);
+    }
+
+    #[test]
+    fn selection_is_a_tint_of_the_accent() {
+        let themes = every_theme();
+        let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1;
+        let ui = named("Catppuccin Mocha").ui();
+        assert_ne!(ui.row_selected, ui.sidebar_background);
+        let d = (hue(ui.row_selected) - hue(ui.accent)).abs();
+        assert!(
+            d.min(360.0 - d) <= 15.0,
+            "row_selected {:?} is {d:.1}° from the accent {:?}",
+            ui.row_selected,
+            ui.accent
+        );
+        assert_eq!(ui.card_shadow_alpha, 0.30);
+        assert_eq!(named("Catppuccin Latte").ui().card_shadow_alpha, 0.08);
     }
 
     #[test]

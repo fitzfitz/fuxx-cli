@@ -111,8 +111,9 @@ impl GridLayout {
     }
 }
 
-/// The space inside a terminal's padding (10 px sides, 8 px top and bottom; 8 and 6 in a split).
-/// The grid is fitted into it (`GridLayout::fit`); the padding is painted with the background.
+/// The space inside a terminal's padding (16 px sides, 12 px top and bottom; 12 and 10 in a
+/// split). The grid is fitted into it (`GridLayout::fit`); the padding is painted with the
+/// background.
 pub fn inset(bounds: Bounds<Pixels>, split: bool) -> Bounds<Pixels> {
     let (x, y) = if split {
         ui_size::SPLIT_TERMINAL_PADDING
@@ -1744,29 +1745,29 @@ mod tests {
     #[test]
     fn inset_balances_leftover() {
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(400.0), px(300.0)));
-        // 10 px sides, 8 px top and bottom; 8 and 6 in a split.
+        // 16 px sides, 12 px top and bottom; 12 and 10 in a split.
         assert_eq!(
             inset(bounds, false),
-            Bounds::new(point(px(10.0), px(8.0)), size(px(380.0), px(284.0)))
+            Bounds::new(point(px(16.0), px(12.0)), size(px(368.0), px(276.0)))
         );
         assert_eq!(
             inset(bounds, true),
-            Bounds::new(point(px(8.0), px(6.0)), size(px(384.0), px(288.0)))
+            Bounds::new(point(px(12.0), px(10.0)), size(px(376.0), px(280.0)))
         );
-        // 9 x 17 cells: 42 columns use 378 of 380 px, 16 rows 272 of 284. What's left over is
-        // shared evenly, so the grid sits 1 px further in on each side, 6 px top and bottom.
+        // 9 x 17 cells: 40 columns use 360 of 368 px, 16 rows 272 of 276. What's left over is
+        // shared evenly, so the grid sits 4 px further in on each side, 2 px top and bottom.
         let grid = GridLayout::fit(inset(bounds, false), px(9.0), px(17.0));
-        assert_eq!((grid.dims.cols, grid.dims.rows), (42, 16));
-        assert_eq!(grid.origin, point(px(11.0), px(14.0)));
-        let right = bounds.size.width - (grid.origin.x + grid.cell_width * 42.0);
+        assert_eq!((grid.dims.cols, grid.dims.rows), (40, 16));
+        assert_eq!(grid.origin, point(px(20.0), px(14.0)));
+        let right = bounds.size.width - (grid.origin.x + grid.cell_width * 40.0);
         let bottom = bounds.size.height - (grid.origin.y + grid.line_height * 16.0);
-        assert_eq!((right, bottom), (px(11.0), px(14.0)));
+        assert_eq!((right, bottom), (px(20.0), px(14.0)));
     }
 
     #[test]
     fn hit_testing_uses_the_inset_origin() {
-        // A pane right of a 220 px sidebar: 580 x 384 inside the padding, 8 x 17 cells, so
-        // 72 x 22 cells with 4 and 10 px left over; the grid starts at (232, 13).
+        // A pane right of a 220 px sidebar: 568 x 376 inside the padding, 8 x 17 cells, so
+        // 71 x 22 cells with 0 and 2 px left over; the grid starts at (236, 13).
         let bounds = Bounds::new(point(px(220.0), px(0.0)), size(px(600.0), px(400.0)));
         let grid = GridLayout::fit(inset(bounds, false), px(8.0), px(17.0));
         let at = |x: f32, y: f32| {
@@ -1774,13 +1775,18 @@ mod tests {
             (p.column.0, p.line.0)
         };
         // Just inside cell (3, 2).
-        assert_eq!(at(232.0 + 3.0 * 8.0 + 1.0, 13.0 + 2.0 * 17.0 + 1.0), (3, 2));
+        assert_eq!(at(236.0 + 3.0 * 8.0 + 1.0, 13.0 + 2.0 * 17.0 + 1.0), (3, 2));
         // In the padding, left of and above the grid: the first cell, not the second.
-        assert_eq!(at(229.0, 10.0), (0, 0));
+        assert_eq!(at(225.0, 4.0), (0, 0));
         // The last cell's far edge.
         assert_eq!(
-            at(232.0 + 72.0 * 8.0 - 1.0, 13.0 + 22.0 * 17.0 - 1.0),
-            (71, 21)
+            at(236.0 + 71.0 * 8.0 - 1.0, 13.0 + 22.0 * 17.0 - 1.0),
+            (70, 21)
         );
+        // In a split the padding is 12 and 10: 576 x 380 inside, 72 x 22 cells with 0 and 6 px
+        // left over; the grid starts at (232, 13).
+        let grid = GridLayout::fit(inset(bounds, true), px(8.0), px(17.0));
+        assert_eq!((grid.dims.cols, grid.dims.rows), (72, 22));
+        assert_eq!(grid.origin, point(px(232.0), px(13.0)));
     }
 }
