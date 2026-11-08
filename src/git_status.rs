@@ -196,7 +196,7 @@ pub fn parse_hunks(diff: &str) -> Vec<(usize, LineChange)> {
 }
 
 /// Whether `root` is a work tree (else None), has a `HEAD`, and tracks `rel` (in the index, or
-/// in HEAD: a staged deletion): the questions
+/// in HEAD and gone from the disk: a staged deletion): the questions
 /// `line_changes` and `file_diff` share. None too when git fails or takes longer than the cap.
 /// Names are literal, not pathspecs (`*`, `[`, a leading `:`).
 fn head_and_tracked(git: &Path, root: &Path, rel: &Path) -> Option<(bool, bool)> {
@@ -219,9 +219,12 @@ fn head_and_tracked(git: &Path, root: &Path, rel: &Path) -> Option<(bool, bool)>
             &path,
         ],
     ))?;
-    // A staged deletion (`git rm`, a `git mv`'s old path) is out of the index but still in
-    // HEAD: tracked, so its diff is its old lines, all removed.
-    let tracked = in_index || (has_head && head_size(git, root, rel)?.is_some());
+    // A staged deletion (`git rm`, a `git mv`'s old path) is out of the index and off the disk
+    // but still in HEAD: tracked, so its diff is its old lines, all removed. Still on disk
+    // (`git rm --cached`), it is untracked: all added.
+    // (A dangling symlink is still on disk: `symlink_metadata`, not `exists`.)
+    let on_disk = root.join(rel).symlink_metadata().is_ok();
+    let tracked = in_index || (has_head && !on_disk && head_size(git, root, rel)?.is_some());
     Some((has_head, tracked))
 }
 
@@ -1081,6 +1084,28 @@ mod tests {
             panic!("c.rs: a unified diff");
         };
         assert!(u.contains("\n@@ -0,0 +1 @@\n+x\n"), "{u}");
+    }
+
+    /// `git rm --cached` with the file still on disk: out of the index, still in HEAD, but the
+    /// disk has it, so it is untracked (all Added), not a staged deletion (all Removed).
+    #[test]
+    fn an_unstaged_file_still_on_disk_is_all_added() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("rm-cached", &git);
+        fs::write(root.join("a.rs"), "one\ntwo\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "first"]);
+        git_in(&git, &root, &["rm", "-q", "--cached", "a.rs"]);
+        assert_eq!(
+            line_changes(&git, &root, Path::new("a.rs")),
+            Some(vec![(1, LineChange::Added), (2, LineChange::Added)])
+        );
+        assert_eq!(
+            file_diff(&git, &root, Path::new("a.rs"), 3),
+            Some(FileDiff::AllAdded)
+        );
     }
 
     #[test]
