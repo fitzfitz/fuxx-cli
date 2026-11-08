@@ -144,6 +144,13 @@ pub(crate) fn run_git_outcome(git: &Path, dir: &Path, args: &[&str]) -> Ran {
     run_capped_outcome(git_command(git, dir, args), None, GIT_CAP)
 }
 
+/// `run_git_outcome`, with what git printed as bytes, for output that may not be UTF-8 (a
+/// diff of a Latin-1 file); the caller decodes it. Paths from porcelain/numstat stay on the
+/// strict `run_git`.
+pub(crate) fn run_git_bytes(git: &Path, dir: &Path, args: &[&str]) -> Ran<Vec<u8>> {
+    run_capped_bytes(git_command(git, dir, args), None, GIT_CAP)
+}
+
 /// `run_git_outcome` with `input` on git's stdin (`check-ignore --stdin`). Any size: it is
 /// written on a thread, within the cap.
 pub(crate) fn run_git_stdin_outcome(git: &Path, dir: &Path, args: &[&str], input: &[u8]) -> Ran {

@@ -79,7 +79,7 @@ pub fn parse_diff(unified: &str) -> Parsed {
     let mut rows: Vec<DiffRow> = Vec::new();
     let (mut old, mut new) = (1, 1);
     let mut started = false;
-    for line in unified.split('\n') {
+    for line in unified.lines() {
         if line.starts_with("@@ ") {
             let mut parts = line.split(' ').skip(1);
             let (Some(a), Some(c)) = (
@@ -103,10 +103,9 @@ pub fn parse_diff(unified: &str) -> Parsed {
         if !started {
             continue;
         }
-        let Some(first) = line.chars().next() else {
-            continue;
-        };
-        let text = &line[1..];
+        // `diff.suppressBlankEmpty` prints a blank context line as an empty line.
+        let first = line.chars().next().unwrap_or(' ');
+        let text = &line[first.len_utf8().min(line.len())..];
         let text = text.strip_suffix('\r').unwrap_or(text);
         let row = match first {
             ' ' => DiffRow {
@@ -341,6 +340,30 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_context_line_without_its_space_still_counts() {
+        // `diff.suppressBlankEmpty=true` drops the leading space of an empty context line.
+        let p = parse_diff("@@ -1,3 +1,3 @@\n a\n\n-b\n+B\n");
+        assert_eq!(
+            p.rows,
+            vec![
+                row(Same, Some(1), Some(1)),
+                row(Same, Some(2), Some(2)),
+                row(Removed, Some(3), None),
+                row(Added, None, Some(3)),
+            ]
+        );
+        assert_eq!(p.text, "a\n\nb\nB");
+    }
+
+    #[test]
+    fn a_line_starting_with_a_non_ascii_char_does_not_panic() {
+        let p = parse_diff("@@ -1 +1 @@\n\u{e9}x\n+\u{e9}y\n");
+        // The unknown-prefix line is skipped; the next is a normal row.
+        assert_eq!(p.rows, vec![row(Added, None, Some(1))]);
+        assert_eq!(p.text, "\u{e9}y");
+    }
+
+    #[test]
     fn all_added_numbers_every_line() {
         let p = all_added("x\ny\n");
         assert_eq!(
@@ -563,6 +586,26 @@ mod tests {
             panic!("unified");
         };
         assert_eq!(parse_diff(&u).text, "1\n2\nTWO");
+        // Non-UTF-8 text (Latin-1 \xe9) still gives a diff, with the byte replaced.
+        fs::write(root.join("latin.txt"), b"caf\xe9\nkeep\n").unwrap();
+        git_in(&git, &root, &["add", "latin.txt"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "latin"]);
+        fs::write(root.join("latin.txt"), b"caf\xe9 au lait\nkeep\n").unwrap();
+        let Some(FileDiff::Unified(u)) = file_diff(&git, &root, Path::new("latin.txt"), 2) else {
+            panic!("unified");
+        };
+        assert_eq!(parse_diff(&u).rows.len(), 3);
+        // A textconv driver does not change the rows.
+        fs::write(root.join(".gitattributes"), "conv.txt diff=up\n").unwrap();
+        fs::write(root.join("conv.txt"), "abc\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "conv"]);
+        git_in(&git, &root, &["config", "diff.up.textconv", "tr a-z A-Z <"]);
+        fs::write(root.join("conv.txt"), "abd\n").unwrap();
+        let Some(FileDiff::Unified(u)) = file_diff(&git, &root, Path::new("conv.txt"), 2) else {
+            panic!("unified");
+        };
+        assert_eq!(parse_diff(&u).text, "abc\nabd");
         // A plain folder.
         assert_eq!(file_diff(&git, &temp("plain"), Path::new("x"), 3), None);
     }
