@@ -37,7 +37,7 @@ use crate::tab_bar::{Glyph, footer_glyph};
 use crate::tab_menu::Dismiss;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::TOP_BAND;
+use crate::ui_tokens::size::{STATUS_BAR, TOP_BAND};
 use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 
@@ -106,13 +106,13 @@ pub(crate) fn popover_width(sidebar_width: f32) -> f32 {
 pub(crate) fn popover_anchor(sidebar_width: f32, viewport_height: f32) -> (f32, f32) {
     let right = footer_buttons(sidebar_width)[2] + FOOTER_BUTTON;
     let left = (right - popover_width(sidebar_width)).max(ROW_INSET);
-    (left, viewport_height - FOOTER - POPOVER_DROP)
+    (left, viewport_height - STATUS_BAR - FOOTER - POPOVER_DROP)
 }
 
 /// The most the list may take in a window `viewport_height` high: up to `LIST_MAX`, and short
 /// enough that the whole panel stays under the top band (where the traffic lights are).
 pub(crate) fn list_room(viewport_height: f32) -> f32 {
-    let above = viewport_height - FOOTER - POPOVER_DROP - TOP_BAND - PANEL_CHROME;
+    let above = viewport_height - STATUS_BAR - FOOTER - POPOVER_DROP - TOP_BAND - PANEL_CHROME;
     above.clamp(0.0, LIST_MAX)
 }
 
@@ -554,7 +554,12 @@ mod tests {
     fn the_popover_opens_upward_from_the_footer_clear_of_the_band() {
         for height in [300.0, 480.0, 600.0, 1000.0] {
             let (_, y) = popover_anchor(260.0, height);
-            assert_eq!(y, height - FOOTER - POPOVER_DROP, "just above the footer");
+            // The footer sits on the status bar (M11i).
+            assert_eq!(
+                y,
+                height - STATUS_BAR - FOOTER - POPOVER_DROP,
+                "just above the footer"
+            );
             // The fullest list: its panel (header, padding and edge included) stays under
             // the top band, where the traffic lights are.
             let panel = PANEL_CHROME + list_room(height);

@@ -961,7 +961,7 @@ pub(crate) enum Glyph {
     Plus,
     Bell,
     Gear,
-    /// The Update Available button's (a 16 px box, as the footer's): a package, an isometric box
+    /// The update pill's (a 12 px box in the status bar, M11i): a package, an isometric box
     /// (its outline, the edges meeting at its front corner) with a tape line across its top.
     Package,
     /// The Files tree's (M11i): a folder (a box with a tab on its top left) and an open one
@@ -970,6 +970,9 @@ pub(crate) enum Glyph {
     Folder,
     FolderOpen,
     CollapseAll,
+    /// The status bar's branch (M11i): a small fork, a trunk with a commit at each end and a
+    /// branch leaving it for a third.
+    Branch,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1237,6 +1240,29 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                             true,
                         );
                         paths.push(flap);
+                    }
+                    Glyph::Branch => {
+                        let ring = |c: (f32, f32)| {
+                            let r = 1.6;
+                            let mut e = stroke();
+                            let radii = point(px(r * u), px(r * u));
+                            e.move_to(p(c.0, c.1 - r));
+                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
+                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
+                            e.close();
+                            e
+                        };
+                        let (top, bottom, side) = ((3.5, 2.2), (3.5, 9.8), (8.5, 3.6));
+                        paths.extend([ring(top), ring(bottom), ring(side)]);
+                        let mut trunk = stroke();
+                        trunk.move_to(p(top.0, top.1 + 1.6));
+                        trunk.line_to(p(bottom.0, bottom.1 - 1.6));
+                        paths.push(trunk);
+                        // From under the side commit, bending down into the trunk.
+                        let mut branch = stroke();
+                        branch.move_to(p(side.0, side.1 + 1.6));
+                        branch.curve_to(p(top.0, 8.0), p(side.0, 8.0));
+                        paths.push(branch);
                     }
                     Glyph::CollapseAll => {
                         for y in [1.5, 6.0] {

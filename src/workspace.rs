@@ -64,6 +64,7 @@ use crate::smart_name::{self, NameFacts, ProgramState, Stable};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
+use crate::status_bar::{self, Ports};
 use crate::status_mark;
 use crate::switcher::Switcher;
 use crate::tab_bar::TabGrab;
@@ -157,7 +158,6 @@ impl Programs {
     }
 
     /// The last `ps` table read; none before the first or after a failed one.
-    #[allow(dead_code)] // read by the status bar's ports lookup (M11i Task 7)
     pub fn table(&self) -> Option<Rc<Vec<Proc>>> {
         self.table.clone()
     }
@@ -288,6 +288,105 @@ impl Workspace {
                 if took.is_err() {
                     break;
                 }
+            }
+        })
+        .detach();
+    }
+}
+
+impl Workspace {
+    /// The followed terminal (`right_sidebar.followed`) if its ports can be looked up, with its
+    /// shell's pid: a local one (not SSH, not a background service's, not lost) with a program
+    /// running in it.
+    fn ports_subject(&self, cx: &App) -> Option<(u64, u32)> {
+        let id = self.right_sidebar.followed?;
+        let s = self.sessions.items().iter().find(|s| s.id == id)?;
+        if s.ssh.is_some() || s.lost {
+            return None;
+        }
+        if !matches!(self.programs.state(id), ProgramState::Running(_)) {
+            return None;
+        }
+        Some((id, s.view.read(cx).working_folder().1?))
+    }
+
+    /// Whether the ports can be looked up: the window can be seen and they aren't frozen (the
+    /// screenshots).
+    fn ports_seen(&self, cx: &App) -> bool {
+        let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
+        seen && !self.ports.frozen
+    }
+
+    /// Whether the ports' refresh should run (`ports_seen`, and a subject to look up).
+    fn ports_wanted(&self, cx: &App) -> bool {
+        self.ports_seen(cx) && self.ports_subject(cx).is_some()
+    }
+
+    /// Look the followed terminal's listening ports up where due (`Ports::due`: at once for a
+    /// newly followed terminal, else every `PORTS_REFRESH`, 30 s after a failure): its shell's
+    /// descendants in the names' last `ps` table, then one `lsof` on the background executor
+    /// (capped at 2 s). With no program running there any more, its ports go. True when what
+    /// the bar shows changed now (an answer redraws when it comes). `render` calls it on every
+    /// frame, the refresh (`tick_ports`) between frames.
+    pub(crate) fn refresh_ports(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.ports_seen(cx) {
+            return false;
+        }
+        let Some((id, shell)) = self.ports_subject(cx) else {
+            return self.ports.clear();
+        };
+        if !self.ports.due(id, Instant::now()) {
+            return false;
+        }
+        let Some(table) = self.programs.table() else {
+            return false;
+        };
+        let pids = procs::descendants(&table, shell);
+        self.ports.ask(id);
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move { procs::listening_ports(&pids) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.ports.take(id, found, Instant::now()) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        false
+    }
+
+    /// Start the ports' refresh unless it's running or nothing is wanted (`ports_wanted`): it
+    /// wakes when the next lookup is due (at most every `PORTS_REFRESH`, never sooner than a
+    /// second) and stops once nothing is wanted, so a hidden window, or a terminal at its
+    /// prompt, is never woken for it. `render` calls it, so a program starting (its name
+    /// found) or the window shown again starts it.
+    pub(crate) fn tick_ports(&mut self, cx: &mut Context<Self>) {
+        if self.ports.ticking || !self.ports_wanted(cx) {
+            return;
+        }
+        self.ports.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let wait = this
+                    .update(cx, |this, cx| {
+                        // (With no program running any more, this lets its ports go.)
+                        if this.refresh_ports(cx) {
+                            cx.notify();
+                        }
+                        this.ports.ticking = this.ports_wanted(cx);
+                        this.ports.ticking.then(|| this.ports.wait(Instant::now()))
+                    })
+                    .ok()
+                    .flatten();
+                let Some(wait) = wait else {
+                    break;
+                };
+                let wait = wait.clamp(Duration::from_secs(1), status_bar::PORTS_RETRY);
+                cx.background_executor().timer(wait).await;
             }
         })
         .detach();
@@ -552,6 +651,8 @@ pub struct Workspace {
     pub(crate) programs: Programs,
     /// Whether the programs' 3 s lookup is running (only while a name it gives can be seen).
     pub(crate) programs_ticking: bool,
+    /// The followed terminal's listening ports, for the status bar (`status_bar::Ports`).
+    pub(crate) ports: Ports,
     /// The name the rename box was opened with: Enter on it unchanged keeps the name automatic.
     pub(crate) renamed_from: String,
     /// This run's notifications, for the title area's 🔔 (`title_area`).
@@ -693,6 +794,7 @@ impl Workspace {
             places_ticking: false,
             programs: Programs::default(),
             programs_ticking: false,
+            ports: Ports::default(),
             renamed_from: String::new(),
             notifications: NotificationList::default(),
             notifications_popover: None,
@@ -2738,6 +2840,10 @@ impl Render for Workspace {
         // The terminal the right sidebar follows, and its folder looked up where due.
         self.refresh_right_sidebar(cx);
         self.tick_right_sidebar(cx);
+        // Its listening ports, for the status bar (after the line above: it follows the same
+        // terminal).
+        self.refresh_ports(cx);
+        self.tick_ports(cx);
         let title = self
             .model
             .focused_workspace()
@@ -2803,6 +2909,7 @@ impl Render for Workspace {
             Some(self.render_drag_strip("pane-strip", window, cx))
         };
         let panes = self.render_panes(colors, ui, window, cx);
+        let status_bar = self.render_status_bar(ui, window, cx);
         // Tabs or rows sliding out of a drag's way (the bars and rows were just drawn): every
         // frame until they're there.
         if self.drag_slides.borrow().moving(Instant::now()) {
@@ -2811,7 +2918,7 @@ impl Render for Workspace {
 
         div()
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
             // The canvas the cards float on (M11i): the left sidebar's colour.
             .bg(hsla(ui.sidebar_background))
@@ -2922,49 +3029,60 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &LaunchPreset7, w, cx| this.launch_preset(6, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset8, w, cx| this.launch_preset(7, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset9, w, cx| this.launch_preset(8, w, cx)))
-            .when_some(sidebar, |root, sidebar| root.child(sidebar))
-            // Only the focused workspace's layout is rendered; other sessions keep running (their
-            // reader threads and tickers live in their views, which the list keeps alive).
+            // The sidebars and the cards in a row, the status bar under them (M11i).
             .child(
                 div()
+                    .relative()
                     .flex()
-                    .flex_col()
+                    .flex_row()
                     .flex_1()
-                    // Not wider than its share: a pane's tab row scrolls rather than widen it.
-                    .min_w(px(0.0))
-                    .h_full()
-                    // Clipped here, not round the cards, so their shadows show in the gaps.
-                    .overflow_hidden()
-                    .when(slide.is_some() && !self.sidebar.hidden, |column| {
-                        column.ml(px(sidebar_width))
-                    })
-                    // The right sidebar's card and the gap at its right (M11i).
-                    .when(right_sliding_in, |column| {
-                        column.mr(px(right_width + CARD_GAP))
-                    })
-                    .children(pane_band)
-                    // The cards, 6 pt from the sidebar (or the window's left edge), from the
-                    // right sidebar's card (or the window's right edge) and from the bottom.
+                    .min_h(px(0.0))
+                    .w_full()
+                    .when_some(sidebar, |row, sidebar| row.child(sidebar))
+                    // Only the focused workspace's layout is rendered; other sessions keep running (their
+                    // reader threads and tickers live in their views, which the list keeps alive).
                     .child(
                         div()
+                            .flex()
+                            .flex_col()
                             .flex_1()
-                            .min_h(px(0.0))
-                            .w_full()
-                            .pl(px(CARD_GAP))
-                            .pr(px(CARD_GAP))
-                            .pb(px(CARD_GAP))
+                            // Not wider than its share: a pane's tab row scrolls rather than widen it.
+                            .min_w(px(0.0))
+                            .h_full()
+                            // Clipped here, not round the cards, so their shadows show in the gaps.
+                            .overflow_hidden()
+                            .when(slide.is_some() && !self.sidebar.hidden, |column| {
+                                column.ml(px(sidebar_width))
+                            })
+                            // The right sidebar's card and the gap at its right (M11i).
+                            .when(right_sliding_in, |column| {
+                                column.mr(px(right_width + CARD_GAP))
+                            })
+                            .children(pane_band)
+                            // The cards, 6 pt from the sidebar (or the window's left edge), from the
+                            // right sidebar's card (or the window's right edge) and from the bottom.
                             .child(
                                 div()
-                                    .relative()
-                                    .size_full()
-                                    .child(self.render_pane_area(cx))
-                                    .children(panes),
+                                    .flex_1()
+                                    .min_h(px(0.0))
+                                    .w_full()
+                                    .pl(px(CARD_GAP))
+                                    .pr(px(CARD_GAP))
+                                    .pb(px(CARD_GAP))
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .size_full()
+                                            .child(self.render_pane_area(cx))
+                                            .children(panes),
+                                    ),
                             ),
-                    ),
+                    )
+                    .children(right_sidebar)
+                    .children(sliding_sidebar)
+                    .children(sliding_right_sidebar),
             )
-            .children(right_sidebar)
-            .children(sliding_sidebar)
-            .children(sliding_right_sidebar)
+            .child(status_bar)
             .child(button)
             // The host picker, the switcher, the Help panel and the address box: over
             // everything, centred near the top of the window.
@@ -3002,6 +3120,7 @@ impl Workspace {
         this.places.frozen = true;
         this.places.home = Some(PathBuf::from("/Users/me"));
         this.programs.frozen = true;
+        this.ports.frozen = true;
         this
     }
 

@@ -6,13 +6,18 @@
 //! is at its prompt; another is the program in the foreground, named by that group's leader
 //! (`foreground`). `descendants` gives a shell's whole tree (for the ports lookup).
 //!
-//! `parse_ps`, `foreground` and `descendants` are pure and tested on `ps` output as text;
-//! `ps_table` runs `ps` and blocks, so it is called on the background executor.
+//! The status bar's ports: the TCP ports a terminal's processes listen on, from one
+//! `/usr/sbin/lsof -nP -iTCP -sTCP:LISTEN -a -p <pids> -Fpn` run (capped at 2 s, off the UI
+//! thread).
+//!
+//! `parse_ps`, `foreground`, `descendants`, `parse_lsof` and `read_lsof` are pure and tested on
+//! the tools' output as text; `ps_table` and `listening_ports` run them and block, so they are
+//! called on the background executor.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
 
-use crate::git_branch::{GIT_CAP, run_capped_bytes};
+use crate::git_branch::{GIT_CAP, Ran, run_capped_bytes, run_capped_outcome};
 
 /// One process as `ps` lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,7 +107,6 @@ pub fn foreground(procs: &[Proc], shell: u32) -> Foreground {
 }
 
 /// Every process below `root` (its children, theirs, and so on), `root` not included.
-#[allow(dead_code)] // the status bar's ports lookup uses it (M11i Task 7)
 pub fn descendants(procs: &[Proc], root: u32) -> Vec<u32> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for p in procs {
@@ -137,6 +141,53 @@ fn ps_command() -> Command {
     ps.args(["-A", "-o", "pid=,ppid=,pgid=,tpgid=,stat=,args="])
         .env("LC_ALL", "en_US.UTF-8");
     ps
+}
+
+/// `lsof -Fpn`'s output read: the port of each `n` line (`n*:3000`, `n127.0.0.1:5173`,
+/// `n[::1]:8080`), sorted, each once (a server on IPv4 and IPv6 is one port). The `p` and `f`
+/// lines, and any line that doesn't read so, are skipped.
+pub fn parse_lsof(stdout: &str) -> Vec<u16> {
+    let mut ports: Vec<u16> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        // A connection (`local->remote`) isn't a listening socket.
+        .filter(|name| !name.contains("->"))
+        .filter_map(|name| name.rsplit_once(':')?.1.parse().ok())
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// What an `lsof` run said, read: its ports when it ran to its end (1 too: lsof says 1 when one
+/// of the pids has ended or none listens, yet lists the rest); none when it failed, wasn't
+/// there, or ran past the cap.
+pub(crate) fn read_lsof(ran: Ran) -> Option<Vec<u16>> {
+    match ran {
+        Ran::Exited(Some(0 | 1), out) => Some(parse_lsof(&out)),
+        _ => None,
+    }
+}
+
+/// The TCP ports processes `pids` listen on, now; none when `lsof` fails or takes longer than
+/// `GIT_CAP` (2 s). No pids: none listen, and nothing is run. Blocks: call it off the UI
+/// thread.
+pub fn listening_ports(pids: &[u32]) -> Option<Vec<u16>> {
+    if pids.is_empty() {
+        return Some(Vec::new());
+    }
+    read_lsof(run_capped_outcome(lsof_command(pids), None, GIT_CAP))
+}
+
+/// The `lsof` run for `pids`: listening TCP sockets (`-a`: and) of those processes, numbers
+/// left as numbers (`-nP`), one field per line (`-Fpn`).
+fn lsof_command(pids: &[u32]) -> Command {
+    let list: Vec<String> = pids.iter().map(u32::to_string).collect();
+    let mut lsof = Command::new("/usr/sbin/lsof");
+    lsof.args(["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p"])
+        .arg(list.join(","))
+        .arg("-Fpn");
+    lsof
 }
 
 #[cfg(test)]
@@ -290,5 +341,67 @@ mod tests {
         assert_eq!(below, [200, 300, 400]);
         assert_eq!(descendants(&procs, 400), Vec::<u32>::new());
         assert_eq!(descendants(&procs, 999), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn lsof_ports_merge_ipv4_ipv6_and_any_and_come_sorted() {
+        // As `lsof -Fpn` prints them: a `p` line per process, `f` and `n` lines per socket.
+        let out = "p501\nf3\nn*:3000\nf4\nn[::1]:3000\nf5\nn127.0.0.1:3000\n\
+                   p502\nf7\nn[::]:8080\nf8\nn127.0.0.1:5173\n";
+        assert_eq!(parse_lsof(out), [3000, 5173, 8080]);
+    }
+
+    #[test]
+    fn lsof_lines_that_dont_name_a_port_are_skipped() {
+        // A process with no socket listed: its `p` line alone.
+        assert_eq!(parse_lsof("p501\n"), Vec::<u16>::new());
+        let out =
+            "garbage\nn*:abc\nn*:99999\nnlocalhost\nn*:\n\nn10.0.0.1:22->10.0.0.2:5000\nn*:4000\n";
+        assert_eq!(parse_lsof(out), [4000]);
+        assert_eq!(parse_lsof(""), Vec::<u16>::new());
+    }
+
+    #[test]
+    fn an_lsof_that_ran_to_its_end_is_read_and_anything_else_is_none() {
+        let listed = "p501\nf3\nn*:3000\n".to_string();
+        assert_eq!(
+            read_lsof(Ran::Exited(Some(0), listed.clone())),
+            Some(vec![3000])
+        );
+        // 1: a pid had ended (or nothing listened); what it found still counts.
+        assert_eq!(read_lsof(Ran::Exited(Some(1), listed)), Some(vec![3000]));
+        assert_eq!(read_lsof(Ran::Exited(Some(1), String::new())), Some(vec![]));
+        assert_eq!(read_lsof(Ran::Exited(Some(2), String::new())), None);
+        assert_eq!(read_lsof(Ran::Exited(None, String::new())), None);
+        assert_eq!(read_lsof(Ran::TimedOut), None);
+        // Missing (not on this Mac) or unreadable.
+        assert_eq!(read_lsof(Ran::Failed), None);
+    }
+
+    #[test]
+    fn no_pids_listen_on_nothing_and_run_nothing() {
+        // Some, not None (a failure): and at once, with no lsof run.
+        let at = std::time::Instant::now();
+        assert_eq!(listening_ports(&[]), Some(vec![]));
+        assert!(at.elapsed() < std::time::Duration::from_millis(5));
+    }
+
+    #[test]
+    fn lsof_asks_for_the_pids_listening_tcp_sockets_by_absolute_path() {
+        let lsof = lsof_command(&[200, 300, 400]);
+        assert_eq!(lsof.get_program(), "/usr/sbin/lsof");
+        let args: Vec<_> = lsof.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "-nP",
+                "-iTCP",
+                "-sTCP:LISTEN",
+                "-a",
+                "-p",
+                "200,300,400",
+                "-Fpn"
+            ]
+        );
     }
 }
