@@ -112,20 +112,26 @@ const NO_MATCH: &str = "No file matches.";
 
 /// A mark's colour on the Files tree: the theme's ANSI blue (M), green (A) or red (D), pushed
 /// to read as status marks do (`on_rows`).
+// (The tree draws from `RowInks`; the tests and the screenshots read it one colour at a time.)
+#[cfg(any(test, feature = "ui-shots"))]
 pub(crate) fn mark_color(mark: Mark, theme: &Theme) -> Rgb {
+    mark_ink(mark, theme, &theme.ui())
+}
+
+/// `mark_color` with the theme's chrome colours (`ui`) already worked out.
+fn mark_ink(mark: Mark, theme: &Theme, ui: &UiColors) -> Rgb {
     let ansi = match mark {
         Mark::Modified => theme.palette[4],
         Mark::Added => theme.palette[2],
         Mark::Deleted => theme.palette[1],
     };
-    on_rows(ansi, theme)
+    on_rows(ansi, ui)
 }
 
 /// `colour` pushed (hue kept) to `MARK_MIN` on each fill a Files row has (M11i: the card, and
 /// `card_hover` / `card_selected` under a hovered or selected row), so a git mark or a type
 /// tint reads on all of them.
-fn on_rows(colour: Rgb, theme: &Theme) -> Rgb {
-    let ui = theme.ui();
+fn on_rows(colour: Rgb, ui: &UiColors) -> Rgb {
     readable(
         colour,
         &[ui.card, ui.card_hover, ui.card_selected],
@@ -183,8 +189,14 @@ pub fn file_kind(name: &str) -> FileKind {
 
 /// A file icon's tint: the theme's ANSI colour for its kind, pushed (hue kept) to `MARK_MIN`
 /// on the card and the row fills (`on_rows`); `Plain` is the dim text colour.
+// (The tree draws from `RowInks`; the tests and the screenshots read it one colour at a time.)
+#[cfg(any(test, feature = "ui-shots"))]
 pub fn kind_color(kind: FileKind, theme: &Theme) -> Rgb {
-    let ui = theme.ui();
+    kind_ink(kind, theme, &theme.ui())
+}
+
+/// `kind_color` with the theme's chrome colours (`ui`) already worked out.
+fn kind_ink(kind: FileKind, theme: &Theme, ui: &UiColors) -> Rgb {
     let ansi = match kind {
         FileKind::Red => 1,
         FileKind::Green => 2,
@@ -194,7 +206,7 @@ pub fn kind_color(kind: FileKind, theme: &Theme) -> Rgb {
         FileKind::Cyan => 6,
         FileKind::Plain => return ui.text_dim,
     };
-    on_rows(theme.palette[ansi], theme)
+    on_rows(theme.palette[ansi], ui)
 }
 
 /// Where a row `depth` levels down draws its indent guides: the x (from the row's left) of
@@ -243,11 +255,13 @@ struct RowInks {
 }
 
 impl RowInks {
+    /// Worked out from one `theme.ui()` (not one per tint and mark).
     fn of(theme: &Theme) -> Self {
+        let ui = theme.ui();
         Self {
-            ui: theme.ui(),
-            kinds: FileKind::ALL.map(|k| kind_color(k, theme)),
-            marks: [Mark::Modified, Mark::Added, Mark::Deleted].map(|m| mark_color(m, theme)),
+            kinds: FileKind::ALL.map(|k| kind_ink(k, theme, &ui)),
+            marks: [Mark::Modified, Mark::Added, Mark::Deleted].map(|m| mark_ink(m, theme, &ui)),
+            ui,
         }
     }
 
