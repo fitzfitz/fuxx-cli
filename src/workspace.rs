@@ -2531,7 +2531,7 @@ impl Render for Workspace {
         // The right sidebar the same way, from the right.
         let (right_sidebar, sliding_right_sidebar) = self.right_sidebar_layout(ui, window, cx);
         let right_sliding_in = sliding_right_sidebar.is_some() && !self.right_sidebar.hidden;
-        let right_width = self.right_sidebar.width;
+        let right_width = self.right_sidebar_drawn_width(window);
         let button = self.render_sidebar_button(ui, window, cx);
         let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);

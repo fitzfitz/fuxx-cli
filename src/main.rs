@@ -23,6 +23,7 @@ mod daemon_session;
 mod detector;
 mod drag_gap;
 mod file_tab;
+mod file_tree;
 mod fonts;
 mod git_branch;
 #[allow(dead_code)] // used by the right sidebar and file tab from M11g Task 5
@@ -265,6 +266,14 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // The Help panel: its box is a NameInput too; these keys scroll its list a row.
         KeyBinding::new("up", help_panel::ScrollUp, Some("HelpPanel")),
         KeyBinding::new("down", help_panel::ScrollDown, Some("HelpPanel")),
+        // The right sidebar's Files panel (its tree and its filter box, a NameInput whose Enter
+        // and Escape are above): move, open and close folders, open a file, back to the pane.
+        KeyBinding::new("up", right_sidebar::SelectPrev, Some("FileTree")),
+        KeyBinding::new("down", right_sidebar::SelectNext, Some("FileTree")),
+        KeyBinding::new("right", right_sidebar::ExpandSelected, Some("FileTree")),
+        KeyBinding::new("left", right_sidebar::CollapseSelected, Some("FileTree")),
+        KeyBinding::new("enter", right_sidebar::OpenSelected, Some("FileTree")),
+        KeyBinding::new("escape", right_sidebar::BackToPane, Some("FileTree")),
         // A sidebar row's tab menu: Escape closes it.
         KeyBinding::new("escape", tab_menu::Dismiss, Some("TabMenu")),
         // The browser's address box: its box is a NameInput too; an address is pasted.
@@ -1199,6 +1208,48 @@ mod tests {
         }
         // ⌘\ is still the left sidebar's.
         assert!(runs(&keymap, "cmd-\\", TERMINAL).partial_eq(&ToggleSidebar));
+    }
+
+    #[test]
+    fn the_files_panel_keys_work_in_its_tree_and_its_filter_box() {
+        use crate::name_input;
+        use crate::right_sidebar::{
+            BackToPane, CollapseSelected, ExpandSelected, OpenSelected, SelectNext, SelectPrev,
+        };
+        let keymap = keymap();
+        let tree: &[&str] = &["Workspace", "FileTree"];
+        let filter_box: &[&str] = &["Workspace", "FileTree", "NameInput"];
+        let keys: [(&str, Box<dyn Action>); 6] = [
+            ("up", Box::new(SelectPrev)),
+            ("down", Box::new(SelectNext)),
+            ("right", Box::new(ExpandSelected)),
+            ("left", Box::new(CollapseSelected)),
+            ("enter", Box::new(OpenSelected)),
+            ("escape", Box::new(BackToPane)),
+        ];
+        for (key, action) in &keys {
+            let got = runs(&keymap, key, tree);
+            assert!(
+                got.partial_eq(action.as_ref()),
+                "{key} in the tree: {}",
+                got.name()
+            );
+        }
+        // In the box, ↑ ↓ still move through the rows; Return and Escape are the box's (it
+        // opens the selected row, or gives the keyboard back to the pane).
+        assert!(runs(&keymap, "up", filter_box).partial_eq(&SelectPrev));
+        assert!(runs(&keymap, "down", filter_box).partial_eq(&SelectNext));
+        assert!(runs(&keymap, "enter", filter_box).partial_eq(&name_input::Confirm));
+        assert!(runs(&keymap, "escape", filter_box).partial_eq(&name_input::Cancel));
+        // Not in a terminal.
+        let (found, _) = keymap.bindings_for_input(
+            &[Keystroke::parse("up").unwrap()],
+            &[
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("Terminal").unwrap(),
+            ],
+        );
+        assert!(found.is_empty(), "↑ stays the terminal's");
     }
 
     #[test]
