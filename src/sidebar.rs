@@ -1390,6 +1390,8 @@ impl Workspace {
             width: self.sidebar.width,
             height: row_height(row),
         };
+        // The program's own title, under the name, when it says more (M11i).
+        let tip = self.workspace_tip(ws);
         let row_el = div()
             .id(("workspace", ws.0 as usize))
             .group(ROW_GROUP)
@@ -1409,6 +1411,9 @@ impl Workspace {
                 row.hover(move |style| style.bg(hsla(hover)))
             })
             .when(lifted, |row| row.opacity(0.0))
+            .when_some(tip, |row, tip| {
+                row.tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() })
+            })
             // During any drag the closed hand shows instead (`hold_closed_hand`).
             .cursor_pointer()
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {

@@ -6,7 +6,8 @@
 //! branch: `git rev-parse --abbrev-ref HEAD` there (a detached HEAD: its short sha), run off the
 //! UI thread with a 2 s cap and cached per folder (`Places`). Both are looked up again at most
 //! every 5 s, and only for rows on screen (`due`); outside a repo, or with no git, there is no
-//! branch and nothing is said.
+//! branch and nothing is said. Since M11i the folders of every terminal whose name is on
+//! screen are looked up too (`named_on_screen`): a terminal's name says where it is.
 //!
 //! `parse_head`, `short_sha`, `due`, `git_program` and `Places` are pure and tested; `branch_at`
 //! runs git and `process_cwd` asks the kernel. The Workspace's `refresh_places` (on each frame,
@@ -459,17 +460,31 @@ impl Places {
 }
 
 impl Workspace {
-    /// The sessions (by place in the list) that are the first terminal of a workspace whose row
-    /// is on screen (`rows_in_view`: none with the sidebar hidden).
-    fn first_terminals_on_screen(&self) -> Vec<usize> {
-        self.rows_in_view(Instant::now())
-            .into_iter()
-            .filter_map(|row| match row {
-                SidebarRow::Workspace(w) => self.model.terminals(w.workspace).first().copied(),
-                SidebarRow::Header(_) => None,
-            })
-            .filter_map(|id| self.index_of(id))
-            .collect()
+    /// The sessions (by place in the list) whose names or places are on screen, each once:
+    /// for each row in view (none with the sidebar hidden), the terminal it is named after (its
+    /// focused pane's, else its first) and its first (its second line's place); every terminal
+    /// tab of the shown workspace's panes; and the terminal the right sidebar and the status
+    /// bar follow.
+    pub(crate) fn named_on_screen(&self) -> Vec<usize> {
+        let rows = self.rows_in_view(Instant::now());
+        let row_terminals = rows.iter().flat_map(|row| match row {
+            SidebarRow::Workspace(w) => [
+                self.named_terminal(w.workspace),
+                self.model.terminals(w.workspace).first().copied(),
+            ],
+            SidebarRow::Header(_) => [None, None],
+        });
+        let mut on_screen: Vec<usize> = Vec::new();
+        let ids = row_terminals
+            .chain([self.right_sidebar.followed])
+            .flatten()
+            .filter_map(|id| self.index_of(id));
+        for i in ids.chain(self.tab_sessions()) {
+            if !on_screen.contains(&i) {
+                on_screen.push(i);
+            }
+        }
+        on_screen
     }
 
     /// Whether rows' places can be looked up: the window can be seen (not hidden, minimised or
@@ -479,23 +494,23 @@ impl Workspace {
         seen && !self.places.frozen
     }
 
-    /// Whether the places' refresh should run: they can be seen and a row is on screen.
+    /// Whether the places' refresh should run: they can be seen and a name or row is on screen.
     fn places_wanted(&self, cx: &App) -> bool {
-        self.places_seen(cx) && !self.first_terminals_on_screen().is_empty()
+        self.places_seen(cx) && !self.named_on_screen().is_empty()
     }
 
-    /// Look up again, where due (`due`), the place of each workspace whose row is on screen:
-    /// its first terminal's folder at once (what it reported, else the kernel's answer for a
-    /// local one, else the folder it started in; an SSH one's only as reported), and the branch
-    /// there from git, off the UI thread. True when a folder changed (git's answer redraws when
-    /// it comes).
+    /// Look up again, where due (`due`), the place of each terminal whose name or row is on
+    /// screen (`named_on_screen`, M11i): its folder at once (what it reported, else the kernel's
+    /// answer for a local one, else the folder it started in; an SSH one's only as reported),
+    /// and the branch there from git, off the UI thread. True when a folder changed (git's
+    /// answer redraws when it comes).
     pub(crate) fn refresh_places(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.places_seen(cx) {
             return false;
         }
         let now = Instant::now();
         let mut changed = false;
-        for i in self.first_terminals_on_screen() {
+        for i in self.named_on_screen() {
             let session = &self.sessions.items()[i];
             let (id, ssh) = (session.id, session.ssh.is_some());
             if self.places.folder_due(id, now) {

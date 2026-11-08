@@ -224,6 +224,7 @@ const SCENES: &[(&str, fn())] = &[
     ("api-background", api_background),
     ("banner-click", banner_click),
     ("default-name", default_name),
+    ("smart-names", smart_names),
     ("switcher", switcher_scenes),
     ("overlays", overlays),
     ("help", help_scenes),
@@ -1168,11 +1169,12 @@ fn cached_panes() {
     );
 }
 
-/// What the waiting session shows: a Claude Code style prompt, drawn in a box.
-const CLAUDE_PROMPT: &str = "  Editing src/auth.rs (+12 -3)\r\n\r\n╭──────────────────────────────────────────────────╮\r\n│ Edit file                                        │\r\n│ src/auth.rs                                      │\r\n│                                                  │\r\n│ Do you want to make this edit to auth.rs?        │\r\n│ ❯ 1. Yes                                         │\r\n│   2. Yes, and don't ask again this session       │\r\n│   3. No, and tell Claude what to do differently  │\r\n╰──────────────────────────────────────────────────╯\r\n";
+/// What the waiting session shows: a Claude Code style prompt, drawn in a box 40 columns wide so
+/// it fits a split pane's grid (about 42 columns, M11i's padding) without wrapping mid-word.
+const CLAUDE_PROMPT: &str = "  Editing src/auth.rs (+12 -3)\r\n\r\n╭──────────────────────────────────────╮\r\n│ Edit file                            │\r\n│ src/auth.rs                          │\r\n│                                      │\r\n│ Do you want to edit auth.rs?         │\r\n│ ❯ 1. Yes                             │\r\n│   2. Yes, don't ask again            │\r\n│   3. No, tell Claude what to do      │\r\n╰──────────────────────────────────────╯\r\n";
 
 /// The question the sidebar must find in `CLAUDE_PROMPT`.
-const CLAUDE_QUESTION: &str = "Do you want to make this edit to auth.rs?";
+const CLAUDE_QUESTION: &str = "Do you want to edit auth.rs?";
 
 /// A session in a sidebar scene: name, group folder, status, how long in it, its screen.
 struct ShotSession {
@@ -4627,9 +4629,11 @@ fn api_background() {
     render_with(&theme, size(px(960.0), px(560.0)), build, act);
 }
 
-/// A new workspace, which has no name of yours (M11c Task 3b): its sidebar row and its tab show
-/// the default, `groups::DEFAULT_NAME`. Shot in both themes (`default-name-*.png`) to see that
-/// the glyphs draw (no missing-glyph boxes); panics unless the label is the default.
+/// New terminals with no name of yours (M11c Task 3b; M11i): one in a folder is called by the
+/// folder (`api`), and **╭∩╮** (`groups::DEFAULT_NAME`) is left for one that knows no folder
+/// (shown, so its tab and row draw it). Shot in both themes (`default-name-*.png`) to see that
+/// the glyphs draw (no missing-glyph boxes); panics unless the names are those, and the
+/// scripting API's name (`Session::label`) is still the default for both.
 fn default_name() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4643,7 +4647,9 @@ fn default_name() {
             let ws = cx.new(|cx| {
                 let mut ws = Workspace::for_shots(window, cx);
                 ws.sidebar.hint_dismissed = true;
-                ws.open_unnamed_shot_session(std::path::Path::new(API), SHELL_TEXT, window, cx);
+                let api = Some(std::path::Path::new(API));
+                ws.open_unnamed_shot_session(api, SHELL_TEXT, window, cx);
+                ws.open_unnamed_shot_session(None, SHELL_TEXT, window, cx);
                 ws
             });
             *keep.borrow_mut() = Some(ws.clone());
@@ -4652,12 +4658,25 @@ fn default_name() {
         let acting = slot.clone();
         let act = move |cx: &mut VisualTestAppContext, _window: AnyWindowHandle| {
             let ws = slotted(&acting);
-            let label = cx.read(|cx| ws.read(cx).sessions.items()[0].label());
-            assert_eq!(
-                label.as_ref(),
-                crate::groups::DEFAULT_NAME,
-                "default-name: a new terminal shows the default"
-            );
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let named = |folder: bool| {
+                    let s = ws.sessions.items().iter().find(|s| s.project.is_some() == folder);
+                    let s = s.expect("both opened");
+                    (ws.terminal_label(s.id).to_string(), s.label().to_string())
+                };
+                let default = crate::groups::DEFAULT_NAME.to_string();
+                assert_eq!(
+                    named(true),
+                    ("api".to_string(), default.clone()),
+                    "default-name: a terminal in a folder is called by it (the API's name unchanged)"
+                );
+                assert_eq!(
+                    named(false),
+                    (default.clone(), default),
+                    "default-name: ╭∩╮ for a terminal with no folder"
+                );
+            });
             drop(ws);
             acting.borrow_mut().take();
         };
@@ -4670,6 +4689,277 @@ fn default_name() {
             act,
         );
         println!("{}", path.display());
+    }
+}
+
+/// The folders of `smart_names`'s terminals.
+const FUXX_CLI: &str = "/Users/me/Kerja/proj/fuxx-cli";
+const INVITEE: &str = "/Users/me/w/invitee";
+const SHOT_HOME: &str = "/Users/me";
+/// What devbox's remote shell reported (OSC 7).
+const DEVBOX_SRC: &str = "/home/me/src";
+/// A shell theme's title (OSC 2): no longer the name, only in the tooltips.
+const SHELL_TITLE: &str = "me@mac:~/Kerja/proj/fuxx-cli";
+
+/// The terminals of `smart_names`'s shown workspace, by id.
+#[derive(Clone, Copy, Default)]
+struct SmartIds {
+    claude: u64,
+    prompt: u64,
+}
+
+/// `smart_names`'s window. The shown workspace: claude (running `claude` in fuxx-cli, focused),
+/// a dev server (`npm run dev` in invitee) and api (renamed, running `claude`) in the left
+/// pane; the dashboard page, a shell at its prompt in fuxx-cli (with a shell theme's title), one
+/// at home and an SSH terminal to devbox in the right. Then a workspace each for: `npm run dev`
+/// in invitee, a prompt in fuxx-cli, a prompt at home, api, and devbox. Programs and folders are
+/// set, not looked up.
+fn smart_names_workspace(
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> (Workspace, SmartIds) {
+    use std::path::Path;
+    use std::time::Instant;
+
+    use crate::browser_tab::BarState;
+    use crate::layout_model::TabKind;
+    use crate::smart_name::ProgramState::{Prompt, Running};
+    use crate::workspace::At;
+
+    let mut ws = Workspace::for_shots(window, cx);
+    ws.sidebar.hint_dismissed = true;
+    let (fuxx, invitee, home) = (
+        Some(Path::new(FUXX_CLI)),
+        Some(Path::new(INVITEE)),
+        Some(Path::new(SHOT_HOME)),
+    );
+    let running = |name: &str| Running(name.into());
+    let claude = ws.open_shot_at(None, fuxx, AGENT_TEXT, At::New, window, cx);
+    let left = ws.model.focused_pane().expect("a pane");
+    let npm = ws.open_shot_at(None, invitee, SHELL_TEXT, At::Tab(left), window, cx);
+    let api = ws.open_shot_at(Some("api"), fuxx, AGENT_TEXT, At::Tab(left), window, cx);
+    let url = Some(PAGE_URL.to_string());
+    let page = TabKind::Browser { url: url.clone() };
+    let opened = ws.model.split(left, Axis::Row, page).expect("split");
+    ws.sync();
+    let view = ws.make_browser_tab(opened.tab, url, window, cx);
+    view.update(cx, |view, _| {
+        view.show_state(BarState {
+            url: PAGE_URL.into(),
+            title: PAGE_TITLE.into(),
+            loading: false,
+            can_back: false,
+            can_forward: false,
+        })
+    });
+    ws.browser_titles.insert(opened.tab, PAGE_TITLE.into());
+    let right = At::Tab(opened.pane);
+    let prompt = ws.open_shot_at(None, fuxx, SHELL_TEXT, right, window, cx);
+    let at_home = ws.open_shot_at(None, home, SHELL_TEXT, right, window, cx);
+    let devbox = ws.open_shot_at(None, None, SHELL_TEXT, right, window, cx);
+    // A workspace of its own each.
+    let rows = [
+        (None, invitee, Some(running("npm run dev"))),
+        (None, fuxx, Some(Prompt)),
+        (None, home, Some(Prompt)),
+        (Some("api"), fuxx, Some(running("claude"))),
+        (None, None, None),
+    ];
+    let mut opened_rows = Vec::new();
+    for (name, folder, state) in rows {
+        let id = ws.open_shot_at(name, folder, SHELL_TEXT, At::New, window, cx);
+        if let Some(state) = state {
+            ws.programs.set_for_shots(id, state);
+        }
+        opened_rows.push(id);
+    }
+    let row_prompt = opened_rows[1];
+    let row_devbox = opened_rows[4];
+    for (id, state) in [
+        (claude, running("claude")),
+        (npm, running("npm run dev")),
+        (api, running("claude")),
+        (prompt, Prompt),
+        (at_home, Prompt),
+    ] {
+        ws.programs.set_for_shots(id, state);
+    }
+    for id in [devbox, row_devbox] {
+        let i = ws.index_of(id).expect("opened");
+        ws.sessions.get_mut(i).expect("opened").ssh = Some(crate::ssh_target::SshTarget {
+            host: "devbox".into(),
+            tmux: false,
+            tmux_name: None,
+        });
+        ws.places
+            .set_folder(id, Some(DEVBOX_SRC.into()), Instant::now());
+    }
+    for id in [prompt, row_prompt] {
+        let i = ws.index_of(id).expect("opened");
+        ws.sessions.get_mut(i).expect("opened").title = Some(SHELL_TITLE.into());
+    }
+    ws.sync();
+    ws.select(ws.index_of(claude).expect("claude"), window, cx);
+    (ws, SmartIds { claude, prompt })
+}
+
+/// Smart names (M11i): every tab and row says what runs there and where, or where. In both
+/// themes (`smart-names-*.png`). Panics unless:
+/// - the tabs read `claude · fuxx-cli`, `npm run dev · invitee`, `api` (yours wins over what
+///   runs), the page's title, `fuxx-cli`, `~` and `devbox · src`; the rows read the shown
+///   workspace's focused terminal's name and `npm run dev · invitee`, `fuxx-cli`, `~`, `api`
+///   and `devbox · src`;
+/// - the shell theme's title is only in the tooltips (tab and row), on a second line;
+/// - the scripting API's names are as before (`Session::label`: the title, ╭∩╮, yours);
+/// - Enter on an untouched smart name, in the tab's rename box and the row's, keeps the
+///   terminal and the workspace automatic.
+fn smart_names() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    use gpui::KeyBinding;
+
+    use crate::sidebar::SidebarRow;
+
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let ids = Rc::new(Cell::new(SmartIds::default()));
+        let set_ids = ids.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let (ws, ids) = smart_names_workspace(window, cx);
+                set_ids.set(ids);
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let ids = ids.get();
+            let n = format!("smart-names-{slug}");
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let now = Instant::now();
+                let panes = ws.shown_layout().expect("a layout").leaves();
+                let bars: Vec<Vec<crate::tab_bar::BarTab>> = panes
+                    .iter()
+                    .map(|&p| ws.pane_bar_tabs(ws.model.pane(p).expect("its pane"), now))
+                    .collect();
+                let titles = |bar: &[crate::tab_bar::BarTab]| -> Vec<String> {
+                    bar.iter().map(|t| t.title.to_string()).collect()
+                };
+                assert_eq!(
+                    titles(&bars[0]),
+                    ["claude · fuxx-cli", "npm run dev · invitee", "api"],
+                    "{n}: the left pane's tabs"
+                );
+                assert_eq!(
+                    titles(&bars[1]),
+                    [PAGE_TITLE, "fuxx-cli", "~", "devbox · src"],
+                    "{n}: the right pane's tabs"
+                );
+                let prompt_tab = bars[1].iter().find(|t| t.terminal == Some(ids.prompt));
+                assert_eq!(
+                    prompt_tab.expect("its tab").tip,
+                    format!("fuxx-cli\n{SHELL_TITLE}"),
+                    "{n}: the title is in the tab's tooltip, under the name"
+                );
+                let rows: Vec<(String, Option<String>)> = ws
+                    .rows_in_view(now)
+                    .into_iter()
+                    .filter_map(|row| match row {
+                        SidebarRow::Workspace(w) => Some((w.label, ws.workspace_tip(w.workspace))),
+                        SidebarRow::Header(_) => None,
+                    })
+                    .collect();
+                let mut labels: Vec<&str> = rows.iter().map(|(l, _)| l.as_str()).collect();
+                labels.sort();
+                let mut want = [
+                    "claude · fuxx-cli",
+                    "npm run dev · invitee",
+                    "fuxx-cli",
+                    "~",
+                    "api",
+                    "devbox · src",
+                ];
+                want.sort();
+                assert_eq!(labels, want, "{n}: the rows");
+                let tips: Vec<&str> = rows.iter().filter_map(|(_, t)| t.as_deref()).collect();
+                assert_eq!(
+                    tips,
+                    [format!("fuxx-cli\n{SHELL_TITLE}").as_str()],
+                    "{n}: only the titled row has a tooltip, its title under the name"
+                );
+                // The scripting API's names are as they were.
+                let api_name = |id: u64| {
+                    let i = ws.index_of(id).expect("open");
+                    ws.sessions.items()[i].label().to_string()
+                };
+                assert_eq!(
+                    api_name(ids.claude),
+                    crate::groups::DEFAULT_NAME,
+                    "{n}: API"
+                );
+                assert_eq!(api_name(ids.prompt), SHELL_TITLE, "{n}: API, the title");
+            });
+            // Enter on an untouched smart name: the tab's rename box, then the row's.
+            cx.update(|cx| {
+                cx.bind_keys([KeyBinding::new(
+                    "enter",
+                    crate::name_input::Confirm,
+                    Some("NameInput"),
+                )])
+            });
+            let shown_ws = cx.read(|cx| ws.read(cx).model.focused_workspace().expect("shown"));
+            for tab in [true, false] {
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        if tab {
+                            ws.start_tab_rename(ids.claude, window, cx)
+                        } else {
+                            ws.start_rename(shown_ws, window, cx)
+                        }
+                    })
+                })
+                .expect("open the rename box");
+                cx.run_until_parked();
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let (_, input) = ws.renaming.as_ref().expect("the rename box is open");
+                    assert_eq!(
+                        input.read(cx).text(),
+                        "claude · fuxx-cli",
+                        "{n}: the box starts with the smart name"
+                    );
+                });
+                cx.simulate_keystrokes(window, "enter");
+                cx.run_until_parked();
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    assert!(ws.renaming.is_none(), "{n}: Enter closed the box");
+                    let i = ws.index_of(ids.claude).expect("open");
+                    assert_eq!(ws.sessions.items()[i].name, None, "{n}: still automatic");
+                    let w = ws.model.workspace(shown_ws).expect("shown");
+                    assert_eq!(w.name, None, "{n}: the workspace still automatic");
+                    assert_eq!(ws.terminal_label(ids.claude).as_ref(), "claude · fuxx-cli");
+                });
+            }
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with(
+            "smart-names",
+            slug,
+            &theme,
+            size(px(1440.0), px(560.0)),
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
     }
 }
 
