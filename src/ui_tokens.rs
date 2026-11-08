@@ -31,9 +31,21 @@ pub mod size {
     pub const TOP_BAND: f32 = 38.0;
     /// Where the traffic lights go: (x, y) from the window's top left.
     pub const TRAFFIC_LIGHTS: (f32, f32) = (13.0, 12.0);
-    /// Terminal padding: (sides, top and bottom); smaller in splits.
-    pub const TERMINAL_PADDING: (f32, f32) = (10.0, 8.0);
-    pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (8.0, 6.0);
+    /// Terminal padding: (sides, top and bottom); smaller in splits. Both are larger than
+    /// `CARD_RADIUS`, so nothing the grid paints reaches into a card's rounded corner (M11i).
+    pub const TERMINAL_PADDING: (f32, f32) = (16.0, 12.0);
+    pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (12.0, 10.0);
+    /// M11i's raised cards (each pane, the right sidebar): the gap around and between them,
+    /// their corner radius, and a focused pane's edge in a split.
+    pub const CARD_GAP: f32 = 6.0;
+    pub const CARD_RADIUS: f32 = 8.0;
+    pub const FOCUS_RING: f32 = 1.0;
+    /// The status bar along the window's bottom edge (M11i).
+    pub const STATUS_BAR: f32 = 22.0;
+    /// How far below the tab bar's top its tabs start (M11i).
+    pub const TAB_TOP_GAP: f32 = 4.0;
+    /// The accent bar at the selected sidebar row's left edge (M11i).
+    pub const SELECTION_BAR: f32 = 2.0;
     pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
     pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
     pub const SIDEBAR_DEFAULT_WIDTH: f32 = 240.0;

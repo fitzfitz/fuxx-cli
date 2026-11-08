@@ -327,7 +327,7 @@ fn tokens() {
             "tokens",
             &slug,
             &theme,
-            size(px(960.0), px(600.0)),
+            size(px(1020.0), px(600.0)),
             |_, cx| {
                 let mono = mono_font(cx);
                 cx.new(|_| TokenBoard { label, theme, mono }).into()
@@ -373,6 +373,20 @@ impl Render for TokenBoard {
             ("divider", ui.divider),
             ("panel_border", ui.panel_border),
             ("selection", ui.selection),
+            // M11i: cards, the quiet selection, the tab bar and the Files tree's guides.
+            ("card", ui.card),
+            ("card_border", ui.card_border),
+            // The card's shadow, shown as it falls on the canvas.
+            (
+                "card_shadow_alpha",
+                theme::mix(ui.sidebar_background, ui.shadow, ui.card_shadow_alpha),
+            ),
+            ("row_selected", ui.row_selected),
+            ("card_hover", ui.card_hover),
+            ("card_selected", ui.card_selected),
+            ("tab_bar", ui.tab_bar),
+            ("tab_hover", ui.tab_hover),
+            ("guide", ui.guide),
         ];
         let chips = tokens.map(|(name, color)| {
             // The pair closest to its floor, if this token is drawn on something.
@@ -382,13 +396,16 @@ impl Render for TokenBoard {
                 .map(|p| (contrast(p.fg, p.bg), p))
                 .min_by(|a, b| (a.0 / a.1.min).total_cmp(&(b.0 / b.1.min)));
             let detail = match worst {
+                _ if name == "card_shadow_alpha" => {
+                    format!("{} at {:.2}", hex(ui.shadow), ui.card_shadow_alpha)
+                }
                 Some((ratio, p)) => {
                     format!("{} {ratio:.2} on {} ≥{}", hex(color), p.bg_name, p.min)
                 }
                 None => format!("{} surface", hex(color)),
             };
             div()
-                .w(px(224.0))
+                .w(px(244.0))
                 .h(px(34.0))
                 .flex()
                 .items_center()
@@ -821,7 +838,8 @@ fn window_scenes() {
 }
 
 /// Panics unless the padding (and with the sidebar hidden, the top band) of the pane at the
-/// right edge is all terminal background.
+/// right edge is all terminal background, and the left pane's grid starts just inside its
+/// left padding.
 fn check_window(
     shot: &Shot,
     theme: &Theme,
@@ -882,6 +900,29 @@ fn check_window(
         }
         x += 1.0;
     }
+    // The left pane's left padding: where the terminal background starts (after the sidebar),
+    // `pad_x` of background, then the grid's first column (its prompt and output) within a cell
+    // and a half (the grid's leftover width is shared by both sides).
+    let mid = (top + h) / 2.0;
+    let left = (0..w as usize)
+        .map(|x| x as f32)
+        .find(|&x| is_bg(x, mid))
+        .expect("a terminal");
+    let rows = (top + pad_y) as usize..(h - pad_y) as usize;
+    for y in rows.clone() {
+        for dx in 0..pad_x as usize {
+            assert!(
+                is_bg(left + dx as f32, y as f32),
+                "{scene}-{slug}: left padding at y {y}"
+            );
+        }
+    }
+    let first_column = (pad_x as usize..pad_x as usize + 14)
+        .any(|dx| rows.clone().any(|y| !is_bg(left + dx as f32, y as f32)));
+    assert!(
+        first_column,
+        "{scene}-{slug}: no text just inside the left padding"
+    );
 }
 
 /// Mark board layout, in points: margin, label column, header row and each (square) cell.
