@@ -24,6 +24,8 @@ mod detector;
 mod drag_gap;
 mod fonts;
 mod git_branch;
+#[allow(dead_code)] // used by the right sidebar and file tab from M11g Task 5
+mod git_status;
 mod grid;
 mod groups;
 mod help_commands;
