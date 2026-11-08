@@ -27,7 +27,7 @@ pub type StartDrag = Rc<dyn Fn(Vec<bool>, &mut Window, &mut App)>;
 /// Called with a split's path when the pointer enters (`true`) or leaves its line's grab strip.
 pub type HoverDivider = Rc<dyn Fn(Vec<bool>, bool, &mut Window, &mut App)>;
 
-/// Width of the invisible grab strip centred on each split's ratio: the gap between its cards.
+/// Width of the invisible grab strip over each split's gap: the gap between its cards.
 const GRAB: f32 = CARD_GAP;
 
 /// A card's shadow (M11i): straight down this far, blurred this much.
@@ -126,12 +126,16 @@ pub fn divider_active(path: &[bool], hovered: Option<&[bool]>, dragging: Option<
     hovered == Some(path) || dragging == Some(path)
 }
 
-/// Where the 2 pt accent line starts in a split's grab strip (`gap` wide, centred on the
-/// split's `ratio` of its width): the middle of the gap between the two cards. The sides give
-/// up the gap in proportion to their shares, so the gap's middle sits `gap * (0.5 - ratio)`
-/// past the strip's middle.
-pub fn accent_offset(ratio: f32, gap: f32) -> f32 {
-    gap / 2.0 + gap * (0.5 - ratio) - DIVIDER_ACTIVE / 2.0
+/// How far from the split's `ratio` of its width its grab strip (`gap` wide) starts, so that it
+/// covers exactly the gap between the two cards: the sides give up the gap in proportion to
+/// their shares, so the first ends at `ratio * (width - gap)`.
+pub fn grab_shift(ratio: f32, gap: f32) -> f32 {
+    -gap * ratio
+}
+
+/// Where the 2 pt accent line starts in a split's grab strip (the gap, `gap` wide): its middle.
+pub fn accent_offset(gap: f32) -> f32 {
+    (gap - DIVIDER_ACTIVE) / 2.0
 }
 
 /// `tree` filling its parent. In a split, the focused pane's card has the focus ring.
@@ -166,7 +170,8 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                         })
                         .children((panes.view)(id))
                         // No listeners, so no hitbox: clicks go through to the terminal
-                        // underneath. Rounded at the bottom like the card.
+                        // underneath. Rounded at the bottom as the inside of the card's edge
+                        // (as the tab bar is at the top).
                         .when(id != panes.active, |pane| {
                             pane.child(
                                 div()
@@ -174,7 +179,7 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                                     .top_0()
                                     .left_0()
                                     .size_full()
-                                    .rounded_b(px(CARD_RADIUS))
+                                    .rounded_b(px(CARD_RADIUS - FOCUS_RING))
                                     .bg(panes.colors.dim),
                             )
                         }),
@@ -224,7 +229,7 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
             // The accent line is drawn in the grab strip (the last child, so over both panes),
             // in the middle of the gap (`accent_offset`).
             let accent = div().absolute().bg(panes.colors.accent).map(|d| {
-                let from = accent_offset(*ratio, CARD_GAP);
+                let from = accent_offset(CARD_GAP);
                 if row {
                     d.top_0().h_full().w(px(DIVIDER_ACTIVE)).left(px(from))
                 } else {
@@ -245,14 +250,14 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                             .h_full()
                             .w(px(GRAB))
                             .left(relative(*ratio))
-                            .ml(px(-GRAB / 2.0))
+                            .ml(px(grab_shift(*ratio, GRAB)))
                             .cursor_col_resize()
                     } else {
                         d.left_0()
                             .w_full()
                             .h(px(GRAB))
                             .top(relative(*ratio))
-                            .mt(px(-GRAB / 2.0))
+                            .mt(px(grab_shift(*ratio, GRAB)))
                             .cursor_row_resize()
                     }
                 })
@@ -279,33 +284,32 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
 mod tests {
     use super::*;
 
-    /// The gap between the two cards in a split's grab strip coordinates: the strip is `gap`
-    /// wide and centred on the split's `ratio`; the first side gives up `ratio * gap` of its
-    /// share to the gap.
-    fn gap_in_strip(ratio: f32, gap: f32) -> (f32, f32) {
-        let start = gap / 2.0 - ratio * gap;
-        (start, start + gap)
+    #[test]
+    fn the_grab_strip_covers_exactly_the_gap_at_any_ratio() {
+        // A split `w` wide: the sides take their shares and give up the gap in proportion
+        // (flex shrink), so the first side ends at `ratio * (w - gap)`. The strip is placed at
+        // `ratio * w`, shifted by `grab_shift`.
+        let gap = CARD_GAP;
+        for w in [400.0_f32, 708.0, 1028.0] {
+            for ratio in [0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9] {
+                let gap_start = ratio * (w - gap);
+                let strip_start = ratio * w + grab_shift(ratio, gap);
+                assert!(
+                    (strip_start - gap_start).abs() < 1e-3,
+                    "{w} at {ratio}: strip {strip_start}, gap {gap_start}"
+                );
+            }
+        }
     }
 
     #[test]
     fn the_accent_line_is_centred_in_the_gap() {
-        // An even split: the strip is the gap, and the 2 pt line sits 2 pt in.
-        assert_eq!(accent_offset(0.5, 6.0), 2.0);
-        assert_eq!(gap_in_strip(0.5, 6.0), (0.0, 6.0));
-        for ratio in [0.1, 0.25, 0.5, 0.75, 0.9] {
-            let (from, to) = gap_in_strip(ratio, 6.0);
-            let line = accent_offset(ratio, 6.0);
-            assert!(
-                line >= from && line + DIVIDER_ACTIVE <= to,
-                "{ratio}: {line}"
-            );
-            // Centred: as much gap on either side of it.
-            let (before, after) = (line - from, to - line - DIVIDER_ACTIVE);
-            assert!(
-                (before - after).abs() < 1e-4,
-                "{ratio}: {before} vs {after}"
-            );
-        }
+        // The strip is the gap, so the 2 pt line sits as far from either card at any ratio.
+        assert_eq!(accent_offset(6.0), 2.0);
+        let line = accent_offset(CARD_GAP);
+        let (before, after) = (line, CARD_GAP - line - DIVIDER_ACTIVE);
+        assert!(line >= 0.0 && after >= 0.0, "{line}");
+        assert!((before - after).abs() < 1e-4, "{before} vs {after}");
     }
 
     #[test]

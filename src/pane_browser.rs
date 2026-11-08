@@ -85,6 +85,8 @@ pub struct Overlays {
     pub row_menu: bool,
     /// A pane tab's right-click menu.
     pub tab_menu: bool,
+    /// A pane bar's ⋯ menu (M11i).
+    pub pane_actions: bool,
     /// The sidebar footer's "+ New" menu.
     pub new_menu: bool,
     /// A browser tab's address suggestions.
@@ -104,6 +106,7 @@ impl Overlays {
             switcher,
             row_menu,
             tab_menu,
+            pane_actions,
             new_menu,
             suggestions,
             notifications,
@@ -115,6 +118,7 @@ impl Overlays {
             || switcher
             || row_menu
             || tab_menu
+            || pane_actions
             || new_menu
             || suggestions
             || notifications
@@ -566,6 +570,10 @@ mod tests {
             },
             Overlays {
                 tab_menu: true,
+                ..none
+            },
+            Overlays {
+                pane_actions: true,
                 ..none
             },
             Overlays {
