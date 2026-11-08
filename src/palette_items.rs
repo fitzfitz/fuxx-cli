@@ -640,6 +640,8 @@ pub const SSH_NOTE: &str = "Files aren't searched for SSH terminals.";
 pub const NO_FOLDER: &str = "No terminal folder to search.";
 pub const FAILED: &str = "Files couldn't be listed.";
 pub const CAPPED: &str = "Only the first 50,000 files are searched.";
+/// The same, for a folder that isn't a repo (its walk is bounded sooner).
+pub const CAPPED_WALK: &str = "Only part of this folder is searched.";
 pub const HINT: &str =
     "Enter open \u{b7} \u{2191}\u{2193} choose \u{b7} Tab scope \u{b7} Esc close";
 /// The most rows a section shows on All before its `… more` row.
