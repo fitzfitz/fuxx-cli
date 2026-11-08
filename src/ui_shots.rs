@@ -227,6 +227,7 @@ const SCENES: &[(&str, fn())] = &[
     ("panels", panel_scenes),
     ("preferences", preferences_scenes),
     ("update-button", update_button_scenes),
+    ("cursor", cursor_scenes),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -5378,5 +5379,492 @@ fn update_button_scenes() {
             wide("update-narrow") + 20.0 < wide("update-available"),
             "{slug}: the narrow button left its version out: {ink:?}"
         );
+    }
+}
+
+/// One terminal in a hidden window for the `cursor` scene: a `cat` showing `text`, the
+/// Appearance as `tweak` leaves it, motion off when `still`. `focus`: the terminal has the
+/// focus; `key`: it counts its window as the key one (an off-screen window never is).
+struct CursorRig {
+    // Before `cx`: fields drop in order, and a handle must go before its app.
+    view: gpui::Entity<crate::terminal_view::TerminalView>,
+    cx: VisualTestAppContext,
+    window: AnyWindowHandle,
+    dims: Size<Pixels>,
+}
+
+impl CursorRig {
+    fn new(
+        theme: Theme,
+        text: &str,
+        focus: bool,
+        key: bool,
+        still: bool,
+        tweak: impl FnOnce(&mut Appearance),
+    ) -> Self {
+        use crate::terminal_view::TerminalView;
+        use gpui::Focusable;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let dims = size(px(320.0), px(120.0));
+        let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+        fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+        let slot = Rc::new(RefCell::new(None));
+        let text = text.to_string();
+        let window = {
+            let slot = slot.clone();
+            cx.open_offscreen_window(dims, move |window, cx| {
+                cx.set_reduce_motion(still);
+                let mut appearance = shot_appearance(theme, cx);
+                tweak(&mut appearance);
+                cx.set_global(appearance);
+                let quiet = crate::pty::ShellEnv {
+                    base: None,
+                    set: Vec::new(),
+                    remove: Vec::new(),
+                };
+                let view =
+                    TerminalView::spawn(cx, Some(vec!["/bin/cat".into()]), None, None, &quiet)
+                        .expect("start cat");
+                view.read(cx).show_text(&text);
+                if key {
+                    view.read(cx).pretend_key_window();
+                }
+                if focus {
+                    view.focus_handle(cx).focus(window, cx);
+                }
+                *slot.borrow_mut() = Some(view.clone());
+                cx.new(|_| Root {
+                    theme,
+                    scene: view.into(),
+                })
+            })
+            .expect("open an off-screen window")
+        };
+        cx.run_until_parked();
+        let view = slot.borrow().clone().expect("the terminal");
+        Self {
+            view,
+            cx,
+            window: window.into(),
+            dims,
+        }
+    }
+
+    /// Draw a frame now and capture it.
+    fn frame(&mut self) -> Shot {
+        self.cx.run_until_parked();
+        self.cx
+            .update_window(self.window, |_, window, cx| window.draw(cx).clear())
+            .expect("draw");
+        let image = self
+            .cx
+            .capture_screenshot(self.window)
+            .expect("capture the window");
+        Shot {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.as_raw().to_vec(),
+        }
+    }
+
+    /// Print `text` as the program would, and have the terminal redraw.
+    fn write(&mut self, text: &str) {
+        let view = self.view.clone();
+        self.cx.update(|cx| {
+            view.read(cx).show_text(text);
+            view.update(cx, |_, cx| cx.notify());
+        });
+    }
+
+    fn appearance(&mut self, f: impl FnOnce(&mut Appearance)) {
+        self.cx
+            .update(|cx| cx.update_global::<Appearance, _>(|a, _| f(a)));
+    }
+
+    /// Where cell (`col`, `row`) was last painted, in points.
+    fn cell(&self, col: usize, row: usize) -> gpui::Bounds<Pixels> {
+        self.cx
+            .read(|cx| self.view.read(cx).cell_bounds(col, row))
+            .expect("painted")
+    }
+
+    fn read<R>(&self, f: impl FnOnce(&crate::terminal_view::TerminalView) -> R) -> R {
+        self.cx.read(|cx| f(self.view.read(cx)))
+    }
+}
+
+/// Write `shot` to `target/ui-shots/<name>-<slug>.png`.
+fn save_shot(name: &str, slug: &str, shot: &Shot) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("ui-shots");
+    std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+    let path = dir.join(format!("{name}-{slug}.png"));
+    std::fs::write(&path, png(shot)).expect("write the PNG");
+    println!("ui-shots: {}", path.display());
+    path
+}
+
+/// Whether the pixel at (`x`, `y`) points is `c` (within 3 per channel).
+fn is_colour(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    x: f32,
+    y: f32,
+    c: alacritty_terminal::vte::ansi::Rgb,
+) -> bool {
+    pixel_at(shot, dims, x, y)
+        .iter()
+        .zip([c.r, c.g, c.b])
+        .all(|(a, b)| a.abs_diff(b) <= 3)
+}
+
+/// The terminal cursor (M11f), in both themes, one `cat` terminal per check, its cursor on
+/// the blank cell (2, 1):
+/// - `cursor-bar|underline|hollow|block`: each Style setting with no program style (glow off,
+///   so the colour is exact): the bar is 2 px at the cell's left edge, the underline 2 px at
+///   its bottom, the hollow a 1 px outline, the block a filled cell.
+/// - `cursor-working`: a Working terminal (its status given by a `Workspace`) draws the cursor
+///   in `ring_working`; back to Idle, the theme's cursor colour. A block in a status colour
+///   writes its letter in the background colour.
+/// - `cursor-glow`: the breathing glow around the bar, on a ~30 fps timer; after a program's
+///   `ESC [ 2 q` (`cursor-steady-block`), a steady block with no glow and no frames.
+/// - `cursor-unfocused`: an unfocused terminal (and a focused one in a window that isn't key):
+///   a 1 px outline in the theme's cursor colour, whatever the status; no frames.
+/// - 50 cursor moves before one frame leave one glide, from the old cell to the last.
+/// - Sparks come from typed text only: not from output, arrows, ctrl-keys or Enter.
+/// - `cursor-still`: with motion off, no glow, no glide (the bar is exactly on its new cell),
+///   no sparks, and no frames.
+fn cursor_scenes() {
+    use crate::appearance::{CursorFun, CursorShapeSetting};
+    use crate::cursor_look::Frames;
+
+    let text = "\r\n$ ";
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let own = theme.cursor.unwrap_or(theme.foreground);
+        let bg = theme.background;
+
+        // Each shape, glow off so the colour is exact.
+        for setting in CursorShapeSetting::ALL {
+            let mut rig = CursorRig::new(theme, text, true, true, false, |a| {
+                a.cursor_style = setting;
+                a.cursor_glow = false;
+            });
+            let shot = rig.frame();
+            let n = format!("cursor-{}-{slug}", setting.value());
+            save_shot(&format!("cursor-{}", setting.value()), slug, &shot);
+            let dims = rig.dims;
+            let cell = rig.cell(2, 1);
+            let scale = shot.width as f32 / f32::from(dims.width);
+            let (left, right) = (f32::from(cell.left()), f32::from(cell.right()));
+            let (top, bottom) = (f32::from(cell.top()), f32::from(cell.bottom()));
+            let mid = (top + bottom) / 2.0;
+            let across = |y: f32| count_along(&shot, dims, own, y, left - 4.0, right + 4.0);
+            let two = (2.0 * scale).round() as usize;
+            match setting {
+                CursorShapeSetting::Bar => {
+                    assert_eq!(across(mid), two, "{n}: the bar is 2 px wide");
+                    assert!(
+                        is_colour(&shot, dims, left + 0.5, mid, own),
+                        "{n}: the bar is at the cell's left edge"
+                    );
+                    assert!(
+                        is_colour(&shot, dims, left + 2.5, mid, bg),
+                        "{n}: the bar stops after 2 px"
+                    );
+                }
+                CursorShapeSetting::Underline => {
+                    let wide = across(bottom - 1.0);
+                    let cell_px = ((right - left) * scale).round() as usize;
+                    assert!(
+                        wide.abs_diff(cell_px) <= 2,
+                        "{n}: the underline spans the cell ({wide} of {cell_px})"
+                    );
+                    assert_eq!(across(bottom - 3.0), 0, "{n}: the underline is 2 px tall");
+                    assert_eq!(across(mid), 0, "{n}: nothing at the cell's middle");
+                }
+                CursorShapeSetting::Hollow => {
+                    assert_eq!(across(mid), two, "{n}: a 1 px outline, left and right");
+                    assert!(
+                        is_colour(&shot, dims, (left + right) / 2.0, mid, bg),
+                        "{n}: hollow inside"
+                    );
+                }
+                CursorShapeSetting::Block => {
+                    assert!(
+                        is_colour(&shot, dims, (left + right) / 2.0, mid, own),
+                        "{n}: the block fills the cell"
+                    );
+                }
+            }
+        }
+
+        // The status colour, from a Workspace.
+        {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            let dims = size(px(640.0), px(400.0));
+            let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+            fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let window = {
+                let slot = slot.clone();
+                cx.open_offscreen_window(dims, move |window, cx| {
+                    let mut appearance = shot_appearance(theme, cx);
+                    appearance.cursor_glow = false;
+                    cx.set_global(appearance);
+                    let ws = cx.new(|cx| {
+                        let mut ws = Workspace::for_shots(window, cx);
+                        let project = std::path::Path::new("/Users/me/code/api");
+                        ws.open_shot_session("api", project, text, None, window, cx);
+                        ws.select(0, window, cx);
+                        ws.focus_active(window, cx);
+                        ws
+                    });
+                    *slot.borrow_mut() = Some(ws.clone());
+                    cx.new(|_| Root {
+                        theme,
+                        scene: ws.into(),
+                    })
+                })
+                .expect("open an off-screen window")
+            };
+            cx.run_until_parked();
+            let ws = slot.borrow().clone().expect("the workspace");
+            let view = cx.read(|cx| ws.read(cx).sessions.items()[0].view.clone());
+            cx.read(|cx| view.read(cx).pretend_key_window());
+            let frame = |cx: &mut VisualTestAppContext, status: Status| -> Shot {
+                cx.update(|cx| ws.update(cx, |ws, cx| ws.set_status(0, status, false, cx)));
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+                    .expect("draw");
+                let image = cx
+                    .capture_screenshot(window.into())
+                    .expect("capture the window");
+                Shot {
+                    width: image.width(),
+                    height: image.height(),
+                    rgba: image.as_raw().to_vec(),
+                }
+            };
+            for (status, colour, label) in [
+                (Status::Working, ui.ring_working, "working"),
+                (Status::Idle, own, "idle"),
+            ] {
+                let shot = frame(&mut cx, status);
+                if status == Status::Working {
+                    save_shot("cursor-working", slug, &shot);
+                }
+                let cell = cx
+                    .read(|cx| view.read(cx).cell_bounds(2, 1))
+                    .expect("painted");
+                let mid = f32::from(cell.top() + cell.bottom()) / 2.0;
+                assert!(
+                    is_colour(&shot, dims, f32::from(cell.left()) + 0.5, mid, colour),
+                    "cursor-working-{slug}: a {label} terminal's bar is {colour:?}, saw {:?}",
+                    pixel_at(&shot, dims, f32::from(cell.left()) + 0.5, mid)
+                );
+            }
+        }
+
+        // A block in a status colour: its letter in the background colour.
+        {
+            let mut rig = CursorRig::new(theme, "\r\n$ x\x1b[D", true, true, false, |a| {
+                a.cursor_style = CursorShapeSetting::Block;
+                a.cursor_glow = false;
+            });
+            let view = rig.view.clone();
+            rig.cx
+                .update(|cx| view.update(cx, |v, cx| v.set_status(Status::Working, cx)));
+            let shot = rig.frame();
+            let cell = rig.cell(2, 1);
+            let (l, r) = (f32::from(cell.left()), f32::from(cell.right()));
+            let (t, b) = (f32::from(cell.top()), f32::from(cell.bottom()));
+            let n = format!("cursor-block-working-{slug}");
+            let mut fill = 0;
+            let mut letter = 0;
+            let mut y = t + 0.5;
+            while y < b {
+                fill += count_along(&shot, rig.dims, ui.ring_working, y, l, r);
+                letter += count_along(&shot, rig.dims, bg, y, l, r);
+                y += 1.0;
+            }
+            assert!(fill > 0, "{n}: the block is ring_working");
+            assert!(letter > 0, "{n}: the letter is the background colour");
+        }
+
+        // The glow, then a program's steady block.
+        {
+            let mut rig = CursorRig::new(theme, text, true, true, false, |_| ());
+            let shot = rig.frame();
+            save_shot("cursor-glow", slug, &shot);
+            let cell = rig.cell(2, 1);
+            let left = f32::from(cell.left());
+            let mid = f32::from(cell.top() + cell.bottom()) / 2.0;
+            let n = format!("cursor-glow-{slug}");
+            assert!(
+                !is_colour(&shot, rig.dims, left - 3.0, mid, bg),
+                "{n}: a glow beside the bar"
+            );
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::Timer33ms,
+                "{n}: breathing redraws on the ~30 fps timer"
+            );
+
+            rig.write("\x1b[2 q");
+            let shot = rig.frame();
+            save_shot("cursor-steady-block", slug, &shot);
+            let n = format!("cursor-steady-block-{slug}");
+            let centre = f32::from(cell.left() + cell.right()) / 2.0;
+            assert!(is_colour(&shot, rig.dims, centre, mid, own), "{n}: a block");
+            assert!(
+                is_colour(&shot, rig.dims, left - 3.0, mid, bg),
+                "{n}: no glow around a steady cursor"
+            );
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::None,
+                "{n}: no frames"
+            );
+        }
+
+        // Unfocused, and focused in a window that isn't key: a still 1 px outline.
+        for (focus, key, label) in [(false, true, "unfocused"), (true, false, "not key")] {
+            let mut rig = CursorRig::new(theme, text, focus, key, false, |_| ());
+            let view = rig.view.clone();
+            rig.cx
+                .update(|cx| view.update(cx, |v, cx| v.set_status(Status::Working, cx)));
+            let shot = rig.frame();
+            if !focus {
+                save_shot("cursor-unfocused", slug, &shot);
+            }
+            let scale = shot.width as f32 / f32::from(rig.dims.width);
+            let cell = rig.cell(2, 1);
+            let (l, r) = (f32::from(cell.left()), f32::from(cell.right()));
+            let mid = f32::from(cell.top() + cell.bottom()) / 2.0;
+            let n = format!("cursor-{label}-{slug}");
+            assert_eq!(
+                count_along(&shot, rig.dims, own, mid, l - 4.0, r + 4.0),
+                (2.0 * scale).round() as usize,
+                "{n}: a 1 px outline in the theme's cursor colour"
+            );
+            assert!(
+                is_colour(&shot, rig.dims, (l + r) / 2.0, mid, bg),
+                "{n}: hollow"
+            );
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::None,
+                "{n}: no frames"
+            );
+        }
+
+        // 50 moves in one frame: one glide, from the old cell to the last.
+        {
+            let mut rig = CursorRig::new(theme, text, true, true, false, |_| ());
+            rig.frame();
+            let mut moves = String::new();
+            for i in 0..49 {
+                moves.push_str(&format!("\x1b[{};{}H", 2 + i % 3, 3 + i % 7));
+            }
+            moves.push_str("\x1b[2;13H");
+            rig.write(&moves);
+            rig.frame();
+            let n = format!("cursor-glide-{slug}");
+            let glide = rig.read(|v| v.cursor_glide()).expect("a glide");
+            assert_eq!(glide.from, (2.0, 1.0), "{n}: from the old cell");
+            assert_eq!(glide.to, (12, 1), "{n}: to the last");
+            assert_eq!(rig.read(|v| v.cursor_frames()), Frames::EveryFrame, "{n}");
+            // Where the first frame draws the bar depends on when the platform drew it (a few
+            // ms in, it is already a fraction of a pixel along): the unit tests pin that.
+        }
+
+        // Sparks: typed text only.
+        {
+            let mut rig = CursorRig::new(theme, text, true, true, false, |a| {
+                a.cursor_fun = CursorFun::Sparks;
+            });
+            rig.frame();
+            let n = format!("cursor-sparks-{slug}");
+            let window = rig.window;
+            rig.cx.simulate_keystrokes(window, "a->a");
+            assert_eq!(
+                rig.read(|v| v.spark_bursts()),
+                1,
+                "{n}: a typed letter sparks"
+            );
+            assert_eq!(rig.read(|v| v.live_sparks()), 6, "{n}: six of them");
+            rig.write("output");
+            rig.cx.simulate_keystrokes(window, "left ctrl-c enter");
+            assert_eq!(
+                rig.read(|v| v.spark_bursts()),
+                1,
+                "{n}: no sparks from output, arrows, ctrl-keys or Enter"
+            );
+        }
+
+        // Motion off: still and solid.
+        {
+            let mut rig = CursorRig::new(theme, text, true, true, true, |a| {
+                a.cursor_fun = CursorFun::Sparks;
+            });
+            let shot = rig.frame();
+            let cell = rig.cell(2, 1);
+            let mid = f32::from(cell.top() + cell.bottom()) / 2.0;
+            let n = format!("cursor-still-{slug}");
+            assert!(
+                is_colour(&shot, rig.dims, f32::from(cell.left()) - 3.0, mid, bg),
+                "{n}: no glow"
+            );
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::None,
+                "{n}: no frames"
+            );
+            rig.write("\x1b[2;13H");
+            let shot = rig.frame();
+            save_shot("cursor-still", slug, &shot);
+            let scale = shot.width as f32 / f32::from(rig.dims.width);
+            let new = rig.cell(12, 1);
+            let (l, r) = (f32::from(new.left()), f32::from(new.right()));
+            assert!(rig.read(|v| v.cursor_glide()).is_none(), "{n}: no glide");
+            assert!(
+                is_colour(&shot, rig.dims, l + 0.5, mid, own),
+                "{n}: the bar is on its new cell at once"
+            );
+            assert_eq!(
+                count_along(&shot, rig.dims, own, mid, l - 4.0, r),
+                (2.0 * scale).round() as usize,
+                "{n}: exactly on the cell's left edge"
+            );
+            assert_eq!(
+                count_along(
+                    &shot,
+                    rig.dims,
+                    own,
+                    mid,
+                    f32::from(cell.left()) - 1.0,
+                    f32::from(cell.right())
+                ),
+                0,
+                "{n}: nothing left at the old cell"
+            );
+            let window = rig.window;
+            rig.cx.simulate_keystrokes(window, "a->a");
+            assert_eq!(rig.read(|v| v.spark_bursts()), 0, "{n}: no sparks");
+            assert_eq!(rig.read(|v| v.live_sparks()), 0, "{n}: no sparks");
+            rig.appearance(|a| a.cursor_fun = CursorFun::Trail);
+            rig.write("\x1b[2;3H");
+            rig.frame();
+            assert!(
+                rig.read(|v| v.cursor_glide()).is_none(),
+                "{n}: no glide, so no trail"
+            );
+        }
     }
 }

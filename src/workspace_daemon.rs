@@ -411,6 +411,8 @@ impl Workspace {
             Slot::Live(a) => (a.saved, a.title, a.status, a.note, a.progress),
             Slot::Restore(launch) => (launch.saved, None, Status::Idle, None, None),
         };
+        // The cursor takes the service's status colour at once (M11f).
+        view.update(cx, |view, cx| view.set_status(status, cx));
         Session {
             id,
             view,

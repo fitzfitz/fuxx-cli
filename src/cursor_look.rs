@@ -74,7 +74,8 @@ pub fn cursor_color(status: Status, follows: bool, ui: &UiColors, theme: &Theme)
     }
 }
 
-const HOLD: Duration = Duration::from_millis(600);
+/// How long the breath holds at full strength after the cursor changes.
+pub const HOLD: Duration = Duration::from_millis(600);
 const BREATH_PERIOD: f32 = 1.6;
 const BREATH_LOW: f32 = 0.35;
 
