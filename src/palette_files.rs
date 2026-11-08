@@ -12,7 +12,7 @@ use crate::file_tree::nfc;
 use crate::git_branch::{Ran, find_git, run_git_bytes};
 use crate::palette_items::FileHit;
 use crate::palette_match::fuzzy_path;
-use crate::right_sidebar::find_root;
+use crate::right_sidebar::{back_off, find_root};
 
 /// The most files kept from a listing; `Listed::more` counts the rest.
 pub const FILES_CAP: usize = 50_000;
@@ -32,6 +32,8 @@ const KEPT: usize = 4;
 pub struct Listed {
     pub paths: Vec<String>,
     pub more: usize,
+    /// It came from the walk (not git), so a cut-short one says so differently.
+    pub walked: bool,
 }
 
 /// `git ls-files -z` output: NUL-separated, empty pieces skipped, lossy UTF-8, NFC.
@@ -61,10 +63,15 @@ pub(crate) fn list_repo_with(git: &Path, root: &Path, cap: usize) -> Option<List
         "--others",
         "--exclude-standard",
     ])?;
-    let deleted: HashSet<String> = parse_z(&out(&["ls-files", "-z", "--deleted"])?)
-        .into_iter()
-        .collect();
-    let mut paths: Vec<String> = parse_z(&all)
+    let deleted = out(&["ls-files", "-z", "--deleted"])?;
+    Some(assemble(&all, &deleted, cap))
+}
+
+/// The two `ls-files -z` outputs as a listing: the deleted subtracted, deduped (a conflicted
+/// path is listed once per stage), sorted, cut at `cap`.
+fn assemble(all: &[u8], deleted: &[u8], cap: usize) -> Listed {
+    let deleted: HashSet<String> = parse_z(deleted).into_iter().collect();
+    let mut paths: Vec<String> = parse_z(all)
         .into_iter()
         .filter(|p| !deleted.contains(p))
         .collect();
@@ -72,19 +79,43 @@ pub(crate) fn list_repo_with(git: &Path, root: &Path, cap: usize) -> Option<List
     paths.dedup();
     let more = paths.len().saturating_sub(cap);
     paths.truncate(cap);
-    Some(Listed { paths, more })
+    Listed {
+        paths,
+        more,
+        walked: false,
+    }
 }
 
-/// A breadth-first walk of `root` for a folder that isn't a repo: dot-folders skipped, symlinked
-/// folders not followed (so no loops), and stopped at `max_files` files, `max_depth` folders deep
-/// or `max_time`. `more` is non-zero when files were left out by the file or time cap.
+/// A breadth-first walk of `root` for a folder that isn't a repo: dot-folders skipped (and
+/// `~/Library` when `root` is the home folder), symlinked folders not followed (so no loops), and
+/// stopped at `max_files` files, `max_depth` folders deep or `max_time`. `more` is non-zero when
+/// files were left out by the file or time cap.
 pub fn walk(root: &Path, max_files: usize, max_depth: usize, max_time: Duration) -> Listed {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    walk_with_home(root, home.as_deref(), max_files, max_depth, max_time)
+}
+
+/// How many entries the walk reads between looks at the clock.
+const WALK_CLOCK_EVERY: usize = 256;
+
+/// `walk`, with `home` as the folder whose `Library` is skipped (macOS asks for permission to
+/// read into some of it).
+pub(crate) fn walk_with_home(
+    root: &Path,
+    home: Option<&Path>,
+    max_files: usize,
+    max_depth: usize,
+    max_time: Duration,
+) -> Listed {
     let started = Instant::now();
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let at_home = home.is_some_and(|h| real(h) == real(root));
     let mut paths: Vec<String> = Vec::new();
     let mut more = 0;
+    let mut seen = 0usize;
     let mut queue: VecDeque<(PathBuf, String, usize)> = VecDeque::new();
     queue.push_back((root.to_path_buf(), String::new(), 0));
-    while let Some((dir, rel, depth)) = queue.pop_front() {
+    'dirs: while let Some((dir, rel, depth)) = queue.pop_front() {
         if started.elapsed() >= max_time {
             more = more.max(1);
             break;
@@ -93,12 +124,20 @@ pub fn walk(root: &Path, max_files: usize, max_depth: usize, max_time: Duration)
             continue;
         };
         for entry in entries.flatten() {
+            seen += 1;
+            if seen.is_multiple_of(WALK_CLOCK_EVERY) && started.elapsed() >= max_time {
+                more = more.max(1);
+                break 'dirs;
+            }
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
-            let name = nfc(&entry.file_name().to_string_lossy());
+            let raw = entry.file_name();
             let is_file = if kind.is_dir() {
-                if depth < max_depth && !name.starts_with('.') {
+                let hidden = raw.as_encoded_bytes().first() == Some(&b'.');
+                let library = at_home && depth == 0 && raw == "Library";
+                if depth < max_depth && !hidden && !library {
+                    let name = nfc(&raw.to_string_lossy());
                     queue.push_back((entry.path(), format!("{rel}{name}/"), depth + 1));
                 }
                 false
@@ -112,22 +151,19 @@ pub fn walk(root: &Path, max_files: usize, max_depth: usize, max_time: Duration)
                 continue;
             }
             if paths.len() >= max_files {
-                more += 1;
-            } else {
-                paths.push(format!("{rel}{name}"));
-            }
-        }
-        if paths.len() >= max_files {
-            // The rest of this folder was counted; folders still queued hold files we skip.
-            if !queue.is_empty() {
                 more = more.max(1);
+                break 'dirs;
             }
-            break;
+            paths.push(format!("{rel}{}", nfc(&raw.to_string_lossy())));
         }
     }
     paths.sort_unstable();
     paths.dedup();
-    Listed { paths, more }
+    Listed {
+        paths,
+        more,
+        walked: true,
+    }
 }
 
 /// A folder's files as asked for, with the root they are relative to.
@@ -161,8 +197,12 @@ pub struct CachedFiles {
     pub root: PathBuf,
     pub paths: Arc<Vec<String>>,
     pub more: usize,
+    /// The list came from the walk (not git).
+    pub walked: bool,
     pub failed: bool,
     pub listed_at: Instant,
+    /// How long after `listed_at` it is asked again: `FRESH`, or the back-off after a failure.
+    pub wait: Duration,
 }
 
 /// The listings a window has, one running at a time.
@@ -180,7 +220,7 @@ impl PaletteFiles {
             && self
                 .listings
                 .get(folder)
-                .is_none_or(|c| c.failed || now.saturating_duration_since(c.listed_at) >= FRESH)
+                .is_none_or(|c| now.saturating_duration_since(c.listed_at) >= c.wait)
     }
 
     pub fn started(&mut self, _folder: &Path) {
@@ -198,16 +238,27 @@ impl PaletteFiles {
                 root,
                 paths: Arc::new(l.paths),
                 more: l.more,
+                walked: l.walked,
                 failed: false,
                 listed_at: now,
+                wait: FRESH,
             },
-            other => CachedFiles {
-                root: other.map(|a| a.root).unwrap_or_default(),
-                paths: Arc::new(Vec::new()),
-                more: 0,
-                failed: true,
-                listed_at: now,
-            },
+            other => {
+                // 2 s after a first failure, then 4, 8, 16, 30 s.
+                let wait = match self.listings.get(folder) {
+                    Some(c) if c.failed => back_off(c.wait, false),
+                    _ => back_off(Duration::from_secs(1), false),
+                };
+                CachedFiles {
+                    root: other.map(|a| a.root).unwrap_or_default(),
+                    paths: Arc::new(Vec::new()),
+                    more: 0,
+                    walked: false,
+                    failed: true,
+                    listed_at: now,
+                    wait,
+                }
+            }
         };
         if self.listings.len() >= KEPT && !self.listings.contains_key(folder) {
             let oldest = self
@@ -239,8 +290,10 @@ impl PaletteFiles {
                 root,
                 paths: Arc::new(paths),
                 more: 0,
+                walked: false,
                 failed: false,
                 listed_at: Instant::now(),
+                wait: FRESH,
             },
         );
     }
@@ -412,31 +465,101 @@ mod tests {
         assert!(none.paths.is_empty() && none.more >= 1);
     }
 
+    fn answer(folder: &Path, paths: &[&str]) -> FilesAnswer {
+        FilesAnswer {
+            folder: folder.to_path_buf(),
+            root: folder.to_path_buf(),
+            listed: Some(Listed {
+                paths: paths.iter().map(|p| p.to_string()).collect(),
+                more: 0,
+                walked: false,
+            }),
+        }
+    }
+
     #[test]
     fn palette_files_lists_once_and_freshens() {
         let folder = Path::new("/p");
         let mut files = PaletteFiles::default();
         let t = Instant::now();
+        let secs = Duration::from_secs;
         assert!(files.due(folder, t));
         files.started(folder);
         assert!(!files.due(folder, t) && files.running());
-        let answer = FilesAnswer {
-            folder: folder.to_path_buf(),
-            root: PathBuf::from("/p"),
-            listed: Some(Listed {
-                paths: vec!["a".into()],
-                more: 0,
-            }),
-        };
-        files.finished(folder, Some(answer), t);
+        files.finished(folder, Some(answer(folder, &["a"])), t);
         assert!(!files.running());
         assert!(!files.get(folder).unwrap().failed);
-        assert!(!files.due(folder, t + Duration::from_secs(9)));
-        assert!(files.due(folder, t + Duration::from_secs(10)));
+        assert!(!files.due(folder, t + secs(9)));
+        assert!(files.due(folder, t + secs(10)));
+        // A failure backs off: 2 s, then 4 s.
         files.started(folder);
         files.finished(folder, None, t);
         assert!(files.get(folder).unwrap().failed);
-        assert!(files.due(folder, t));
+        assert!(!files.due(folder, t));
+        assert!(!files.due(folder, t + secs(1)));
+        assert!(files.due(folder, t + secs(2)));
+        files.started(folder);
+        files.finished(folder, None, t);
+        assert!(!files.due(folder, t + secs(3)));
+        assert!(files.due(folder, t + secs(4)));
+        // A success is back to FRESH.
+        files.started(folder);
+        files.finished(folder, Some(answer(folder, &["a"])), t);
+        assert!(!files.due(folder, t + secs(9)));
+        assert!(files.due(folder, t + secs(10)));
+    }
+
+    #[test]
+    fn palette_files_keeps_each_folder_under_its_own_key() {
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        let mut files = PaletteFiles::default();
+        let t = Instant::now();
+        files.started(a);
+        files.finished(a, Some(answer(a, &["one"])), t);
+        files.started(b);
+        files.finished(b, Some(answer(b, &["two", "three"])), t);
+        assert_eq!(*files.get(a).unwrap().paths, ["one"]);
+        assert_eq!(files.get(a).unwrap().root, a);
+        assert_eq!(*files.get(b).unwrap().paths, ["two", "three"]);
+        assert!(files.get(Path::new("/c")).is_none());
+        assert!(files.due(Path::new("/c"), t));
+    }
+
+    #[test]
+    fn assemble_dedupes_subtracts_and_flags_the_source() {
+        // A conflicted path is listed once per stage; a deleted one goes.
+        let listed = assemble(b"b a a a gone ", b"gone ", 10);
+        assert_eq!(listed.paths, ["a", "b"]);
+        assert!(!listed.walked && listed.more == 0);
+    }
+
+    #[test]
+    fn walk_is_breadth_first_and_flagged() {
+        let root = temp("bfs");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b/c")).unwrap();
+        fs::write(root.join("a/f"), "").unwrap();
+        fs::write(root.join("b/c/f"), "").unwrap();
+        let listed = walk(&root, 1, 12, Duration::from_secs(2));
+        assert_eq!(listed.paths, ["a/f"]);
+        assert!(listed.more >= 1 && listed.walked);
+        let all = walk(&root, 10, 12, Duration::from_secs(2));
+        assert_eq!(all.more, 0);
+    }
+
+    #[test]
+    fn walk_skips_library_only_in_the_home_folder() {
+        let home = temp("home");
+        fs::create_dir_all(home.join("Library")).unwrap();
+        fs::write(home.join("Library/secret"), "").unwrap();
+        fs::create_dir_all(home.join("proj/Library")).unwrap();
+        fs::write(home.join("proj/Library/ok"), "").unwrap();
+        fs::write(home.join("notes"), "").unwrap();
+        let t = Duration::from_secs(2);
+        let at_home = walk_with_home(&home, Some(&home), 100, 12, t);
+        assert_eq!(at_home.paths, ["notes", "proj/Library/ok"]);
+        let elsewhere = walk_with_home(&home, Some(Path::new("/nonexistent-home")), 100, 12, t);
+        assert!(elsewhere.paths.contains(&"Library/secret".to_string()));
     }
 
     fn strings(list: &[&str]) -> Vec<String> {
@@ -456,6 +579,21 @@ mod tests {
         let rels: Vec<&str> = hits.iter().map(|h| h.rel.as_str()).collect();
         assert_eq!(rels, ["src/main.rs", "docs/maintenance.md"]);
         assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn rank_files_breaks_ties_by_length_then_path() {
+        let paths = strings(&["c/main.rs", "main.rsx", "b/main.rs", "main.rs", "a/main.rs"]);
+        let current = AtomicU64::new(1);
+        let (hits, total) = rank_files(&paths, "main", 10, 1, &current).unwrap();
+        let rels: Vec<&str> = hits.iter().map(|h| h.rel.as_str()).collect();
+        assert_eq!(hits[0].score, hits[1].score);
+        assert_eq!(hits[2].score, hits[4].score);
+        assert_eq!(
+            rels,
+            ["main.rs", "main.rsx", "a/main.rs", "b/main.rs", "c/main.rs"]
+        );
+        assert_eq!(total, 5);
     }
 
     #[test]
