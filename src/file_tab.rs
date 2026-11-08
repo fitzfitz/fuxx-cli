@@ -67,8 +67,8 @@ use crate::diff_view::{
     diff_spans, dim, first_change, reveal_row, sides,
 };
 use crate::git_branch::find_git;
-use crate::git_status::{FileDiff, LineChange, file_diff, line_changes, repo_root};
-use crate::highlight::{Highlighter, REFUSE_ABOVE, Span, Viewable, classify};
+use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes, repo_root_at};
+use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{FileMode, PaneId, TabId, TabKind};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
@@ -714,6 +714,11 @@ pub enum DiffState {
 pub struct DiffDoc {
     pub doc: Doc,
     pub rows: Arc<Vec<DiffRow>>,
+    /// Its two number columns' widths, worked out once.
+    pub gutter: Gutter,
+    /// Whether it may be coloured: both its sides at most 2 MB (`PLAIN_ABOVE`) and no line too
+    /// long to colour. Decided by the rows, not the file on disk (a deleted file has none).
+    pub colourable: bool,
 }
 
 /// The diff held and the disk version it was asked for: an answer for an older version than
@@ -739,18 +744,24 @@ impl HeldDiff {
 
 /// A diff's rows coloured: the old and the new side each highlighted whole as `path`, each row
 /// taking its side's colours (blocking: the background executor's).
-fn colour_rows(h: &Highlighter, path: &Path, parsed: &Parsed) -> Vec<Vec<Span>> {
-    let (old, new) = sides(parsed);
-    diff_spans(
-        &parsed.rows,
-        &h.highlight(path, &old),
-        &h.highlight(path, &new),
-    )
+fn colour_rows(
+    h: &Highlighter,
+    path: &Path,
+    rows: &[DiffRow],
+    (old, new): &(String, String),
+) -> Vec<Vec<Span>> {
+    diff_spans(rows, &h.highlight(path, old), &h.highlight(path, new))
+}
+
+/// Whether a diff with these `sides` and its longest line `longest` (bytes) may be coloured:
+/// each side at most `PLAIN_ABOVE` (as a file over 2 MB isn't), no line too long to colour.
+fn colourable((old, new): &(String, String), longest: usize) -> bool {
+    old.len() as u64 <= PLAIN_ABOVE && new.len() as u64 <= PLAIN_ABOVE && longest <= COLOUR_LINE_MAX
 }
 
 /// What git's answer shows (blocking: the background executor's), its rows a `Doc` of `version`
 /// (one line per row: a last `\n` so a blank last row is a line), coloured with `colour` when
-/// given (none: a file over 2 MB, or the syntaxes not loaded yet) unless a line is too long.
+/// given (none: the syntaxes not loaded yet) and the rows are `colourable`.
 fn diff_state(
     diff: FileDiff,
     disk_text: Option<&str>,
@@ -762,18 +773,45 @@ fn diff_state(
         Outcome::Binary => DiffState::Binary,
         Outcome::Rows(parsed) => {
             let mut doc = Doc::new(format!("{}\n", parsed.text), version);
+            let both = sides(&parsed);
+            let colourable = colourable(&both, doc.longest);
             if let Some((h, path)) = colour
-                && doc.longest <= COLOUR_LINE_MAX
+                && colourable
             {
-                doc.spans = Some(Arc::new(colour_rows(h, path, &parsed)));
+                doc.spans = Some(Arc::new(colour_rows(h, path, &parsed.rows, &both)));
                 doc.spans_version = Some(version);
             }
             DiffState::Rows(DiffDoc {
                 doc,
+                gutter: Gutter::diff(&parsed.rows),
                 rows: Arc::new(parsed.rows),
+                colourable,
             })
         }
     }
+}
+
+/// The diff to show for a file whose old blob is `old_size` bytes (none: not in HEAD): over
+/// 20 MB (`REFUSE_ABOVE`) refused without asking git for the diff (it would stream the whole
+/// blob); else git's answer (`diff`), refused too when that is over 20 MB. None: no answer
+/// from git (the rows shown stay). Blocking.
+fn diff_answer(
+    old_size: Option<u64>,
+    diff: impl FnOnce() -> Option<FileDiff>,
+    disk_text: Option<&str>,
+    version: u64,
+    colour: Option<(&Highlighter, &Path)>,
+) -> Option<DiffState> {
+    if old_size.is_some_and(|n| n > REFUSE_ABOVE) {
+        return Some(DiffState::Refuse);
+    }
+    let diff = diff()?;
+    if let FileDiff::Unified(u) = &diff
+        && u.len() as u64 > REFUSE_ABOVE
+    {
+        return Some(DiffState::Refuse);
+    }
+    Some(diff_state(diff, disk_text, version, colour))
 }
 
 /// A file's size and time, to tell whether it changed.
@@ -885,24 +923,27 @@ pub enum Gutter {
     },
 }
 
+/// A number column's width: its largest number's digits, at least 2.
+fn digits(n: usize) -> usize {
+    n.to_string().len().max(2)
+}
+
 impl Gutter {
-    /// The gutter for `count` lines of a file, or for a diff's `rows`.
-    fn of(count: usize, rows: Option<&[DiffRow]>) -> Gutter {
-        let digits = |n: usize| n.to_string().len().max(2);
-        match rows {
-            None => Gutter::Plain {
-                digits: digits(count),
-            },
-            Some(rows) => {
-                // The numbers rise down the rows: each side's last is its largest.
-                let last = |side: fn(&DiffRow) -> Option<usize>| {
-                    rows.iter().rev().find_map(side).unwrap_or(0)
-                };
-                Gutter::Diff {
-                    old_digits: digits(last(|r| r.old)),
-                    new_digits: digits(last(|r| r.new)),
-                }
-            }
+    /// The gutter for `count` lines of a file.
+    fn plain(count: usize) -> Gutter {
+        Gutter::Plain {
+            digits: digits(count),
+        }
+    }
+
+    /// The gutter for a diff's `rows` (made once, with its `DiffDoc`).
+    fn diff(rows: &[DiffRow]) -> Gutter {
+        let (old, new) = rows.iter().fold((0, 0), |(o, n), r| {
+            (o.max(r.old.unwrap_or(0)), n.max(r.new.unwrap_or(0)))
+        });
+        Gutter::Diff {
+            old_digits: digits(old),
+            new_digits: digits(new),
         }
     }
 }
@@ -1182,6 +1223,8 @@ struct Frame {
     doc: Doc,
     /// A diff's rows (Diff mode): tints, signs and two number columns, unchanged rows dimmed.
     diff: Option<Arc<Vec<DiffRow>>>,
+    /// A diff's gutter (none: a file's, from its line count).
+    gutter: Option<Gutter>,
     mode: FileMode,
     coloured: bool,
     scroll: Point<Pixels>,
@@ -1412,30 +1455,45 @@ struct GitPlace {
     rel: PathBuf,
 }
 
-/// `path`'s place for git (blocking): none outside a repo or without git. A deleted file's is
-/// its folder's (git still has its old lines: Diff mode shows them).
-fn git_place(path: &Path) -> Option<GitPlace> {
-    let git = find_git()?;
+/// `path`'s place for git (blocking): `Some(None)` outside a repo (git says so), without git,
+/// or with its folder gone; None when git gave no answer (it failed or took longer than the
+/// cap: asked again later). A deleted file's is its folder's (git still has its old lines:
+/// Diff mode shows them).
+fn git_place(path: &Path) -> Option<Option<GitPlace>> {
+    let Some(git) = find_git() else {
+        return Some(None);
+    };
     // git prints real paths (`/private/var`, not `/var`).
     let real = match std::fs::canonicalize(path) {
-        Ok(real) => real,
-        Err(_) => std::fs::canonicalize(path.parent()?)
-            .ok()?
-            .join(path.file_name()?),
+        Ok(real) => Some(real),
+        Err(_) => path
+            .parent()
+            .and_then(|dir| std::fs::canonicalize(dir).ok())
+            .zip(path.file_name())
+            .map(|(dir, name)| dir.join(name)),
     };
-    let root = repo_root(&git, real.parent()?)?;
+    let Some(real) = real else {
+        return Some(None);
+    };
+    let Some(root) = repo_root_at(&git, real.parent()?)? else {
+        return Some(None);
+    };
     let root = std::fs::canonicalize(&root).unwrap_or(root);
-    let rel = real.strip_prefix(&root).ok()?.to_path_buf();
-    Some(GitPlace { git, root, rel })
+    let rel = real.strip_prefix(&root).ok().map(Path::to_path_buf);
+    Some(rel.map(|rel| GitPlace { git, root, rel }))
 }
 
-/// The tab's place for git: the one `known`, else looked up (`look`). Only a place found is
-/// kept, so a look-up that failed (git slow or failing, or no repo) is tried again next time.
+/// The tab's place for git: the one `known`, else looked up (`look`: `git_place`). Only a
+/// place found is kept, so a look-up with no answer (git slow or failing) or no repo is tried
+/// again next time.
 fn lookup_place(
     known: Option<GitPlace>,
-    look: impl FnOnce() -> Option<GitPlace>,
-) -> Option<GitPlace> {
-    known.or_else(look)
+    look: impl FnOnce() -> Option<Option<GitPlace>>,
+) -> Option<Option<GitPlace>> {
+    match known {
+        Some(place) => Some(Some(place)),
+        None => look(),
+    }
 }
 
 /// `/usr/bin/open`'s arguments for the file at `path` in `state`: shown (or being read), `-t`
@@ -1723,16 +1781,18 @@ impl FileTab {
                 self.versions += 1;
                 self.state = State::Missing;
                 self.stamp = None;
-                self.refocus |= self.find.take().is_some();
-                // A deleted file's diff: its old lines, all removed.
+                self.unrefuse_diff();
+                // A deleted file's diff: its old lines, all removed (the find bar stays on
+                // them).
                 self.look_up_changes(cx);
+                self.drop_find_without_text();
             }
             Loaded::Refuse(stamp) => {
                 self.versions += 1;
                 self.state = State::Refuse;
                 self.stamp = Some(stamp);
-                self.refocus |= self.find.take().is_some();
                 self.look_up_changes(cx);
+                self.drop_find_without_text();
             }
             Loaded::Text {
                 stamp,
@@ -1755,6 +1815,7 @@ impl FileTab {
                 } else {
                     State::Text(doc)
                 };
+                self.unrefuse_diff();
                 self.colour(cx);
                 self.look_up_changes(cx);
             }
@@ -1762,6 +1823,21 @@ impl FileTab {
         self.keep_selection();
         self.find_again(cx);
         cx.notify();
+    }
+
+    /// The file isn't refused any more: its diff (refused without asking git) is to be asked.
+    fn unrefuse_diff(&mut self) {
+        if matches!(self.diff.state, DiffState::Refuse) {
+            self.diff.state = DiffState::Waiting;
+        }
+    }
+
+    /// The find bar closes when no text is left to find in (the file went or was refused, and
+    /// no diff rows show); the tab takes the keyboard back.
+    fn drop_find_without_text(&mut self) {
+        if self.shown_doc().is_none() && matches!(self.state, State::Missing | State::Refuse) {
+            self.refocus |= self.find.take().is_some();
+        }
     }
 
     /// The selection within the new text (none without one).
@@ -1866,13 +1942,13 @@ impl FileTab {
     }
 
     /// Colour the diff's rows held (off the UI thread), in the current theme: rows that came
-    /// before the syntaxes were loaded, or a new theme. Not for a file over 2 MB (or with a line
-    /// too long to colour).
+    /// before the syntaxes were loaded, or a new theme. Only rows that may be coloured (each
+    /// side at most 2 MB, no line too long: `DiffDoc::colourable`).
     fn colour_diff(&mut self, cx: &mut Context<Self>) {
         let DiffState::Rows(d) = &self.diff.state else {
             return;
         };
-        if matches!(self.state, State::PlainTooLarge(_)) || d.doc.longest > COLOUR_LINE_MAX {
+        if !d.colourable {
             return;
         }
         let (version, text, rows) = (d.doc.version, d.doc.text.clone(), d.rows.clone());
@@ -1895,7 +1971,7 @@ impl FileTab {
                         text,
                         rows: keep.to_vec(),
                     };
-                    colour_rows(&h, &path, &parsed)
+                    colour_rows(&h, &path, &parsed.rows, &sides(&parsed))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1926,6 +2002,8 @@ impl FileTab {
         }
         match (self.mode, &self.state) {
             (FileMode::Plain, State::Text(_) | State::PlainTooLarge(_)) => {}
+            // No text, no bars: only its place, once (for the toolbar's toggle).
+            (FileMode::Plain, State::Missing | State::Refuse) if self.git_place.is_none() => {}
             (FileMode::Plain, _) | (FileMode::Diff, State::Loading) => return,
             // Over 20 MB or binary: git isn't asked (it would read the whole old blob).
             (FileMode::Diff, State::Refuse) => {
@@ -1958,28 +2036,34 @@ impl FileTab {
             self.look_up_diff(cx);
             return;
         }
-        let Some(version) = self.doc().map(|d| d.version) else {
-            return;
-        };
+        // Without a text (missing or refused), only the place is looked up.
+        let version = self.doc().map(|d| d.version);
         let (path, known) = (self.path.clone(), self.git_place.clone());
         cx.spawn(async move |this, cx| {
             let (place, changes) = cx
                 .background_executor()
                 .spawn(async move {
-                    let place = lookup_place(known, || git_place(&path));
+                    let place = lookup_place(known, || git_place(&path)).flatten();
                     let changes = place
                         .as_ref()
+                        .filter(|_| version.is_some())
                         .and_then(|p| line_changes(&p.git, &p.root, &p.rel));
                     (place, changes)
                 })
                 .await;
             this.update(cx, |this, cx| {
+                let found = place.is_some() && this.git_place.is_none();
                 this.git_place = place;
                 // No answer (git slow or failing, or no repo): the bars shown stay.
                 if let Some(changes) = changes
+                    && let Some(version) = version
                     && let Some(doc) = this.doc_mut()
                     && doc.accept_changes(version, &changes)
                 {
+                    cx.notify();
+                }
+                // A place found shows the toggle.
+                if found {
                     cx.notify();
                 }
                 this.looked_up(cx);
@@ -2002,10 +2086,11 @@ impl FileTab {
     /// The answer carries the disk version it was asked for (`HeldDiff::accept`).
     fn look_up_diff(&mut self, cx: &mut Context<Self>) {
         let version = self.versions;
+        // Over 2 MB on disk, the new side can't be coloured: the syntaxes aren't asked for.
         let (disk, lines, colour) = match &self.state {
             State::Text(doc) => (Some(doc.text.clone()), doc.lines.len(), true),
             State::PlainTooLarge(doc) => (Some(doc.text.clone()), doc.lines.len(), false),
-            State::Missing => (None, 0, false),
+            State::Missing => (None, 0, true),
             State::Loading | State::Refuse => {
                 self.looked_up(cx);
                 return;
@@ -2023,20 +2108,27 @@ impl FileTab {
                 .spawn(async move {
                     let place = lookup_place(known, || git_place(&path));
                     let state = match &place {
-                        None => Some(DiffState::NoRepo),
-                        Some(p) => {
-                            file_diff(&p.git, &p.root, &p.rel, context_for(lines)).map(|diff| {
-                                let colour = h.as_deref().map(|h| (h, path.as_path()));
-                                diff_state(diff, disk.as_deref(), version, colour)
-                            })
-                        }
+                        // No answer (git slow or failing): nothing changes, asked again later.
+                        None => None,
+                        Some(None) => Some(DiffState::NoRepo),
+                        // The old blob's size first: over 20 MB, git isn't asked for the diff.
+                        Some(Some(p)) => head_size(&p.git, &p.root, &p.rel).and_then(|size| {
+                            let colour = h.as_deref().map(|h| (h, path.as_path()));
+                            diff_answer(
+                                size,
+                                || file_diff(&p.git, &p.root, &p.rel, context_for(lines)),
+                                disk.as_deref(),
+                                version,
+                                colour,
+                            )
+                        }),
                     };
-                    (place, state)
+                    (place.flatten(), state)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.git_place = place;
-                // No answer (git slow or failing): the rows shown stay.
+                // No answer (git slow or failing): the rows (or the wait) shown stay.
                 if let Some(state) = state {
                     this.accept_diff(version, state, cx);
                 }
@@ -2069,16 +2161,22 @@ impl FileTab {
         if !self.diff.accept(version, self.versions, state) {
             return;
         }
-        if let DiffState::Rows(d) = &self.diff.state {
-            if first_rows && self.reveal.is_none() {
-                self.reveal = Some(Reveal::First);
+        match &self.diff.state {
+            DiffState::Rows(d) => {
+                if first_rows && self.reveal.is_none() {
+                    self.reveal = Some(Reveal::First);
+                }
+                if d.doc.spans.is_none() {
+                    self.colour_diff(cx);
+                }
             }
-            if d.doc.spans.is_none() {
-                self.colour_diff(cx);
-            }
+            // No rows to show a change bar's change in: it is dropped (new rows open at their
+            // first change).
+            _ => self.reveal = None,
         }
         if self.mode == FileMode::Diff {
             self.keep_selection();
+            self.drop_find_without_text();
             self.find_again(cx);
         }
         cx.notify();
@@ -2123,6 +2221,7 @@ impl FileTab {
             self.looked_at = None;
             self.look_up_changes(cx);
         }
+        self.drop_find_without_text();
         self.find_again(cx);
         cx.notify();
     }
@@ -2804,14 +2903,15 @@ impl FileTab {
         let (matches, current) = self.find.as_ref().map_or((Arc::default(), None), |f| {
             (f.finds.matches.clone(), f.finds.current)
         });
-        let diff = match (self.mode, &self.diff.state) {
-            (FileMode::Diff, DiffState::Rows(d)) => Some(d.rows.clone()),
-            _ => None,
+        let (diff, gutter) = match (self.mode, &self.diff.state) {
+            (FileMode::Diff, DiffState::Rows(d)) => (Some(d.rows.clone()), Some(d.gutter)),
+            _ => (None, None),
         };
         let frame = Rc::new(Frame {
             // A diff's colours are only made when it may have them.
             coloured: diff.is_some() || matches!(self.state, State::Text(_)),
             diff,
+            gutter,
             mode: self.mode,
             doc,
             scroll: self.mode_scroll(),
@@ -2848,7 +2948,7 @@ impl FileTab {
                         move |bounds, window, cx| {
                             let m = CellMetrics::measure(cx.global::<Appearance>(), window);
                             let count = laid.doc.lines.len();
-                            let gutter = Gutter::of(count, laid.diff.as_deref().map(Vec::as_slice));
+                            let gutter = laid.gutter.unwrap_or_else(|| Gutter::plain(count));
                             let g =
                                 Geom::of(bounds, &m, count, gutter, laid.doc.widest, laid.scroll);
                             geom.set(Some(g));
@@ -2944,6 +3044,23 @@ impl FileTab {
         }
     }
 
+    /// A frozen tab has no git place (no look-up), so Plain mode shows no toggle: give it a
+    /// made-up one, so the scenes can click File and Diff both ways. git is never run on it.
+    pub fn pretend_in_repo_for_shots(&mut self, cx: &mut Context<Self>) {
+        let root = self
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let rel = self.path.file_name().map(PathBuf::from).unwrap_or_default();
+        self.git_place = Some(GitPlace {
+            git: PathBuf::from("git"),
+            root,
+            rel,
+        });
+        cx.notify();
+    }
+
     /// The diff's rows, once in.
     pub fn diff_doc(&self) -> Option<&DiffDoc> {
         match &self.diff.state {
@@ -2963,9 +3080,7 @@ impl FileTab {
             FileDiff::Unified(unified.to_string())
         };
         let theme = cx.global::<Appearance>().theme;
-        let h = matches!(self.state, State::Text(_))
-            .then(|| cx.default_global::<Highlighters>().get(&theme))
-            .flatten();
+        let h = cx.default_global::<Highlighters>().get(&theme);
         let disk = self.doc().map(|d| d.text.clone());
         let colour = h.as_deref().map(|h| (h, self.path.as_path()));
         let state = diff_state(diff, disk.as_deref(), self.versions, colour);
@@ -3241,21 +3356,27 @@ mod tests {
             rel: "a.rs".into(),
         };
         let asked = Cell::new(0);
+        // No answer (git slow or failing): nothing kept, asked again next time.
         let failed = lookup_place(None, || {
             asked.set(asked.get() + 1);
             None
         });
-        // Nothing cached: the next look-up asks git again.
         assert_eq!(failed, None);
-        let found = lookup_place(failed, || {
+        // Not a repo (git said so): an answer, nothing kept either.
+        let no_repo = lookup_place(None, || {
             asked.set(asked.get() + 1);
-            Some(place.clone())
+            Some(None)
         });
-        assert_eq!(found, Some(place.clone()));
-        assert_eq!(asked.get(), 2);
+        assert_eq!(no_repo, Some(None));
+        let found = lookup_place(None, || {
+            asked.set(asked.get() + 1);
+            Some(Some(place.clone()))
+        });
+        assert_eq!(found, Some(Some(place.clone())));
+        assert_eq!(asked.get(), 3);
         // Found once: kept for the tab's life, git isn't asked where it is again.
-        let kept = lookup_place(found, || unreachable!("asked again"));
-        assert_eq!(kept, Some(place));
+        let kept = lookup_place(found.flatten(), || unreachable!("asked again"));
+        assert_eq!(kept, Some(Some(place)));
     }
 
     #[test]
@@ -3623,6 +3744,14 @@ mod tests {
         assert_eq!(d.doc.line(2), "");
         assert_eq!(d.doc.version, 4);
         assert!(d.doc.spans.is_none(), "no highlighter: uncoloured");
+        // Its gutter, worked out once: old numbers to 2, new to 3 (each at least 2 digits).
+        assert_eq!(
+            d.gutter,
+            Gutter::Diff {
+                old_digits: 2,
+                new_digits: 2
+            }
+        );
         let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, None);
         let DiffState::Rows(d) = all else {
             panic!("rows");
@@ -3671,13 +3800,86 @@ mod tests {
         assert!(ok, "git init");
         let file = dir.join("src/gone.rs");
         std::fs::write(&file, "x\n").unwrap();
-        let found = git_place(&file).expect("a file in a repo");
+        let found = git_place(&file)
+            .expect("an answer")
+            .expect("a file in a repo");
         assert_eq!(found.rel, PathBuf::from("src/gone.rs"));
         // Deleted (git still has its old lines): the same place, so its diff can show them.
         std::fs::remove_file(&file).unwrap();
-        assert_eq!(git_place(&file), Some(found));
-        // A folder that's gone too: none.
-        assert_eq!(git_place(&dir.join("nowhere/x.rs")), None);
+        assert_eq!(git_place(&file), Some(Some(found)));
+        // A folder that's gone too: no place (an answer, not "ask again").
+        assert_eq!(git_place(&dir.join("nowhere/x.rs")), Some(None));
+        // Outside any repo: git says so.
+        let plain = std::env::temp_dir().join(format!("fuxx-no-repo-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(git_place(&plain.join("x.rs")), Some(None));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_diff_is_coloured_only_when_both_sides_are_at_most_2_mb() {
+        let h = Highlighter::load(&Theme::default());
+        let path = Path::new("gone.rs");
+        let deleted = |lines: usize| {
+            let mut u = format!("@@ -1,{lines} +0,0 @@\n");
+            for i in 0..lines {
+                u.push_str(&format!("-let value_{i:06} = \"{}\";\n", "x".repeat(40)));
+            }
+            FileDiff::Unified(u)
+        };
+        // A small deleted file (no disk text): coloured.
+        let DiffState::Rows(small) = diff_state(deleted(10), None, 1, Some((&h, path))) else {
+            panic!("rows");
+        };
+        assert!(
+            small.doc.spans.is_some(),
+            "a small deleted file is coloured"
+        );
+        // Its old side over 2 MB: uncoloured, though there's no disk text to say so.
+        let big = deleted(40_000);
+        let DiffState::Rows(d) = diff_state(big, None, 1, Some((&h, path))) else {
+            panic!("rows");
+        };
+        assert!(
+            d.doc.text.len() as u64 > PLAIN_ABOVE,
+            "{}",
+            d.doc.text.len()
+        );
+        assert!(
+            d.doc.spans.is_none(),
+            "an old side over 2 MB is not coloured"
+        );
+        assert!(!d.colourable);
+        assert!(small.colourable);
+    }
+
+    #[test]
+    fn an_old_blob_or_a_diff_over_20_mb_is_refused() {
+        let rows = || Some(FileDiff::Unified("@@ -1 +1 @@\n-a\n+b\n".into()));
+        // The old blob over the limit: refused, git's diff never asked.
+        let over = Some(REFUSE_ABOVE + 1);
+        let refused = diff_answer(over, || unreachable!("no diff asked"), None, 1, None);
+        assert!(matches!(refused, Some(DiffState::Refuse)));
+        // At the limit, or not in HEAD: the diff.
+        assert!(matches!(
+            diff_answer(Some(REFUSE_ABOVE), rows, None, 1, None),
+            Some(DiffState::Rows(_))
+        ));
+        assert!(matches!(
+            diff_answer(None, rows, None, 1, None),
+            Some(DiffState::Rows(_))
+        ));
+        // git's answer itself over the limit (the backstop): refused.
+        let huge = || {
+            let mut u = String::from("@@ -1 +1 @@\n-");
+            u.push_str(&"a".repeat(REFUSE_ABOVE as usize));
+            Some(FileDiff::Unified(u))
+        };
+        assert!(matches!(
+            diff_answer(None, huge, None, 1, None),
+            Some(DiffState::Refuse)
+        ));
+        // No answer from git: none (the rows shown stay).
+        assert!(diff_answer(None, || None, None, 1, None).is_none());
     }
 }
