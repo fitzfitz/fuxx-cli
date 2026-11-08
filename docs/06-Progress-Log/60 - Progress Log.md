@@ -22,6 +22,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — v0.3.1 released; the button seen; M11f planned (cursor style + package icon)
+- **Did:** On your word, released v0.3.1 (a version bump; Release run green). On your Mac, fuxx 0.3.0 showed the
+  blue **Update Available** button (note 57 item 4). Your asks: a "package" icon on the button (note 57 amendment) and
+  a blinking cursor that isn't a full block, then "fun and entertaining" options; you chose the suggested mix ("ya
+  pakai cara mu"): Bar + glide + breathing glow + colour following the agent, Trail and Sparks as Fun. Spec
+  [[58 - Milestone 11f - Cursor Style]], plan [[M11f Plan - Cursor Style]] (3 build tasks, then v0.3.2). A detail
+  found while planning: the background service creates the terminals, so each starts with a "no program has chosen"
+  style (`HollowBlock`, which programs can't request) and the window draws your setting there.
+- **Next:** your review of note 58 and the plan; note 57's items 5–12 can be tried now (Update and Restart to 0.3.1).
+
 ### 2026-11-08 — v0.3.0 released; installed on your Mac
 - **Did:** On your word: merged `m11e-update-available` into `master` (fast-forward; 834 tests pass on master), pushed
   `master` (M11d and M11e, 20 commits), and pushed tag `v0.3.0`. The Release workflow went green on its first run
