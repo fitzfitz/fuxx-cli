@@ -320,7 +320,7 @@ const TAB_GAP: f32 = 6.0;
 const CLOSE: f32 = 16.0;
 const TAB_RADIUS: f32 = 6.0;
 /// A button, its icon box, and the gap between buttons and around them.
-const BUTTON: f32 = 20.0;
+pub(crate) const BUTTON: f32 = 20.0;
 const ICON: f32 = 12.0;
 const BUTTON_GAP: f32 = 2.0;
 const BUTTONS_PAD: f32 = 4.0;
@@ -964,6 +964,12 @@ pub(crate) enum Glyph {
     /// The Update Available button's (a 16 px box, as the footer's): a package, an isometric box
     /// (its outline, the edges meeting at its front corner) with a tape line across its top.
     Package,
+    /// The Files tree's (M11i): a folder (a box with a tab on its top left) and an open one
+    /// (its back, and its front flap leaning out); the header's collapse all, two chevrons
+    /// pointing up.
+    Folder,
+    FolderOpen,
+    CollapseAll,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1198,6 +1204,48 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                             true,
                         );
                         paths.push(filled);
+                    }
+                    Glyph::Folder => {
+                        let mut folder = stroke();
+                        folder.add_polygon(
+                            &[
+                                p(1.0, 2.0),
+                                p(4.5, 2.0),
+                                p(5.75, 3.5),
+                                p(11.0, 3.5),
+                                p(11.0, 10.0),
+                                p(1.0, 10.0),
+                            ],
+                            true,
+                        );
+                        paths.push(folder);
+                    }
+                    Glyph::FolderOpen => {
+                        // The back: up the left side, over the tab, down to where the flap
+                        // starts.
+                        let mut back = stroke();
+                        back.move_to(p(1.0, 10.0));
+                        back.line_to(p(1.0, 2.0));
+                        back.line_to(p(4.5, 2.0));
+                        back.line_to(p(5.75, 3.5));
+                        back.line_to(p(9.5, 3.5));
+                        back.line_to(p(9.5, 5.5));
+                        paths.push(back);
+                        let mut flap = stroke();
+                        flap.add_polygon(
+                            &[p(1.0, 10.0), p(3.0, 5.5), p(11.5, 5.5), p(9.5, 10.0)],
+                            true,
+                        );
+                        paths.push(flap);
+                    }
+                    Glyph::CollapseAll => {
+                        for y in [1.5, 6.0] {
+                            let mut chevron = stroke();
+                            chevron.move_to(p(2.5, y + 4.0));
+                            chevron.line_to(p(6.0, y + 0.5));
+                            chevron.line_to(p(9.5, y + 4.0));
+                            paths.push(chevron);
+                        }
                     }
                     Glyph::More => {
                         // Filled dots, as wide as the lines are thick and a little more.

@@ -2420,6 +2420,15 @@ fn card_scenes() {
                 "{n}: canvas outside the card's top-left curve at ({x}, {y}): {p:?}"
             );
         }
+        // The first tab's own top-left corner is rounded (Task 5 review, Minor 1): just inside
+        // the bar, 1.5 pt into the tab's 6 pt corner (the tab starts at the card's 1 pt edge,
+        // 4 pt under the bar's top), the bar shows, not the active tab's card fill.
+        let (x, y) = (card_left + 2.5, card_top + 6.5);
+        let p = at(x, y);
+        assert!(
+            gap(p, ui.tab_bar) < gap(p, ui.card),
+            "{n}: the bar inside the first tab's rounded corner at ({x}, {y}): {p:?}"
+        );
         println!("ui-shots: {}", path.display());
 
         // A window too narrow for the right sidebar beside the panes (its drawn width 0): no
@@ -4382,8 +4391,8 @@ fn file_view_scenes() {
         let room = ui_tokens::size::CARD_RADIUS;
         let p = pixel_at(&shot, dims, w - 2.0, h - room - 2.0);
         assert!(
-            !near(p, theme.background, 4),
-            "{n}: the last line is tinted: {p:?}, {tint:?}"
+            near(p, tint, 4) && !near(p, theme.background, 4),
+            "{n}: the last line is tinted: {p:?}, not {tint:?}"
         );
         // ... and the room under it, across the width, the background.
         for x in [1.0, 2.0, 6.0, w / 2.0, w - 6.0, w - 2.0, w - 1.0] {
@@ -4960,15 +4969,19 @@ fn files_fixture() -> PathBuf {
 }
 
 /// The fixture's tree as the panel builds it for a terminal in its src/ (listed from the disk,
-/// no git): src open and selected, and a made-up mark map: main.rs and README.md modified,
-/// new.rs added, old.rs deleted (so not on the disk).
-fn files_tree(root: &std::path::Path) -> crate::file_tree::FileTree {
+/// no git): src open and selected (with `util` open too when `open_util`), and a made-up mark
+/// map: main.rs and README.md modified, new.rs added, old.rs deleted (so not on the disk).
+fn files_tree(root: &std::path::Path, open_util: bool) -> crate::file_tree::FileTree {
     use crate::file_tree::{CAP, FileTree};
     use crate::git_status::{Mark, list_dir};
     use std::collections::HashMap;
 
     let mut tree = FileTree::new(root.to_path_buf(), Some(PathBuf::from("src")));
-    for rel in tree.wanted() {
+    let mut folders = tree.wanted();
+    if open_util {
+        folders.push(PathBuf::from("src/util"));
+    }
+    for rel in folders {
         let (entries, more) = list_dir(&root.join(&rel), CAP);
         tree.expand(rel, entries, more);
     }
@@ -4983,13 +4996,21 @@ fn files_tree(root: &std::path::Path) -> crate::file_tree::FileTree {
 
 /// The Files panel (M11g Task 5) in the right sidebar, on `files_fixture` (no git: a made-up
 /// mark map), beside a terminal in its src/, in a 1100 × 560 window, in both themes:
-/// - `files`: the left sidebar shown. The tree: docs, src (open, selected, `M`: it holds a
-///   modified and an added file), util, main.rs (`M`, blue), new.rs (`A`, green), Cargo.toml,
-///   notes.txt, old.rs (`D`, red: gone from the disk), README.md (`M`). The panel's header row
-///   is level with the pane's tab bar, at the top.
+/// - `files`: the left sidebar shown, util open too. The tree: docs, src (open, selected, `M`:
+///   it holds a modified and an added file), util (open), a.rs, main.rs (`M`, blue), new.rs
+///   (`A`, green), Cargo.toml, notes.txt, old.rs (`D`, red: gone from the disk), README.md
+///   (`M`). The panel's header row is level with the pane's tab bar, at the top. M11i: folder
+///   icons in the dim text colour (open for src and util), file icons tinted by type (.rs
+///   red, .toml cyan, .txt and .md dim), indent guides at depth 1 and 2, none at depth 0.
 /// - `files-filter`: "main" typed in the filter box: src and main.rs only.
 /// - `files-bare`: the left sidebar hidden: the header row is still level with the tab bar,
 ///   both under the 38 pt band.
+/// - `files-header` (M11i): the root header above the filter: ▾, the root's name, collapse
+///   all at the right, and the root's path under them, its start cut at the 300 pt sidebar.
+///   After a click on collapse all, every folder is closed (the selection on src).
+/// - `files-header-collapsed`: then a click on the name: the root folds away (▸), the filter
+///   and the tree are gone; a click again brings them back (every folder still closed), and a
+///   third folds it away again for the shot.
 ///
 /// Not shot: in the tree, ↓ → ← ↑ and Return move, open and close; a click on main.rs opens its
 /// file tab, which takes the keyboard; Esc in the tree gives the keyboard back to the pane;
@@ -4997,7 +5018,9 @@ fn files_tree(root: &std::path::Path) -> crate::file_tree::FileTree {
 fn files_scenes() {
     use crate::git_status::Mark;
     use crate::layout_model::{FileMode, TabKind};
-    use crate::right_sidebar::{FILTER_BAND, ROW, mark_color};
+    use crate::right_sidebar::{
+        FILTER_BAND, FileKind, ROOT_HEADER, ROW, kind_color, mark_color, root_path_line,
+    };
     use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR, TAB_TOP_GAP, TOP_BAND};
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
@@ -5026,7 +5049,7 @@ fn files_scenes() {
                 .zip([c.r, c.g, c.b])
                 .all(|(a, b)| a.abs_diff(b) <= by)
         };
-        let build_for = |bare: bool, slot: Slot| {
+        let build_for = |bare: bool, open_util: bool, slot: Slot| {
             let root = root.clone();
             move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(shot_appearance(theme, cx));
@@ -5038,7 +5061,8 @@ fn files_scenes() {
                     ws.right_sidebar.hidden = false;
                     let src = root.join("src");
                     ws.open_shot_session("api", &src, SHELL_TEXT, None, window, cx);
-                    ws.right_sidebar.files.show_for_shots(files_tree(&root));
+                    let tree = files_tree(&root, open_util);
+                    ws.right_sidebar.files.show_for_shots(tree);
                     ws
                 });
                 *slot.borrow_mut() = Some(ws.clone());
@@ -5071,21 +5095,26 @@ fn files_scenes() {
                 card_top
             };
             let slot: Slot = Rc::new(RefCell::new(None));
-            let build = build_for(bare, slot.clone());
+            let open_util = scene == "files";
+            let build = build_for(bare, open_util, slot.clone());
             let tab_top: Rc<RefCell<Option<f32>>> = Rc::default();
             let seen = tab_top.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
                 let n = format!("{scene}-{slug}");
                 frame(cx, window);
-                assert_eq!(rows_of(cx, &ws), tree_rows, "{n}: the tree");
+                let mut rows = tree_rows.to_vec();
+                if open_util {
+                    rows.insert(3, "src/util/a.rs");
+                }
+                assert_eq!(rows_of(cx, &ws), rows, "{n}: the tree");
                 let pane = cx.read(|cx| ws.read(cx).model.focused_pane().expect("a pane"));
                 let tab = tab_bounds(cx, &ws, pane, 0).expect("the tab laid out");
                 *seen.borrow_mut() = Some(f32::from(tab.top()));
                 if scene == "files-filter" {
                     let field = point(
                         px(sidebar_left + 60.0),
-                        px(top + TAB_BAR + FILTER_BAND / 2.0),
+                        px(top + TAB_BAR + ROOT_HEADER + FILTER_BAND / 2.0),
                     );
                     cx.simulate_click(window, field, Modifiers::none());
                     let typing = cx
@@ -5125,34 +5154,55 @@ fn files_scenes() {
             );
             let inside = at(sidebar_left + 250.0, top + TAB_BAR / 2.0);
             assert!(near(inside, ui.card, 3), "{n}: the header: {inside:?}");
-            // Each row's mark colour, somewhere along it (its name and letter are drawn in it).
-            let list_top = top + TAB_BAR + FILTER_BAND;
-            let inked = |row: usize, c: alacritty_terminal::vte::ansi::Rgb| {
+            // Each row's mark colour, somewhere along its name and letter (drawn in it), right
+            // of its icon.
+            let list_top = top + TAB_BAR + ROOT_HEADER + FILTER_BAND;
+            let depths: &[usize] = match scene {
+                "files" => &[0, 0, 1, 2, 1, 1, 0, 0, 0, 0],
+                "files-filter" => &[0, 1],
+                _ => &[0, 0, 1, 1, 1, 0, 0, 0, 0],
+            };
+            // A row's icon box: 8 pt in, 14 pt a level, after the 12 pt chevron column.
+            let icon_left = |row: usize| sidebar_left + 8.0 + depths[row] as f32 * 14.0 + 12.0;
+            let ink_in = |row: usize, x0: f32, x1: f32, c: alacritty_terminal::vte::ansi::Rgb| {
                 let y0 = list_top + row as f32 * ROW;
+                let steps = ((x1 - x0) * 2.0) as usize;
                 (4..(ROW as usize * 2 - 4)).any(|dy| {
                     let y = y0 + dy as f32 * 0.5;
-                    (0..560).any(|dx| near(at(sidebar_left + 8.0 + dx as f32 * 0.5, y), c, 24))
+                    (0..steps).any(|dx| near(at(x0 + dx as f32 * 0.5, y), c, 24))
                 })
+            };
+            let inked = |row: usize, c: alacritty_terminal::vte::ansi::Rgb| {
+                let x0 = icon_left(row) + 12.0 + 1.0;
+                ink_in(row, x0, sidebar_left + 290.0, c)
             };
             let (m, a, d) = (
                 mark_color(Mark::Modified, &theme),
                 mark_color(Mark::Added, &theme),
                 mark_color(Mark::Deleted, &theme),
             );
-            let expect: Vec<(usize, Option<alacritty_terminal::vte::ansi::Rgb>)> =
-                if scene == "files-filter" {
-                    vec![(0, Some(m)), (1, Some(m))]
-                } else {
-                    vec![
-                        (0, None),
-                        (1, Some(m)),
-                        (3, Some(m)),
-                        (4, Some(a)),
-                        (6, None),
-                        (7, Some(d)),
-                        (8, Some(m)),
-                    ]
-                };
+            let expect: Vec<(usize, Option<alacritty_terminal::vte::ansi::Rgb>)> = match scene {
+                "files-filter" => vec![(0, Some(m)), (1, Some(m))],
+                "files" => vec![
+                    (0, None),
+                    (1, Some(m)),
+                    (3, None),
+                    (4, Some(m)),
+                    (5, Some(a)),
+                    (7, None),
+                    (8, Some(d)),
+                    (9, Some(m)),
+                ],
+                _ => vec![
+                    (0, None),
+                    (1, Some(m)),
+                    (3, Some(m)),
+                    (4, Some(a)),
+                    (6, None),
+                    (7, Some(d)),
+                    (8, Some(m)),
+                ],
+            };
             for (row, colour) in expect {
                 match colour {
                     Some(c) => assert!(inked(row, c), "{n}: row {row} in {c:?}"),
@@ -5163,18 +5213,249 @@ fn files_scenes() {
                     }
                 }
             }
+            if scene != "files" {
+                continue;
+            }
+            // M11i: each row's icon in its own colour, in its 12 pt box: folders dim, files
+            // tinted by type (the names keep their marks' colours).
+            let (red, cyan) = (
+                kind_color(FileKind::Red, &theme),
+                kind_color(FileKind::Cyan, &theme),
+            );
+            let icon = |row: usize, c| ink_in(row, icon_left(row), icon_left(row) + 12.0, c);
+            for (row, what, c) in [
+                (0, "docs", ui.text_dim),
+                (1, "src (open)", ui.text_dim),
+                (2, "util (open)", ui.text_dim),
+                (3, "a.rs", red),
+                (4, "main.rs", red),
+                (6, "Cargo.toml", cyan),
+                (7, "notes.txt", ui.text_dim),
+                (9, "README.md", ui.text_dim),
+            ] {
+                assert!(icon(row, c), "{n}: {what}'s icon in {c:?}");
+            }
+            for (row, what) in [(6, "Cargo.toml"), (7, "notes.txt"), (9, "README.md")] {
+                assert!(!icon(row, red), "{n}: {what}'s icon isn't red");
+            }
+            assert!(!icon(4, cyan), "{n}: main.rs's icon isn't cyan");
+            // An open folder's icon differs from a closed one's: its flap's top edge crosses
+            // the middle of the 12 pt box (5 pt down the row), where a closed folder is empty.
+            let open_flap = |row: usize| {
+                let (x, y) = (
+                    icon_left(row) + 6.0,
+                    list_top + row as f32 * ROW + 5.0 + 5.5,
+                );
+                near(at(x, y), ui.text_dim, 40)
+            };
+            assert!(open_flap(1) && !open_flap(0), "{n}: src open, docs closed");
+            // Indent guides: 1 pt in `guide` at each level above the row, at the middle of
+            // that level's chevron column (8 + 14 d + 6), the row's full height; none at the
+            // top level. (It spans x - 0.5 to x + 0.5: on a 1x shot it lands on one side.)
+            let guide_at = |row: usize, x: f32| {
+                let y0 = list_top + row as f32 * ROW;
+                [x - 1.0, x].iter().any(|&x| {
+                    [0.5, ROW / 2.0, ROW - 0.5]
+                        .iter()
+                        .all(|dy| near(at(sidebar_left + x, y0 + dy), ui.guide, 3))
+                })
+            };
+            for row in [2, 3, 4, 5] {
+                assert!(guide_at(row, 14.0), "{n}: row {row}'s depth-1 guide");
+            }
+            assert!(guide_at(3, 28.0), "{n}: a.rs's depth-2 guide");
+            assert!(!guide_at(4, 28.0), "{n}: main.rs is at depth 1");
+            for row in [6, 7, 9] {
+                assert!(
+                    !guide_at(row, 14.0),
+                    "{n}: no guide at the top level ({row})"
+                );
+            }
+        }
+
+        // M11i: the root header; collapse all, then the root folded away.
+        for scene in ["files-header", "files-header-collapsed"] {
+            let fold = scene == "files-header-collapsed";
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = build_for(false, true, slot.clone());
+            let header_top = card_top + TAB_BAR;
+            // Line 1's middle: 3 pt (the header's room round its 34 pt of lines) + 10.
+            let line_one = header_top + (ROOT_HEADER - 34.0) / 2.0 + 10.0;
+            let button = point(
+                px(window_right - GAP - FOCUS_RING - 6.0 - 10.0),
+                px(line_one),
+            );
+            let name = point(px(sidebar_left + 60.0), px(line_one));
+            let root_for = root.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let n = format!("{scene}-{slug}");
+                let none = Modifiers::none();
+                frame(cx, window);
+                let state = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| {
+                        let tree = ws.read(cx).right_sidebar.files.tree.as_ref();
+                        let tree = tree.expect("the tree");
+                        let selected = tree.selected().map(|s| s.display().to_string());
+                        (tree.expanded_set(), selected)
+                    })
+                };
+                // The path line, as drawn at this width: its start cut, its own name kept.
+                let drawn = cx
+                    .update_window(window, |_, window, cx| {
+                        let ws = ws.read(cx);
+                        let room = ws.right_sidebar.width - 2.0 * FOCUS_RING - 10.0 - 6.0;
+                        let wrapper = RefCell::new(window.text_system().line_wrapper(
+                            gpui::TextStyle::default().font(),
+                            px(crate::ui_tokens::text::META),
+                        ));
+                        let fits = |s: &str| {
+                            wrapper
+                                .borrow_mut()
+                                .should_truncate_line(
+                                    s,
+                                    px(room),
+                                    "\u{2026}",
+                                    gpui::TruncateFrom::End,
+                                )
+                                .is_none()
+                        };
+                        root_path_line(&root_for, ws.places.home.as_deref(), fits)
+                    })
+                    .expect("read");
+                assert!(
+                    drawn.starts_with('\u{2026}') && drawn.ends_with("/fuxx-ui-shots-files"),
+                    "{n}: the path's start is cut at 300 pt: {drawn}"
+                );
+                cx.simulate_click(window, button, none);
+                frame(cx, window);
+                assert_eq!(
+                    rows_of(cx, &ws),
+                    [
+                        "docs",
+                        "src",
+                        "Cargo.toml",
+                        "notes.txt",
+                        "old.rs",
+                        "README.md"
+                    ],
+                    "{n}: collapse all closes every folder"
+                );
+                let (memory, selected) = state(cx);
+                assert!(memory.expanded.is_empty(), "{n}: none open: {memory:?}");
+                assert!(!memory.root_collapsed, "{n}: the root stays open");
+                assert_eq!(selected.as_deref(), Some("src"), "{n}: the selection");
+                if fold {
+                    cx.simulate_click(window, name, none);
+                    frame(cx, window);
+                    assert!(rows_of(cx, &ws).is_empty(), "{n}: the tree is hidden");
+                    assert!(state(cx).0.root_collapsed, "{n}: folded away");
+                    // A click again: back, its folders as they were (all closed).
+                    cx.simulate_click(window, name, none);
+                    frame(cx, window);
+                    assert_eq!(rows_of(cx, &ws).len(), 6, "{n}: back");
+                    cx.simulate_click(window, name, none);
+                    frame(cx, window);
+                    assert!(rows_of(cx, &ws).is_empty(), "{n}: and away again");
+                }
+                // The pointer away over the pane: no hover or tooltip in the shot.
+                cx.simulate_mouse_move(window, point(px(500.0), px(300.0)), None, none);
+                frame(cx, window);
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let n = format!("{scene}-{slug}");
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let has = |x0: f32, x1: f32, y0: f32, y1: f32, c, by| {
+                let (w, h) = (((x1 - x0) * 2.0) as usize, ((y1 - y0) * 2.0) as usize);
+                (0..h).any(|dy| {
+                    (0..w).any(|dx| near(at(x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5), c, by))
+                })
+            };
+            let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
+            let (left, right) = (sidebar_left + 10.0, window_right - GAP - FOCUS_RING - 6.0);
+            // Line 1: the name in the text colour; line 2: the path, faint, inside the pads.
+            assert!(
+                has(
+                    left + 10.0,
+                    left + 120.0,
+                    line_top,
+                    line_top + 20.0,
+                    ui.text,
+                    24
+                ),
+                "{n}: the root's name"
+            );
+            assert!(
+                has(
+                    left,
+                    left + 200.0,
+                    line_top + 20.0,
+                    line_top + 34.0,
+                    ui.text_faint,
+                    24
+                ),
+                "{n}: the root's path"
+            );
+            assert!(
+                !has(
+                    left,
+                    left + 200.0,
+                    line_top + 20.0,
+                    line_top + 34.0,
+                    ui.text,
+                    12
+                ),
+                "{n}: the path is faint, not text"
+            );
+            // Collapse all's two chevrons, dim, in its 20 pt box at the right of line 1.
+            assert!(
+                has(
+                    right - 20.0,
+                    right,
+                    line_top,
+                    line_top + 20.0,
+                    ui.text_dim,
+                    24
+                ),
+                "{n}: the collapse all button"
+            );
+            let filter_middle = header_top + ROOT_HEADER + FILTER_BAND / 2.0;
+            let filter_box = (0..548)
+                .map(|i| sidebar_left + 6.0 + i as f32 * 0.5)
+                .any(|x| !near(at(x, filter_middle), ui.card, 3));
+            if fold {
+                // Only the header: no filter box, no rows under it.
+                assert!(!filter_box, "{n}: no filter box");
+                let rows_top = header_top + ROOT_HEADER;
+                assert!(
+                    !has(
+                        sidebar_left + 2.0,
+                        right,
+                        rows_top,
+                        rows_top + 120.0,
+                        ui.text,
+                        24
+                    ),
+                    "{n}: no rows"
+                );
+            } else {
+                assert!(filter_box, "{n}: the filter box under the header");
+            }
         }
 
         // Keys, a click, Esc (not shot).
         let slot: Slot = Rc::new(RefCell::new(None));
-        let build = build_for(false, slot.clone());
+        let build = build_for(false, false, slot.clone());
         let root_for = root.clone();
         let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
             let ws = slotted(&slot);
             let n = format!("files-keys-{slug}");
             let none = Modifiers::none();
             frame(cx, window);
-            let list_top = card_top + TAB_BAR + FILTER_BAND;
+            let list_top = card_top + TAB_BAR + ROOT_HEADER + FILTER_BAND;
             let row_at = |i: usize| {
                 point(
                     px(sidebar_left + 80.0),
@@ -5284,14 +5565,14 @@ fn files_scenes() {
 
         // The filter box focused, ⌥⌘\: the sidebar closes, the terminal takes the keyboard.
         let slot: Slot = Rc::new(RefCell::new(None));
-        let build = build_for(false, slot.clone());
+        let build = build_for(false, false, slot.clone());
         let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
             let ws = slotted(&slot);
             let n = format!("files-close-{slug}");
             frame(cx, window);
             let field = point(
                 px(sidebar_left + 60.0),
-                px(card_top + TAB_BAR + FILTER_BAND / 2.0),
+                px(card_top + TAB_BAR + ROOT_HEADER + FILTER_BAND / 2.0),
             );
             cx.simulate_click(window, field, Modifiers::none());
             let typing = cx
