@@ -39,6 +39,7 @@
 //! `Panel`, `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder`, `lookup_due`, `back_off`,
 //! `file_kind`, `kind_color`, `guides` and `root_path_line` are pure and tested, as is the tree.
 
+#[cfg(feature = "ui-shots")]
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -47,11 +48,14 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, AnyView, App, Bounds, ClickEvent, Context, DispatchPhase, Entity, FocusHandle,
-    Focusable, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    ScrollStrategy, SharedString, Subscription, TextStyle, TruncateFrom, UniformListScrollHandle,
-    Window, actions, canvas, div, prelude::*, px, uniform_list,
+    AnyElement, AnyView, App, ClickEvent, Context, DispatchPhase, Entity, FocusHandle, Focusable,
+    FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollStrategy,
+    SharedString, Subscription, TextStyle, TruncateFrom, UniformListScrollHandle, Window, actions,
+    canvas, div, prelude::*, px, uniform_list,
 };
+
+#[cfg(feature = "ui-shots")]
+use gpui::{Bounds, Pixels};
 
 use crate::appearance::Appearance;
 use crate::changes_panel::ChangesPanel;
@@ -119,8 +123,6 @@ const COLLAPSE_ALL_TIP: &str = "Collapse all folders";
 const FILTER_PLACEHOLDER: &str = "Filter files";
 const SSH_NOTE: &str = "Files aren't shown for SSH terminals.";
 pub(crate) const NO_FOLDER: &str = "No terminal folder to show.";
-/// The Activity panel's body until it is drawn (M11h Task 6).
-const NO_ACTIVITY: &str = "No activity yet.";
 const NO_MATCH: &str = "No file matches.";
 
 /// A panel the right sidebar shows (M11h), chosen with the tabs in its strip.
@@ -500,16 +502,39 @@ fn list_folder(
 
 /// The tree's root for a terminal in `folder` (off the UI thread): the repo's top folder, else
 /// the folder; both by their real paths (git prints them so: `/private/var`, not `/var`). Also
-/// whether it's a repo, and the folder from the root (to open and select).
-pub(crate) fn find_root(folder: &Path) -> (PathBuf, bool, Option<PathBuf>) {
+/// whether it's a repo, and the folder from the root (to open and select). None when git gave
+/// no answer (`root_from`). No git at all: not a repo.
+pub(crate) fn find_root(folder: &Path) -> Option<(PathBuf, bool, Option<PathBuf>)> {
     let real = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
-    let top = find_git().and_then(|git| git_status::repo_root(&git, &real));
+    let top = match find_git() {
+        Some(git) => git_status::repo_root_at(&git, &real),
+        None => Some(None),
+    };
+    root_from(&real, top)
+}
+
+/// What a root lookup found for a folder whose real path is `real`, from git's answer
+/// (`git_status::repo_root_at`): a repo's top folder (by its real path), or "not a repo" (the
+/// folder is the root); with whether it's a repo and the folder from the root. None: no answer
+/// (git failed, or took longer than the cap), so the folder stays un-rooted and is asked again
+/// later (`needs_root`), not taken for "not a repo" until it moves.
+pub(crate) fn root_from(
+    real: &Path,
+    top: Option<Option<PathBuf>>,
+) -> Option<(PathBuf, bool, Option<PathBuf>)> {
+    let top = top?;
     let in_repo = top.is_some();
     let root = top
         .map(|t| std::fs::canonicalize(&t).unwrap_or(t))
-        .unwrap_or_else(|| real.clone());
+        .unwrap_or_else(|| real.to_path_buf());
     let revealed = real.strip_prefix(&root).ok().map(Path::to_path_buf);
-    (root, in_repo, revealed)
+    Some((root, in_repo, revealed))
+}
+
+/// Whether a refresh (or a root lookup asked again) that last started at `last` (none: never)
+/// is due `now`, `wait` after it.
+pub(crate) fn due(last: Option<Instant>, wait: Duration, now: Instant) -> bool {
+    last.is_none_or(|at| now.saturating_duration_since(at) >= wait)
 }
 
 /// The Files panel: its tree and what it was made from, its filter box, focus and scroll, and
@@ -610,6 +635,24 @@ impl FilesPanel {
         self.listing.clear();
         self.refreshing = false;
         self.wait = REFRESH;
+    }
+
+    /// Whether `folder`'s root is looked up `now`: a folder other than the last one at once;
+    /// the same one again only when its lookup had no answer (no tree, nothing under way) and
+    /// its wait is over.
+    fn needs_root(&self, folder: &Path, now: Instant) -> bool {
+        self.folder.as_deref() != Some(folder)
+            || (self.tree.is_none() && !self.rooting && due(self.refreshed, self.wait, now))
+    }
+
+    /// The root lookup had no answer at `now`: un-rooted (no tree, not the last folder's either),
+    /// asked again after a longer wait (`back_off`).
+    fn unanswered(&mut self, now: Instant) {
+        let wait = back_off(self.wait, false);
+        self.forget();
+        self.rooting = false;
+        self.refreshed = Some(now);
+        self.wait = wait;
     }
 
     /// Folders' listings for the tree at `root` (dropped if the tree has moved on). A folder
@@ -783,7 +826,11 @@ pub struct RightSidebarState {
     pub(crate) files: FilesPanel,
     /// The Changes panel (M11h).
     pub(crate) changes: ChangesPanel,
+    /// The Activity panel's scroll (M11h): back to the newest when it is shown again or
+    /// follows another terminal.
+    pub(crate) activity_scroll: UniformListScrollHandle,
     /// The panel tabs, as last drawn (the screenshots click them).
+    #[cfg(feature = "ui-shots")]
     tabs_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
 }
 
@@ -802,6 +849,8 @@ impl RightSidebarState {
             panel: Panel::Files,
             files: FilesPanel::new(),
             changes: ChangesPanel::new(),
+            activity_scroll: UniformListScrollHandle::new(),
+            #[cfg(feature = "ui-shots")]
             tabs_at: Rc::default(),
         }
     }
@@ -819,12 +868,13 @@ impl RightSidebarState {
         self.tabs_at.get()
     }
 
-    /// The shown panel brings itself up to date at once (shown, another terminal).
+    /// The shown panel brings itself up to date at once (shown, another terminal); Activity
+    /// starts again at its newest row.
     fn refresh_now(&mut self) {
         match self.panel {
             Panel::Files => self.files.refreshed = None,
             Panel::Changes => self.changes.refreshed = None,
-            Panel::Activity => {}
+            Panel::Activity => self.activity_scroll = UniformListScrollHandle::new(),
         }
     }
 }
@@ -1145,8 +1195,10 @@ impl Workspace {
             .w_full()
             .h(px(TAB_BAR))
             .bg(hsla(ui.tab_bar))
-            // The card's top, rounded as the inside of its edge (as a pane's tab bar).
+            // The card's top, rounded as the inside of its edge (as a pane's tab bar); its
+            // tabs clipped to it, so a narrow card never shows a square tab edge under a corner.
             .rounded_t(px(CARD_RADIUS - FOCUS_RING))
+            .overflow_hidden()
             // The tabs float 4 pt under its top, flush with its bottom.
             .pt(px(TAB_TOP_GAP))
             .pl(px(PANEL_TABS_LEFT))
@@ -1156,12 +1208,7 @@ impl Workspace {
         let body = match self.right_sidebar.panel {
             Panel::Files => self.render_files_panel(ui, width, cx),
             Panel::Changes => self.render_changes_panel(ui, width, cx),
-            Panel::Activity => div()
-                .flex_1()
-                .min_h(px(0.0))
-                .w_full()
-                .child(note(&ui, NO_ACTIVITY))
-                .into_any_element(),
+            Panel::Activity => self.render_activity_panel(ui, width, cx),
         };
         let card = panes::card(&PaneColors::of(&ui), false)
             .flex()
@@ -1191,8 +1238,8 @@ impl Workspace {
     /// text colour, the others unfilled, dim, `tab_hover` on hover. A click shows its panel.
     fn render_panel_tab(&self, panel: Panel, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let active = self.right_sidebar.panel == panel;
-        let (at, i) = (self.right_sidebar.tabs_at.clone(), panel as usize);
-        div()
+        let i = panel as usize;
+        let tab = div()
             .id(("right-panel-tab", i))
             .relative()
             .flex()
@@ -1210,9 +1257,12 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.show_right_panel(panel, window, cx)
             }))
-            .child(panel.label())
-            // Where it is (the screenshots click it).
-            .child(
+            .child(panel.label());
+        // Where it is (the screenshots click it).
+        #[cfg(feature = "ui-shots")]
+        let tab = {
+            let at = self.right_sidebar.tabs_at.clone();
+            tab.child(
                 canvas(
                     move |b, _, _| {
                         let mut all = at.get();
@@ -1226,7 +1276,8 @@ impl Workspace {
                 .left_0()
                 .size_full(),
             )
-            .into_any_element()
+        };
+        tab.into_any_element()
     }
 
     /// The Files panel's focus and filter box, made once (they need a window).
@@ -1330,12 +1381,13 @@ impl Workspace {
             }
             return;
         };
-        if files.folder.as_ref() != Some(&folder) {
+        let now = Instant::now();
+        if files.needs_root(&folder, now) {
             files.folder = Some(folder.clone());
             files.rooting = true;
             cx.spawn(async move |this, cx| {
                 let asked = folder.clone();
-                let (root, in_repo, revealed) = cx
+                let found = cx
                     .background_executor()
                     .spawn(async move { find_root(&asked) })
                     .await;
@@ -1345,6 +1397,12 @@ impl Workspace {
                     if files.folder.as_ref() != Some(&folder) {
                         return;
                     }
+                    // No answer from git: un-rooted, asked again on a later tick.
+                    let Some((root, in_repo, revealed)) = found else {
+                        files.unanswered(Instant::now());
+                        cx.notify();
+                        return;
+                    };
                     files.rooting = false;
                     files.rooted(root, in_repo, revealed);
                     files.refreshed = None;
@@ -1359,11 +1417,7 @@ impl Workspace {
             .detach();
             return;
         }
-        let now = Instant::now();
-        let due = files
-            .refreshed
-            .is_none_or(|at| now.saturating_duration_since(at) >= files.wait);
-        if files.rooting || files.refreshing || !due {
+        if files.rooting || files.refreshing || !due(files.refreshed, files.wait, now) {
             return;
         }
         let Some(tree) = files.tree.as_ref() else {
@@ -2048,6 +2102,53 @@ mod tests {
             .into_iter()
             .map(|r| r.rel.display().to_string())
             .collect()
+    }
+
+    /// git's answer to "which repo is this folder in": a top folder (a repo's root), "not a
+    /// repo" (exit 128, or no git: the folder is the root), or no answer (failed, slower than
+    /// the cap): no root, to ask again later.
+    #[test]
+    fn a_root_is_a_repo_s_top_else_the_folder_and_no_answer_is_none() {
+        let real = Path::new("/w/app/src");
+        assert_eq!(
+            root_from(real, Some(Some(PathBuf::from("/w/app")))),
+            Some((PathBuf::from("/w/app"), true, Some(PathBuf::from("src"))))
+        );
+        assert_eq!(
+            root_from(real, Some(None)),
+            Some((real.to_path_buf(), false, Some(PathBuf::new())))
+        );
+        assert_eq!(root_from(real, None), None);
+    }
+
+    /// A folder's root lookup that got no answer leaves it un-rooted: it is asked again on a
+    /// later tick, each time waiting longer (`back_off`: 4, 8 … s); another folder at once.
+    #[test]
+    fn files_asks_for_an_unanswered_root_again_backing_off() {
+        let folder = Path::new("/w/app/src");
+        let s = Duration::from_secs;
+        let now = Instant::now();
+        let mut files = FilesPanel::new();
+        assert!(files.needs_root(folder, now), "a new folder at once");
+        files.folder = Some(folder.to_path_buf());
+        files.rooting = true;
+        assert!(!files.needs_root(folder, now), "under way");
+        files.unanswered(now);
+        assert!(!files.rooting);
+        assert!(files.tree.is_none(), "un-rooted");
+        assert!(!files.needs_root(folder, now + s(3)));
+        assert!(
+            files.needs_root(folder, now + s(4)),
+            "asked again after 4 s"
+        );
+        files.rooting = true;
+        files.unanswered(now + s(4));
+        assert!(!files.needs_root(folder, now + s(11)));
+        assert!(files.needs_root(folder, now + s(12)), "then after 8 s");
+        assert!(files.needs_root(Path::new("/w/other"), now + s(2)));
+        // Answered: rooted, not asked again for this folder.
+        files.rooted(PathBuf::from("/w/app"), true, Some(PathBuf::from("src")));
+        assert!(!files.needs_root(folder, now + s(60)));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 // Many sessions in one window, each with a live status ring and background notifications.
 
 mod activity;
+mod activity_panel;
 mod adopt;
 mod api;
 mod api_client;

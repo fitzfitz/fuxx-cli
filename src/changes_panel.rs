@@ -33,7 +33,7 @@ use crate::git_status::{self, Change, ChangeList, Counts, Mark};
 use crate::layout_model::{FileMode, TabKind};
 use crate::right_sidebar::{
     NO_FOLDER, PATH_LINE, Panel, REFRESH, ROOT_HEADER, ROOT_LINE, ROOT_PAD_LEFT, ROOT_PAD_RIGHT,
-    ROW, back_off, find_root, mark_ink, note,
+    ROW, back_off, due, find_root, mark_ink, note,
 };
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::Tip;
@@ -126,6 +126,24 @@ impl ChangesPanel {
         self.scroll = UniformListScrollHandle::new();
         self.refreshing = false;
         self.wait = REFRESH;
+    }
+
+    /// Whether `folder`'s root is looked up `now`: a folder other than the last one at once;
+    /// the same one again only when its lookup had no answer (no root, nothing under way) and
+    /// its wait is over.
+    fn needs_root(&self, folder: &Path, now: Instant) -> bool {
+        self.folder.as_deref() != Some(folder)
+            || (self.root.is_none() && !self.rooting && due(self.refreshed, self.wait, now))
+    }
+
+    /// The root lookup had no answer at `now`: un-rooted (nothing shown; not "Not a git
+    /// repository."), asked again after a longer wait (`back_off`).
+    fn unanswered(&mut self, now: Instant) {
+        let wait = back_off(self.wait, false);
+        self.forget();
+        self.rooting = false;
+        self.refreshed = Some(now);
+        self.wait = wait;
     }
 
     /// A refresh's answer for `root`: the list (none: git failed or was slow, so the list shown
@@ -383,12 +401,13 @@ impl Workspace {
             }
             return;
         };
-        if changes.folder.as_ref() != Some(&folder) {
+        let now = Instant::now();
+        if changes.needs_root(&folder, now) {
             changes.folder = Some(folder.clone());
             changes.rooting = true;
             cx.spawn(async move |this, cx| {
                 let asked = folder.clone();
-                let (root, in_repo, _) = cx
+                let found = cx
                     .background_executor()
                     .spawn(async move { find_root(&asked) })
                     .await;
@@ -398,6 +417,13 @@ impl Workspace {
                     if changes.folder.as_ref() != Some(&folder) {
                         return;
                     }
+                    // No answer from git: un-rooted (not "Not a git repository."), asked
+                    // again on a later tick.
+                    let Some((root, in_repo, _)) = found else {
+                        changes.unanswered(Instant::now());
+                        cx.notify();
+                        return;
+                    };
                     changes.rooting = false;
                     changes.rooted(root, in_repo);
                     changes.refreshed = None;
@@ -412,10 +438,7 @@ impl Workspace {
             .detach();
             return;
         }
-        let now = Instant::now();
-        let due = changes
-            .refreshed
-            .is_none_or(|at| now.saturating_duration_since(at) >= changes.wait);
+        let due = due(changes.refreshed, changes.wait, now);
         if changes.rooting || changes.refreshing || !due || !changes.in_repo {
             return;
         }
@@ -679,6 +702,37 @@ mod tests {
         assert!(panel.apply(Path::new("/other"), Some(first.clone())));
         panel.rooted(PathBuf::from("/other"), true);
         assert_eq!(panel.list.as_ref(), Some(&first));
+    }
+
+    /// A root lookup with no answer (git failed or was slow) doesn't say "Not a git
+    /// repository.": the folder stays un-rooted and is asked again, backing off.
+    #[test]
+    fn changes_asks_for_an_unanswered_root_again_backing_off() {
+        let folder = Path::new("/w/app/src");
+        let s = Duration::from_secs;
+        let now = Instant::now();
+        let mut panel = ChangesPanel::new();
+        assert!(panel.needs_root(folder, now), "a new folder at once");
+        panel.folder = Some(folder.to_path_buf());
+        panel.rooting = true;
+        assert!(!panel.needs_root(folder, now), "under way");
+        panel.unanswered(now);
+        assert!(!panel.rooting);
+        assert_eq!(panel.root, None, "un-rooted");
+        assert!(!panel.in_repo);
+        assert!(!panel.needs_root(folder, now + s(3)));
+        assert!(
+            panel.needs_root(folder, now + s(4)),
+            "asked again after 4 s"
+        );
+        panel.rooting = true;
+        panel.unanswered(now + s(4));
+        assert!(!panel.needs_root(folder, now + s(11)));
+        assert!(panel.needs_root(folder, now + s(12)), "then after 8 s");
+        assert!(panel.needs_root(Path::new("/w/other"), now + s(2)));
+        // Answered: rooted, not asked again for this folder.
+        panel.rooted(PathBuf::from("/w/app"), true);
+        assert!(!panel.needs_root(folder, now + s(60)));
     }
 
     #[test]
