@@ -143,6 +143,15 @@ file to open it as a **read-only tab** in the pane, with syntax colours, line nu
 last commit; it updates live while an agent edits it. ⌘F finds; "Open in Editor" opens it in your text editor (it
 never runs a file). fuxx never changes your files.
 
+## Changes and Activity (M11h)
+
+The right sidebar has three tabs: **Files**, **Changes** and **Activity**. Changes lists the files that differ from
+the last commit (**M**/**A**/**D** with `+added −removed` counts); click one to open it in **diff mode**: removed
+lines red, added lines green, both line numbers, syntax colours on. A **File | Diff** switch in the tab's toolbar
+flips between the file and its changes, and clicking a change bar in a file jumps to the diff. Activity shows the
+focused terminal's timeline (Working, Needs input, Done — 11 min), the question it's waiting on, and the agent's
+`fuxx note` / `fuxx progress` lines.
+
 ## The cursor
 
 The terminal's cursor is a thin bar by default that glides to where it goes, breathes softly instead of blinking,

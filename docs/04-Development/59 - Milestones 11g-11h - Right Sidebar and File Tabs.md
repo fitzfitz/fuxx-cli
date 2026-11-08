@@ -5,7 +5,7 @@ status: approved
 
 # 59 - Milestones 11g–11h - Right Sidebar and File Tabs (design)
 
-**Status:: ✅ Design approved by you 2026-11-08 ("lets go"). 🟨 M11g built and reviewed 2026-11-08 (953 tests), releasing as v0.4.0; on-screen check pending. 🟦 M11h planned 2026-11-08 (after M11i; every gap AI's call, below): [[M11h Plan - Changes, Diff View, Activity]].**  ·  **Phase 4: M11 extensions.**
+**Status:: ✅ Design approved by you 2026-11-08 ("lets go"). 🟨 M11g built and reviewed 2026-11-08 (953 tests), releasing as v0.4.0; on-screen check pending. 🟨 M11h built, reviewed, merged and pushed 2026-11-09 (1089 tests; every gap AI's call, below; not released on its own: one release after M11l): [[M11h Plan - Changes, Diff View, Activity]]; on-screen check pending.**  ·  **Phase 4: M11 extensions.**
 **Changes the scope** (your decision, 2026-11-08): [[12 - Scope]] says "Being a general IDE / editor" is out. This
 design brings in a **read-only file viewer**, but **not an editor**. If you approve, Scope is updated before
 planning.
@@ -288,7 +288,40 @@ them, inside M11i's new look, these were the places they would have had to guess
 17. **Nothing new besides.** No new crates, settings, key bindings or menu items; the scripting API is unchanged.
     Released in the one release after M11l (your rule), not on its own.
 
-## M11h on-screen checklist (pending)
+## M11h as built (2026-11-09)
+
+Where the build settled something the plan left open, or changed it (AI's rulings after each task's review and the
+final whole-branch review):
+
+- **Diffs read any text.** git's diff output is decoded leniently, so a Latin-1 or Shift-JIS file shows its diff
+  (bad bytes as `�`) instead of waiting forever. `--no-textconv` keeps the rows equal to the file on disk, and a
+  blank context line that `diff.suppressBlankEmpty` prints without its space still counts.
+- **Size limits judge the diff, not only the disk file:** colours only when both the old and new sides are at most
+  2 MB; the old version's size is asked first (`git cat-file -s`, capped) and over 20 MB the diff is refused without
+  asking git for it; a diff output over 20 MB is refused too.
+- **Deleted files show their old lines** whether deleted on disk, with `git rm`, as a `git mv`'s old path, or with
+  their whole folder gone (the nearest existing folder finds the repo). `git rm --cached` with the file still on
+  disk counts as untracked (all added).
+- **A slow or failing git is not "Not a git repository."**: the tab, Files and Changes stay as they are and ask
+  again (with back-off); only git's own "not a repo" answer shows that note.
+- **An open Diff tab doesn't re-colour** an unchanged diff every 5 s (it did: up to 2 s of work per side near
+  2 MB).
+- **The `+`/`−` signs reach 3:1 on their own tinted rows** on every theme (Latte's `+` was 2.68).
+- **A binary file** in Diff mode says "This file is binary: no diff to show." Known: a file refused for another
+  reason at 20 MB or less (no permission to read it, a failed read) says the same.
+- **Changes:** a renamed file is **D** (old path) and **A** (new path); a nested repo or submodule row is shown but
+  doesn't open a tab; a failed line count still shows the list but waits longer before asking again; past 1,000
+  rows the header's totals cover the listed rows. `git init` or deleting `.git` in the followed folder shows only
+  after a `cd`.
+- **Activity:** progress updates in a row are one entry; a note the same as the last note is skipped; an SSH
+  reconnect records the change to Idle; an adopted session's first "lasted" counts from when fuxx adopted it. The
+  still marks are drawn at the same moment of their animation with motion on and off. Only the rows in sight are
+  built.
+- Known and parked: a tab first looked up while its own repo's folder is gone can be bound to an enclosing repo
+  (its Diff shows "This file no longer exists"; reopen the tab after restoring the repo). The `title-area`
+  screenshot check flakes now and then (2 pt), unrelated to M11h.
+
+## M11h on-screen checklist (pending, after the combined release)
 
 1. The right sidebar's top shows three tabs, **Files · Changes · Activity**; the active one merges into the panel.
    Switch to Changes, quit and reopen fuxx: Changes is still shown.
