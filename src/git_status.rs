@@ -335,10 +335,13 @@ pub struct Change {
 }
 
 /// The changed files, sorted, at most `CHANGES_CAP`; `more` is how many were left out.
+/// `counts_failed`: `git diff --numstat` failed or was slow (the tracked entries' counts are
+/// `Unknown`), so the panel waits longer before asking again (`back_off`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChangeList {
     pub entries: Vec<Change>,
     pub more: usize,
+    pub counts_failed: bool,
 }
 
 /// Most rows a `ChangeList` holds.
@@ -434,7 +437,7 @@ fn assemble(
 /// The files changed since the last commit, with their line counts. Blocking: call it from
 /// background work. None outside a repo, or when git fails or takes longer than the cap (no
 /// answer, not "nothing changed"). A failed `numstat` with a good status leaves the tracked
-/// entries' counts `Unknown`.
+/// entries' counts `Unknown` and the list `counts_failed`.
 pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
     let status = run_git(
         git,
@@ -480,8 +483,25 @@ pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
         )
         .map(|out| parse_numstat(out.as_bytes()))
     };
-    let entries = assemble(marks, numstat, fresh, |path| count_lines(&root.join(path)));
-    Some(ChangeList { entries, more })
+    Some(change_list(marks, more, numstat, fresh, |path| {
+        count_lines(&root.join(path))
+    }))
+}
+
+/// The list from status's `marks` (`more` left out) and numstat's answer (None: it failed or
+/// was slow, flagged `counts_failed`), counted as `assemble` does.
+fn change_list(
+    marks: Vec<(PathBuf, Mark)>,
+    more: usize,
+    numstat: Option<HashMap<PathBuf, Counts>>,
+    fresh: bool,
+    count: impl FnMut(&Path) -> Counts,
+) -> ChangeList {
+    ChangeList {
+        counts_failed: numstat.is_none(),
+        entries: assemble(marks, numstat, fresh, count),
+        more,
+    }
 }
 
 /// `dir`'s entries: folders first, then files, each case-insensitive by name; `.git` left out.
@@ -965,6 +985,20 @@ mod tests {
                 Counts::Unknown
             ]
         );
+    }
+
+    #[test]
+    fn a_failed_numstat_is_flagged_on_the_list() {
+        let marks = || vec![(p("m.txt"), Mark::Modified)];
+        let count = |_: &Path| Counts::Unknown;
+        // numstat failed or was slow: the list says so (the panel backs off).
+        let failed = change_list(marks(), 0, None, false, count);
+        assert!(failed.counts_failed);
+        assert_eq!(failed.entries[0].counts, Counts::Unknown);
+        // Answered, or not asked (no commits yet): not failed.
+        assert!(!change_list(marks(), 0, Some(HashMap::new()), false, count).counts_failed);
+        assert!(!change_list(marks(), 3, Some(HashMap::new()), true, count).counts_failed);
+        assert_eq!(change_list(marks(), 3, None, false, count).more, 3);
     }
 
     #[test]

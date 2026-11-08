@@ -6610,6 +6610,7 @@ fn changes_scenes() {
             ),
         ],
         more: 3,
+        counts_failed: false,
     };
     let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
         cx.update_window(window, |_, window, _| window.refresh())

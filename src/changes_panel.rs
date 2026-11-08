@@ -147,14 +147,16 @@ impl ChangesPanel {
     }
 
     /// A refresh's answer for `root`: the list (none: git failed or was slow, so the list shown
-    /// stays and the next refresh waits longer, `back_off`). False, and nothing done, when the
-    /// panel has moved on to another root.
+    /// stays and the next refresh waits longer, `back_off`; its counts failed: shown, and the
+    /// next refresh waits longer too). False, and nothing done, when the panel has moved on to
+    /// another root.
     fn apply(&mut self, root: &Path, list: Option<ChangeList>) -> bool {
         if self.root.as_deref() != Some(root) {
             return false;
         }
         self.refreshing = false;
-        self.wait = back_off(self.wait, list.is_some());
+        let ok = list.as_ref().is_some_and(|l| !l.counts_failed);
+        self.wait = back_off(self.wait, ok);
         if let Some(list) = list {
             self.list = Some(list);
         }
@@ -653,7 +655,33 @@ mod tests {
     }
 
     fn list_of(entries: Vec<Change>, more: usize) -> ChangeList {
-        ChangeList { entries, more }
+        ChangeList {
+            entries,
+            more,
+            counts_failed: false,
+        }
+    }
+
+    #[test]
+    fn a_list_whose_counts_failed_is_shown_but_backs_off() {
+        let root = PathBuf::from("/repo");
+        let mut panel = ChangesPanel::new();
+        panel.rooted(root.clone(), true);
+        let failed = ChangeList {
+            counts_failed: true,
+            ..list_of(vec![change("a.rs", Mark::Modified, Counts::Unknown)], 0)
+        };
+        panel.refreshing = true;
+        assert!(panel.apply(&root, Some(failed.clone())));
+        // The marks are git's answer (shown); its counts aren't: waits longer, as a failed
+        // status does (2 → 4 → 8 s).
+        assert_eq!(panel.list.as_ref(), Some(&failed));
+        assert_eq!(panel.wait, Duration::from_secs(4));
+        assert!(panel.apply(&root, Some(failed.clone())));
+        assert_eq!(panel.wait, Duration::from_secs(8));
+        // Counted again: 2 s.
+        assert!(panel.apply(&root, Some(list_of(Vec::new(), 0))));
+        assert_eq!(panel.wait, REFRESH);
     }
 
     #[test]
