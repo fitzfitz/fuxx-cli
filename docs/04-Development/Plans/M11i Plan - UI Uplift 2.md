@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11i
-status: planned
+status: built
 updated: 2026-11-08
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-11-08
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[60 - Milestone 11i - UI Uplift 2]] (incl. "Settled before planning") |
-| **Status** | 🟦 Planned 2026-11-08; not started |
-| **Tasks done** | 0 / 10 |
-| **▶ Pick up here** | Task 1: tokens and terminal padding |
+| **Status** | 🟨 Built, reviewed and merged to master 2026-11-08; release with M11l; on-screen check pending |
+| **Tasks done** | 9 / 10 (Task 9, the release, is folded into the one release after M11l) |
+| **▶ Pick up here** | Nothing to build. Your on-screen check (22 items in note 60) after the combined release |
 | **Decisions used** | Yours (2026-11-08): the eight items, in M11i, before M11h. Everything else: AI's calls in note 60 (you skipped the design questions). |
 | **Needs your eyes** | 👀 Tasks 8–9 (merge/push/release on your word, then the 20-item on-screen check in note 60) |
 
@@ -126,7 +126,7 @@ change in the tasks that draw them (3 and 5), so this task moves no row or bar.
 **Interfaces — Produces:** the constants and `UiColors` fields in Global Constraints (`card`, `card_border`,
 `card_shadow_alpha: f32`, `row_selected`, `card_hover`, `card_selected`, `tab_bar`, `tab_hover`, `guide`).
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `new_surfaces_keep_text_readable_on_every_theme`: for every built-in theme, `contrast(ui.text, s) ≥ 4.5` and
     `contrast(ui.text_dim, s) ≥ 4.5` for `s` in `row_selected`, `card_selected`, `card_hover`, `tab_bar`,
     `tab_hover`;
@@ -135,9 +135,9 @@ change in the tasks that draw them (3 and 5), so this task moves no row or bar.
   - `selection_is_a_tint_of_the_accent`: on Mocha, `row_selected != sidebar_background` and its hue is within 15° of
     `accent`'s; `card_shadow_alpha` is 0.30 on Mocha and 0.08 on Latte;
   - `inset_balances_leftover` and `hit_testing_uses_the_inset_origin` updated to 16/12 and 12/10.
-- [ ] **Step 2: run** `cargo test` → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt,
+- [x] **Step 2: run** `cargo test` → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt,
   `__ui-shots tokens` and `__ui-shots window` (the window scenes change by the padding; update their checks).
-- [ ] **Step 5: commit** `feat(m11i): design tokens for cards, selection and tab bar; more terminal padding`.
+- [x] **Step 5: commit** `feat(m11i): design tokens for cards, selection and tab bar; more terminal padding`.
 
 ### Task 2: Smart names (pure core, lookups, wiring)
 
@@ -173,7 +173,7 @@ window's banners' label call site in `src/workspace.rs` (`label = session.label(
   Option<Rc<Vec<Proc>>>` and (ui-shots) `pub fn set_for_shots(&mut self, id: u64, state: ProgramState)`;
   `pub(crate) fn terminal_label(&self, id: u64) -> SharedString`; `pub(crate) const NAMES_REFRESH: Duration = 3 s`.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `parse_ps`: the five-column lines from this Mac (`39856 39855 39856 39882 -/bin/zsh`, `39882 39856 39882 39882
     claude`), args with spaces and `\012`, a short line and a non-numeric pid skipped, empty input;
   - `foreground`: shell pgid == tpgid → `Prompt`; tpgid 0 → `Prompt`; tpgid = another group → `Program(args of the
@@ -195,11 +195,11 @@ window's banners' label call site in `src/workspace.rs` (`label = session.label(
   - ui-shot `smart-names` (Mocha, Latte), with `Programs::set_for_shots` and fixed folders: tabs and rows read
     `claude · fuxx-cli`, `npm run dev · invitee`, `fuxx-cli`, `~`, a renamed `api` tab; the SSH `devbox · src` tab;
     a browser tab's page title. `default-name` updated: ╭∩╮ only for a terminal with no folder.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement** (`ps_table` via `run_capped_outcome(Command::new("/bin/ps"),
+- [x] **Step 2: run** → FAIL. **Step 3: implement** (`ps_table` via `run_capped_outcome(Command::new("/bin/ps"),
   None, GIT_CAP)`; the ticker as `tick_places`: a `programs_ticking` flag, stops when nothing is wanted).
   **Step 4: run** `cargo test`, clippy (both), fmt, full `__ui-shots` (update the scenes whose labels change:
   `sidebar`, `tab-bars`, `switcher`, `title-area`, `banner-click`).
-- [ ] **Step 5: commit** `feat(m11i): smart names — what runs, or the folder; ╭∩╮ only as a last resort`.
+- [x] **Step 5: commit** `feat(m11i): smart names — what runs, or the folder; ╭∩╮ only as a last resort`.
 
 ### Task 3: Compact rows and the subtle selection
 
@@ -215,7 +215,7 @@ dot or ring), `src/ui_shots.rs` (`sidebar`, `sidebar-rows`, `sidebar-marks` upda
 else `SIDEBAR_ROW`; `pub enum LineTwo { NotLive, Waiting(Option<String>), Note(String), Place }` and
 `pub fn line_two(row: &WorkspaceRow) -> Option<LineTwo>`; `WorkspaceRow.running: bool`.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `a_row_is_22_with_one_line_and_32_with_two`: no place, no sub → 22; place only → 32; waiting with place and
     question → 32 (was 56); lost → 32;
   - `line_two_prefers_not_live_then_waiting_then_note_then_place`;
@@ -226,9 +226,9 @@ else `SIDEBAR_ROW`; `pub enum LineTwo { NotLive, Waiting(Option<String>), Note(S
     `row_selected`, its name pixels are `text`-coloured (not `on_accent`); a waiting selected row keeps its waiting
     mark colour; hover on another row shows the shortcut and `row_hover`; an idle row with a running program shows
     the dot, at a prompt the ring.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt,
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt,
   `__ui-shots sidebar` and the full set.
-- [ ] **Step 5: commit** `feat(m11i): compact two-line sidebar rows, a tinted selection with an accent bar`.
+- [x] **Step 5: commit** `feat(m11i): compact two-line sidebar rows, a tinted selection with an accent bar`.
 
 ### Task 4: Floating panels
 
@@ -246,7 +246,7 @@ radius, edge, shadow); `pub fn accent_offset(ratio: f32, gap: f32) -> f32` (pure
 grab strip); `pub fn drawn_width(width, window_width, left)` keeps its signature, now reserving `PANE_COLUMN_MIN +
 3 * CARD_GAP`.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `accent_offset` at ratio 0.5 centres the 2 pt line in a 6 pt gap, at 0.25 and 0.75 stays inside the gap;
   - `a_narrow_window_keeps_the_panes_200_wide` updated for the gaps;
   - `divider_active` tests unchanged.
@@ -255,9 +255,9 @@ grab strip); `pub fn drawn_width(width, window_width, left)` keeps its signature
     with a 6 pt canvas gap; the focused one's edge pixel is `accent`, the other's is `card_border`; a hovered gap
     shows the 2 pt accent line; `cards-corners` (Review Focus 1): a terminal filled with `ESC[44m` + clear, the
     pixel 2 pt inside each bottom corner is the canvas; a lone pane has no `accent` edge pixel.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11i): panes and the right sidebar as rounded cards with gaps and a focus ring`.
+- [x] **Step 5: commit** `feat(m11i): panes and the right sidebar as rounded cards with gaps and a focus ring`.
 
 ### Task 5: The cleaner tab bar and the ⋯ menu
 
@@ -275,7 +275,7 @@ NewTerminal, NewBrowser, SplitRight, SplitDown }` with `pub const ALL: [PaneActi
 window, cx)`; `look(ui, status, active, pane_focused) -> Look` loses its `top_accent` field and gives the active
 tab `fill: Some(ui.card)`. `TAB_BAR` becomes 30 and `TAB_TOP_GAP` 4 in this task.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `the_buttons_are_plus_more_and_the_right_sidebar`: `BarButton::ALL` order and tooltips;
   - `the_menu_lists_the_pane_actions_with_their_keys`: `PaneAction::ALL` labels and keys exactly as the constraints;
   - `the_active_tab_takes_the_card_colour_and_has_no_top_line` (replaces
@@ -287,9 +287,9 @@ tab `fill: Some(ui.card)`. `TAB_BAR` becomes 30 and `TAB_TOP_GAP` 4 in this task
     (hover maths for 3 buttons); `tab-bars-more`: ⋯ open shows the 4 items under the button, right-aligned, the ⋯
     lit; clicking "Split Right" splits that pane; Escape closes it; `overlays` covers `PaneActions`;
     `tab-bars-narrow` (720 pt).
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11i): a cleaner tab bar — tabs that merge into the pane, +, ⋯ menu, sidebar toggle`.
+- [x] **Step 5: commit** `feat(m11i): a cleaner tab bar — tabs that merge into the pane, +, ⋯ menu, sidebar toggle`.
 
 ### Task 6: The Files tree — icons, guides, root header, collapse all
 
@@ -307,7 +307,7 @@ root_collapsed: bool }`). In `right_sidebar.rs`: `pub enum FileKind { Red, Green
 Plain → `text_dim`); `pub fn guides(depth: usize) -> Vec<f32>` (x of each guide: `8 + d * 14 + 6` for d in
 0..depth).
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `collapse_all_closes_every_folder_and_keeps_listings` (re-expanding needs no new listing: `toggle` returns no
     `Want`); the selection moves to its top-level ancestor; the root stays open;
   - `a_collapsed_root_shows_no_rows` and the memory restores it after a re-root and back;
@@ -318,9 +318,9 @@ Plain → `text_dim`); `pub fn guides(depth: usize) -> Vec<f32>` (x of each guid
   - ui-shots (Mocha, Latte): `files-header`: the root header with name, path (start-cut at a 300 pt sidebar for a
     long path), collapse-all button; after a click on it every folder is closed; a click on the name hides the tree;
     `files`: folder and file icons with tints, guides at depth 1–2, marks unchanged.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt,
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt,
   `__ui-shots files` and the full set.
-- [ ] **Step 5: commit** `feat(m11i): Files tree — type icons, indent guides, a root header and collapse all`.
+- [x] **Step 5: commit** `feat(m11i): Files tree — type icons, indent guides, a root header and collapse all`.
 
 ### Task 7: The status bar, ports, and the update button moved
 
@@ -348,7 +348,7 @@ status bar's terminal), `src/tab_bar.rs` (`Glyph::Branch`), `src/main.rs` (`mod`
   `pub fn port_chips(ports: &[u16]) -> (Vec<String>, Option<usize>)` (max 3 + overflow count);
   `pub const PORTS_REFRESH: Duration = 5 s`; `Workspace::render_status_bar(ui, window, cx) -> AnyElement`.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `parse_lsof`: IPv4, IPv6 and `*` forms of the same port merge; a `p` line alone; garbage lines skipped; empty;
   - `listening_ports(&[])` is `Some([])` and runs nothing;
   - the 30 s back-off after a failed `lsof` and the reset on success (pure `back_off`-style helper, as
@@ -363,25 +363,25 @@ status bar's terminal), `src/tab_bar.rs` (`Glyph::Branch`), `src/main.rs` (`mod`
     `http://localhost:3000`; `status-bar-narrow` (720 pt, 40-char branch, deep folder, 6 ports, update pending): no
     overlap (the pill's bounds and the folder's don't intersect); `update-*`: the pill at the bar's right end, its
     narrow label at 720 pt, nothing above the sidebar footer; Reduce motion: the mark is the still variant.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`, and `scripts/bundle-mac.sh --app-only` (a release build; report the `ps` and `lsof` run times from
   the log at debug level).
-- [ ] **Step 5: commit** `feat(m11i): a status bar — status, branch, folder, listening ports, and the update button`.
+- [x] **Step 5: commit** `feat(m11i): a status bar — status, branch, folder, listening ports, and the update button`.
 
 ### Task 8: Merge and push (your word) — 👀
 
-- [ ] On your word: merge `m11i-ui-uplift` into `master` (all tests, clippy both, fmt, full `__ui-shots` green
+- [x] On your word: merge `m11i-ui-uplift` into `master` (all tests, clippy both, fmt, full `__ui-shots` green
   first), push.
 
 ### Task 9: Release (your word) and on screen — 👀
 
-- [ ] On your word: version **0.5.0** in `Cargo.toml` (a new look), `cargo test`, commit
+- [ ] ~~On your word: version **0.5.0** in `Cargo.toml` (a new look), `cargo test`, commit~~ Skipped by ruling: one release after M11l (your rule, 2026-11-08).
   `chore(release): 0.5.0 — UI uplift 2 (M11i)`, push, tag `v0.5.0`, watch the Release run to green.
-- [ ] You: the 20-item on-screen checklist in note 60.
+- [ ] You: the 22-item on-screen checklist in note 60 (after the combined release).
 
 ### Task 10: Docs
 
-- [ ] Note 60 (status, an "As built" section for what the build settled, the checklist's state). This plan (ticks,
+- [x] Note 60 (status, an "As built" section for what the build settled, the checklist's state). This plan (ticks,
   header). The roadmap. The Plan Tracker. The Progress Log. `STRUCTURE.md` (`procs.rs`, `smart_name.rs`,
   `status_bar.rs`, `pane_actions.rs`). `README.md` (smart names, the status bar, ports).
-- [ ] Commit `docs(m11i): …`.
+- [x] Commit `docs(m11i): …`.

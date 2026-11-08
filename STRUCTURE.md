@@ -76,7 +76,7 @@ src/
 ├── presets.rs            M7 · agent presets (claude / opencode / codex + agent-preset lines)
 ├── restore.rs            M7 · session-restore setting, sessions.json format   M8 · layouts
 ├── split_tree.rs         M8 · nested split tree: split, close, neighbours, ratios, sanitize
-├── panes.rs              M8 · draws a layout: nested panes, dividers, dimming
+├── panes.rs              M8 · draws a layout: nested panes, dividers, dimming   M11i · rounded cards, 6 pt gaps as grab strips, the focus ring
 │
 │   scripting (M9)
 ├── api.rs                M9 · protocol: requests/replies, targets, key names, wait conditions
@@ -126,7 +126,7 @@ src/
 │
 │   workspaces, pane tabs and the in-pane browser (M11b)
 ├── layout_model.rs       M11b · workspaces → panes → tabs: every rule (new, split, close cascades, move, roll-up, pinning, ⌘1–9, old-file loader), GPUI-free
-├── tab_bar.rs            M11b · the 26 px tab bar over each pane (replaces pane headers): tabs, marks, ×, buttons, drag, scroll
+├── tab_bar.rs            M11b · the tab bar over each pane (replaces pane headers): tabs, marks, ×, buttons, drag, scroll   M11i · 30 pt, tabs merge into the pane, +, ⋯, sidebar toggle
 ├── drag_gap.rs           M11b · Task 7b: where a dragged tab or row lands (the gap nearest its copy), the others' offsets, the 150 ms ease-out slides; GPUI-free
 ├── pane_tab_menu.rs      M11b · a pane tab's right-click menu: Close Tab, Close Other Tabs in Pane, Rename Tab…, Pop Out
 ├── pane_browser.rs       M11b · the web view placed over a pane each frame, and the rule for hiding it behind fuxx's own menus
@@ -157,7 +157,11 @@ src/
 ├── highlight.rs          M11g · syntect + two-face: a syntax theme built from the fuxx theme (3:1 floor), file classification (pure)
 ├── git_status.rs         M11g · repo root, status marks, ignore checks, per-file line changes (git, capped, last good kept)
 ├── file_tree.rs          M11g · the Files panel's lazy tree model: rows (cached), marks, filter, keyboard selection (pure)
-├── right_sidebar.rs      M11g · the right sidebar: toggle, pane icon, resize, follows the focused terminal, the Files panel
+├── right_sidebar.rs      M11g · the right sidebar: toggle, pane icon, resize, follows the focused terminal, the Files panel   M11i · type icons, guides, root header, collapse all
+├── procs.rs              M11i · the `ps` table and `lsof` listening ports (absolute paths, capped, background), parsing (pure)
+├── smart_name.rs         M11i · what a terminal is called: program · folder, the folder at a prompt, SSH host; secrets-safe words; the stable rule (pure)
+├── pane_actions.rs       M11i · the ⋯ menu on a pane's tab bar: New Terminal Tab, New Browser Tab, Split Right, Split Down
+├── status_bar.rs         M11i · the status bar: status word, branch, folder, port chips, the update pill; fitting by drop order (pure core)
 ├── file_tab.rs           M11g · read-only file tabs: colours, line numbers, change bars, live reload, find, selection, Open in Editor
 ├── cursor_look.rs        M11f · the cursor's rules: shape (the HollowBlock marker = no program has chosen), colour, breathing, glide, trail, sparks, frames (pure)
 └── updater.rs            M11e · the check (curl, at launch + daily + the menu), the Updates state, the install (download, verify, swap, reopen)

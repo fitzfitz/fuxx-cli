@@ -89,6 +89,16 @@ Preferences (⌘,) has sections down the left (General, Appearance, Sessions, Br
 "Reduce motion" is respected too) and "Show the tips card again". A sidebar button beside the window buttons hides and shows the sidebar (same as ⌘\). Rows in the sidebar behave like tabs: hover shows a × to close, middle-click closes, and right-click opens a menu (Close Workspace, Close Other Workspaces, Close Workspaces Below, Show All Workspaces, Rename Workspace…, Pin, Workspace Color); closing several at once always asks first. Rows show ⌘1…⌘9 on the right. Screenshots of every screen, in a dark and a light theme, come from
 `cargo run --features ui-shots -- __ui-shots` (PNGs in `target/ui-shots/`). Built and reviewed, not yet tried on screen.
 
+## The 2026 look (M11i)
+
+Terminals name themselves after what runs in them: `claude · fuxx-cli`, `npm run dev · api`, or just the folder at a
+prompt (flag values and paths never show). Sidebar rows are two compact lines with a soft tinted selection. Panes
+and the right sidebar float as rounded cards with small gaps; the focused split has an accent edge. The tab bar has
+only **+**, **⋯** (New Terminal Tab, New Browser Tab, Split Right, Split Down) and the right-sidebar toggle. The Files
+tree has coloured file icons, indent guides, a root header and collapse all. A **status bar** along the bottom shows
+the focused terminal's status, branch and folder, the ports its programs listen on (click `:3000` to open it in a
+browser tab), and Update Available when there is one.
+
 ## Scripting fuxx
 
 Inside any fuxx session, the `fuxx` command talks to the running app (outside, put the binary on your `PATH`):

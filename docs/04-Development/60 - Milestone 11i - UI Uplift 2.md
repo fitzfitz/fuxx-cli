@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: planned
+status: built
 ---
 
 # 60 - Milestone 11i - UI Uplift 2 (design)
 
-**Status:: 🟦 Designed and planned 2026-11-08 (every detail is AI's call; you skipped the design questions). Correct anything before the build.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
+**Status:: 🟨 Built, reviewed and merged to master 2026-11-08 (every detail AI's call; you skipped the design questions). Not released on its own: one release after M11l. On-screen check pending (22 items below).**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout…"). Comes **before M11h**, so
 Changes and Activity are built into the new look.
 
@@ -329,7 +329,7 @@ reads at 4.5:1 on every built-in theme, light or dark.
 - The left sidebar as a card; a redesign of its footer (the +, 🔔 and gear stay; only the update button leaves).
 - Showing smart names in the scripting API.
 
-## On-screen checklist (pending)
+## On-screen checklist (pending, after the combined release)
 
 1. A new terminal at a prompt in `~/Kerja/proj/fuxx-cli` is called `fuxx-cli` in its tab and its sidebar row; in
    your home folder, `~`. ╭∩╮ shows at most for a moment.
@@ -366,6 +366,8 @@ reads at 4.5:1 on every built-in theme, light or dark.
 19. Animations off or macOS Reduce motion on: the status bar's mark is still, nothing slides that didn't before.
 20. Activity Monitor: fuxx idle in front uses no noticeably more CPU than v0.4.1 (the 3 s names lookup and the 5 s
     ports lookup are the only new work).
+21. Switch workspaces and back: a background tab's `npm run dev · <folder>` name doesn't blink back to the folder.
+22. Hide the left sidebar, press ⌘P and type `claude`: the workspace running claude is found.
 
 ## Settled before planning (AI's calls after a builder's read, 2026-11-08)
 
@@ -406,6 +408,44 @@ Re-reading the design as the builder who must plan it, these were the places the
     scenes it touches and the checks inside them (heights, hover positions, the `tab-bars-button` hover maths for
     3 buttons, the `update-button` scenes now in the status bar).
 16. **Version:** M11i is a visible new look, released as **0.5.0**.
+
+## M11i as built (2026-11-08)
+
+Where the build settled something the plan left open, or changed it (AI's rulings while building, after each
+task's review and the final whole-branch review):
+
+- **Names never show flag values or paths.** A tool's subcommand word (`npm run dev`, `cargo test`) is shown only
+  when it comes *right after* the tool and is a clean word (letters, digits, `. _ : -`, at most 32 characters, no
+  `=`, `/`, `~`, leading `+` or `.`), and never after `--`. Otherwise the tool's name stands alone
+  (`docker run -e TOKEN=…` → `docker`). Window titles and banners are therefore safe to show.
+- **`ps`** runs with `LC_ALL=en_US.UTF-8`, reads its output as lossy UTF-8 and skips zombies (`stat=`). It reads
+  **every local terminal** from each table (the table is system-wide, so this costs nothing), so names stay steady
+  when a terminal leaves the screen, and ⌘P and the notification list keep program names with the sidebar hidden.
+  A failed or timed-out `ps` waits 30 s and keeps the last good names.
+- **`ring_waiting`** is pushed to 4.5:1 on the waiting tints and the selection, in every theme (hue kept).
+- **A waiting row's whole question** is in the row's tooltip (line 2 cuts it; below 200 pt it isn't drawn).
+- **The card shadow's blur of 6 is a GPUI Gaussian sigma**, about CSS `0 1px 12px`: soft and wide, subtle in the
+  screenshots.
+- **The split's grab strip is exactly the gap** at any ratio; the accent line is centred in it. Known and parked:
+  the split model's rectangles don't count the gaps, so in same-axis nested splits (A | [B | C]) dragging the inner
+  gap runs 1.5–3 pt off the pointer, and Equalize leaves three-across panes about 3 pt unequal.
+- **File tabs have an 8 pt room at the bottom** (as well as the top), so no change tint, selection or find highlight
+  paints into the card's rounded bottom corners.
+- **No right-sidebar card at all** when the window is too narrow for it (no 2 pt stub).
+- **The tab bar has no separators between tabs** (top-rounded tabs don't need them). The first tab sits inside the
+  card's top-left curve, checked by pixel in the screenshots. A half-scrolled tab at the left edge of a narrow bar is
+  cut square by the row's clip (GPUI masks are rectangles); it stays inside the card's 1 pt edge.
+- **Files:** git marks and type tints reach 3:1 on the card, its hover and its selection (Gruvbox's red D was 2.15
+  on a selected row). Reopening a folder shows its kept listing at once and lists it again in the background, so a
+  file an agent created while it was closed appears. The root's path is cut at a `/` (`…/proj/fuxx-cli`). The
+  tree keeps refreshing while the root is folded, so unfolding shows a fresh tree.
+- **Status bar:** when even the branch is gone and it still doesn't fit (a window under about 230 pt), the ports
+  chip goes last, so the update pill always shows. The footer's notifications popover and + menu open 22 pt higher,
+  above the bar. Ports are looked up 5 s after the last answer, and at once when the followed terminal changes.
+  Timings on this Mac (from a shell; fuxx has no debug log): `ps` 0.02 s, `lsof` 0.02–0.05 s.
+- **The idle mark and the name describe the same terminal** (the focused pane's) on an all-idle row.
+- Left for a later clean-up (unused but harmless): `on_accent`, `look`'s `_pane_focused`, `BarButton::enabled`,
+  `divider` (tokens board only).
 
 ## Left to the builder
 
