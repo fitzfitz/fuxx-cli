@@ -45,15 +45,9 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// The repo's top folder holding `dir`, or none outside a repo (or when git fails or is slow).
-pub fn repo_root(git: &Path, dir: &Path) -> Option<PathBuf> {
-    let out = run_git(git, dir, &["rev-parse", "--show-toplevel"])?;
-    let top = out.trim_end_matches('\n');
-    (!top.is_empty()).then(|| PathBuf::from(top))
-}
-
-/// `repo_root`, telling "not a repo" (git says so: `Some(None)`) from no answer (git failed,
-/// took longer than the cap, or couldn't run: None, to ask again later).
+/// The repo's top folder holding `dir` (`Some(Some(top))`), telling "not a repo" (git says
+/// so: `Some(None)`) from no answer (git failed, took longer than the cap, or couldn't run:
+/// None, to ask again later).
 pub fn repo_root_at(git: &Path, dir: &Path) -> Option<Option<PathBuf>> {
     match run_git_outcome(git, dir, &["rev-parse", "--show-toplevel"]) {
         Ran::Exited(Some(0), out) => {
@@ -601,7 +595,7 @@ mod tests {
         };
         let dir = temp("norepo");
         fs::write(dir.join("f.txt"), "x\n").unwrap();
-        assert_eq!(repo_root(&git, &dir), None);
+        assert_eq!(repo_root_at(&git, &dir), Some(None));
         assert_eq!(line_changes(&git, &dir, Path::new("f.txt")), None);
         // A failed status (exit 128) is no answer, not "nothing changed".
         assert_eq!(status(&git, &dir), None);
@@ -680,7 +674,10 @@ mod tests {
 
         run(&["add", "-A"]);
         run(&["commit", "-q", "-m", "first"]);
-        assert_eq!(repo_root(&git, &root), Some(root.canonicalize().unwrap()));
+        assert_eq!(
+            repo_root_at(&git, &root),
+            Some(Some(root.canonicalize().unwrap()))
+        );
 
         fs::write(root.join("a.txt"), "one\nTWO\nthree\n").unwrap();
         fs::write(root.join("new.txt"), "x\ny\n").unwrap();

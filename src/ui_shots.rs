@@ -229,6 +229,7 @@ const SCENES: &[(&str, fn())] = &[
     ("files", files_scenes),
     ("right-panels", right_panel_scenes),
     ("changes", changes_scenes),
+    ("activity", activity_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
     ("default-name", default_name),
@@ -6577,7 +6578,7 @@ fn changes_scenes() {
     use crate::right_sidebar::{Panel, ROOT_HEADER, ROW, mark_color};
     use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
-    use gpui::Modifiers;
+    use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -6847,6 +6848,13 @@ fn changes_scenes() {
                     let view = ws.focused_file_tab().expect("its view");
                     assert_eq!(view.read(cx).mode(), FileMode::Diff, "{n}: the tab's mode");
                 });
+                let keys = cx
+                    .update_window(window, |_, window, cx| {
+                        let view = ws.read(cx).focused_file_tab().expect("its view");
+                        view.focus_handle(cx).is_focused(window)
+                    })
+                    .expect("read");
+                assert!(keys, "{n}: the diff tab has the keyboard");
                 // The pointer away: no hover or tooltip in the shot.
                 cx.simulate_mouse_move(
                     window,
@@ -6879,6 +6887,584 @@ fn changes_scenes() {
             "{n}: the next isn't: {:?}",
             fill(1)
         );
+    }
+}
+
+/// A screen asking a question one line long on the terminal, wrapped in the Activity card.
+const ASKING_TEXT: &str =
+    "~/code/api $ ./deploy\r\nRun the database migration on production now? (y/n) ";
+
+/// The Activity panel's window (M11h Task 6): the right sidebar open on Activity, 300 pt wide,
+/// with terminals `sessions` (name, screen; none: no terminal to follow), the first focused;
+/// Reduce motion as `still`.
+fn activity_workspace(
+    theme: Theme,
+    sessions: &'static [(&'static str, &'static str)],
+    still: bool,
+    slot: Slot,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView + Clone + 'static {
+    move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(shot_appearance(theme, cx));
+        cx.bind_keys(crate::key_bindings());
+        cx.set_reduce_motion(still);
+        let ws = cx.new(|cx| {
+            let mut ws = Workspace::for_shots(window, cx);
+            ws.sidebar.hint_dismissed = true;
+            ws.right_sidebar.hidden = false;
+            ws.right_sidebar.width = 300.0;
+            ws.right_sidebar.panel = crate::right_sidebar::Panel::Activity;
+            for (name, text) in sessions {
+                let at = std::path::Path::new(API);
+                ws.open_shot_session(name, at, text, None, window, cx);
+            }
+            if !sessions.is_empty() {
+                ws.select(0, window, cx);
+            }
+            ws
+        });
+        *slot.borrow_mut() = Some(ws.clone());
+        ws.into()
+    }
+}
+
+/// The Activity panel (M11h Task 6) in the right sidebar, in a 1100 × 560 window, both themes:
+/// - `activity`: api driven as the app drives it: Working, 11 min later Working again (no
+///   change) and Done, the note `a` twice, progress 10 then 20 %. Its log: 2 status entries,
+///   1 note, 1 progress; its rows newest first `Progress 20%`, `a`, `Done — 11 min` (how long
+///   it worked: `status_since` aged before the change, so `lasted` is read before the reset),
+///   `Working`; the header `api` and `Done · 4m`. In the shot: the rows' marks in that order
+///   (two faint dots, Done's, Working's), nothing after them; the name in `text`, the status
+///   words `text_dim`. Then (not shot) the focus to web: its empty log, `No activity yet.`.
+/// - `activity-waiting`: api Waiting on a question long enough to wrap: the header's words
+///   `Needs input · 2m` in `ring_waiting`; the card 6 pt in, filled `waiting_tint`, at least two
+///   lines of question tall, `Needs input` in it `ring_waiting`, the question in `text`.
+/// - `activity-empty-none`: a terminal with no entries: `No activity yet.` under its header;
+///   `activity-empty-unfollowed`: no terminal: `No terminal to follow.` and no header. Then (not
+///   shot) a busy log with Reduce motion on, and again with it off: two frames 200 ms apart are
+///   the same in the panel (nothing in it moves).
+fn activity_scenes() {
+    use crate::activity::Kind;
+    use crate::activity_panel::{NO_ACTIVITY, NO_TERMINAL, RowMark};
+    use crate::right_sidebar::{ROOT_HEADER, ROW};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
+    let sidebar_right = window_right - GAP - FOCUS_RING;
+    let card_top = GAP + FOCUS_RING;
+    let header_top = card_top + TAB_BAR;
+    let list_top = header_top + ROOT_HEADER;
+    // A row: 8 pt in, the 36 pt time column, the 10 pt mark, 6 pt, the words.
+    let mark_x = sidebar_left + 8.0 + 36.0;
+    let words_x = mark_x + 10.0 + 6.0;
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    let ago = |secs: u64| Instant::now() - Duration::from_secs(secs);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let near = |p: [u8; 3], c: Rgb, by: u8| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(x, y)| x.abs_diff(y) <= by)
+        };
+        // Whether any pixel in the box is `c` (within `by`).
+        let has = |shot: &Shot, x0: f32, x1: f32, y0: f32, y1: f32, c: Rgb, by: u8| {
+            let (w, h) = (((x1 - x0) * 2.0) as usize, ((y1 - y0) * 2.0) as usize);
+            (0..h).any(|dy| {
+                (0..w).any(|dx| {
+                    let p = pixel_at(shot, dims, x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5);
+                    near(p, c, by)
+                })
+            })
+        };
+        let marks = [ui.ring_working, ui.ring_waiting, ui.ring_done];
+
+        // The timeline.
+        let n = format!("activity-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = activity_workspace(
+            theme,
+            &[("api", SHELL_TEXT), ("web", SHELL_TEXT)],
+            true,
+            slot.clone(),
+        );
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                ws.update(cx, |ws, cx| {
+                    let i = ws.sessions.position(|s| s.label() == "api").expect("api");
+                    ws.set_status(i, Status::Working, false, cx);
+                    // It works 11 min: aged before the next change (read as `lasted`).
+                    ws.sessions.get_mut(i).expect("api").status_since = ago(11 * 60 + 5);
+                    ws.set_status(i, Status::Working, false, cx);
+                    ws.set_status(i, Status::Done, false, cx);
+                    ws.set_note(i, Some("a".into()), cx);
+                    ws.set_note(i, Some("a".into()), cx);
+                    ws.set_progress(i, Some((10, None)), cx);
+                    ws.set_progress(i, Some((20, None)), cx);
+                    let s = ws.sessions.get_mut(i).expect("api");
+                    s.status_since = ago(4 * 60 + 5);
+                    s.pop = None;
+                });
+                frame(cx, window);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let api = &ws.sessions.items()[0];
+                    let kinds: Vec<_> = api.activity.newest_first().map(|e| &e.kind).collect();
+                    let count = |f: fn(&Kind) -> bool| kinds.iter().filter(|k| f(k)).count();
+                    assert_eq!(count(|k| matches!(k, Kind::Status { .. })), 2, "{n}");
+                    assert_eq!(count(|k| matches!(k, Kind::Note(_))), 1, "{n}");
+                    assert_eq!(count(|k| matches!(k, Kind::Progress(..))), 1, "{n}");
+                    let rows = ws.activity_rows();
+                    let words: Vec<_> = rows.iter().map(|r| r.text.as_str()).collect();
+                    assert_eq!(
+                        words,
+                        ["Progress 20%", "a", "Done \u{2014} 11 min", "Working"],
+                        "{n}: newest first; Done says how long it worked"
+                    );
+                    let marks: Vec<_> = rows.iter().map(|r| r.mark).collect();
+                    assert_eq!(
+                        marks,
+                        [
+                            RowMark::Dot,
+                            RowMark::Dot,
+                            RowMark::Status(Status::Done),
+                            RowMark::Status(Status::Working)
+                        ],
+                        "{n}"
+                    );
+                    let (label, words, waiting) = ws.activity_header().expect("followed");
+                    assert_eq!(
+                        (label.as_ref(), words.as_str(), waiting),
+                        ("api", "Done \u{b7} 4m", false),
+                        "{n}: the header"
+                    );
+                    assert_eq!(ws.activity_note(), None, "{n}: rows, no note");
+                });
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with("activity", slug, &theme, dims, build.clone(), act.clone());
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let row_box = |i: usize| {
+            (
+                list_top + i as f32 * ROW + 2.0,
+                list_top + (i + 1) as f32 * ROW - 2.0,
+            )
+        };
+        let in_mark = |i: usize, c: Rgb| {
+            let (y0, y1) = row_box(i);
+            has(&shot, mark_x - 1.0, mark_x + 11.0, y0, y1, c, 24)
+        };
+        for i in [0, 1] {
+            assert!(in_mark(i, ui.text_faint), "{n}: row {i}'s dot");
+            for c in marks {
+                assert!(!in_mark(i, c), "{n}: row {i} has no status mark ({c:?})");
+            }
+        }
+        assert!(in_mark(2, ui.ring_done), "{n}: row 2 is Done's");
+        assert!(!in_mark(2, ui.ring_working), "{n}: row 2 isn't Working's");
+        assert!(in_mark(3, ui.ring_working), "{n}: row 3 is Working's");
+        assert!(!in_mark(3, ui.ring_done), "{n}: row 3 isn't Done's");
+        let (y0, y1) = row_box(4);
+        assert!(
+            !has(
+                &shot,
+                sidebar_left + 4.0,
+                sidebar_right - 4.0,
+                y0,
+                y1,
+                ui.text,
+                24
+            ),
+            "{n}: nothing after the four rows"
+        );
+        // The times faint in their column, the words in `text`.
+        let (y0, y1) = row_box(3);
+        assert!(
+            has(&shot, sidebar_left + 8.0, mark_x, y0, y1, ui.text_faint, 12),
+            "{n}: a time"
+        );
+        assert!(
+            has(&shot, words_x, words_x + 60.0, y0, y1, ui.text, 12),
+            "{n}: the words"
+        );
+        // The header: the name in `text`, under it the status words `text_dim`.
+        let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
+        let left = sidebar_left + 10.0;
+        assert!(
+            has(
+                &shot,
+                left,
+                left + 60.0,
+                line_top,
+                line_top + 20.0,
+                ui.text,
+                12
+            ),
+            "{n}: the name"
+        );
+        assert!(
+            has(
+                &shot,
+                left,
+                left + 60.0,
+                line_top + 20.0,
+                line_top + 34.0,
+                ui.text_dim,
+                12
+            ),
+            "{n}: the status words"
+        );
+        assert!(
+            !has(
+                &shot,
+                left,
+                left + 60.0,
+                line_top + 20.0,
+                line_top + 34.0,
+                ui.ring_waiting,
+                12
+            ),
+            "{n}: not in the waiting colour"
+        );
+
+        // The focus to web (not shot): its own log, empty.
+        let n = format!("activity-switch-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = activity_workspace(
+            theme,
+            &[("api", SHELL_TEXT), ("web", SHELL_TEXT)],
+            true,
+            slot.clone(),
+        );
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                ws.update(cx, |ws, cx| {
+                    let i = ws.sessions.position(|s| s.label() == "api").expect("api");
+                    ws.set_status(i, Status::Working, false, cx);
+                    ws.set_note(i, Some("busy".into()), cx);
+                });
+                frame(cx, window);
+                assert_eq!(
+                    cx.read(|cx| ws.read(cx).activity_rows().len()),
+                    2,
+                    "{n}: api's"
+                );
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        let i = ws.sessions.position(|s| s.label() == "web").expect("web");
+                        ws.select(i, window, cx);
+                    })
+                })
+                .expect("focus web");
+                frame(cx, window);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let web = ws.sessions.items().iter().find(|s| s.label() == "web");
+                    assert_eq!(
+                        ws.right_sidebar.followed,
+                        web.map(|s| s.id),
+                        "{n}: follows web"
+                    );
+                    assert_eq!(
+                        ws.activity_note(),
+                        Some(NO_ACTIVITY),
+                        "{n}: web's empty log"
+                    );
+                    assert!(ws.activity_rows().is_empty(), "{n}");
+                    let (label, _, _) = ws.activity_header().expect("followed");
+                    assert_eq!(label.as_ref(), "web", "{n}: its header");
+                });
+                slot.borrow_mut().take();
+            }
+        };
+        let shot = render_with(&theme, dims, build, act);
+        assert!(
+            has(
+                &shot,
+                sidebar_left + 2.0,
+                sidebar_right,
+                list_top,
+                list_top + 30.0,
+                ui.text_dim,
+                6
+            ),
+            "{n}: the note's words"
+        );
+        for c in marks {
+            assert!(
+                !has(
+                    &shot,
+                    mark_x - 1.0,
+                    mark_x + 11.0,
+                    list_top,
+                    list_top + 4.0 * ROW,
+                    c,
+                    24
+                ),
+                "{n}: no rows ({c:?})"
+            );
+        }
+        println!("ui-shots: {n} ok");
+
+        // Waiting, on a question that wraps.
+        let n = format!("activity-waiting-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = activity_workspace(theme, &[("api", ASKING_TEXT)], true, slot.clone());
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                ws.update(cx, |ws, cx| {
+                    ws.set_status(0, Status::Working, false, cx);
+                    ws.set_status(0, Status::Waiting, false, cx);
+                    ws.sessions.get_mut(0).expect("api").status_since = ago(2 * 60 + 5);
+                });
+                frame(cx, window);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let question = ws.sessions.items()[0].question.clone();
+                    assert_eq!(
+                        question.as_deref(),
+                        Some("Run the database migration on production now? (y/n)"),
+                        "{n}: read off the screen"
+                    );
+                    let (_, words, waiting) = ws.activity_header().expect("followed");
+                    assert_eq!(
+                        (words.as_str(), waiting),
+                        ("Needs input \u{b7} 2m", true),
+                        "{n}"
+                    );
+                    let tip = ws.activity_rows()[0].tip.clone();
+                    assert_eq!(
+                        tip.as_deref(),
+                        Some("Needs input\nRun the database migration on production now? (y/n)"),
+                        "{n}: the entry keeps its question"
+                    );
+                });
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "activity-waiting",
+            slug,
+            &theme,
+            dims,
+            build.clone(),
+            act.clone(),
+        );
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
+        let left = sidebar_left + 10.0;
+        assert!(
+            has(
+                &shot,
+                left,
+                left + 80.0,
+                line_top + 20.0,
+                line_top + 34.0,
+                ui.ring_waiting,
+                6
+            ),
+            "{n}: the header's words in the waiting colour"
+        );
+        // The card: 6 pt in from the sides and under the header, filled `waiting_tint`.
+        let (card_left, card_right, top) =
+            (sidebar_left + 6.0, sidebar_right - 6.0, list_top + 6.0);
+        let tint = |x: f32, y: f32| near(pixel_at(&shot, dims, x, y), ui.waiting_tint, 3);
+        assert!(tint(card_left + 4.0, top + 10.0), "{n}: the card's fill");
+        assert!(tint(card_right - 4.0, top + 10.0), "{n}: across");
+        assert!(
+            !tint(sidebar_left + 3.0, top + 10.0),
+            "{n}: 6 pt in from the left"
+        );
+        assert!(
+            !tint(card_left + 4.0, list_top + 3.0),
+            "{n}: 6 pt under the header"
+        );
+        // Measured down a column just past its 6 pt corners (in its 8 pt padding).
+        let tall = (0..400)
+            .map(|dy| top + dy as f32 * 0.5)
+            .take_while(|&y| tint(card_left + 7.0, y))
+            .count() as f32
+            * 0.5;
+        println!("ui-shots: {n}: the card is {tall} pt tall");
+        // Padding 8 + `Needs input` (11 pt) + two lines of question (13 pt) + 8.
+        assert!(
+            tall >= 60.0,
+            "{n}: two lines of question at least: {tall} pt"
+        );
+        assert!(tall < 120.0, "{n}: not the whole panel: {tall} pt");
+        let first = top + 8.0;
+        assert!(
+            has(
+                &shot,
+                card_left + 8.0,
+                card_left + 90.0,
+                first,
+                first + 14.0,
+                ui.ring_waiting,
+                6
+            ),
+            "{n}: Needs input"
+        );
+        assert!(
+            has(
+                &shot,
+                card_left + 8.0,
+                card_right - 8.0,
+                first + 16.0,
+                top + tall - 8.0,
+                ui.text,
+                12
+            ),
+            "{n}: the question"
+        );
+        // The timeline under it: Waiting's mark, then Working's.
+        let rows_top = top + tall + 6.0;
+        assert!(
+            has(
+                &shot,
+                mark_x - 1.0,
+                mark_x + 11.0,
+                rows_top,
+                rows_top + ROW,
+                ui.ring_waiting,
+                24
+            ),
+            "{n}: the newest row is Waiting's"
+        );
+
+        // Empty.
+        for case in ["none", "unfollowed"] {
+            let scene = format!("activity-empty-{case}");
+            let n = format!("{scene}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let sessions: &'static [(&str, &str)] = match case {
+                "none" => &[("api", SHELL_TEXT)],
+                _ => &[],
+            };
+            let build = activity_workspace(theme, sessions, true, slot.clone());
+            let act = {
+                let (n, slot) = (n.clone(), slot.clone());
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    frame(cx, window);
+                    cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        let (note, header) = match case {
+                            "none" => (NO_ACTIVITY, true),
+                            _ => (NO_TERMINAL, false),
+                        };
+                        assert_eq!(ws.activity_note(), Some(note), "{n}");
+                        assert_eq!(ws.activity_header().is_some(), header, "{n}: the header");
+                    });
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(&scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let header = case == "none";
+            assert_eq!(
+                has(
+                    &shot,
+                    sidebar_left + 2.0,
+                    sidebar_right,
+                    header_top,
+                    header_top + 30.0,
+                    ui.text,
+                    6
+                ),
+                header,
+                "{n}: the header {}",
+                if header { "shows" } else { "doesn't" }
+            );
+            let note_top = if header { list_top } else { header_top };
+            assert!(
+                has(
+                    &shot,
+                    sidebar_left + 2.0,
+                    sidebar_right,
+                    note_top,
+                    note_top + 30.0,
+                    ui.text_dim,
+                    6
+                ),
+                "{n}: the note's words"
+            );
+        }
+
+        // Nothing moves: two frames 200 ms apart, the same in the panel.
+        for still in [true, false] {
+            let n = format!("activity-still-{slug}-{still}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = activity_workspace(
+                theme,
+                &[("api", ASKING_TEXT), ("web", SHELL_TEXT)],
+                still,
+                slot.clone(),
+            );
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    ws.update(cx, |ws, cx| {
+                        ws.set_status(0, Status::Working, false, cx);
+                        ws.set_note(0, Some("migrating".into()), cx);
+                        ws.set_status(0, Status::Waiting, false, cx);
+                        ws.set_status(0, Status::Working, false, cx);
+                        ws.set_status(0, Status::Done, false, cx);
+                        ws.set_status(0, Status::Working, false, cx);
+                        ws.set_status(0, Status::Waiting, false, cx);
+                        ws.sessions.get_mut(0).expect("api").status_since = ago(4 * 60 + 30);
+                    });
+                    frame(cx, window);
+                    let grab = |cx: &mut VisualTestAppContext| {
+                        let image = cx.capture_screenshot(window).expect("capture");
+                        let (w, raw) = (image.width() as usize, image.as_raw().to_vec());
+                        let scale = w as f32 / f32::from(dims.width);
+                        let (x0, x1) = (
+                            (sidebar_left * scale) as usize,
+                            (sidebar_right * scale) as usize,
+                        );
+                        let (y0, y1) = (
+                            (header_top * scale) as usize,
+                            ((f32::from(dims.height) - 20.0) * scale) as usize,
+                        );
+                        (y0..y1)
+                            .flat_map(|y| raw[(y * w + x0) * 4..(y * w + x1) * 4].to_vec())
+                            .collect::<Vec<u8>>()
+                    };
+                    let before = grab(cx);
+                    std::thread::sleep(Duration::from_millis(200));
+                    // Drawn again for certain (not a cached frame).
+                    ws.update(cx, |_, cx| cx.notify());
+                    frame(cx, window);
+                    let after = grab(cx);
+                    assert!(before == after, "{n}: the panel moved in 200 ms");
+                    assert_eq!(cx.read(|cx| ws.read(cx).activity_rows().len()), 7, "{n}");
+                    slot.borrow_mut().take();
+                }
+            };
+            render_with(&theme, dims, build, act);
+            println!("ui-shots: {n} ok");
+        }
     }
 }
 

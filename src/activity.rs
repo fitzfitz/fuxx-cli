@@ -84,24 +84,20 @@ impl ActivityLog {
         }
     }
 
-    #[allow(dead_code)] // drawn by the Activity panel (M11h task 6)
     pub fn newest_first(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().rev()
     }
 
-    #[allow(dead_code)] // drawn by the Activity panel (M11h task 6)
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    #[allow(dead_code)] // drawn by the Activity panel (M11h task 6)
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
 
 /// `HH:MM`, 24-hour, at `utc_offset_secs` east of UTC.
-#[allow(dead_code)] // drawn by the Activity panel (M11h task 6)
 pub fn clock_hm(unix_secs: i64, utc_offset_secs: i64) -> String {
     let day = (unix_secs + utc_offset_secs).rem_euclid(86_400);
     format!("{:02}:{:02}", day / 3600, day % 3600 / 60)
@@ -124,7 +120,6 @@ pub fn lasted_label(d: Duration) -> String {
 }
 
 /// The row's words.
-#[allow(dead_code)] // drawn by the Activity panel (M11h task 6)
 pub fn entry_text(kind: &Kind) -> String {
     match kind {
         Kind::Status { status, lasted, .. } => match status {
@@ -211,6 +206,35 @@ mod tests {
         assert_eq!(log.len(), 1);
         log.note(Some("b"), t(4));
         assert_eq!(log.len(), 2);
+    }
+
+    fn notes(log: &ActivityLog) -> Vec<String> {
+        log.newest_first()
+            .filter_map(|e| match &e.kind {
+                Kind::Note(n) => Some(n.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// "The same as the last note entry": the last note in the log, whatever came between.
+    #[test]
+    fn a_note_repeated_after_a_status_change_is_still_a_repeat() {
+        let mut log = ActivityLog::default();
+        log.note(Some("a"), t(0));
+        st(&mut log, Status::Working, 1);
+        log.note(Some("a"), t(2));
+        assert_eq!(notes(&log), ["a"]);
+        assert_eq!(log.len(), 2, "1 note and 1 status");
+    }
+
+    #[test]
+    fn a_note_back_after_another_is_a_new_entry() {
+        let mut log = ActivityLog::default();
+        log.note(Some("a"), t(0));
+        log.note(Some("b"), t(1));
+        log.note(Some("a"), t(2));
+        assert_eq!(notes(&log), ["a", "b", "a"]);
     }
 
     #[test]
