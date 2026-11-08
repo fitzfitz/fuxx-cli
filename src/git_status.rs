@@ -87,7 +87,7 @@ pub fn status(git: &Path, root: &Path) -> HashMap<PathBuf, Mark> {
 }
 
 /// Which of `rel` (paths relative to `root`) git ignores, in one `check-ignore --stdin` call.
-/// Empty when none are (git exits 1 then), when git fails, or when the list is too long to send.
+/// Empty when none are (git exits 1 then), or when git fails or takes longer than the cap.
 pub fn ignored(git: &Path, root: &Path, rel: &[PathBuf]) -> HashSet<PathBuf> {
     if rel.is_empty() {
         return HashSet::new();
@@ -174,6 +174,7 @@ pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, L
         git,
         root,
         &[
+            "--literal-pathspecs",
             "diff",
             "HEAD",
             "-U0",
@@ -420,6 +421,16 @@ mod tests {
         assert_eq!(
             line_changes(&git, &root, Path::new("a[1].txt")),
             Some(vec![(1, LineChange::Added)])
+        );
+        // A tracked one: a glob would also match a1.txt.
+        fs::write(root.join("a1.txt"), "p\nq\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "second"]);
+        fs::write(root.join("a[1].txt"), "Q\n").unwrap();
+        fs::write(root.join("a1.txt"), "p\nq\nr\ns\n").unwrap();
+        assert_eq!(
+            line_changes(&git, &root, Path::new("a[1].txt")),
+            Some(vec![(1, LineChange::Changed)])
         );
     }
 
