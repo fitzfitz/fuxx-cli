@@ -46,6 +46,8 @@ pub struct CursorView {
     pub row: usize,
     pub col: usize,
     pub shape: CursorShape,
+    /// The style's blinking flag (the breathing glow follows it, M11f).
+    pub blinking: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +225,7 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
             row: cursor_row as usize,
             col: c.point.column.0,
             shape: c.shape,
+            blinking: term.cursor_style().blinking,
         });
 
     GridSnapshot {

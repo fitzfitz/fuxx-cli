@@ -5,7 +5,7 @@
 //! the view takes `Status` from the backend and runs no tracker of its own; its owner sees the
 //! same `TerminalEvent`s either way.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -16,18 +16,20 @@ use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Point, Side};
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
-use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+use alacritty_terminal::vte::ansi::{self, Rgb};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EventEmitter,
-    FocusHandle, Focusable, Font, FontStyle, FontWeight, HitboxBehavior, Hsla, KeyDownEvent,
-    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Rgba, ScrollWheelEvent, SharedString, Subscription, Task, TextAlign, TextRun,
-    TouchPhase, UnderlineStyle, Window, actions, canvas, div, fill, point, prelude::*, px, size,
+    App, Bounds, BoxShadow, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase, Entity,
+    EventEmitter, FocusHandle, Focusable, Font, FontStyle, FontWeight, HitboxBehavior, Hsla,
+    KeyDownEvent, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Rgba, ScrollWheelEvent, SharedString, Subscription, Task, TextAlign,
+    TextRun, TouchPhase, UnderlineStyle, Window, actions, canvas, div, fill, point, prelude::*, px,
+    size,
 };
 
-use crate::appearance::Appearance;
+use crate::appearance::{Appearance, CursorFun, CursorShapeSetting};
+use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
 use crate::daemon_client::DaemonClient;
 use crate::grid::{self, GridSnapshot, TextScope};
 use crate::keys;
@@ -47,6 +49,14 @@ actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
 /// How often to run housekeeping (flush stuck synchronized updates, re-evaluate status).
 const TICK: Duration = Duration::from_millis(50);
+/// The breathing glow's redraw interval: at most ~30 a second (M11f).
+const BREATH_FRAME: Duration = Duration::from_millis(33);
+/// The glow around the cursor: its blur and the share of the cursor's colour it takes.
+const GLOW_BLUR: f32 = 6.0;
+const GLOW_ALPHA: f32 = 0.30;
+/// The bar's width and the underline's height; a spark's size.
+const BAR: f32 = 2.0;
+const SPARK: f32 = 2.0;
 
 /// What a terminal tells its owner.
 pub enum TerminalEvent {
@@ -154,6 +164,15 @@ pub struct TerminalView {
     /// Held after an SSH disconnect (M10b): the program is gone, so input goes nowhere and Enter
     /// asks for a reconnect; the status no longer changes.
     disconnected: bool,
+    /// The session's status, as the workspace has it (`set_status`): the cursor's colour.
+    status: Status,
+    /// The cursor's glide, breath and sparks between paints; the canvas updates it as it paints.
+    motion: Rc<RefCell<CursorMotion>>,
+    /// The breathing timer is running (`breathe`).
+    breathing: bool,
+    /// UI screenshots: count the window as the key one (an off-screen window never is).
+    #[cfg(feature = "ui-shots")]
+    shot_key_window: Cell<bool>,
     /// Dropping a GPUI `Task` cancels it, so these live as long as the view.
     _events: Task<()>,
     _ticker: Task<()>,
@@ -287,6 +306,134 @@ impl TerminalView {
         self.core.show_local(text);
     }
 
+    /// Count this terminal's window as the key window (an off-screen window never is).
+    #[cfg(feature = "ui-shots")]
+    pub fn pretend_key_window(&self) {
+        self.shot_key_window.set(true);
+    }
+
+    /// Where cell (`col`, `row`) was last painted.
+    #[cfg(feature = "ui-shots")]
+    pub fn cell_bounds(&self, col: usize, row: usize) -> Option<Bounds<Pixels>> {
+        let l = self.layout.get()?;
+        Some(Bounds::new(
+            point(
+                l.origin.x + l.cell_width * col as f32,
+                l.origin.y + l.line_height * row as f32,
+            ),
+            size(l.cell_width, l.line_height),
+        ))
+    }
+
+    /// The redraws the cursor asked for at its last paint.
+    #[cfg(feature = "ui-shots")]
+    pub fn cursor_frames(&self) -> Frames {
+        self.motion.borrow().frames
+    }
+
+    /// The cursor's glide, if one was set going.
+    #[cfg(feature = "ui-shots")]
+    pub fn cursor_glide(&self) -> Option<Glide> {
+        self.motion.borrow().glide
+    }
+
+    /// The sparks flying now.
+    #[cfg(feature = "ui-shots")]
+    pub fn live_sparks(&self) -> usize {
+        self.motion.borrow().sparks.len()
+    }
+
+    /// How many keystrokes have sparked.
+    #[cfg(feature = "ui-shots")]
+    pub fn spark_bursts(&self) -> u64 {
+        self.motion.borrow().seed
+    }
+
+    /// The status of this terminal's session, for the cursor's colour; redraws on a change.
+    pub fn set_status(&mut self, status: Status, cx: &mut Context<Self>) {
+        if self.status != status {
+            self.status = status;
+            cx.notify();
+        }
+    }
+
+    /// Whether this terminal's window is the key one (the breathing glow runs only there).
+    fn key_window(&self, window: &Window) -> bool {
+        #[cfg(feature = "ui-shots")]
+        if self.shot_key_window.get() {
+            return true;
+        }
+        window.is_window_active()
+    }
+
+    /// Start the breathing timer unless it runs: a redraw every 33 ms while the last paint
+    /// asked for it (`Frames::Timer33ms`) and the terminal is focused in the key window. It
+    /// stops, without a redraw, as soon as any of that ends.
+    fn breathe(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.breathing {
+            return;
+        }
+        self.breathing = true;
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(BREATH_FRAME).await;
+                let go = this
+                    .update_in(cx, |this, window, cx| {
+                        let go = this.motion.borrow().frames == Frames::Timer33ms
+                            && this.focus_handle.is_focused(window)
+                            && this.key_window(window);
+                        if go {
+                            cx.notify();
+                        } else {
+                            this.breathing = false;
+                        }
+                        go
+                    })
+                    .unwrap_or(false);
+                if !go {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// A keystroke that types text (not Enter, arrows or ctrl-keys) sends sparks off the
+    /// cursor, with Fun = Sparks and motion on.
+    fn spark(&mut self, bytes: &[u8], cx: &App) {
+        let a = cx.global::<Appearance>();
+        if a.cursor_fun != CursorFun::Sparks
+            || !a.animations
+            || cx.reduce_motion()
+            || self.disconnected
+            || !is_typed_text(bytes)
+        {
+            return;
+        }
+        let Some(layout) = self.layout.get() else {
+            return;
+        };
+        let mut m = self.motion.borrow_mut();
+        let Some(((x, y), shape)) = m.drawn else {
+            return;
+        };
+        let (cw, lh) = (f32::from(layout.cell_width), f32::from(layout.line_height));
+        let ox = x * cw
+            + match shape {
+                PaintShape::Bar => BAR / 2.0,
+                _ => cw / 2.0,
+            };
+        let oy = y * lh
+            + match shape {
+                PaintShape::Underline => lh - BAR / 2.0,
+                _ => lh / 2.0,
+            };
+        m.seed += 1;
+        let seed = m.seed;
+        m.sparks
+            .extend(cursor_look::sparks_for_key(seed, (ox, oy), Instant::now()));
+    }
+
     /// When the program first printed (`TerminalCore::first_output`).
     pub fn first_output(&self) -> Option<Instant> {
         self.core.first_output()
@@ -371,6 +518,11 @@ impl TerminalView {
             mouse_reported: false,
             split: Cell::new(false),
             disconnected: false,
+            status: Status::Idle,
+            motion: Rc::new(RefCell::new(CursorMotion::new(Instant::now()))),
+            breathing: false,
+            #[cfg(feature = "ui-shots")]
+            shot_key_window: Cell::new(false),
             _events: events,
             _ticker: ticker,
             _appearance: appearance,
@@ -380,6 +532,8 @@ impl TerminalView {
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
             TermEvent::Output { notifications } => {
+                // The program wrote: the breath holds.
+                self.motion.borrow_mut().changed = Instant::now();
                 self.hear_of_resize();
                 if self.tracks_status()
                     && let Some(status) = self.tracker.on_output(Instant::now(), notifications)
@@ -476,6 +630,7 @@ impl TerminalView {
             m.shift,
             app_cursor,
         ) {
+            self.spark(&bytes, cx);
             self.send_key_bytes(&bytes, cx);
         }
     }
@@ -497,6 +652,8 @@ impl TerminalView {
             return;
         }
         self.core.input(bytes);
+        // You typed: the breath holds.
+        self.motion.borrow_mut().changed = Instant::now();
         self.hear_of_resize();
         if self.tracks_status()
             && let Some(status) = self.tracker.on_input(Instant::now())
@@ -754,10 +911,28 @@ fn button(b: MouseButton) -> Option<Button> {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+        let key_window = self.key_window(window);
+        let appearance = cx.global::<Appearance>();
+        let theme = self.core.theme();
+        let cursor = CursorSettings {
+            setting: appearance.cursor_style,
+            focused,
+            key_window,
+            motion: appearance.animations && !cx.reduce_motion(),
+            glide: appearance.cursor_glide,
+            glow: appearance.cursor_glow,
+            fun: appearance.cursor_fun,
+            color: cursor_look::cursor_color(
+                self.status,
+                appearance.cursor_follows_status,
+                &theme.ui(),
+                &theme,
+            ),
+        };
+        let motion = self.motion.clone();
         let resize_core = self.core.clone();
         let resized_at = self.resized_at.clone();
         let paint_core = self.core.clone();
-        let theme = self.core.theme();
         let layout = self.layout.clone();
         let hovered = self.hovered.clone();
         let split = self.split.get();
@@ -814,7 +989,27 @@ impl Render for TerminalView {
                             let offset = paint_core.display_offset();
                             grid::underline_cells(&mut snap, link.start, link.end, offset);
                         }
-                        paint_grid(snap, &theme, &metrics, bounds, origin, focused, window, cx);
+                        let screen = (
+                            paint_core.mode().contains(TermMode::ALT_SCREEN),
+                            paint_core.display_offset(),
+                        );
+                        let look = cursor.look(
+                            &snap,
+                            screen,
+                            &theme,
+                            &mut motion.borrow_mut(),
+                            Instant::now(),
+                        );
+                        paint_grid(snap, &theme, &metrics, bounds, origin, look, window, cx);
+                        // The next redraw the cursor needs (none when still).
+                        let frames = motion.borrow().frames;
+                        match frames {
+                            Frames::EveryFrame => window.request_animation_frame(),
+                            Frames::Timer33ms => {
+                                view.update(cx, |this, cx| this.breathe(window, cx))
+                            }
+                            Frames::None => {}
+                        }
 
                         let style = if hovered.is_some() && window.modifiers().platform {
                             CursorStyle::PointingHand
@@ -896,16 +1091,9 @@ pub fn paint_fixed_screen(
         metrics.cell_width,
         metrics.line_height,
     );
-    paint_grid(
-        screen(grid.dims),
-        theme,
-        &metrics,
-        bounds,
-        grid.origin,
-        false,
-        window,
-        cx,
-    );
+    let snap = screen(grid.dims);
+    let look = snap.cursor.map(|c| CursorLook::outline(c, theme));
+    paint_grid(snap, theme, &metrics, bounds, grid.origin, look, window, cx);
 }
 
 pub fn hsla(c: Rgb) -> Hsla {
@@ -918,8 +1106,292 @@ pub fn hsla(c: Rgb) -> Hsla {
     .into()
 }
 
+/// What the canvas knows of the cursor before it paints (read in `render`).
+#[derive(Clone, Copy)]
+struct CursorSettings {
+    setting: CursorShapeSetting,
+    focused: bool,
+    key_window: bool,
+    /// The `animations` setting on and macOS Reduce motion off.
+    motion: bool,
+    glide: bool,
+    glow: bool,
+    fun: CursorFun,
+    /// `cursor_look::cursor_color` for the session's status.
+    color: Rgb,
+}
+
+impl CursorSettings {
+    /// The cursor to paint over `snap` at `now`, with `motion` brought up to date (where it
+    /// is, its glide, its sparks, the frames it needs next). `None` when there's no cursor.
+    fn look(
+        &self,
+        snap: &GridSnapshot,
+        screen: (bool, usize),
+        theme: &Theme,
+        motion: &mut CursorMotion,
+        now: Instant,
+    ) -> Option<CursorLook> {
+        let live = self.focused && self.key_window;
+        let moving = live && self.motion;
+        let c = snap
+            .cursor
+            .filter(|c| c.row < snap.rows && c.col < snap.cols);
+        let style = c.map(|c| {
+            cursor_look::effective_style(
+                ansi::CursorStyle {
+                    shape: c.shape,
+                    blinking: c.blinking,
+                },
+                self.setting,
+            )
+        });
+        let cell = c
+            .filter(|_| style.is_some_and(|s| s.shape != PaintShape::Hidden))
+            .map(|c| (c.col, c.row));
+        let at = motion.follow(cell, screen, moving && self.glide, now);
+        if !moving {
+            motion.sparks.clear();
+        }
+        motion
+            .sparks
+            .retain(|s| cursor_look::spark_at(s, now).is_some());
+        let trail = match motion.glide {
+            Some(g) if moving && self.fun == CursorFun::Trail => cursor_look::trail(&g, now),
+            _ => Vec::new(),
+        };
+        let animating = motion.gliding(now) || !trail.is_empty() || !motion.sparks.is_empty();
+        if !animating {
+            motion.glide = None;
+        }
+        let glowing = self.glow && style.is_some_and(|s| s.blinking) && at.is_some();
+        motion.frames = cursor_look::needs_frames(
+            self.focused,
+            self.key_window,
+            self.motion,
+            glowing,
+            animating,
+        );
+        let (Some(c), Some(style), Some(at)) = (c, style, at) else {
+            motion.drawn = None;
+            return None;
+        };
+        if !live {
+            motion.drawn = None;
+            return Some(CursorLook::outline(c, theme));
+        }
+        motion.drawn = Some((at, style.shape));
+        let glow = glowing && self.motion;
+        let alpha = if glow {
+            let since = now.saturating_duration_since(motion.changed);
+            cursor_look::breath_alpha(since, since.saturating_sub(cursor_look::HOLD))
+        } else {
+            1.0
+        };
+        let own = theme.cursor.unwrap_or(theme.foreground);
+        Some(CursorLook {
+            cell: (c.col, c.row),
+            at,
+            shape: style.shape,
+            color: self.color,
+            text: if self.color == own {
+                theme.cursor_text.unwrap_or(theme.background)
+            } else {
+                theme.background
+            },
+            alpha,
+            glow,
+            trail,
+            sparks: motion
+                .sparks
+                .iter()
+                .filter_map(|s| cursor_look::spark_at(s, now))
+                .collect(),
+        })
+    }
+}
+
+/// The cursor as `paint_grid` draws it.
+struct CursorLook {
+    /// The cell it is on (a block's letter there takes `text`).
+    cell: (usize, usize),
+    /// Where it is drawn, in cells (fractional mid-glide).
+    at: (f32, f32),
+    /// Never `Hidden`.
+    shape: PaintShape,
+    color: Rgb,
+    /// The letter's colour under a full block.
+    text: Rgb,
+    /// The breath: the cursor's opacity.
+    alpha: f32,
+    glow: bool,
+    /// `(column, row, scale, alpha)` copies under the cursor (`cursor_look::trail`).
+    trail: Vec<(f32, f32, f32, f32)>,
+    /// Each spark's position (pixels from the grid's origin) and alpha.
+    sparks: Vec<((f32, f32), f32)>,
+}
+
+impl CursorLook {
+    /// The still 1 px outline in the theme's cursor colour of a terminal that isn't focused
+    /// in the key window.
+    fn outline(c: grid::CursorView, theme: &Theme) -> Self {
+        Self {
+            cell: (c.col, c.row),
+            at: (c.col as f32, c.row as f32),
+            shape: PaintShape::Hollow,
+            color: theme.cursor.unwrap_or(theme.foreground),
+            text: theme.background,
+            alpha: 1.0,
+            glow: false,
+            trail: Vec::new(),
+            sparks: Vec::new(),
+        }
+    }
+
+    /// The shape's box with its cell's top-left at `at`, scaled about its middle by `scale`
+    /// (the trail's copies): a 2 px bar at the left edge, a 2 px underline at the bottom, the
+    /// whole cell for a block or hollow.
+    fn bounds(&self, at: gpui::Point<Pixels>, m: &CellMetrics, scale: f32) -> Bounds<Pixels> {
+        let (cw, lh) = (m.cell_width, m.line_height);
+        match self.shape {
+            PaintShape::Bar => Bounds::new(
+                point(at.x, at.y + lh * (1.0 - scale) / 2.0),
+                size(px(BAR), lh * scale),
+            ),
+            PaintShape::Underline => Bounds::new(
+                point(at.x + cw * (1.0 - scale) / 2.0, at.y + lh - px(BAR)),
+                size(cw * scale, px(BAR)),
+            ),
+            _ => Bounds::new(
+                point(
+                    at.x + cw * (1.0 - scale) / 2.0,
+                    at.y + lh * (1.0 - scale) / 2.0,
+                ),
+                size(cw * scale, lh * scale),
+            ),
+        }
+    }
+
+    /// Paint the shape in `bounds` at opacity `alpha`.
+    fn paint(&self, bounds: Bounds<Pixels>, alpha: f32, window: &mut Window) {
+        let color = hsla(self.color).opacity(alpha);
+        match self.shape {
+            PaintShape::Hollow => {
+                window.paint_quad(gpui::outline(bounds, color, gpui::BorderStyle::Solid))
+            }
+            _ => window.paint_quad(fill(bounds, color)),
+        }
+    }
+}
+
+/// `a` moved toward `b` by `t` (0 to 1).
+fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)).round() as u8;
+    Rgb {
+        r: m(a.r, b.r),
+        g: m(a.g, b.g),
+        b: m(a.b, b.b),
+    }
+}
+
+/// Whether a keystroke's bytes are text you typed (they spark): printable characters only,
+/// not Enter, Tab, Backspace, escape sequences or ctrl-keys.
+fn is_typed_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|t| !t.is_empty() && !t.chars().any(char::is_control))
+}
+
+/// The cursor's motion between paints (M11f): the cell and screen it was last painted on, its
+/// glide, when it last changed (the breath holds after), the sparks in flight and how many
+/// keystrokes sparked (each burst's seed). Shared by the view and its canvas.
+struct CursorMotion {
+    /// The cell it was last painted on; `None` while hidden.
+    cell: Option<(usize, usize)>,
+    /// The screen of that cell: the alternate screen or not, and the scrollback offset.
+    screen: (bool, usize),
+    glide: Option<Glide>,
+    /// When the cursor last moved, the program wrote or you typed.
+    changed: Instant,
+    sparks: Vec<Spark>,
+    seed: u64,
+    /// Where it was last drawn (cells) and its shape, while live: where sparks start.
+    drawn: Option<((f32, f32), PaintShape)>,
+    /// The redraws its last paint asked for.
+    frames: Frames,
+}
+
+impl CursorMotion {
+    fn new(now: Instant) -> Self {
+        Self {
+            cell: None,
+            screen: (false, 0),
+            glide: None,
+            changed: now,
+            sparks: Vec::new(),
+            seed: 0,
+            drawn: None,
+            frames: Frames::None,
+        }
+    }
+
+    /// The cursor is on `cell` (`None`: hidden) of `screen` at `now`: start a glide from where
+    /// it is drawn when it moved and `glide` allows (`cursor_look::glide_from_now`; the rows
+    /// moved counted between cells), and say where to draw it, in cells.
+    fn follow(
+        &mut self,
+        cell: Option<(usize, usize)>,
+        screen: (bool, usize),
+        glide: bool,
+        now: Instant,
+    ) -> Option<(f32, f32)> {
+        let screen_changed = std::mem::replace(&mut self.screen, screen) != screen;
+        if !glide {
+            self.glide = None;
+        }
+        let Some(to) = cell else {
+            self.cell = None;
+            self.glide = None;
+            return None;
+        };
+        match self.cell {
+            Some(from) if from != to || screen_changed => {
+                self.changed = now;
+                if glide {
+                    let drawn = self.position(from, now);
+                    self.glide = cursor_look::glide_from_now(
+                        self.glide.as_ref(),
+                        drawn,
+                        to,
+                        from.1.abs_diff(to.1),
+                        screen_changed,
+                        now,
+                    );
+                }
+            }
+            None => self.changed = now,
+            Some(_) => {}
+        }
+        self.cell = Some(to);
+        Some(self.position(to, now))
+    }
+
+    /// Where the cursor headed for (or on) `cell` is drawn at `now`.
+    fn position(&self, cell: (usize, usize), now: Instant) -> (f32, f32) {
+        self.glide
+            .filter(|g| g.to == cell)
+            .map_or((cell.0 as f32, cell.1 as f32), |g| g.position(now))
+    }
+
+    /// Whether a glide is still on its way at `now`.
+    fn gliding(&self, now: Instant) -> bool {
+        self.glide
+            .is_some_and(|g| g.position(now) != (g.to.0 as f32, g.to.1 as f32))
+    }
+}
+
 /// Paint `snap` with its first cell at `origin`, over `bounds` (the whole pane, padding
-/// included) filled with the theme background.
+/// included) filled with the theme background, and `cursor` over it: its trail and glow under
+/// the text, a block under its letter (which takes the block's text colour), any other shape
+/// over the text, then the sparks.
 #[allow(clippy::too_many_arguments)]
 fn paint_grid(
     mut snap: GridSnapshot,
@@ -927,33 +1399,28 @@ fn paint_grid(
     m: &CellMetrics,
     bounds: Bounds<Pixels>,
     origin: gpui::Point<Pixels>,
-    focused: bool,
+    cursor: Option<CursorLook>,
     window: &mut Window,
     cx: &mut App,
 ) {
     window.paint_quad(fill(bounds, hsla(theme.background)));
 
-    // A focused block cursor is drawn by inverting its cell, so the glyph stays readable.
-    let mut outline_cursor = None;
-    if let Some(mut c) = snap.cursor {
-        c.shape = painted_shape(c.shape);
-        if c.row < snap.rows && c.col < snap.cols {
-            if focused && c.shape == CursorShape::Block {
-                let cell = &mut snap.lines[c.row][c.col];
-                cell.fg = theme.cursor_text.unwrap_or(theme.background);
-                cell.bg = theme.cursor.unwrap_or(theme.foreground);
-            } else {
-                outline_cursor = Some(c);
-            }
-        }
-    }
+    let at_cells =
+        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
+    let cell_origin = |row: usize, col: usize| at_cells((col as f32, row as f32));
 
-    let cell_origin = |row: usize, col: usize| {
-        point(
-            origin.x + m.cell_width * col as f32,
-            origin.y + m.line_height * row as f32,
-        )
-    };
+    // A block on its cell: the letter there turns the block's text colour, as much as the
+    // block shows through its breath.
+    if let Some(c) = &cursor
+        && c.shape == PaintShape::Block
+        && c.at == (c.cell.0 as f32, c.cell.1 as f32)
+        && let Some(cell) = snap
+            .lines
+            .get_mut(c.cell.1)
+            .and_then(|l| l.get_mut(c.cell.0))
+    {
+        cell.fg = mix(cell.fg, c.text, c.alpha);
+    }
 
     for (row, line) in snap.lines.iter().enumerate() {
         for rect in grid::bg_rects(line, theme.background) {
@@ -963,6 +1430,36 @@ fn paint_grid(
                 hsla(rect.color),
             ));
         }
+    }
+
+    if let Some(c) = &cursor {
+        for &(x, y, scale, alpha) in &c.trail {
+            c.paint(
+                c.bounds(at_cells((x, y)), m, scale),
+                alpha * c.alpha,
+                window,
+            );
+        }
+        let shape = c.bounds(at_cells(c.at), m, 1.0);
+        if c.glow {
+            window.paint_drop_shadows(
+                shape,
+                Corners::default(),
+                &[BoxShadow {
+                    color: hsla(c.color).opacity(GLOW_ALPHA * c.alpha),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(GLOW_BLUR),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }],
+            );
+        }
+        if c.shape == PaintShape::Block {
+            c.paint(shape, c.alpha, window);
+        }
+    }
+
+    for (row, line) in snap.lines.iter().enumerate() {
         for span in grid::text_spans(line) {
             let color = hsla(span.fg);
             let run = TextRun {
@@ -1007,55 +1504,113 @@ fn paint_grid(
         }
     }
 
-    // Unfocused block = hollow box; beam = thin bar; underline = thin bottom bar.
-    if let Some(c) = outline_cursor {
-        let origin = cell_origin(c.row, c.col);
-        let color = hsla(theme.cursor.unwrap_or(theme.foreground));
-        let full = Bounds::new(origin, size(m.cell_width, m.line_height));
-        match c.shape {
-            CursorShape::Beam => window.paint_quad(fill(
-                Bounds::new(origin, size(px(2.0), m.line_height)),
-                color,
-            )),
-            CursorShape::Underline => window.paint_quad(fill(
-                Bounds::new(
-                    point(origin.x, origin.y + m.line_height - px(2.0)),
-                    size(m.cell_width, px(2.0)),
-                ),
-                color,
-            )),
-            _ => window.paint_quad(gpui::outline(full, color, gpui::BorderStyle::Solid)),
+    if let Some(c) = &cursor {
+        if c.shape != PaintShape::Block {
+            c.paint(c.bounds(at_cells(c.at), m, 1.0), c.alpha, window);
         }
-    }
-}
-
-/// The shape drawn for a Term's cursor `shape`: the marker (`terminal::CURSOR_UNSET`, "no
-/// program has chosen") as the steady block it looked like before M11f; any other as itself.
-fn painted_shape(shape: CursorShape) -> CursorShape {
-    match shape {
-        CursorShape::HollowBlock => CursorShape::Block,
-        shape => shape,
+        let dot = px(SPARK);
+        for &((x, y), alpha) in &c.sparks {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(origin.x + px(x) - dot / 2.0, origin.y + px(y) - dot / 2.0),
+                    size(dot, dot),
+                ),
+                hsla(c.color).opacity(alpha),
+            ));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use gpui::{Bounds, point, px, size};
 
-    use super::{GridLayout, inset, painted_shape};
-    use alacritty_terminal::vte::ansi::CursorShape;
+    use super::{CursorMotion, GridLayout, inset, is_typed_text};
+
+    /// The main screen, not scrolled back.
+    const MAIN: (bool, usize) = (false, 0);
 
     #[test]
-    fn the_marker_is_painted_as_todays_steady_block() {
-        // Until M11f Task 3 draws the setting, "no program has chosen" looks as it did.
-        assert_eq!(painted_shape(CursorShape::HollowBlock), CursorShape::Block);
-        for shape in [
-            CursorShape::Block,
-            CursorShape::Beam,
-            CursorShape::Underline,
-            CursorShape::Hidden,
+    fn first_sight_appears_at_once() {
+        let t0 = Instant::now();
+        let mut m = CursorMotion::new(t0);
+        assert_eq!(m.follow(Some((2, 1)), MAIN, true, t0), Some((2.0, 1.0)));
+        assert!(m.glide.is_none());
+    }
+
+    #[test]
+    fn a_move_glides_from_the_old_cell() {
+        let t0 = Instant::now();
+        let mut m = CursorMotion::new(t0);
+        m.follow(Some((2, 1)), MAIN, true, t0);
+        let t1 = t0 + Duration::from_millis(500);
+        // However many moves came between two paints, the paint sees only the last cell.
+        assert_eq!(m.follow(Some((12, 1)), MAIN, true, t1), Some((2.0, 1.0)));
+        let g = m.glide.expect("a glide");
+        assert_eq!((g.from, g.to, g.start), ((2.0, 1.0), (12, 1), t1));
+        assert_eq!(m.changed, t1);
+        assert!(m.gliding(t1));
+        // A retarget mid-glide starts where the cursor is drawn.
+        let t2 = t1 + Duration::from_millis(45);
+        let drawn = g.position(t2);
+        m.follow(Some((3, 4)), MAIN, true, t2);
+        let g2 = m.glide.expect("a new glide");
+        assert_eq!((g2.from, g2.to), (drawn, (3, 4)));
+        // Over once its time is up.
+        assert!(!m.gliding(t2 + Duration::from_millis(90)));
+        assert_eq!(
+            m.follow(Some((3, 4)), MAIN, true, t2 + Duration::from_millis(90)),
+            Some((3.0, 4.0))
+        );
+    }
+
+    #[test]
+    fn no_glide_when_off_far_on_another_screen_or_after_hiding() {
+        let t0 = Instant::now();
+        let mut m = CursorMotion::new(t0);
+        m.follow(Some((2, 1)), MAIN, true, t0);
+        assert_eq!(m.follow(Some((9, 1)), MAIN, false, t0), Some((9.0, 1.0)));
+        assert!(m.glide.is_none());
+        // 21 rows, counted from the cells.
+        assert_eq!(m.follow(Some((9, 22)), MAIN, true, t0), Some((9.0, 22.0)));
+        assert!(m.glide.is_none());
+        // The alternate screen, or the view scrolled back.
+        assert_eq!(
+            m.follow(Some((0, 0)), (true, 0), true, t0),
+            Some((0.0, 0.0))
+        );
+        assert!(m.glide.is_none());
+        assert_eq!(
+            m.follow(Some((0, 3)), (true, 3), true, t0),
+            Some((0.0, 3.0))
+        );
+        assert!(m.glide.is_none());
+        // Hidden, then back elsewhere.
+        assert_eq!(m.follow(None, (true, 3), true, t0), None);
+        assert_eq!(
+            m.follow(Some((5, 5)), (true, 3), true, t0),
+            Some((5.0, 5.0))
+        );
+        assert!(m.glide.is_none());
+    }
+
+    #[test]
+    fn only_typed_text_sparks() {
+        for typed in [&b"a"[..], "ß".as_bytes(), b" ", b"abc"] {
+            assert!(is_typed_text(typed), "{typed:?}");
+        }
+        for not in [
+            &b""[..],
+            b"\r",
+            b"\t",
+            b"\x1b[D",
+            b"\x03",
+            b"\x7f",
+            b"\x1bb",
         ] {
-            assert_eq!(painted_shape(shape), shape);
+            assert!(!is_typed_text(not), "{not:?}");
         }
     }
 

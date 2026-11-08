@@ -1490,6 +1490,8 @@ impl Workspace {
         // How long it worked, when a Working stretch ends here (for a Done notification).
         let worked = (old == Status::Working && new != old).then(|| session.status_since.elapsed());
         session.status = new;
+        // The cursor takes the status colour (M11f).
+        session.view.update(cx, |view, cx| view.set_status(new, cx));
         if old != new {
             session.status_since = Instant::now();
         }
