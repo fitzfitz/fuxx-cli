@@ -76,7 +76,7 @@ use crate::reduce_motion::WindowVisible;
 use crate::sidebar_toggle::Tip;
 use crate::tab_bar::{Glyph, glyph, glyph_with};
 use crate::terminal_view::{CellMetrics, Copy, hsla};
-use crate::theme::{Theme, UiColors};
+use crate::theme::{Theme, UiColors, mix};
 use crate::ui_tokens::size::CARD_RADIUS;
 use crate::ui_tokens::{MARK_MIN, ensure_contrast, text};
 use crate::workspace::Workspace;
@@ -1100,6 +1100,13 @@ impl BarColours {
     }
 }
 
+/// A diff's signs' inks (removed, added): the change bars' red and green, each pushed to 3:1
+/// on its own row's tint as painted (the colour at `TINT` over `background`).
+fn sign_inks(bars: &BarColours, background: Rgb) -> (Rgb, Rgb) {
+    let on_tint = |c: Rgb| ensure_contrast(c, mix(background, c, TINT), MARK_MIN);
+    (on_tint(bars.deleted), on_tint(bars.added))
+}
+
 /// The colour runs (shown bytes, colour) of bytes `range` of a line as shown, covering it: the
 /// line's spans (source bytes, sorted; the line's ending and anything outside `range` dropped,
 /// tabs widened), the foreground between them.
@@ -1300,9 +1307,10 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
             None,
         )
     };
+    let (removed_ink, added_ink) = sign_inks(&bars, bg);
     let (removed_sign, added_sign) = (
-        sign(SIGN_REMOVED, bars.deleted, window),
-        sign(SIGN_ADDED, bars.added, window),
+        sign(SIGN_REMOVED, removed_ink, window),
+        sign(SIGN_ADDED, added_ink, window),
     );
     for i in rows.clone() {
         let y = bounds.top() + lh * i as f32 - g.scroll.y;
@@ -3938,6 +3946,41 @@ mod tests {
         );
         assert!(!d.colourable);
         assert!(small.colourable);
+    }
+
+    #[test]
+    fn diff_signs_numbers_and_text_read_on_their_tints() {
+        for (name, theme) in crate::theme::every_theme() {
+            let bg = theme.background;
+            let bars = BarColours::of(&theme);
+            let (removed, added) = sign_inks(&bars, bg);
+            let faint = theme.ui().text_faint;
+            use crate::ui_tokens::TEXT_MIN;
+            for (what, bar, sign) in [
+                ("removed", bars.deleted, removed),
+                ("added", bars.added, added),
+            ] {
+                // As painted: the bar colour at `TINT` over the background.
+                let tint = mix(bg, bar, TINT);
+                let c = |ink| crate::ui_tokens::contrast(ink, tint);
+                assert!(
+                    c(sign) >= MARK_MIN,
+                    "{name}: the {what} sign {:.2}",
+                    c(sign)
+                );
+                // The numbers and the text are text: 4.5:1.
+                assert!(
+                    c(faint) >= TEXT_MIN,
+                    "{name}: numbers on {what} {:.2}",
+                    c(faint)
+                );
+                assert!(
+                    c(theme.foreground) >= TEXT_MIN,
+                    "{name}: text on {what} {:.2}",
+                    c(theme.foreground)
+                );
+            }
+        }
     }
 
     #[test]
