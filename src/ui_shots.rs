@@ -6595,6 +6595,7 @@ fn changes_scenes() {
         path: PathBuf::from(path),
         mark,
         counts,
+        folder: false,
     };
     let six = ChangeList {
         entries: vec![

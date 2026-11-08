@@ -326,12 +326,14 @@ pub enum Counts {
     Unknown,
 }
 
-/// A file changed since the last commit (`path` relative to the repo root).
+/// A file changed since the last commit (`path` relative to the repo root). `folder`: the
+/// entry is a folder (`?? vendor/x/`, a nested repo, or a submodule): listed, but no diff.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     pub path: PathBuf,
     pub mark: Mark,
     pub counts: Counts,
+    pub folder: bool,
 }
 
 /// The changed files, sorted, at most `CHANGES_CAP`; `more` is how many were left out.
@@ -429,7 +431,12 @@ fn assemble(
                 }
                 None => Counts::Unknown,
             };
-            Change { path, mark, counts }
+            Change {
+                path,
+                mark,
+                counts,
+                folder: false,
+            }
         })
         .collect()
 }
@@ -483,9 +490,20 @@ pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
         )
         .map(|out| parse_numstat(out.as_bytes()))
     };
-    Some(change_list(marks, more, numstat, fresh, |path| {
+    let mut list = change_list(marks, more, numstat, fresh, |path| {
         count_lines(&root.join(path))
-    }))
+    });
+    for change in &mut list.entries {
+        change.folder = is_folder_entry(root, &change.path);
+    }
+    Some(list)
+}
+
+/// Whether status's entry `rel` is a folder: git's `?? vendor/x/` (a trailing `/`: a nested
+/// repo), or a folder on disk (a submodule). A symlink to a folder isn't: git keeps the link.
+fn is_folder_entry(root: &Path, rel: &Path) -> bool {
+    rel.as_os_str().as_bytes().ends_with(b"/")
+        || std::fs::symlink_metadata(root.join(rel)).is_ok_and(|m| m.is_dir())
 }
 
 /// The list from status's `marks` (`more` left out) and numstat's answer (None: it failed or
@@ -890,6 +908,7 @@ mod tests {
             path: p(path),
             mark,
             counts,
+            folder: false,
         };
         let want = vec![
             change("a.rs", Mark::Modified, lines(1, 1)),
@@ -905,6 +924,51 @@ mod tests {
         // Staged, the edit reads the same.
         git_in(&git, &root, &["add", "a.rs"]);
         assert_eq!(changes(&git, &root).unwrap().entries, want);
+    }
+
+    #[test]
+    fn folder_entries_are_flagged() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("folder-entries", &git);
+        // An embedded repo committed as a gitlink (as a submodule is), then moved on: ` M sub`.
+        fs::create_dir(root.join("sub")).unwrap();
+        git_in(&git, &root.join("sub"), &["init", "-q"]);
+        git_in(
+            &git,
+            &root.join("sub"),
+            &["commit", "-q", "--allow-empty", "-m", "s1"],
+        );
+        git_in(
+            &git,
+            &root,
+            &["-c", "advice.addEmbeddedRepo=false", "add", "sub"],
+        );
+        git_in(&git, &root, &["commit", "-q", "-m", "first"]);
+        git_in(
+            &git,
+            &root.join("sub"),
+            &["commit", "-q", "--allow-empty", "-m", "s2"],
+        );
+        // A nested repo, untracked: `?? vendor/x/`.
+        fs::create_dir_all(root.join("vendor/x")).unwrap();
+        git_in(&git, &root.join("vendor/x"), &["init", "-q"]);
+        fs::write(root.join("vendor/x/f.txt"), "x\n").unwrap();
+        fs::write(root.join("new.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink("vendor", root.join("link")).unwrap();
+        let got = changes(&git, &root).unwrap();
+        let folder = |path: &str| {
+            got.entries
+                .iter()
+                .find(|c| c.path.as_os_str() == path)
+                .unwrap_or_else(|| panic!("{path} in {:?}", got.entries))
+                .folder
+        };
+        assert!(folder("vendor/x/"), "a nested repo");
+        assert!(folder("sub"), "a gitlink");
+        assert!(!folder("new.txt"));
+        assert!(!folder("link"), "a link to a folder is a file to git");
     }
 
     #[test]
@@ -951,12 +1015,14 @@ mod tests {
                 Change {
                     path: p("x.txt"),
                     mark: Mark::Added,
-                    counts: lines(2)
+                    counts: lines(2),
+                    folder: false,
                 },
                 Change {
                     path: p("y.txt"),
                     mark: Mark::Added,
-                    counts: lines(1)
+                    counts: lines(1),
+                    folder: false,
                 },
             ]
         );
