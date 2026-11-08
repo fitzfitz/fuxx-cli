@@ -743,6 +743,15 @@ impl HeldDiff {
     }
 }
 
+/// The diff's rows held, coloured: their text (the `Doc`'s) and rows. A look-up whose parse
+/// gives the same isn't coloured again (`diff_state`): a diff that hasn't changed costs no
+/// highlighting, and `accept_diff` keeps the rows and colours held.
+#[derive(Clone)]
+struct ColouredRows {
+    text: Arc<str>,
+    rows: Arc<Vec<DiffRow>>,
+}
+
 /// A diff's rows coloured: the old and the new side each highlighted whole as `path`, each row
 /// taking its side's colours (blocking: the background executor's).
 fn colour_rows(
@@ -762,12 +771,14 @@ fn colourable((old, new): &(String, String), longest: usize) -> bool {
 
 /// What git's answer shows (blocking: the background executor's), its rows a `Doc` of `version`
 /// (one line per row: a last `\n` so a blank last row is a line), coloured with `colour` when
-/// given (none: the syntaxes not loaded yet) and the rows are `colourable`.
+/// given (none: the syntaxes not loaded yet) and the rows are `colourable`, unless they are the
+/// rows `held` coloured already (left uncoloured: `accept_diff` keeps the held ones).
 fn diff_state(
     diff: FileDiff,
     disk_text: Option<&str>,
     version: u64,
     colour: Option<(&Highlighter, &Path)>,
+    held: Option<&ColouredRows>,
 ) -> DiffState {
     match diff_outcome(diff, disk_text) {
         Outcome::Same => DiffState::Same,
@@ -776,8 +787,11 @@ fn diff_state(
             let mut doc = Doc::new(format!("{}\n", parsed.text), version);
             let both = sides(&parsed);
             let colourable = colourable(&both, doc.longest);
+            // The rows held, coloured, again: not highlighted again (`accept_diff` keeps them).
+            let unchanged = held.is_some_and(|h| *h.text == *doc.text && *h.rows == parsed.rows);
             if let Some((h, path)) = colour
                 && colourable
+                && !unchanged
             {
                 doc.spans = Some(Arc::new(colour_rows(h, path, &parsed.rows, &both)));
                 doc.spans_version = Some(version);
@@ -802,6 +816,7 @@ fn diff_answer(
     disk_text: Option<&str>,
     version: u64,
     colour: Option<(&Highlighter, &Path)>,
+    held: Option<&ColouredRows>,
 ) -> Option<DiffState> {
     if old_size.is_some_and(|n| n > REFUSE_ABOVE) {
         return Some(DiffState::Refuse);
@@ -812,7 +827,7 @@ fn diff_answer(
     {
         return Some(DiffState::Refuse);
     }
-    Some(diff_state(diff, disk_text, version, colour))
+    Some(diff_state(diff, disk_text, version, colour, held))
 }
 
 /// A file's size and time, to tell whether it changed.
@@ -2109,6 +2124,14 @@ impl FileTab {
         } else {
             None
         };
+        // The rows held, coloured: the same parse again isn't coloured again.
+        let held = match &self.diff.state {
+            DiffState::Rows(d) if d.doc.spans.is_some() => Some(ColouredRows {
+                text: d.doc.text.clone(),
+                rows: d.rows.clone(),
+            }),
+            _ => None,
+        };
         let (path, known) = (self.path.clone(), self.git_place.clone());
         cx.spawn(async move |this, cx| {
             let (place, state) = cx
@@ -2128,6 +2151,7 @@ impl FileTab {
                                 disk.as_deref(),
                                 version,
                                 colour,
+                                held.as_ref(),
                             )
                         }),
                     };
@@ -3091,7 +3115,7 @@ impl FileTab {
         let h = cx.default_global::<Highlighters>().get(&theme);
         let disk = self.doc().map(|d| d.text.clone());
         let colour = h.as_deref().map(|h| (h, self.path.as_path()));
-        let state = diff_state(diff, disk.as_deref(), self.versions, colour);
+        let state = diff_state(diff, disk.as_deref(), self.versions, colour, None);
         let version = self.versions;
         self.accept_diff(version, state, cx);
     }
@@ -3743,6 +3767,7 @@ mod tests {
             None,
             4,
             None,
+            None,
         );
         let DiffState::Rows(d) = state else {
             panic!("rows");
@@ -3761,24 +3786,24 @@ mod tests {
                 new_digits: 2
             }
         );
-        let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, None);
+        let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, None, None);
         let DiffState::Rows(d) = all else {
             panic!("rows");
         };
         assert_eq!((d.rows.len(), d.doc.lines.len()), (2, 2));
         assert!(matches!(
-            diff_state(FileDiff::Unified(String::new()), None, 1, None),
+            diff_state(FileDiff::Unified(String::new()), None, 1, None, None),
             DiffState::Same
         ));
         assert!(matches!(
-            diff_state(FileDiff::Binary, Some("x"), 1, None),
+            diff_state(FileDiff::Binary, Some("x"), 1, None, None),
             DiffState::Binary
         ));
     }
 
     #[test]
     fn a_diff_answer_for_an_older_disk_version_is_dropped() {
-        let rows = |v: u64| diff_state(FileDiff::AllAdded, Some("x\n"), v, None);
+        let rows = |v: u64| diff_state(FileDiff::AllAdded, Some("x\n"), v, None, None);
         let mut held = HeldDiff::default();
         assert!(matches!(held.state, DiffState::Waiting));
         // Asked at version 2; version 3 was read and answered first: 2's answer is dropped.
@@ -3889,7 +3914,8 @@ mod tests {
             FileDiff::Unified(u)
         };
         // A small deleted file (no disk text): coloured.
-        let DiffState::Rows(small) = diff_state(deleted(10), None, 1, Some((&h, path))) else {
+        let DiffState::Rows(small) = diff_state(deleted(10), None, 1, Some((&h, path)), None)
+        else {
             panic!("rows");
         };
         assert!(
@@ -3898,7 +3924,7 @@ mod tests {
         );
         // Its old side over 2 MB: uncoloured, though there's no disk text to say so.
         let big = deleted(40_000);
-        let DiffState::Rows(d) = diff_state(big, None, 1, Some((&h, path))) else {
+        let DiffState::Rows(d) = diff_state(big, None, 1, Some((&h, path)), None) else {
             panic!("rows");
         };
         assert!(
@@ -3915,19 +3941,60 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_diff_is_not_coloured_again() {
+        let h = Highlighter::load(&Theme::default());
+        let path = Path::new("a.rs");
+        let diff =
+            || FileDiff::Unified("@@ -1,2 +1,2 @@\n let a = 1;\n-let b = 2;\n+let b = 3;\n".into());
+        let colour = Some((&h, path));
+        let DiffState::Rows(first) = diff_state(diff(), None, 1, colour, None) else {
+            panic!("rows");
+        };
+        assert!(first.doc.spans.is_some(), "first rows are coloured");
+        let held = ColouredRows {
+            text: first.doc.text.clone(),
+            rows: first.rows.clone(),
+        };
+        // The same text and rows again (a static tab's 5 s look-up): no highlighting, no spans.
+        let DiffState::Rows(again) = diff_state(diff(), None, 2, colour, Some(&held)) else {
+            panic!("rows");
+        };
+        assert!(
+            again.doc.spans.is_none(),
+            "an unchanged parse isn't coloured"
+        );
+        assert_eq!(*again.doc.text, *first.doc.text);
+        assert_eq!(*again.rows, *first.rows);
+        // Through `diff_answer` too.
+        let Some(DiffState::Rows(answer)) =
+            diff_answer(None, || Some(diff()), None, 2, colour, Some(&held))
+        else {
+            panic!("rows");
+        };
+        assert!(answer.doc.spans.is_none());
+        // A changed parse is coloured.
+        let changed =
+            FileDiff::Unified("@@ -1,2 +1,2 @@\n let a = 1;\n-let b = 2;\n+let b = 4;\n".into());
+        let DiffState::Rows(new) = diff_state(changed, None, 3, colour, Some(&held)) else {
+            panic!("rows");
+        };
+        assert!(new.doc.spans.is_some(), "a changed parse is coloured");
+    }
+
+    #[test]
     fn an_old_blob_or_a_diff_over_20_mb_is_refused() {
         let rows = || Some(FileDiff::Unified("@@ -1 +1 @@\n-a\n+b\n".into()));
         // The old blob over the limit: refused, git's diff never asked.
         let over = Some(REFUSE_ABOVE + 1);
-        let refused = diff_answer(over, || unreachable!("no diff asked"), None, 1, None);
+        let refused = diff_answer(over, || unreachable!("no diff asked"), None, 1, None, None);
         assert!(matches!(refused, Some(DiffState::Refuse)));
         // At the limit, or not in HEAD: the diff.
         assert!(matches!(
-            diff_answer(Some(REFUSE_ABOVE), rows, None, 1, None),
+            diff_answer(Some(REFUSE_ABOVE), rows, None, 1, None, None),
             Some(DiffState::Rows(_))
         ));
         assert!(matches!(
-            diff_answer(None, rows, None, 1, None),
+            diff_answer(None, rows, None, 1, None, None),
             Some(DiffState::Rows(_))
         ));
         // git's answer itself over the limit (the backstop): refused.
@@ -3937,10 +4004,10 @@ mod tests {
             Some(FileDiff::Unified(u))
         };
         assert!(matches!(
-            diff_answer(None, huge, None, 1, None),
+            diff_answer(None, huge, None, 1, None, None),
             Some(DiffState::Refuse)
         ));
         // No answer from git: none (the rows shown stay).
-        assert!(diff_answer(None, || None, None, 1, None).is_none());
+        assert!(diff_answer(None, || None, None, 1, None, None).is_none());
     }
 }
