@@ -18,7 +18,7 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::git_branch::{Ran, run_git, run_git_outcome, run_git_stdin_outcome};
+use crate::git_branch::{Ran, run_git, run_git_bytes, run_git_outcome, run_git_stdin_outcome};
 use crate::highlight::{PLAIN_ABOVE, REFUSE_ABOVE, Viewable, classify};
 
 /// A file's git state, as the tree marks it.
@@ -235,7 +235,7 @@ pub enum FileDiff {
 
 /// `rel`'s (relative to `root`) whole diff against HEAD with `context` lines around each hunk.
 /// Blocking: call it from background work. None outside a repo, or when git fails or takes
-/// longer than the cap (no answer, not "unchanged"). A `Binary files …` line with no hunk is
+/// longer than the cap (no answer, not "unchanged"). Non-UTF-8 text is decoded lossily. A `Binary files …` line with no hunk is
 /// `Binary`.
 #[allow(dead_code)] // wired in M11h task 3/4
 pub fn file_diff(git: &Path, root: &Path, rel: &Path, context: usize) -> Option<FileDiff> {
@@ -245,7 +245,9 @@ pub fn file_diff(git: &Path, root: &Path, rel: &Path, context: usize) -> Option<
     }
     let path = rel.to_string_lossy();
     let unified = format!("-U{context}");
-    let out = run_git(
+    // Bytes, decoded lossily: a Latin-1 byte in the file must not hide its whole diff.
+    // `--no-textconv`: the rows are the file's own lines, not a converter's text.
+    let out = run_git_bytes(
         git,
         root,
         &[
@@ -255,10 +257,13 @@ pub fn file_diff(git: &Path, root: &Path, rel: &Path, context: usize) -> Option<
             &unified,
             "--no-color",
             "--no-ext-diff",
+            "--no-textconv",
             "--",
             &path,
         ],
-    )?;
+    )
+    .success()?;
+    let out = String::from_utf8_lossy(&out).into_owned();
     let hunks = out.lines().any(|l| l.starts_with("@@ "));
     if !hunks && out.lines().any(|l| l.starts_with("Binary files ")) {
         return Some(FileDiff::Binary);
