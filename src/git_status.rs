@@ -19,7 +19,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::git_branch::{Ran, run_git, run_git_outcome, run_git_stdin_outcome};
-use crate::highlight::REFUSE_ABOVE;
+use crate::highlight::{PLAIN_ABOVE, REFUSE_ABOVE, Viewable, classify};
 
 /// A file's git state, as the tree marks it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -230,6 +230,171 @@ fn all_added(path: &Path) -> Vec<(usize, LineChange)> {
     let lines = bytes.iter().filter(|&&b| b == b'\n').count()
         + usize::from(bytes.last().is_some_and(|&b| b != b'\n'));
     (1..=lines).map(|n| (n, LineChange::Added)).collect()
+}
+
+/// A changed file's line counts.
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Counts {
+    Lines {
+        added: u32,
+        removed: u32,
+    },
+    Binary,
+    /// Not counted: too large, not a plain file, past the per-refresh budget, or git said nothing.
+    Unknown,
+}
+
+/// A file changed since the last commit (`path` relative to the repo root).
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub path: PathBuf,
+    pub mark: Mark,
+    pub counts: Counts,
+}
+
+/// The changed files, sorted, at most `CHANGES_CAP`; `more` is how many were left out.
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangeList {
+    pub entries: Vec<Change>,
+    pub more: usize,
+}
+
+/// Most rows a `ChangeList` holds.
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+pub const CHANGES_CAP: usize = 1_000;
+/// Most files counted from disk (untracked, or before the first commit) per `changes` call.
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+pub const COUNT_FILES_MAX: usize = 200;
+
+/// `git diff --numstat -z`'s entries (`added\tremoved\tpath\0`, split on the first two tabs
+/// only, so a path may hold one) as counts; `-\t-` is a binary file. Malformed entries are
+/// skipped.
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+pub fn parse_numstat(z: &[u8]) -> HashMap<PathBuf, Counts> {
+    let mut out = HashMap::new();
+    for entry in z.split(|&b| b == 0) {
+        let mut parts = entry.splitn(3, |&b| b == b'\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let number = |b: &[u8]| std::str::from_utf8(b).ok()?.parse::<u32>().ok();
+        let counts = if added == b"-" && removed == b"-" {
+            Counts::Binary
+        } else if let (Some(added), Some(removed)) = (number(added), number(removed)) {
+            Counts::Lines { added, removed }
+        } else {
+            continue;
+        };
+        out.insert(PathBuf::from(OsStr::from_bytes(path)), counts);
+    }
+    out
+}
+
+/// The lines of the plain file at `path`, all counted as added (it is new). Blocking. Only a
+/// plain file (never a FIFO or a device, which could block), read through a bound: `Binary`
+/// with a NUL in its first 8 KB, `Unknown` past `PLAIN_ABOVE` bytes or when unreadable.
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+pub fn count_lines(path: &Path) -> Counts {
+    use std::io::Read;
+    if !path.is_file() {
+        return Counts::Unknown;
+    }
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path)
+        .and_then(|file| file.take(PLAIN_ABOVE + 1).read_to_end(&mut bytes));
+    if read.is_err() {
+        return Counts::Unknown;
+    }
+    match classify(bytes.len() as u64, &bytes[..bytes.len().min(8 * 1024)]) {
+        Viewable::Refuse => Counts::Binary,
+        Viewable::PlainTooLarge => Counts::Unknown,
+        Viewable::Text => {
+            let lines = bytes.iter().filter(|&&b| b == b'\n').count()
+                + usize::from(bytes.last().is_some_and(|&b| b != b'\n'));
+            Counts::Lines {
+                added: u32::try_from(lines).unwrap_or(u32::MAX),
+                removed: 0,
+            }
+        }
+    }
+}
+
+/// The files changed since the last commit, with their line counts. Blocking: call it from
+/// background work. None outside a repo, or when git fails or takes longer than the cap (no
+/// answer, not "nothing changed"). A failed `numstat` with a good status leaves the tracked
+/// entries' counts `Unknown`.
+#[allow(dead_code)] // wired by the Changes panel (M11h task 4)
+pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
+    let status = run_git(
+        git,
+        root,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
+    )?;
+    let mut marks = parse_porcelain(status.as_bytes());
+    marks.sort_by_cached_key(|(path, _)| (path.to_string_lossy().to_lowercase(), path.clone()));
+    let more = marks.len().saturating_sub(CHANGES_CAP);
+    marks.truncate(CHANGES_CAP);
+    // None: git's diff failed. Empty and `fresh`: no commits yet, so every file is new.
+    let fresh = match yes_or_no(run_git_outcome(
+        git,
+        root,
+        &["rev-parse", "--verify", "-q", "HEAD"],
+    )) {
+        Some(has_head) => !has_head,
+        None => false,
+    };
+    let numstat = if fresh {
+        Some(HashMap::new())
+    } else {
+        run_git(
+            git,
+            root,
+            &[
+                "diff",
+                "HEAD",
+                "--numstat",
+                "-z",
+                "--no-renames",
+                "--no-color",
+                "--no-ext-diff",
+            ],
+        )
+        .map(|out| parse_numstat(out.as_bytes()))
+    };
+    let mut counted = 0;
+    let entries = marks
+        .into_iter()
+        .map(|(path, mark)| {
+            let counts = match numstat.as_ref().and_then(|n| n.get(&path)) {
+                Some(&counts) => counts,
+                // Not in the diff: untracked or new, counted from disk within the budget.
+                None if mark == Mark::Added || fresh => {
+                    if counted < COUNT_FILES_MAX {
+                        counted += 1;
+                        count_lines(&root.join(&path))
+                    } else {
+                        Counts::Unknown
+                    }
+                }
+                None => Counts::Unknown,
+            };
+            Change { path, mark, counts }
+        })
+        .collect();
+    Some(ChangeList { entries, more })
 }
 
 /// `dir`'s entries: folders first, then files, each case-insensitive by name; `.git` left out.
@@ -545,6 +710,154 @@ mod tests {
             .collect();
         assert!(names.len() * 60 > 100_000);
         assert_eq!(ignored(&git, &root, &names), Some(want));
+    }
+
+    #[test]
+    fn numstat_counts_lines_and_binaries() {
+        let lines = |added, removed| Counts::Lines { added, removed };
+        assert_eq!(
+            parse_numstat(b"3\t1\tsrc/a.rs\0-\t-\tlogo.png\0"),
+            HashMap::from([
+                (p("src/a.rs"), lines(3, 1)),
+                (p("logo.png"), Counts::Binary)
+            ])
+        );
+        assert_eq!(
+            parse_numstat(b"0\t0\tmode.sh\0"),
+            HashMap::from([(p("mode.sh"), lines(0, 0))])
+        );
+        assert!(parse_numstat(b"x\ty\0").is_empty());
+        assert!(parse_numstat(b"").is_empty());
+        assert_eq!(
+            parse_numstat(b"1\t0\ta\tb.txt\0"),
+            HashMap::from([(p("a\tb.txt"), lines(1, 0))])
+        );
+    }
+
+    #[test]
+    fn count_lines_reads_only_small_text_files() {
+        let dir = temp("count");
+        let lines = |n| Counts::Lines {
+            added: n,
+            removed: 0,
+        };
+        fs::write(dir.join("nl"), "a\nb\n").unwrap();
+        fs::write(dir.join("no-nl"), "a\nb").unwrap();
+        fs::write(dir.join("empty"), "").unwrap();
+        fs::write(dir.join("nul"), b"ab\0cd\n").unwrap();
+        fs::write(dir.join("big"), vec![b'a'; PLAIN_ABOVE as usize + 1]).unwrap();
+        fs::write(dir.join("edge"), vec![b'\n'; PLAIN_ABOVE as usize]).unwrap();
+        fs::create_dir(dir.join("folder")).unwrap();
+        assert_eq!(count_lines(&dir.join("nl")), lines(2));
+        assert_eq!(count_lines(&dir.join("no-nl")), lines(2));
+        assert_eq!(count_lines(&dir.join("empty")), lines(0));
+        assert_eq!(count_lines(&dir.join("nul")), Counts::Binary);
+        assert_eq!(count_lines(&dir.join("big")), Counts::Unknown);
+        assert_eq!(count_lines(&dir.join("edge")), lines(PLAIN_ABOVE as u32));
+        assert_eq!(count_lines(&dir.join("folder")), Counts::Unknown);
+        assert_eq!(count_lines(&dir.join("missing")), Counts::Unknown);
+    }
+
+    #[test]
+    fn changes_end_to_end() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("changes", &git);
+        fs::write(root.join("a.rs"), "one\ntwo\nthree\n").unwrap();
+        fs::write(root.join("b.rs"), "x\ny\n").unwrap();
+        fs::write(root.join("c.rs"), "q\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "first"]);
+        fs::write(root.join("a.rs"), "one\nTWO\nthree\n").unwrap();
+        fs::remove_file(root.join("b.rs")).unwrap();
+        git_in(&git, &root, &["mv", "c.rs", "d.rs"]);
+        fs::create_dir(root.join("new dir")).unwrap();
+        fs::write(root.join("new dir/\u{fc}.txt"), "1\n2\n").unwrap();
+        fs::write(root.join("bin.dat"), b"a\0b").unwrap();
+        let lines = |added, removed| Counts::Lines { added, removed };
+        let change = |path: &str, mark, counts| Change {
+            path: p(path),
+            mark,
+            counts,
+        };
+        let want = vec![
+            change("a.rs", Mark::Modified, lines(1, 1)),
+            change("b.rs", Mark::Deleted, lines(0, 2)),
+            change("bin.dat", Mark::Added, Counts::Binary),
+            change("c.rs", Mark::Deleted, lines(0, 1)),
+            change("d.rs", Mark::Added, lines(1, 0)),
+            change("new dir/\u{fc}.txt", Mark::Added, lines(2, 0)),
+        ];
+        let got = changes(&git, &root).unwrap();
+        assert_eq!(got.entries, want);
+        assert_eq!(got.more, 0);
+        // Staged, the edit reads the same.
+        git_in(&git, &root, &["add", "a.rs"]);
+        assert_eq!(changes(&git, &root).unwrap().entries, want);
+    }
+
+    #[test]
+    fn changes_cap_and_more() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("cap-changes", &git);
+        git_in(
+            &git,
+            &root,
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+        );
+        for i in 0..CHANGES_CAP + 5 {
+            fs::write(root.join(format!("f{i:04}.txt")), "x\n").unwrap();
+        }
+        let got = changes(&git, &root).unwrap();
+        assert_eq!(got.entries.len(), CHANGES_CAP);
+        assert_eq!(got.more, 5);
+        assert_eq!(got.entries[0].path, p("f0000.txt"));
+        let one = Counts::Lines {
+            added: 1,
+            removed: 0,
+        };
+        let (counted, rest) = got.entries.split_at(COUNT_FILES_MAX);
+        assert!(counted.iter().all(|c| c.counts == one));
+        assert!(rest.iter().all(|c| c.counts == Counts::Unknown));
+    }
+
+    #[test]
+    fn changes_without_commits() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("changes-fresh", &git);
+        fs::write(root.join("x.txt"), "1\n2\n").unwrap();
+        git_in(&git, &root, &["add", "x.txt"]);
+        fs::write(root.join("y.txt"), "q\n").unwrap();
+        let lines = |added| Counts::Lines { added, removed: 0 };
+        let got = changes(&git, &root).unwrap();
+        assert_eq!(
+            got.entries,
+            vec![
+                Change {
+                    path: p("x.txt"),
+                    mark: Mark::Added,
+                    counts: lines(2)
+                },
+                Change {
+                    path: p("y.txt"),
+                    mark: Mark::Added,
+                    counts: lines(1)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn changes_outside_a_repo_is_no_answer() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        assert_eq!(changes(&git, &temp("changes-norepo")), None);
     }
 
     fn temp(name: &str) -> PathBuf {
