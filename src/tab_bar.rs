@@ -1,10 +1,11 @@
-//! Pane tab bars (M11b): a 26 px bar on top of every pane (even a lone one, as cmux does), in
+//! Pane tab bars (M11b): a 30 pt bar on top of every pane (even a lone one, as cmux does), in
 //! place of M11's pane headers. Each tab shows an icon (a terminal's `>_`, a browser's globe, a
 //! file's page), its title, and for a terminal whose agent is Working, Waiting or Done its status mark in the
-//! icon's place; × closes it (shown on hover). The active tab is filled and, in the focused pane,
-//! has an accent line along its top; a waiting tab is tinted. Too many tabs shrink to a minimum
-//! width, then the row scrolls sideways. On the right, pinned: new terminal tab, new browser tab
-//! split right, split down, and the right sidebar's (M11g; lit while it's open).
+//! icon's place; × closes it (shown on hover). The tabs float in the bar (M11i): 4 pt from its
+//! top, rounded on top; the active one is the card's colour, so it merges into the pane below
+//! it; a waiting one is tinted. Too many tabs shrink to a minimum width, then the row scrolls
+//! sideways. On the right, pinned: + (a new terminal tab), ⋯ (the pane's actions,
+//! `pane_actions`) and the right sidebar's (M11g; lit while it's open).
 //!
 //! A tab can be dragged (M11b Task 7): within its bar or into another pane's, or onto a sidebar
 //! row (into that workspace's focused pane, at the end). It is picked up (Task 7b): the pointer
@@ -17,10 +18,13 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, Context, CursorStyle, Div, DragMoveEvent, Focusable,
-    MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollHandle, SharedString, Window,
-    canvas, div, point, prelude::*, px,
+    AnyElement, AnyView, App, Bounds, ClickEvent, Context, CursorStyle, Div, DragMoveEvent,
+    Focusable, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollHandle, SharedString,
+    Window, canvas, div, point, prelude::*, px,
 };
 
 use crate::appearance::Appearance;
@@ -34,7 +38,7 @@ use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR};
+use crate::ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR, TAB_TOP_GAP};
 use crate::ui_tokens::text;
 use crate::workspace::{At, Renaming, Workspace};
 use crate::workspace_ssh::Place;
@@ -195,26 +199,23 @@ pub struct Look {
     /// Its fill under the pointer; none: no change.
     pub hover: Option<Rgb>,
     pub text: Rgb,
-    /// The accent line along its top edge: the active tab of the focused pane.
-    pub top_accent: bool,
 }
 
-/// The look of a tab with `status`, `active` in its pane or not, in the focused pane or not. The
-/// bar is the sidebar's colour; the active tab is raised to the panel colour with full text, the
-/// others dim. A waiting tab is tinted, active or not (the active one a step lighter).
-pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> Look {
+/// The look of a tab with `status`, `active` in its pane or not, in the focused pane or not (the
+/// same either way since M11i: the focus ring shows the focused pane). The active tab is the
+/// card's colour, so it merges into the pane below it, with full text; the others have no fill,
+/// dim text and the bar's hover shade. A waiting tab that isn't shown is tinted.
+pub fn look(ui: &UiColors, status: Status, active: bool, _pane_focused: bool) -> Look {
     let waiting = status == Status::Waiting;
     let (fill, hover) = match (active, waiting) {
-        (true, false) => (Some(ui.panel), None),
-        (true, true) => (Some(ui.waiting_hover), None),
-        (false, false) => (None, Some(ui.row_hover)),
+        (true, _) => (Some(ui.card), None),
+        (false, false) => (None, Some(ui.tab_hover)),
         (false, true) => (Some(ui.waiting_tint), Some(ui.waiting_hover)),
     };
     Look {
         fill,
         hover,
         text: if active { ui.text } else { ui.text_dim },
-        top_accent: active && pane_focused,
     }
 }
 
@@ -222,19 +223,16 @@ pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarButton {
     NewTerminal,
-    NewBrowser,
-    SplitRight,
-    SplitDown,
+    /// Opens the pane's actions menu (`pane_actions`); lit while it's open.
+    More,
     /// Opens or closes the right sidebar (M11g), at the far right; lit while it's open.
     RightSidebar,
 }
 
 impl BarButton {
-    pub const ALL: [BarButton; 5] = [
+    pub const ALL: [BarButton; 3] = [
         BarButton::NewTerminal,
-        BarButton::NewBrowser,
-        BarButton::SplitRight,
-        BarButton::SplitDown,
+        BarButton::More,
         BarButton::RightSidebar,
     ];
 
@@ -246,10 +244,8 @@ impl BarButton {
     /// Its tooltip.
     pub fn tooltip(self) -> &'static str {
         match self {
-            BarButton::NewTerminal => "New terminal tab",
-            BarButton::NewBrowser => "New browser tab",
-            BarButton::SplitRight => "Split right",
-            BarButton::SplitDown => "Split down",
+            BarButton::NewTerminal => "New terminal tab (⌘T)",
+            BarButton::More => "More",
             BarButton::RightSidebar => "Toggle right sidebar (⌥⌘\\)",
         }
     }
@@ -294,7 +290,7 @@ impl Render for TabChip {
             .flex_row()
             .items_center()
             .w(px(self.width))
-            .h(px(TAB_BAR))
+            .h(px(TAB_BAR - TAB_TOP_GAP))
             .pl(px(TAB_PAD_LEFT))
             .pr(px(TAB_PAD_RIGHT + CLOSE))
             .gap(px(TAB_GAP))
@@ -317,13 +313,12 @@ impl Render for TabChip {
     }
 }
 
-/// A tab's side padding and the gap between its parts; the × button's side.
+/// A tab's side padding and the gap between its parts; the × button's side; its top corners.
 const TAB_PAD_LEFT: f32 = 8.0;
 const TAB_PAD_RIGHT: f32 = 4.0;
 const TAB_GAP: f32 = 6.0;
 const CLOSE: f32 = 16.0;
-/// The accent line along the active tab's top (as thick as an active divider).
-const ACCENT: f32 = 2.0;
+const TAB_RADIUS: f32 = 6.0;
 /// A button, its icon box, and the gap between buttons and around them.
 const BUTTON: f32 = 20.0;
 const ICON: f32 = 12.0;
@@ -382,6 +377,8 @@ impl Workspace {
             .flex_1()
             .min_w(px(0.0))
             .h_full()
+            // The tabs float 4 pt under the bar's top, flush with its bottom (M11i).
+            .pt(px(TAB_TOP_GAP))
             .overflow_x_scroll()
             .track_scroll(&scroll)
             .children(
@@ -424,8 +421,12 @@ impl Workspace {
             .px(px(BUTTONS_PAD))
             .gap(px(BUTTON_GAP))
             .children(BarButton::ALL.map(|b| {
-                // The right sidebar's is lit while the sidebar is open.
-                let lit = b == BarButton::RightSidebar && !self.right_sidebar.hidden;
+                // The right sidebar's is lit while the sidebar is open; ⋯ while its menu is.
+                let lit = match b {
+                    BarButton::NewTerminal => false,
+                    BarButton::More => self.pane_actions.as_ref().is_some_and(|m| m.pane == pane),
+                    BarButton::RightSidebar => !self.right_sidebar.hidden,
+                };
                 render_button(pane, b, lit, ui, cx)
             }));
         Some(
@@ -435,7 +436,7 @@ impl Workspace {
                 .flex_none()
                 .w_full()
                 .h(px(TAB_BAR))
-                .bg(hsla(ui.sidebar_background))
+                .bg(hsla(ui.tab_bar))
                 // The top of its pane's card (M11i): rounded as the inside of the card's edge.
                 .rounded_t(px(CARD_RADIUS - FOCUS_RING))
                 // A press on the bar's empty part focuses its pane (a tab's own press selects it;
@@ -490,10 +491,10 @@ impl Workspace {
         scroll.clone()
     }
 
-    /// One tab: its icon (or mark), its title (or the rename box), × on hover, the accent line
-    /// along the top of the focused pane's active tab. It can be dragged (a press and a move of
-    /// a few pixels; a click stays a click): its chip, `width` wide, is it meanwhile, and its
-    /// place shows empty. It is drawn `offset` px right of its place (out of a dragged tab's way;
+    /// One tab: its icon (or mark), its title (or the rename box), × on hover; rounded on top
+    /// (so the first sits inside its card's rounded corner). It can be dragged (a press and a
+    /// move of a few pixels; a click stays a click): its chip, `width` wide, is it meanwhile,
+    /// and its place shows empty. It is drawn `offset` px right of its place (out of a dragged tab's way;
     /// its place in the row, which the drop rules measure, stays where it is).
     fn render_tab(
         &self,
@@ -505,7 +506,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = look(&ui, tab.status, tab.active, pane_focused);
-        let surface = look.fill.unwrap_or(ui.sidebar_background);
+        let surface = look.fill.unwrap_or(ui.tab_bar);
         let id = tab.tab;
         let group: SharedString = format!("pane-tab-{}", id.0).into();
         let session = tab
@@ -581,30 +582,14 @@ impl Workspace {
             .pl(px(TAB_PAD_LEFT))
             .pr(px(TAB_PAD_RIGHT))
             .gap(px(TAB_GAP))
-            // The line on its right shows between tabs on the bar's colour only: a filled or
-            // hovered tab is told apart by its fill (the line would be too faint on it).
-            .border_r_1()
-            .border_color(hsla(look.fill.unwrap_or(ui.sidebar_border)))
+            .rounded_t(px(TAB_RADIUS))
             .text_size(px(text::NAME))
             .text_color(hsla(look.text))
             .when_some(look.fill, |t, fill| t.bg(hsla(fill)))
-            .when_some(look.hover, |t, hover| {
-                t.hover(move |s| s.bg(hsla(hover)).border_color(hsla(hover)))
-            })
+            .when_some(look.hover, |t, hover| t.hover(move |s| s.bg(hsla(hover))))
             .child(mark_slot(icon))
             .child(title)
             .child(close)
-            .when(look.top_accent, |t| {
-                t.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .w_full()
-                        .h(px(ACCENT))
-                        .bg(hsla(ui.accent)),
-                )
-            })
             // Its chip is it while it's dragged: its place shows empty.
             .when(lifted, |t| t.opacity(0.0))
             .on_drag(DraggedTab { tab: id }, move |dragged, at, window, cx| {
@@ -839,8 +824,8 @@ impl Workspace {
         self.open_session_then(launch, At::Tab(pane), None, window, cx);
     }
 
-    /// A bar's split buttons: `pane` takes the focus, then splits as ⌘D / ⇧⌘D do.
-    fn split_pane(
+    /// Split `pane` (its ⋯ menu): it takes the focus, then splits as ⌘D / ⇧⌘D do.
+    pub(crate) fn split_pane(
         &mut self,
         pane: PaneId,
         axis: Axis,
@@ -866,8 +851,9 @@ pub(crate) fn hold_closed_hand(window: &Window, cx: &mut App) {
 }
 
 /// One of a bar's buttons: its icon, dim until hovered; a disabled one stays faint and only
-/// says why. A `lit` one (the right sidebar's, while it's open) is drawn as hovered all the
-/// time: its icon in the text colour on the hover fill.
+/// says why. A `lit` one (the right sidebar's while it's open, ⋯ while its menu is) is drawn as
+/// hovered all the time: its icon in the text colour on the bar's hover shade. ⋯ opens its menu
+/// under itself, right edges together (it knows where it is from its last paint).
 fn render_button(
     pane: PaneId,
     button: BarButton,
@@ -883,13 +869,14 @@ fn render_button(
         (false, _) => (ui.text_faint, ui.text_faint),
     };
     let kind = match button {
-        BarButton::NewTerminal => Glyph::Terminal,
-        BarButton::NewBrowser => Glyph::Globe,
-        BarButton::SplitRight => Glyph::SplitRight,
-        BarButton::SplitDown => Glyph::SplitDown,
+        BarButton::NewTerminal => Glyph::Plus,
+        BarButton::More => Glyph::More,
         BarButton::RightSidebar => Glyph::RightSidebar,
     };
     let tip = button.tooltip();
+    // Where it was last painted: the ⋯ menu opens under it.
+    let placed: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+    let place = placed.clone();
     let icon = div()
         .relative()
         .size(px(ICON))
@@ -911,21 +898,31 @@ fn render_button(
             .flex()
             .items_center()
             .justify_center()
+            .relative()
             .size(px(BUTTON))
             .rounded(px(4.0))
-            .when(on && lit_up, |b| b.bg(hsla(ui.row_hover)))
+            .when(on && lit_up, |b| b.bg(hsla(ui.tab_hover)))
             .when(on, |b| {
                 b.cursor_pointer()
-                    .hover(move |s| s.bg(hsla(ui.row_hover)))
+                    .hover(move |s| s.bg(hsla(ui.tab_hover)))
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, window, cx| match button {
                             BarButton::NewTerminal => this.new_terminal_tab(pane, window, cx),
-                            BarButton::NewBrowser => this.new_browser_tab(pane, window, cx),
-                            BarButton::SplitRight => this.split_pane(pane, Axis::Row, window, cx),
-                            BarButton::SplitDown => this.split_pane(pane, Axis::Column, window, cx),
+                            BarButton::More => {
+                                if let Some(b) = placed.get() {
+                                    this.open_pane_actions(pane, b.bottom_right(), window, cx)
+                                }
+                            }
                             BarButton::RightSidebar => this.right_sidebar_button(pane, window, cx),
                         }),
                     )
+            })
+            .when(button == BarButton::More, |b| {
+                b.child(
+                    canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
             })
             // Its press is its own (not the bar's, which focuses the pane first).
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
@@ -945,9 +942,8 @@ pub(crate) enum Glyph {
     Globe,
     /// A page with its top right corner folded over.
     File,
-    /// A box split by a line down its middle, and by one across it.
-    SplitRight,
-    SplitDown,
+    /// Three dots in a row (a pane bar's ⋯, M11i).
+    More,
     /// The right sidebar's: a box with its right side filled.
     RightSidebar,
     /// Chevrons left and right.
@@ -959,8 +955,9 @@ pub(crate) enum Glyph {
     Stop,
     /// A magnifying glass.
     Search,
-    /// The sidebar footer's three (drawn in a 16 px box, `footer_glyph`): a plus, a bell (a
-    /// dome open at the bottom, its rim and clapper) and a gear (a ring with teeth around a hub).
+    /// The sidebar footer's three (drawn in a 16 px box, `footer_glyph`): a plus (also a pane
+    /// bar's +, in 12), a bell (a dome open at the bottom, its rim and clapper) and a gear (a
+    /// ring with teeth around a hub).
     Plus,
     Bell,
     Gear,
@@ -1202,22 +1199,18 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         );
                         paths.push(filled);
                     }
-                    Glyph::SplitRight | Glyph::SplitDown => {
-                        let mut frame = stroke();
-                        frame.add_polygon(
-                            &[p(1.0, 1.5), p(11.0, 1.5), p(11.0, 10.5), p(1.0, 10.5)],
-                            true,
-                        );
-                        paths.push(frame);
-                        let mut line = stroke();
-                        if matches!(kind, Glyph::SplitRight) {
-                            line.move_to(p(6.0, 1.5));
-                            line.line_to(p(6.0, 10.5));
-                        } else {
-                            line.move_to(p(1.0, 6.0));
-                            line.line_to(p(11.0, 6.0));
+                    Glyph::More => {
+                        // Filled dots, as wide as the lines are thick and a little more.
+                        let r = 1.1;
+                        for x in [2.0, 6.0, 10.0] {
+                            let mut dot = PathBuilder::fill();
+                            let radii = point(px(r * u), px(r * u));
+                            dot.move_to(p(x, 6.0 - r));
+                            dot.arc_to(radii, px(0.0), false, true, p(x, 6.0 + r));
+                            dot.arc_to(radii, px(0.0), false, true, p(x, 6.0 - r));
+                            dot.close();
+                            paths.push(dot);
                         }
-                        paths.push(line);
                     }
                 }
                 for path in paths {
@@ -1383,24 +1376,32 @@ mod tests {
     }
 
     #[test]
-    fn the_active_tab_is_raised_and_lit_only_in_the_focused_pane() {
+    fn the_active_tab_takes_the_card_colour_and_has_no_top_line() {
         let ui = ui();
-        let active = look(&ui, Status::Idle, true, true);
-        assert_eq!(active.fill, Some(ui.panel));
-        assert_eq!(active.text, ui.text);
-        assert_eq!(active.hover, None);
-        assert!(active.top_accent);
-        // The same tab in a pane without the focus: still raised, no accent line.
-        let elsewhere = look(&ui, Status::Idle, true, false);
-        assert_eq!(elsewhere.fill, Some(ui.panel));
-        assert!(!elsewhere.top_accent);
-        // An inactive tab: the bar's colour, dim text, a hover fill; never the accent.
+        // In the focused pane or not, the same: it merges into the card below it (the focus
+        // ring, not the tab, shows the focused pane).
+        for focused in [true, false] {
+            let active = look(&ui, Status::Idle, true, focused);
+            assert_eq!(
+                active,
+                Look {
+                    fill: Some(ui.card),
+                    hover: None,
+                    text: ui.text,
+                }
+            );
+        }
+        // An inactive tab: no fill (the bar's), dim text, the bar's hover shade.
         for focused in [true, false] {
             let other = look(&ui, Status::Working, false, focused);
-            assert_eq!(other.fill, None);
-            assert_eq!(other.text, ui.text_dim);
-            assert_eq!(other.hover, Some(ui.row_hover));
-            assert!(!other.top_accent);
+            assert_eq!(
+                other,
+                Look {
+                    fill: None,
+                    hover: Some(ui.tab_hover),
+                    text: ui.text_dim,
+                }
+            );
         }
     }
 
@@ -1411,30 +1412,31 @@ mod tests {
         assert_eq!(other.fill, Some(ui.waiting_tint));
         assert_eq!(other.hover, Some(ui.waiting_hover));
         assert_eq!(other.text, ui.text_dim);
+        // The active one merges into its card like any active tab.
         let active = look(&ui, Status::Waiting, true, true);
-        assert_eq!(active.fill, Some(ui.waiting_hover));
+        assert_eq!(active.fill, Some(ui.card));
+        assert_eq!(active.hover, None);
         assert_eq!(active.text, ui.text);
-        assert!(active.top_accent);
     }
 
     #[test]
-    fn the_buttons_are_in_order_and_all_enabled() {
+    fn the_buttons_are_plus_more_and_the_right_sidebar() {
         assert_eq!(
-            BarButton::ALL.map(BarButton::tooltip),
+            BarButton::ALL,
             [
-                "New terminal tab",
-                "New browser tab",
-                "Split right",
-                "Split down",
-                "Toggle right sidebar (⌥⌘\\)"
+                BarButton::NewTerminal,
+                BarButton::More,
+                BarButton::RightSidebar
             ]
         );
         assert_eq!(
-            BarButton::ALL.map(BarButton::enabled),
-            [true, true, true, true, true]
+            BarButton::ALL.map(BarButton::tooltip),
+            [
+                "New terminal tab (⌘T)",
+                "More",
+                "Toggle right sidebar (⌥⌘\\)"
+            ]
         );
-        // The right sidebar's is the far right one.
-        assert_eq!(BarButton::ALL.last(), Some(&BarButton::RightSidebar));
     }
 
     #[test]

@@ -102,8 +102,10 @@ const BUTTON: f32 = 24.0;
 const BUTTON_STROKE: f32 = 1.75;
 const FIND_BOX: f32 = 260.0;
 const GUTTER_LEFT: f32 = 12.0;
-/// The room above the first line (M11i: as the gutter's at its left).
+/// The room above the first line (M11i: as the gutter's at its left), and below the last: as
+/// tall as the card's rounded corners, so no line's tint, match or selection reaches them.
 const TOP_ROOM: f32 = 12.0;
+const BOTTOM_ROOM: f32 = CARD_RADIUS;
 const NUMBER_GAP: f32 = 8.0;
 const BAR_WIDTH: f32 = 3.0;
 const TEXT_GAP: f32 = 10.0;
@@ -2092,14 +2094,16 @@ impl FileTab {
         let view = cx.entity();
         let keep = view.clone();
         let laid = frame.clone();
-        // The text is clipped below the top room, so a line scrolled half out of sight doesn't
-        // show in it; a press or the wheel in the room still reaches the text.
+        // The text is clipped between the top and bottom rooms, so a line scrolled half out of
+        // sight doesn't show in them (nor in the card's bottom corners); a press or the wheel in
+        // a room still reaches the text.
         let text = div().size_full().overflow_hidden();
         div()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
             .pt(px(TOP_ROOM))
+            .pb(px(BOTTOM_ROOM))
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.wheel(e, cx)))
             .on_mouse_down(
                 MouseButton::Left,

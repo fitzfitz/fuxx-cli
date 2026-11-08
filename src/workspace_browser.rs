@@ -352,6 +352,7 @@ impl Workspace {
             switcher: self.switcher.is_some(),
             row_menu: self.sidebar.tab_menu.is_some(),
             tab_menu: self.pane_tab_menu.is_some(),
+            pane_actions: self.pane_actions.is_some(),
             new_menu: self.sidebar.new_menu,
             suggestions: self
                 .browser_tabs

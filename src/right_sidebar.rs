@@ -705,9 +705,13 @@ impl Workspace {
         if self.right_sidebar.hidden && slide.is_none() {
             return (None, None);
         }
+        // A window too narrow for it beside the panes: no card at all (not an empty stub).
+        let width = self.right_sidebar_drawn_width(window);
+        if width <= 0.0 {
+            return (None, None);
+        }
         self.ensure_files_panel(window, cx);
         self.update_file_rows();
-        let width = self.right_sidebar_drawn_width(window);
         let node = self.render_right_sidebar(ui, width, window, cx);
         match slide {
             Some(shown) => {

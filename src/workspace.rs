@@ -47,6 +47,7 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::native_notify::{self, PendingShow, Terminal};
 use crate::notification_list::{self, NotificationList};
 use crate::notifier;
+use crate::pane_actions::PaneActionsMenu;
 use crate::pane_tab_menu::PaneTabMenu;
 use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
@@ -357,6 +358,7 @@ overlays!(
     Switcher,
     TabMenu,
     PaneTabMenu,
+    PaneActions,
     Notifications,
     Help,
 );
@@ -425,6 +427,8 @@ pub struct Workspace {
     pub(crate) renaming: Option<(Renaming, Entity<NameInput>)>,
     /// A pane tab's right-click menu, while it is open.
     pub(crate) pane_tab_menu: Option<PaneTabMenu>,
+    /// A pane bar's ⋯ menu, while it is open (M11i).
+    pub(crate) pane_actions: Option<PaneActionsMenu>,
     /// Each pane's tab row: its scroll, and the tab last scrolled into view, if any (a pane whose
     /// shown tab changes scrolls to it). Panes gone are dropped as the bars are drawn.
     pub(crate) tab_scroll: RefCell<HashMap<PaneId, (ScrollHandle, Option<TabId>)>>,
@@ -627,6 +631,7 @@ impl Workspace {
             collapsed: Vec::new(),
             renaming: None,
             pane_tab_menu: None,
+            pane_actions: None,
             tab_scroll: RefCell::new(HashMap::new()),
             tab_drag: Rc::new(Cell::new(None)),
             tab_drop: None,
@@ -1270,6 +1275,12 @@ impl Workspace {
                 repaired.join("; ")
             );
             debug_assert!(repaired.is_empty(), "tabs and sessions out of step");
+        }
+        // A ⋯ menu whose pane went goes with it.
+        if let Some(menu) = &self.pane_actions
+            && self.model.pane(menu.pane).is_none()
+        {
+            self.pane_actions = None;
         }
         let ids = self.session_ids();
         self.places.retain(|id| ids.contains(&id));
@@ -2074,6 +2085,7 @@ impl Workspace {
     pub(crate) fn close_menus(&mut self) {
         self.sidebar.tab_menu = None;
         self.pane_tab_menu = None;
+        self.pane_actions = None;
         self.notifications_popover = None;
         self.sidebar.new_menu = false;
     }
@@ -2123,6 +2135,9 @@ impl Workspace {
         }
         if keep != Overlay::PaneTabMenu {
             self.pane_tab_menu = None;
+        }
+        if keep != Overlay::PaneActions {
+            self.pane_actions = None;
         }
         if keep != Overlay::Notifications {
             self.notifications_popover = None;
@@ -2775,6 +2790,7 @@ impl Render for Workspace {
         let new_menu = self.render_new_menu(ui, cx);
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
+        let pane_actions = self.render_pane_actions(ui, cx);
         self.refresh_switcher(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
@@ -2967,6 +2983,7 @@ impl Render for Workspace {
             .children(new_menu)
             .children(tab_menu)
             .children(pane_tab_menu)
+            .children(pane_actions)
             .children(notifications)
     }
 }

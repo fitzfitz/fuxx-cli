@@ -670,6 +670,7 @@ impl Workspace {
         self.collapsed.clear();
         self.renaming = None;
         self.pane_tab_menu = None;
+        self.pane_actions = None;
         self.address_box = None;
         // The browser tabs go with their workspaces (their pages leave the window on the next
         // frame), and the popped-out windows with them.

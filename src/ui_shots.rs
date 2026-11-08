@@ -2206,14 +2206,14 @@ fn count_along(
 
 /// A 3-pane split in both themes, from a real `Workspace` (M11i: each pane a card, 6 pt gaps;
 /// the cards span 246–954 and 6–594):
-/// - `splits`: api focused (accent line along its tab's top), claude waiting (tinted tab),
-///   codex working; gaps quiet.
-/// - `splits-waiting`: the waiting pane focused (tint and accent together).
+/// - `splits`: api focused (its card ringed), claude waiting, codex working; gaps quiet.
+/// - `splits-waiting`: the waiting pane focused.
 /// - `splits-hover`: the pointer over the vertical gap (2 px accent in its middle).
 /// - `splits-drag`: that gap dragged left (accent, the panes follow).
 ///
-/// Panics unless each shows 3 tabs, their fills and the focus line are the right colours,
-/// and the gap shows the canvas except when hovered or dragged.
+/// Panics unless each shows 3 tabs, each pane's active tab is the card's colour with no line on
+/// top (M11i: the focus ring shows the focused pane, `cards-split`), and the gap shows the
+/// canvas except when hovered or dragged.
 fn split_scenes() {
     use gpui::{Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -2261,34 +2261,27 @@ fn split_scenes() {
             let n = format!("{scene}-{slug}");
             // Tab fills, away from the text: api (left), claude (top right), both their pane's
             // active (and only) tab, 160 px into it (it is 200 wide; × sits at its end), in
-            // the bars that start inside the cards' 1 pt edges, 7 pt down.
+            // the bars that start inside the cards' 1 pt edges, 7 pt down; the tabs 4 pt
+            // further.
             let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
             let right_tab = at(ratio) + 160.0;
-            let (left_header, right_header) = ((400.0, 20.0), (right_tab, 20.0));
+            let (left_header, right_header) = ((400.0, 30.0), (right_tab, 30.0));
             let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
                 p.iter()
                     .zip([c.r, c.g, c.b])
                     .all(|(a, b)| a.abs_diff(b) <= 3)
             };
             let px_at = |(x, y): (f32, f32)| pixel_at(&shot, dims, x, y);
-            assert!(is(px_at(left_header), ui.panel), "{n}: active tab");
+            assert!(is(px_at(left_header), ui.card), "{n}: active tab");
             assert!(
-                is(px_at(right_header), ui.waiting_hover),
-                "{n}: active waiting tab's tint"
+                is(px_at(right_header), ui.card),
+                "{n}: active waiting tab, the card's colour too"
             );
-            // The focus line: along the top of the focused pane's active tab only (under the
-            // card's edge, at 7–9).
-            let (line_left, line_right) = (px_at((400.0, 8.0)), px_at((right_tab, 8.0)));
-            assert_eq!(
-                is(line_left, ui.accent),
-                focus == 0,
-                "{n}: focus line, left"
-            );
-            assert_eq!(
-                is(line_right, ui.accent),
-                focus == 1,
-                "{n}: focus line, right"
-            );
+            // No line along the top of either tab (at 12, 1 pt into the tabs at 11).
+            for (which, x) in [("left", 400.0), ("right", right_tab)] {
+                let p = px_at((x, 12.0));
+                assert!(is(p, ui.card), "{n}: no line on the {which} tab: {p:?}");
+            }
             // The vertical gap, 6 pt of canvas; the 2 px accent in its middle only when hovered
             // or dragged. Measured across at y = 450, in the lower panes: not at 300, where the
             // right column's own gap (claude over codex) lies along the row. Only the gap: the
@@ -2345,10 +2338,14 @@ const GAP: f32 = ui_tokens::size::CARD_GAP;
 /// M11i floating panels, from a real `Workspace` in both themes (1280 × 600, the sidebar 240
 /// wide):
 /// - `cards`: one pane and the right sidebar open (300 wide): both are cards on the canvas.
+/// - `cards-narrow`: the same in a 440 pt window, too narrow for the right sidebar's card.
 ///
 /// Panics unless the gaps (between the sidebar and the pane card, the pane card and the right
 /// sidebar's, the right card and the window's right edge, above and below the cards) show the
-/// canvas, 20 pt into each card shows its fill, and the left sidebar has no right border line.
+/// canvas, 20 pt into each card shows its fill, the left sidebar has no right border line, and
+/// just outside the pane card's top-left curve is the canvas (no square tab corner pokes out);
+/// in `cards-narrow`, unless the right card isn't drawn and the pane card ends 6 pt from the
+/// window's right edge.
 fn card_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2411,6 +2408,47 @@ fn card_scenes() {
             near(p, ui.sidebar_background),
             "{n}: no sidebar border: {p:?}"
         );
+        // Nothing square pokes out of the pane card's top-left corner (Task 4 review, M1): just
+        // outside its curve, where a square first tab's corner (its fill, a top line) would
+        // be, the canvas shows, not the tab or the card.
+        let (card_left, card_top) = (left + GAP, GAP);
+        for (dx, dy) in [(1.0, 1.0), (1.5, 1.5), (1.0, 2.0), (2.0, 1.0)] {
+            let (x, y) = (card_left + dx, card_top + dy);
+            let p = at(x, y);
+            assert!(
+                is_canvas(p, &ui) && gap(p, ui.sidebar_background) < gap(p, ui.tab_bar),
+                "{n}: canvas outside the card's top-left curve at ({x}, {y}): {p:?}"
+            );
+        }
+        println!("ui-shots: {}", path.display());
+
+        // A window too narrow for the right sidebar beside the panes (its drawn width 0): no
+        // card of it at all (not a 2 pt stub), and the pane card reaches the window's right
+        // gap (Task 4 review, M7).
+        let narrow = size(px(440.0), px(300.0));
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.new(|cx| {
+                let mut ws = card_workspace(1, "", window, cx);
+                ws.right_sidebar.hidden = false;
+                ws
+            })
+            .into()
+        };
+        let shot = render_with(&theme, narrow, build, |_, _| ());
+        let path = save_shot("cards-narrow", slug, &shot);
+        let n = format!("cards-narrow-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, narrow, x, y);
+        let edge = 440.0 - GAP - 0.5;
+        let p = at(edge, 150.0);
+        assert!(
+            near(p, ui.card_border),
+            "{n}: the pane card's right edge at {edge}: {p:?}"
+        );
+        for x in [440.0 - GAP / 2.0, 440.0 - 1.0] {
+            let p = at(x, 150.0);
+            assert!(is_canvas(p, &ui), "{n}: canvas right of it at {x}: {p:?}");
+        }
         println!("ui-shots: {}", path.display());
     }
 }
@@ -2743,33 +2781,40 @@ fn shown_panes(
     })
 }
 
-/// A bar's buttons (`tab_bar`): each 20 pt, 2 pt apart, 4 pt in from the ends; five of them
-/// (new terminal, new browser, split right, split down, the right sidebar's).
-const BAR_BUTTONS: f32 = 4.0 + 5.0 * 20.0 + 4.0 * 2.0 + 4.0;
-/// How far left of its pane's right edge the split-right button's centre is: past the right
-/// sidebar's and split down (each a button and a gap), then half a button.
-const SPLIT_RIGHT_FROM_EDGE: f32 = 4.0 + 2.0 * (20.0 + 2.0) + 10.0;
-/// The same for the right sidebar's button, the last.
+/// A bar's buttons (`tab_bar`): each 20 pt, 2 pt apart, 4 pt in from the ends; three of them
+/// (M11i: +, ⋯, the right sidebar's).
+const BAR_BUTTONS: f32 = 4.0 + 3.0 * 20.0 + 2.0 * 2.0 + 4.0;
+/// How far left of its pane's right edge the + button's centre is: past the right sidebar's
+/// and ⋯ (each a button and a gap), then half a button.
+const PLUS_FROM_EDGE: f32 = 4.0 + 2.0 * (20.0 + 2.0) + 10.0;
+/// The same for ⋯ (past the right sidebar's) and for the right sidebar's button, the last.
+const MORE_FROM_EDGE: f32 = 4.0 + 20.0 + 2.0 + 10.0;
 const RIGHT_SIDEBAR_FROM_EDGE: f32 = 4.0 + 10.0;
+/// A bar's buttons sit in its middle: 5 pt from its top (30 pt bar, 20 pt buttons).
+const BUTTON_TOP: f32 = (ui_tokens::size::TAB_BAR - 20.0) / 2.0;
 /// The left pane's bar in the 1280 pt two-pane scenes (M11i): half the 1028 pt card area, less
 /// half the 6 pt gap and the card's 1 pt edge on either side.
 const LEFT_BAR_WIDTH: f32 = 1028.0 / 2.0 - 3.0 - 2.0;
 
-/// Pane tab bars (M11b Task 3), from real workspaces in both themes:
-/// - `tab-bars`: two panes; the left (focused) one with api (active, accent line on top), claude
-///   (waiting, tinted), codex (working) and a browser tab ("New tab", globe); the right one with
-///   tests (done), unfocused (active but no accent line). The tabs shrink below 200 px to fit.
-/// - `tab-bars-hover`: the pointer over codex (hover fill, × shown); `tab-bars-button`: over the
-///   left bar's split-right button.
+/// Pane tab bars (M11b Task 3; M11i's cleaner bar), from real workspaces in both themes:
+/// - `tab-bars`: two panes; the left (focused) one with api (active: the card's colour, merging
+///   into the terminal below it, no line on top), claude (waiting, tinted), codex (working) and
+///   a browser tab ("New tab", globe); the right one with tests (done; active, the card's colour
+///   too). The 30 pt bars hold their tabs 4 pt under their top; the tabs shrink below 200 pt.
+/// - `tab-bars-hover`: the pointer over codex (`tab_hover`, × shown); `tab-bars-button`: over
+///   the left bar's + (the first of its three buttons).
+/// - `tab-bars-more`: the left bar's ⋯ clicked: its menu (New Terminal Tab ⌘T, New Browser Tab,
+///   Split Right ⌘D, Split Down ⇧⌘D) under it, right edges together, the ⋯ lit.
 /// - `tab-bars-menu`: claude's right-click menu (Close Tab, Close Other Tabs in Pane, Rename
 ///   Tab…); `tab-bars-rename`: codex double-clicked (shown, its rename box open).
 /// - `tab-bars-single`: one pane, one tab (the bar still shows).
 /// - `tab-bars-narrow`: a narrow window, one pane of seven tabs, the last shown: the tabs stop at
 ///   90 px and the row scrolls to the shown one.
 ///
-/// Panics unless the tabs have the widths and fills above, the menu and rename box open on the
-/// tabs clicked; and (not shot) unless ⌃Tab / ⌃⇧Tab cycle the focused pane's tabs, a click
-/// shows a tab, × closes one, a middle-click closes one, and the split button splits its pane.
+/// Panics unless the tabs have the geometry and fills above, the menus and rename box open
+/// where clicked; and (not shot) unless ⌃Tab / ⌃⇧Tab cycle the focused pane's tabs, a click
+/// shows a tab, × closes one, a middle-click closes one, Escape closes the ⋯ menu, and its
+/// Split Right splits the pane whose ⋯ it was (not the focused one).
 fn tab_bar_scenes() {
     use crate::layout_model::TabKind;
     use crate::workspace::{NextTab, PrevTab, Renaming};
@@ -2790,6 +2835,7 @@ fn tab_bar_scenes() {
             "tab-bars",
             "tab-bars-hover",
             "tab-bars-button",
+            "tab-bars-more",
             "tab-bars-menu",
             "tab-bars-rename",
         ] {
@@ -2813,13 +2859,20 @@ fn tab_bar_scenes() {
                 let tabs: Vec<_> = (0..4)
                     .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
                     .collect();
-                // Four tabs in the left bar, equally shrunk, between the bounds.
+                // Four tabs in the left bar, equally shrunk, between the bounds; 4 pt under the
+                // 30 pt bar's top (inside the card's 1 pt edge, under the 6 pt strip), down to
+                // its bottom.
                 for b in &tabs {
                     let w = f32::from(b.size.width);
                     assert!((90.0..200.0).contains(&w), "{n}: tab width {w}");
                     let first = f32::from(tabs[0].size.width);
                     assert!((w - first).abs() <= 1.0, "{n}: equal widths ({w}, {first})");
-                    assert_eq!(f32::from(b.size.height), 26.0, "{n}: 26 px bar");
+                    assert_eq!(f32::from(b.top()), GAP + 1.0 + 4.0, "{n}: tabs 4 pt down");
+                    assert_eq!(
+                        f32::from(b.size.height),
+                        26.0,
+                        "{n}: to a 30 pt bar's bottom"
+                    );
                 }
                 assert_eq!(
                     cx.read(|cx| ws.read(cx).tab_sessions().len()),
@@ -2832,11 +2885,27 @@ fn tab_bar_scenes() {
                         cx.simulate_mouse_move(window, tabs[2].center(), None, none);
                     }
                     "tab-bars-button" => {
-                        // The left pane's buttons sit at its right edge: split right is the
-                        // third of five.
+                        // The left pane's buttons sit at its right edge: + is the first of
+                        // three.
                         let right = tabs[0].left() + px(LEFT_BAR_WIDTH);
-                        let at = point(right - px(SPLIT_RIGHT_FROM_EDGE), tabs[0].center().y);
+                        let at = point(right - px(PLUS_FROM_EDGE), tabs[0].center().y);
                         cx.simulate_mouse_move(window, at, None, none);
+                    }
+                    "tab-bars-more" => {
+                        // The left bar's ⋯: its menu hangs from the button's bottom right.
+                        let right = tabs[0].left() + px(LEFT_BAR_WIDTH);
+                        let at = point(right - px(MORE_FROM_EDGE), tabs[0].center().y);
+                        cx.simulate_click(window, at, none);
+                        let menu = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            ws.pane_actions.as_ref().map(|m| (m.pane, m.at))
+                        });
+                        let bar_top = tabs[0].top() - px(4.0);
+                        let corner = point(
+                            right - px(MORE_FROM_EDGE - 10.0),
+                            bar_top + px(BUTTON_TOP + 20.0),
+                        );
+                        assert_eq!(menu, Some((panes[0], corner)), "{n}: under the left ⋯");
                     }
                     "tab-bars-menu" => {
                         cx.simulate_mouse_down(window, tabs[1].center(), MouseButton::Right, none);
@@ -2890,22 +2959,112 @@ fn tab_bar_scenes() {
             let n = format!("{scene}-{slug}");
             let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
             let tabs = geometry.borrow().clone();
-            let (api, claude) = (tabs[0], tabs[1]);
+            let (api, claude, codex) = (tabs[0], tabs[1], tabs[2]);
+            let (top, bottom) = (f32::from(api.top()), f32::from(api.bottom()));
+            let (bar_top, bar_right) = (top - 4.0, f32::from(api.left()) + LEFT_BAR_WIDTH);
             // Away from the text, the icon and the ×: near each tab's right end, low in the bar.
-            let fill_at = |b: gpui::Bounds<Pixels>| (f32::from(b.right()) - 26.0, 20.0);
-            if scene == "tab-bars" {
-                // The accent line: along the top of the bar, inside its card's edge (M11i).
-                let line = f32::from(api.top()) + 1.0;
-                let (x, y) = fill_at(api);
-                assert!(is(px_at(x, y), ui.panel), "{n}: api raised");
-                assert!(is(px_at(x, line), ui.accent), "{n}: api's accent line");
-                let (x, y) = fill_at(claude);
-                assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
-                assert!(!is(px_at(x, line), ui.accent), "{n}: no line on claude");
-                // The right pane's tests: active, raised, but its pane isn't focused.
-                let x = f32::from(api.left()) + 520.0 + 150.0;
-                assert!(is(px_at(x, 20.0), ui.panel), "{n}: tests raised");
-                assert!(is(px_at(x, line), ui.panel), "{n}: no line on tests");
+            let fill_at = |b: gpui::Bounds<Pixels>| (f32::from(b.right()) - 26.0, bottom - 6.0);
+            // Whether something is drawn in tab `b`'s × box (on a tab filled `fill`).
+            let close_drawn = |b: gpui::Bounds<Pixels>, fill| {
+                let (right, mid) = (f32::from(b.right()), f32::from(b.center().y));
+                (6..=18).any(|dx| {
+                    (-4..=4).any(|dy| gap(px_at(right - dx as f32, mid + dy as f32), fill) > 30)
+                })
+            };
+            // The corner of a bar button whose centre is `from_edge` left of the bar's right.
+            let button_corner =
+                |from_edge: f32| px_at(bar_right - from_edge - 8.0, bar_top + BUTTON_TOP + 2.0);
+            match scene {
+                "tab-bars" => {
+                    // api: the card's colour, with no line on top, merging into the terminal
+                    // under it: 1 pt above the bar's bottom is the terminal's background.
+                    let (x, y) = fill_at(api);
+                    assert!(is(px_at(x, y), ui.card), "{n}: api is the card's colour");
+                    let merged = px_at(x, bottom - 1.0);
+                    assert!(is(merged, theme.background), "{n}: api merges: {merged:?}");
+                    let line = px_at(x, top + 1.0);
+                    assert!(is(line, ui.card), "{n}: no line on api: {line:?}");
+                    // Above the tabs, the bar.
+                    let above = px_at(x, bar_top + 2.0);
+                    assert!(is(above, ui.tab_bar), "{n}: the bar above api: {above:?}");
+                    let (x, y) = fill_at(claude);
+                    assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
+                    // codex: no fill, no ×.
+                    let (x, y) = fill_at(codex);
+                    assert!(is(px_at(x, y), ui.tab_bar), "{n}: codex on the bar");
+                    assert!(!close_drawn(codex, ui.tab_bar), "{n}: codex's × hidden");
+                    // The right pane's tests: active, the card's colour, merging too.
+                    let x = f32::from(api.left()) + 520.0 + 150.0;
+                    assert!(is(px_at(x, bottom - 6.0), ui.card), "{n}: tests");
+                    assert!(
+                        is(px_at(x, bottom - 1.0), theme.background),
+                        "{n}: tests merge"
+                    );
+                    assert!(is(px_at(x, top + 1.0), ui.card), "{n}: no line on tests");
+                }
+                "tab-bars-hover" => {
+                    let (x, y) = fill_at(codex);
+                    let p = px_at(x, y);
+                    assert!(is(p, ui.tab_hover), "{n}: codex hovered: {p:?}");
+                    assert!(close_drawn(codex, ui.tab_hover), "{n}: codex's × shown");
+                }
+                "tab-bars-button" => {
+                    let (plus, more) =
+                        (button_corner(PLUS_FROM_EDGE), button_corner(MORE_FROM_EDGE));
+                    assert!(is(plus, ui.tab_hover), "{n}: + hovered: {plus:?}");
+                    assert!(is(more, ui.tab_bar), "{n}: ⋯ not: {more:?}");
+                }
+                "tab-bars-more" => {
+                    // ⋯ lit: its fill stands off the bar in the 2 pt gap beside it (both under
+                    // the menu's shadow, so compared with each other, not the tokens).
+                    let more = button_corner(MORE_FROM_EDGE);
+                    let beside = px_at(
+                        bar_right - MORE_FROM_EDGE - 11.0,
+                        bar_top + BUTTON_TOP + 2.0,
+                    );
+                    let rgb = |[r, g, b]: [u8; 3]| alacritty_terminal::vte::ansi::Rgb { r, g, b };
+                    let h = ui.tab_hover;
+                    let lit = gap([h.r, h.g, h.b], ui.tab_bar);
+                    assert!(
+                        gap(more, rgb(beside)) * 2 >= lit,
+                        "{n}: ⋯ lit: {more:?} beside {beside:?}"
+                    );
+                    // The menu's top right at the ⋯'s bottom right.
+                    let (mx, my) = (
+                        bar_right - MORE_FROM_EDGE + 10.0,
+                        bar_top + BUTTON_TOP + 20.0,
+                    );
+                    let inside = px_at(mx - 2.5, my + 30.0);
+                    assert!(is(inside, ui.panel), "{n}: the menu under ⋯: {inside:?}");
+                    let right = px_at(mx + 3.0, my + 30.0);
+                    assert!(!is(right, ui.panel), "{n}: right edges together: {right:?}");
+                    let above = px_at(mx - 100.0, my - 2.0);
+                    assert!(!is(above, ui.panel), "{n}: under the button: {above:?}");
+                    // Four items (26 pt each, inside the 1 pt edge and 4 pt padding), each with
+                    // its name; the keys at the right of all but New Browser Tab; the menu ends
+                    // after the fourth.
+                    let inked = |x0: f32, x1: f32, y: f32| {
+                        (x0 as i32..x1 as i32).any(|x| {
+                            (-4..=4).any(|dy| gap(px_at(x as f32, y + dy as f32), ui.panel) > 60)
+                        })
+                    };
+                    for k in 0..4 {
+                        let y = my + 5.0 + 26.0 * k as f32 + 13.0;
+                        assert!(inked(mx - 192.0, mx - 110.0, y), "{n}: item {k}'s name");
+                        let keys = inked(mx - 40.0, mx - 10.0, y);
+                        assert_eq!(keys, k != 1, "{n}: item {k}'s keys");
+                    }
+                    let end = my + 1.0 + 4.0 + 4.0 * 26.0 + 4.0 + 1.0;
+                    // (Clear of the panel's rounded corners.)
+                    let last = px_at(mx - 20.0, end - 3.0);
+                    assert!(is(last, ui.panel), "{n}: the menu's foot: {last:?}");
+                    let past = px_at(mx - 20.0, end + 3.0);
+                    assert!(
+                        !is(past, ui.panel),
+                        "{n}: nothing after the fourth: {past:?}"
+                    );
+                }
+                _ => {}
             }
             println!("ui-shots: {}", path.display());
         }
@@ -2945,7 +3104,7 @@ fn tab_bar_scenes() {
                     assert!(offset < 0.0, "{n}: scrolled to the last tab");
                     let last = tab_bounds(cx, &ws, panes[0], many - 1).expect("laid out");
                     assert!(
-                        f32::from(last.right()) <= 720.0 - BAR_BUTTONS + 1.0,
+                        f32::from(last.right()) <= 720.0 - GAP - 1.0 - BAR_BUTTONS + 1.0,
                         "{n}: last in view"
                     );
                 }
@@ -3019,12 +3178,40 @@ fn tab_bar_scenes() {
             assert_eq!(count(cx), 2, "{n}: middle-click closed codex");
             let codex_gone = cx.read(|cx| ws.read(cx).sessions.position(|s| s.label() == "codex"));
             assert_eq!(codex_gone, None, "{n}: codex ended");
-            // The left bar's split right: a third pane, focused, with one terminal tab.
+            // The left bar's ⋯ (the right pane, tests, has the focus): Escape closes its menu.
             let right = api.left() + px(LEFT_BAR_WIDTH);
-            let split = point(right - px(SPLIT_RIGHT_FROM_EDGE), api.center().y);
+            let more = point(right - px(MORE_FROM_EDGE), api.center().y);
+            cx.update(|cx| {
+                cx.bind_keys([KeyBinding::new(
+                    "escape",
+                    crate::tab_menu::Dismiss,
+                    Some("TabMenu"),
+                )])
+            });
+            let open = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| ws.read(cx).pane_actions.as_ref().map(|m| (m.pane, m.at)))
+            };
+            cx.simulate_click(window, more, none);
+            let (pane, at) = open(cx).expect("the ⋯ menu");
+            assert_eq!(pane, panes[0], "{n}: the left pane's menu");
+            cx.simulate_keystrokes(window, "escape");
+            assert_eq!(open(cx), None, "{n}: Escape closes it");
+            // Again, and its Split Right (the third item): the left pane splits, beside it a
+            // third pane, focused; the right pane is still last.
+            cx.simulate_click(window, more, none);
+            assert!(open(cx).is_some(), "{n}: open again");
+            let split = point(at.x - px(100.0), at.y + px(5.0 + 26.0 * 2.0 + 13.0));
             cx.simulate_click(window, split, none);
+            assert_eq!(open(cx), None, "{n}: a choice closes it");
             let panes_now = shown_panes(cx, &ws);
-            assert_eq!(panes_now.len(), 3, "{n}: split right made a pane");
+            assert_eq!(panes_now.len(), 3, "{n}: Split Right made a pane");
+            assert_eq!(
+                (panes_now[0], panes_now[2]),
+                (panes[0], panes[1]),
+                "{n}: beside the left pane"
+            );
+            let focused = cx.read(|cx| ws.read(cx).model.focused_pane());
+            assert_eq!(focused, Some(panes_now[1]), "{n}: the new pane focused");
             slot.borrow_mut().take();
         };
         render_with(&theme, wide, build, act);
@@ -3205,11 +3392,12 @@ fn tab_drag_scenes() {
             let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
             let g = geometry.borrow().clone();
             let tabs = &g.tabs;
-            // The bars' top: inside the cards' 1 pt edges, under the 6 pt strip (M11i).
+            // The tabs' top: 4 pt into the bars, inside the cards' 1 pt edges, under the 6 pt
+            // strip (M11i).
             let top = f32::from(tabs[0].top());
             let width = f32::from(tabs[0].size.width);
             let (chip_x, chip_y) = (f32::from(g.chip.x), f32::from(g.chip.y));
-            // No insertion line: no accent in the left bar below the active tab's top line.
+            // No insertion line: no accent across the left bar's tabs.
             let no_line = || {
                 for x in (f32::from(tabs[0].left()) as i32..f32::from(tabs[3].right()) as i32)
                     .map(|x| x as f32 + 0.5)
@@ -3223,10 +3411,7 @@ fn tab_drag_scenes() {
                 for dx in [6.0, 20.0, 40.0, 60.0, 80.0] {
                     for y in [top + 7.0, top + 13.0, top + 19.0] {
                         let p = px_at(left + dx, y);
-                        assert!(
-                            is(p, ui.sidebar_background),
-                            "{n}: {what} empty at +{dx},{y}: {p:?}"
-                        );
+                        assert!(is(p, ui.tab_bar), "{n}: {what} empty at +{dx},{y}: {p:?}");
                     }
                 }
             };
@@ -3239,7 +3424,7 @@ fn tab_drag_scenes() {
                         "{n}: claude slid left: {claude:?}"
                     );
                     let gap = px_at(f32::from(tabs[1].right()) - 4.0, top + 3.0);
-                    assert!(is(gap, ui.sidebar_background), "{n}: the gap: {gap:?}");
+                    assert!(is(gap, ui.tab_bar), "{n}: the gap: {gap:?}");
                     // The chip is where api was taken: its left edge at the pointer less the
                     // grab, level with the bar (not under it).
                     assert_eq!(chip_y, top, "{n}: the chip's top is the bar's");
@@ -3266,13 +3451,13 @@ fn tab_drag_scenes() {
                         "{n}: claude slid left: {claude:?}"
                     );
                     empty(tabs[3], "the left bar's last place");
-                    // The right bar: tests (filled, as its pane's shown tab) slid right by
-                    // api's width; the gap's end shows the bar.
+                    // The right bar: tests (the card's colour, as its pane's shown tab) slid
+                    // right by api's width; the gap's end shows the bar.
                     let left = f32::from(g.right.left());
                     let tests = px_at(left + width + 6.0, top + 3.0);
-                    assert!(is(tests, ui.panel), "{n}: tests slid right: {tests:?}");
+                    assert!(is(tests, ui.card), "{n}: tests slid right: {tests:?}");
                     let gap = px_at(left + width - 6.0, top + 3.0);
-                    assert!(is(gap, ui.sidebar_background), "{n}: the gap: {gap:?}");
+                    assert!(is(gap, ui.tab_bar), "{n}: the gap: {gap:?}");
                     no_line();
                 }
                 _ => {
@@ -3824,6 +4009,9 @@ fn file_tab_scenes() {
 /// - `file-tab-long`: a 1,200-character line (with two-byte characters: drawn from its
 ///   checkpoints) scrolled sideways by the wheel (its end shows), and a ▸ for lines deleted above
 ///   the first, drawn whole under the top edge.
+/// - `file-tab-end`: 80 long lines, all changed and found ("x"), scrolled to the end: the
+///   bottom room (as tall as the card's corner radius) stays the background, so no tint, match
+///   or selection reaches the card's rounded bottom corners.
 /// - `file-tab-missing`, `file-tab-refuse`, `file-tab-plain`: a file that is gone (its path, a
 ///   Close button that asks to close the tab), a binary file (Show in Finder), a file over 2 MB
 ///   (plain text, "Too large to colour").
@@ -3857,6 +4045,13 @@ fn file_view_scenes() {
         format!("// one long line\n{long_line}\nfn after() {{}}\n"),
     )
     .expect("long.rs");
+    // 80 lines, each running far past the right edge (for `file-tab-end`).
+    let end_rs = dir.join("end.rs");
+    let end_lines = 80;
+    let end_text: String = (0..end_lines)
+        .map(|i| format!("let line_{i:02} = \"{}\";\n", "x".repeat(200)))
+        .collect();
+    std::fs::write(&end_rs, end_text).expect("end.rs");
     let missing = dir.join("gone.rs");
     let _ = std::fs::remove_file(&missing);
     let binary = dir.join("image.bin");
@@ -4126,6 +4321,80 @@ fn file_view_scenes() {
             whole,
             "{n}: the top edge's ▸ is drawn whole, under the edge"
         );
+
+        // Scrolled to its end, every line changed (tinted the full width) and found: nothing
+        // is painted in the bottom room, where the card's bottom corners are (Task 4 review, M2).
+        let n = format!("file-tab-end-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(end_rs.clone(), slot.clone());
+        let act = {
+            let n = n.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                frame(cx, window);
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| {
+                        // Lines counted from 1, as git does.
+                        let all = (1..=end_lines).map(|i| (i, LineChange::Changed));
+                        t.set_changes(all.collect(), cx)
+                    })
+                });
+                cx.update_window(window, |_, window, cx| {
+                    tab.read(cx).focus_handle(cx).focus(window, cx)
+                })
+                .expect("focus");
+                cx.simulate_keystrokes(window, "cmd-f");
+                cx.simulate_input(window, "x");
+                frame(cx, window);
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                for _ in 0..3 {
+                    cx.simulate_event(
+                        window,
+                        ScrollWheelEvent {
+                            position: g.bounds.center(),
+                            delta: ScrollDelta::Pixels(point(px(0.0), px(-50_000.0))),
+                            modifiers: Modifiers::none(),
+                            touch_phase: TouchPhase::Moved,
+                        },
+                    );
+                }
+                frame(cx, window);
+                let (scroll, g) = cx.read(|cx| (tab.read(cx).scroll(), tab.read(cx).geom()));
+                let g = g.expect("drawn");
+                assert!(scroll.y > px(0.0), "{n}: scrolled down");
+                assert_eq!(scroll.y, g.max_scroll.y, "{n}: to the end");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-end",
+            slug,
+            &theme,
+            dims,
+            build.clone(),
+            act.clone(),
+        );
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+        let tint = crate::theme::mix(theme.background, fit(theme.palette[4]), 0.12);
+        // The last line, tinted, above the room ...
+        let room = ui_tokens::size::CARD_RADIUS;
+        let p = pixel_at(&shot, dims, w - 2.0, h - room - 2.0);
+        assert!(
+            !near(p, theme.background, 4),
+            "{n}: the last line is tinted: {p:?}, {tint:?}"
+        );
+        // ... and the room under it, across the width, the background.
+        for x in [1.0, 2.0, 6.0, w / 2.0, w - 6.0, w - 2.0, w - 1.0] {
+            for y in [h - 1.0, h - 2.0, h - room / 2.0] {
+                let p = pixel_at(&shot, dims, x, y);
+                assert!(
+                    near(p, theme.background, 4),
+                    "{n}: nothing in the bottom room at ({x}, {y}): {p:?}"
+                );
+            }
+        }
 
         // The states: missing (and its Close), refused, plain.
         for (scene, file, state, words) in [
@@ -4528,13 +4797,13 @@ fn right_sidebar_scenes() {
             for (i, right) in edges.borrow().iter().enumerate() {
                 let centre = right - RIGHT_SIDEBAR_FROM_EDGE;
                 assert!(*right > left, "{n}: pane {i}'s edge {right}");
-                // The bars run 7–33 (under the 6 pt strip and the cards' edges).
-                let (fill, glyph) = (at(centre - 8.0, 20.0), at(centre + 3.0, 20.0));
+                // The bars run 7–37 (under the 6 pt strip and the cards' edges).
+                let (fill, glyph) = (at(centre - 8.0, 22.0), at(centre + 3.0, 22.0));
                 if width > 0.0 {
-                    assert!(near(fill, ui.row_hover), "{n}: pane {i} lit: {fill:?}");
+                    assert!(near(fill, ui.tab_hover), "{n}: pane {i} lit: {fill:?}");
                     assert!(near(glyph, ui.text), "{n}: pane {i} glyph: {glyph:?}");
                 } else {
-                    let bar = ui.sidebar_background;
+                    let bar = ui.tab_bar;
                     assert!(near(fill, bar), "{n}: pane {i} unlit: {fill:?}");
                     assert!(
                         near(glyph, ui.text_dim),
@@ -4595,7 +4864,7 @@ fn right_sidebar_scenes() {
                 let panes = shown_panes(cx, &ws);
                 let icon = point(
                     px(window_right - GAP - 1.0 - RIGHT_SIDEBAR_FROM_EDGE),
-                    px(20.0),
+                    px(22.0),
                 );
                 cx.simulate_click(window, icon, none);
                 cx.read(|cx| {
@@ -4729,7 +4998,7 @@ fn files_scenes() {
     use crate::git_status::Mark;
     use crate::layout_model::{FileMode, TabKind};
     use crate::right_sidebar::{FILTER_BAND, ROW, mark_color};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR, TOP_BAND};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR, TAB_TOP_GAP, TOP_BAND};
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4842,12 +5111,12 @@ fn files_scenes() {
             let shot = render_with(&theme, dims, build, act);
             let n = format!("{scene}-{slug}");
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-            // The header row lines up with the pane's tab bar: same top, and its bottom edge
-            // where the bar ends.
-            let tab_top = tab_top.borrow().expect("the tab's top");
+            // The header row lines up with the pane's tab bar: same top (its tabs 4 pt under
+            // it, M11i), and its bottom edge where the bar ends.
+            let bar_top = tab_top.borrow().expect("the tab's top") - TAB_TOP_GAP;
             assert!(
-                (tab_top - top).abs() < 0.5,
-                "{n}: the tab bar at {tab_top}, not {top}"
+                (bar_top - top).abs() < 0.5,
+                "{n}: the tab bar at {bar_top}, not {top}"
             );
             let edge = at(sidebar_left + 150.0, top + TAB_BAR - 0.5);
             assert!(
@@ -5855,11 +6124,11 @@ fn browser_tab_scenes() {
                 }
                 let field = field.expect("the field is drawn");
                 typed.set(Some(field));
-                // Under the 26 px tab bar, centred in the 34 px bar; the card (M11i) starts
+                // Under the 30 pt tab bar (M11i), centred in the 34 px bar; the card starts
                 // under the 6 pt strip, inside its 1 pt edge.
                 assert_eq!(f32::from(field.size.height), 24.0, "{n}: field height");
                 let top = f32::from(field.top());
-                assert!((36.0..=39.0).contains(&top), "{n}: field top {top}");
+                assert!((40.0..=43.0).contains(&top), "{n}: field top {top}");
                 if scene == "browser-tab-suggestions" {
                     cx.update(|cx| {
                         cx.bind_keys([KeyBinding::new("down", SuggestNext, Some("AddressField"))])
@@ -6276,6 +6545,10 @@ fn overlays() {
                         Overlay::PaneTabMenu => {
                             let tab = ws.model.focused_tab().expect("a focused tab");
                             ws.open_pane_tab_menu(tab, at, window, cx)
+                        }
+                        Overlay::PaneActions => {
+                            let pane = ws.model.focused_pane().expect("a focused pane");
+                            ws.open_pane_actions(pane, at, window, cx)
                         }
                         Overlay::Notifications => ws.open_notifications(window, cx),
                         Overlay::Help => {

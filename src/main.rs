@@ -47,6 +47,7 @@ mod native_notify;
 mod notification_list;
 mod notifier;
 mod overlay_panel;
+mod pane_actions;
 mod pane_browser;
 mod pane_tab_menu;
 mod panes;
