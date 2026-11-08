@@ -169,20 +169,21 @@ unsafe extern "C" {
 /// `SIGKILL` from `<sys/signal.h>`.
 const SIGKILL: c_int = 9;
 
-/// What a capped command did.
+/// What a capped command did; what it printed as text (`String`), or as bytes
+/// (`run_capped_bytes`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Ran {
+pub(crate) enum Ran<Out = String> {
     /// It ran to its end: its exit code (none: ended by a signal) and what it printed.
-    Exited(Option<i32>, String),
+    Exited(Option<i32>, Out),
     /// It was still running at the cap, and was killed (with its whole process group).
     TimedOut,
     /// It couldn't be started, or what it printed couldn't be read.
     Failed,
 }
 
-impl Ran {
+impl<Out> Ran<Out> {
     /// What it printed, if it exited successfully (0).
-    pub(crate) fn success(self) -> Option<String> {
+    pub(crate) fn success(self) -> Option<Out> {
         match self {
             Ran::Exited(Some(0), out) => Some(out),
             _ => None,
@@ -202,7 +203,23 @@ pub(crate) fn run_capped(command: Command, cap: Duration) -> Option<String> {
 /// what it said (exit code and stdout) from a failure or the cap. The command leads its own
 /// session and process group (`setsid`), so at the cap the whole group is killed: children it
 /// started (a hook, an fsmonitor) holding its pipes end too, and so do the pipes' threads.
-pub(crate) fn run_capped_outcome(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Ran {
+pub(crate) fn run_capped_outcome(command: Command, input: Option<&[u8]>, cap: Duration) -> Ran {
+    match run_capped_bytes(command, input, cap) {
+        Ran::Exited(code, out) => {
+            String::from_utf8(out).map_or(Ran::Failed, |out| Ran::Exited(code, out))
+        }
+        Ran::TimedOut => Ran::TimedOut,
+        Ran::Failed => Ran::Failed,
+    }
+}
+
+/// `run_capped_outcome`, with what the command printed as bytes (`ps`, whose output may not be
+/// UTF-8 when a process's arguments aren't).
+pub(crate) fn run_capped_bytes(
+    mut command: Command,
+    input: Option<&[u8]>,
+    cap: Duration,
+) -> Ran<Vec<u8>> {
     use std::io::Write;
     use std::os::unix::process::CommandExt;
     command
@@ -239,8 +256,8 @@ pub(crate) fn run_capped_outcome(mut command: Command, input: Option<&[u8]>, cap
         return Ran::Failed;
     };
     let reader = std::thread::spawn(move || {
-        let mut out = String::new();
-        stdout.read_to_string(&mut out).ok().map(|_| out)
+        let mut out = Vec::new();
+        stdout.read_to_end(&mut out).ok().map(|_| out)
     });
     let started = Instant::now();
     let status = loop {
@@ -720,10 +737,13 @@ mod tests {
             run_capped_outcome(Command::new("/no/such/program"), None, GIT_CAP),
             Ran::Failed
         );
-        assert_eq!(Ran::Exited(Some(0), "x".into()).success(), Some("x".into()));
-        assert_eq!(Ran::Exited(Some(1), "x".into()).success(), None);
-        assert_eq!(Ran::Exited(None, "x".into()).success(), None);
-        assert_eq!(Ran::TimedOut.success(), None);
+        assert_eq!(
+            Ran::Exited(Some(0), String::from("x")).success(),
+            Some("x".into())
+        );
+        assert_eq!(Ran::Exited(Some(1), String::from("x")).success(), None);
+        assert_eq!(Ran::Exited(None, String::from("x")).success(), None);
+        assert_eq!(Ran::<String>::TimedOut.success(), None);
     }
 
     #[test]

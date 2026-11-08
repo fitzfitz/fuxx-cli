@@ -120,23 +120,45 @@ fn named(program: &str, rest: &[&str]) -> String {
                 || file_name(script).to_string(),
                 |s| s.to_string_lossy().into(),
             );
-            return with_subcommand(&stem, &rest[1..]);
+            if is_clean_word(&stem) {
+                return with_subcommand(&stem, &rest[1..]);
+            }
         }
     }
     with_subcommand(program, rest)
 }
 
-/// `tool` and its subcommand when it's one of `SUBCOMMAND_TOOLS`; else `tool` alone.
+/// The longest word a name takes from the arguments.
+const MAX_WORD: usize = 32;
+
+/// Whether an argument may go into a name: a plain word (`dev`, `test`, `build:web`), never a
+/// flag or what follows `--`, a value (`KEY=…`), a path (`/…`, `~/…`, `./…`), a `+toolchain`, or
+/// anything longer than `MAX_WORD` or with other characters. Names reach the window title, the
+/// tabs, the rows and banners, so a token in the arguments must never get there.
+fn is_clean_word(word: &str) -> bool {
+    !word.is_empty()
+        && word.len() <= MAX_WORD
+        && !word.starts_with(['-', '/', '~', '+', '.'])
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+}
+
+/// `tool` and its subcommand when it's one of `SUBCOMMAND_TOOLS`; else `tool` alone. The
+/// subcommand is the word right after the tool, and after `run` or `exec` the word right after
+/// that, each only if it's a clean word (`is_clean_word`): no word is taken from past a flag, so
+/// a flag's value (`-C build`, `-e API_KEY=…`, `-- --token …`) never becomes the name.
 fn with_subcommand(tool: &str, rest: &[&str]) -> String {
     let mut name = tool.to_string();
     if !SUBCOMMAND_TOOLS.contains(&tool) {
         return name;
     }
-    let mut words = rest.iter().filter(|w| !w.starts_with('-'));
-    if let Some(sub) = words.next() {
+    let mut words = rest.iter().copied();
+    let mut clean = || words.next().filter(|w| is_clean_word(w));
+    if let Some(sub) = clean() {
         name = format!("{name} {sub}");
-        if matches!(*sub, "run" | "exec")
-            && let Some(next) = words.next()
+        if matches!(sub, "run" | "exec")
+            && let Some(next) = clean()
         {
             name = format!("{name} {next}");
         }
@@ -299,7 +321,8 @@ mod tests {
             ),
             ("node /x/@google/gemini-cli/dist/index.js", "gemini"),
             ("/opt/homebrew/bin/aider --model x", "aider"),
-            ("make -j8 all", "make all"),
+            ("make all", "make all"),
+            ("make -j8 all", "make"),
             ("git rebase -i main", "git rebase"),
             ("yarn exec tsc", "yarn exec tsc"),
             ("python3.12 app.py", "app"),
@@ -310,6 +333,38 @@ mod tests {
         for (args, name) in cases {
             assert_eq!(program_name(args), name, "{args}");
         }
+    }
+
+    #[test]
+    fn flag_values_paths_and_secrets_never_show() {
+        let cases = [
+            ("cargo run -- --token abc123", "cargo run", "abc123"),
+            (
+                "docker run -e API_KEY=sk-live-0123456789 img",
+                "docker run",
+                "sk-live",
+            ),
+            ("git -c user.token=ghp_0123456789 push", "git", "ghp_"),
+            ("make -C build all", "make", "build"),
+            ("git -C /Users/me/repo status", "git", "/Users"),
+            ("git -C ~/repo status", "git", "repo"),
+            ("npm run ./scripts/x.js", "npm run", "scripts"),
+            ("npx +foo", "npx", "foo"),
+            ("yarn exec .bin/tsc", "yarn exec", "bin"),
+            ("uv run a$b", "uv run", "$"),
+            ("just 0123456789abcdef0123456789abcdef0", "just", "0123"),
+            ("node secret=abc main.js", "node", "secret"),
+        ];
+        for (args, name, hidden) in cases {
+            let shown = program_name(args);
+            assert_eq!(shown, name, "{args}");
+            assert!(!shown.contains(hidden), "{args} shows {hidden}");
+        }
+        // Clean words still name the job.
+        assert_eq!(program_name("npm run dev"), "npm run dev");
+        assert_eq!(program_name("cargo test"), "cargo test");
+        assert_eq!(program_name("go test ./..."), "go test");
+        assert_eq!(program_name("just build:web"), "just build:web");
     }
 
     #[test]

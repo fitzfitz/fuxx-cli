@@ -4916,7 +4916,17 @@ fn smart_names() {
                 )])
             });
             let shown_ws = cx.read(|cx| ws.read(cx).model.focused_workspace().expect("shown"));
-            for tab in [true, false] {
+            // Each box twice: untouched; then with the smart name changing while it's open
+            // (claude quits to the prompt): Enter on the text it opened with still stores no
+            // name (Settled #14), and the name follows what runs.
+            let claude_state = |running: bool| {
+                if running {
+                    crate::smart_name::ProgramState::Running("claude".into())
+                } else {
+                    crate::smart_name::ProgramState::Prompt
+                }
+            };
+            for (tab, changes) in [(true, false), (false, false), (true, true), (false, true)] {
                 cx.update_window(window, |_, window, cx| {
                     ws.update(cx, |ws, cx| {
                         if tab {
@@ -4937,17 +4947,40 @@ fn smart_names() {
                         "{n}: the box starts with the smart name"
                     );
                 });
+                if changes {
+                    cx.update(|cx| {
+                        ws.update(cx, |ws, cx| {
+                            ws.programs.set_for_shots(ids.claude, claude_state(false));
+                            cx.notify();
+                        })
+                    });
+                    cx.run_until_parked();
+                }
                 cx.simulate_keystrokes(window, "enter");
                 cx.run_until_parked();
                 cx.read(|cx| {
                     let ws = ws.read(cx);
-                    assert!(ws.renaming.is_none(), "{n}: Enter closed the box");
+                    let m = format!("{n} (tab: {tab}, changed while open: {changes})");
+                    assert!(ws.renaming.is_none(), "{m}: Enter closed the box");
                     let i = ws.index_of(ids.claude).expect("open");
-                    assert_eq!(ws.sessions.items()[i].name, None, "{n}: still automatic");
+                    assert_eq!(ws.sessions.items()[i].name, None, "{m}: still automatic");
                     let w = ws.model.workspace(shown_ws).expect("shown");
-                    assert_eq!(w.name, None, "{n}: the workspace still automatic");
-                    assert_eq!(ws.terminal_label(ids.claude).as_ref(), "claude · fuxx-cli");
+                    assert_eq!(w.name, None, "{m}: the workspace still automatic");
+                    let now = if changes {
+                        "fuxx-cli"
+                    } else {
+                        "claude · fuxx-cli"
+                    };
+                    assert_eq!(ws.terminal_label(ids.claude).as_ref(), now, "{m}");
+                    assert_eq!(ws.workspace_label(shown_ws).as_ref(), now, "{m}");
                 });
+                cx.update(|cx| {
+                    ws.update(cx, |ws, cx| {
+                        ws.programs.set_for_shots(ids.claude, claude_state(true));
+                        cx.notify();
+                    })
+                });
+                cx.run_until_parked();
             }
             slot.borrow_mut().take();
         };

@@ -169,8 +169,8 @@ impl Programs {
         self.by_terminal.insert(id, stable);
     }
 
-    /// A `ps` table (none: `ps` failed), read for `shells` (each terminal and its shell's pid);
-    /// true when a terminal's shown program changed. A failed `ps` forgets what was known, so
+    /// A `ps` table (none: `ps` failed), read for `shells` (each terminal and its shell's pid;
+    /// any other is forgotten); true when a terminal's shown program changed. A failed `ps` forgets what was known, so
     /// the names fall back to their folders rather than keep a stale program.
     pub fn take(&mut self, table: Option<Vec<Proc>>, shells: &[(u64, u32)]) -> bool {
         let Some(table) = table else {
@@ -198,6 +198,11 @@ impl Programs {
             };
             changed |= self.by_terminal.entry(id).or_default().offer(seen);
         }
+        // The terminals not asked about: their names left the screen. Forgotten, so they fall
+        // back to `preset · folder` rather than keep a stale program, and their first answer
+        // back is taken at once.
+        self.by_terminal
+            .retain(|id, _| shells.iter().any(|(shell_id, _)| shell_id == id));
         self.table = Some(Rc::new(table));
         changed
     }
@@ -3251,11 +3256,11 @@ mod tests {
     fn programs_are_read_from_the_ps_table_and_kept_steady() {
         // s1: zsh at its prompt; s2: zsh running claude (a node package); s3: zsh running make.
         let ps = "\
-            100 1 100 100 -zsh\n\
-            200 1 200 210 -zsh\n\
-            210 200 210 210 node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js\n\
-            300 1 300 310 -zsh\n\
-            310 300 310 310 make -j8 all\n";
+            100 1 100 100 Ss -zsh\n\
+            200 1 200 210 Ss -zsh\n\
+            210 200 210 210 S+ node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js\n\
+            300 1 300 310 Ss -zsh\n\
+            310 300 310 310 S+ make all\n";
         let shells = [(1, 100), (2, 200), (3, 300), (4, 999)];
         let mut programs = Programs::default();
         assert_eq!(programs.state(1), ProgramState::Unknown, "never looked up");
@@ -3268,11 +3273,29 @@ mod tests {
         assert_eq!(programs.state(5), ProgramState::Unknown);
         assert!(programs.table().is_some_and(|t| t.len() == 5));
         // make ends: one answer isn't enough, two are.
-        let after = "100 1 100 100 -zsh\n300 1 300 300 -zsh\n";
+        let after = "100 1 100 100 Ss -zsh\n300 1 300 300 Ss -zsh\n";
         assert!(!programs.take(Some(parse_ps(after)), &shells[2..3]));
         assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
         assert!(programs.take(Some(parse_ps(after)), &shells[2..3]));
         assert_eq!(programs.state(3), ProgramState::Prompt);
+        // Terminals not asked about (their names left the screen) are forgotten: they fall back
+        // to `preset · folder`, and their first answer back is taken at once.
+        assert_eq!(
+            programs.state(2),
+            ProgramState::Unknown,
+            "s2 left the screen"
+        );
+        assert_eq!(programs.state(1), ProgramState::Unknown, "s1 too");
+        assert!(programs.take(Some(parse_ps(ps)), &shells));
+        assert_eq!(programs.state(1), ProgramState::Prompt);
+        assert_eq!(programs.state(2), ProgramState::Running("claude".into()));
+        // s3 stayed on screen: one sighting of make isn't enough...
+        assert_eq!(programs.state(3), ProgramState::Prompt);
+        // ...but after leaving the screen and coming back, its first answer is taken at once.
+        programs.take(Some(parse_ps(ps)), &shells[..1]);
+        assert_eq!(programs.state(3), ProgramState::Unknown);
+        assert!(programs.take(Some(parse_ps(ps)), &shells[2..3]));
+        assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
         // ps failing: what was known is forgotten (the names fall back to their folders).
         assert!(programs.take(None, &shells));
         assert_eq!(programs.state(1), ProgramState::Unknown);
