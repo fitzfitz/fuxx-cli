@@ -250,7 +250,7 @@ pub fn reveal_row(rows: &[DiffRow], change: (usize, LineChange)) -> Option<usize
 /// `min(contrast(c, background), TEXT_MIN)`, never below `MARK_MIN`: dimmer, still readable.
 #[allow(dead_code)] // wired in M11h task 3/4
 pub fn dim(c: Rgb, background: Rgb) -> Rgb {
-    let floor = contrast(c, background).min(TEXT_MIN).max(MARK_MIN);
+    let floor = contrast(c, background).clamp(MARK_MIN, TEXT_MIN);
     ensure_contrast(mix(c, background, DIM_MIX), background, floor)
 }
 
