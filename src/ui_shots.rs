@@ -7955,10 +7955,15 @@ fn shot_shell_pid(id: u64) -> u32 {
     1000 + id as u32
 }
 
-/// One of the programs' lookups as the app runs it every 3 s (`Programs::take`, `ps` left out):
+/// What the programs' lookup does with each `ps` table (`Programs::take` and a redraw; the
+/// `ps` itself, and the 3 s timer that runs it, are left out: `for_shots` freezes the lookups):
 /// each of `states`' terminals at its prompt (`false`) or running `make all` (`true`), offered
-/// twice so the steadying takes it. Then the clock moves past a lookup and a ports refresh.
-fn names_tick(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>, states: &[(u64, bool)]) {
+/// twice so the steadying takes it.
+fn programs_lookup(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+    states: &[(u64, bool)],
+) {
     use crate::procs::Proc;
     let proc = |pid: u32, pgid: u32, tpgid: u32, args: &str| Proc {
         pid,
@@ -7992,9 +7997,6 @@ fn names_tick(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>, state
         })
     });
     cx.run_until_parked();
-    cx.background_executor
-        .advance_clock(std::time::Duration::from_secs(6));
-    cx.run_until_parked();
 }
 
 /// The ids of `renames`'s terminals.
@@ -8005,22 +8007,29 @@ struct RenameIds {
 }
 
 /// Renaming by typing (the user's report, 2026-11-09: "I cannot rename them at all"), for a
-/// terminal at its prompt and one running a program, each in a workspace of its own:
-/// - a double-click on its tab opens the tab's rename box with the keyboard; a lookup of what
-///   runs (and the clock past a ports refresh) while it's open leaves it open and focused;
-///   a new name typed and Enter name the terminal, and after another lookup the tab, the row
-///   (its workspace has no name) and the window title all show it;
-/// - ⌘R opens the row's rename box the same way; a typed name and Enter name the workspace,
-///   and after a lookup the row and the window title show it, the tab still the terminal's.
+/// terminal at its prompt and one running a program, each in a workspace of its own. Each box
+/// is opened by a real gesture; a programs lookup (`programs_lookup`) runs while it's open and
+/// after Enter, and the program sets a new title (OSC 2, through the terminal's own parser and
+/// `TerminalEvent::TitleChanged`) between the typing and Enter:
+/// - a double-click on its tab: the tab's box opens with the keyboard (with ╭∩╮: no title, no
+///   preset), stays open and focused through the lookup and the title, and the typed name
+///   names the terminal: the tab, the row (its workspace has no name) and the window title
+///   show it, not the title;
+/// - a double-click on its row (the sidebar takes the keyboard back on each press first): the
+///   row's box opens with the keyboard, holds, and the typed name names the workspace: the row
+///   and the window title show it, the tab the terminal's;
+/// - ⌘R: the same, a second name for the workspace.
 ///
-/// Both start as ╭∩╮ (no title, no preset). In both themes (`renames-*.png`, the second
-/// workspace renamed). Panics on the first that doesn't hold.
+/// In both themes (`renames-*.png`, the second workspace renamed). Panics on the first that
+/// doesn't hold.
 fn renames() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Instant;
 
-    use gpui::{Focusable, KeyBinding, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+    use gpui::{
+        Focusable, KeyBinding, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Point,
+    };
 
     use crate::sidebar::SidebarRow;
     use crate::workspace::{At, RenameSession, Renaming, window_title};
@@ -8059,16 +8068,62 @@ fn renames() {
                 ])
             });
             let none = Modifiers::none();
-            // Whether the rename box is open on `on`, with the keyboard.
+            let double_click = |cx: &mut VisualTestAppContext, at: Point<Pixels>| {
+                for count in [1, 2] {
+                    cx.simulate_event(
+                        window,
+                        MouseDownEvent {
+                            position: at,
+                            modifiers: none,
+                            button: MouseButton::Left,
+                            click_count: count,
+                            first_mouse: false,
+                        },
+                    );
+                    cx.simulate_event(
+                        window,
+                        MouseUpEvent {
+                            position: at,
+                            modifiers: none,
+                            button: MouseButton::Left,
+                            click_count: count,
+                        },
+                    );
+                }
+                cx.run_until_parked();
+            };
+            // Whether the rename box is open on `on`, with the keyboard, and its text.
             let open_on = |cx: &mut VisualTestAppContext, on: Renaming| {
                 cx.update_window(window, |_, window, cx| {
                     let ws = ws.read(cx);
                     ws.renaming
                         .as_ref()
                         .filter(|(r, _)| *r == on)
-                        .map(|(_, input)| input.focus_handle(cx).is_focused(window))
+                        .map(|(_, input)| {
+                            let input = input.read(cx);
+                            (
+                                input.focus_handle(cx).is_focused(window),
+                                input.text().to_string(),
+                            )
+                        })
                 })
                 .expect("read the box")
+            };
+            // The program sets terminal `id`'s title (OSC 2), through the terminal's parser.
+            let set_title = |cx: &mut VisualTestAppContext, id: u64, title: &str| {
+                cx.update(|cx| {
+                    let ws = ws.read(cx);
+                    let i = ws.index_of(id).expect("open");
+                    let view = ws.sessions.items()[i].view.read(cx);
+                    view.show_text(&format!("\x1b]2;{title}\x07"));
+                });
+                cx.run_until_parked();
+                let got = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let i = ws.index_of(id).expect("open");
+                    ws.sessions.items()[i].title.as_ref().map(|t| t.to_string())
+                });
+                assert_eq!(got.as_deref(), Some(title), "the title reached the session");
             };
             // What the tab, the row and the window title say about terminal `id`'s workspace.
             let shown = |cx: &mut VisualTestAppContext, id: u64| {
@@ -8095,9 +8150,45 @@ fn renames() {
                     )
                 })
             };
-            for (id, running, typed, ws_typed) in [
-                (ids.prompt, false, "my-shell", "shell-work"),
-                (ids.running, true, "my-agent", "agent-work"),
+            // Type `typed` into the box open on `on` (whose text is `from`), with a lookup
+            // before and the title changing before Enter, then a lookup after.
+            let rename = |cx: &mut VisualTestAppContext,
+                          id: u64,
+                          running: bool,
+                          on: Renaming,
+                          from: &str,
+                          typed: &str,
+                          m: &str| {
+                assert_eq!(
+                    open_on(cx, on),
+                    Some((true, from.to_string())),
+                    "{m}: the box is open with the keyboard, with the name"
+                );
+                programs_lookup(cx, &ws, &[(id, !running)]);
+                assert_eq!(
+                    open_on(cx, on).map(|(focused, _)| focused),
+                    Some(true),
+                    "{m}: still open with the keyboard after a lookup"
+                );
+                cx.simulate_input(window, typed);
+                set_title(cx, id, &format!("✳ {typed} title"));
+                assert_eq!(
+                    open_on(cx, on),
+                    Some((true, typed.to_string())),
+                    "{m}: still open with the keyboard and the typing after a new title"
+                );
+                cx.simulate_keystrokes(window, "enter");
+                cx.run_until_parked();
+                programs_lookup(cx, &ws, &[(id, running)]);
+                assert!(
+                    cx.read(|cx| ws.read(cx).renaming.is_none()),
+                    "{m}: Enter closed the box"
+                );
+            };
+            let default = crate::groups::DEFAULT_NAME;
+            for (id, running, typed, ws_clicked, ws_keyed) in [
+                (ids.prompt, false, "my-shell", "shell-work", "shell-2"),
+                (ids.running, true, "my-agent", "agent-work", "agent-2"),
             ] {
                 let n = format!("renames-{slug} (running: {running})");
                 cx.update_window(window, |_, window, cx| {
@@ -8111,106 +8202,59 @@ fn renames() {
                 // The tab: a double-click on it.
                 let pane = shown_panes(cx, &ws)[0];
                 let at = tab_bounds(cx, &ws, pane, 0).expect("laid out").center();
-                for count in [1, 2] {
-                    cx.simulate_event(
-                        window,
-                        MouseDownEvent {
-                            position: at,
-                            modifiers: none,
-                            button: MouseButton::Left,
-                            click_count: count,
-                            first_mouse: false,
-                        },
-                    );
-                    cx.simulate_event(
-                        window,
-                        MouseUpEvent {
-                            position: at,
-                            modifiers: none,
-                            button: MouseButton::Left,
-                            click_count: count,
-                        },
-                    );
-                }
-                cx.run_until_parked();
-                assert_eq!(
-                    open_on(cx, Renaming::Terminal(id)),
-                    Some(true),
-                    "{n}: the tab's box is open with the keyboard"
-                );
-                let opened_with = cx.read(|cx| ws.read(cx).terminal_label(id).to_string());
-                let text = cx.read(|cx| {
-                    let ws = ws.read(cx);
-                    let (_, input) = ws.renaming.as_ref().expect("open");
-                    input.read(cx).text().to_string()
-                });
-                assert_eq!(text, opened_with, "{n}: the box starts with the name");
-                assert_eq!(
-                    text,
-                    crate::groups::DEFAULT_NAME,
-                    "{n}: untitled and unnamed, ╭∩╮, at a prompt or running"
-                );
-                // A lookup while it's open (what runs changes): it stays open and focused.
-                names_tick(cx, &ws, &[(id, !running)]);
-                assert_eq!(
-                    open_on(cx, Renaming::Terminal(id)),
-                    Some(true),
-                    "{n}: still open with the keyboard after a lookup"
-                );
-                cx.simulate_input(window, typed);
-                cx.simulate_keystrokes(window, "enter");
-                cx.run_until_parked();
-                names_tick(cx, &ws, &[(id, running)]);
+                double_click(cx, at);
+                let m = format!("{n}, the tab");
+                rename(cx, id, running, Renaming::Terminal(id), default, typed, &m);
                 cx.read(|cx| {
                     let ws = ws.read(cx);
-                    assert!(ws.renaming.is_none(), "{n}: Enter closed the box");
                     let i = ws.index_of(id).expect("open");
                     let name = ws.sessions.items()[i].name.as_deref();
-                    assert_eq!(name, Some(typed), "{n}: the terminal is named");
-                    assert_eq!(ws.terminal_label(id).as_ref(), typed, "{n}: its name");
+                    assert_eq!(name, Some(typed), "{m}: the terminal is named");
                 });
                 let (tab, row, title, number) = shown(cx, id);
-                assert_eq!(tab, typed, "{n}: the tab");
-                assert_eq!(row, typed, "{n}: the row (its workspace has no name)");
-                assert_eq!(title, window_title(number, typed), "{n}: the window title");
+                assert_eq!(tab, typed, "{m}: the tab, not the title");
+                assert_eq!(row, typed, "{m}: the row (its workspace has no name)");
+                assert_eq!(title, window_title(number, typed), "{m}: the window title");
 
-                // The row: ⌘R.
-                cx.simulate_keystrokes(window, "cmd-r");
-                cx.run_until_parked();
-                let w = cx.read(|cx| ws.read(cx).model.focused_workspace().expect("shown"));
-                assert_eq!(
-                    open_on(cx, Renaming::Workspace(w)),
-                    Some(true),
-                    "{n}: the row's box is open with the keyboard"
-                );
-                names_tick(cx, &ws, &[(id, !running)]);
-                assert_eq!(
-                    open_on(cx, Renaming::Workspace(w)),
-                    Some(true),
-                    "{n}: the row's box still open after a lookup"
-                );
-                cx.simulate_input(window, ws_typed);
-                cx.simulate_keystrokes(window, "enter");
-                cx.run_until_parked();
-                names_tick(cx, &ws, &[(id, running)]);
-                cx.read(|cx| {
+                // The row: a double-click on it, then ⌘R.
+                let (w, at) = cx.read(|cx| {
                     let ws = ws.read(cx);
-                    assert!(ws.renaming.is_none(), "{n}: Enter closed the row's box");
-                    let name = ws.model.workspace(w).and_then(|w| w.name.clone());
-                    assert_eq!(
-                        name.as_deref(),
-                        Some(ws_typed),
-                        "{n}: the workspace is named"
-                    );
+                    let w = ws.model.focused_workspace().expect("shown");
+                    let item = ws
+                        .rows_in_view(Instant::now())
+                        .iter()
+                        .position(|row| matches!(row, SidebarRow::Workspace(r) if r.workspace == w))
+                        .expect("its row");
+                    let b = ws.sidebar.scroll.bounds_for_item(item).expect("laid out");
+                    (w, b.center())
                 });
-                let (tab, row, title, number) = shown(cx, id);
-                assert_eq!(tab, typed, "{n}: the tab keeps the terminal's name");
-                assert_eq!(row, ws_typed, "{n}: the row");
-                assert_eq!(
-                    title,
-                    window_title(number, ws_typed),
-                    "{n}: the window title"
-                );
+                for (gesture, from, typed_ws) in [
+                    ("double-click", typed, ws_clicked),
+                    ("cmd-r", ws_clicked, ws_keyed),
+                ] {
+                    let m = format!("{n}, the row by {gesture}");
+                    match gesture {
+                        "double-click" => double_click(cx, at),
+                        _ => {
+                            cx.simulate_keystrokes(window, "cmd-r");
+                            cx.run_until_parked();
+                        }
+                    }
+                    rename(cx, id, running, Renaming::Workspace(w), from, typed_ws, &m);
+                    cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        let name = ws.model.workspace(w).and_then(|w| w.name.clone());
+                        assert_eq!(name.as_deref(), Some(typed_ws), "{m}: the workspace");
+                    });
+                    let (tab, row, title, number) = shown(cx, id);
+                    assert_eq!(tab, typed, "{m}: the tab keeps the terminal's name");
+                    assert_eq!(row, typed_ws, "{m}: the row");
+                    assert_eq!(
+                        title,
+                        window_title(number, typed_ws),
+                        "{m}: the window title"
+                    );
+                }
             }
             slot.borrow_mut().take();
         };

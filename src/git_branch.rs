@@ -6,13 +6,13 @@
 //! branch: `git rev-parse --abbrev-ref HEAD` there (a detached HEAD: its short sha), run off the
 //! UI thread with a 2 s cap and cached per folder (`Places`). Both are looked up again at most
 //! every 5 s, and only for rows on screen (`due`); outside a repo, or with no git, there is no
-//! branch and nothing is said. Since M11i the folders of every terminal whose name is on
-//! screen are looked up too (`named_on_screen`): a terminal's name says where it is.
+//! branch and nothing is said. Since M11i the terminal the status bar follows is looked up too
+//! (its folder and branch are on the bar): `place_subjects`.
 //!
-//! `parse_head`, `short_sha`, `due`, `git_program` and `Places` are pure and tested; `branch_at`
-//! runs git and `process_cwd` asks the kernel. The Workspace's `refresh_places` (on each frame,
-//! rate-limited by `due`) and `tick_places` (every 5 s while a row can be seen, so nothing wakes
-//! a hidden or covered window) do the lookups.
+//! `parse_head`, `short_sha`, `due`, `git_program`, `subjects` and `Places` are pure and tested;
+//! `branch_at` runs git and `process_cwd` asks the kernel. The Workspace's `refresh_places` (on
+//! each frame, rate-limited by `due`) and `tick_places` (every 5 s while a place can be seen,
+//! so nothing wakes a hidden or covered window) do the lookups.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, c_int, c_void};
@@ -483,32 +483,32 @@ impl Places {
     }
 }
 
-impl Workspace {
-    /// The sessions (by place in the list) whose names or places are on screen, each once:
-    /// for each row in view (none with the sidebar hidden), the terminal it is named after (its
-    /// focused pane's, else its first) and its first (its second line's place); every terminal
-    /// tab of the shown workspace's panes; and the terminal the right sidebar and the status
-    /// bar follow.
-    pub(crate) fn named_on_screen(&self) -> Vec<usize> {
-        let rows = self.rows_in_view(Instant::now());
-        let row_terminals = rows.iter().flat_map(|row| match row {
-            SidebarRow::Workspace(w) => [
-                self.named_terminal(w.workspace),
-                self.model.terminals(w.workspace).first().copied(),
-            ],
-            SidebarRow::Header(_) => [None, None],
-        });
-        let mut on_screen: Vec<usize> = Vec::new();
-        let ids = row_terminals
-            .chain([self.right_sidebar.followed])
-            .flatten()
-            .filter_map(|id| self.index_of(id));
-        for i in ids.chain(self.tab_sessions()) {
-            if !on_screen.contains(&i) {
-                on_screen.push(i);
-            }
+/// The terminals (by id) whose facts are on screen, each once, in order: one per row in view
+/// (`rows`; none for a row without one), then `followed` (the status bar's).
+pub fn subjects(rows: impl IntoIterator<Item = Option<u64>>, followed: Option<u64>) -> Vec<u64> {
+    let mut ids: Vec<u64> = Vec::new();
+    for id in rows.into_iter().chain([followed]).flatten() {
+        if !ids.contains(&id) {
+            ids.push(id);
         }
-        on_screen
+    }
+    ids
+}
+
+impl Workspace {
+    /// The sessions (by place in the list) whose places are on screen, each once (`subjects`):
+    /// each row in view's first terminal (its second line's place; none with the sidebar
+    /// hidden), then the terminal the status bar follows.
+    fn place_subjects(&self) -> Vec<usize> {
+        let rows = self.rows_in_view(Instant::now());
+        let firsts = rows.iter().map(|row| match row {
+            SidebarRow::Workspace(w) => self.model.terminals(w.workspace).first().copied(),
+            SidebarRow::Header(_) => None,
+        });
+        subjects(firsts, self.right_sidebar.followed)
+            .into_iter()
+            .filter_map(|id| self.index_of(id))
+            .collect()
     }
 
     /// Whether rows' places can be looked up: the window can be seen (not hidden, minimised or
@@ -518,13 +518,13 @@ impl Workspace {
         seen && !self.places.frozen
     }
 
-    /// Whether the places' refresh should run: they can be seen and a name or row is on screen.
+    /// Whether the places' refresh should run: they can be seen and a place is on screen.
     fn places_wanted(&self, cx: &App) -> bool {
-        self.places_seen(cx) && !self.named_on_screen().is_empty()
+        self.places_seen(cx) && !self.place_subjects().is_empty()
     }
 
-    /// Look up again, where due (`due`), the place of each terminal whose name or row is on
-    /// screen (`named_on_screen`, M11i): its folder at once (what it reported, else the kernel's
+    /// Look up again, where due (`due`), the place of each terminal whose place is on screen
+    /// (`place_subjects`): its folder at once (what it reported, else the kernel's
     /// answer for a local one, else the folder it started in; an SSH one's only as reported),
     /// and the branch there from git, off the UI thread. True when a folder changed (git's
     /// answer redraws when it comes).
@@ -534,7 +534,7 @@ impl Workspace {
         }
         let now = Instant::now();
         let mut changed = false;
-        for i in self.named_on_screen() {
+        for i in self.place_subjects() {
             let session = &self.sessions.items()[i];
             let (id, ssh) = (session.id, session.ssh.is_some());
             if self.places.folder_due(id, now) {
@@ -617,6 +617,21 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_subjects_are_the_rows_terminals_then_the_followed_one_each_once() {
+        // Three rows (the second has no terminal, the third repeats the first's), then the
+        // terminal the status bar follows.
+        assert_eq!(
+            subjects([Some(1), None, Some(2), Some(1)], Some(3)),
+            [1, 2, 3]
+        );
+        // The followed one is a row's: once.
+        assert_eq!(subjects([Some(1), Some(2)], Some(2)), [1, 2]);
+        // No rows (the sidebar hidden): only the followed one.
+        assert_eq!(subjects([], Some(4)), [4]);
+        assert!(subjects([None], None).is_empty());
+    }
 
     #[test]
     fn head_reads_as_a_branch_or_detached() {

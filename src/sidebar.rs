@@ -2796,12 +2796,12 @@ mod tests {
     fn a_waiting_rows_tooltip_has_its_whole_question() {
         let question = "Do you want to make this edit to src/auth/session_store.rs? (y/n)";
         assert_eq!(
-            row_tip("claude \u{b7} api", None, Some(question)).as_deref(),
-            Some(format!("claude \u{b7} api\n{question}").as_str())
+            row_tip("api", None, Some(question)).as_deref(),
+            Some(format!("api\n{question}").as_str())
         );
         assert_eq!(
-            row_tip("claude \u{b7} api", Some("Editing auth"), Some(question)).as_deref(),
-            Some(format!("claude \u{b7} api\nEditing auth\n{question}").as_str())
+            row_tip("api", Some("Editing auth"), Some(question)).as_deref(),
+            Some(format!("api\nEditing auth\n{question}").as_str())
         );
         // Not waiting (no question): as before, the title only when it says more.
         assert_eq!(
