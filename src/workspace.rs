@@ -17,7 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
@@ -50,6 +50,7 @@ use crate::notifier;
 use crate::pane_tab_menu::PaneTabMenu;
 use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
+use crate::procs::{self, Foreground, Proc};
 use crate::pty::ShellEnv;
 use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
 use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
@@ -58,6 +59,7 @@ use crate::session_list::SessionList;
 use crate::settings;
 use crate::sidebar::{self, RowGrab, SidebarState};
 use crate::sidebar_toggle::{self, Slide};
+use crate::smart_name::{self, NameFacts, ProgramState, Stable};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
@@ -126,6 +128,165 @@ actions!(
 /// How long after a session turns Done its mark is drawn as a pop: the pop, plus a margin for the
 /// frame it starts on. After that the mark is drawn plain, so the pop never plays twice.
 pub(crate) const POP_SHOWN: std::time::Duration = std::time::Duration::from_millis(450);
+
+/// How often what runs in the terminals whose names are on screen is looked up again (one
+/// `ps`), at most.
+pub(crate) const NAMES_REFRESH: Duration = Duration::from_secs(3);
+
+/// What runs in each terminal (M11i), for its name (`terminal_label`): read from one `ps` table
+/// (`procs::ps_table`, on the background executor) at most every `NAMES_REFRESH`, and kept
+/// steady (`Stable`). A terminal never looked up is `Unknown`, not at its prompt.
+#[derive(Default)]
+pub(crate) struct Programs {
+    by_terminal: HashMap<u64, Stable>,
+    /// The last table read (the status bar's ports lookup finds a shell's processes in it).
+    table: Option<Rc<Vec<Proc>>>,
+    /// Nothing is looked up (the UI screenshots set what they show).
+    pub frozen: bool,
+    /// When `ps` last ran.
+    last_run: Option<Instant>,
+}
+
+impl Programs {
+    /// What terminal `id` is shown running.
+    pub fn state(&self, id: u64) -> ProgramState {
+        self.by_terminal
+            .get(&id)
+            .map_or(ProgramState::Unknown, |s| s.shown().clone())
+    }
+
+    /// The last `ps` table read; none before the first or after a failed one.
+    #[allow(dead_code)] // read by the status bar's ports lookup (M11i Task 7)
+    pub fn table(&self) -> Option<Rc<Vec<Proc>>> {
+        self.table.clone()
+    }
+
+    /// Show terminal `id` running `state` (the screenshots; nothing is looked up there).
+    #[cfg(feature = "ui-shots")]
+    pub fn set_for_shots(&mut self, id: u64, state: ProgramState) {
+        let mut stable = Stable::new();
+        stable.offer(state);
+        self.by_terminal.insert(id, stable);
+    }
+
+    /// A `ps` table (none: `ps` failed), read for `shells` (each terminal and its shell's pid);
+    /// true when a terminal's shown program changed. A failed `ps` forgets what was known, so
+    /// the names fall back to their folders rather than keep a stale program.
+    pub fn take(&mut self, table: Option<Vec<Proc>>, shells: &[(u64, u32)]) -> bool {
+        let Some(table) = table else {
+            self.table = None;
+            let known = self
+                .by_terminal
+                .values()
+                .any(|s| *s.shown() != ProgramState::Unknown);
+            self.by_terminal.clear();
+            return known;
+        };
+        let mut changed = false;
+        for &(id, shell) in shells {
+            let seen = match procs::foreground(&table, shell) {
+                Foreground::Prompt => ProgramState::Prompt,
+                Foreground::Program(args) => {
+                    let name = smart_name::program_name(&args);
+                    if name.is_empty() {
+                        ProgramState::Unknown
+                    } else {
+                        ProgramState::Running(name)
+                    }
+                }
+                Foreground::Unknown => ProgramState::Unknown,
+            };
+            changed |= self.by_terminal.entry(id).or_default().offer(seen);
+        }
+        self.table = Some(Rc::new(table));
+        changed
+    }
+
+    /// How long until `ps` may run again (`NAMES_REFRESH` after the last run), from `now`.
+    pub fn wait(&self, now: Instant) -> Duration {
+        self.last_run.map_or(Duration::ZERO, |at| {
+            NAMES_REFRESH.saturating_sub(now.saturating_duration_since(at))
+        })
+    }
+
+    /// Forget terminals that are gone (by their ids still open).
+    pub fn retain(&mut self, open: impl Fn(u64) -> bool) {
+        self.by_terminal.retain(|id, _| open(*id));
+    }
+}
+
+impl Workspace {
+    /// The local terminals whose names are on screen (`named_on_screen`) with their shell's
+    /// pid. Not SSH ones (their programs run elsewhere) nor background-service ones (fuxx
+    /// doesn't have their shell's pid), nor lost ones.
+    fn program_shells(&self, cx: &App) -> Vec<(u64, u32)> {
+        self.named_on_screen()
+            .into_iter()
+            .filter_map(|i| {
+                let s = &self.sessions.items()[i];
+                if s.ssh.is_some() || s.lost {
+                    return None;
+                }
+                Some((s.id, s.view.read(cx).working_folder().1?))
+            })
+            .collect()
+    }
+
+    /// Whether the programs' lookup should run: the window can be seen (not hidden, minimised
+    /// or covered), it isn't frozen, and a local terminal's name is on screen.
+    fn programs_wanted(&self, cx: &App) -> bool {
+        let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
+        seen && !self.programs.frozen && !self.program_shells(cx).is_empty()
+    }
+
+    /// Start the programs' lookup unless it's running or nothing is wanted (`programs_wanted`):
+    /// one `ps` on the background executor (capped at 2 s), at most every `NAMES_REFRESH` (also
+    /// across restarts), its answer read for the terminals on screen then. It stops once
+    /// nothing is wanted, so a hidden or covered window is never woken; `render` calls it, so
+    /// showing the window again starts it.
+    pub(crate) fn tick_programs(&mut self, cx: &mut Context<Self>) {
+        if self.programs_ticking || !self.programs_wanted(cx) {
+            return;
+        }
+        self.programs_ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(wait) = this.update(cx, |this, _| this.programs.wait(Instant::now())) else {
+                    break;
+                };
+                if !wait.is_zero() {
+                    cx.background_executor().timer(wait).await;
+                }
+                let wanted = this
+                    .update(cx, |this, cx| {
+                        this.programs_ticking = this.programs_wanted(cx);
+                        if this.programs_ticking {
+                            this.programs.last_run = Some(Instant::now());
+                        }
+                        this.programs_ticking
+                    })
+                    .unwrap_or(false);
+                if !wanted {
+                    break;
+                }
+                let table = cx
+                    .background_executor()
+                    .spawn(async { procs::ps_table() })
+                    .await;
+                let took = this.update(cx, |this, cx| {
+                    let shells = this.program_shells(cx);
+                    if this.programs.take(table, &shells) {
+                        cx.notify();
+                    }
+                });
+                if took.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+}
 
 pub struct Session {
     /// Scripting id: shown to scripts as `s<id>`.
@@ -378,6 +539,12 @@ pub struct Workspace {
     pub(crate) places: Places,
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
     pub(crate) places_ticking: bool,
+    /// What runs in each terminal, for its name (`Programs`).
+    pub(crate) programs: Programs,
+    /// Whether the programs' 3 s lookup is running (only while a name it gives can be seen).
+    pub(crate) programs_ticking: bool,
+    /// The name the rename box was opened with: Enter on it unchanged keeps the name automatic.
+    pub(crate) renamed_from: String,
     /// This run's notifications, for the title area's 🔔 (`title_area`).
     pub(crate) notifications: NotificationList,
     /// The 🔔's popover, while it is open: the focus it holds (so Escape closes it).
@@ -514,6 +681,9 @@ impl Workspace {
             right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             places_ticking: false,
+            programs: Programs::default(),
+            programs_ticking: false,
+            renamed_from: String::new(),
             notifications: NotificationList::default(),
             notifications_popover: None,
         }
@@ -1098,6 +1268,7 @@ impl Workspace {
         }
         let ids = self.session_ids();
         self.places.retain(|id| ids.contains(&id));
+        self.programs.retain(|id| ids.contains(&id));
         let sessions = self.sessions.items();
         let group_of = |id: u64| {
             sessions
@@ -1250,8 +1421,55 @@ impl Workspace {
         Some(groups::group_label(&key, &all))
     }
 
-    /// A workspace's name: yours, else its focused pane's terminal's, else its first
-    /// terminal's, else (only browser tabs) "Browser".
+    /// The terminal a workspace is named after: its focused pane's, else its first.
+    pub(crate) fn named_terminal(&self, ws: WorkspaceId) -> Option<u64> {
+        let w = self.model.workspace(ws)?;
+        self.pane_session(w.focused)
+            .map(|s| s.id)
+            .or_else(|| self.model.terminals(ws).first().copied())
+    }
+
+    /// Terminal `id`'s name as fuxx shows it (M11i, `smart_name`): yours, else what runs there
+    /// and where, else where, else (SSH) its host… The scripting API keeps `Session::label`.
+    pub(crate) fn terminal_label(&self, id: u64) -> SharedString {
+        let Some(s) = self.sessions.items().iter().find(|s| s.id == id) else {
+            return groups::DEFAULT_NAME.into();
+        };
+        let host = s.ssh.as_ref().map(|t| t.host.as_str());
+        let found = self.places.folder(id);
+        // An SSH terminal's folder is only what its remote shell reported (not where it began).
+        let folder = if host.is_some() {
+            found
+        } else {
+            found.or(s.project.as_deref())
+        };
+        smart_name::smart_name(&NameFacts {
+            user: s.name.as_deref(),
+            // What runs over SSH is on the other machine: not looked up.
+            program: if host.is_some() {
+                ProgramState::Unknown
+            } else {
+                self.programs.state(id)
+            },
+            folder,
+            home: self.places.home.as_deref(),
+            ssh_host: host,
+            preset: s.preset.as_ref().map(|p| p.name.as_str()),
+            title: s.title.as_deref(),
+        })
+        .into()
+    }
+
+    /// A row's tooltip: its name and, under it, the program's own title when it says more.
+    pub(crate) fn workspace_tip(&self, ws: WorkspaceId) -> Option<String> {
+        let label = self.workspace_label(ws);
+        let id = self.named_terminal(ws)?;
+        let s = self.sessions.items().iter().find(|s| s.id == id)?;
+        smart_name::extra_title(&label, s.title.as_deref()).map(|title| format!("{label}\n{title}"))
+    }
+
+    /// A workspace's name: yours, else its focused pane's terminal's (`terminal_label`), else
+    /// its first terminal's, else the shown page's title or file's name, else "Browser".
     pub(crate) fn workspace_label(&self, ws: WorkspaceId) -> SharedString {
         let Some(w) = self.model.workspace(ws) else {
             return groups::DEFAULT_NAME.into();
@@ -1259,13 +1477,8 @@ impl Workspace {
         if let Some(name) = w.name.as_deref().filter(|n| !n.trim().is_empty()) {
             return name.to_string().into();
         }
-        let first = || {
-            let id = *self.model.terminals(ws).first()?;
-            self.sessions.items().iter().find(|s| s.id == id)
-        };
-        self.pane_session(w.focused)
-            .or_else(first)
-            .map(Session::label)
+        self.named_terminal(ws)
+            .map(|id| self.terminal_label(id))
             .or_else(|| {
                 let tab = self.model.pane(w.focused)?.active;
                 Some(self.browser_titles.get(&tab)?.clone().into())
@@ -1537,9 +1750,10 @@ impl Workspace {
             }
             _ => None,
         };
-        let label = session.label();
-        let terminal = Some(session.id);
+        let id = session.id;
         let question = session.question.clone();
+        let terminal = Some(id);
+        let label = self.terminal_label(id);
         if old != new {
             let change = Event::StatusChanged { from: old, to: new };
             self.emit(&change, Some(index));
@@ -1924,6 +2138,7 @@ impl Workspace {
             return;
         }
         let text = self.workspace_label(ws).to_string();
+        self.renamed_from = text.clone();
         if let Some(key) = self.workspace_group(ws) {
             self.collapsed.retain(|c| *c != key);
         }
@@ -1950,12 +2165,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(text) = self
-            .index_of(id)
-            .map(|i| self.sessions.items()[i].label().to_string())
-        else {
+        if self.index_of(id).is_none() {
             return;
-        };
+        }
+        let text = self.terminal_label(id).to_string();
+        self.renamed_from = text.clone();
         self.close_overlays(Overlay::Rename);
         let input = cx.new(|cx| {
             let mut input = NameInput::new(text, window, cx);
@@ -1982,13 +2196,16 @@ impl Workspace {
         };
         let renaming = *renaming;
         self.renaming = None;
+        // What the box was opened with: confirmed unchanged, an automatic name stays automatic
+        // (and keeps following what runs there).
+        let opened_with = std::mem::take(&mut self.renamed_from);
         if let NameInputEvent::Confirm(text) = event {
             match renaming {
                 Renaming::Workspace(ws) => {
                     if let Some(named) = self.model.workspace(ws).map(|w| w.name.is_some()) {
                         // Enter on an untouched automatic name keeps it automatic (it still
-                        // follows the focused terminal's title).
-                        if named || *text != self.workspace_label(ws).as_ref() {
+                        // follows the focused terminal's name).
+                        if named || *text != opened_with {
                             let name = (!text.is_empty()).then(|| text.clone());
                             self.model.set_name(ws, name);
                         }
@@ -1999,7 +2216,7 @@ impl Workspace {
                     // As `session.rename`; an untouched automatic name stays automatic too.
                     if let Some(i) = self.index_of(id) {
                         let session = &self.sessions.items()[i];
-                        if session.name.is_some() || *text != session.label().as_ref() {
+                        if session.name.is_some() || *text != opened_with {
                             self.rename_at(i, text, cx);
                         }
                     }
@@ -2480,6 +2697,7 @@ impl Render for Workspace {
         if self.places.check_due(Instant::now()) {
             self.refresh_places(cx);
             self.tick_places(cx);
+            self.tick_programs(cx);
         }
         // The terminal the right sidebar follows, and its folder looked up where due.
         self.refresh_right_sidebar(cx);
@@ -2737,6 +2955,7 @@ impl Workspace {
         // unless a scene sets one: nothing is looked up on this Mac.
         this.places.frozen = true;
         this.places.home = Some(PathBuf::from("/Users/me"));
+        this.programs.frozen = true;
         this
     }
 
@@ -2755,18 +2974,19 @@ impl Workspace {
             (Some(axis), Some(pane)) => At::Split(axis, pane),
             _ => At::New,
         };
-        self.open_shot_at(Some(name), project, text, at, window, cx);
+        self.open_shot_at(Some(name), Some(project), text, at, window, cx);
     }
 
-    /// `open_shot_session` for a terminal with no name of yours (a new one): it shows the default.
+    /// `open_shot_session` for a terminal with no name of yours (a new one), in a workspace of
+    /// its own; `project`: none for one that knows no folder (it shows the default).
     pub(crate) fn open_unnamed_shot_session(
         &mut self,
-        project: &Path,
+        project: Option<&Path>,
         text: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        self.open_shot_at(None, project, text, At::New, window, cx);
+    ) -> u64 {
+        self.open_shot_at(None, project, text, At::New, window, cx)
     }
 
     /// `open_shot_session` as a new tab at the end of the focused pane's.
@@ -2779,18 +2999,20 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let at = self.model.focused_pane().map_or(At::New, At::Tab);
-        self.open_shot_at(Some(name), project, text, at, window, cx);
+        self.open_shot_at(Some(name), Some(project), text, at, window, cx);
     }
 
-    fn open_shot_at(
+    /// Open a session at `at`, named `name` (none: automatic) in `project`'s group (none: no
+    /// folder), showing `text` (see `open_shot_session`); its id.
+    pub(crate) fn open_shot_at(
         &mut self,
         name: Option<&str>,
-        project: &Path,
+        project: Option<&Path>,
         text: &str,
         at: At,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> u64 {
         let quiet = ShellEnv {
             base: None,
             set: Vec::new(),
@@ -2801,12 +3023,13 @@ impl Workspace {
         view.read(cx).show_text(text);
         let saved = SavedSession {
             name: name.map(Into::into),
-            project: Some(project.into()),
+            project: project.map(Into::into),
             ..SavedSession::default()
         };
         let id = self.next_id;
         self.next_id += 1;
         self.insert_session(id, view, saved, at, window, cx);
+        id
     }
 }
 
@@ -3009,17 +3232,73 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        daemon_create, notification_summary, scripting_env, session_env, starts_window_move,
-        window_title,
+        NAMES_REFRESH, Programs, daemon_create, notification_summary, scripting_env, session_env,
+        starts_window_move, window_title,
     };
     use crate::presets::Preset;
+    use crate::procs::parse_ps;
     use crate::pty::apply_env;
     use crate::restore::SavedSession;
+    use crate::smart_name::ProgramState;
     use gpui::MouseButton;
     use portable_pty::CommandBuilder;
     use std::collections::BTreeMap;
     use std::ffi::OsStr;
     use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn programs_are_read_from_the_ps_table_and_kept_steady() {
+        // s1: zsh at its prompt; s2: zsh running claude (a node package); s3: zsh running make.
+        let ps = "\
+            100 1 100 100 -zsh\n\
+            200 1 200 210 -zsh\n\
+            210 200 210 210 node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js\n\
+            300 1 300 310 -zsh\n\
+            310 300 310 310 make -j8 all\n";
+        let shells = [(1, 100), (2, 200), (3, 300), (4, 999)];
+        let mut programs = Programs::default();
+        assert_eq!(programs.state(1), ProgramState::Unknown, "never looked up");
+        assert!(programs.take(Some(parse_ps(ps)), &shells));
+        assert_eq!(programs.state(1), ProgramState::Prompt);
+        assert_eq!(programs.state(2), ProgramState::Running("claude".into()));
+        assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
+        // A shell not in the table, and one never asked about.
+        assert_eq!(programs.state(4), ProgramState::Unknown);
+        assert_eq!(programs.state(5), ProgramState::Unknown);
+        assert!(programs.table().is_some_and(|t| t.len() == 5));
+        // make ends: one answer isn't enough, two are.
+        let after = "100 1 100 100 -zsh\n300 1 300 300 -zsh\n";
+        assert!(!programs.take(Some(parse_ps(after)), &shells[2..3]));
+        assert_eq!(programs.state(3), ProgramState::Running("make all".into()));
+        assert!(programs.take(Some(parse_ps(after)), &shells[2..3]));
+        assert_eq!(programs.state(3), ProgramState::Prompt);
+        // ps failing: what was known is forgotten (the names fall back to their folders).
+        assert!(programs.take(None, &shells));
+        assert_eq!(programs.state(1), ProgramState::Unknown);
+        assert!(programs.table().is_none());
+        assert!(!programs.take(None, &shells), "nothing more to forget");
+        // Gone terminals are forgotten.
+        programs.take(Some(parse_ps(ps)), &shells);
+        programs.retain(|id| id == 1);
+        assert_eq!(programs.state(2), ProgramState::Unknown);
+        assert_eq!(programs.state(1), ProgramState::Prompt);
+    }
+
+    #[test]
+    fn ps_runs_at_most_every_3_s() {
+        let now = Instant::now();
+        let mut programs = Programs::default();
+        assert_eq!(programs.wait(now), Duration::ZERO, "never run: at once");
+        programs.last_run = Some(now);
+        assert_eq!(programs.wait(now), NAMES_REFRESH);
+        assert_eq!(
+            programs.wait(now + Duration::from_secs(1)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(programs.wait(now + Duration::from_secs(5)), Duration::ZERO);
+        assert_eq!(NAMES_REFRESH, Duration::from_secs(3));
+    }
 
     #[test]
     fn only_a_held_left_button_starts_a_window_move() {

@@ -57,10 +57,11 @@ pub enum TabIcon {
     Mark(Status),
 }
 
-/// What the bar knows of a terminal: its name (as the sidebar used to show it), its status and
-/// for how long it has had it.
+/// What the bar knows of a terminal: its name (`Workspace::terminal_label`), the program's own
+/// title (OSC; for the tooltip), its status and for how long it has had it.
 pub struct TerminalFacts {
     pub label: SharedString,
+    pub title: Option<SharedString>,
     pub status: Status,
     pub age: Duration,
 }
@@ -91,11 +92,16 @@ pub fn icon(kind: &TabKind, status: Status) -> TabIcon {
     }
 }
 
-/// A tab's tooltip: `title`, then while not Idle its status and age ("claude — waiting 4m").
-pub fn tip(title: &str, status: Status, age: Duration) -> String {
-    match status {
+/// A tab's tooltip: `title`, then while not Idle its status and age ("claude — waiting 4m");
+/// under it, the program's own title (`osc`) when it says something the name doesn't.
+pub fn tip(title: &str, osc: Option<&str>, status: Status, age: Duration) -> String {
+    let line = match status {
         Status::Idle => title.to_string(),
         _ => format!("{title} — {} {}", status.as_str(), status::age_label(age)),
+    };
+    match crate::smart_name::extra_title(title, osc) {
+        Some(osc) => format!("{line}\n{osc}"),
+        None => line,
     }
 }
 
@@ -110,22 +116,21 @@ pub fn bar_tabs(
     pane.tabs
         .iter()
         .map(|t| {
-            let (terminal, title, status, age): (_, SharedString, _, _) = match &t.kind {
+            let idle = (Status::Idle, Duration::ZERO);
+            let (terminal, title, osc, (status, age)): (_, SharedString, _, _) = match &t.kind {
                 TabKind::Terminal(id) => match facts(*id) {
-                    Some(f) => (Some(*id), f.label, f.status, f.age),
-                    None => (Some(*id), "Terminal".into(), Status::Idle, Duration::ZERO),
+                    Some(f) => (Some(*id), f.label, f.title, (f.status, f.age)),
+                    None => (Some(*id), "Terminal".into(), None, idle),
                 },
                 TabKind::Browser { .. } => {
                     let title = page(t.id).unwrap_or_else(|| BROWSER_TITLE.into());
-                    (None, title, Status::Idle, Duration::ZERO)
+                    (None, title, None, idle)
                 }
-                TabKind::File { path, .. } => {
-                    (None, file_title(path), Status::Idle, Duration::ZERO)
-                }
+                TabKind::File { path, .. } => (None, file_title(path), None, idle),
             };
             let tip = match &t.kind {
                 TabKind::File { path, .. } => path.display().to_string(),
-                _ => tip(&title, status, age),
+                _ => tip(&title, osc.as_deref(), status, age),
             };
             BarTab {
                 tab: t.id,
@@ -328,6 +333,24 @@ const BUTTONS_PAD: f32 = 4.0;
 const STROKE: f32 = 1.25;
 
 impl Workspace {
+    /// Pane `p`'s tabs as its bar draws them `now`: each terminal by its name
+    /// (`terminal_label`), a browser tab by its page's title, a file tab by its file's name.
+    pub(crate) fn pane_bar_tabs(&self, p: &Pane, now: Instant) -> Vec<BarTab> {
+        bar_tabs(
+            p,
+            |id| {
+                let s = self.sessions.items().iter().find(|s| s.id == id)?;
+                Some(TerminalFacts {
+                    label: self.terminal_label(id),
+                    title: s.title.clone(),
+                    status: s.status,
+                    age: now.saturating_duration_since(s.status_since),
+                })
+            },
+            |tab| self.browser_titles.get(&tab).map(|t| t.clone().into()),
+        )
+    }
+
     /// `pane`'s tab bar: its tabs (scrolling sideways when they don't fit) and, pinned on the
     /// right, its buttons. None for an unknown pane. `drags_window`: the bar is at the window's
     /// top edge, so its empty part (after the last tab) drags the window.
@@ -341,18 +364,7 @@ impl Workspace {
         let p = self.model.pane(pane)?;
         let focused = self.model.focused_pane() == Some(pane);
         let now = Instant::now();
-        let tabs = bar_tabs(
-            p,
-            |id| {
-                let s = self.sessions.items().iter().find(|s| s.id == id)?;
-                Some(TerminalFacts {
-                    label: s.label(),
-                    status: s.status,
-                    age: now.saturating_duration_since(s.status_since),
-                })
-            },
-            |tab| self.browser_titles.get(&tab).map(|t| t.clone().into()),
-        );
+        let tabs = self.pane_bar_tabs(p, now);
         let scroll = self.tab_row_scroll(pane, p.active, &tabs);
         // While a tab is dragged: where each tab is drawn, out of its way.
         let targets = match self.tab_grab(cx) {
@@ -1229,6 +1241,7 @@ mod tests {
     fn terminal(label: &str, status: Status, secs: u64) -> Option<TerminalFacts> {
         Some(TerminalFacts {
             label: label.to_string().into(),
+            title: None,
             status,
             age: Duration::from_secs(secs),
         })
@@ -1249,17 +1262,43 @@ mod tests {
     #[test]
     fn the_tooltip_adds_status_and_age_while_busy() {
         assert_eq!(
-            tip("shell", Status::Idle, Duration::from_secs(900)),
+            tip("shell", None, Status::Idle, Duration::from_secs(900)),
             "shell"
         );
         assert_eq!(
-            tip("claude", Status::Waiting, Duration::from_secs(4 * 60 + 12)),
+            tip(
+                "claude",
+                None,
+                Status::Waiting,
+                Duration::from_secs(4 * 60 + 12)
+            ),
             "claude — waiting 4m"
         );
         assert_eq!(
-            tip("codex", Status::Working, Duration::from_secs(32)),
+            tip("codex", None, Status::Working, Duration::from_secs(32)),
             "codex — working 32s"
         );
+    }
+
+    #[test]
+    fn the_tooltip_adds_the_program_s_title_on_a_second_line_when_it_says_more() {
+        let idle = Duration::ZERO;
+        assert_eq!(
+            tip("fuxx-cli", Some("me@mac:~/fuxx-cli"), Status::Idle, idle),
+            "fuxx-cli\nme@mac:~/fuxx-cli"
+        );
+        assert_eq!(
+            tip(
+                "claude · api",
+                Some("✳ Fix the tests"),
+                Status::Working,
+                Duration::from_secs(32)
+            ),
+            "claude · api — working 32s\n✳ Fix the tests"
+        );
+        // The same as the name, or blank: nothing more.
+        assert_eq!(tip("vim", Some("vim"), Status::Idle, idle), "vim");
+        assert_eq!(tip("vim", Some(" "), Status::Idle, idle), "vim");
     }
 
     #[test]
@@ -1316,6 +1355,29 @@ mod tests {
         assert_eq!(tabs[1].status, Status::Idle);
         assert_eq!(tabs[2].tip, "claude — waiting 1m");
         assert_eq!(tabs[3].tip, "Terminal");
+    }
+
+    #[test]
+    fn a_terminal_tab_s_tooltip_carries_its_program_s_title() {
+        let pane = Pane {
+            id: crate::layout_model::PaneId(1),
+            tabs: vec![crate::layout_model::Tab {
+                id: TabId(10),
+                kind: TabKind::Terminal(1),
+            }],
+            active: TabId(10),
+        };
+        let facts = |_| {
+            Some(TerminalFacts {
+                label: "fuxx-cli".into(),
+                title: Some("me@mac:~/fuxx-cli".into()),
+                status: Status::Idle,
+                age: Duration::ZERO,
+            })
+        };
+        let tabs = bar_tabs(&pane, facts, |_| None);
+        assert_eq!(tabs[0].title.as_ref(), "fuxx-cli");
+        assert_eq!(tabs[0].tip, "fuxx-cli\nme@mac:~/fuxx-cli");
     }
 
     #[test]
