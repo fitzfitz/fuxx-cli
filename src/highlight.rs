@@ -21,7 +21,7 @@ pub enum Viewable {
 /// Over this many bytes a file is shown as plain text, without colours.
 const PLAIN_ABOVE: u64 = 2 * 1024 * 1024;
 /// Over this many bytes a file is not opened at all.
-const REFUSE_ABOVE: u64 = 20 * 1024 * 1024;
+pub(crate) const REFUSE_ABOVE: u64 = 20 * 1024 * 1024;
 
 /// How a file may be shown, from its size and the first bytes (at most 8 KB): a NUL byte there
 /// means binary.
