@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11g
-status: planned
+status: built
 updated: 2026-11-08
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-11-08
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]] (M11g parts; "Settled after a builder's read") |
-| **Status** | 🟦 Planned 2026-11-08; building straight away (your "go straight to implement") |
-| **Tasks done** | 0 / 9 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built and reviewed 2026-11-08 (953 tests); merging and releasing v0.4.0 (your "7-8 go ahead") |
+| **Tasks done** | 7 / 9 (Tasks 1–6, 9); Tasks 7–8 under way |
+| **▶ Pick up here** | Task 8: your on-screen check (14 items in note 59) after v0.4.0 |
 | **Decisions used** | Yours (2026-11-08): the right sidebar, a file explorer opening files in the middle (read-only), syntect + two-face, line numbers and change bars, an icon on every pane; approved "lets go". The rest: AI's calls in note 59. |
 | **Needs your eyes** | 👀 Tasks 7–8 (merge/push/release on your word, then on screen) |
 
@@ -112,7 +112,7 @@ on the background executor, and polling follows `tick_places` (visible-only, a `
 
 ---
 
-### Task 1: Highlighting core (pure) and the new crates
+### Task 1: Highlighting core (pure) and the new crates — ✅
 
 **Files:** Modify `Cargo.toml`, `Cargo.lock`; Create `src/highlight.rs`; Modify `src/main.rs` (`mod`).
 
@@ -130,18 +130,18 @@ on the background executor, and polling follows `tick_places` (visible-only, a `
   entity.name.function → blue, entity.name.type/support.type → cyan, variable/default → foreground, invalid →
   red. AI may refine.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `classify` at each boundary (2 MB exactly vs +1; 20 MB vs +1; a NUL at byte 0 and at byte 8191; text);
   - `highlight` on a small Rust snippet gives ≥ 3 distinct colours and covers every byte of each line;
   - an unknown extension gives a single foreground span per line;
   - `syntect_theme` for Mocha and for Latte uses the theme's own green for strings;
   - an empty file gives one empty line.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement** (add the crates with the exact lines above; verify the APIs with
+- [x] **Step 2: run** → FAIL. **Step 3: implement** (add the crates with the exact lines above; verify the APIs with
   Context7 `/trishume/syntect` and docs.rs two-face). **Step 4: run** `cargo test`, `cargo tree -i onig` (empty),
   clippy (both), fmt.
-- [ ] **Step 5: commit** `feat(m11g): highlighting core — syntect + two-face, colours from the fuxx theme`.
+- [x] **Step 5: commit** `feat(m11g): highlighting core — syntect + two-face, colours from the fuxx theme`.
 
-### Task 2: Git status, line changes and folder listing
+### Task 2: Git status, line changes and folder listing — ✅
 
 **Files:** Create `src/git_status.rs`; Modify `src/git_branch.rs` (make `run_git`/`run_capped` `pub(crate)`; add a
 `run_capped_with_stdin(cmd, input: &[u8], cap)` variant); `src/main.rs` (`mod`).
@@ -161,17 +161,17 @@ on the background executor, and polling follows `tick_places` (visible-only, a `
   `pub fn list_dir(dir: &Path, cap: usize) -> (Vec<DirEntry>, usize /*more*/)` (folders first, then case-insensitive
   by name; skips `.git`).
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `parse_porcelain` (modified, untracked `??`, deleted, renamed → Added for the new path, a path with spaces);
   - `parse_hunks` (each header shape, including `@@ -3,0 +4,2 @@`, `@@ -5,2 +4,0 @@`, `@@ -7 +7 @@`);
   - on a temp repo made with the real `git` (skip if no git): `repo_root`, `status`, `ignored` (`target/` in
     `.gitignore`), `line_changes` (an edited line → Changed, a new file → all Added), and a repo with no commits;
   - a non-repo dir → `repo_root` None, `line_changes` None;
   - `list_dir` order, `.git` skipped, the cap with 12 entries and cap 10 → 10 + more 2.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt.
-- [ ] **Step 5: commit** `feat(m11g): git status, line changes and folder listing (capped, off the UI thread)`.
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt.
+- [x] **Step 5: commit** `feat(m11g): git status, line changes and folder listing (capped, off the UI thread)`.
 
-### Task 3: `TabKind::File` in the model
+### Task 3: `TabKind::File` in the model — ✅
 
 **Files:** Modify `src/layout_model.rs` (`TabKind`, `SavedTab`, `to_saved`, the restore builder, `terminals`,
 `shown_elsewhere`), and every match the compiler flags: `src/adopt.rs`, `src/tab_bar.rs` (`icon`, `bar_tabs`,
@@ -185,17 +185,17 @@ focused pane, saves, activates); `close_file_tab` in `close_tab`; `Workspace.fil
 created by an `ensure_file_tabs` (like `ensure_browser_tabs`). The `FileTab` entity in this task is a stub showing the
 path; Task 6 replaces its body.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - a model with a File tab round-trips through `SavedTab`;
   - an old JSON (`RECORDED_V1`) and a v2 file without File tabs still load;
   - a saved `{"kind":"file","path":"/x"}` (no mode) loads as Plain;
   - closing a File tab leaves the terminals alone;
   - `open_file_tab` twice for the same path in one pane gives one tab, selected.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11g): a file tab kind in panes (model, restore, close, drag)`.
+- [x] **Step 5: commit** `feat(m11g): a file tab kind in panes (model, restore, close, drag)`.
 
-### Task 4: The right sidebar shell
+### Task 4: The right sidebar shell — ✅
 
 **Files:** Create `src/right_sidebar.rs`; Modify `src/workspace.rs` (state, render: a sibling after the pane column,
 the `ToggleRightSidebar` handler, save/load), `src/restore.rs` (`SavedState` fields), `src/tab_bar.rs`
@@ -209,7 +209,7 @@ Option<(PathBuf, bool /*ssh*/)>`: the focused terminal's folder, resolved like `
 is visible; for a focused browser/file tab, the last terminal's. The panel body is a placeholder ("Files") until
 Task 5.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `SavedState` without the fields → hidden, 300 wide;
   - clamp 100 → 220, 900 → 560;
   - the keymap resolves `alt-cmd-\\` to `ToggleRightSidebar` from a terminal, a browser page and a file tab;
@@ -218,11 +218,11 @@ Task 5.
   - ui-shot `right-sidebar` (Mocha, Latte): closed (no sidebar, icon unlit); open (300 pt wide on the right, icon
     lit in every pane); a resize drag from x to x−80 → width +80; reduce motion → no slide; ⌘W/close paths
     untouched.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11g): the right sidebar — toggle, pane icons, resize, remembered`.
+- [x] **Step 5: commit** `feat(m11g): the right sidebar — toggle, pane icons, resize, remembered`.
 
-### Task 5: The Files panel
+### Task 5: The Files panel — ✅
 
 **Files:** Create `src/file_tree.rs` (the model); Modify `src/right_sidebar.rs` (rendering, keys, filter, refresh
 ticker), `src/workspace.rs` (wiring `open_file_tab`), `src/main.rs` (bindings in a `FileTree` context),
@@ -234,7 +234,7 @@ ticker), `src/workspace.rs` (wiring `open_file_tab`), `src/main.rs` (bindings in
 `select_next/prev`, `toggle_selected`, and `expanded_set()` (for the per-root memory). Pure; the I/O stays in the
 panel.
 
-- [ ] **Step 1: failing tests (pure `FileTree`):**
+- [x] **Step 1: failing tests (pure `FileTree`):**
   - rows order and depth;
   - an unexpanded folder has no children listed;
   - marks propagate to parents;
@@ -245,11 +245,11 @@ panel.
   - re-rooting resets, the memory restores.
   - ui-shot `files` on a fixture folder (with a fake mark map, no real git): the tree with `M` / `A` / `D`
     colours, the filter narrowing it, a click opening a file tab, and Esc returning focus to the pane.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11g): the Files panel — repo tree, git marks, filter, keyboard`.
+- [x] **Step 5: commit** `feat(m11g): the Files panel — repo tree, git marks, filter, keyboard`.
 
-### Task 6: The file view
+### Task 6: The file view — ✅
 
 **Files:** Create/replace `src/file_tab.rs`; Modify `src/workspace.rs` (render the tab, focus), `src/main.rs`
 (`FileTab` bindings: cmd-f, cmd-g, shift-cmd-g, cmd-c, ctrl-tab, ctrl-shift-tab, escape closes find),
@@ -261,7 +261,7 @@ panel.
 Option<..>, changes, version }`, `PlainTooLarge`, `Refuse`, `Missing`. A 1 s visible-only poll; a shared
 `Highlighter` as a GPUI Global loaded once in the background; find state; selection.
 
-- [ ] **Step 1: failing tests:** pure helpers:
+- [x] **Step 1: failing tests:** pure helpers:
   - tab expansion (column mapping with tabs → 4 spaces);
   - the find (matches across lines, case-insensitive, wrap-around next/prev);
   - selection to text (a multi-line range, partial first/last lines);
@@ -273,10 +273,10 @@ Option<..>, changes, version }`, `PlainTooLarge`, `Refuse`, `Missing`. A 1 s vis
     - a long line scrolled horizontally;
     - the Missing, Refuse and PlainTooLarge states;
     - a reload with new text keeps the scroll.
-- [ ] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
+- [x] **Step 2: run** → FAIL. **Step 3: implement.** **Step 4: run** `cargo test`, clippy (both), fmt, full
   `__ui-shots`, and `scripts/bundle-mac.sh --app-only` (a release build: open a 5,000-line file in a ui-shot or a
   test and check that the highlighting finishes in a reasonable time; report the number).
-- [ ] **Step 5: commit** `feat(m11g): read-only file tabs — colours, line numbers, change bars, live reload, find, copy`.
+- [x] **Step 5: commit** `feat(m11g): read-only file tabs — colours, line numbers, change bars, live reload, find, copy`.
 
 ### Task 7: Merge and push (your word)
 
@@ -285,8 +285,8 @@ Option<..>, changes, version }`, `PlainTooLarge`, `Refuse`, `Missing`. A 1 s vis
 - [ ] On your word: version **0.4.0** (a new feature), commit, push, tag, and watch the Release run.
 - [ ] You: on-screen checklist (written into note 59 in Task 9).
 
-### Task 9: Docs
+### Task 9: Docs — ✅
 
-- [ ] Note 59 (M11g status, "As built", the on-screen checklist). This plan (ticks). The roadmap. The Plan Tracker.
+- [x] Note 59 (M11g status, "As built", the on-screen checklist). This plan (ticks). The roadmap. The Plan Tracker.
   The Progress Log. `STRUCTURE.md` (the 5 modules). `README.md` (the right sidebar and file tabs).
-- [ ] Commit `docs(m11g): …`.
+- [x] Commit `docs(m11g): …`.

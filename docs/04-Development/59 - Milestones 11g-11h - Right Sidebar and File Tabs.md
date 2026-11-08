@@ -5,7 +5,7 @@ status: approved
 
 # 59 - Milestones 11g–11h - Right Sidebar and File Tabs (design)
 
-**Status:: ✅ Design approved by you 2026-11-08 ("lets go"); Scope updated. M11g's plan next, then M11h's.**  ·  **Phase 4: M11 extensions.**
+**Status:: ✅ Design approved by you 2026-11-08 ("lets go"). 🟨 M11g built and reviewed 2026-11-08 (953 tests), releasing as v0.4.0; on-screen check pending. M11h next.**  ·  **Phase 4: M11 extensions.**
 **Changes the scope** (your decision, 2026-11-08): [[12 - Scope]] says "Being a general IDE / editor" is out. This
 design brings in a **read-only file viewer**, but **not an editor**. If you approve, Scope is updated before
 planning.
@@ -164,6 +164,50 @@ read-only, with syntax colours, line numbers and coloured change bars, and it up
    theirs. The tree is **keyboard-navigable** when it has focus (↑ ↓ to move, → ← to expand and collapse, Return to
    open, Esc back to the pane). Clicking anywhere in the sidebar gives it focus; Esc or clicking a pane gives focus
    back.
+
+## M11g as built (2026-11-08)
+
+Where the build settled something the plan left open, or changed it (rulings made while building):
+
+- **Open in Editor opens the file in macOS's default *text* editor** (`/usr/bin/open -t`), never its default app,
+  so a script or executable (`gradlew`, `.command`, `.py` with the Python Launcher) can't run. In the "too large or
+  binary" state the button is **Show in Finder** (`/usr/bin/open -R`). `$VISUAL`/`$EDITOR` aren't used.
+- **When git is slow or fails** (a busy machine, the 2 s cap), the last good marks, hidden entries and change bars are
+  kept, and the sidebar's refresh backs off 2 → 4 → … 30 s until git answers again. `check-ignore`'s "none ignored"
+  answer counts as success. At the cap, git's whole process group is stopped.
+- **The `… N more` row** has no "(open in Finder)" link.
+- **Nested repos and submodules:** the folder itself is marked; its contents carry no marks (per-repo state inside
+  them isn't in M11g).
+- **Change bars are re-checked every 5 s** while a file tab is shown, so a commit clears them without the file
+  changing; git look-ups for a tab run at most once every 2 s.
+- **Syntax colours reach at least 3:1 contrast** against the background on every theme (Latte's comments were 1.9:1).
+- **Find runs off the UI thread** and stops at 10,000 matches ("10,000+"). Very long lines are drawn only where
+  they're on screen. Lines over 20,000 bytes show uncoloured.
+- A file-only workspace is named after its file; ⌘P counts file views for "since". After a relaunch with a file tab
+  focused, the sidebar follows the workspace's first terminal.
+- Not built (not in the plan): keyboard scrolling, auto-scroll while selecting, double-click word selection,
+  scroll width for wide (CJK/emoji) characters.
+
+## M11g on-screen checklist (pending)
+
+1. **⌥⌘\** opens and closes the right sidebar (from a terminal, a browser page and a file tab); View → Toggle Right
+   Sidebar does too; it's remembered after a relaunch.
+2. The **icon at the far right of every pane's tab bar** is lit while the sidebar is open; clicking it in another
+   pane focuses that pane and toggles.
+3. Drag the sidebar's left edge: it resizes between 220 and 560 pt; a narrow window never pushes it off-screen.
+4. In a repo: the tree shows the repo with your terminal's folder opened; `target/`, `node_modules/` (ignored) are
+   hidden; edited files show **M** (blue), new **A** (green), deleted **D** (red), and their folders too.
+5. `cd` into another repo: the tree re-roots. An SSH terminal shows "Files aren't shown for SSH terminals."
+6. Type in the filter box: the tree narrows. ↑ ↓ → ← Return work in the tree; Esc returns to the terminal.
+7. Close the sidebar while the filter box has the keyboard: the terminal takes keys again at once.
+8. Click a file: it opens as a tab in the pane, with **colours, line numbers and change bars** (green/blue/red ▸).
+9. Let an agent edit that file: the tab updates within about a second, keeping its scroll; the bars follow.
+10. ⌘F in a file tab: "n of m", ⌘G / ⇧⌘G step, Esc closes. Select text with the mouse, ⌘C, paste elsewhere.
+11. **Open in Editor** opens the file in your text editor. Try it on an executable script (e.g. `gradlew`): it opens
+    as text and **does not run**. A binary file shows **Show in Finder**.
+12. Delete an open file: its tab says "This file no longer exists". Quit and reopen fuxx: file tabs come back.
+13. Switch themes (light and dark): the file tab's colours follow and stay readable.
+14. With the sidebar and a file tab open next to an agent streaming output, fuxx stays smooth (Activity Monitor).
 
 ## Left to the builder
 
