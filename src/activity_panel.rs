@@ -71,8 +71,21 @@ pub struct ActivityRow {
 /// at that time), its mark and words. The tooltip is for what a row can cut: a note's or a
 /// progress's words whole, and a Waiting entry's words with its question on a second line;
 /// none for the other status words (short, never cut).
+#[cfg(test)]
 pub fn rows(log: &ActivityLog, offset: impl Fn(SystemTime) -> i64) -> Vec<ActivityRow> {
+    rows_in(log, 0..log.len(), offset)
+}
+
+/// The rows `range` of `rows` (newest first), and only those built: a `uniform_list` asks
+/// for the rows in sight.
+pub fn rows_in(
+    log: &ActivityLog,
+    range: std::ops::Range<usize>,
+    offset: impl Fn(SystemTime) -> i64,
+) -> Vec<ActivityRow> {
     log.newest_first()
+        .skip(range.start)
+        .take(range.len())
         .map(|entry| {
             let secs = entry
                 .at
@@ -99,14 +112,21 @@ pub fn rows(log: &ActivityLog, offset: impl Fn(SystemTime) -> i64) -> Vec<Activi
 }
 
 /// Row `i` (22 pt): 8 pt in, the time (11 pt, tabular, faint) in its 36 pt column, the still
-/// mark (10 pt: the status's at phase 0, no pop; Idle's hollow ring) or a 4 pt faint dot, 6 pt,
-/// the words (13 pt, cut at the end); its tooltip, if any: the words whole (and a question).
+/// mark (10 pt: the status's at `STILL_PHASE`, as Reduce motion draws it, no pop; Idle's
+/// hollow ring) or a 4 pt faint dot, 6 pt, the words (13 pt, cut at the end); its tooltip, if
+/// any: the words whole (and a question).
 fn activity_row(i: usize, row: &ActivityRow, ui: &UiColors) -> AnyElement {
     let mark = match row.mark {
         RowMark::Status(Status::Idle) => status_mark::idle_mark(false, ui).into_any_element(),
-        RowMark::Status(status) => {
-            status_mark::mark_on(status, ui, 0.0, None, px(MARK), ui.card).into_any_element()
-        }
+        RowMark::Status(status) => status_mark::mark_on(
+            status,
+            ui,
+            status_mark::STILL_PHASE,
+            None,
+            px(MARK),
+            ui.card,
+        )
+        .into_any_element(),
         RowMark::Dot => div()
             .size(px(DOT))
             .rounded_full()
@@ -260,9 +280,16 @@ impl Workspace {
     }
 
     /// The followed terminal's timeline rows, newest first, in this Mac's local time.
+    #[cfg(feature = "ui-shots")]
     pub(crate) fn activity_rows(&self) -> Vec<ActivityRow> {
+        let all = self.activity_session().map_or(0, |s| s.activity.len());
+        self.activity_rows_in(0..all)
+    }
+
+    /// The timeline's rows `range` (newest first), only those built (`rows_in`).
+    fn activity_rows_in(&self, range: std::ops::Range<usize>) -> Vec<ActivityRow> {
         self.activity_session().map_or_else(Vec::new, |s| {
-            rows(&s.activity, |at| {
+            rows_in(&s.activity, range, |at| {
                 let ms = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
                 cli::local_utc_offset(ms as u64)
             })
@@ -295,9 +322,11 @@ impl Workspace {
                     count,
                     cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
                         let ui = cx.global::<Appearance>().theme.ui();
-                        let rows = this.activity_rows();
-                        range
-                            .filter_map(|i| rows.get(i).map(|row| activity_row(i, row, &ui)))
+                        let first = range.start;
+                        this.activity_rows_in(range)
+                            .iter()
+                            .enumerate()
+                            .map(|(k, row)| activity_row(first + k, row, &ui))
                             .collect::<Vec<_>>()
                     }),
                 )
@@ -325,6 +354,25 @@ mod tests {
     use super::*;
     use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast};
     use std::time::Duration;
+
+    #[test]
+    fn only_the_rows_asked_for_are_built() {
+        let t = |s: u64| UNIX_EPOCH + Duration::from_secs(1_000_000 + s * 60);
+        let mut log = ActivityLog::default();
+        for i in 0..6 {
+            log.note(Some(&format!("note {i}")), t(i));
+        }
+        let built = std::cell::Cell::new(0);
+        let some = rows_in(&log, 2..4, |_| {
+            built.set(built.get() + 1);
+            0
+        });
+        assert_eq!(built.get(), 2, "only the two rows in sight");
+        assert_eq!(some, rows(&log, |_| 0)[2..4].to_vec());
+        assert_eq!(some[0].text, "note 3", "newest first");
+        // Past the end: what there is.
+        assert_eq!(rows_in(&log, 5..9, |_| 0).len(), 1);
+    }
 
     #[test]
     fn rows_are_newest_first_with_local_times_and_tips() {

@@ -1196,7 +1196,8 @@ impl Workspace {
             .h(px(TAB_BAR))
             .bg(hsla(ui.tab_bar))
             // The card's top, rounded as the inside of its edge (as a pane's tab bar); its
-            // tabs clipped to it, so a narrow card never shows a square tab edge under a corner.
+            // tabs clipped to the strip's bounds (GPUI's mask is a rectangle, not the rounded
+            // corners), so a narrow card never lets a tab spill past the strip.
             .rounded_t(px(CARD_RADIUS - FOCUS_RING))
             .overflow_hidden()
             // The tabs float 4 pt under its top, flush with its bottom.
