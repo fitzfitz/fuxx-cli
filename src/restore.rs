@@ -136,6 +136,10 @@ pub struct SavedState {
     /// The right sidebar's width as you left it; none: the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right_sidebar_width: Option<f32>,
+    /// The right sidebar's panel as you left it (M11h): `files`, `changes` or `activity`;
+    /// missing or unknown: Files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_sidebar_panel: Option<String>,
 }
 
 /// The right sidebar's state in a file without it: closed.
@@ -162,6 +166,7 @@ impl Default for SavedState {
             browser_data_kept: false,
             right_sidebar_hidden: true,
             right_sidebar_width: None,
+            right_sidebar_panel: None,
         }
     }
 }
@@ -522,6 +527,25 @@ mod tests {
         assert!(old.right_sidebar_hidden);
         assert_eq!(old.right_sidebar_width, None);
         assert!(SavedState::default().right_sidebar_hidden);
+    }
+
+    #[test]
+    fn the_right_sidebar_panel_round_trips_and_an_old_file_shows_files() {
+        let state = SavedState {
+            right_sidebar_panel: Some("changes".into()),
+            ..sample()
+        };
+        let text = encode(&state);
+        assert!(text.contains("\"right_sidebar_panel\""), "{text}");
+        assert_eq!(decode(&text), Some(state));
+        // A file from before M11h: no panel, so Files; and none isn't written.
+        let old = decode(r#"{"version":2,"sessions":[{}]}"#).expect("an old file loads");
+        assert_eq!(old.right_sidebar_panel, None);
+        assert_eq!(
+            crate::right_sidebar::Panel::from_key(old.right_sidebar_panel.as_deref()),
+            crate::right_sidebar::Panel::Files
+        );
+        assert!(!encode(&SavedState::default()).contains("right_sidebar_panel"));
     }
 
     #[test]

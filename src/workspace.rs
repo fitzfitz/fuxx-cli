@@ -1085,6 +1085,15 @@ impl Workspace {
             return;
         }
         let Some(home) = home_dir() else { return };
+        let state = self.saved_state();
+        let path = restore::state_path(&home);
+        if let Err(err) = settings::write_atomic(&path, &restore::encode(&state)) {
+            eprintln!("[fuxx] restore: could not save {}: {err}", path.display());
+        }
+    }
+
+    /// What `save` writes to the sessions file.
+    pub(crate) fn saved_state(&self) -> SavedState {
         let mut collapsed = Vec::new();
         let mut collapsed_hosts = Vec::new();
         for key in &self.collapsed {
@@ -1094,7 +1103,7 @@ impl Workspace {
             }
         }
         let (workspaces, active_workspace) = self.model.to_saved(|id| self.index_of(id));
-        let state = SavedState {
+        SavedState {
             version: restore::VERSION,
             active: self.sessions.active_index(),
             collapsed,
@@ -1123,10 +1132,7 @@ impl Workspace {
             browser_data_kept: self.browser_data_kept,
             right_sidebar_hidden: self.right_sidebar.hidden,
             right_sidebar_width: Some(self.right_sidebar.width),
-        };
-        let path = restore::state_path(&home);
-        if let Err(err) = settings::write_atomic(&path, &restore::encode(&state)) {
-            eprintln!("[fuxx] restore: could not save {}: {err}", path.display());
+            right_sidebar_panel: Some(self.right_sidebar.panel.key().to_string()),
         }
     }
 

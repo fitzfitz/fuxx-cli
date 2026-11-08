@@ -318,7 +318,7 @@ const TAB_PAD_LEFT: f32 = 8.0;
 const TAB_PAD_RIGHT: f32 = 4.0;
 const TAB_GAP: f32 = 6.0;
 const CLOSE: f32 = 16.0;
-const TAB_RADIUS: f32 = 6.0;
+pub(crate) const TAB_RADIUS: f32 = 6.0;
 /// A button, its icon box, and the gap between buttons and around them.
 pub(crate) const BUTTON: f32 = 20.0;
 const ICON: f32 = 12.0;

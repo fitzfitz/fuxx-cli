@@ -14,6 +14,7 @@ mod browser_history;
 mod browser_js;
 mod browser_tab;
 mod browser_url;
+mod changes_panel;
 mod cli;
 mod colors;
 mod cursor_look;

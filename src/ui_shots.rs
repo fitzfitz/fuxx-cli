@@ -227,6 +227,8 @@ const SCENES: &[(&str, fn())] = &[
     ("file-diff", file_diff_scenes),
     ("right-sidebar", right_sidebar_scenes),
     ("files", files_scenes),
+    ("right-panels", right_panel_scenes),
+    ("changes", changes_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
     ("default-name", default_name),
@@ -5822,13 +5824,17 @@ fn files_scenes() {
                 (bar_top - top).abs() < 0.5,
                 "{n}: the tab bar at {bar_top}, not {top}"
             );
-            let edge = at(sidebar_left + 150.0, top + TAB_BAR - 0.5);
-            assert!(
-                near(edge, ui.sidebar_border, 3),
-                "{n}: the header's edge: {edge:?}"
-            );
+            // M11h: the strip holds the panel tabs on `tab_bar` (its empty part at the right),
+            // with no border under it: the card right below.
             let inside = at(sidebar_left + 250.0, top + TAB_BAR / 2.0);
-            assert!(near(inside, ui.card, 3), "{n}: the header: {inside:?}");
+            assert!(near(inside, ui.tab_bar, 3), "{n}: the strip: {inside:?}");
+            let edge = at(sidebar_left + 250.0, top + TAB_BAR - 0.5);
+            assert!(
+                near(edge, ui.tab_bar, 3),
+                "{n}: no border under the strip: {edge:?}"
+            );
+            let below = at(sidebar_left + 250.0, top + TAB_BAR + 0.5);
+            assert!(near(below, ui.card, 3), "{n}: the card under it: {below:?}");
             // Each row's mark colour, somewhere along its name and letter (drawn in it), right
             // of its icon.
             let list_top = top + TAB_BAR + ROOT_HEADER + FILTER_BAND;
@@ -6302,6 +6308,577 @@ fn files_scenes() {
         };
         render_with(&theme, dims, build, act);
         println!("ui-shots: files-close-{slug} ok");
+    }
+}
+
+/// A workspace for the right sidebar's panel scenes (M11h): the Files panel's fixture beside a
+/// terminal (`api`) in its src/, the right sidebar open `width` wide showing `panel`, the Files
+/// tree made as in `files_scenes`; `ready` then sets up anything else.
+fn right_panel_workspace(
+    theme: Theme,
+    root: PathBuf,
+    width: f32,
+    panel: crate::right_sidebar::Panel,
+    slot: Slot,
+    ready: impl Fn(&mut Workspace) + Clone + 'static,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView + Clone + 'static {
+    move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(shot_appearance(theme, cx));
+        cx.bind_keys(crate::key_bindings());
+        let ws = cx.new(|cx| {
+            let mut ws = Workspace::for_shots(window, cx);
+            ws.sidebar.hint_dismissed = true;
+            ws.right_sidebar.hidden = false;
+            ws.right_sidebar.width = width;
+            ws.right_sidebar.panel = panel;
+            let src = root.join("src");
+            ws.open_shot_session("api", &src, SHELL_TEXT, None, window, cx);
+            ws.right_sidebar
+                .files
+                .show_for_shots(files_tree(&root, false));
+            ready(&mut ws);
+            ws
+        });
+        *slot.borrow_mut() = Some(ws.clone());
+        ws.into()
+    }
+}
+
+/// The right sidebar's panel tabs (M11h Task 4) on the Files panel's fixture, in a 1100 × 560
+/// window, in both themes:
+/// - `right-panels`: Files shown: its tab filled with the card (merging into the panel), the
+///   Changes tab unfilled on the strip's `tab_bar`, the hovered Activity tab `tab_hover`; the
+///   tabs 6 pt from the strip's left, 2 pt apart, 4 pt under its top and flush with its
+///   bottom, in Files · Changes · Activity order; no border under the strip; its empty part
+///   `tab_bar`. Then (not shot) the filter box focused and a click on Changes: Changes shown,
+///   saved as `changes`, the terminal has the keyboard back (not the Files panel), and now the
+///   Changes tab is the filled one.
+/// - `right-panels-narrow`: the sidebar at its narrowest (220 pt): the three tabs fit, the
+///   Activity tab's right edge at least 6 pt inside the card's.
+fn right_panel_scenes() {
+    use crate::right_sidebar::{FILTER_BAND, Panel, ROOT_HEADER};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR, TAB_TOP_GAP};
+    use gpui::{Bounds, Focusable, Modifiers};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let card_right = window_right - GAP;
+    let card_top = GAP + FOCUS_RING;
+    let root = files_fixture();
+    type Tabs = Rc<Cell<[Option<Bounds<Pixels>>; 3]>>;
+    let tabs_of = |cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>| {
+        let all = cx.read(|cx| ws.read(cx).right_sidebar.panel_tab_bounds());
+        all.map(|b| b.expect("each tab laid out"))
+    };
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= 3)
+        };
+        assert_ne!(ui.tab_bar, ui.card, "{slug}: told apart");
+        assert_ne!(ui.tab_hover, ui.tab_bar, "{slug}: told apart");
+
+        for scene in ["right-panels", "right-panels-narrow"] {
+            let narrow = scene == "right-panels-narrow";
+            let width = if narrow { 220.0 } else { 300.0 };
+            let sidebar_left = card_right - width + FOCUS_RING;
+            let n = format!("{scene}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = right_panel_workspace(
+                theme,
+                root.clone(),
+                width,
+                Panel::Files,
+                slot.clone(),
+                |_| (),
+            );
+            let seen: Tabs = Rc::default();
+            let act = {
+                let (n, seen) = (n.clone(), seen.clone());
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    frame(cx, window);
+                    let [files, changes, activity] = tabs_of(cx, &ws);
+                    let (l, r, t, b) = (
+                        |b: Bounds<Pixels>| f32::from(b.left()),
+                        |b: Bounds<Pixels>| f32::from(b.right()),
+                        |b: Bounds<Pixels>| f32::from(b.top()),
+                        |b: Bounds<Pixels>| f32::from(b.bottom()),
+                    );
+                    let close = |a: f32, b: f32| (a - b).abs() < 0.5;
+                    assert!(
+                        close(l(files), sidebar_left + 6.0),
+                        "{n}: Files 6 pt from the strip's left: {files:?}"
+                    );
+                    assert!(close(l(changes), r(files) + 2.0), "{n}: 2 pt apart");
+                    assert!(close(l(activity), r(changes) + 2.0), "{n}: 2 pt apart");
+                    for tab in [files, changes, activity] {
+                        assert!(close(t(tab), card_top + TAB_TOP_GAP), "{n}: 4 pt under");
+                        assert!(close(b(tab), card_top + TAB_BAR), "{n}: flush: {tab:?}");
+                    }
+                    assert!(
+                        r(activity) <= card_right - 6.0,
+                        "{n}: Activity ends at {}, past the card's right − 6",
+                        r(activity)
+                    );
+                    seen.set([Some(files), Some(changes), Some(activity)]);
+                    // The pointer on the Activity tab: its hover fill in the shot.
+                    let on = point(px(l(activity) + 4.0), px(card_top + TAB_BAR - 4.0));
+                    cx.simulate_mouse_move(window, on, None, Modifiers::none());
+                    frame(cx, window);
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let [files, changes, activity] = seen.get().map(|b| b.expect("seen"));
+            // Inside each tab's left padding (no words there), low in it.
+            let pad = |b: Bounds<Pixels>| at(f32::from(b.left()) + 4.0, card_top + TAB_BAR - 6.0);
+            assert!(
+                near(pad(files), ui.card),
+                "{n}: Files is shown: {:?}",
+                pad(files)
+            );
+            assert!(
+                near(pad(changes), ui.tab_bar),
+                "{n}: Changes isn't: {:?}",
+                pad(changes)
+            );
+            assert!(
+                near(pad(activity), ui.tab_hover),
+                "{n}: Activity hovered: {:?}",
+                pad(activity)
+            );
+            // The strip: above the tabs and its empty part in `tab_bar`; no border under it
+            // (its last row `tab_bar` beside the tabs, the card right under it).
+            let empty = card_right - 10.0;
+            let x_files = f32::from(files.left()) + 4.0;
+            for (what, x, y) in [
+                ("above the tabs", x_files, card_top + 2.0),
+                ("its empty part", empty, card_top + TAB_BAR / 2.0),
+                ("its last row", empty, card_top + TAB_BAR - 0.5),
+            ] {
+                let p = at(x, y);
+                assert!(near(p, ui.tab_bar), "{n}: the strip {what}: {p:?}");
+            }
+            let p = at(empty, card_top + TAB_BAR + 0.5);
+            assert!(near(p, ui.card), "{n}: the card right under it: {p:?}");
+            let p = at(x_files, card_top + TAB_BAR - 0.5);
+            assert!(near(p, ui.card), "{n}: Files merges into the panel: {p:?}");
+        }
+
+        // The filter box focused, a click on Changes (not shot).
+        let n = format!("right-panels-click-{slug}");
+        let sidebar_left = card_right - 300.0 + FOCUS_RING;
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = right_panel_workspace(
+            theme,
+            root.clone(),
+            300.0,
+            Panel::Files,
+            slot.clone(),
+            |_| (),
+        );
+        let seen: Tabs = Rc::default();
+        let act = {
+            let (n, seen) = (n.clone(), seen.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                frame(cx, window);
+                let field = point(
+                    px(sidebar_left + 60.0),
+                    px(card_top + TAB_BAR + ROOT_HEADER + FILTER_BAND / 2.0),
+                );
+                cx.simulate_click(window, field, Modifiers::none());
+                let keys = |cx: &mut VisualTestAppContext| {
+                    cx.update_window(window, |_, window, cx| {
+                        let ws = ws.read(cx);
+                        let files = ws.right_sidebar.files.focus.clone().expect("its focus");
+                        let terminal = ws.sessions.active().expect("the terminal");
+                        (
+                            files.contains_focused(window, cx),
+                            terminal.view.focus_handle(cx).is_focused(window),
+                        )
+                    })
+                    .expect("read")
+                };
+                assert_eq!(
+                    keys(cx),
+                    (true, false),
+                    "{n}: the filter box has the keyboard"
+                );
+                let [_, changes, _] = tabs_of(cx, &ws);
+                cx.simulate_click(window, changes.center(), Modifiers::none());
+                frame(cx, window);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    assert_eq!(ws.right_sidebar.panel, Panel::Changes, "{n}: shown");
+                    assert_eq!(
+                        ws.saved_state().right_sidebar_panel.as_deref(),
+                        Some("changes"),
+                        "{n}: saved"
+                    );
+                });
+                assert_eq!(
+                    keys(cx),
+                    (false, true),
+                    "{n}: the terminal has the keyboard back"
+                );
+                seen.set(tabs_of(cx, &ws).map(Some));
+                slot.borrow_mut().take();
+            }
+        };
+        let shot = render_with(&theme, dims, build, act);
+        let [files, changes, _] = seen.get().map(|b| b.expect("seen"));
+        let pad = |b: Bounds<Pixels>| {
+            pixel_at(
+                &shot,
+                dims,
+                f32::from(b.left()) + 4.0,
+                card_top + TAB_BAR - 6.0,
+            )
+        };
+        assert!(near(pad(changes), ui.card), "{n}: Changes is shown now");
+        assert!(near(pad(files), ui.tab_bar), "{n}: Files isn't");
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// The Changes panel (M11h Task 4) in the right sidebar, beside a terminal, in a 1100 × 560
+/// window, in both themes, its list given (`show_for_shots`; nothing looked up):
+/// - `changes`: six rows and 3 more for the fixture folder as a repo: src/main.rs (M, +12 −3),
+///   src/new.rs (A, +4), old.rs (D, −9), docs/logo.png (A, binary), a file four folders down
+///   (M, +2 −2) and a long name (A, not counted), then `… 3 more`. The header reads the repo's
+///   name, `9 files` and the totals (+18 −14); each letter in its mark's colour (M blue, A
+///   green, D red); `+12` in the added ink and `−3` in the removed one, a binary or uncounted
+///   row in neither; the hovered row (the fifth) `card_hover`, the others the card.
+/// - `changes-empty-clean`: an empty list in a repo: the header (name only), then
+///   "No changes since the last commit."; `changes-empty-norepo`: not a repo: "Not a git
+///   repository." and no header; `changes-empty-ssh`: an SSH terminal followed: "Changes
+///   aren't shown for SSH terminals.", no header.
+/// - `changes-click`: a click on the M row opens src/main.rs in the focused pane in Diff mode
+///   (the model's tab), and that row is drawn `card_selected`.
+fn changes_scenes() {
+    use crate::changes_panel::{NO_CHANGES, NO_REPO, SSH_NOTE, file_count_label, totals};
+    use crate::git_status::{Change, ChangeList, Counts, Mark};
+    use crate::layout_model::{FileMode, TabKind};
+    use crate::right_sidebar::{Panel, ROOT_HEADER, ROW, mark_color};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use gpui::Modifiers;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
+    let sidebar_right = window_right - GAP - FOCUS_RING;
+    let card_top = GAP + FOCUS_RING;
+    let header_top = card_top + TAB_BAR;
+    let list_top = header_top + ROOT_HEADER;
+    let root = files_fixture();
+    let lines = |added, removed| Counts::Lines { added, removed };
+    let change = |path: &str, mark, counts| Change {
+        path: PathBuf::from(path),
+        mark,
+        counts,
+    };
+    let six = ChangeList {
+        entries: vec![
+            change("src/main.rs", Mark::Modified, lines(12, 3)),
+            change("src/new.rs", Mark::Added, lines(4, 0)),
+            change("old.rs", Mark::Deleted, lines(0, 9)),
+            change("docs/logo.png", Mark::Added, Counts::Binary),
+            change("src/ui/widgets/deep/panel.rs", Mark::Modified, lines(2, 2)),
+            change(
+                "a_very_long_file_name_that_goes_on_well_past_the_sidebar_edge.rs",
+                Mark::Added,
+                Counts::Unknown,
+            ),
+        ],
+        more: 3,
+    };
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    let row_mid = |i: usize| list_top + (i as f32 + 0.5) * ROW;
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let (added, removed) = crate::changes_panel::count_inks(&theme);
+        let (m, a, d) = (
+            mark_color(Mark::Modified, &theme),
+            mark_color(Mark::Added, &theme),
+            mark_color(Mark::Deleted, &theme),
+        );
+        let near = |p: [u8; 3], c: Rgb, by: u8| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(x, y)| x.abs_diff(y) <= by)
+        };
+        let build_for = |list: Option<ChangeList>, in_repo: bool, ssh: bool, slot: Slot| {
+            let root_for = root.clone();
+            right_panel_workspace(
+                theme,
+                root.clone(),
+                300.0,
+                Panel::Changes,
+                slot,
+                move |ws| {
+                    ws.right_sidebar.changes.show_for_shots(
+                        root_for.clone(),
+                        in_repo,
+                        list.clone(),
+                    );
+                    if ssh {
+                        let i = ws.sessions.position(|s| s.label() == "api").expect("api");
+                        ws.sessions.get_mut(i).expect("opened").ssh =
+                            Some(crate::ssh_target::SshTarget {
+                                host: "devbox".into(),
+                                tmux: false,
+                                tmux_name: None,
+                            });
+                    }
+                },
+            )
+        };
+
+        // The list.
+        let n = format!("changes-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = build_for(Some(six.clone()), true, false, slot.clone());
+        let act = {
+            let n = n.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                frame(cx, window);
+                let shown = cx.read(|cx| ws.read(cx).changes_note(cx));
+                assert_eq!(shown, None, "{n}: rows, no note");
+                // The pointer on the fifth row: its hover fill in the shot.
+                let on = point(px(sidebar_left + 150.0), px(row_mid(4)));
+                cx.simulate_mouse_move(window, on, None, Modifiers::none());
+                frame(cx, window);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with("changes", slug, &theme, dims, build.clone(), act.clone());
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let has = |x0: f32, x1: f32, y0: f32, y1: f32, c: Rgb, by: u8| {
+            let (w, h) = (((x1 - x0) * 2.0) as usize, ((y1 - y0) * 2.0) as usize);
+            (0..h).any(|dy| {
+                (0..w).any(|dx| near(at(x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5), c, by))
+            })
+        };
+        let in_row = |i: usize, x0: f32, x1: f32, c: Rgb| {
+            let y0 = list_top + i as f32 * ROW;
+            has(x0, x1, y0 + 2.0, y0 + ROW - 2.0, c, 24)
+        };
+        // The header: the repo's name, `9 files` at the right, the totals under them.
+        assert_eq!(file_count_label(six.entries.len() + six.more), "9 files");
+        assert_eq!(totals(&six), (18, 14), "{n}: the totals");
+        let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
+        let (left, right) = (sidebar_left + 10.0, sidebar_right - 6.0);
+        assert!(
+            has(left, left + 120.0, line_top, line_top + 20.0, ui.text, 24),
+            "{n}: the repo's name"
+        );
+        assert!(
+            has(
+                right - 45.0,
+                right,
+                line_top,
+                line_top + 20.0,
+                ui.text_faint,
+                24
+            ),
+            "{n}: the file count, faint, at the right"
+        );
+        assert!(
+            !has(right - 45.0, right, line_top, line_top + 20.0, ui.text, 12),
+            "{n}: the file count isn't in the text colour"
+        );
+        for (what, c) in [("added", added), ("removed", removed)] {
+            assert!(
+                has(left, left + 80.0, line_top + 20.0, line_top + 34.0, c, 24),
+                "{n}: the {what} total"
+            );
+        }
+        // Each row's letter in its mark's colour, and in no other mark's.
+        let letter = |i: usize, c: Rgb| in_row(i, sidebar_left + 8.0, sidebar_left + 20.0, c);
+        for (i, mark) in [(0, m), (1, a), (2, d), (3, a), (4, m), (5, a)] {
+            assert!(letter(i, mark), "{n}: row {i}'s letter in {mark:?}");
+            for other in [m, a, d].into_iter().filter(|o| *o != mark) {
+                assert!(!letter(i, other), "{n}: row {i}'s letter isn't {other:?}");
+            }
+        }
+        // The counts at the right: `+12 −3` in both inks; `+4` added only; `−9` removed
+        // only; `binary` faint in neither; an uncounted row has none.
+        let counts =
+            |i: usize, c: Rgb| in_row(i, sidebar_right - 8.0 - 60.0, sidebar_right - 8.0, c);
+        for (i, want_added, want_removed) in [
+            (0, true, true),
+            (1, true, false),
+            (2, false, true),
+            (3, false, false),
+            (5, false, false),
+        ] {
+            assert_eq!(counts(i, added), want_added, "{n}: row {i}'s added count");
+            assert_eq!(
+                counts(i, removed),
+                want_removed,
+                "{n}: row {i}'s removed count"
+            );
+        }
+        assert!(counts(3, ui.text_faint), "{n}: `binary`, faint");
+        // `… 3 more`, faint, under the names, last.
+        let more = |i: usize, c: Rgb| in_row(i, sidebar_left + 26.0, sidebar_left + 120.0, c);
+        assert!(more(6, ui.text_faint), "{n}: the more row");
+        assert!(!more(7, ui.text_faint), "{n}: nothing after it");
+        // The hovered row filled `card_hover`, the one above it the card.
+        let fill = |i: usize| at(sidebar_left + 3.0, row_mid(i));
+        assert!(
+            near(fill(4), ui.card_hover, 3),
+            "{n}: hovered {:?}",
+            fill(4)
+        );
+        assert!(near(fill(3), ui.card, 3), "{n}: not hovered {:?}", fill(3));
+
+        // The empty states.
+        for (case, list, in_repo, ssh, note) in [
+            (
+                "clean",
+                Some(ChangeList::default()),
+                true,
+                false,
+                NO_CHANGES,
+            ),
+            ("norepo", None, false, false, NO_REPO),
+            ("ssh", Some(six.clone()), true, true, SSH_NOTE),
+        ] {
+            let scene = format!("changes-empty-{case}");
+            let n = format!("{scene}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = build_for(list, in_repo, ssh, slot.clone());
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    frame(cx, window);
+                    let shown = cx.read(|cx| ws.read(cx).changes_note(cx));
+                    assert_eq!(shown, Some(note), "{n}");
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(&scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            // Tight: Latte's dim and full text colours are close.
+            let has = |y0: f32, y1: f32, c: Rgb| {
+                (0..((y1 - y0) * 2.0) as usize).any(|dy| {
+                    (0..400).any(|dx| {
+                        let (x, y) = (sidebar_left + 2.0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5);
+                        near(at(x, y), c, 6)
+                    })
+                })
+            };
+            // The header (in a repo only), then the note's words, dim.
+            let header = case == "clean";
+            assert_eq!(
+                has(header_top, header_top + 30.0, ui.text),
+                header,
+                "{n}: the header {}",
+                if header { "shows" } else { "doesn't" }
+            );
+            let note_top = if header { list_top } else { header_top };
+            assert!(
+                has(note_top, note_top + 30.0, ui.text_dim),
+                "{n}: the note's words"
+            );
+            // No rows: no mark letters.
+            for c in [m, a, d] {
+                assert!(
+                    !has(note_top + 30.0, note_top + 120.0, c),
+                    "{n}: no rows ({c:?})"
+                );
+            }
+        }
+
+        // A click on the M row: its diff, selected.
+        let n = format!("changes-click-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = build_for(Some(six.clone()), true, false, slot.clone());
+        let act = {
+            let (n, root) = (n.clone(), root.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                frame(cx, window);
+                let on = point(px(sidebar_left + 100.0), px(row_mid(0)));
+                cx.simulate_click(window, on, Modifiers::none());
+                frame(cx, window);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let tab = ws.model.focused_tab().expect("a tab");
+                    let kind = ws.model.tab(tab).expect("known").kind.clone();
+                    assert_eq!(
+                        kind,
+                        TabKind::File {
+                            path: root.join("src/main.rs"),
+                            mode: FileMode::Diff
+                        },
+                        "{n}: the click opens src/main.rs's diff"
+                    );
+                    let view = ws.focused_file_tab().expect("its view");
+                    assert_eq!(view.read(cx).mode(), FileMode::Diff, "{n}: the tab's mode");
+                });
+                // The pointer away: no hover or tooltip in the shot.
+                cx.simulate_mouse_move(
+                    window,
+                    point(px(500.0), px(300.0)),
+                    None,
+                    Modifiers::none(),
+                );
+                frame(cx, window);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "changes-click",
+            slug,
+            &theme,
+            dims,
+            build.clone(),
+            act.clone(),
+        );
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let fill = |i: usize| pixel_at(&shot, dims, sidebar_left + 3.0, row_mid(i));
+        assert!(
+            near(fill(0), ui.card_selected, 3),
+            "{n}: the M row is selected: {:?}",
+            fill(0)
+        );
+        assert!(
+            near(fill(1), ui.card, 3),
+            "{n}: the next isn't: {:?}",
+            fill(1)
+        );
     }
 }
 
