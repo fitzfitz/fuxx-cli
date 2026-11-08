@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11f
-status: planned
+status: built
 updated: 2026-11-08
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-11-08
 | At a glance | |
 |---|---|
 | **Milestone note** | [[58 - Milestone 11f - Cursor Style]] (the spec); the icon: [[57 - Milestone 11e - Update Available]] "Amendment" |
-| **Status** | 🟦 Planned 2026-11-08; not started |
-| **Tasks done** | 0 / 6 |
-| **▶ Pick up here** | Your review of note 58 and this plan, then Task 1 |
+| **Status** | 🟨 Tasks 1–3 built and reviewed 2026-11-08 (868 tests); merge, release and on-screen check next |
+| **Tasks done** | 3 / 6 (Tasks 1–3); Task 6 docs partly |
+| **▶ Pick up here** | Task 4: merge and push (your word given), then Task 5: release v0.3.2 |
 | **Decisions used** | Yours (2026-11-08): a package icon and the target version on the Update Available button; the cursor mix "Bar + glide + breathing glow + colour following the agent, with Trail and Sparks as Fun" ("ya pakai cara mu"). Details: AI's call, in note 58. |
 | **Needs your eyes** | 👀 Task 5 (release v0.3.2 on your word, then on screen) |
 
@@ -83,7 +83,7 @@ keeps a small `CursorMotion` state (last cell, glide start, last change, sparks)
 
 ---
 
-### Task 1: Settings, the "no program has chosen" marker, Preferences, and the package icon
+### Task 1: Settings, the "no program has chosen" marker, Preferences, and the package icon — ✅
 
 **Files:**
 - Modify: `src/appearance.rs`, `src/prefs.rs`, `src/preferences.rs` (a "Cursor" group in Appearance);
@@ -98,7 +98,7 @@ keeps a small `CursorMotion` state (last cell, glide start, last change, sparks)
   `prefs::cursor_*_values` in the same style; `pub const CURSOR_UNSET: CursorStyle = CursorStyle { shape: CursorShape::HollowBlock, blinking: true }`
   (in `daemon_session.rs` or a shared spot both the daemon and the window import).
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - Appearance parsing: defaults (bar, on, on, status, off); each non-default value; junk → the default plus a warning.
   - `prefs::cursor_style_values(Bar) == []`, `(Hollow) == ["hollow"]`; the same pattern for the others.
   - A new `Term` from `daemon_session` reports `cursor_style() == CURSOR_UNSET`, and after feeding `ESC [ 6 q` →
@@ -110,11 +110,11 @@ keeps a small `CursorMotion` state (last cell, glide start, last change, sparks)
     reads `Downloading v0.3.2…`; at the narrowest sidebar width the version part is gone and `Update Available`
     still shows in full.
   - A pure `button_label(state, width_fits_version: bool)` (or similar) test for the three texts.
-- [ ] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt,
+- [x] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt,
   `__ui-shots preferences` and `update-button` → ok. Look at the PNGs.
-- [ ] **Step 5: commit** `feat(m11f): cursor settings and the "no program has chosen" marker; M11e: a package icon on the update button`.
+- [x] **Step 5: commit** `feat(m11f): cursor settings and the "no program has chosen" marker; M11e: a package icon on the update button`.
 
-### Task 2: The cursor's rules (pure)
+### Task 2: The cursor's rules (pure) — ✅
 
 **Files:** Create `src/cursor_look.rs`; Modify `src/main.rs` (`mod`).
 
@@ -137,7 +137,7 @@ keeps a small `CursorMotion` state (last cell, glide start, last change, sparks)
     (position and alpha; None after 350 ms).
   - `pub fn needs_frames(focused: bool, key_window: bool, motion: bool, glowing: bool, animating: bool) -> Frames`
     with `pub enum Frames { None, Timer33ms, EveryFrame }`.
-- [ ] **Step 1: failing tests**, one or more per function:
+- [x] **Step 1: failing tests**, one or more per function:
   - `effective_style` over the marker × each setting and over Beam/Underline/Block × blinking.
   - `cursor_color` for each status with `follows` true and false.
   - `breath_alpha`: 1.0 at 0.3 s since a change; 0.35 at the trough; 1.0 at the period.
@@ -147,10 +147,10 @@ keeps a small `CursorMotion` state (last cell, glide start, last change, sparks)
   - `sparks_for_key`: deterministic, 6 distinct angles, reach in range; `spark_at` is None after 350 ms.
   - `needs_frames`: unfocused or non-key → None; motion off → None; glowing only → Timer33ms; animating →
     EveryFrame.
-- [ ] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt → ok.
-- [ ] **Step 5: commit** `feat(m11f): the cursor's rules — shape, colour, breathing, glide, trail, sparks (pure)`.
+- [x] **Step 2: run** → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy (both), fmt → ok.
+- [x] **Step 5: commit** `feat(m11f): the cursor's rules — shape, colour, breathing, glide, trail, sparks (pure)`.
 
-### Task 3: Drawing and driving the cursor
+### Task 3: Drawing and driving the cursor — ✅
 
 **Files:** Modify `src/terminal_view.rs` (`CursorMotion`, painting, frames, sparks on typed keys, the status passed
 in), `src/workspace.rs` (giving each `TerminalView` its session's status when it changes), `src/ui_shots.rs` (scene
@@ -165,7 +165,7 @@ in), `src/workspace.rs` (giving each `TerminalView` its session's status when it
 - Frames: per `needs_frames`. Use `window.request_animation_frame()` for EveryFrame, and a 33 ms
   `cx.background_executor().timer` loop for Timer33ms. The loop stops when `needs_frames` is None (unfocused, the
   window not key, motion off).
-- [ ] **Step 1: failing tests (ui-shot `cursor`, Mocha and Latte)**:
+- [x] **Step 1: failing tests (ui-shot `cursor`, Mocha and Latte)**:
   - Each shape (bar, underline, hollow, block) with the setting and no program style; assert the bar's quad is 2 px
     wide at the cell's left edge.
   - A Working terminal draws the cursor in `ring_working`; Idle draws it in the theme's cursor colour.
@@ -173,9 +173,9 @@ in), `src/workspace.rs` (giving each `TerminalView` its session's status when it
   - An unfocused pane: a 1 px outline, and `needs_frames == None`.
   - 50 cursor moves in one frame leave one glide.
   - With `reduce_motion`: no glow, no trail, no sparks, and the cursor exactly on its cell.
-- [ ] **Step 2: run** `__ui-shots cursor` → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy
+- [x] **Step 2: run** `__ui-shots cursor` → FAIL.  **Step 3: implement.**  **Step 4: run** `cargo test`, clippy
   (both), fmt, the full `__ui-shots`. Look at the PNGs.
-- [ ] **Step 5: commit** `feat(m11f): a bar cursor that glides, breathes and follows the agent; trail and sparks`.
+- [x] **Step 5: commit** `feat(m11f): a bar cursor that glides, breathes and follows the agent; trail and sparks`.
 
 ### Task 4: Merge and push (your word)
 
