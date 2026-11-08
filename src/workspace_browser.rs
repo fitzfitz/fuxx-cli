@@ -375,7 +375,7 @@ impl Workspace {
             .filter(|t| !self.browser_tabs.contains_key(&t.id))
             .filter_map(|t| match &t.kind {
                 TabKind::Browser { url } => Some((t.id, url.clone())),
-                TabKind::Terminal(_) => None,
+                TabKind::Terminal(_) | TabKind::File { .. } => None,
             })
             .collect();
         let focused = self.model.focused_tab();

@@ -423,13 +423,16 @@ impl Workspace {
                         (s.status, s.status_since, s.question.clone())
                     }
                     None => {
-                        let opened = self
-                            .model
-                            .tabs_of(ws)
+                        let tabs = self.model.tabs_of(ws);
+                        let pages = tabs
                             .iter()
                             .filter_map(|t| self.browser_tabs.get(t))
-                            .map(|v| v.read(cx).since)
-                            .min();
+                            .map(|v| v.read(cx).since);
+                        let files = tabs
+                            .iter()
+                            .filter_map(|t| self.file_tabs.get(t))
+                            .map(|v| v.read(cx).since);
+                        let opened = pages.chain(files).min();
                         (Status::Idle, opened.unwrap_or(self.started), None)
                     }
                 };

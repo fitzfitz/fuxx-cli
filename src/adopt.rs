@@ -223,6 +223,11 @@ pub fn workspaces(saved: &SavedState, p: &Placement, ids: &[u64]) -> Model {
             .focused_tab()
             .and_then(|t| model.tab(t))
             .is_some_and(|t| matches!(t.kind, TabKind::Browser { .. })),
+        // Nor does a file tab.
+        Some(SavedFocus::File) => model
+            .focused_tab()
+            .and_then(|t| model.tab(t))
+            .is_some_and(|t| matches!(t.kind, TabKind::File { .. })),
         None => false,
     };
     if !came_back {
@@ -415,7 +420,7 @@ mod tests {
                             .iter()
                             .filter_map(|t| match t.kind {
                                 TabKind::Terminal(id) => Some(id),
-                                TabKind::Browser { .. } => None,
+                                TabKind::Browser { .. } | TabKind::File { .. } => None,
                             })
                             .collect()
                     })
@@ -427,7 +432,7 @@ mod tests {
     fn focused(m: &Model) -> Option<u64> {
         match m.tab(m.focused_tab()?)?.kind {
             TabKind::Terminal(id) => Some(id),
-            TabKind::Browser { .. } => None,
+            TabKind::Browser { .. } | TabKind::File { .. } => None,
         }
     }
     const INSTANCE: u64 = 0xfeed;
@@ -952,7 +957,7 @@ mod tests {
             .flat_map(|p| &p.tabs)
             .find_map(|t| match t.kind {
                 TabKind::Terminal(id) => Some(id),
-                TabKind::Browser { .. } => None,
+                TabKind::Browser { .. } | TabKind::File { .. } => None,
             })
             .unwrap_or(0)
     }
@@ -1061,6 +1066,35 @@ mod tests {
             tab.kind,
             TabKind::Browser {
                 url: Some("http://localhost:3000".into())
+            },
+            "not moved to the first live terminal"
+        );
+        assert_eq!(focused(&m), None);
+    }
+
+    #[test]
+    fn a_saved_focus_on_a_file_tab_stays_there() {
+        let mut saved = with_tabs();
+        // api's first pane, showing a file tab in its browser tab's place, had the focus.
+        saved.active_workspace = Some(0);
+        saved.workspaces[0].focused = 0;
+        if let Node::Split { first, .. } = &mut saved.workspaces[0].layout
+            && let Node::Leaf(pane) = first.as_mut()
+        {
+            pane.tabs[2] = SavedTab::File {
+                path: "/w/api/README.md".into(),
+                mode: crate::layout_model::FileMode::Plain,
+            };
+            pane.active = 2;
+        }
+        let p = place_all(&saved, &[live(3), live(1)], RestoreMode::Agents);
+        let m = model(&saved, &p);
+        let tab = m.tab(m.focused_tab().unwrap()).unwrap();
+        assert_eq!(
+            tab.kind,
+            TabKind::File {
+                path: "/w/api/README.md".into(),
+                mode: crate::layout_model::FileMode::Plain,
             },
             "not moved to the first live terminal"
         );

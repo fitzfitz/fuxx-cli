@@ -1,6 +1,6 @@
 //! Pane tab bars (M11b): a 26 px bar on top of every pane (even a lone one, as cmux does), in
-//! place of M11's pane headers. Each tab shows an icon (a terminal's `>_`, a browser's globe), its
-//! title, and for a terminal whose agent is Working, Waiting or Done its status mark in the
+//! place of M11's pane headers. Each tab shows an icon (a terminal's `>_`, a browser's globe, a
+//! file's page), its title, and for a terminal whose agent is Working, Waiting or Done its status mark in the
 //! icon's place; × closes it (shown on hover). The active tab is filled and, in the focused pane,
 //! has an accent line along its top; a waiting tab is tinted. Too many tabs shrink to a minimum
 //! width, then the row scrolls sideways. On the right, pinned: new terminal tab, new browser tab
@@ -51,6 +51,8 @@ pub const BROWSER_TITLE: &str = "New tab";
 pub enum TabIcon {
     Terminal,
     Globe,
+    /// A file tab's (M11g): a page with a folded corner.
+    File,
     /// A terminal's status mark, while it is anything but Idle.
     Mark(Status),
 }
@@ -67,14 +69,15 @@ pub struct TerminalFacts {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BarTab {
     pub tab: TabId,
-    /// The terminal it shows (`sN`); none for a browser tab.
+    /// The terminal it shows (`sN`); none for a browser or file tab.
     pub terminal: Option<u64>,
     pub title: SharedString,
     pub icon: TabIcon,
-    /// Idle for a browser tab.
+    /// Idle for a browser or file tab.
     pub status: Status,
     pub active: bool,
-    /// Its tooltip: the title, and for a busy terminal its status and for how long.
+    /// Its tooltip: the title, and for a busy terminal its status and for how long; a file
+    /// tab's full path.
     pub tip: String,
 }
 
@@ -82,6 +85,7 @@ pub struct BarTab {
 pub fn icon(kind: &TabKind, status: Status) -> TabIcon {
     match kind {
         TabKind::Browser { .. } => TabIcon::Globe,
+        TabKind::File { .. } => TabIcon::File,
         TabKind::Terminal(_) if status == Status::Idle => TabIcon::Terminal,
         TabKind::Terminal(_) => TabIcon::Mark(status),
     }
@@ -97,7 +101,7 @@ pub fn tip(title: &str, status: Status, age: Duration) -> String {
 
 /// `pane`'s tabs in bar order. `facts` tells about a terminal; one it doesn't know (never, while
 /// tabs and sessions are in step) is drawn as an idle "Terminal". `page` gives a browser tab's
-/// title (none: "New tab").
+/// title (none: "New tab"). A file tab's title is its file's name, its tooltip the full path.
 pub fn bar_tabs(
     pane: &Pane,
     facts: impl Fn(u64) -> Option<TerminalFacts>,
@@ -106,27 +110,43 @@ pub fn bar_tabs(
     pane.tabs
         .iter()
         .map(|t| {
-            let (terminal, title, status, age): (_, SharedString, _, _) = match t.kind {
-                TabKind::Terminal(id) => match facts(id) {
-                    Some(f) => (Some(id), f.label, f.status, f.age),
-                    None => (Some(id), "Terminal".into(), Status::Idle, Duration::ZERO),
+            let (terminal, title, status, age): (_, SharedString, _, _) = match &t.kind {
+                TabKind::Terminal(id) => match facts(*id) {
+                    Some(f) => (Some(*id), f.label, f.status, f.age),
+                    None => (Some(*id), "Terminal".into(), Status::Idle, Duration::ZERO),
                 },
                 TabKind::Browser { .. } => {
                     let title = page(t.id).unwrap_or_else(|| BROWSER_TITLE.into());
                     (None, title, Status::Idle, Duration::ZERO)
                 }
+                TabKind::File { path, .. } => {
+                    (None, file_title(path), Status::Idle, Duration::ZERO)
+                }
+            };
+            let tip = match &t.kind {
+                TabKind::File { path, .. } => path.display().to_string(),
+                _ => tip(&title, status, age),
             };
             BarTab {
                 tab: t.id,
                 terminal,
                 icon: icon(&t.kind, status),
-                tip: tip(&title, status, age),
+                tip,
                 title,
                 status,
                 active: t.id == pane.active,
             }
         })
         .collect()
+}
+
+/// A file tab's title: its file's name (the whole path when it has none, as `/`).
+fn file_title(path: &std::path::Path) -> SharedString {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+        .into()
 }
 
 /// Where a dragged tab would land, as one bar sees it.
@@ -257,6 +277,7 @@ impl Render for TabChip {
                     .into_any_element()
             }
             TabIcon::Globe => glyph(Glyph::Globe, ui.text).into_any_element(),
+            TabIcon::File => glyph(Glyph::File, ui.text).into_any_element(),
             TabIcon::Terminal => glyph(Glyph::Terminal, ui.text).into_any_element(),
         };
         div()
@@ -480,6 +501,7 @@ impl Workspace {
             )
             .into_any_element(),
             (TabIcon::Globe, _) => glyph(Glyph::Globe, look.text).into_any_element(),
+            (TabIcon::File, _) => glyph(Glyph::File, look.text).into_any_element(),
             (TabIcon::Terminal, _) => glyph(Glyph::Terminal, look.text).into_any_element(),
         };
         let rename_box = self
@@ -707,7 +729,8 @@ impl Workspace {
     }
 
     /// Close `tab` (its ×, a middle-click, its menu, ⌘W, a workspace closing): a terminal ends;
-    /// a browser tab's page goes with its view (`sync` drops it). Never asks. The pane's next
+    /// a browser tab's page goes with its view (`sync` drops it); a file tab just goes (the file
+    /// is only read). Never asks. The pane's next
     /// tab shows, or the pane (then the workspace) goes with its last one; with nothing left,
     /// the window.
     pub(crate) fn close_tab(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
@@ -718,6 +741,7 @@ impl Workspace {
                 }
             }
             Some(TabKind::Browser { .. }) => self.close_browser_tab(tab, true, window, cx),
+            Some(TabKind::File { .. }) => self.close_file_tab(tab, window, cx),
             None => {}
         }
     }
@@ -892,6 +916,8 @@ pub(crate) enum Glyph {
     Terminal,
     /// A circle with a meridian and the equator.
     Globe,
+    /// A page with its top right corner folded over.
+    File,
     /// A box split by a line down its middle, and by one across it.
     SplitRight,
     SplitDown,
@@ -971,6 +997,27 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         equator.move_to(p(c.0 - r, c.1));
                         equator.line_to(p(c.0 + r, c.1));
                         paths.push(equator);
+                    }
+                    Glyph::File => {
+                        // The page's outline, its top right corner cut; the fold's two edges.
+                        let (left, right, top, bottom, fold) = (2.5, 9.5, 1.0, 11.0, 3.0);
+                        let mut page = stroke();
+                        page.add_polygon(
+                            &[
+                                p(left, top),
+                                p(right - fold, top),
+                                p(right, top + fold),
+                                p(right, bottom),
+                                p(left, bottom),
+                            ],
+                            true,
+                        );
+                        paths.push(page);
+                        let mut corner = stroke();
+                        corner.move_to(p(right - fold, top));
+                        corner.line_to(p(right - fold, top + fold));
+                        corner.line_to(p(right, top + fold));
+                        paths.push(corner);
                     }
                     Glyph::Back | Glyph::Forward => {
                         let (tip, wing) = if matches!(kind, Glyph::Back) {
@@ -1369,6 +1416,37 @@ mod tests {
             moved.move_tab(left[1], pane, index).unwrap();
             assert_eq!(ids(&moved, b.pane)[slot], left[1]);
         }
+    }
+
+    #[test]
+    fn a_file_tab_shows_its_file_name_and_glyph_and_its_path_in_the_tooltip() {
+        let file = TabKind::File {
+            path: "/w/api/src/main.rs".into(),
+            mode: crate::layout_model::FileMode::Plain,
+        };
+        assert_eq!(icon(&file, Status::Idle), TabIcon::File);
+        assert_eq!(icon(&file, Status::Waiting), TabIcon::File);
+        let pane = Pane {
+            id: crate::layout_model::PaneId(1),
+            tabs: vec![
+                crate::layout_model::Tab {
+                    id: TabId(10),
+                    kind: TabKind::Terminal(1),
+                },
+                crate::layout_model::Tab {
+                    id: TabId(11),
+                    kind: file,
+                },
+            ],
+            active: TabId(11),
+        };
+        let tabs = bar_tabs(&pane, |_| terminal("shell", Status::Idle, 0), |_| None);
+        assert_eq!(tabs[1].title.as_ref(), "main.rs");
+        assert_eq!(tabs[1].icon, TabIcon::File);
+        assert_eq!(tabs[1].tip, "/w/api/src/main.rs");
+        assert_eq!(tabs[1].terminal, None);
+        assert_eq!(tabs[1].status, Status::Idle);
+        assert!(tabs[1].active);
     }
 
     #[test]

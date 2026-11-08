@@ -22,6 +22,7 @@ mod daemon_client;
 mod daemon_session;
 mod detector;
 mod drag_gap;
+mod file_tab;
 mod fonts;
 mod git_branch;
 #[allow(dead_code)] // used by the right sidebar and file tab from M11g Task 5

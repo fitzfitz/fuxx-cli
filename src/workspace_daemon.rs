@@ -676,6 +676,7 @@ impl Workspace {
         let closed = self.browser_tabs.drain().map(|(_, view)| view);
         self.closed_browser_tabs.extend(closed);
         self.browser_titles.clear();
+        self.file_tabs.clear();
         self.browsers = Browsers::new();
         self.dragging = None;
         self.restoring = false; // even mid-startup, the list saved is the empty one

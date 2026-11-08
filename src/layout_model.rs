@@ -1,9 +1,10 @@
 //! Workspaces → panes → tabs (M11b): the sidebar lists workspaces, a workspace is a split layout
-//! of panes, a pane holds an ordered row of terminal and browser tabs. Every rule lives here
+//! of panes, a pane holds an ordered row of terminal, browser and (M11g) file tabs. Every rule lives here
 //! (new, split, add tab, close-last cascades, move, select, roll-up, pinned order, ⌘1–⌘9, the
 //! saved shape and the loader for older files). Pure and GPUI-free, so the rules are unit-tested.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -22,11 +23,23 @@ pub struct PaneId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TabId(pub u64);
 
-/// What a tab shows: a terminal (by its scripting id, `sN`) or a web page.
+/// What a tab shows: a terminal (by its scripting id, `sN`), a web page, or a file, read-only
+/// (M11g).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabKind {
     Terminal(u64),
     Browser { url: Option<String> },
+    File { path: PathBuf, mode: FileMode },
+}
+
+/// How a file tab shows its file: as it is (with change bars), or as a diff against the last
+/// commit (M11h; M11g opens only `Plain`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileMode {
+    #[default]
+    Plain,
+    Diff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,7 +134,8 @@ pub struct SavedPane {
 }
 
 /// A terminal tab names its saved session (an index into the file's `sessions`); a browser tab
-/// keeps its page.
+/// keeps its page; a file tab its file and how it shows it (none saved: `Plain`). Files from
+/// before file tabs have none, so the version stays 2.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SavedTab {
@@ -131,6 +145,11 @@ pub enum SavedTab {
     Browser {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+    },
+    File {
+        path: PathBuf,
+        #[serde(default)]
+        mode: FileMode,
     },
 }
 
@@ -186,12 +205,12 @@ impl Model {
             .flat_map(|p| &p.tabs)
             .filter_map(|t| match t.kind {
                 TabKind::Terminal(id) => Some(id),
-                TabKind::Browser { .. } => None,
+                TabKind::Browser { .. } | TabKind::File { .. } => None,
             })
             .collect()
     }
 
-    /// Every tab of a workspace, browser tabs too: panes in reading order, tabs in tab-bar
+    /// Every tab of a workspace, browser and file tabs too: panes in reading order, tabs in tab-bar
     /// order.
     pub fn tabs_of(&self, workspace: WorkspaceId) -> Vec<TabId> {
         let Some(w) = self.workspace(workspace) else {
@@ -308,6 +327,28 @@ impl Model {
             pane,
             tab,
         })
+    }
+
+    /// Open file `path` in `pane` (`Plain`): the pane's tab that already shows it, else a new
+    /// tab at the end of its bar. Either way it is shown and gets the focus. None when `pane`
+    /// is unknown.
+    pub fn open_file(&mut self, pane: PaneId, path: PathBuf) -> Option<Opened> {
+        let kind = TabKind::File {
+            path,
+            mode: FileMode::Plain,
+        };
+        let w = self.index_of_pane(pane)?;
+        let ws = &self.workspaces[w];
+        let Some(tab) = ws.pane(pane)?.tabs.iter().find(|t| t.kind == kind) else {
+            return self.add_tab(pane, kind);
+        };
+        let opened = Opened {
+            workspace: ws.id,
+            pane,
+            tab: tab.id,
+        };
+        self.select_tab(opened.tab);
+        Some(opened)
     }
 
     /// Show something else in `tab` (a reconnected terminal, a browser's new page); returns
@@ -628,6 +669,10 @@ impl Model {
                             SavedTab::Terminal { session }
                         }
                         TabKind::Browser { url } => SavedTab::Browser { url: url.clone() },
+                        TabKind::File { path, mode } => SavedTab::File {
+                            path: path.clone(),
+                            mode: *mode,
+                        },
                     };
                     if t.id == pane.active {
                         shown = tabs.len();
@@ -852,6 +897,11 @@ impl Model {
                     TabKind::Terminal(*terminal)
                 }
                 SavedTab::Browser { url } => TabKind::Browser { url: url.clone() },
+                // A file gone since comes back too: its tab says so (M11g Task 6).
+                SavedTab::File { path, mode } => TabKind::File {
+                    path: path.clone(),
+                    mode: *mode,
+                },
             };
             let id = TabId(self.next());
             if i == saved.active {
@@ -888,7 +938,8 @@ impl Model {
             .position(|w| w.panes.iter().any(|p| p.id == pane))
     }
 
-    /// Whether `kind` is a terminal some tab other than `except` already shows.
+    /// Whether `kind` is a terminal some tab other than `except` already shows (a page or a file
+    /// may be open in any number of tabs).
     fn shown_elsewhere(&self, kind: &TabKind, except: Option<TabId>) -> bool {
         matches!(kind, TabKind::Terminal(_))
             && self
@@ -971,14 +1022,17 @@ pub fn saved_focus(state: &SavedState) -> Option<SavedFocus> {
     Some(match pane.tabs.get(pane.active)? {
         SavedTab::Terminal { session } => SavedFocus::Terminal(*session),
         SavedTab::Browser { .. } => SavedFocus::Browser,
+        SavedTab::File { .. } => SavedFocus::File,
     })
 }
 
-/// What a file's focused tab showed: a saved session (its index in `sessions`), or a page.
+/// What a file's focused tab showed: a saved session (its index in `sessions`), a page, or a
+/// file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SavedFocus {
     Terminal(usize),
     Browser,
+    File,
 }
 
 /// `node`'s `n`th leaf in reading order.
@@ -1018,7 +1072,7 @@ pub fn renumber(
                         Some(session) => SavedTab::Terminal { session },
                         None => continue,
                     },
-                    browser => browser.clone(),
+                    page_or_file => page_or_file.clone(),
                 };
                 if t <= sp.active {
                     active = tabs.len();
@@ -1108,7 +1162,7 @@ mod tests {
             .flat_map(|p| &p.tabs)
             .filter_map(|t| match t.kind {
                 TabKind::Terminal(id) => Some(id),
-                TabKind::Browser { .. } => None,
+                TabKind::Browser { .. } | TabKind::File { .. } => None,
             })
             .collect()
     }
@@ -1865,9 +1919,11 @@ mod tests {
                     .flat_map(|w| &w.panes)
                     .flat_map(|p| p.tabs.iter().map(|t| t.id))
                     .collect();
-                // A fresh terminal mostly, sometimes a browser, sometimes one already shown.
-                let mut kind = |rng: &mut Lcg| match rng.below(6) {
+                // A fresh terminal mostly, sometimes a browser or a file, sometimes one already
+                // shown.
+                let mut kind = |rng: &mut Lcg| match rng.below(7) {
                     0 => web("https://r.test"),
+                    6 => file("/r/a.rs"),
                     1 if !live.is_empty() => term(*live.iter().nth(rng.below(live.len())).unwrap()),
                     _ => {
                         next_terminal += 1;
@@ -2538,7 +2594,7 @@ mod tests {
     fn m_terminal(w: &Workspace) -> u64 {
         match w.panes[0].tabs[0].kind {
             TabKind::Terminal(id) => id,
-            TabKind::Browser { .. } => u64::MAX,
+            TabKind::Browser { .. } | TabKind::File { .. } => u64::MAX,
         }
     }
 
@@ -2597,5 +2653,176 @@ mod tests {
         // The focused workspace's own sessions all left: no focused one.
         let (_, none) = renumber(&saved, Some(1), map);
         assert_eq!(none, None);
+    }
+
+    fn file(path: &str) -> TabKind {
+        TabKind::File {
+            path: PathBuf::from(path),
+            mode: FileMode::Plain,
+        }
+    }
+
+    #[test]
+    fn a_file_tab_round_trips_through_the_saved_shape() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(11)).unwrap();
+        let f = m.add_tab(a.pane, file("/w/api/src/main.rs")).unwrap();
+        m.split(a.pane, Axis::Row, file("/w/api/Cargo.toml"))
+            .unwrap();
+        m.select_tab(f.tab);
+        let session = |id: u64| Some((id - 11) as usize);
+        let (saved, active) = m.to_saved(session);
+        assert_eq!(
+            nth_leaf(&saved[0].layout, 0).unwrap().tabs,
+            [
+                SavedTab::Terminal { session: 0 },
+                SavedTab::File {
+                    path: PathBuf::from("/w/api/src/main.rs"),
+                    mode: FileMode::Plain,
+                },
+            ]
+        );
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(
+            json.contains(r#""kind":"file","path":"/w/api/src/main.rs","mode":"plain""#),
+            "{json}"
+        );
+        let back: Vec<SavedWorkspace> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, saved);
+        let m2 = Model::from_saved(&back, active, &[Some(11)]);
+        ok(&m2);
+        assert_eq!(shape(&m2), shape(&m));
+        assert_eq!(
+            m2.focused_tab().and_then(|t| m2.tab(t)).unwrap().kind,
+            file("/w/api/src/main.rs"),
+            "the file tab keeps the focus"
+        );
+        assert_eq!(m2.to_saved(session), (saved, active));
+    }
+
+    #[test]
+    fn a_saved_file_tab_without_a_mode_loads_as_plain() {
+        let tab: SavedTab = serde_json::from_str(r#"{"kind":"file","path":"/x"}"#).unwrap();
+        assert_eq!(
+            tab,
+            SavedTab::File {
+                path: PathBuf::from("/x"),
+                mode: FileMode::Plain,
+            }
+        );
+        let diff: SavedTab =
+            serde_json::from_str(r#"{"kind":"file","path":"/x","mode":"diff"}"#).unwrap();
+        assert_eq!(
+            diff,
+            SavedTab::File {
+                path: PathBuf::from("/x"),
+                mode: FileMode::Diff,
+            }
+        );
+        assert_eq!(FileMode::default(), FileMode::Plain);
+    }
+
+    /// A version-2 file as fuxx wrote it before file tabs: a pane of a terminal and a page, and
+    /// a pane of one terminal.
+    const RECORDED_V2: &str = r#"{
+  "version": 2,
+  "sessions": [
+    {"name": null, "project": "/w/api", "preset": null},
+    {"name": "logs", "project": "/w/api", "preset": null}
+  ],
+  "workspaces": [
+    {"name": "api", "layout": {"split": {"axis": "row", "ratio": 0.5,
+      "first": {"leaf": {"tabs": [{"kind": "terminal", "session": 0},
+                                  {"kind": "browser", "url": "http://localhost:3000"}],
+                         "active": 1}},
+      "second": {"leaf": {"tabs": [{"kind": "terminal", "session": 1}]}}}},
+     "focused": 1}
+  ],
+  "active_workspace": 0
+}"#;
+
+    #[test]
+    fn files_from_before_file_tabs_still_load() {
+        // Version 1 (sessions and layouts).
+        let old = restore::decode(RECORDED_V1).expect("the v1 file loads");
+        let m = Model::from_state(&old, &started(9));
+        ok(&m);
+        assert_eq!(m.workspaces().len(), 5);
+        // Version 2 with terminal and browser tabs only.
+        let v2 = restore::decode(RECORDED_V2).expect("the v2 file loads");
+        let m = Model::from_state(&v2, &started(2));
+        ok(&m);
+        assert_eq!(
+            shape(&m),
+            [vec![
+                vec![term(100), web("http://localhost:3000")],
+                vec![term(101)]
+            ]]
+        );
+        assert_eq!(m.focused_tab(), m.terminal_tab(101));
+    }
+
+    #[test]
+    fn closing_a_file_tab_leaves_the_terminals_alone() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let f = m.add_tab(a.pane, file("/w/notes.md")).unwrap();
+        m.add_tab(a.pane, term(2)).unwrap();
+        let closed = m.close_tab(f.tab).unwrap();
+        ok(&m);
+        assert_eq!(closed.tabs.len(), 1);
+        assert_eq!(closed.tabs[0].kind, file("/w/notes.md"));
+        assert!(closed.panes.is_empty() && closed.workspaces.is_empty());
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), term(2)]);
+        assert_eq!(m.terminals(a.workspace), [1, 2]);
+        // A file tab alone in a pane: its pane closes with it, the terminal's stays.
+        let lone = m.split(a.pane, Axis::Row, file("/w/a.rs")).unwrap();
+        let closed = m.close_tab(lone.tab).unwrap();
+        ok(&m);
+        assert_eq!(closed.panes, [lone.pane]);
+        assert_eq!(shape(&m), [vec![vec![term(1), term(2)]]]);
+        assert_eq!(m.focused_pane(), Some(a.pane));
+    }
+
+    #[test]
+    fn a_file_tab_holds_no_terminal() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        m.add_tab(a.pane, file("/w/a.rs")).unwrap();
+        // The same file may be open in two panes (it isn't a terminal, which shows once).
+        let b = m.split(a.pane, Axis::Row, file("/w/a.rs")).unwrap();
+        ok(&m);
+        assert_eq!(m.terminals(a.workspace), [1]);
+        assert_eq!(m.tabs_of(a.workspace).len(), 3);
+        // A workspace of a file only.
+        let only = m.new_workspace(1, file("/w/b.rs")).unwrap();
+        ok(&m);
+        assert!(m.terminals(only.workspace).is_empty());
+        let _ = b;
+    }
+
+    #[test]
+    fn opening_a_file_twice_in_one_pane_gives_one_tab_selected() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let first = m.open_file(a.pane, PathBuf::from("/w/a.rs")).unwrap();
+        assert_eq!(first.pane, a.pane);
+        m.select_tab(a.tab);
+        let again = m.open_file(a.pane, PathBuf::from("/w/a.rs")).unwrap();
+        ok(&m);
+        assert_eq!(again, first, "the tab it had");
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), file("/w/a.rs")]);
+        assert_eq!(m.focused_tab(), Some(first.tab));
+        // Another file is a new tab; the same file in another pane is that pane's own.
+        let other = m.open_file(a.pane, PathBuf::from("/w/b.rs")).unwrap();
+        assert_ne!(other.tab, first.tab);
+        let b = m.split(a.pane, Axis::Row, term(2)).unwrap();
+        let there = m.open_file(b.pane, PathBuf::from("/w/a.rs")).unwrap();
+        ok(&m);
+        assert_eq!(there.pane, b.pane);
+        assert_ne!(there.tab, first.tab);
+        assert_eq!(m.focused_tab(), Some(there.tab));
+        // An unknown pane opens nothing.
+        assert_eq!(m.open_file(PaneId(999), PathBuf::from("/w/a.rs")), None);
     }
 }

@@ -218,6 +218,7 @@ const SCENES: &[(&str, fn())] = &[
     ("tab-bars", tab_bar_scenes),
     ("tab-drag", tab_drag_scenes),
     ("browser-tab", browser_tab_scenes),
+    ("file-tab", file_tab_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
     ("default-name", default_name),
@@ -2428,6 +2429,7 @@ fn tab_bar_scenes() {
                             ws.sessions.items()[i].label().to_string()
                         }
                         TabKind::Browser { .. } => "browser".to_string(),
+                        TabKind::File { .. } => "file".to_string(),
                     }
                 })
             };
@@ -2753,6 +2755,7 @@ fn tab_drag_scenes() {
                                 ws.sessions.items()[i].label().to_string()
                             }
                             TabKind::Browser { .. } => "browser".to_string(),
+                            TabKind::File { .. } => "file".to_string(),
                         })
                         .collect()
                 })
@@ -2795,6 +2798,11 @@ fn tab_drag_scenes() {
                             let view = ws.browser_tabs.get(&tab).expect("its view");
                             let keys = view.read(cx).focus_handle(cx).is_focused(window);
                             ("browser".to_string(), keys)
+                        }
+                        TabKind::File { .. } => {
+                            let view = ws.file_tabs.get(&tab).expect("its view");
+                            let keys = view.read(cx).focus_handle(cx).is_focused(window);
+                            ("file".to_string(), keys)
                         }
                     }
                 })
@@ -3088,6 +3096,122 @@ const PAGE_TITLE: &str = "Acme dashboard";
 
 /// A workspace for the browser tab scenes: api's terminal on the left; on the right, focused, a
 /// browser tab on `PAGE_URL` (`loading`: still loading, so its third button is stop).
+/// A file tab (M11g Task 3, its stub view) in a pane beside a terminal's tab: opened twice for
+/// one file it is one tab, shown, with the keyboard; its bar tab draws the file glyph; closing it
+/// leaves the terminal, which takes the keyboard back. Shot once per theme (opened).
+fn file_tab_scenes() {
+    use crate::layout_model::TabKind;
+    use crate::tab_bar::look;
+    use gpui::Focusable;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(900.0), px(400.0));
+    let file = PathBuf::from(format!("{API}/src/main.rs"));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let tab_at: Rc<Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
+        let scene = |close: bool| {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    let project = std::path::Path::new(API);
+                    ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let file = file.clone();
+            let seen = tab_at.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let n = format!("file-tab-{slug}");
+                for _ in 0..2 {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| ws.open_file_tab(file.clone(), window, cx))
+                    })
+                    .expect("open the file");
+                    cx.run_until_parked();
+                }
+                let pane = cx.read(|cx| ws.read(cx).model.focused_pane().expect("a pane"));
+                let (kinds, file_tab) = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let p = ws.model.pane(pane).expect("known");
+                    let kinds: Vec<TabKind> = p.tabs.iter().map(|t| t.kind.clone()).collect();
+                    assert_eq!(ws.model.focused_tab(), Some(p.tabs[1].id), "{n}: shown");
+                    assert_eq!(ws.file_tabs.len(), 1, "{n}: one view");
+                    assert_eq!(ws.focused_terminal(), None, "{n}: no terminal focused");
+                    (kinds, p.tabs[1].id)
+                });
+                assert!(matches!(kinds[0], TabKind::Terminal(_)), "{n}");
+                assert_eq!(
+                    kinds[1..],
+                    [TabKind::File {
+                        path: file.clone(),
+                        mode: crate::layout_model::FileMode::Plain,
+                    }],
+                    "{n}: one file tab for the file opened twice"
+                );
+                let keys = cx
+                    .update_window(window, |_, window, cx| {
+                        let ws = ws.read(cx);
+                        let view = ws.focused_file_tab().expect("the file tab's view");
+                        view.read(cx).focus_handle(cx).is_focused(window)
+                    })
+                    .expect("read");
+                assert!(keys, "{n}: the file tab has the keyboard");
+                seen.set(tab_bounds(cx, &ws, pane, 1));
+                if close {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| ws.close_tab(file_tab, window, cx))
+                    })
+                    .expect("close the file tab");
+                    cx.run_until_parked();
+                    cx.update_window(window, |_, window, cx| {
+                        let ws = ws.read(cx);
+                        let p = ws.model.pane(pane).expect("the pane stays");
+                        assert_eq!(p.tabs.len(), 1, "{n}: the terminal's tab is left");
+                        assert!(ws.file_tabs.is_empty(), "{n}: the view went");
+                        let s = ws.sessions.active().expect("the terminal is active again");
+                        assert_eq!(ws.focused_terminal(), Some(s.id), "{n}");
+                        let keys = s.view.focus_handle(cx).is_focused(window);
+                        assert!(keys, "{n}: the terminal has the keyboard back");
+                    })
+                    .expect("read");
+                }
+                slot.borrow_mut().take();
+            };
+            (build, act)
+        };
+        let (build, act) = scene(false);
+        let path = shoot_with("file-tab", slug, &theme, dims, build.clone(), act.clone());
+        println!("ui-shots: {}", path.display());
+        // Its bar tab (active, in the focused pane) draws the glyph in the tab's text colour.
+        let shot = render_with(&theme, dims, build, act);
+        let tab = tab_at.get().expect("the file tab was laid out");
+        let text = look(&ui, Status::Idle, true, true).text;
+        let near = |p: [u8; 3]| {
+            p.iter()
+                .zip([text.r, text.g, text.b])
+                .all(|(a, b)| a.abs_diff(b) <= 60)
+        };
+        let (x0, y) = (f32::from(tab.left()) + 8.0, f32::from(tab.center().y));
+        let glyph = (0..12).any(|dx| {
+            (-6..=6).any(|dy| near(pixel_at(&shot, dims, x0 + dx as f32, y + dy as f32)))
+        });
+        assert!(glyph, "file-tab-{slug}: the file glyph is drawn");
+        // Closing it (not shot).
+        let (build, act) = scene(true);
+        render_with(&theme, dims, build, act);
+    }
+}
+
 fn browser_workspace(loading: bool, window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
     use crate::browser_tab::BarState;
     use crate::layout_model::TabKind;
@@ -3622,6 +3746,7 @@ fn browser_tab_scenes() {
                         .map(|t| match t.kind {
                             TabKind::Terminal(_) => "terminal",
                             TabKind::Browser { .. } => "browser",
+                            TabKind::File { .. } => "file",
                         })
                         .collect::<Vec<_>>()
                 })
@@ -3632,6 +3757,7 @@ fn browser_tab_scenes() {
                     match ws.model.tab(ws.model.focused_tab()?)?.kind {
                         TabKind::Terminal(_) => Some("terminal"),
                         TabKind::Browser { .. } => Some("browser"),
+                        TabKind::File { .. } => Some("file"),
                     }
                 })
             };
