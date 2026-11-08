@@ -3,10 +3,12 @@
 //! UI thread and hands the results in.
 //!
 //! - Rooted at the repo's top folder, or outside a repo at the terminal's folder; paths are
-//!   relative to the root (`""` is the root, always open, never a row).
+//!   relative to the root (`""` is the root, never a row; open unless the panel's header folds
+//!   it away, M11i: then no rows at all).
 //! - Lazy: a folder's children are rows only once it's been listed (`expand`); closing it keeps
-//!   the listing, so opening it again shows them at once. Each listing is capped (`CAP`, by the
-//!   panel, after hiding ignored entries: `shown_entries`); a capped one ends in a `… N more` row.
+//!   the listing, so opening it again shows them at once (also after `collapse_all`, which
+//!   closes every folder). Each listing is capped (`CAP`, by the panel, after hiding ignored
+//!   entries: `shown_entries`); a capped one ends in a `… N more` row.
 //! - Folders first, then files, each by name in any case.
 //! - Marks (`git status`): on a file, and on each folder holding marked files (the same mark, or
 //!   Modified when they differ). A file under an untracked folder (one entry, `new/`) is Added.
@@ -101,11 +103,22 @@ pub fn sort_entries(entries: &mut [DirEntry]) {
     entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase(), e.name.clone()));
 }
 
+/// What the panel remembers of a root for the run, to show it again as it was left.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeMemory {
+    /// The open folders.
+    pub expanded: HashSet<PathBuf>,
+    /// The root folded away in the header.
+    pub root_collapsed: bool,
+}
+
 pub struct FileTree {
     root: PathBuf,
     listings: HashMap<PathBuf, Listing>,
-    /// The open folders (never the root, which always is).
+    /// The open folders (never the root: it is open unless `root_collapsed`).
     expanded: HashSet<PathBuf>,
+    /// The root folded away in the panel's header (M11i): no rows at all.
+    root_collapsed: bool,
     /// git's marks by path, and each folder's from what it holds.
     marks: HashMap<PathBuf, Mark>,
     folder_marks: HashMap<PathBuf, Mark>,
@@ -184,6 +197,7 @@ impl FileTree {
             root,
             listings: HashMap::new(),
             expanded,
+            root_collapsed: false,
             marks: HashMap::new(),
             folder_marks: HashMap::new(),
             deleted: HashMap::new(),
@@ -242,8 +256,9 @@ impl FileTree {
         }
     }
 
-    /// Open folder `rel` if closed (asking for its listing, which also catches a kept one up),
-    /// else close it.
+    /// Open folder `rel` if closed, else close it. Opening asks for its listing only when
+    /// something under it isn't listed yet: a kept listing shows at once (M11i: as after
+    /// `collapse_all`), and the panel's 2 s refresh catches it up.
     pub fn toggle(&mut self, rel: &Path) -> Option<Want> {
         let rel = key(rel);
         if rel.as_os_str().is_empty() {
@@ -254,7 +269,38 @@ impl FileTree {
             return None;
         }
         self.expanded.insert(rel.clone());
-        Some(Want::List(rel))
+        let listed = self.listings.contains_key(&rel) && self.wanted().is_empty();
+        (!listed).then_some(Want::List(rel))
+    }
+
+    /// Close every folder (their listings kept, so opening one again is instant); the root
+    /// stays as it is. The selection moves to its top-level folder (a top-level row keeps it).
+    pub fn collapse_all(&mut self) {
+        if let Some(top) = self
+            .selected
+            .as_ref()
+            .and_then(|s| s.components().next())
+            .map(|c| PathBuf::from(c.as_os_str()))
+        {
+            self.selected = Some(top);
+            self.selected_at = None;
+        }
+        if !self.expanded.is_empty() {
+            self.expanded.clear();
+            self.changed();
+        }
+    }
+
+    /// Fold the root away (no rows at all) or show it again, its folders as they were.
+    pub fn set_root_collapsed(&mut self, collapsed: bool) {
+        if self.root_collapsed != collapsed {
+            self.root_collapsed = collapsed;
+            self.changed();
+        }
+    }
+
+    pub fn root_collapsed(&self) -> bool {
+        self.root_collapsed
     }
 
     /// git's marks (paths from the root, as `git_status::status` gives them). The same marks
@@ -322,18 +368,23 @@ impl FileTree {
             .is_some_and(|repos| repos.contains(rel))
     }
 
-    /// The open folders, for remembering this root's (`restore_expanded`).
-    pub fn expanded_set(&self) -> HashSet<PathBuf> {
-        self.expanded.clone()
+    /// The open folders and whether the root is folded away, for remembering this root's
+    /// (`restore_expanded`).
+    pub fn expanded_set(&self) -> TreeMemory {
+        TreeMemory {
+            expanded: self.expanded.clone(),
+            root_collapsed: self.root_collapsed,
+        }
     }
 
-    /// Open what was open when this root was last shown.
-    pub fn restore_expanded(&mut self, expanded: HashSet<PathBuf>) {
+    /// Open what was open when this root was last shown, and fold the root away if it was.
+    pub fn restore_expanded(&mut self, memory: TreeMemory) {
         let before = self.expanded.len();
-        self.expanded.extend(expanded);
+        self.expanded.extend(memory.expanded);
         if self.expanded.len() != before {
             self.changed();
         }
+        self.set_root_collapsed(memory.root_collapsed);
     }
 
     /// The folders whose children can be seen: the root, and each open folder whose folders are
@@ -468,10 +519,13 @@ impl FileTree {
     }
 
     /// The rows to draw: the open tree, or with a `filter` (any case, blank for none) the
-    /// matching entries and their folders.
+    /// matching entries and their folders; none while the root is folded away.
     pub fn rows(&self, filter: &str) -> Vec<Row> {
         let needle = filter.trim().to_lowercase();
         let mut out = Vec::new();
+        if self.root_collapsed {
+            return out;
+        }
         if needle.is_empty() {
             self.walk(Path::new(""), 0, &mut out);
         } else {
@@ -607,6 +661,14 @@ mod tests {
         DirEntry {
             name: name.into(),
             is_dir: true,
+        }
+    }
+
+    /// A memory of these folders open, the root open.
+    fn memory_of(folders: &[&str]) -> TreeMemory {
+        TreeMemory {
+            expanded: folders.iter().map(|f| p(f)).collect(),
+            root_collapsed: false,
         }
     }
 
@@ -862,7 +924,8 @@ mod tests {
         t.select(Path::new("src"));
         assert_eq!(t.toggle_selected(""), None, "closed");
         assert!(!t.rows("").iter().any(|r| r.rel == p("src/main.rs")));
-        assert_eq!(t.toggle_selected(""), Some(Want::List(p("src"))), "open");
+        // Open again from its kept listing: nothing to ask for (M11i).
+        assert_eq!(t.toggle_selected(""), None, "open");
         assert!(t.rows("").iter().any(|r| r.rel == p("src/main.rs")));
     }
 
@@ -883,7 +946,7 @@ mod tests {
         t.collapse_selected("");
         assert_eq!(t.selected(), Some(Path::new("docs")));
         t.collapse_selected("");
-        assert!(!t.expanded_set().contains(Path::new("docs")));
+        assert!(!t.expanded_set().expanded.contains(Path::new("docs")));
         t.collapse_selected("");
         assert_eq!(t.selected(), Some(Path::new("docs")));
     }
@@ -901,9 +964,9 @@ mod tests {
                 ("README.md".into(), 0),
             ]
         );
-        // Opened again: its children at once, from what was listed (a fresh listing is asked
-        // for too, to catch up).
-        assert_eq!(t.toggle(Path::new("src")), Some(Want::List(p("src"))));
+        // Opened again: its children at once, from what was listed (M11i: nothing asked for;
+        // the 2 s refresh catches it up).
+        assert_eq!(t.toggle(Path::new("src")), None);
         let rows = t.rows("");
         assert!(rows.iter().any(|r| r.rel == p("src/main.rs")));
         assert!(t.wanted().is_empty(), "nothing missing");
@@ -915,7 +978,7 @@ mod tests {
         assert_eq!(t.root(), Path::new("/repo"));
         assert_eq!(t.selected(), Some(Path::new("src/util")));
         assert_eq!(
-            t.expanded_set(),
+            t.expanded_set().expanded,
             HashSet::from([p("src"), p("src/util")]),
             "it and its folders"
         );
@@ -926,21 +989,24 @@ mod tests {
 
     #[test]
     fn re_rooting_resets_the_memory_restores() {
-        let mut memory: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+        let mut memory: HashMap<PathBuf, TreeMemory> = HashMap::new();
         let mut t = tree();
         t.toggle(Path::new("docs"));
         t.expand(p("docs"), vec![], 0);
         // A cd into another repo: a new tree, nothing open but its root.
         memory.insert(t.root().to_path_buf(), t.expanded_set());
         let mut t = FileTree::new(p("/other"), None);
-        assert!(t.expanded_set().is_empty());
+        assert!(t.expanded_set().expanded.is_empty());
         assert!(t.rows("").is_empty(), "nothing listed yet");
         assert_eq!(t.wanted(), vec![p("")]);
         // Back: what was open is open again, and listed afresh.
         memory.insert(t.root().to_path_buf(), t.expanded_set());
         t = FileTree::new(p("/repo"), None);
         t.restore_expanded(memory[Path::new("/repo")].clone());
-        assert_eq!(t.expanded_set(), HashSet::from([p("src"), p("docs")]));
+        assert_eq!(
+            t.expanded_set().expanded,
+            HashSet::from([p("src"), p("docs")])
+        );
         assert_eq!(t.wanted(), vec![p(""), p("docs"), p("src")]);
     }
 
@@ -951,7 +1017,7 @@ mod tests {
         t.expand(p("src/util"), vec![], 0);
         t.collapse(Path::new("src"));
         // util is remembered open but can't be seen: not listed again.
-        assert!(t.expanded_set().contains(Path::new("src/util")));
+        assert!(t.expanded_set().expanded.contains(Path::new("src/util")));
         assert_eq!(t.open_folders(), vec![p("")]);
     }
 
@@ -1014,7 +1080,7 @@ mod tests {
         t.set_marks(HashMap::new());
         t.set_ignored(HashSet::new());
         t.set_nested(Path::new("src"), HashSet::new());
-        t.restore_expanded(HashSet::from([p("src")]));
+        t.restore_expanded(memory_of(&["src"]));
         t.collapse(Path::new("docs")); // already closed
         assert!(
             Rc::ptr_eq(&first, &cache.rows(&t, "")),
@@ -1032,7 +1098,7 @@ mod tests {
             &|t| t.relist(p("src"), vec![file("main.rs")], 0),
             &|t| t.set_marks(HashMap::from([(p("src/main.rs"), Mark::Modified)])),
             &|t| t.set_ignored(HashSet::from([p("README.md")])),
-            &|t| t.restore_expanded(HashSet::from([p("docs")])),
+            &|t| t.restore_expanded(memory_of(&["docs"])),
             &|t| t.set_nested(Path::new(""), HashSet::from([p("docs")])),
         ];
         for (i, change) in changes.iter().enumerate() {
@@ -1136,7 +1202,7 @@ mod tests {
             vec![dir("util"), file("main.rs"), file("lib.rs")],
             0,
         );
-        assert!(!t.expanded_set().contains(Path::new("src")));
+        assert!(!t.expanded_set().expanded.contains(Path::new("src")));
         assert!(
             !t.rows("")
                 .iter()
@@ -1153,6 +1219,85 @@ mod tests {
         assert!(t.wanted().is_empty(), "util can't be seen");
         assert_eq!(t.toggle(Path::new("src")), Some(Want::List(p("src"))));
         assert_eq!(t.wanted(), vec![p("src/util")], "listed with it");
+    }
+
+    #[test]
+    fn collapse_all_closes_every_folder_and_keeps_listings() {
+        let mut t = tree();
+        t.toggle(Path::new("src/util"));
+        t.expand(p("src/util"), vec![file("a.rs")], 0);
+        t.toggle(Path::new("docs"));
+        t.expand(p("docs"), vec![file("guide.md")], 0);
+        t.select(Path::new("src/util/a.rs"));
+        let before = t.generation();
+        t.collapse_all();
+        assert_ne!(t.generation(), before, "the rows changed");
+        assert!(t.expanded_set().expanded.is_empty(), "every folder closed");
+        assert_eq!(
+            shape(&t.rows("")),
+            vec![
+                ("docs".into(), 0),
+                ("src".into(), 0),
+                ("Cargo.toml".into(), 0),
+                ("README.md".into(), 0),
+            ],
+            "the root stays open"
+        );
+        assert!(!t.root_collapsed());
+        // The selection: its top-level folder.
+        assert_eq!(t.selected(), Some(Path::new("src")));
+        // Reopening is instant: the listings were kept, nothing to ask for.
+        assert_eq!(t.toggle(Path::new("src")), None);
+        assert!(t.rows("").iter().any(|r| r.rel == p("src/main.rs")));
+        assert_eq!(t.toggle(Path::new("src/util")), None);
+        assert!(t.rows("").iter().any(|r| r.rel == p("src/util/a.rs")));
+        assert!(t.wanted().is_empty());
+        // A top-level row keeps the selection; nothing open changes nothing.
+        t.collapse_all();
+        t.select(Path::new("README.md"));
+        let before = t.generation();
+        t.collapse_all();
+        assert_eq!(t.selected(), Some(Path::new("README.md")));
+        assert_eq!(t.generation(), before, "nothing to close");
+    }
+
+    #[test]
+    fn a_collapsed_root_shows_no_rows() {
+        let mut t = tree();
+        assert!(!t.root_collapsed(), "open at first");
+        let before = t.generation();
+        t.set_root_collapsed(true);
+        assert!(t.root_collapsed());
+        assert_ne!(t.generation(), before, "the rows changed");
+        assert!(t.rows("").is_empty());
+        assert!(t.rows("main").is_empty(), "nor with a filter");
+        // Keys find nothing to move to or open.
+        t.select_next("");
+        assert_eq!(t.toggle_selected(""), None);
+        // Its folders stay as they were: open again, the same rows.
+        t.set_root_collapsed(false);
+        assert_eq!(t.rows(""), tree().rows(""));
+        let before = t.generation();
+        t.set_root_collapsed(false);
+        assert_eq!(t.generation(), before, "the same changes nothing");
+    }
+
+    #[test]
+    fn the_memory_carries_a_collapsed_root() {
+        let mut t = tree();
+        t.set_root_collapsed(true);
+        let memory = t.expanded_set();
+        assert_eq!(
+            memory,
+            TreeMemory {
+                expanded: HashSet::from([p("src")]),
+                root_collapsed: true
+            }
+        );
+        let mut again = FileTree::new(p("/repo"), None);
+        again.restore_expanded(memory);
+        assert!(again.root_collapsed());
+        assert_eq!(again.expanded_set().expanded, HashSet::from([p("src")]));
     }
 
     #[test]

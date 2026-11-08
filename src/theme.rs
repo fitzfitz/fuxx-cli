@@ -162,7 +162,7 @@ pub fn on_accent(accent: Rgb, background: Rgb, foreground: Rgb) -> Rgb {
 /// `fg` moved along its hue (see `ensure_contrast`) until it reaches `min` on every one of `bgs`.
 /// The chrome's surfaces all sit on the same side of a foreground, so moving away from one never
 /// loses another; the repeat is a guard for odd user themes where they don't.
-fn readable(mut fg: Rgb, bgs: &[Rgb], min: f32) -> Rgb {
+pub(crate) fn readable(mut fg: Rgb, bgs: &[Rgb], min: f32) -> Rgb {
     for _ in 0..3 {
         let before = fg;
         for &bg in bgs {
@@ -371,20 +371,28 @@ impl Theme {
         // Tab colours are drawn as dots wherever a mark is (rows, switcher, menu).
         let tabs: Vec<(&'static str, Rgb)> = TabColor::ALL.map(|c| (c.name(), ui.tab(c))).into();
         // M11i's surfaces. The selected sidebar row keeps its marks and tab dot in their own
-        // colours, so they are checked there too; the rest carry text.
+        // colours, so they are checked there too.
         let row_selected = ("row_selected", ui.row_selected);
+        // Text-only here: no status mark or tab colour is drawn on these. `card_hover` and
+        // `card_selected` are the Files tree's hovered and selected rows: besides text, they
+        // carry only the tree's git marks and file-type tints, which `right_sidebar` pushes to
+        // `MARK_MIN` on them as it draws (`mark_color`, `kind_color`; its
+        // `type_tints_and_marks_read_on_every_files_row_fill` checks every theme). Tab colours
+        // must stay off them: Mocha's purple is 2.94:1 on `card_selected`.
         let text_only = [
             ("card_selected", ui.card_selected),
             ("card_hover", ui.card_hover),
-            ("tab_bar", ui.tab_bar),
-            ("tab_hover", ui.tab_hover),
         ];
+        // The pane tab bars: their titles, glyphs and buttons, and a busy tab's status mark
+        // (inactive on the bar, hovered on `tab_hover`); no tab colours.
+        let tab_bars = [("tab_bar", ui.tab_bar), ("tab_hover", ui.tab_hover)];
         let marked: Vec<_> = surfaces.iter().copied().chain([row_selected]).collect();
-        let written: Vec<_> = marked.iter().copied().chain(text_only).collect();
+        let mark_room: Vec<_> = marked.iter().copied().chain(tab_bars).collect();
+        let written: Vec<_> = mark_room.iter().copied().chain(text_only).collect();
         let mut pairs = vec![];
         for (fgs, min, on) in [
             (&text[..], TEXT_MIN, &written),
-            (&marks[..], MARK_MIN, &marked),
+            (&marks[..], MARK_MIN, &mark_room),
             (&tabs[..], MARK_MIN, &marked),
         ] {
             for &fg in fgs {
@@ -603,6 +611,24 @@ pub fn builtin_theme(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Every built-in theme, resolved as `theme = <name>` does, and the default theme (for the
+/// contrast tests here and in the UI pieces that push colours on their own surfaces).
+#[cfg(test)]
+pub(crate) fn every_theme() -> Vec<(&'static str, Theme)> {
+    let entries = |text: &str| crate::settings::parse(text);
+    let mut all: Vec<_> = BUILTIN_THEMES
+        .iter()
+        .map(|&name| {
+            let t = resolve(&entries(&format!("theme = {name}")), true, &|n| {
+                builtin_theme(n).map(str::to_string)
+            });
+            (name, t)
+        })
+        .collect();
+    all.push(("default", Theme::default()));
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,21 +732,6 @@ mod tests {
         }
         assert_eq!(builtin_theme("catppuccin mocha"), None); // exact names only
         assert_eq!(builtin_theme("Nope"), None);
-    }
-
-    /// Every built-in theme, resolved as `theme = <name>` does, and the default theme.
-    fn every_theme() -> Vec<(&'static str, Theme)> {
-        let mut all: Vec<_> = BUILTIN_THEMES
-            .iter()
-            .map(|&name| {
-                let t = resolve(&entries(&format!("theme = {name}")), true, &|n| {
-                    builtin_theme(n).map(str::to_string)
-                });
-                (name, t)
-            })
-            .collect();
-        all.push(("default", Theme::default()));
-        all
     }
 
     #[test]

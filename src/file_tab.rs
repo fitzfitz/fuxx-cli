@@ -102,9 +102,10 @@ const BUTTON: f32 = 24.0;
 const BUTTON_STROKE: f32 = 1.75;
 const FIND_BOX: f32 = 260.0;
 const GUTTER_LEFT: f32 = 12.0;
-/// The room above the first line (M11i: as the gutter's at its left), and below the last: as
-/// tall as the card's rounded corners, so no line's tint, match or selection reaches them.
+/// The room above the first line (M11i: as the gutter's at its left).
 const TOP_ROOM: f32 = 12.0;
+/// The room below the last line (M11i): as tall as the card's rounded corners, so no line's
+/// tint, match or selection reaches them.
 const BOTTOM_ROOM: f32 = CARD_RADIUS;
 const NUMBER_GAP: f32 = 8.0;
 const BAR_WIDTH: f32 = 3.0;

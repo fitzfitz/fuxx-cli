@@ -22,13 +22,16 @@
 //! each with one `git check-ignore` batch; marks come from `git status`. All of it runs on the
 //! background executor, again when the sidebar is shown, when the terminal or its folder
 //! changes, and every 2 s while it can be seen (`back_off`: longer, up to 30 s, while git status
-//! fails or hits its cap; a failed git answer keeps the marks and ignored files shown). A filter
-//! box above it; ↑ ↓ → ← Return and Esc in it (key context `FileTree`); a click on a file opens
-//! it in a file tab. The panel has its own focus: closing the sidebar while it has the keyboard
-//! gives the keyboard to the focused tab. An SSH terminal's files aren't shown.
+//! fails or hits its cap; a failed git answer keeps the marks and ignored files shown). Above it
+//! (M11i) the root header: the root's name (a click folds the whole tree away, remembered per
+//! root for the run), collapse all, and the root's path, its start cut to fit; then a filter
+//! box; ↑ ↓ → ← Return and Esc in it (key context `FileTree`); a click on a file opens it in a
+//! file tab. Rows (M11i) have type icons (`file_kind`, tinted by `kind_color`) and indent
+//! guides (`guides`). The panel has its own focus: closing the sidebar while it has the
+//! keyboard gives the keyboard to the focused tab. An SSH terminal's files aren't shown.
 //!
-//! `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder`, `lookup_due` and `back_off` are
-//! pure and tested, as is the tree.
+//! `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder`, `lookup_due`, `back_off`,
+//! `file_kind`, `kind_color`, `guides` and `root_path_line` are pure and tested, as is the tree.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -37,13 +40,14 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, DispatchPhase, Entity, FocusHandle, Focusable,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollStrategy, Subscription,
-    UniformListScrollHandle, Window, actions, canvas, div, prelude::*, px, uniform_list,
+    AnyElement, AnyView, App, ClickEvent, Context, DispatchPhase, Entity, FocusHandle, Focusable,
+    FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollStrategy,
+    SharedString, Subscription, TextStyle, TruncateFrom, UniformListScrollHandle, Window, actions,
+    canvas, div, prelude::*, px, uniform_list,
 };
 
 use crate::appearance::Appearance;
-use crate::file_tree::{self, FileTree, Row, RowCache, Want};
+use crate::file_tree::{self, FileTree, Row, RowCache, TreeMemory, Want};
 use crate::git_branch::{find_git, is_this_mac, process_cwd};
 use crate::git_status::{self, DirEntry, Mark};
 use crate::name_input::{NameInput, NameInputEvent};
@@ -51,14 +55,15 @@ use crate::overlay_panel;
 use crate::panes::{self, PaneColors};
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
-use crate::sidebar_toggle::{self, Slide};
+use crate::sidebar_toggle::{self, Slide, Tip};
+use crate::tab_bar::{self, Glyph, glyph};
 use crate::terminal_view::hsla;
-use crate::theme::{Theme, UiColors};
+use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::size::{
-    CARD_GAP, DIVIDER_ACTIVE, RIGHT_SIDEBAR_DEFAULT_WIDTH, RIGHT_SIDEBAR_MAX_WIDTH,
+    CARD_GAP, DIVIDER_ACTIVE, FOCUS_RING, RIGHT_SIDEBAR_DEFAULT_WIDTH, RIGHT_SIDEBAR_MAX_WIDTH,
     RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TOP_BAND,
 };
-use crate::ui_tokens::{MARK_MIN, ensure_contrast, text};
+use crate::ui_tokens::{MARK_MIN, text};
 use crate::workspace::Workspace;
 
 // Bound in main.rs with the "FileTree" key context (the panel, its filter box included).
@@ -83,22 +88,147 @@ const PANEL: &str = "Files";
 pub(crate) const ROW: f32 = 22.0;
 /// The band holding the filter box, under the header.
 pub(crate) const FILTER_BAND: f32 = 34.0;
-/// How far each level of the tree is indented.
-const INDENT: f32 = 12.0;
+/// How far each level of the tree is indented (M11i: 14, was 12).
+const INDENT: f32 = 14.0;
+/// A row's room left of its top level's chevron column.
+const ROW_LEFT: f32 = 8.0;
+/// The chevron column, then the icon and the gap after it (M11i).
+const CHEVRON: f32 = 12.0;
+const ICON: f32 = 12.0;
+const ICON_GAP: f32 = 6.0;
+/// The root header above the filter (M11i): its name line and its path line.
+pub(crate) const ROOT_HEADER: f32 = 40.0;
+const ROOT_LINE: f32 = 20.0;
+const PATH_LINE: f32 = 14.0;
+const ROOT_PAD_LEFT: f32 = 10.0;
+const ROOT_PAD_RIGHT: f32 = 6.0;
+/// Between the root's chevron and its name.
+const ROOT_CHEVRON_GAP: f32 = 4.0;
+const COLLAPSE_ALL_TIP: &str = "Collapse all folders";
 const FILTER_PLACEHOLDER: &str = "Filter files";
 const SSH_NOTE: &str = "Files aren't shown for SSH terminals.";
 const NO_FOLDER: &str = "No terminal folder to show.";
 const NO_MATCH: &str = "No file matches.";
 
-/// A mark's colour on the sidebar: the theme's ANSI blue (M), green (A) or red (D), pushed to
-/// read on the sidebar's background as status marks do.
+/// A mark's colour on the Files tree: the theme's ANSI blue (M), green (A) or red (D), pushed
+/// to read as status marks do (`on_rows`).
 pub(crate) fn mark_color(mark: Mark, theme: &Theme) -> Rgb {
     let ansi = match mark {
         Mark::Modified => theme.palette[4],
         Mark::Added => theme.palette[2],
         Mark::Deleted => theme.palette[1],
     };
-    ensure_contrast(ansi, theme.ui().sidebar_background, MARK_MIN)
+    on_rows(ansi, theme)
+}
+
+/// `colour` pushed (hue kept) to `MARK_MIN` on each fill a Files row has (M11i: the card, and
+/// `card_hover` / `card_selected` under a hovered or selected row), so a git mark or a type
+/// tint reads on all of them.
+fn on_rows(colour: Rgb, theme: &Theme) -> Rgb {
+    let ui = theme.ui();
+    readable(
+        colour,
+        &[ui.card, ui.card_hover, ui.card_selected],
+        MARK_MIN,
+    )
+}
+
+/// What a file's icon is tinted by (M11i): one of the theme's ANSI colours 1–6, or `Plain`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    Plain,
+}
+
+/// A file's kind from its extension, in any case (note 60 §4's table). Dotfiles, names
+/// without an extension and anything not in the table are `Plain`; only the last extension
+/// counts (`archive.tar.gz` is a `gz`).
+pub fn file_kind(name: &str) -> FileKind {
+    use FileKind::*;
+    if name.starts_with('.') {
+        return Plain;
+    }
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return Plain;
+    };
+    match ext.to_ascii_lowercase().as_str() {
+        "rs" | "rb" | "swift" | "scala" | "html" | "htm" => Red,
+        "sh" | "bash" | "zsh" | "fish" | "vue" | "lua" => Green,
+        "js" | "jsx" | "mjs" | "cjs" | "py" => Yellow,
+        "ts" | "tsx" | "mts" | "cts" | "c" | "h" | "cpp" | "hpp" | "cc" | "css" | "scss"
+        | "java" | "kt" => Blue,
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" | "pdf" => Magenta,
+        "go" | "json" | "jsonc" | "yaml" | "yml" | "toml" | "xml" | "sql" => Cyan,
+        _ => Plain,
+    }
+}
+
+/// A file icon's tint: the theme's ANSI colour for its kind, pushed (hue kept) to `MARK_MIN`
+/// on the card and the row fills (`on_rows`); `Plain` is the dim text colour.
+pub fn kind_color(kind: FileKind, theme: &Theme) -> Rgb {
+    let ui = theme.ui();
+    let ansi = match kind {
+        FileKind::Red => 1,
+        FileKind::Green => 2,
+        FileKind::Yellow => 3,
+        FileKind::Blue => 4,
+        FileKind::Magenta => 5,
+        FileKind::Cyan => 6,
+        FileKind::Plain => return ui.text_dim,
+    };
+    on_rows(theme.palette[ansi], theme)
+}
+
+/// Where a row `depth` levels down draws its indent guides: the x (from the row's left) of
+/// each level above it, at the centre of that level's chevron column.
+pub fn guides(depth: usize) -> Vec<f32> {
+    (0..depth)
+        .map(|d| ROW_LEFT + d as f32 * INDENT + CHEVRON / 2.0)
+        .collect()
+}
+
+/// The root's path as the header's second line shows it: home-relative, its start cut
+/// (`…/proj/fuxx-cli`) until it `fits`, never shorter than the folder's own name.
+pub fn root_path_line(root: &Path, home: Option<&Path>, fits: impl Fn(&str) -> bool) -> String {
+    let path = crate::sidebar::home_relative(root, home);
+    crate::sidebar::fit_place(None, Some(&path), fits)
+}
+
+/// The colours the tree's rows are drawn in, worked out once per frame (not per row): the
+/// chrome's, and each type tint and git mark's (`kind_color`, `mark_color`).
+struct RowInks {
+    ui: UiColors,
+    kinds: [Rgb; 7],
+    marks: [Rgb; 3],
+}
+
+impl RowInks {
+    fn of(theme: &Theme) -> Self {
+        use FileKind::*;
+        Self {
+            ui: theme.ui(),
+            kinds: [Red, Green, Yellow, Blue, Magenta, Cyan, Plain].map(|k| kind_color(k, theme)),
+            marks: [Mark::Modified, Mark::Added, Mark::Deleted].map(|m| mark_color(m, theme)),
+        }
+    }
+
+    fn kind(&self, kind: FileKind) -> Rgb {
+        self.kinds[kind as usize]
+    }
+
+    fn mark(&self, mark: Mark) -> Rgb {
+        let at = match mark {
+            Mark::Modified => 0,
+            Mark::Added => 1,
+            Mark::Deleted => 2,
+        };
+        self.marks[at]
+    }
 }
 
 fn mark_letter(mark: Mark) -> &'static str {
@@ -109,29 +239,43 @@ fn mark_letter(mark: Mark) -> &'static str {
     }
 }
 
-/// Tree row `i`: indented by its depth, a folder's ▸ / ▾, its name and its mark (both in the
-/// mark's colour), filled while `selected`; a click on it is `files_click`. A `… N more` row is
-/// only its text.
+/// Tree row `i`: indented by its depth (an indent guide for each level above it), a folder's
+/// ▸ / ▾, its icon (a folder, open while expanded, in the dim text colour; a file's page tinted
+/// by its kind), its name and its mark (both in the mark's colour), filled while `selected`; a
+/// click on it is `files_click`. A `… N more` row is only its text (and its guides).
 fn file_row(
     i: usize,
     row: &Row,
     selected: Option<&Path>,
-    theme: &Theme,
+    inks: &RowInks,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let ui = theme.ui();
+    let ui = inks.ui;
+    let left = ROW_LEFT + row.depth as f32 * INDENT;
+    // 1 pt lines the row's full height, so they join from row to row.
+    let lines = guides(row.depth).into_iter().map(|x| {
+        div()
+            .absolute()
+            .top_0()
+            .left(px(x - 0.5))
+            .w(px(1.0))
+            .h_full()
+            .bg(hsla(ui.guide))
+    });
     let base = div()
         .id(("file-row", i))
+        .relative()
         .flex()
         .items_center()
         .h(px(ROW))
         .w_full()
-        .pl(px(8.0 + row.depth as f32 * INDENT))
+        .pl(px(left))
         .pr(px(10.0))
-        .text_size(px(text::NAME));
+        .text_size(px(text::NAME))
+        .children(lines);
     if let Some(more) = row.more {
         return base
-            .pl(px(8.0 + row.depth as f32 * INDENT + INDENT))
+            .pl(px(left + CHEVRON))
             .text_color(hsla(ui.text_faint))
             .child(format!("\u{2026} {more} more"))
             .into_any_element();
@@ -142,24 +286,36 @@ fn file_row(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ink = row.mark.map_or(ui.text, |m| mark_color(m, theme));
+    let ink = row.mark.map_or(ui.text, |m| inks.mark(m));
     let chevron = match (row.is_dir, row.expanded) {
         (true, true) => "\u{25be}",
         (true, false) => "\u{25b8}",
         (false, _) => "",
     };
+    let icon = match (row.is_dir, row.expanded) {
+        (true, true) => glyph(Glyph::FolderOpen, ui.text_dim),
+        (true, false) => glyph(Glyph::Folder, ui.text_dim),
+        (false, _) => glyph(Glyph::File, inks.kind(file_kind(&name))),
+    };
     let (rel, is_dir) = (row.rel.clone(), row.is_dir);
-    let hover = ui.row_hover;
-    base.when(chosen, |r| r.bg(hsla(ui.row_active)))
+    let hover = ui.card_hover;
+    base.when(chosen, |r| r.bg(hsla(ui.card_selected)))
         .when(!chosen, |r| r.hover(move |s| s.bg(hsla(hover))))
         .cursor_pointer()
         .child(
             div()
                 .flex_none()
-                .w(px(INDENT))
+                .w(px(CHEVRON))
                 .text_size(px(text::META))
                 .text_color(hsla(ui.text_dim))
                 .child(chevron),
+        )
+        .child(
+            div()
+                .flex_none()
+                .size(px(ICON))
+                .mr(px(ICON_GAP))
+                .child(icon),
         )
         .child(
             div()
@@ -262,8 +418,8 @@ pub(crate) struct FilesPanel {
     in_repo: bool,
     /// The terminal folder the tree was last made for.
     folder: Option<PathBuf>,
-    /// Each root's open folders, for the run.
-    memory: HashMap<PathBuf, HashSet<PathBuf>>,
+    /// Each root's open folders and whether it was folded away, for the run.
+    memory: HashMap<PathBuf, TreeMemory>,
     /// What git ignores in each listed folder (all of it goes to the tree).
     ignored: HashMap<PathBuf, HashSet<PathBuf>>,
     /// The rows drawn, built again only when the tree or the filter changes.
@@ -324,9 +480,9 @@ impl FilesPanel {
     }
 
     /// Re-root at `root` (a repo's, `in_repo`) for a terminal at `revealed` in it: the same root
-    /// keeps its tree as it is; another remembers this one's open folders and starts afresh
-    /// (with that root's, if it was shown before). Work under way for the old root no longer
-    /// holds the new one up (its results are dropped).
+    /// keeps its tree as it is; another remembers this one's open folders (and whether it was
+    /// folded away) and starts afresh (as that root was left, if it was shown before). Work
+    /// under way for the old root no longer holds the new one up (its results are dropped).
     fn rooted(&mut self, root: PathBuf, in_repo: bool, revealed: Option<PathBuf>) {
         self.in_repo = in_repo;
         if self.tree.as_ref().is_some_and(|t| t.root() == root) {
@@ -341,8 +497,8 @@ impl FilesPanel {
         self.reveal = Some(ScrollStrategy::Center);
     }
 
-    /// No tree (an SSH terminal's, or no folder): this one's open folders are remembered, and
-    /// nothing under way for it holds a new one up.
+    /// No tree (an SSH terminal's, or no folder): this one's memory is kept, and nothing under
+    /// way for it holds a new one up.
     fn forget(&mut self) {
         if let Some(old) = self.tree.take() {
             self.memory
@@ -790,7 +946,7 @@ impl Workspace {
             .mr(px(CARD_GAP))
             .mb(px(CARD_GAP))
             .child(strip)
-            .child(self.render_files_panel(ui, cx));
+            .child(self.render_files_panel(ui, width, cx));
         div()
             .id("right-sidebar")
             .relative()
@@ -1092,10 +1248,151 @@ impl Workspace {
         self.files_want(want, window, cx);
     }
 
-    /// The Files panel under the header: the filter box, then the tree (or what stands in for
-    /// it: an SSH terminal's note, no folder, no match). It has its own focus, and the tree's
-    /// keys (key context `FileTree`, the box included: ↑ ↓ move through the rows while typing).
-    fn render_files_panel(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+    /// A click on the root header's name line: the root folds away (only the header shows) or
+    /// comes back, remembered for the root.
+    fn files_toggle_root(&mut self, cx: &mut Context<Self>) {
+        let files = &mut self.right_sidebar.files;
+        if let Some(tree) = files.tree.as_mut() {
+            tree.set_root_collapsed(!tree.root_collapsed());
+            files.reveal = Some(ScrollStrategy::Nearest);
+            cx.notify();
+        }
+    }
+
+    /// The header's collapse all: every folder closes, the selection goes to its top-level
+    /// folder; the filter stays.
+    fn files_collapse_all(&mut self, cx: &mut Context<Self>) {
+        let files = &mut self.right_sidebar.files;
+        if let Some(tree) = files.tree.as_mut() {
+            tree.collapse_all();
+            files.reveal = Some(ScrollStrategy::Nearest);
+            cx.notify();
+        }
+    }
+
+    /// The root header (M11i), for a card `width` wide: ▾ (▸ while folded away), the root
+    /// folder's name and, at the right, collapse all; under them its path, home-relative, its
+    /// start cut to fit (the whole path in its tooltip). A click on the name line folds the
+    /// root away or brings it back.
+    fn render_root_header(
+        &self,
+        tree: &FileTree,
+        ui: UiColors,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let root = tree.root();
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.display().to_string());
+        let chevron = if tree.root_collapsed() {
+            "\u{25b8}"
+        } else {
+            "\u{25be}"
+        };
+        let room = width - 2.0 * FOCUS_RING - ROOT_PAD_LEFT - ROOT_PAD_RIGHT;
+        let wrapper = std::cell::RefCell::new(
+            cx.text_system()
+                .line_wrapper(TextStyle::default().font(), px(text::META)),
+        );
+        // As the drawn line decides whether to cut itself (`truncate`).
+        let fits = |s: &str| {
+            wrapper
+                .borrow_mut()
+                .should_truncate_line(s, px(room), "\u{2026}", TruncateFrom::End)
+                .is_none()
+        };
+        let path = root_path_line(root, self.places.home.as_deref(), fits);
+        let full: SharedString = root.display().to_string().into();
+        let group = "files-collapse-all";
+        let collapse_all = div()
+            .id(group)
+            .group(group)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .relative()
+            .size(px(tab_bar::BUTTON))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(ui.card_hover)))
+            // Its press and click are its own, not the name line's.
+            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                cx.stop_propagation()
+            })
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.files_collapse_all(cx)
+            }))
+            .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip(COLLAPSE_ALL_TIP.into())).into() })
+            .child(
+                glyph(Glyph::CollapseAll, ui.text_dim)
+                    .absolute()
+                    .group_hover(group, |s| s.invisible()),
+            )
+            .child(
+                glyph(Glyph::CollapseAll, ui.text)
+                    .absolute()
+                    .invisible()
+                    .group_hover(group, |s| s.visible()),
+            );
+        let line = div()
+            .id("files-root")
+            .flex()
+            .items_center()
+            .h(px(ROOT_LINE))
+            .w_full()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.files_toggle_root(cx)))
+            .child(
+                div()
+                    .flex_none()
+                    .mr(px(ROOT_CHEVRON_GAP))
+                    .text_size(px(text::META))
+                    .text_color(hsla(ui.text_dim))
+                    .child(chevron),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(text::NAME))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(ui.text))
+                    .child(name),
+            )
+            .child(collapse_all);
+        let path_line = div()
+            .id("files-root-path")
+            .h(px(PATH_LINE))
+            .w_full()
+            .truncate()
+            .text_size(px(text::META))
+            .text_color(hsla(ui.text_faint))
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(full.clone())).into() })
+            .child(path);
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .h(px(ROOT_HEADER))
+            .w_full()
+            .pl(px(ROOT_PAD_LEFT))
+            .pr(px(ROOT_PAD_RIGHT))
+            .child(line)
+            .child(path_line)
+            .into_any_element()
+    }
+
+    /// The Files panel under the "Files" strip: the root header, the filter box, then the tree
+    /// (or what stands in for it: an SSH terminal's note, no folder, no match); with the root
+    /// folded away, the header alone. It has its own focus, and the tree's keys (key context
+    /// `FileTree`, the box included: ↑ ↓ move through the rows while typing).
+    fn render_files_panel(&self, ui: UiColors, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let files = &self.right_sidebar.files;
         let note = |text: &'static str| {
             div()
@@ -1107,8 +1404,13 @@ impl Workspace {
                 .into_any_element()
         };
         let ssh = self.followed_ssh();
+        let tree = files.tree.as_ref().filter(|_| !ssh);
+        let folded = tree.is_some_and(FileTree::root_collapsed);
+        let header = tree.map(|tree| self.render_root_header(tree, ui, width, cx));
         let body = if ssh {
             Some(note(SSH_NOTE))
+        } else if folded {
+            None
         } else if files.tree.is_none() {
             // Nothing to look at; else its tree is on its way.
             self.right_sidebar_folder(cx)
@@ -1121,12 +1423,12 @@ impl Workspace {
                 "file-rows",
                 files.rows.len(),
                 cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
-                    let theme = cx.global::<Appearance>().theme;
+                    let inks = RowInks::of(&cx.global::<Appearance>().theme);
                     let files = &this.right_sidebar.files;
                     let selected = files.tree.as_ref().and_then(|t| t.selected());
                     range
                         .filter_map(|i| files.rows.get(i).map(|row| (i, row)))
-                        .map(|(i, row)| file_row(i, row, selected, &theme, cx))
+                        .map(|(i, row)| file_row(i, row, selected, &inks, cx))
                         .collect::<Vec<_>>()
                 }),
             )
@@ -1137,7 +1439,7 @@ impl Workspace {
         let filter = files
             .input
             .clone()
-            .filter(|_| !ssh && files.tree.is_some())
+            .filter(|_| !ssh && files.tree.is_some() && !folded)
             .map(|input| {
                 let empty = input.read(cx).text().is_empty();
                 let focus_box = input.clone();
@@ -1207,6 +1509,7 @@ impl Workspace {
             .on_action(
                 cx.listener(|this, _: &BackToPane, window, cx| this.focus_active(window, cx)),
             )
+            .children(header)
             .children(filter)
             .child(div().flex_1().min_h(px(0.0)).w_full().children(body));
         match &files.focus {
@@ -1499,5 +1802,176 @@ mod tests {
         // Another root's answer is dropped.
         assert!(!files.apply_refresh(Path::new("/other"), Vec::new(), None));
         assert_eq!(files.wait, REFRESH);
+    }
+
+    #[test]
+    fn a_collapsed_root_is_remembered_across_a_re_root() {
+        let (repo, other) = (PathBuf::from("/repo"), PathBuf::from("/other"));
+        let mut files = FilesPanel::new();
+        files.rooted(repo.clone(), true, Some(PathBuf::from("src")));
+        files.tree.as_mut().unwrap().set_root_collapsed(true);
+        // A cd elsewhere: that root starts open.
+        files.rooted(other.clone(), true, None);
+        assert!(!files.tree.as_ref().unwrap().root_collapsed());
+        // Back: collapsed as it was left, its folders remembered too.
+        files.rooted(repo, true, None);
+        let tree = files.tree.as_ref().unwrap();
+        assert!(tree.root_collapsed());
+        assert!(tree.expanded_set().expanded.contains(Path::new("src")));
+        assert!(tree.rows("").is_empty());
+        // And the other root comes back open.
+        files.rooted(other, true, None);
+        assert!(!files.tree.as_ref().unwrap().root_collapsed());
+    }
+
+    #[test]
+    fn a_file_s_kind_is_its_extension_s_in_any_case() {
+        use FileKind::*;
+        let table: [(FileKind, &[&str]); 6] = [
+            (Red, &["rs", "rb", "swift", "scala", "html", "htm"]),
+            (Green, &["sh", "bash", "zsh", "fish", "vue", "lua"]),
+            (Yellow, &["js", "jsx", "mjs", "cjs", "py"]),
+            (
+                Blue,
+                &[
+                    "ts", "tsx", "mts", "cts", "c", "h", "cpp", "hpp", "cc", "css", "scss", "java",
+                    "kt",
+                ],
+            ),
+            (
+                Magenta,
+                &["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "pdf"],
+            ),
+            (
+                Cyan,
+                &["go", "json", "jsonc", "yaml", "yml", "toml", "xml", "sql"],
+            ),
+        ];
+        for (kind, extensions) in table {
+            for ext in extensions {
+                assert_eq!(file_kind(&format!("a.{ext}")), kind, "a.{ext}");
+                let upper = format!("A.{}", ext.to_uppercase());
+                assert_eq!(file_kind(&upper), kind, "{upper}");
+            }
+        }
+        for plain in [
+            "README.md",
+            "notes.txt",
+            "Cargo.lock",
+            "Cargo.LOCK",
+            ".gitignore",
+            ".env",
+            "Makefile",
+            "archive.tar.gz",
+            "a.unknown",
+            "trailing.",
+        ] {
+            assert_eq!(file_kind(plain), Plain, "{plain}");
+        }
+        assert_eq!(file_kind("main.RS"), Red);
+    }
+
+    /// Every colour a Files row draws over its fills (`card`, hovered, selected) reaches
+    /// `MARK_MIN` on each, in every built-in theme (Task 1 review: the tints and git marks on
+    /// `card_hover` and `card_selected`).
+    #[test]
+    fn type_tints_and_marks_read_on_every_files_row_fill() {
+        use crate::ui_tokens::contrast;
+        let mut failures = vec![];
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            let fills = [
+                ("card", ui.card),
+                ("card_hover", ui.card_hover),
+                ("card_selected", ui.card_selected),
+            ];
+            let kinds = [
+                FileKind::Red,
+                FileKind::Green,
+                FileKind::Yellow,
+                FileKind::Blue,
+                FileKind::Magenta,
+                FileKind::Cyan,
+                FileKind::Plain,
+            ];
+            let tints = kinds.map(|k| (format!("{k:?}"), kind_color(k, &theme)));
+            let marks = [Mark::Modified, Mark::Added, Mark::Deleted]
+                .map(|m| (format!("{m:?}"), mark_color(m, &theme)));
+            for (what, ink) in tints.iter().chain(&marks) {
+                for (fill_name, fill) in fills {
+                    let ratio = contrast(*ink, fill);
+                    if ratio < MARK_MIN {
+                        failures.push(format!("{name}: {what} on {fill_name} is {ratio:.2}"));
+                    }
+                }
+            }
+            // Plain files are drawn in the dim text colour; the tints keep their ANSI hue.
+            assert_eq!(kind_color(FileKind::Plain, &theme), ui.text_dim, "{name}");
+        }
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn the_rows_inks_are_the_tints_and_marks() {
+        for (name, theme) in crate::theme::every_theme() {
+            let inks = RowInks::of(&theme);
+            for kind in [
+                FileKind::Red,
+                FileKind::Green,
+                FileKind::Yellow,
+                FileKind::Blue,
+                FileKind::Magenta,
+                FileKind::Cyan,
+                FileKind::Plain,
+            ] {
+                assert_eq!(
+                    inks.kind(kind),
+                    kind_color(kind, &theme),
+                    "{name}: {kind:?}"
+                );
+            }
+            for mark in [Mark::Modified, Mark::Added, Mark::Deleted] {
+                assert_eq!(
+                    inks.mark(mark),
+                    mark_color(mark, &theme),
+                    "{name}: {mark:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tint_is_its_ansi_colour_when_it_already_reads() {
+        // Mocha's red on its own background is far past 3:1: drawn as the theme has it.
+        let (_, theme) = crate::theme::every_theme()
+            .into_iter()
+            .find(|(name, _)| *name == "Catppuccin Mocha")
+            .expect("a built-in theme");
+        assert_eq!(kind_color(FileKind::Red, &theme), theme.palette[1]);
+        assert_eq!(kind_color(FileKind::Cyan, &theme), theme.palette[6]);
+    }
+
+    #[test]
+    fn guides_sit_at_each_ancestor_level_s_chevron_centre() {
+        assert!(guides(0).is_empty(), "none at the top level");
+        assert_eq!(guides(1), vec![14.0]);
+        assert_eq!(guides(3), vec![14.0, 28.0, 42.0]);
+    }
+
+    #[test]
+    fn the_root_s_path_is_home_relative_and_cut_at_its_start() {
+        let home = Some(Path::new("/Users/me"));
+        let root = Path::new("/Users/me/Kerja/proj/fuxx-cli");
+        let all = |_: &str| true;
+        assert_eq!(root_path_line(root, home, all), "~/Kerja/proj/fuxx-cli");
+        // Room for 15 characters: its start cut.
+        let short = |s: &str| s.chars().count() <= 15;
+        assert_eq!(root_path_line(root, home, short), "…/proj/fuxx-cli");
+        // Never shorter than the folder's own name.
+        let none = |_: &str| false;
+        assert_eq!(root_path_line(root, home, none), "…fuxx-cli");
+        // Outside the home folder: the whole path; the home folder itself: ~.
+        assert_eq!(root_path_line(Path::new("/tmp/x"), home, all), "/tmp/x");
+        assert_eq!(root_path_line(Path::new("/Users/me"), home, all), "~");
     }
 }
