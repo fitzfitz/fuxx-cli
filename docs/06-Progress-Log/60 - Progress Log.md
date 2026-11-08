@@ -22,6 +22,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — v0.3.2 released (the cursor; the button's icon and version)
+- **Did:** On your word: merged `m11f-cursor-style` into `master` (fast-forward), version 0.3.2 (868 tests pass on
+  master), pushed `master` and tag `v0.3.2`; the Release run went green (42439235155),
+  https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.3.2. The installed fuxx in `~/Applications` reads 0.3.1, so an
+  Update and Restart from 0.3.0 already swapped it in (to be confirmed by you: note 57 items 5–8).
+- **Next:** your Update and Restart from 0.3.1 to 0.3.2 (the button now shows the package icon and `v0.3.2`), then
+  note 58's checklist (12 items) and the rest of note 57's.
+
 ### 2026-11-08 — M11f built: the cursor; M11e's button gets the icon and version
 - **Did:** Built on branch `m11f-cursor-style`, 3 tasks, each reviewed (Tasks 2 and 3 after a fix round), then a
   whole-branch review (ready, nothing critical) and one fix round. The Update Available button has a package icon

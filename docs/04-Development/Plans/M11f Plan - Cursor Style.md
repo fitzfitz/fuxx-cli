@@ -13,8 +13,8 @@ updated: 2026-11-08
 |---|---|
 | **Milestone note** | [[58 - Milestone 11f - Cursor Style]] (the spec); the icon: [[57 - Milestone 11e - Update Available]] "Amendment" |
 | **Status** | 🟨 Tasks 1–3 built and reviewed 2026-11-08 (868 tests); merge, release and on-screen check next |
-| **Tasks done** | 3 / 6 (Tasks 1–3); Task 6 docs partly |
-| **▶ Pick up here** | Task 4: merge and push (your word given), then Task 5: release v0.3.2 |
+| **Tasks done** | 4 / 6 (Tasks 1–4); v0.3.2 released; Task 5's on-screen part pending |
+| **▶ Pick up here** | Task 5: update to v0.3.2 with the button, then note 58's checklist |
 | **Decisions used** | Yours (2026-11-08): a package icon and the target version on the Update Available button; the cursor mix "Bar + glide + breathing glow + colour following the agent, with Trail and Sparks as Fun" ("ya pakai cara mu"). Details: AI's call, in note 58. |
 | **Needs your eyes** | 👀 Task 5 (release v0.3.2 on your word, then on screen) |
 
@@ -177,13 +177,13 @@ in), `src/workspace.rs` (giving each `TerminalView` its session's status when it
   (both), fmt, the full `__ui-shots`. Look at the PNGs.
 - [x] **Step 5: commit** `feat(m11f): a bar cursor that glides, breathes and follows the agent; trail and sparks`.
 
-### Task 4: Merge and push (your word)
+### Task 4: Merge and push (your word) — ✅ (2026-11-08)
 
 After the whole-branch review: merge to `master` and push it, both on your word.
 
 ### Task 5: Release v0.3.2 and the on-screen check — 👀 (your word, then you)
 
-- [ ] On your word: version 0.3.2, commit, push, tag `v0.3.2`, and watch the Release run.
+- [x] On your word: version 0.3.2, commit, push, tag `v0.3.2`, and watch the Release run. (2026-11-08, green)
 - [ ] You: fuxx 0.3.1 shows **Update Available**, now with the package icon (note 57's amendment). Update and
   Restart brings 0.3.2. This also covers note 57's items 5–8.
 - [ ] Note 58's checklist, items 1–10.
