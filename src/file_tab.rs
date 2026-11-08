@@ -1,20 +1,903 @@
-//! A file tab (M11g): a pane tab that shows a file, read-only. Nothing here writes to the file.
+//! A file tab (M11g): a pane tab that shows a file, read-only. Nothing here writes to the file;
+//! the one process it starts is `/usr/bin/open <path>` (Open in Editor, a toolbar button).
 //!
-//! For now (Task 3) its view is a stub that shows the file's path; the viewer itself (colours,
-//! line numbers, change bars, live reload) replaces its body in Task 6. The workspace keeps one
-//! view per file tab of the model (`ensure_file_tabs`, as for browser tabs), and `sync` drops
-//! those whose tab has gone.
+//! The file is read, coloured (`highlight::Highlighter`, one shared GPUI global loaded once in
+//! the background) and compared with HEAD (`git_status::line_changes`) on the background
+//! executor; the UI thread only swaps the results in. The text shows as soon as it is read,
+//! plain, and the colours follow.
+//!
+//! **Live reload.** While the tab is on screen (the workspace says so every frame: `set_shown`)
+//! and the window can be seen, the disk is checked every second: its mtime and length, off the
+//! UI thread, and a changed file is read again. The scroll stays. Each read is a new `version`;
+//! a highlight or a git answer carries the version it was asked for and is dropped once another
+//! is loaded (`Doc::accept_spans`, `Doc::accept_changes`). One highlight and one git look-up run
+//! at a time per tab (`OneAtATime`): asked again meanwhile (a reload, a theme change), each runs
+//! once more when it ends, for the text then shown, so a file rewritten every second never piles
+//! up work. Until the new colours and bars come, the old ones stay (no flash of plain text on
+//! every reload). The UI screenshots freeze it (`frozen`): no polling,
+//! no git.
+//!
+//! **Drawing.** One canvas draws the lines in sight (not an element per line): the changed
+//! lines' tints, the selection, find's matches and the text (one shaped line per source line),
+//! then the gutter's numbers and change bars. Tabs show as four spaces; long lines scroll
+//! sideways, and a very long one is shaped only where it is in sight.
 
-use std::path::PathBuf;
-use std::time::Instant;
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
-use gpui::{App, Context, Entity, FocusHandle, Focusable, Window, div, prelude::*, px};
+use alacritty_terminal::vte::ansi::Rgb;
+use gpui::{
+    AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
+    DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent,
+    SharedString, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div, fill, point,
+    prelude::*, px, size,
+};
 
 use crate::appearance::Appearance;
+use crate::git_branch::find_git;
+use crate::git_status::{LineChange, line_changes, repo_root};
+use crate::highlight::{Highlighter, Span, Viewable, classify};
 use crate::layout_model::{PaneId, TabId, TabKind};
-use crate::terminal_view::hsla;
-use crate::ui_tokens::text;
+use crate::name_input::{NameInput, NameInputEvent};
+use crate::overlay_panel;
+use crate::reduce_motion::WindowVisible;
+use crate::sidebar_toggle::Tip;
+use crate::tab_bar::{Glyph, glyph, glyph_with};
+use crate::terminal_view::{CellMetrics, Copy, hsla};
+use crate::theme::{Theme, UiColors};
+use crate::ui_tokens::{MARK_MIN, ensure_contrast, text};
 use crate::workspace::Workspace;
+
+// Bound in main.rs in the "FileTab" key context: ⌘F, ⌘G, ⇧⌘G, and Esc to close the find bar.
+gpui::actions!(file_tab, [Find, FindNext, FindPrev, CloseFind]);
+
+/// The notes the tab shows for a file it can't colour or show.
+pub const MISSING: &str = "This file no longer exists";
+pub const REFUSED: &str = "This file is too large or binary to show";
+pub const TOO_LARGE: &str = "Too large to colour";
+const OPEN_IN_EDITOR: &str = "Open in Editor";
+const FIND_PLACEHOLDER: &str = "Find in file";
+
+/// How many spaces a tab shows as.
+pub const TAB_WIDTH: usize = 4;
+/// How often a tab on screen looks at the disk.
+const POLL: Duration = Duration::from_secs(1);
+/// Every this many looks, git is asked for the change bars again (a commit changes them
+/// without touching the file).
+const CHANGES_EVERY: u32 = 5;
+/// The bytes `classify` looks at for a NUL.
+const HEAD: usize = 8 * 1024;
+/// A line longer than this (bytes) is not coloured: syntect crawls on minified lines. The file
+/// shows as plain text, "Too large to colour".
+const COLOUR_LINE_MAX: usize = 20_000;
+/// A shown line longer than this (characters) is shaped only where it is in sight.
+const LONG_LINE: usize = 1_000;
+
+// The view's geometry, in points.
+const TOOLBAR: f32 = crate::browser_tab::BAR;
+const BAR_PAD: f32 = 6.0;
+const BUTTON: f32 = 24.0;
+const BUTTON_STROKE: f32 = 1.75;
+const FIND_BOX: f32 = 260.0;
+const GUTTER_LEFT: f32 = 12.0;
+const NUMBER_GAP: f32 = 8.0;
+const BAR_WIDTH: f32 = 3.0;
+const TEXT_GAP: f32 = 10.0;
+const RIGHT_PAD: f32 = 24.0;
+/// A changed line's tint: its bar's colour at this opacity.
+const TINT: f32 = 0.12;
+/// Find's matches: the accent at these opacities (the current one stronger).
+const MATCH_TINT: f32 = 0.25;
+const CURRENT_TINT: f32 = 0.55;
+/// The deleted-lines ▸, larger than the text so it reads at a glance.
+const MARKER_SCALE: f32 = 1.3;
+
+/// A place in the file: a (0-based) line and a byte offset in it (the source text, tabs as tabs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pos {
+    pub line: usize,
+    pub col: usize,
+}
+
+/// A find match: its line and its bytes in that line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Match {
+    pub line: usize,
+    pub cols: Range<usize>,
+}
+
+/// The text's lines as byte ranges, each without its `\n` (or `\r\n`); a last `\n` ends the last
+/// line (`"a\n"` is one line, as the highlighter and git count them); an empty text is one empty
+/// line.
+pub fn line_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for piece in text.split_inclusive('\n') {
+        let line = piece.strip_suffix('\n').unwrap_or(piece);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        out.push(at..at + line.len());
+        at += piece.len();
+    }
+    if out.is_empty() {
+        out.push(0..0);
+    }
+    out
+}
+
+/// A line as shown: each tab as four spaces.
+pub fn expand_tabs(line: &str) -> String {
+    line.replace('\t', &" ".repeat(TAB_WIDTH))
+}
+
+/// A line's tabs (their byte offsets) and its length, to map between its bytes and its shown
+/// bytes.
+struct Tabs {
+    at: Vec<usize>,
+    len: usize,
+}
+
+impl Tabs {
+    fn of(line: &str) -> Tabs {
+        Tabs {
+            at: line
+                .bytes()
+                .enumerate()
+                .filter(|&(_, b)| b == b'\t')
+                .map(|(i, _)| i)
+                .collect(),
+            len: line.len(),
+        }
+    }
+
+    /// Source byte → shown byte (past the end: the end).
+    fn shown(&self, col: usize) -> usize {
+        let col = col.min(self.len);
+        col + self.at.partition_point(|&t| t < col) * (TAB_WIDTH - 1)
+    }
+
+    /// Shown byte → source byte (past the end: the end); inside a tab, the nearer of its edges.
+    fn source(&self, shown: usize) -> usize {
+        for (k, &t) in self.at.iter().enumerate() {
+            let start = t + k * (TAB_WIDTH - 1);
+            if shown < start {
+                return shown - k * (TAB_WIDTH - 1);
+            }
+            if shown < start + TAB_WIDTH {
+                return if shown - start < TAB_WIDTH / 2 {
+                    t
+                } else {
+                    t + 1
+                };
+            }
+        }
+        (shown - self.at.len() * (TAB_WIDTH - 1)).min(self.len)
+    }
+}
+
+/// Where source byte `col` of `line` is shown (tabs as four spaces). The view maps with `Tabs`.
+#[cfg(test)]
+pub fn display_col(line: &str, col: usize) -> usize {
+    Tabs::of(line).shown(col)
+}
+
+/// The source byte of `line` shown at byte `display` (inside a tab: the nearer edge; past the
+/// end: the end).
+#[cfg(test)]
+pub fn source_col(line: &str, display: usize) -> usize {
+    Tabs::of(line).source(display)
+}
+
+/// `query`'s matches in `text`'s lines, in order, ignoring case; none across a line's end, none
+/// overlapping, none for an empty query.
+pub fn find_matches(text: &str, lines: &[Range<usize>], query: &str) -> Vec<Match> {
+    let mut out = Vec::new();
+    if query.is_empty() {
+        return out;
+    }
+    if query.is_ascii() {
+        // Byte by byte: an ASCII byte never sits inside a multi-byte character, so every match
+        // starts and ends on a character boundary.
+        let q = query.as_bytes();
+        for (i, r) in lines.iter().enumerate() {
+            let l = &text.as_bytes()[r.clone()];
+            let mut at = 0;
+            while at + q.len() <= l.len() {
+                if l[at..at + q.len()].eq_ignore_ascii_case(q) {
+                    out.push(Match {
+                        line: i,
+                        cols: at..at + q.len(),
+                    });
+                    at += q.len();
+                } else {
+                    at += 1;
+                }
+            }
+        }
+        return out;
+    }
+    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    for (i, r) in lines.iter().enumerate() {
+        let l = &text[r.clone()];
+        let mut at = 0;
+        while at < l.len() {
+            match lower_match(&l[at..], &q) {
+                Some(len) => {
+                    out.push(Match {
+                        line: i,
+                        cols: at..at + len,
+                    });
+                    at += len;
+                }
+                None => at += l[at..].chars().next().map_or(1, char::len_utf8),
+            }
+        }
+    }
+    out
+}
+
+/// The bytes of `rest`'s start that lower-case to `q`, if they do (whole characters only).
+fn lower_match(rest: &str, q: &[char]) -> Option<usize> {
+    let mut k = 0;
+    for (i, c) in rest.char_indices() {
+        for lc in c.to_lowercase() {
+            if q.get(k) != Some(&lc) {
+                return None;
+            }
+            k += 1;
+        }
+        if k == q.len() {
+            return Some(i + c.len_utf8());
+        }
+    }
+    None
+}
+
+/// The next (or previous) of `count` matches after `current`, round the ends; with none current,
+/// the first (or last).
+pub fn step(current: Option<usize>, count: usize, forward: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match (current, forward) {
+        (None, true) => 0,
+        (None, false) => count - 1,
+        (Some(c), true) => (c + 1) % count,
+        (Some(c), false) => (c + count - 1) % count,
+    })
+}
+
+/// The first match on or after `line`, else the first of all.
+pub fn first_from(matches: &[Match], line: usize) -> Option<usize> {
+    matches
+        .iter()
+        .position(|m| m.line >= line)
+        .or_else(|| (!matches.is_empty()).then_some(0))
+}
+
+/// The find bar's count: "2 of 7", "No results", or nothing while the box is empty.
+pub fn find_label(query: &str, current: Option<usize>, count: usize) -> String {
+    if query.is_empty() {
+        String::new()
+    } else if count == 0 {
+        "No results".to_string()
+    } else {
+        format!("{} of {count}", current.map_or(0, |c| c + 1))
+    }
+}
+
+/// Byte `col` of `line`, at most its end, back to a character boundary.
+fn clamp_col(line: &str, col: usize) -> usize {
+    let mut col = col.min(line.len());
+    while !line.is_char_boundary(col) {
+        col -= 1;
+    }
+    col
+}
+
+/// The text between `a` and `b` (either way round): the first and last lines in part, `\n`
+/// between lines (a CRLF file's `\r` is not copied).
+pub fn selection_text(text: &str, lines: &[Range<usize>], a: Pos, b: Pos) -> String {
+    let (s, e) = if a <= b { (a, b) } else { (b, a) };
+    let mut out = String::new();
+    let Some(last) = lines.len().checked_sub(1) else {
+        return out;
+    };
+    for i in s.line..=e.line.min(last) {
+        let l = &text[lines[i].clone()];
+        let from = if i == s.line { clamp_col(l, s.col) } else { 0 };
+        let to = if i == e.line {
+            clamp_col(l, e.col)
+        } else {
+            l.len()
+        };
+        if from < to {
+            out.push_str(&l[from..to]);
+        }
+        if i != e.line {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// A change list (1-based new lines, from `line_changes`) as bars by 0-based line, and the
+/// edges where lines were deleted: edge `c` is above 0-based line `c` (0 is the top).
+pub fn bars(changes: &[(usize, LineChange)]) -> (HashMap<usize, LineChange>, Vec<usize>) {
+    let mut by_line = HashMap::new();
+    let mut deleted = Vec::new();
+    for &(line, change) in changes {
+        match change {
+            LineChange::DeletedAfter => deleted.push(line),
+            _ if line > 0 => {
+                by_line.insert(line - 1, change);
+            }
+            _ => {}
+        }
+    }
+    deleted.sort_unstable();
+    deleted.dedup();
+    (by_line, deleted)
+}
+
+/// Background work of which one runs at a time (a tab's highlight, its git look-up): asked again
+/// while one runs, it runs once more when that one ends, with whatever is current then.
+#[derive(Default, Debug)]
+pub struct OneAtATime {
+    busy: bool,
+    again: bool,
+}
+
+impl OneAtATime {
+    /// Whether to start now (else it's queued to run once the running one ends).
+    pub fn start(&mut self) -> bool {
+        if self.busy {
+            self.again = true;
+            return false;
+        }
+        self.busy = true;
+        true
+    }
+
+    /// The running one ended: whether to run once more.
+    pub fn finish(&mut self) -> bool {
+        self.busy = false;
+        std::mem::take(&mut self.again)
+    }
+}
+
+/// The change bars of a loaded text.
+#[derive(Default, PartialEq, Debug)]
+pub struct Changes {
+    pub by_line: HashMap<usize, LineChange>,
+    pub deleted: Vec<usize>,
+}
+
+/// A loaded text: its lines, colours (once highlighted) and change bars (once git answered).
+#[derive(Clone)]
+pub struct Doc {
+    pub text: Arc<str>,
+    pub lines: Arc<Vec<Range<usize>>>,
+    pub spans: Option<Arc<Vec<Vec<Span>>>>,
+    pub changes: Arc<Changes>,
+    /// Which read of the file this is (each reload, one more).
+    pub version: u64,
+    /// The widest line as shown, in characters (tabs as four).
+    pub widest: usize,
+    /// The longest line, in bytes.
+    longest: usize,
+}
+
+impl Doc {
+    pub fn new(text: String, version: u64) -> Doc {
+        let lines = line_ranges(&text);
+        let (mut widest, mut longest) = (0, 0);
+        for r in &lines {
+            let l = &text[r.clone()];
+            longest = longest.max(l.len());
+            let tabs = l.bytes().filter(|&b| b == b'\t').count();
+            widest = widest.max(l.chars().count() + tabs * (TAB_WIDTH - 1));
+        }
+        Doc {
+            text: text.into(),
+            lines: Arc::new(lines),
+            spans: None,
+            changes: Arc::default(),
+            version,
+            widest,
+            longest,
+        }
+    }
+
+    /// Line `i` (without its ending); empty past the end.
+    pub fn line(&self, i: usize) -> &str {
+        self.lines.get(i).map_or("", |r| &self.text[r.clone()])
+    }
+
+    /// Colours made for `version`: taken if that is still the text shown.
+    pub fn accept_spans(&mut self, version: u64, spans: Vec<Vec<Span>>) -> bool {
+        if version != self.version {
+            return false;
+        }
+        self.spans = Some(Arc::new(spans));
+        true
+    }
+
+    /// Change bars asked for `version`: taken if that is still the text shown. True when they
+    /// changed.
+    pub fn accept_changes(&mut self, version: u64, changes: &[(usize, LineChange)]) -> bool {
+        if version != self.version {
+            return false;
+        }
+        let (by_line, deleted) = bars(changes);
+        let changes = Changes { by_line, deleted };
+        if *self.changes == changes {
+            return false;
+        }
+        self.changes = Arc::new(changes);
+        true
+    }
+}
+
+/// What a file tab shows.
+pub enum State {
+    /// Being read for the first time.
+    Loading,
+    Text(Doc),
+    /// Over 2 MB (or with a line too long to colour): plain text, "Too large to colour".
+    PlainTooLarge(Doc),
+    /// Over 20 MB or binary: "This file is too large or binary to show".
+    Refuse,
+    /// Gone: "This file no longer exists".
+    Missing,
+}
+
+/// A file's size and time, to tell whether it changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+/// What a look at the disk found.
+enum Loaded {
+    /// The same size and time as the text shown.
+    Unchanged,
+    Missing,
+    Refuse(Stamp),
+    Text {
+        stamp: Stamp,
+        doc: Doc,
+        plain: bool,
+    },
+}
+
+/// Read `path` (blocking: the background executor's) unless its size and time are still
+/// `known`.
+fn read_file(path: &Path, known: Option<Stamp>) -> Loaded {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Loaded::Missing;
+    };
+    let stamp = Stamp {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+    };
+    if known == Some(stamp) {
+        return Loaded::Unchanged;
+    }
+    if meta.is_dir() || classify(meta.len(), &[]) == Viewable::Refuse {
+        return Loaded::Refuse(stamp);
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Missing,
+        Err(_) => return Loaded::Refuse(stamp),
+    };
+    let head = &bytes[..bytes.len().min(HEAD)];
+    let viewable = classify(bytes.len() as u64, head);
+    if viewable == Viewable::Refuse {
+        return Loaded::Refuse(stamp);
+    }
+    let text = String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+    let doc = Doc::new(text, 0);
+    let plain = viewable == Viewable::PlainTooLarge || doc.longest > COLOUR_LINE_MAX;
+    Loaded::Text { stamp, doc, plain }
+}
+
+/// The change bars for `path` against HEAD (blocking): none outside a repo or without git.
+fn changes_for(path: &Path) -> Option<Vec<(usize, LineChange)>> {
+    let git = find_git()?;
+    // git prints real paths (`/private/var`, not `/var`).
+    let real = std::fs::canonicalize(path).ok()?;
+    let root = repo_root(&git, real.parent()?)?;
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    let rel = real.strip_prefix(&root).ok()?;
+    line_changes(&git, &root, rel)
+}
+
+/// The shared highlighter (a GPUI global): its syntaxes loaded once, in the background, by the
+/// first tab that needs them; recoloured (`with_theme`) when the theme changes.
+#[derive(Default)]
+pub struct Highlighters {
+    ready: Option<(Arc<Highlighter>, Theme)>,
+    loading: bool,
+    /// Tabs waiting for the syntaxes, coloured once they are in.
+    waiting: Vec<WeakEntity<FileTab>>,
+}
+
+impl Global for Highlighters {}
+
+impl Highlighters {
+    /// The highlighter in `theme`'s colours, once the syntaxes are loaded.
+    fn get(&mut self, theme: &Theme) -> Option<Arc<Highlighter>> {
+        let (h, t) = self.ready.as_mut()?;
+        if t != theme {
+            *h = Arc::new(h.with_theme(theme));
+            *t = *theme;
+        }
+        Some(h.clone())
+    }
+}
+
+/// The lines in sight: from `scroll_y` down `height`, `line_height` each, of `count`.
+fn visible_rows(
+    scroll_y: Pixels,
+    height: Pixels,
+    line_height: Pixels,
+    count: usize,
+) -> Range<usize> {
+    let lh = f32::from(line_height).max(1.0);
+    let first = (f32::from(scroll_y) / lh).floor().max(0.0) as usize;
+    let last = ((f32::from(scroll_y + height) / lh).ceil().max(0.0) as usize).min(count);
+    first.min(last)..last
+}
+
+/// Where the text body's parts sit, as last drawn (for the mouse, the wheel and find).
+#[derive(Clone, Copy, Debug)]
+pub struct Geom {
+    pub bounds: Bounds<Pixels>,
+    pub line_height: Pixels,
+    pub cell_width: Pixels,
+    /// From the body's left edge: the line numbers' right edge, the change bar's left edge, the
+    /// text's left edge (before the sideways scroll).
+    pub numbers_right: Pixels,
+    pub bar_left: Pixels,
+    pub text_left: Pixels,
+    /// The scroll drawn (kept within `max_scroll`).
+    pub scroll: Point<Pixels>,
+    pub max_scroll: Point<Pixels>,
+}
+
+impl Geom {
+    fn of(
+        bounds: Bounds<Pixels>,
+        m: &CellMetrics,
+        lines: usize,
+        widest: usize,
+        scroll: Point<Pixels>,
+    ) -> Geom {
+        let digits = lines.to_string().len().max(2);
+        let numbers_right = px(GUTTER_LEFT) + m.cell_width * digits as f32;
+        let bar_left = numbers_right + px(NUMBER_GAP);
+        let text_left = bar_left + px(BAR_WIDTH + TEXT_GAP);
+        let max_scroll = point(
+            (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD) - bounds.size.width)
+                .max(px(0.0)),
+            (m.line_height * lines as f32 - bounds.size.height).max(px(0.0)),
+        );
+        Geom {
+            bounds,
+            line_height: m.line_height,
+            cell_width: m.cell_width,
+            numbers_right,
+            bar_left,
+            text_left,
+            scroll: Geom::clamp(scroll, max_scroll),
+            max_scroll,
+        }
+    }
+
+    fn clamp(p: Point<Pixels>, max: Point<Pixels>) -> Point<Pixels> {
+        point(p.x.clamp(px(0.0), max.x), p.y.clamp(px(0.0), max.y))
+    }
+}
+
+/// The colours of the change bars (and tints): the theme's green, blue and red, pushed to 3:1 on
+/// the background as the tree's marks are.
+#[derive(Clone, Copy)]
+struct BarColours {
+    added: Rgb,
+    changed: Rgb,
+    deleted: Rgb,
+}
+
+impl BarColours {
+    fn of(theme: &Theme) -> BarColours {
+        let fit = |c: Rgb| ensure_contrast(c, theme.background, MARK_MIN);
+        BarColours {
+            added: fit(theme.palette[2]),
+            changed: fit(theme.palette[4]),
+            deleted: fit(theme.palette[1]),
+        }
+    }
+
+    fn of_change(&self, change: LineChange) -> Rgb {
+        match change {
+            LineChange::Added => self.added,
+            LineChange::Changed => self.changed,
+            LineChange::DeletedAfter => self.deleted,
+        }
+    }
+}
+
+/// A shown line's colour runs (shown bytes, colour), covering it: its spans (source bytes; the
+/// line's ending and anything past it dropped, tabs widened), the foreground between them.
+fn line_runs(line: &str, spans: Option<&[Span]>, fg: Rgb) -> Vec<(Range<usize>, Rgb)> {
+    let tabs = Tabs::of(line);
+    let shown_len = tabs.shown(line.len());
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (r, c) in spans.unwrap_or(&[]) {
+        let (s, e) = (clamp_col(line, r.start), clamp_col(line, r.end));
+        let (s, e) = (tabs.shown(s).max(at), tabs.shown(e));
+        if s >= e {
+            continue;
+        }
+        if s > at {
+            out.push((at..s, fg));
+        }
+        out.push((s..e, *c));
+        at = e;
+    }
+    if at < shown_len {
+        out.push((at..shown_len, fg));
+    }
+    out
+}
+
+/// A shown line laid out to draw: shaped whole, or (a long one) only the part in sight, from
+/// character `first`.
+struct Laid {
+    shaped: Option<gpui::ShapedLine>,
+    /// Long: measured in cells (the font is monospaced), the part in sight shaped from `first`.
+    long: bool,
+    first: usize,
+}
+
+impl Laid {
+    fn new(
+        shown: &str,
+        runs: &[(Range<usize>, Rgb)],
+        m: &CellMetrics,
+        scroll_x: Pixels,
+        width: Pixels,
+        window: &mut Window,
+    ) -> Laid {
+        let chars = shown.chars().count();
+        let long = chars > LONG_LINE;
+        let (first, range) = if long {
+            let cw = f32::from(m.cell_width).max(1.0);
+            let first = ((f32::from(scroll_x) / cw).floor() as usize).saturating_sub(8);
+            let count = (f32::from(width) / cw).ceil() as usize + 16;
+            let start = byte_at_char(shown, first);
+            let end = byte_at_char(shown, first + count);
+            (first, start..end)
+        } else {
+            (0, 0..shown.len())
+        };
+        let text_runs: Vec<TextRun> = runs
+            .iter()
+            .filter_map(|(r, c)| {
+                let s = r.start.max(range.start);
+                let e = r.end.min(range.end);
+                (s < e).then(|| TextRun {
+                    len: e - s,
+                    font: m.font.clone(),
+                    color: hsla(*c),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                })
+            })
+            .collect();
+        let shaped = (!range.is_empty()).then(|| {
+            window.text_system().shape_line(
+                SharedString::from(shown[range.clone()].to_string()),
+                m.font_size,
+                &text_runs,
+                None,
+            )
+        });
+        Laid {
+            shaped,
+            long,
+            first,
+        }
+    }
+
+    /// The x of shown byte `b`, from the text's left edge.
+    fn x(&self, shown: &str, b: usize, cell_width: Pixels) -> Pixels {
+        if self.long {
+            let b = clamp_col(shown, b);
+            return cell_width * shown[..b].chars().count() as f32;
+        }
+        match &self.shaped {
+            Some(s) => s.x_for_index(b),
+            None => px(0.0),
+        }
+    }
+
+    /// The x where the shaped part starts, from the text's left edge.
+    fn x0(&self, cell_width: Pixels) -> Pixels {
+        if self.long {
+            cell_width * self.first as f32
+        } else {
+            px(0.0)
+        }
+    }
+}
+
+/// The byte where character `n` of `s` starts (its length past the end).
+fn byte_at_char(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map_or(s.len(), |(i, _)| i)
+}
+
+/// A one-colour run of `len` bytes in `m`'s font.
+fn plain_run(len: usize, m: &CellMetrics, color: Rgb) -> TextRun {
+    TextRun {
+        len,
+        font: m.font.clone(),
+        color: hsla(color),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }
+}
+
+/// Everything one frame of the text body draws, read in `render`.
+struct Frame {
+    doc: Doc,
+    coloured: bool,
+    scroll: Point<Pixels>,
+    selection: Option<(Pos, Pos)>,
+    matches: Arc<Vec<Match>>,
+    current: Option<usize>,
+    theme: Theme,
+}
+
+/// Paint the text body: `f`'s lines in sight, laid out as `g`.
+fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mut App) {
+    let ui = f.theme.ui();
+    let bars = BarColours::of(&f.theme);
+    let bounds = g.bounds;
+    let lh = g.line_height;
+    let rows = visible_rows(g.scroll.y, bounds.size.height, lh, f.doc.lines.len());
+    let text_x = bounds.left() + g.text_left - g.scroll.x;
+    let mask = ContentMask {
+        bounds: Bounds::from_corners(
+            point(
+                bounds.left() + g.bar_left + px(BAR_WIDTH + 1.0),
+                bounds.top(),
+            ),
+            bounds.bottom_right(),
+        ),
+    };
+    let spans = f.doc.spans.as_deref().filter(|_| f.coloured);
+    let accent = hsla(ui.accent);
+    for i in rows.clone() {
+        let y = bounds.top() + lh * i as f32 - g.scroll.y;
+        let line = f.doc.line(i);
+        let change = f.doc.changes.by_line.get(&i).copied();
+        if let Some(change) = change {
+            let row = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+            window.paint_quad(fill(row, hsla(bars.of_change(change)).opacity(TINT)));
+        }
+        let shown = expand_tabs(line);
+        let tabs = Tabs::of(line);
+        let runs = line_runs(
+            line,
+            spans.and_then(|s| s.get(i)).map(Vec::as_slice),
+            f.theme.foreground,
+        );
+        let laid = Laid::new(&shown, &runs, m, g.scroll.x, bounds.size.width, window);
+        let x_of = |col: usize| text_x + laid.x(&shown, tabs.shown(col), g.cell_width);
+        window.with_content_mask(Some(mask), |window| {
+            if let Some((s, e)) = f.selection
+                && (s.line..=e.line).contains(&i)
+                && s != e
+            {
+                let from = if i == s.line { s.col } else { 0 };
+                let to = if i == e.line { e.col } else { line.len() };
+                // A line's end inside the selection shows as one more cell.
+                let end = if i == e.line { px(0.0) } else { g.cell_width };
+                let (x0, x1) = (x_of(from), x_of(to) + end);
+                if x1 > x0 {
+                    let b = Bounds::from_corners(point(x0, y), point(x1, y + lh));
+                    window.paint_quad(fill(b, hsla(ui.selection)));
+                }
+            }
+            let start = f.matches.partition_point(|m| m.line < i);
+            for (k, hit) in f.matches[start..]
+                .iter()
+                .take_while(|m| m.line == i)
+                .enumerate()
+            {
+                let tint = if f.current == Some(start + k) {
+                    CURRENT_TINT
+                } else {
+                    MATCH_TINT
+                };
+                let (x0, x1) = (x_of(hit.cols.start), x_of(hit.cols.end));
+                let b = Bounds::from_corners(point(x0, y), point(x1, y + lh));
+                window.paint_quad(fill(b, accent.opacity(tint)));
+            }
+            if let Some(shaped) = &laid.shaped {
+                let origin = point(text_x + laid.x0(g.cell_width), y);
+                let _ = shaped.paint(origin, lh, TextAlign::Left, None, window, cx);
+            }
+        });
+        let label = (i + 1).to_string();
+        let run = plain_run(label.len(), m, ui.text_faint);
+        let number =
+            window
+                .text_system()
+                .shape_line(SharedString::from(label), m.font_size, &[run], None);
+        let at = point(bounds.left() + g.numbers_right - number.width(), y);
+        let _ = number.paint(at, lh, TextAlign::Left, None, window, cx);
+        if let Some(change) = change {
+            let bar = Bounds::new(
+                point(bounds.left() + g.bar_left, y),
+                size(px(BAR_WIDTH), lh),
+            );
+            window.paint_quad(fill(bar, hsla(bars.of_change(change))));
+        }
+    }
+    // Deleted lines: a red ▸ on the edge between two lines, over the bar's place.
+    let glyph = "\u{25b8}";
+    let run = plain_run(glyph.len(), m, bars.deleted);
+    let marker = window.text_system().shape_line(
+        SharedString::from(glyph),
+        m.font_size * MARKER_SCALE,
+        &[run],
+        None,
+    );
+    for &edge in &f.doc.changes.deleted {
+        if edge < rows.start || edge > rows.end {
+            continue;
+        }
+        let y = bounds.top() + lh * edge as f32 - g.scroll.y;
+        let x = bounds.left() + g.bar_left + px(BAR_WIDTH / 2.0) - marker.width() / 2.0;
+        let _ = marker.paint(
+            point(x, y - lh / 2.0),
+            lh,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
+}
+
+/// What the tab asks of its workspace.
+pub enum FileTabEvent {
+    /// The Close button of a file that no longer exists.
+    Close,
+}
+
+/// The find bar: its box and what it found.
+struct FindBar {
+    input: Entity<NameInput>,
+    query: String,
+    matches: Arc<Vec<Match>>,
+    current: Option<usize>,
+    _subscriptions: Vec<Subscription>,
+}
 
 /// A file tab's view.
 pub struct FileTab {
@@ -22,17 +905,36 @@ pub struct FileTab {
     /// When it was opened (an age for a workspace with no terminal, as a browser tab's).
     pub since: Instant,
     focus: FocusHandle,
+    state: State,
+    /// The size and time of the file as last read.
+    stamp: Option<Stamp>,
+    /// Reads so far (each one's `version`).
+    versions: u64,
+    /// A read in flight.
+    reading: bool,
+    /// The highlight and the git look-up in flight (one of each at a time).
+    colouring: OneAtATime,
+    looking: OneAtATime,
+    /// The theme the colours were asked in (another one: colour again).
+    coloured_with: Option<Theme>,
+    scroll: Point<Pixels>,
+    geom: Rc<Cell<Option<Geom>>>,
+    /// The selection: where the mouse went down, and where it is.
+    selection: Option<(Pos, Pos)>,
+    selecting: bool,
+    find: Option<FindBar>,
+    /// On screen (the workspace sets it each frame), polling, polls so far.
+    shown: bool,
+    ticking: bool,
+    polls: u32,
+    /// The UI screenshots: no polling, no git.
+    pub frozen: bool,
+    /// The Close button's bounds (a missing file's), as last drawn.
+    close_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    _appearance: Subscription,
 }
 
-impl FileTab {
-    pub fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
-        Self {
-            path,
-            since: Instant::now(),
-            focus: cx.focus_handle(),
-        }
-    }
-}
+impl EventEmitter<FileTabEvent> for FileTab {}
 
 impl Focusable for FileTab {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -40,19 +942,935 @@ impl Focusable for FileTab {
     }
 }
 
+impl FileTab {
+    /// A tab showing `path`: read at once, off the UI thread.
+    pub fn new(path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // A theme change colours the text again (bars and tints follow the theme each frame).
+        let appearance = cx.observe_global::<Appearance>(|this, cx| {
+            let theme = cx.global::<Appearance>().theme;
+            if this.coloured_with.is_some_and(|t| t != theme) {
+                this.colour(cx);
+            }
+        });
+        let mut tab = Self {
+            path,
+            since: Instant::now(),
+            focus: cx.focus_handle(),
+            state: State::Loading,
+            stamp: None,
+            versions: 0,
+            reading: false,
+            colouring: OneAtATime::default(),
+            looking: OneAtATime::default(),
+            coloured_with: None,
+            scroll: Point::default(),
+            geom: Rc::default(),
+            selection: None,
+            selecting: false,
+            find: None,
+            shown: false,
+            ticking: false,
+            polls: 0,
+            frozen: false,
+            close_at: Rc::default(),
+            _appearance: appearance,
+        };
+        tab.check_disk(cx);
+        tab
+    }
+
+    /// The text shown, plain or coloured.
+    pub fn doc(&self) -> Option<&Doc> {
+        match &self.state {
+            State::Text(doc) | State::PlainTooLarge(doc) => Some(doc),
+            _ => None,
+        }
+    }
+
+    fn doc_mut(&mut self) -> Option<&mut Doc> {
+        match &mut self.state {
+            State::Text(doc) | State::PlainTooLarge(doc) => Some(doc),
+            _ => None,
+        }
+    }
+
+    /// The selected text (empty: none).
+    pub fn selected_text(&self) -> String {
+        match (self.doc(), self.selection) {
+            (Some(doc), Some((a, b))) => selection_text(&doc.text, &doc.lines, a, b),
+            _ => String::new(),
+        }
+    }
+
+    /// The workspace's word, each frame: whether the tab is on screen. On screen (and the window
+    /// seen), the disk is checked every second; coming back on screen, at once.
+    pub(crate) fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        let was = std::mem::replace(&mut self.shown, shown);
+        if shown && !was && !self.frozen {
+            self.check_disk(cx);
+        }
+        self.tick(cx);
+    }
+
+    /// Whether the disk should be watched: on screen, the window seen, not frozen.
+    fn wanted(&self, cx: &App) -> bool {
+        let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
+        self.shown && seen && !self.frozen
+    }
+
+    /// Start the 1 s poll unless it runs or isn't wanted; it stops once it isn't, so a hidden tab
+    /// or window is never woken. `set_shown` (each frame) starts it again.
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.ticking || !self.wanted(cx) {
+            return;
+        }
+        self.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL).await;
+                let wanted = this
+                    .update(cx, |this, cx| {
+                        this.ticking = this.wanted(cx);
+                        if this.ticking {
+                            this.polls = this.polls.wrapping_add(1);
+                            this.check_disk(cx);
+                            if this.polls.is_multiple_of(CHANGES_EVERY) {
+                                this.look_up_changes(cx);
+                            }
+                        }
+                        this.ticking
+                    })
+                    .unwrap_or(false);
+                if !wanted {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Look at the disk (off the UI thread): a changed file is read again.
+    pub fn check_disk(&mut self, cx: &mut Context<Self>) {
+        if self.reading {
+            return;
+        }
+        self.reading = true;
+        let (path, known) = (self.path.clone(), self.stamp);
+        cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { read_file(&path, known) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.reading = false;
+                this.loaded(loaded, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Show what the disk gave: a new version of the text (the scroll kept; the old colours and
+    /// bars until the new ones come), or a note.
+    fn loaded(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
+        match loaded {
+            Loaded::Unchanged => return,
+            Loaded::Missing => {
+                if matches!(self.state, State::Missing) {
+                    return;
+                }
+                self.state = State::Missing;
+                self.stamp = None;
+            }
+            Loaded::Refuse(stamp) => {
+                self.state = State::Refuse;
+                self.stamp = Some(stamp);
+            }
+            Loaded::Text {
+                stamp,
+                mut doc,
+                plain,
+            } => {
+                self.versions += 1;
+                doc.version = self.versions;
+                if let Some(old) = self.doc() {
+                    if !plain {
+                        doc.spans = old.spans.clone();
+                    }
+                    doc.changes = old.changes.clone();
+                }
+                self.stamp = Some(stamp);
+                self.state = if plain {
+                    State::PlainTooLarge(doc)
+                } else {
+                    State::Text(doc)
+                };
+                self.colour(cx);
+                self.look_up_changes(cx);
+            }
+        }
+        self.keep_selection();
+        self.find_again();
+        cx.notify();
+    }
+
+    /// The selection within the new text (none without one).
+    fn keep_selection(&mut self) {
+        let last = self.doc().map(|d| d.lines.len().saturating_sub(1));
+        self.selection = match (last, self.selection) {
+            (Some(last), Some((a, b))) => {
+                let fit = |p: Pos| {
+                    if p.line > last {
+                        Pos {
+                            line: last,
+                            col: usize::MAX,
+                        }
+                    } else {
+                        p
+                    }
+                };
+                Some((fit(a), fit(b)))
+            }
+            _ => None,
+        };
+        if self.selection.is_none() {
+            self.selecting = false;
+        }
+    }
+
+    /// Colour the text (off the UI thread), in the current theme. The shared highlighter is
+    /// loaded first if it isn't yet.
+    fn colour(&mut self, cx: &mut Context<Self>) {
+        let State::Text(doc) = &self.state else {
+            return;
+        };
+        let (version, text) = (doc.version, doc.text.clone());
+        let theme = cx.global::<Appearance>().theme;
+        let me = cx.entity().downgrade();
+        let got = {
+            let all = cx.default_global::<Highlighters>();
+            match all.get(&theme) {
+                Some(h) => Ok(h),
+                None => {
+                    all.waiting.push(me);
+                    Err(std::mem::replace(&mut all.loading, true))
+                }
+            }
+        };
+        let h = match got {
+            Ok(h) => h,
+            Err(already_loading) => {
+                if !already_loading {
+                    cx.spawn(async move |_, cx| {
+                        let loaded = cx
+                            .background_executor()
+                            .spawn(async move { Highlighter::load(&theme) })
+                            .await;
+                        cx.update(|cx| {
+                            let all = cx.default_global::<Highlighters>();
+                            all.loading = false;
+                            all.ready = Some((Arc::new(loaded), theme));
+                            for tab in std::mem::take(&mut all.waiting) {
+                                tab.update(cx, |tab, cx| tab.colour(cx)).ok();
+                            }
+                        });
+                    })
+                    .detach();
+                }
+                return;
+            }
+        };
+        if !self.colouring.start() {
+            // It runs again, in the theme and on the text of then, when the running one ends.
+            return;
+        }
+        self.coloured_with = Some(theme);
+        let path = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let spans = cx
+                .background_executor()
+                .spawn(async move { h.highlight(&path, &text) })
+                .await;
+            this.update(cx, |this, cx| {
+                if let State::Text(doc) = &mut this.state
+                    && doc.accept_spans(version, spans)
+                {
+                    cx.notify();
+                }
+                if this.colouring.finish() {
+                    this.colour(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Ask git for the change bars of the text shown (off the UI thread). Not when frozen.
+    fn look_up_changes(&mut self, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
+        let Some(version) = self.doc().map(|d| d.version) else {
+            return;
+        };
+        if !self.looking.start() {
+            return;
+        }
+        let path = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let changes = cx
+                .background_executor()
+                .spawn(async move { changes_for(&path) })
+                .await;
+            this.update(cx, |this, cx| {
+                let changes = changes.unwrap_or_default();
+                if let Some(doc) = this.doc_mut()
+                    && doc.accept_changes(version, &changes)
+                {
+                    cx.notify();
+                }
+                if this.looking.finish() {
+                    this.look_up_changes(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Scroll to `to`, kept within the text (as last drawn).
+    pub fn set_scroll(&mut self, to: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(g) = self.geom.get() else {
+            return;
+        };
+        let to = Geom::clamp(to, g.max_scroll);
+        if to != self.scroll {
+            self.scroll = to;
+            cx.notify();
+        }
+    }
+
+    fn wheel(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let Some(g) = self.geom.get() else {
+            return;
+        };
+        let d = e.delta.pixel_delta(g.line_height);
+        self.set_scroll(point(g.scroll.x - d.x, g.scroll.y - d.y), cx);
+    }
+
+    /// The place under window point `p` (the nearest character edge; above or below the text,
+    /// its first or last line).
+    fn pos_at(&self, p: Point<Pixels>, window: &mut Window, cx: &App) -> Option<Pos> {
+        let g = self.geom.get()?;
+        let doc = self.doc()?;
+        let count = doc.lines.len();
+        let y = p.y - g.bounds.top() + g.scroll.y;
+        let line = if y < px(0.0) {
+            0
+        } else {
+            ((y / g.line_height).floor() as usize).min(count.saturating_sub(1))
+        };
+        let l = doc.line(line);
+        let shown = expand_tabs(l);
+        let x = p.x - g.bounds.left() - g.text_left + g.scroll.x;
+        let at = if x <= px(0.0) || shown.is_empty() {
+            0
+        } else if shown.chars().count() > LONG_LINE {
+            byte_at_char(&shown, (x / g.cell_width).round() as usize)
+        } else {
+            let m = CellMetrics::measure(cx.global::<Appearance>(), window);
+            let run = plain_run(shown.len(), &m, Rgb { r: 0, g: 0, b: 0 });
+            window
+                .text_system()
+                .shape_line(SharedString::from(shown), m.font_size, &[run], None)
+                .closest_index_for_x(x)
+        };
+        Some(Pos {
+            line,
+            col: Tabs::of(l).source(at),
+        })
+    }
+
+    fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus.focus(window, cx);
+        if let Some(pos) = self.pos_at(e.position, window, cx) {
+            self.selection = Some((pos, pos));
+            self.selecting = true;
+            cx.notify();
+        }
+    }
+
+    fn mouse_drag(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting || e.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        let Some(head) = self.pos_at(e.position, window, cx) else {
+            return;
+        };
+        if let Some((anchor, old)) = self.selection
+            && old != head
+        {
+            self.selection = Some((anchor, head));
+            cx.notify();
+        }
+    }
+
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        let text = self.selected_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// ⌘F: the find bar, its box taking the keyboard (its text selected, when open already).
+    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(find) = &self.find {
+            let input = find.input.clone();
+            input.update(cx, |input, cx| {
+                input.select_all();
+                cx.notify();
+            });
+            input.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        let input = cx.new(|cx| NameInput::new(String::new(), window, cx));
+        let events = cx.subscribe_in(&input, window, |this, input, event, window, cx| {
+            match event {
+                NameInputEvent::Confirm(_) => this.find_step(true, window, cx),
+                // Esc in the box (not the box losing the keyboard): the bar closes.
+                NameInputEvent::Cancel => {
+                    if input.read(cx).focus_handle(cx).is_focused(window) {
+                        this.close_find(window, cx);
+                    }
+                }
+            }
+        });
+        let typed = cx.observe(&input, |this, input, cx| {
+            let query = input.read(cx).text().to_string();
+            this.find_query(query, cx);
+        });
+        input.read(cx).focus_handle(cx).focus(window, cx);
+        self.find = Some(FindBar {
+            input,
+            query: String::new(),
+            matches: Arc::default(),
+            current: None,
+            _subscriptions: vec![events, typed],
+        });
+        cx.notify();
+    }
+
+    /// The find box's text changed: its matches, the first from the top line in sight.
+    fn find_query(&mut self, query: String, cx: &mut Context<Self>) {
+        if self.find.as_ref().is_none_or(|f| f.query == query) {
+            return;
+        }
+        let top = self
+            .geom
+            .get()
+            .map_or(0, |g| (g.scroll.y / g.line_height).floor() as usize);
+        let found = self
+            .doc()
+            .map(|d| find_matches(&d.text, &d.lines, &query))
+            .unwrap_or_default();
+        if let Some(find) = self.find.as_mut() {
+            find.current = first_from(&found, top);
+            find.matches = Arc::new(found);
+            find.query = query;
+        }
+        self.reveal_current(cx);
+        cx.notify();
+    }
+
+    /// The text changed under the find bar: its matches again, the current one kept (by
+    /// number) where it can be.
+    fn find_again(&mut self) {
+        let found = match (self.doc(), self.find.as_ref()) {
+            (Some(d), Some(f)) => find_matches(&d.text, &d.lines, &f.query),
+            _ => Vec::new(),
+        };
+        if let Some(find) = self.find.as_mut() {
+            find.current = find
+                .current
+                .filter(|_| !found.is_empty())
+                .map(|c| c.min(found.len() - 1));
+            find.matches = Arc::new(found);
+        }
+    }
+
+    /// ⌘G / ⇧⌘G (and Return in the box): the next or previous match, round the ends. With the
+    /// bar closed, it opens.
+    fn find_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(find) = self.find.as_mut() else {
+            self.open_find(window, cx);
+            return;
+        };
+        find.current = step(find.current, find.matches.len(), forward);
+        self.reveal_current(cx);
+        cx.notify();
+    }
+
+    /// Esc: the find bar closes and the tab takes the keyboard. With no bar, Esc goes on.
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.take().is_none() {
+            cx.propagate();
+            return;
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Scroll the current match into sight: its line to the middle when off screen, and
+    /// sideways when it's out of the text's width.
+    fn reveal_current(&mut self, cx: &mut Context<Self>) {
+        let Some(hit) = self
+            .find
+            .as_ref()
+            .and_then(|f| f.matches.get(f.current?).cloned())
+        else {
+            return;
+        };
+        let (Some(g), Some(doc)) = (self.geom.get(), self.doc()) else {
+            return;
+        };
+        let (lh, h, w) = (g.line_height, g.bounds.size.height, g.bounds.size.width);
+        let mut to = g.scroll;
+        let top = lh * hit.line as f32;
+        if top < to.y || top + lh > to.y + h {
+            to.y = top - (h - lh) / 2.0;
+        }
+        let line = doc.line(hit.line);
+        let shown = expand_tabs(line);
+        let tabs = Tabs::of(line);
+        let x = |col: usize| {
+            let b = clamp_col(&shown, tabs.shown(col));
+            g.cell_width * shown[..b].chars().count() as f32
+        };
+        let (x0, x1) = (x(hit.cols.start), x(hit.cols.end));
+        let room = w - g.text_left - px(RIGHT_PAD);
+        if x0 < to.x || x1 > to.x + room {
+            to.x = (x0 + x1) / 2.0 - room / 2.0;
+        }
+        self.set_scroll(to, cx);
+    }
+
+    /// Open the file with macOS's default app for it (off the UI thread). The only process a
+    /// file tab starts.
+    fn open_in_editor(&self, cx: &mut Context<Self>) {
+        let path = self.path.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let _ = std::process::Command::new("/usr/bin/open")
+                    .arg(&path)
+                    .status();
+            })
+            .detach();
+    }
+
+    fn icon_button(
+        id: &'static str,
+        kind: Glyph,
+        tip: &'static str,
+        ui: UiColors,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id(id)
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(BUTTON))
+            .rounded(px(5.0))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(ui.panel_hover)))
+            .child(glyph_with(kind, ui.text, BUTTON_STROKE))
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
+            )
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            .into_any_element()
+    }
+
+    fn text_button(
+        id: &'static str,
+        label: &'static str,
+        ui: UiColors,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(BUTTON))
+            .px(px(10.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .bg(hsla(ui.panel))
+            .text_size(px(text::NAME))
+            .text_color(hsla(ui.text))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(ui.panel_hover)))
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
+            )
+            .child(label)
+    }
+
+    /// The toolbar: the file's path, a note, Open in Editor.
+    fn toolbar(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let note = match self.state {
+            State::PlainTooLarge(_) => Some(TOO_LARGE),
+            _ => None,
+        };
+        // A refused file has its button in the middle; a missing one has none.
+        let open = matches!(
+            self.state,
+            State::Loading | State::Text(_) | State::PlainTooLarge(_)
+        )
+        .then(|| {
+            Self::text_button(
+                "file-open-in-editor",
+                OPEN_IN_EDITOR,
+                ui,
+                |this, _, cx| this.open_in_editor(cx),
+                cx,
+            )
+        });
+        div()
+            .flex()
+            .flex_none()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .h(px(TOOLBAR))
+            .px(px(BAR_PAD + 4.0))
+            .gap(px(8.0))
+            .bg(hsla(ui.panel))
+            .border_b_1()
+            .border_color(hsla(ui.panel_border))
+            .child(glyph(Glyph::File, ui.text_dim))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(text::NAME))
+                    .text_color(hsla(ui.text_dim))
+                    .child(SharedString::from(self.path.display().to_string())),
+            )
+            .children(note.map(|note| {
+                div()
+                    .flex_none()
+                    .text_size(px(text::META))
+                    .text_color(hsla(ui.text_faint))
+                    .child(note)
+            }))
+            .children(open)
+            .into_any_element()
+    }
+
+    /// The find bar, when open: its box, its count, previous / next, close.
+    fn find_bar(&self, ui: UiColors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let find = self.find.as_ref()?;
+        let input = find.input.clone();
+        let empty = input.read(cx).text().is_empty();
+        let label = find_label(&find.query, find.current, find.matches.len());
+        let focus_box = input.clone();
+        let prev = Self::icon_button(
+            "file-find-prev",
+            Glyph::Back,
+            "Previous match",
+            ui,
+            |this, window, cx| this.find_step(false, window, cx),
+            cx,
+        );
+        let next = Self::icon_button(
+            "file-find-next",
+            Glyph::Forward,
+            "Next match",
+            ui,
+            |this, window, cx| this.find_step(true, window, cx),
+            cx,
+        );
+        let close = Self::icon_button(
+            "file-find-close",
+            Glyph::Stop,
+            "Close the find bar",
+            ui,
+            |this, window, cx| this.close_find(window, cx),
+            cx,
+        );
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .flex_row()
+                .items_center()
+                .w_full()
+                .h(px(TOOLBAR))
+                .px(px(BAR_PAD))
+                .gap(px(2.0))
+                .bg(hsla(ui.panel))
+                .border_b_1()
+                .border_color(hsla(ui.panel_border))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(FIND_BOX))
+                        // The box keeps its clicks from reaching what holds it: it takes the
+                        // keyboard here, before they arrive.
+                        .capture_any_mouse_down(move |_, window, cx| {
+                            let focus = focus_box.read(cx).focus_handle(cx);
+                            focus.focus(window, cx);
+                        })
+                        .child(overlay_panel::filter_box(
+                            &ui,
+                            &input,
+                            empty,
+                            FIND_PLACEHOLDER,
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w(px(72.0))
+                        .px(px(8.0))
+                        .text_size(px(text::META))
+                        .text_color(hsla(ui.text_dim))
+                        .child(SharedString::from(label)),
+                )
+                .child(prev)
+                .child(next)
+                .child(div().flex_1())
+                .child(close)
+                .into_any_element(),
+        )
+    }
+
+    /// A note in the middle of the body, with its button: a missing or refused file.
+    fn notice(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let missing = matches!(self.state, State::Missing);
+        let words = if missing { MISSING } else { REFUSED };
+        let button = if missing {
+            let at = self.close_at.clone();
+            Self::text_button(
+                "file-close",
+                "Close",
+                ui,
+                |_, _, cx| cx.emit(FileTabEvent::Close),
+                cx,
+            )
+            // Where it is (the scenes click it).
+            .child(
+                canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+        } else {
+            Self::text_button(
+                "file-open-in-editor-body",
+                OPEN_IN_EDITOR,
+                ui,
+                |this, _, cx| this.open_in_editor(cx),
+                cx,
+            )
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .items_center()
+            .justify_center()
+            .gap(px(10.0))
+            .px(px(24.0))
+            .child(
+                div()
+                    .text_size(px(text::NAME))
+                    .text_color(hsla(ui.text))
+                    .child(words),
+            )
+            .when(missing, |d| {
+                d.child(
+                    div()
+                        .max_w_full()
+                        .truncate()
+                        .text_size(px(text::META))
+                        .text_color(hsla(ui.text_dim))
+                        .child(SharedString::from(self.path.display().to_string())),
+                )
+            })
+            .child(button)
+            .into_any_element()
+    }
+
+    /// The text: a canvas drawing the lines in sight, the wheel scrolling it, the mouse
+    /// selecting.
+    fn body(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(doc) = self.doc().cloned() else {
+            return div().flex_1().into_any_element();
+        };
+        let (matches, current) = self
+            .find
+            .as_ref()
+            .map_or((Arc::default(), None), |f| (f.matches.clone(), f.current));
+        let frame = Rc::new(Frame {
+            coloured: matches!(self.state, State::Text(_)),
+            doc,
+            scroll: self.scroll,
+            selection: self
+                .selection
+                .map(|(a, b)| if a <= b { (a, b) } else { (b, a) }),
+            matches,
+            current,
+            theme,
+        });
+        let geom = self.geom.clone();
+        let view = cx.entity();
+        let laid = frame.clone();
+        div()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .overflow_hidden()
+            .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.wheel(e, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| this.mouse_down(e, window, cx)),
+            )
+            .child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let m = CellMetrics::measure(cx.global::<Appearance>(), window);
+                        let g = Geom::of(
+                            bounds,
+                            &m,
+                            laid.doc.lines.len(),
+                            laid.doc.widest,
+                            laid.scroll,
+                        );
+                        geom.set(Some(g));
+                        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                        (m, g, hitbox)
+                    },
+                    move |_, (m, g, hitbox), window, cx| {
+                        window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+                        paint_body(&frame, &g, &m, window, cx);
+                        // A drag keeps going outside the text; registered for this frame.
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |e: &MouseMoveEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    view.update(cx, |this, cx| this.mouse_drag(e, window, cx));
+                                }
+                            }
+                        });
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                view.update(cx, |this, _| this.selecting = false);
+                            }
+                        });
+                    },
+                )
+                .size_full(),
+            )
+            .into_any_element()
+    }
+}
+
+/// What the UI screenshots read of a tab, and the change list they give it.
+#[cfg(feature = "ui-shots")]
+impl FileTab {
+    /// "loading", "text", "plain", "refuse" or "missing".
+    pub fn state_name(&self) -> &'static str {
+        match self.state {
+            State::Loading => "loading",
+            State::Text(_) => "text",
+            State::PlainTooLarge(_) => "plain",
+            State::Refuse => "refuse",
+            State::Missing => "missing",
+        }
+    }
+
+    /// The note the tab shows instead of (or over) the text.
+    pub fn note(&self) -> Option<&'static str> {
+        match self.state {
+            State::PlainTooLarge(_) => Some(TOO_LARGE),
+            State::Refuse => Some(REFUSED),
+            State::Missing => Some(MISSING),
+            State::Loading | State::Text(_) => None,
+        }
+    }
+
+    pub fn geom(&self) -> Option<Geom> {
+        self.geom.get()
+    }
+
+    pub fn scroll(&self) -> Point<Pixels> {
+        self.scroll
+    }
+
+    pub fn close_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.close_at.get()
+    }
+
+    /// The find bar's count ("1 of 7"); empty with the bar closed.
+    pub fn find_label(&self) -> String {
+        self.find.as_ref().map_or_else(String::new, |f| {
+            find_label(&f.query, f.current, f.matches.len())
+        })
+    }
+
+    /// Change bars from a list (git's answer; a scene's given list).
+    pub fn set_changes(&mut self, changes: Vec<(usize, LineChange)>, cx: &mut Context<Self>) {
+        if let Some(doc) = self.doc_mut() {
+            let version = doc.version;
+            if doc.accept_changes(version, &changes) {
+                cx.notify();
+            }
+        }
+    }
+}
+
 impl Render for FileTab {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
+        let toolbar = self.toolbar(ui, cx);
+        let find_bar = self.find_bar(ui, cx);
+        let body = match self.state {
+            State::Missing | State::Refuse => self.notice(ui, cx),
+            _ => self.body(theme, cx),
+        };
         div()
+            .flex()
+            .flex_col()
             .size_full()
             .track_focus(&self.focus)
             .key_context("FileTab")
             .bg(hsla(theme.background))
             .text_color(hsla(ui.text))
-            .text_size(px(text::NAME))
-            .p(px(12.0))
-            .child(self.path.display().to_string())
+            .on_action(cx.listener(|this, _: &Find, window, cx| this.open_find(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &FindNext, window, cx| this.find_step(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FindPrev, window, cx| this.find_step(false, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &CloseFind, window, cx| this.close_find(window, cx)))
+            .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+            .child(toolbar)
+            .children(find_bar)
+            .child(body)
     }
 }
 
@@ -73,7 +1891,7 @@ impl Workspace {
         };
         self.sync();
         if !self.file_tabs.contains_key(&opened.tab) {
-            self.make_file_tab(opened.tab, path, cx);
+            self.make_file_tab(opened.tab, path, window, cx);
         }
         self.save();
         self.activate(window, cx);
@@ -124,7 +1942,7 @@ impl Workspace {
         let focused = self.model.focused_tab();
         let mut focus_it = false;
         for (tab, path) in missing {
-            self.make_file_tab(tab, path, cx);
+            self.make_file_tab(tab, path, window, cx);
             focus_it |= Some(tab) == focused;
         }
         if focus_it {
@@ -133,9 +1951,46 @@ impl Workspace {
     }
 
     /// The view for file tab `tab`, showing `path`.
-    fn make_file_tab(&mut self, tab: TabId, path: PathBuf, cx: &mut Context<Self>) {
-        let view = cx.new(|cx| FileTab::new(path, cx));
+    fn make_file_tab(
+        &mut self,
+        tab: TabId,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let frozen = self.places.frozen;
+        let view = cx.new(|cx| {
+            let mut view = FileTab::new(path, window, cx);
+            view.frozen = frozen;
+            view
+        });
+        // A missing file's Close button closes its tab.
+        cx.subscribe_in(
+            &view,
+            window,
+            move |this, _, event, window, cx| match event {
+                FileTabEvent::Close => this.close_file_tab(tab, window, cx),
+            },
+        )
+        .detach();
         self.file_tabs.insert(tab, view);
+    }
+
+    /// Tell each file tab whether it's on screen (the shown tab of a pane of the focused
+    /// workspace): only those watch their file. Each frame (`render`), so showing the window
+    /// again starts their polls.
+    pub(crate) fn show_file_tabs(&self, cx: &mut Context<Self>) {
+        let shown: Vec<TabId> = self
+            .shown_layout()
+            .map(|tree| tree.leaves())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|pane| Some(self.model.pane(pane)?.active))
+            .collect();
+        for (tab, view) in &self.file_tabs {
+            let on = shown.contains(tab);
+            view.update(cx, |view, cx| view.set_shown(on, cx));
+        }
     }
 
     /// The file tab the focused pane shows, if it shows one.
@@ -146,5 +2001,168 @@ impl Workspace {
     /// The file tab pane `pane` shows, if it shows one.
     pub(crate) fn pane_file_tab(&self, pane: PaneId) -> Option<Entity<FileTab>> {
         self.file_tabs.get(&self.model.pane(pane)?.active).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::vte::ansi::Rgb;
+
+    #[test]
+    fn lines_drop_their_endings_and_a_last_newline_ends_the_last_line() {
+        let text = "a\nbb\r\n\nc";
+        let lines = line_ranges(text);
+        let got: Vec<&str> = lines.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(got, ["a", "bb", "", "c"]);
+        assert_eq!(line_ranges("a\n").len(), 1);
+        let empty = line_ranges("");
+        assert_eq!((empty.len(), empty[0].clone()), (1, 0..0));
+    }
+
+    #[test]
+    fn a_tab_shows_as_four_spaces_and_columns_map_both_ways() {
+        assert_eq!(expand_tabs("\tx\ty"), "    x    y");
+        assert_eq!(expand_tabs("plain"), "plain");
+        let line = "\tx\ty";
+        // Source byte → shown byte: each tab before it adds three.
+        assert_eq!(display_col(line, 0), 0);
+        assert_eq!(display_col(line, 1), 4);
+        assert_eq!(display_col(line, 2), 5);
+        assert_eq!(display_col(line, 3), 9);
+        assert_eq!(display_col(line, 4), 10);
+        // Shown byte → source byte: inside a tab, the nearer of its two edges.
+        assert_eq!(source_col(line, 0), 0);
+        assert_eq!(source_col(line, 1), 0);
+        assert_eq!(source_col(line, 2), 1);
+        assert_eq!(source_col(line, 3), 1);
+        assert_eq!(source_col(line, 4), 1);
+        assert_eq!(source_col(line, 5), 2);
+        assert_eq!(source_col(line, 9), 3);
+        assert_eq!(source_col(line, 10), 4);
+        assert_eq!(source_col(line, 99), 4);
+        assert_eq!(source_col("ab", 1), 1);
+    }
+
+    #[test]
+    fn a_column_past_the_end_of_a_tabbed_line_maps_to_its_end() {
+        // A selection kept over a reload can point past a line's end.
+        assert_eq!(display_col("\tx", usize::MAX), 5);
+        assert_eq!(display_col("", usize::MAX), 0);
+    }
+
+    #[test]
+    fn find_matches_every_line_ignoring_case_and_steps_around() {
+        let text = "fn main() {\n    FN x; fn y\n}\nnothing\n";
+        let lines = line_ranges(text);
+        let found = find_matches(text, &lines, "fn");
+        assert_eq!(
+            found,
+            [
+                Match {
+                    line: 0,
+                    cols: 0..2
+                },
+                Match {
+                    line: 1,
+                    cols: 4..6
+                },
+                Match {
+                    line: 1,
+                    cols: 10..12
+                },
+            ]
+        );
+        assert!(find_matches(text, &lines, "").is_empty());
+        assert!(find_matches(text, &lines, "zzz").is_empty());
+        // Not across a line's end.
+        assert!(find_matches(text, &lines, "{\n").is_empty());
+        // A non-ASCII query, any case.
+        let text = "Ärger ärger\n";
+        let lines = line_ranges(text);
+        assert_eq!(find_matches(text, &lines, "äR").len(), 2);
+        // Next and previous go round.
+        assert_eq!(step(None, 3, true), Some(0));
+        assert_eq!(step(None, 3, false), Some(2));
+        assert_eq!(step(Some(2), 3, true), Some(0));
+        assert_eq!(step(Some(0), 3, false), Some(2));
+        assert_eq!(step(Some(1), 3, true), Some(2));
+        assert_eq!(step(Some(0), 0, true), None);
+        // The first at or after a line, else the first of all.
+        let text = "fn a\nb\nfn c\n";
+        let lines = line_ranges(text);
+        let found = find_matches(text, &lines, "fn");
+        assert_eq!(first_from(&found, 1), Some(1));
+        assert_eq!(first_from(&found, 3), Some(0));
+        assert_eq!(first_from(&[], 0), None);
+        assert_eq!(find_label("fn", Some(0), 3), "1 of 3");
+        assert_eq!(find_label("fn", None, 0), "No results");
+        assert_eq!(find_label("", None, 0), "");
+    }
+
+    #[test]
+    fn a_selection_over_lines_copies_the_ends_partly() {
+        let text = "alpha\nbeta\ngamma\n";
+        let lines = line_ranges(text);
+        let a = Pos { line: 0, col: 2 };
+        let b = Pos { line: 2, col: 3 };
+        assert_eq!(selection_text(text, &lines, a, b), "pha\nbeta\ngam");
+        // Either way round; on one line; empty.
+        assert_eq!(selection_text(text, &lines, b, a), "pha\nbeta\ngam");
+        let c = Pos { line: 1, col: 1 };
+        let d = Pos { line: 1, col: 3 };
+        assert_eq!(selection_text(text, &lines, c, d), "et");
+        assert_eq!(selection_text(text, &lines, c, c), "");
+        // Past a line's end: the line's end (CRLF endings are not copied).
+        let text = "ab\r\ncd\r\n";
+        let lines = line_ranges(text);
+        let e = Pos { line: 0, col: 99 };
+        let f = Pos { line: 1, col: 1 };
+        assert_eq!(selection_text(text, &lines, e, f), "\nc");
+    }
+
+    #[test]
+    fn a_highlight_for_an_older_version_is_dropped() {
+        let spans = || vec![vec![(0..10, Rgb { r: 1, g: 2, b: 3 })]];
+        // Version 3 was asked to be coloured; the text changed on disk and version 4 is loaded
+        // before version 3's colours arrive.
+        let asked = Doc::new("fn a() {}\n".into(), 3).version;
+        let mut doc = Doc::new("fn b() {}\n".into(), 4);
+        assert!(!doc.accept_spans(asked, spans()));
+        assert!(doc.spans.is_none());
+        assert!(doc.accept_spans(4, spans()));
+        assert_eq!(doc.spans.as_deref().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn asks_while_one_runs_become_one_more_run() {
+        let mut work = OneAtATime::default();
+        assert!(work.start(), "nothing running: go");
+        // Three reloads while it runs: queued, not started.
+        assert!(!work.start());
+        assert!(!work.start());
+        assert!(!work.start());
+        // It ends: one more run (for the latest), which starts as usual.
+        assert!(work.finish());
+        assert!(work.start());
+        // That one ends with nothing asked meanwhile: done, and idle again.
+        assert!(!work.finish());
+        assert!(work.start());
+    }
+
+    #[test]
+    fn change_lists_become_bars_by_line_and_deletion_marks_between_lines() {
+        let (by_line, deleted) = bars(&[
+            (1, LineChange::Added),
+            (3, LineChange::Changed),
+            (5, LineChange::DeletedAfter),
+            (0, LineChange::DeletedAfter),
+        ]);
+        // 0-based lines.
+        assert_eq!(by_line.get(&0), Some(&LineChange::Added));
+        assert_eq!(by_line.get(&2), Some(&LineChange::Changed));
+        assert_eq!(by_line.len(), 2);
+        // Deleted after (1-based) line 5: the edge above 0-based line 5; after 0: the top.
+        assert_eq!(deleted, [0, 5]);
     }
 }

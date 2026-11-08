@@ -1038,18 +1038,18 @@ impl Render for TerminalView {
     }
 }
 
-/// Monospace cell geometry for the terminal font.
-struct CellMetrics {
-    font: Font,
-    font_size: Pixels,
-    cell_width: Pixels,
-    line_height: Pixels,
+/// Monospace cell geometry for the terminal font (also the file tabs' text, M11g).
+pub(crate) struct CellMetrics {
+    pub(crate) font: Font,
+    pub(crate) font_size: Pixels,
+    pub(crate) cell_width: Pixels,
+    pub(crate) line_height: Pixels,
 }
 
 impl CellMetrics {
     /// The configured font and size; bold/italic runs derive from `font`, keeping its fallbacks
     /// and features.
-    fn measure(appearance: &Appearance, window: &Window) -> Self {
+    pub(crate) fn measure(appearance: &Appearance, window: &Window) -> Self {
         let font = appearance.font.clone();
         let font_size = px(appearance.font_size);
         let text_system = window.text_system();

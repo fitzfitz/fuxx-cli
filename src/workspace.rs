@@ -2467,6 +2467,8 @@ impl Render for Workspace {
         }
         self.ensure_browser_tabs(window, cx);
         self.ensure_file_tabs(window, cx);
+        // Only the file tabs on screen watch their files.
+        self.show_file_tabs(cx);
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
         // Before the rows are drawn, so a folder found now shows in this frame; at most once a
