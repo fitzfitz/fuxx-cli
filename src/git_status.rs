@@ -52,6 +52,32 @@ pub fn repo_root(git: &Path, dir: &Path) -> Option<PathBuf> {
     (!top.is_empty()).then(|| PathBuf::from(top))
 }
 
+/// `repo_root`, telling "not a repo" (git says so: `Some(None)`) from no answer (git failed,
+/// took longer than the cap, or couldn't run: None, to ask again later).
+pub fn repo_root_at(git: &Path, dir: &Path) -> Option<Option<PathBuf>> {
+    match run_git_outcome(git, dir, &["rev-parse", "--show-toplevel"]) {
+        Ran::Exited(Some(0), out) => {
+            let top = out.trim_end_matches('\n');
+            Some((!top.is_empty()).then(|| PathBuf::from(top)))
+        }
+        // git's "fatal: not a git repository".
+        Ran::Exited(Some(128), _) => Some(None),
+        _ => None,
+    }
+}
+
+/// The size in bytes of `rel`'s blob in HEAD (`git cat-file -s HEAD:<rel>`): `Some(None)` when
+/// it isn't there (untracked, or no commits yet), None when git failed or took longer than the
+/// cap. Blocking.
+pub fn head_size(git: &Path, root: &Path, rel: &Path) -> Option<Option<u64>> {
+    let object = format!("HEAD:{}", rel.to_string_lossy());
+    match run_git_outcome(git, root, &["cat-file", "-s", &object]) {
+        Ran::Exited(Some(0), out) => out.trim().parse().ok().map(Some),
+        Ran::Exited(Some(_), _) => Some(None),
+        _ => None,
+    }
+}
+
 /// `git status --porcelain=v1 -z`'s entries (`XY path\0`; a rename or copy is followed by its
 /// old path, which is skipped) as marks; see the module note for the mapping.
 pub fn parse_porcelain(z: &[u8]) -> Vec<(PathBuf, Mark)> {
@@ -169,7 +195,8 @@ pub fn parse_hunks(diff: &str) -> Vec<(usize, LineChange)> {
     out
 }
 
-/// Whether `root` is a work tree (else None), has a `HEAD`, and tracks `rel`: the questions
+/// Whether `root` is a work tree (else None), has a `HEAD`, and tracks `rel` (in the index, or
+/// in HEAD: a staged deletion): the questions
 /// `line_changes` and `file_diff` share. None too when git fails or takes longer than the cap.
 /// Names are literal, not pathspecs (`*`, `[`, a leading `:`).
 fn head_and_tracked(git: &Path, root: &Path, rel: &Path) -> Option<(bool, bool)> {
@@ -181,7 +208,7 @@ fn head_and_tracked(git: &Path, root: &Path, rel: &Path) -> Option<(bool, bool)>
         root,
         &["rev-parse", "--verify", "-q", "HEAD"],
     ))?;
-    let tracked = yes_or_no(run_git_outcome(
+    let in_index = yes_or_no(run_git_outcome(
         git,
         root,
         &[
@@ -192,6 +219,9 @@ fn head_and_tracked(git: &Path, root: &Path, rel: &Path) -> Option<(bool, bool)>
             &path,
         ],
     ))?;
+    // A staged deletion (`git rm`, a `git mv`'s old path) is out of the index but still in
+    // HEAD: tracked, so its diff is its old lines, all removed.
+    let tracked = in_index || (has_head && head_size(git, root, rel)?.is_some());
     Some((has_head, tracked))
 }
 
@@ -1016,5 +1046,66 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_staged_deletion_still_diffs_its_old_lines() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("staged-deletion", &git);
+        fs::write(root.join("a.rs"), "one\ntwo\n").unwrap();
+        fs::write(root.join("b.rs"), "x\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "first"]);
+        // `git rm`: gone from the disk and the index, still in HEAD.
+        git_in(&git, &root, &["rm", "-q", "a.rs"]);
+        // `git mv`: the old path is gone from the index too.
+        git_in(&git, &root, &["mv", "b.rs", "c.rs"]);
+        for (rel, lines) in [("a.rs", 2), ("b.rs", 1)] {
+            let Some(FileDiff::Unified(u)) = file_diff(&git, &root, Path::new(rel), 1) else {
+                panic!("{rel}: a unified diff");
+            };
+            let removed = u
+                .lines()
+                .filter(|l| l.starts_with('-') && !l.starts_with("---"));
+            assert_eq!(removed.count(), lines, "{rel}: {u}");
+            assert!(
+                !u.lines()
+                    .any(|l| l.starts_with('+') && !l.starts_with("+++")),
+                "{rel}"
+            );
+        }
+        // The new path of the move (staged, so in the index) is all new lines.
+        let Some(FileDiff::Unified(u)) = file_diff(&git, &root, Path::new("c.rs"), 2) else {
+            panic!("c.rs: a unified diff");
+        };
+        assert!(u.contains("\n@@ -0,0 +1 @@\n+x\n"), "{u}");
+    }
+
+    #[test]
+    fn head_size_and_repo_root_tell_no_from_no_answer() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("head-size", &git);
+        // No commits yet: nothing in HEAD.
+        fs::write(root.join("a.rs"), "12345\n").unwrap();
+        assert_eq!(head_size(&git, &root, Path::new("a.rs")), Some(None));
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "first"]);
+        assert_eq!(head_size(&git, &root, Path::new("a.rs")), Some(Some(6)));
+        fs::write(root.join("new.rs"), "x\n").unwrap();
+        assert_eq!(head_size(&git, &root, Path::new("new.rs")), Some(None));
+        // A repo's top, or (git says so) not a repo; no git to run: no answer.
+        let top = repo_root_at(&git, &root)
+            .expect("an answer")
+            .expect("a repo");
+        assert_eq!(
+            fs::canonicalize(top).unwrap(),
+            fs::canonicalize(&root).unwrap()
+        );
+        assert_eq!(repo_root_at(&git, &temp("head-size-plain")), Some(None));
+        assert_eq!(repo_root_at(Path::new("/no/such/git"), &root), None);
     }
 }

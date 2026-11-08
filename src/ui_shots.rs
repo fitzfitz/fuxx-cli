@@ -4682,8 +4682,9 @@ fn file_diff_fixture() -> String {
 ///   git repository."), `missing-rows` (a deleted file's removed rows show, not "This file no
 ///   longer exists"), `missing-same` (a deleted file with nothing to show: that note).
 /// - `file-diff-toggle`: a workspace with the Files panel; `open_file_tab(view.rs, Diff)`: the
-///   toolbar's toggle with Diff `card_selected` and File `panel`. Not shot: a click on File
-///   (the tab and the model Plain, the same tab); a click on line 7's change bar (Diff, its
+///   toolbar's toggle with Diff `card_selected` and File `panel`. Not shot: File and Diff
+///   clicked both ways, each mode keeping its own scroll; a click on File (the tab and the
+///   model Plain, the same tab); a click on line 7's change bar (Diff, its
 ///   change scrolled into view, the model Diff); a Files click on view.rs (the same tab, Plain).
 fn file_diff_scenes() {
     use crate::diff_view::{BINARY, NO_CHANGES, NO_REPO, RowKind, first_change, reveal_row};
@@ -5169,6 +5170,44 @@ fn file_diff_scenes() {
                         (view.read(cx).mode(), model)
                     })
                 };
+                // Each mode keeps its own scroll: the diff scrolled, File (scrolled too), Diff
+                // again, File again, by the toggle both ways.
+                cx.update(|cx| view.update(cx, |t, cx| t.pretend_in_repo_for_shots(cx)));
+                frame(cx, window);
+                let lh = cx
+                    .read(|cx| view.read(cx).geom())
+                    .expect("drawn")
+                    .line_height;
+                let segment = |cx: &mut VisualTestAppContext, i: usize| {
+                    cx.read(|cx| view.read(cx).toggle_bounds()[i])
+                        .expect("the toggle")
+                        .center()
+                };
+                let scroll = |cx: &mut VisualTestAppContext| cx.read(|cx| view.read(cx).scroll());
+                cx.update(|cx| view.update(cx, |t, cx| t.set_scroll(point(px(0.0), lh * 5.0), cx)));
+                frame(cx, window);
+                let diff_at = scroll(cx);
+                assert_eq!(diff_at.y, lh * 5.0, "{n}: the diff scrolled");
+                let at = segment(cx, 0);
+                cx.simulate_click(window, at, Modifiers::none());
+                frame(cx, window);
+                assert_eq!(modes(cx), (FileMode::Plain, FileMode::Plain), "{n}: File");
+                assert_eq!(scroll(cx).y, px(0.0), "{n}: the file's own scroll");
+                cx.update(|cx| view.update(cx, |t, cx| t.set_scroll(point(px(0.0), lh * 2.0), cx)));
+                frame(cx, window);
+                let at = segment(cx, 1);
+                cx.simulate_click(window, at, Modifiers::none());
+                frame(cx, window);
+                assert_eq!(modes(cx), (FileMode::Diff, FileMode::Diff), "{n}: Diff");
+                assert_eq!(scroll(cx), diff_at, "{n}: the diff's scroll kept");
+                let at = segment(cx, 0);
+                cx.simulate_click(window, at, Modifiers::none());
+                frame(cx, window);
+                assert_eq!(scroll(cx).y, lh * 2.0, "{n}: the file's scroll kept");
+                let at = segment(cx, 1);
+                cx.simulate_click(window, at, Modifiers::none());
+                frame(cx, window);
+                assert_eq!(modes(cx), (FileMode::Diff, FileMode::Diff), "{n}: Diff");
                 // Scrolled to the diff's end, away from its changes.
                 cx.update(|cx| {
                     view.update(cx, |t, cx| t.set_scroll(point(px(0.0), px(1.0e5)), cx))
