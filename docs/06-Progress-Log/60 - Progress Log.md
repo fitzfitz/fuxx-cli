@@ -22,6 +22,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-08 — v0.3.3 released; the right sidebar designed and approved (M11g–M11h)
+- **Did:** On your word, released v0.3.3 (a version bump) to see the new Update Available button with its icon and
+  version: "great! nice!". Then designed the right sidebar with you: what cmux (Files/Sessions/Feed) and Warp (code
+  review) put there; your file explorer with files opening in the middle; syntect + two-face (your pick); line numbers
+  and change bars; an icon on every pane to toggle it. A builder's read raised 9 questions, 8 settled as AI's calls.
+  You approved it ("lets go"), which changes the scope: a read-only file viewer is in, an editor stays out
+  ([[12 - Scope]]). Design: [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]].
+- **Next:** M11g's plan.
+
 ### 2026-11-08 — v0.3.2 released (the cursor; the button's icon and version)
 - **Did:** On your word: merged `m11f-cursor-style` into `master` (fast-forward), version 0.3.2 (868 tests pass on
   master), pushed `master` and tag `v0.3.2`; the Release run went green (42439235155),
