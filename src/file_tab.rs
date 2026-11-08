@@ -1,5 +1,7 @@
 //! A file tab (M11g): a pane tab that shows a file, read-only. Nothing here writes to the file;
-//! the one process it starts is `/usr/bin/open <path>` (Open in Editor, a toolbar button).
+//! the one process it starts is `/usr/bin/open -t <path>` (Open in Editor, a toolbar button:
+//! the default text editor, never the file's own app, which could run it), or for a refused file
+//! `/usr/bin/open -R <path>` (Show in Finder: revealed, never launched).
 //!
 //! The file is read, coloured (`highlight::Highlighter`, one shared GPUI global loaded once in
 //! the background) and compared with HEAD (`git_status::line_changes`) on the background
@@ -14,7 +16,8 @@
 //! carried over a reload, so a file that grows faster than it's coloured still gets fresher
 //! colours), else dropped (`Doc::accept_spans`, `Doc::accept_changes`). One highlight and one git look-up run at a time
 //! per tab (`OneAtATime`): asked again meanwhile, each runs once more when it ends, for the text
-//! then shown. git runs at most once every 2 s per tab, its program and repo looked up once. Only
+//! then shown. git runs at most once every 2 s per tab, its program and repo kept once found (a
+//! failed look-up is tried again); a failed or slow answer leaves the bars as they are. Only
 //! plain files are read (a FIFO or a device is refused), never past 20 MB. The UI screenshots
 //! freeze it (`frozen`): no polling, no git.
 //!
@@ -31,6 +34,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -70,6 +74,7 @@ pub const MISSING: &str = "This file no longer exists";
 pub const REFUSED: &str = "This file is too large or binary to show";
 pub const TOO_LARGE: &str = "Too large to colour";
 const OPEN_IN_EDITOR: &str = "Open in Editor";
+const SHOW_IN_FINDER: &str = "Show in Finder";
 const FIND_PLACEHOLDER: &str = "Find in file";
 
 /// How many spaces a tab shows as.
@@ -1107,8 +1112,8 @@ struct FindBar {
 }
 
 /// Where a tab's file sits for git: the git to run, its repo's top folder, and the file's path
-/// in it. Looked up once per tab (off the UI thread).
-#[derive(Clone, Debug)]
+/// in it. Looked up off the UI thread, and kept once found (`lookup_place`).
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct GitPlace {
     git: PathBuf,
     root: PathBuf,
@@ -1124,6 +1129,36 @@ fn git_place(path: &Path) -> Option<GitPlace> {
     let root = std::fs::canonicalize(&root).unwrap_or(root);
     let rel = real.strip_prefix(&root).ok()?.to_path_buf();
     Some(GitPlace { git, root, rel })
+}
+
+/// The tab's place for git: the one `known`, else looked up (`look`). Only a place found is
+/// kept, so a look-up that failed (git slow or failing, or no repo) is tried again next time.
+fn lookup_place(
+    known: Option<GitPlace>,
+    look: impl FnOnce() -> Option<GitPlace>,
+) -> Option<GitPlace> {
+    known.or_else(look)
+}
+
+/// `/usr/bin/open`'s arguments for the file at `path` in `state`: shown (or being read), `-t`
+/// (the default text editor, so a script or a program is never run); refused (binary or huge,
+/// maybe a program), `-R` (shown in the Finder, never launched); missing, none.
+fn open_argv(state: &State, path: &Path) -> Option<Vec<OsString>> {
+    let flag = match state {
+        State::Loading | State::Text(_) | State::PlainTooLarge(_) => "-t",
+        State::Refuse => "-R",
+        State::Missing => return None,
+    };
+    Some(vec![OsString::from(flag), path.as_os_str().to_owned()])
+}
+
+/// The button for `open_argv`: Open in Editor, or for a refused file Show in Finder.
+fn open_label(state: &State) -> Option<&'static str> {
+    match state {
+        State::Loading | State::Text(_) | State::PlainTooLarge(_) => Some(OPEN_IN_EDITOR),
+        State::Refuse => Some(SHOW_IN_FINDER),
+        State::Missing => None,
+    }
 }
 
 /// A file tab's view.
@@ -1145,8 +1180,8 @@ pub struct FileTab {
     searching: OneAtATime,
     /// Searches asked so far (each one's generation).
     searches: u64,
-    /// The file's place for git, once looked up (`Some(None)`: not in a repo).
-    git_place: Option<Option<GitPlace>>,
+    /// The file's place for git, once found (none: not yet, or the last look-up failed).
+    git_place: Option<GitPlace>,
     /// When the last git look-up started, and whether one waits for its turn (`lookup_wait`).
     looked_at: Option<Instant>,
     lookup_waiting: bool,
@@ -1185,11 +1220,13 @@ impl FileTab {
     /// A tab showing `path`: read at once, off the UI thread.
     pub fn new(path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         // A theme change colours the text again (bars and tints follow the theme each frame).
+        // Drawn again at once for any change (the view is cached: it repaints when it says so).
         let appearance = cx.observe_global::<Appearance>(|this, cx| {
             let theme = cx.global::<Appearance>().theme;
             if this.coloured_with.is_some_and(|t| t != theme) {
                 this.colour(cx);
             }
+            cx.notify();
         });
         let mut tab = Self {
             path,
@@ -1458,7 +1495,8 @@ impl FileTab {
 
     /// Ask git for the change bars of the text shown (off the UI thread). Not when frozen. At
     /// most one look-up every 2 s (`lookup_wait`): one asked sooner waits for its turn. The
-    /// git to run and the repo are looked up once per tab.
+    /// git to run and the repo are kept once found (`lookup_place`). No answer from git (slow
+    /// or failing) leaves the bars shown.
     fn look_up_changes(&mut self, cx: &mut Context<Self>) {
         if self.frozen || self.doc().is_none() {
             return;
@@ -1490,7 +1528,7 @@ impl FileTab {
             let (place, changes) = cx
                 .background_executor()
                 .spawn(async move {
-                    let place = known.unwrap_or_else(|| git_place(&path));
+                    let place = lookup_place(known, || git_place(&path));
                     let changes = place
                         .as_ref()
                         .and_then(|p| line_changes(&p.git, &p.root, &p.rel));
@@ -1498,9 +1536,10 @@ impl FileTab {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.git_place = Some(place);
-                let changes = changes.unwrap_or_default();
-                if let Some(doc) = this.doc_mut()
+                this.git_place = place;
+                // No answer (git slow or failing, or no repo): the bars shown stay.
+                if let Some(changes) = changes
+                    && let Some(doc) = this.doc_mut()
                     && doc.accept_changes(version, &changes)
                 {
                     cx.notify();
@@ -1763,14 +1802,17 @@ impl FileTab {
         self.set_scroll(to, cx);
     }
 
-    /// Open the file with macOS's default app for it (off the UI thread). The only process a
-    /// file tab starts.
+    /// Open the file in the default text editor, or show a refused one in the Finder
+    /// (`open_argv`; off the UI thread). Never with the file's own app: that could run it. The
+    /// only process a file tab starts.
     fn open_in_editor(&self, cx: &mut Context<Self>) {
-        let path = self.path.clone();
+        let Some(args) = open_argv(&self.state, &self.path) else {
+            return;
+        };
         cx.background_executor()
             .spawn(async move {
                 let _ = std::process::Command::new("/usr/bin/open")
-                    .arg(&path)
+                    .args(&args)
                     .status();
             })
             .detach();
@@ -1987,7 +2029,7 @@ impl FileTab {
         } else {
             Self::text_button(
                 "file-open-in-editor-body",
-                OPEN_IN_EDITOR,
+                open_label(&self.state).unwrap_or(SHOW_IN_FINDER),
                 ui,
                 |this, _, cx| this.open_in_editor(cx),
                 cx,
@@ -2340,6 +2382,51 @@ impl Workspace {
 mod tests {
     use super::*;
     use alacritty_terminal::vte::ansi::Rgb;
+
+    #[test]
+    fn open_in_editor_never_runs_the_file() {
+        let path = Path::new("/repo/gradlew");
+        let editor = Some(vec![OsString::from("-t"), OsString::from("/repo/gradlew")]);
+        let doc = || Doc::new("x\n".into(), 1);
+        // Shown (or being read): the default text editor, never the file's own app.
+        assert_eq!(open_argv(&State::Loading, path), editor);
+        assert_eq!(open_argv(&State::Text(doc()), path), editor);
+        assert_eq!(open_argv(&State::PlainTooLarge(doc()), path), editor);
+        assert_eq!(open_label(&State::Text(doc())), Some(OPEN_IN_EDITOR));
+        // Refused (binary or huge, maybe a program): only shown in the Finder.
+        let finder = Some(vec![OsString::from("-R"), OsString::from("/repo/gradlew")]);
+        assert_eq!(open_argv(&State::Refuse, path), finder);
+        assert_eq!(open_label(&State::Refuse), Some(SHOW_IN_FINDER));
+        assert_eq!(SHOW_IN_FINDER, "Show in Finder");
+        // Gone: nothing to open.
+        assert_eq!(open_argv(&State::Missing, path), None);
+        assert_eq!(open_label(&State::Missing), None);
+    }
+
+    #[test]
+    fn a_failed_git_place_lookup_is_tried_again() {
+        let place = GitPlace {
+            git: "/usr/bin/git".into(),
+            root: "/repo".into(),
+            rel: "a.rs".into(),
+        };
+        let asked = Cell::new(0);
+        let failed = lookup_place(None, || {
+            asked.set(asked.get() + 1);
+            None
+        });
+        // Nothing cached: the next look-up asks git again.
+        assert_eq!(failed, None);
+        let found = lookup_place(failed, || {
+            asked.set(asked.get() + 1);
+            Some(place.clone())
+        });
+        assert_eq!(found, Some(place.clone()));
+        assert_eq!(asked.get(), 2);
+        // Found once: kept for the tab's life, git isn't asked where it is again.
+        let kept = lookup_place(found, || unreachable!("asked again"));
+        assert_eq!(kept, Some(place));
+    }
 
     #[test]
     fn lines_drop_their_endings_and_a_last_newline_ends_the_last_line() {

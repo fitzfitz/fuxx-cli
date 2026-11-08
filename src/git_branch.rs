@@ -135,13 +135,18 @@ pub fn branch_at(git: &Path, dir: &Path) -> Option<String> {
 /// `git -C dir args…`'s output, if it succeeded within `GIT_CAP`. git never prompts (no
 /// terminal, `GIT_TERMINAL_PROMPT=0`) and never takes the index lock (`GIT_OPTIONAL_LOCKS=0`).
 pub(crate) fn run_git(git: &Path, dir: &Path, args: &[&str]) -> Option<String> {
-    run_capped(git_command(git, dir, args), GIT_CAP)
+    run_git_outcome(git, dir, args).success()
 }
 
-/// `run_git` with `input` on git's stdin (`check-ignore --stdin`). Any size: it is written
-/// on a thread, within the cap.
-pub(crate) fn run_git_stdin(git: &Path, dir: &Path, args: &[&str], input: &[u8]) -> Option<String> {
-    run_capped_with_stdin(git_command(git, dir, args), input, GIT_CAP)
+/// `run_git`, telling what git said (its exit code and output) from a failure or the cap.
+pub(crate) fn run_git_outcome(git: &Path, dir: &Path, args: &[&str]) -> Ran {
+    run_capped_outcome(git_command(git, dir, args), None, GIT_CAP)
+}
+
+/// `run_git_outcome` with `input` on git's stdin (`check-ignore --stdin`). Any size: it is
+/// written on a thread, within the cap.
+pub(crate) fn run_git_stdin_outcome(git: &Path, dir: &Path, args: &[&str], input: &[u8]) -> Ran {
+    run_capped_outcome(git_command(git, dir, args), Some(input), GIT_CAP)
 }
 
 fn git_command(git: &Path, dir: &Path, args: &[&str]) -> Command {
@@ -157,24 +162,46 @@ fn git_command(git: &Path, dir: &Path, args: &[&str]) -> Command {
 
 unsafe extern "C" {
     fn setsid() -> c_int;
+    fn kill(pid: c_int, sig: c_int) -> c_int;
+}
+
+/// `SIGKILL` from `<sys/signal.h>`.
+const SIGKILL: c_int = 9;
+
+/// What a capped command did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Ran {
+    /// It ran to its end: its exit code (none: ended by a signal) and what it printed.
+    Exited(Option<i32>, String),
+    /// It was still running at the cap, and was killed (with its whole process group).
+    TimedOut,
+    /// It couldn't be started, or what it printed couldn't be read.
+    Failed,
+}
+
+impl Ran {
+    /// What it printed, if it exited successfully (0).
+    pub(crate) fn success(self) -> Option<String> {
+        match self {
+            Ran::Exited(Some(0), out) => Some(out),
+            _ => None,
+        }
+    }
 }
 
 /// Run `command` with no terminal (its own session, nothing on stdin, stderr dropped) and its
-/// stdout, if it exits successfully within `cap`; past that it is killed.
+/// stdout, if it exits successfully within `cap`; past that it is killed. (The tests' short
+/// form of `run_capped_outcome`.)
+#[cfg(test)]
 pub(crate) fn run_capped(command: Command, cap: Duration) -> Option<String> {
-    capped(command, None, cap)
+    run_capped_outcome(command, None, cap).success()
 }
 
-/// `run_capped` with `input` written to the command's stdin (then closed).
-pub(crate) fn run_capped_with_stdin(
-    command: Command,
-    input: &[u8],
-    cap: Duration,
-) -> Option<String> {
-    capped(command, Some(input), cap)
-}
-
-fn capped(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Option<String> {
+/// `run_capped`, with `input` (if any) written to the command's stdin (then closed), telling
+/// what it said (exit code and stdout) from a failure or the cap. The command leads its own
+/// session and process group (`setsid`), so at the cap the whole group is killed: children it
+/// started (a hook, an fsmonitor) holding its pipes end too, and so do the pipes' threads.
+pub(crate) fn run_capped_outcome(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Ran {
     use std::io::Write;
     use std::os::unix::process::CommandExt;
     command
@@ -186,14 +213,16 @@ fn capped(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Option<S
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     // SAFETY: setsid is async-signal-safe; it only detaches the child from fuxx's session (and
-    // so from any controlling terminal fuxx has).
+    // so from any controlling terminal fuxx has), making it its own process group's leader.
     unsafe {
         command.pre_exec(|| {
             setsid();
             Ok(())
         });
     }
-    let mut child = command.spawn().ok()?;
+    let Ok(mut child) = command.spawn() else {
+        return Ran::Failed;
+    };
     // Both pipes are served by threads so a big input or output never stalls git (a full pipe
     // would hold it until the cap). They end by themselves: the writer when it is done or git's
     // end closes (a broken pipe, as when the cap kills git), the reader at the end of stdout.
@@ -203,7 +232,11 @@ fn capped(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Option<S
             let _ = stdin.write_all(&input); // dropped after: git sees the end of its input
         })
     });
-    let mut stdout = child.stdout.take()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ran::Failed;
+    };
     let reader = std::thread::spawn(move || {
         let mut out = String::new();
         stdout.read_to_string(&mut out).ok().map(|_| out)
@@ -213,18 +246,29 @@ fn capped(mut command: Command, input: Option<&[u8]>, cap: Duration) -> Option<S
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() < cap => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
+            waited => {
+                // The group (led by the child: `setsid`), so its children go with it. Before
+                // `wait`, while the child's pid can't have been reused.
+                if let Ok(pid) = c_int::try_from(child.id()) {
+                    // SAFETY: a plain signal to our own child's process group.
+                    unsafe { kill(-pid, SIGKILL) };
+                }
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return match waited {
+                    Ok(None) => Ran::TimedOut,
+                    _ => Ran::Failed,
+                };
             }
         }
     };
     if let Some(writer) = writer {
         let _ = writer.join();
     }
-    let out = reader.join().ok()??;
-    status.success().then_some(out)
+    match reader.join().ok().flatten() {
+        Some(out) => Ran::Exited(status.code(), out),
+        None => Ran::Failed,
+    }
 }
 
 /// `PROC_PIDVNODEPATHINFO` from `<sys/proc_info.h>`: a process's current and root folders.
@@ -635,6 +679,66 @@ mod tests {
         // A failure says nothing.
         assert_eq!(run_capped(Command::new("/usr/bin/false"), GIT_CAP), None);
         assert_eq!(run_capped(Command::new("/no/such/program"), GIT_CAP), None);
+    }
+
+    #[test]
+    fn the_capped_runner_tells_an_answer_from_a_failure() {
+        let mut said_no = Command::new("/bin/sh");
+        said_no.args(["-c", "echo out; exit 1"]);
+        assert_eq!(
+            run_capped_outcome(said_no, None, GIT_CAP),
+            Ran::Exited(Some(1), "out\n".into())
+        );
+        let mut echo = Command::new("/bin/echo");
+        echo.arg("hi");
+        assert_eq!(
+            run_capped_outcome(echo, None, GIT_CAP),
+            Ran::Exited(Some(0), "hi\n".into())
+        );
+        let mut sleep = Command::new("/bin/sleep");
+        sleep.arg("5");
+        assert_eq!(
+            run_capped_outcome(sleep, None, Duration::from_millis(100)),
+            Ran::TimedOut
+        );
+        assert_eq!(
+            run_capped_outcome(Command::new("/no/such/program"), None, GIT_CAP),
+            Ran::Failed
+        );
+        assert_eq!(Ran::Exited(Some(0), "x".into()).success(), Some("x".into()));
+        assert_eq!(Ran::Exited(Some(1), "x".into()).success(), None);
+        assert_eq!(Ran::Exited(None, "x".into()).success(), None);
+        assert_eq!(Ran::TimedOut.success(), None);
+    }
+
+    #[test]
+    fn the_cap_ends_the_whole_process_group() {
+        // A child (as a hook or fsmonitor would be) that keeps stdout open past the cap.
+        let pidfile = std::env::temp_dir().join(format!("fuxx-capped-{}", std::process::id()));
+        let _ = std::fs::remove_file(&pidfile);
+        let mut sh = Command::new("/bin/sh");
+        sh.arg("-c")
+            .arg("sleep 30 & echo $! > \"$0\"; wait")
+            .arg(&pidfile);
+        assert_eq!(
+            run_capped_outcome(sh, None, Duration::from_millis(300)),
+            Ran::TimedOut
+        );
+        let pid: c_int = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let _ = std::fs::remove_file(&pidfile);
+        let gone = (0..100).any(|_| {
+            // SAFETY: signal 0 only asks whether the process is there.
+            let alive = unsafe { kill(pid, 0) } == 0;
+            if alive {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            !alive
+        });
+        assert!(gone, "the grandchild {pid} was left running");
     }
 
     /// A repo in a fresh folder with one commit, its branch `trunk`; none without git.

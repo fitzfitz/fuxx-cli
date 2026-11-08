@@ -18,7 +18,8 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::git_branch::{run_git, run_git_stdin};
+use crate::git_branch::{Ran, run_git, run_git_outcome, run_git_stdin_outcome};
+use crate::highlight::REFUSE_ABOVE;
 
 /// A file's git state, as the tree marks it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -80,32 +81,55 @@ pub fn parse_porcelain(z: &[u8]) -> Vec<(PathBuf, Mark)> {
 }
 
 /// The repo's changed files (paths relative to `root`, a folder of untracked files as one
-/// entry); the caller marks their parent folders. Empty when git fails.
-pub fn status(git: &Path, root: &Path) -> HashMap<PathBuf, Mark> {
+/// entry); the caller marks their parent folders. None when git fails or takes longer than the
+/// cap: no answer, not "nothing changed" (the caller keeps the marks it has).
+pub fn status(git: &Path, root: &Path) -> Option<HashMap<PathBuf, Mark>> {
     run_git(git, root, &["status", "--porcelain=v1", "-z"])
         .map(|out| parse_porcelain(out.as_bytes()).into_iter().collect())
-        .unwrap_or_default()
 }
 
-/// Which of `rel` (paths relative to `root`) git ignores, in one `check-ignore --stdin` call.
-/// Empty when none are (git exits 1 then), or when git fails or takes longer than the cap.
-pub fn ignored(git: &Path, root: &Path, rel: &[PathBuf]) -> HashSet<PathBuf> {
+/// Which of `rel` (paths relative to `root`) git ignores, in one `check-ignore --stdin` call
+/// (`ignored_answer`). None when git fails or takes longer than the cap.
+pub fn ignored(git: &Path, root: &Path, rel: &[PathBuf]) -> Option<HashSet<PathBuf>> {
     if rel.is_empty() {
-        return HashSet::new();
+        return Some(HashSet::new());
     }
     let mut input = Vec::new();
     for path in rel {
         input.extend_from_slice(path.as_os_str().as_bytes());
         input.push(0);
     }
-    run_git_stdin(git, root, &["check-ignore", "-z", "--stdin"], &input)
-        .map(|out| {
+    ignored_answer(run_git_stdin_outcome(
+        git,
+        root,
+        &["check-ignore", "-z", "--stdin"],
+        &input,
+    ))
+}
+
+/// `check-ignore -z`'s answer: exit 0 lists the ignored paths; exit 1 is its normal "none of
+/// them are"; anything else (an error, the cap, a signal) is no answer.
+pub fn ignored_answer(ran: Ran) -> Option<HashSet<PathBuf>> {
+    match ran {
+        Ran::Exited(Some(0), out) => Some(
             out.split('\0')
                 .filter(|path| !path.is_empty())
                 .map(PathBuf::from)
-                .collect()
-        })
-        .unwrap_or_default()
+                .collect(),
+        ),
+        Ran::Exited(Some(1), _) => Some(HashSet::new()),
+        _ => None,
+    }
+}
+
+/// A yes-or-no question to git (`rev-parse --verify -q`, `ls-files --error-unmatch`): exit 0
+/// is yes, 1 is no; anything else (an error, the cap) is no answer.
+fn yes_or_no(ran: Ran) -> Option<bool> {
+    match ran {
+        Ran::Exited(Some(0), _) => Some(true),
+        Ran::Exited(Some(1), _) => Some(false),
+        _ => None,
+    }
 }
 
 /// A `-U0` diff's hunks as per-line changes (1-based new line numbers). For `@@ -a,b +c,d @@`
@@ -145,15 +169,21 @@ pub fn parse_hunks(diff: &str) -> Vec<(usize, LineChange)> {
     out
 }
 
-/// `rel`'s (relative to `root`) lines changed on disk against HEAD. None outside a repo; an
-/// untracked file, or any file in a repo with no commits, has every line Added.
+/// `rel`'s (relative to `root`) lines changed on disk against HEAD. An untracked file, or any
+/// file in a repo with no commits, has every line Added (only a plain file, at most
+/// `REFUSE_ABOVE` bytes: else no bars). None outside a repo, or when git fails or takes longer
+/// than the cap: no answer, not "nothing changed" (the caller keeps the bars it has).
 pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, LineChange)>> {
     // Names are literal, not pathspecs (`*`, `[`, a leading `:`).
     let inside = run_git(git, root, &["rev-parse", "--is-inside-work-tree"])?;
     (inside.trim() == "true").then_some(())?;
     let path = rel.to_string_lossy();
-    let has_head = run_git(git, root, &["rev-parse", "--verify", "-q", "HEAD"]).is_some();
-    let tracked = run_git(
+    let has_head = yes_or_no(run_git_outcome(
+        git,
+        root,
+        &["rev-parse", "--verify", "-q", "HEAD"],
+    ))?;
+    let tracked = yes_or_no(run_git_outcome(
         git,
         root,
         &[
@@ -163,13 +193,9 @@ pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, L
             "--",
             &path,
         ],
-    )
-    .is_some();
+    ))?;
     if !has_head || !tracked {
-        let bytes = std::fs::read(root.join(rel)).unwrap_or_default();
-        let lines = bytes.iter().filter(|&&b| b == b'\n').count()
-            + usize::from(bytes.last().is_some_and(|&b| b != b'\n'));
-        return Some((1..=lines).map(|n| (n, LineChange::Added)).collect());
+        return Some(all_added(&root.join(rel)));
     }
     let diff = run_git(
         git,
@@ -184,8 +210,26 @@ pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, L
             "--",
             &path,
         ],
-    );
-    Some(parse_hunks(&diff.unwrap_or_default()))
+    )?;
+    Some(parse_hunks(&diff))
+}
+
+/// Every line of the file at `path` Added: only a plain file (never a FIFO or a device, which
+/// could block), read through a bound; past `REFUSE_ABOVE` bytes, or unreadable, no bars.
+fn all_added(path: &Path) -> Vec<(usize, LineChange)> {
+    use std::io::Read;
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path)
+        .and_then(|file| file.take(REFUSE_ABOVE + 1).read_to_end(&mut bytes));
+    if read.is_err() || bytes.len() as u64 > REFUSE_ABOVE {
+        return Vec::new();
+    }
+    let lines = bytes.iter().filter(|&&b| b == b'\n').count()
+        + usize::from(bytes.last().is_some_and(|&b| b != b'\n'));
+    (1..=lines).map(|n| (n, LineChange::Added)).collect()
 }
 
 /// `dir`'s entries: folders first, then files, each case-insensitive by name; `.git` left out.
@@ -301,6 +345,46 @@ mod tests {
         fs::write(dir.join("f.txt"), "x\n").unwrap();
         assert_eq!(repo_root(&git, &dir), None);
         assert_eq!(line_changes(&git, &dir, Path::new("f.txt")), None);
+        // A failed status (exit 128) is no answer, not "nothing changed".
+        assert_eq!(status(&git, &dir), None);
+        assert_eq!(ignored(&git, &dir, &[p("f.txt")]), None);
+    }
+
+    #[test]
+    fn check_ignore_exit_1_is_none_ignored_and_a_failure_is_no_answer() {
+        assert_eq!(
+            ignored_answer(Ran::Exited(Some(1), String::new())),
+            Some(HashSet::new())
+        );
+        assert_eq!(
+            ignored_answer(Ran::Exited(Some(0), "target\0a b.log\0".into())),
+            Some(HashSet::from([p("target"), p("a b.log")]))
+        );
+        assert_eq!(ignored_answer(Ran::Exited(Some(128), String::new())), None);
+        assert_eq!(ignored_answer(Ran::Exited(None, String::new())), None);
+        assert_eq!(ignored_answer(Ran::TimedOut), None);
+        assert_eq!(ignored_answer(Ran::Failed), None);
+    }
+
+    #[test]
+    fn an_untracked_file_past_the_limit_has_no_bars() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("huge", &git);
+        let huge = vec![b'\n'; REFUSE_ABOVE as usize + 1];
+        fs::write(root.join("huge.txt"), huge).unwrap();
+        assert_eq!(
+            line_changes(&git, &root, Path::new("huge.txt")),
+            Some(Vec::new())
+        );
+        // Not a plain file (a folder here): no bars, nothing read.
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/x"), "x\n").unwrap();
+        assert_eq!(
+            line_changes(&git, &root, Path::new("sub")),
+            Some(Vec::new())
+        );
     }
 
     #[test]
@@ -345,13 +429,14 @@ mod tests {
         fs::create_dir(root.join("target")).unwrap();
         fs::write(root.join("target/out"), "x").unwrap();
 
-        let marks = status(&git, &root);
+        let marks = status(&git, &root).unwrap();
         assert_eq!(marks.get(&p("a.txt")), Some(&Mark::Modified));
         assert_eq!(marks.get(&p("new.txt")), Some(&Mark::Added));
 
         let ign = ignored(&git, &root, &[p("target"), p("a.txt"), p("new.txt")]);
-        assert_eq!(ign, HashSet::from([p("target")]));
-        assert!(ignored(&git, &root, &[p("a.txt")]).is_empty());
+        assert_eq!(ign, Some(HashSet::from([p("target")])));
+        // None ignored (git exits 1): an answer, empty.
+        assert_eq!(ignored(&git, &root, &[p("a.txt")]), Some(HashSet::new()));
 
         assert_eq!(
             line_changes(&git, &root, Path::new("a.txt")),
@@ -408,14 +493,14 @@ mod tests {
         fs::write(root.join("caf\u{e9} x.txt"), "x").unwrap();
         fs::write(root.join("caf\u{e9} x.log"), "x").unwrap();
         fs::write(root.join("sp ace.log"), "x").unwrap();
-        let marks = status(&git, &root);
+        let marks = status(&git, &root).unwrap();
         assert_eq!(marks.get(&p("new n\u{e4}me.txt")), Some(&Mark::Added));
         assert_eq!(marks.get(&p("caf\u{e9} x.txt")), Some(&Mark::Added));
         assert!(!marks.contains_key(&p("old name.txt")));
         let names = [p("caf\u{e9} x.log"), p("sp ace.log"), p("caf\u{e9} x.txt")];
         assert_eq!(
             ignored(&git, &root, &names),
-            HashSet::from([p("caf\u{e9} x.log"), p("sp ace.log")])
+            Some(HashSet::from([p("caf\u{e9} x.log"), p("sp ace.log")]))
         );
         // Glob characters in a name are literal.
         fs::write(root.join("a[1].txt"), "q\n").unwrap();
@@ -459,7 +544,7 @@ mod tests {
             .cloned()
             .collect();
         assert!(names.len() * 60 > 100_000);
-        assert_eq!(ignored(&git, &root, &names), want);
+        assert_eq!(ignored(&git, &root, &names), Some(want));
     }
 
     fn temp(name: &str) -> PathBuf {

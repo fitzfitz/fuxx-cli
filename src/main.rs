@@ -26,7 +26,6 @@ mod file_tab;
 mod file_tree;
 mod fonts;
 mod git_branch;
-#[allow(dead_code)] // used by the right sidebar and file tab from M11g Task 5
 mod git_status;
 mod grid;
 mod groups;
@@ -34,7 +33,6 @@ mod help_commands;
 mod help_menu;
 mod help_panel;
 mod help_shortcuts;
-#[allow(dead_code)] // used by the file tab from M11g Task 6
 mod highlight;
 mod host_picker;
 mod keys;

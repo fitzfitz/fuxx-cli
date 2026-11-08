@@ -3278,7 +3278,7 @@ fn file_tab_scenes() {
 ///   checkpoints) scrolled sideways by the wheel (its end shows), and a ▸ for lines deleted above
 ///   the first, drawn whole under the top edge.
 /// - `file-tab-missing`, `file-tab-refuse`, `file-tab-plain`: a file that is gone (its path, a
-///   Close button that asks to close the tab), a binary file (Open in Editor), a file over 2 MB
+///   Close button that asks to close the tab), a binary file (Show in Finder), a file over 2 MB
 ///   (plain text, "Too large to colour").
 ///
 /// - `file-tab-minified`: a 1.5 MB one-line file, ⌘F "e": "1 of 10,000+", and a frame stays

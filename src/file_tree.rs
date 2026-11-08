@@ -204,6 +204,12 @@ impl FileTree {
         &self.root
     }
 
+    /// Moved on by every change to what the rows show: a caller can tell whether an update
+    /// changed anything to draw.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Folder `rel` is open, listing `entries` (`more` left out). (The panel opens folders with
     /// `toggle` and hands listings in with `relist`, so one closed while it was listed stays
     /// closed.)
