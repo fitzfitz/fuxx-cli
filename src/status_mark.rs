@@ -39,6 +39,11 @@ pub const BREATHS_PER_BEAT: f32 = 3.0;
 /// The halo's alpha, faintest and strongest; drawn still, it holds halfway between.
 const HALO_MIN: f32 = 0.15;
 const HALO_MAX: f32 = 0.45;
+/// The beat's phase at which the moving marks look as they do drawn still (Reduce motion):
+/// Working's arc from the top (four turns a beat: a whole turn) and Waiting's halo halfway
+/// (three breaths a beat: three-quarters of one, where the breath is at its middle). The
+/// Activity panel's still marks are drawn at it.
+pub const STILL_PHASE: f32 = 0.25;
 /// How long the Done pop lasts.
 pub const POP: Duration = Duration::from_millis(350);
 
@@ -277,6 +282,14 @@ fn check(c: Point<Pixels>, unit: f32) -> PathBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_still_phase_draws_moving_marks_as_reduce_motion_does() {
+        // Waiting's halo halfway (as drawn still), Working's arc from the top (turn 0).
+        let mid = (HALO_MIN + HALO_MAX) / 2.0;
+        assert!((halo_alpha(STILL_PHASE) - mid).abs() < 1e-4);
+        assert_eq!((STILL_PHASE * TURNS_PER_BEAT).fract(), 0.0);
+    }
 
     #[test]
     fn should_tick_only_when_something_moves() {
