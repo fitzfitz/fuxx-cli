@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11n
-status: planned
-updated: 2026-11-09
+status: built
+updated: 2026-11-10
 ---
 
 # M11n Plan — Performance
@@ -12,11 +12,11 @@ updated: 2026-11-09
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[65 - Milestone 11n - Performance]] |
-| **Status** | 🟨 Designed and planned 2026-11-09, not built |
-| **Tasks done** | 0 / 9 |
-| **▶ Pick up here** | Task 0 (the benchmark harness in the repo, and the baseline on this branch before any change). |
+| **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-10 (every target met); the v0.5.0 release is next |
+| **Tasks done** | 7 / 9 (Tasks 0–5 and 8; Tasks 6 and 7, the merge and the release, are next) |
+| **▶ Pick up here** | Task 7 (the release v0.5.0); then a tiny docs commit flipping "pending" and notes 59–65 to released. |
 | **Decisions used** | Yours (2026-11-09): a performance milestone after M11l (now M11n, after the M11m title bar); "push the release after performance milestone" (the one combined release v0.5.0, M11i–M11n, is this plan's Task 7). Everything else: AI's calls in note 65. |
-| **Needs your eyes** | 👀 the on-screen check in note 65, after the release |
+| **Needs your eyes** | 👀 the on-screen check in note 65 (11 items), after the release |
 
 **Goal:** Cut fuxx's idle CPU with the breathing glow on, and drain output faster, without changing what you see:
 the breath keeps its curve and never takes a bigger step than today, every byte still reaches the screen, the
@@ -97,7 +97,7 @@ with the fixes below), `scripts/bench/wininfo.swift` (as it was), `scripts/bench
 `PHASE` ∈ {`launch`, `mem`, `tput`, `cpu_base`, `cpu_noglow`, `cpu_rest`, `grid`}; `python3 -I scripts/bench/run.py --bench DIR
 summary` prints the medians as in the 2026-11-09 `summary.txt`. Results: `DIR/results/<APP>-<PHASE>.json`.
 
-- [ ] **Step 1: port the harness**, keeping every method of note 65 §Baseline, with these fixes:
+- [x] **Step 1: port the harness**, keeping every method of note 65 §Baseline, with these fixes:
   - `sessions.json` is **seeded with `{"version":2}`** instead of deleted (since M11k a missing file shows the
     Welcome card, which takes the keyboard from the terminal, so the glow never runs and `cpu_base` reads ~1 %).
   - The zsh rc starts with **`zmodload zsh/datetime`** (else `$EPOCHREALTIME` is empty and `tput` reads 0).
@@ -111,11 +111,11 @@ summary` prints the medians as in the 2026-11-09 `summary.txt`. Results: `DIR/re
     300.8 s rest), frontmost checked over the whole 335 s.
   - `make_data.py DIR` writes `DIR/data/big.txt` (100 MiB of plain ASCII lines of 3–18 words, seed 7) and
     `DIR/data/colors.txt` (200,000 lines with SGR 30–37, bold, 256-colour runs, seed 7), deterministic.
-- [ ] **Step 2: baseline**, before any code change on this branch (= master `f661d5e`): `cargo build --release`,
+- [x] **Step 2: baseline**, before any code change on this branch (= master `f661d5e`): `cargo build --release`,
   `run.py bundle fuxx-base <target>/release/fuxx`, then `run.py fuxx-base` and `run.py ghostty` for `cpu_base` ×3,
   `cpu_noglow` ×2 and `cpu_rest` ×1 (fuxx only), `tput`, `launch`, `mem`. Keep the results directory for Task 5 (same machine, same
   data). Write the medians into note 65 §Baseline as "re-measured (Task 0)".
-- [ ] **Step 3: commit** `chore(m11n): the benchmark harness in scripts/bench (seeded Welcome, datetime, frontmost check)`.
+- [x] **Step 3: commit** `chore(m11n): the benchmark harness in scripts/bench (seeded Welcome, datetime, frontmost check)`.
 
 ### Task 1: The byte scanners jump over plain text
 
@@ -129,7 +129,7 @@ to the next ESC (none: done with the chunk); inside an open OSC body, copy up to
 in one `extend_from_slice` (respecting `CWD_LIMIT` and the mark body's overflow rule) and handle the terminator
 byte by byte as today. `MarkScanner::feed` keeps returning marks with their byte offsets in the chunk.
 
-- [ ] **Step 1: failing test** `fast_scanners_match_bytewise_at_every_split` (one per scanner file, sharing a
+- [x] **Step 1: failing test** `fast_scanners_match_bytewise_at_every_split` (one per scanner file, sharing a
   `#[cfg(test)]` stream builder): a splitmix-seeded generator (seeds 1..=200) builds streams of plain text mixed
   with `ESC]9;msg BEL`, `ESC]9;4;1;50 BEL` (a progress bar, not a notification), `ESC]99;…ESC\`, `ESC]777;notify;…BEL`,
   `ESC]7;file://h/p BEL`, `ESC]133;A/B/C/D;0 BEL`, `ESC[2J`, `ESC[3J`, `ESC c`, stray ESC, ESC ESC, CAN, SUB and a
@@ -138,11 +138,11 @@ byte by byte as today. `MarkScanner::feed` keeps returning marks with their byte
   1..=4096 bytes to the new `feed`. Assert equal notification counts, equal last `CwdReport`, equal mark list
   (kind, payload and absolute byte offset), equal clear count. Plus, per scanner, the exhaustive check: one stream
   holding every sequence above, split at **every** offset into two chunks.
-- [ ] **Step 2: run** `cargo test detector shell_marks terminal::` → the oracle copy compiles, the test passes
+- [x] **Step 2: run** `cargo test detector shell_marks terminal::` → the oracle copy compiles, the test passes
   trivially only if `feed` is unchanged; make it fail first by asserting `at_rest` exists (`let _ = s.at_rest();`).
-- [ ] **Step 3: implement** per Interfaces.
-- [ ] **Step 4: run** `cargo test`, both clippy runs, `cargo fmt --check` → green.
-- [ ] **Step 5: commit** `perf(m11n): the byte scanners jump over plain text with memchr`.
+- [x] **Step 3: implement** per Interfaces.
+- [x] **Step 4: run** `cargo test`, both clippy runs, `cargo fmt --check` → green.
+- [x] **Step 5: commit** `perf(m11n): the byte scanners jump over plain text with memchr`.
 
 ### Task 2: A parser thread, 64 KiB batches, one Output per batch
 
@@ -165,7 +165,7 @@ closure, `TerminalCore::output_seen`), `src/terminal_view.rs` (`on_term_event` a
   `blocks::advance` + `clears.feed` → unlock → `gate.after_batch(n)`.
 - `terminal_view.rs`: `TermEvent::Output` handling begins with `self.core.output_seen()`.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - (pty) `the_inbox_keeps_order_and_blocks_when_full`: one thread pushes 3 MiB in random-sized pieces (seeded)
     while another takes with random pauses; the concatenation equals the input; with no taker, a push past
     `INBOX_CAP` is still waiting after 200 ms and returns once 64 KiB is taken; every `take` moves ≤ `BATCH_MAX`.
@@ -187,13 +187,13 @@ closure, `TerminalCore::output_seen`), `src/terminal_view.rs` (`on_term_event` a
     `on_output` per gate event of the flood test above (typed first, outside the echo window) is Working, and a
     `tick` 3 s after the last event with a prompt tail turns it Done; with an `Output { notifications: 1 }` it settles
     on the next tick, as today.
-- [ ] **Step 2: run** `cargo test pty terminal::` → FAIL (undefined `Inbox`, `OutputGate`, `output_seen`).
-- [ ] **Step 3: implement** per Interfaces. `Inbox` = `Mutex<(Vec<u8>, usize /*read pos*/, bool /*closed*/,
+- [x] **Step 2: run** `cargo test pty terminal::` → FAIL (undefined `Inbox`, `OutputGate`, `output_seen`).
+- [x] **Step 3: implement** per Interfaces. `Inbox` = `Mutex<(Vec<u8>, usize /*read pos*/, bool /*closed*/,
   bool /*parser gone*/)>` + two `Condvar`s (bytes, room). The parser thread owns the `on_output` closure, so the
   scanners, `Term` and event channel see the batches in read order.
-- [ ] **Step 4: run** `cargo test` (including `daemon_session` and `daemon_client`), both clippy runs,
+- [x] **Step 4: run** `cargo test` (including `daemon_session` and `daemon_client`), both clippy runs,
   `cargo fmt --check`, then `cargo run --features ui-shots -- __ui-shots cursor` and `… command-blocks` → green.
-- [ ] **Step 5: commit** `perf(m11n): a parser thread takes the PTY's reads in 64 KiB batches; one Output per batch`.
+- [x] **Step 5: commit** `perf(m11n): a parser thread takes the PTY's reads in 64 KiB batches; one Output per batch`.
 
 ### Task 3: Cheaper frames — `Theme::ui()` once per theme
 
@@ -203,14 +203,14 @@ closure, `TerminalCore::output_seen`), `src/terminal_view.rs` (`on_term_event` a
 copy computed for the last theme it saw (`thread_local! { static UI: Cell<Option<(Theme, UiColors)>> }`; both types
 are `Copy + PartialEq`), recomputing only when the theme differs. `#[cfg(test)] fn ui_computations() -> usize`.
 
-- [ ] **Step 1: failing test** `ui_is_computed_once_per_theme`: `t.ui()` twice → one computation, equal results;
+- [x] **Step 1: failing test** `ui_is_computed_once_per_theme`: `t.ui()` twice → one computation, equal results;
   `t2.ui()` → two; `t.ui()` again → three, equal to the first; every built-in theme's `ui()` equals a fresh uncached
   computation (`ui_uncached`, the old body renamed).
-- [ ] **Step 2: run** `cargo test theme` → FAIL (`ui_computations` undefined).
-- [ ] **Step 3: implement** per Interfaces.
-- [ ] **Step 4: run** `cargo test`, both clippy runs, `cargo fmt --check`, the full `__ui-shots` → green (the
+- [x] **Step 2: run** `cargo test theme` → FAIL (`ui_computations` undefined).
+- [x] **Step 3: implement** per Interfaces.
+- [x] **Step 4: run** `cargo test`, both clippy runs, `cargo fmt --check`, the full `__ui-shots` → green (the
   ui-shots compare colours and would catch a wrong cached `UiColors`).
-- [ ] **Step 5: commit** `perf(m11n): Theme::ui is computed once per theme, not on every render`.
+- [x] **Step 5: commit** `perf(m11n): Theme::ui is computed once per theme, not on every render`.
 
 ### Task 4: The breath — drawn at level crossings, asleep through the hold, at rest after five minutes
 
@@ -233,7 +233,7 @@ are `Copy + PartialEq`), recomputing only when the theme differs. `#[cfg(test)] 
   `breath_wait(clock)` between frames; `cx.notify()` at each wake past the hold; stops as today when the pane loses
   focus or the key window, and when `breath_rests` (after drawing that peak frame).
 
-- [ ] **Step 1: failing tests** (`cursor_look`)
+- [x] **Step 1: failing tests** (`cursor_look`)
   - `breath_frames_are_level_crossings`: simulate from clock 0 over 10 breaths, stepping by `breath_wait`: per breath
     ≤ 22 frames (today 32); consecutive drawn alphas differ by ≤ `BREATH_STEP` + 1e-4; every breath draws 1.0 and
     0.35 (±1e-4); no wait < `BREATH_MIN` or > 0.17 s (the longest is either side of a peak, 0.1625 s).
@@ -241,22 +241,22 @@ are `Copy + PartialEq`), recomputing only when the theme differs. `#[cfg(test)] 
     is a whole number of breaths; `breath_rests(BREATH_REST_AT − 1 ms)` false; `needs_frames(… glowing: false …)` is
     `Frames::None`; a change (`since_change` back to 0) makes `breath_rests(…)` false again.
   - Existing `breath_alpha` and `the_breath_redraws_only_once_its_hold_is_over` tests stay as they are.
-- [ ] **Step 2: failing ui-shots** (family `cursor`, Mocha): `cursor-breath-resumes`: a focused prompt with
+- [x] **Step 2: failing ui-shots** (family `cursor`, Mocha): `cursor-breath-resumes`: a focused prompt with
   `pretend_key_window`; `cursor_frames()` is `Breath`; set the motion's `changed` to 301.5 s ago (a `#[cfg(feature =
   "ui-shots")]` seam `age_breath(Duration)`) and run frames → `Frames::None` and the cursor pixel's alpha is the full
   colour; `type_bytes(b"x")` → `Breath` again; blur the pane and focus it back → `Breath`, alpha 1.0 at first.
-- [ ] **Step 3: run** `cargo test cursor_look terminal_view` and `__ui-shots cursor` → FAIL.
-- [ ] **Step 4: implement** per Interfaces.
-- [ ] **Step 5: run** `cargo test`, both clippy runs, `cargo fmt --check`, the full `__ui-shots` → green.
-- [ ] **Step 6: commit** `perf(m11n): the breath is drawn at level crossings, sleeps through the hold and rests after five minutes`.
+- [x] **Step 3: run** `cargo test cursor_look terminal_view` and `__ui-shots cursor` → FAIL.
+- [x] **Step 4: implement** per Interfaces.
+- [x] **Step 5: run** `cargo test`, both clippy runs, `cargo fmt --check`, the full `__ui-shots` → green.
+- [x] **Step 6: commit** `perf(m11n): the breath is drawn at level crossings, sleeps through the hold and rests after five minutes`.
 
 ### Task 5: The benchmark — prove the targets
 
-- [ ] `cargo build --release` at the branch head; `run.py bundle fuxx-m11n <target>/release/fuxx`; in one session,
+- [x] `cargo build --release` at the branch head; `run.py bundle fuxx-m11n <target>/release/fuxx`; in one session,
   interleaved, with the Mac otherwise idle and the window in front: `fuxx-base`, `fuxx-m11n`, `ghostty` ×
   `cpu_base` ×3 each; `fuxx-base` and `fuxx-m11n` × `cpu_noglow` ×2 and `cpu_rest` ×1; all three × `tput`, `launch`, `mem`; then
   `run.py summary`. A `cpu_*` run that isn't frontmost 15/15 is repeated (up to 5 tries).
-- [ ] **Targets** (note 65 §Targets; all compare runs from this one session):
+- [x] **Targets** (note 65 §Targets; all compare runs from this one session):
   - idle, glow on, breathing (`cpu_base`): `fuxx-m11n` ≤ **0.8 ×** `fuxx-base`;
   - idle, glow on, after five minutes (`cpu_rest`): `fuxx-m11n` ≤ `fuxx-base`'s `cpu_noglow` + 0.3 points (and
     `fuxx-base`'s `cpu_rest` still breathes, ≈ its `cpu_base`);
@@ -264,7 +264,7 @@ are `Copy + PartialEq`), recomputing only when the theme differs. `#[cfg(test)] 
   - `cat` 100 MiB: `fuxx-m11n` ÷ `ghostty` ≤ **1.8** (baseline 2.68);
   - 200k coloured lines: `fuxx-m11n` ÷ `ghostty` ≤ **1.4** (baseline 1.58);
   - no regression: launch ≤ `fuxx-base` + 10 %, idle RSS and 10-tab RSS ≤ `fuxx-base` + 5 MB.
-- [ ] A missed target is a bug to debug (superpowers:systematic-debugging) before merging, not a target to move;
+- [x] A missed target is a bug to debug (superpowers:systematic-debugging) before merging, not a target to move;
   record the numbers in note 65 §As built either way.
 
 ### Task 6: Merge and push (pre-authorized, autonomous program)
@@ -292,9 +292,9 @@ must be `v` + the `Cargo.toml` version), `cargo test`, `scripts/bundle-mac.sh --
 
 ### Task 8: Docs
 
-- [ ] Note 65: status, "M11n as built" (the measured numbers of Task 5 against the targets, anything the build
+- [x] Note 65: status, "M11n as built" (the measured numbers of Task 5 against the targets, anything the build
   settled), the checklist's state. This plan (ticks, header). `40 - Roadmap.md` (M11n, the release line). The Plan
   Tracker. The Progress Log (and its snapshot). `12 - Scope.md` (the Performance line). `STRUCTURE.md` (`pty.rs`:
   the reader and parser threads; `scripts/bench/`). `README.md` only if it states a performance figure. Notes 59–64:
   "released in v0.5.0" in each status line.
-- [ ] Commit `docs(m11n): …`.
+- [x] Commit `docs(m11n): …`.

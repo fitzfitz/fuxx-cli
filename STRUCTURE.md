@@ -51,6 +51,8 @@ src/
 │                         M5 · screen_tail_text (live screen), selection colour, underline_cells
 ├── pty.rs                M1 · spawn the login shell on a PTY; write; resize; kill on drop
 │                         M5 · pty_size with real pixel sizes
+│                         M11n · the reader thread only reads into an `Inbox` (1 MiB cap, backpressure); a parser
+│                         thread takes up to 64 KiB at a time and parses it under one lock
 ├── terminal.rs           M1 · TerminalCore: alacritty_terminal + reader thread + events
 │                         M2 · counts OSC 9 in the output stream
 │                         M5 · input (snaps to bottom), scroll, selection, link_at, CellPx resize
@@ -217,7 +219,9 @@ scripts/
 ├── bundle-mac.sh         M4b · universal release build → fuxx.app (with its icon, M11c) → target/dist/fuxx-<version>.dmg
 ├── make_app_icon.py      M11c · the 3D Cyber logo → packaging/macos/fuxx.icns + the browser bar's mark (run by hand)
 ├── check-dmg.sh          M4b · the test: asserts a DMG is installable (both CPUs, macOS 11.0, version, seal)
-└── check-release-tag.sh  M11e · refuses a release tag that isn't v + Cargo.toml's version
+├── check-release-tag.sh  M11e · refuses a release tag that isn't v + Cargo.toml's version
+└── bench/                M11n · the benchmark harness: run.py (isolated fuxx and Ghostty copies; CPU, throughput,
+                          launch, memory), make_data.py, wininfo.swift; it backs up and restores Ghostty's prefs
 .github/workflows/
 └── release.yml           M11e · on a pushed v* tag: test, build the universal app, zip it, publish the GitHub Release
 packaging/

@@ -5,7 +5,7 @@ status: built
 
 # 60 - Milestone 11i - UI Uplift 2 (design)
 
-**Status:: 🟨 Built, reviewed and merged to master 2026-11-08 (every detail AI's call; you skipped the design questions). Not released on its own: one release after M11n. On-screen check pending (22 items below).**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
+**Status:: 🟨 Built, reviewed and merged to master 2026-11-08 (every detail AI's call; you skipped the design questions). Not released on its own: one release after M11n. On-screen check pending (22 items below). Ships in v0.5.0 (the release after M11n; pending).**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout…"). Comes **before M11h**, so
 Changes and Activity are built into the new look.
 

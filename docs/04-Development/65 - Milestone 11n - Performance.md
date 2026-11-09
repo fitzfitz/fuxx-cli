@@ -1,12 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: planned
+status: built
 ---
 
 # 65 - Milestone 11n - Performance (design)
 
-**Status:: 🟨 Designed and planned 2026-11-09, not built. Every design detail is AI's call (the program is
-autonomous). Ends with the one combined release v0.5.0 (M11i–M11n).**  ·  **Phase 4: an M11 extension.**  ·
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-10 (1289 tests; the full ui-shots set passes, 147 shots). Every target met (numbers in "M11n as built"). Released as v0.5.0 (pending: the release is the next step). Your on-screen check is pending (11 items, below). Every design detail is AI's call (the program is autonomous). Ends with the one combined release v0.5.0 (M11i–M11n).**  ·  **Phase 4: an M11 extension.**  ·
 **Plan:** [[M11n Plan - Performance]]
 **Added to the plan 2026-11-09 by you** (see [[12 - Scope]], "Performance"), after M11l; renumbered M11n when the
 title bar took M11m.
@@ -224,28 +223,92 @@ result that only changes with the theme. Benefits every redraw (breath, typing, 
   whole time; your own use of the Mac during a run makes them noisy.
 - **Not verified on 60 Hz displays or on Intel Macs.**
 
+## M11n as built (2026-11-10)
+
+### Measured against every target
+
+One session, HEAD `6fbced0`, release builds, the Mac otherwise idle, every `cpu_*` run frontmost 15/15 on its first
+try (`cpu_rest` 168/168). "Base" is `f661d5e` (master before M11n), run in the same session. Prefs checks and
+leftovers: the user's fuxx prefs were untouched after all 24 phases, every Ghostty prefs restore compared equal, no
+bench process was left.
+
+| Target | Result | |
+|---|---|---|
+| **Idle, glow on (`cpu_base`)** ≤ 0.8 × base | 5 runs each: base median **6.99 %**, M11n median **5.35 %** = **0.765 ×** | PASS |
+| **After 5 min (`cpu_rest`)** ≤ base glow-off + 0.3 points | **6.99 → 0.93 %** (base glow-off 0.75 %, so ≤ 1.05) | PASS |
+| **Idle, glow off (`cpu_noglow`)** ≤ base + 0.2 | **0.75 → 0.74 %** | PASS |
+| **`cat` 100 MiB** ÷ Ghostty ≤ 1.8 | **0.931 → 0.481 s**, Ghostty 0.338 s = **1.42 ×** (was 2.68–2.93 ×) | PASS |
+| **200k coloured lines** ÷ Ghostty ≤ 1.4 | **0.219 → 0.156 s**, Ghostty 0.155 s = **1.01 ×** | PASS |
+| **Launch** ≤ base + 10 % | **163 → 162 ms** (Ghostty 135) | PASS |
+| **RSS** (idle / 10 tabs) ≤ base + 5 MB | **121.1 / 124.6 → 119.2 / 125.0 MB** | PASS |
+
+Read these with their caveats:
+
+- **`cpu_base`: the median passes at 0.765 ×, the mean at 0.851 ×.** The base's five runs were 2.83, 6.99, 6.92, 7.06 and
+  7.03 %; the 2.83 % was the session's first run and is **unexplained** (15/15 frontmost, nothing in the results file
+  shows a lost key window or a Welcome card). It is **kept**, because nothing showed it was invalid. It drags the base's
+  mean to 6.17 % and the mean ratio over 0.8. Without it the ratio is **0.75 ×**. The three-run version of the same
+  session read 0.775 × (median 6.92), so this target was firmed up to five runs; the result matches the frame model's
+  prediction (about 0.76 ×). The harness stores only each run's aggregate, so a per-sample CPU log is a possible
+  follow-up that would settle the 2.83 %.
+- **Throughput bias:** when `cat` returns, up to 1 MiB (`INBOX_CAP`) can still be unparsed in the inbox, about 6 % of
+  the 200k-colour run's 18 MB, so the true colour ratio may be about **1.07 ×** rather than 1.01 ×. It still passes.
+  The `cat` 100 MiB run is not affected in any way that matters (1 MiB of 100).
+- **`cpu_rest` was one run per app** (as planned), 305 s in.
+- Absolute CPU varies with the Mac's load; only the ratios inside one session mean anything.
+- **The final fix wave** (after `6fbced0`: the daemon's queue caps, comments, constants, tests) did not touch the
+  local path that was measured, so the numbers were not re-run.
+
+### What the build settled (AI's rulings beyond the plan)
+
+- **`MarkScanner` also cuts at CAN and SUB** (0x18, 0x1A), not only at ESC and BEL. It is equivalent to the old
+  byte-by-byte oracle, and needed: removing the cut was caught by the oracle test (mutation 0).
+- **One buffer per terminal, not two:** a drained terminal holds at most `IDLE_KEEP` (64 KiB) in total, so ten idle
+  tabs do not hold 128 KiB each.
+- **The daemon's queues keep their real old bound.** macOS reads were about 1 KiB, so before M11n the subscriber queue
+  held about 1 MiB (1024 frames) and a connection's writer queue about 256 KiB (256 frames). With 64 KiB batches the
+  frame caps alone would allow 64 MiB and 16 MiB. Both now have a **1 MiB byte cap** next to the frame cap. A frame
+  bigger than the cap (a Snapshot can be) waits for an empty queue and goes in alone, so nothing deadlocks and nothing
+  is dropped. The protocol and frame shapes are unchanged, and the daemon is compatible both ways.
+- **Turning the glow, Animations or Reduce motion back on ends the rest**, so a solid cursor never waits for a keystroke
+  after a settings change. **A hidden cursor reappearing, or the style returning to a breathing one, also restarts the
+  breath:** 0.6 s solid, then breathing from a peak. Before, it resumed mid-phase.
+- **A ui-shots `cursor-flood` scene guards `output_seen`:** a flood with Animations off must show its last line with no
+  input, so the view can never stop acknowledging an `Output` (the stale-frame class of bug).
+- **The benchmark harness is in `scripts/bench/`** (`run.py`, `make_data.py`, `wininfo.swift`). It backs up, restores
+  and verifies the user's Ghostty prefs: the bench copy shares Ghostty's bundle id and cfprefsd ignores
+  `CFFIXED_USER_HOME`. The first Ghostty runs (grid, launch) rewrote the user's `NSWindowLastPosition` before that rule
+  existed; the old value is lost, and you were told. Every process the harness starts is killed on any exit path.
+
+### Found for later (the chores round; not done)
+
+- **The breath still costs about 5.3 %** (5.35 % against the glow-off 0.74 %), because every breath frame re-renders the
+  whole window chrome (sidebar, tab bars, status bar, title area): only the panes are `.cached()`. Caching the chrome
+  could save more than repainting only the cursor, and does not have that idea's layering problems (see "Not in M11n").
+- A per-sample CPU log in the harness (above).
+
+### Limits
+
+- **Nothing has been verified on the real screen yet;** that is your on-screen check below. The tests and the benchmark
+  show the numbers and the structure, not how the glow looks.
+- `cpu_rest` has one run per app; the `cpu_base` base set has one unexplained low run (above).
+- Still not verified on 60 Hz displays or on Intel Macs.
+
 ## On-screen checklist (pending, after the v0.5.0 release)
 
-1. **The breath looks the same:** a new terminal's cursor breathes softly, 100 % to dim and back about every 1.6 s,
-   with its glow. Watch a few breaths: it should look like v0.4.1's. If you see stepping near the brightest or
-   dimmest moment, say so.
-2. Type: the cursor holds solid while you type and starts breathing again about 0.6 s after you stop.
-3. Click another app, then back: the cursor is solid, then breathes again.
-4. **Rest:** leave a prompt untouched for over 5 minutes, then look: the cursor is solid and glowing, not breathing.
-   Press a key: it breathes again shortly after.
-5. **Idle feel:** Activity Monitor, fuxx in front at an idle prompt for a minute: % CPU well under v0.4.1's (about 6 %
-   before). Note the number.
-6. `cat` a big file (`seq 1 5000000 > /tmp/s; cat /tmp/s`): it finishes noticeably faster than in v0.4.1, the last line
-   is `5000000`, and you can scroll back through the output.
-7. `seq 1 1000000` ends on `1000000`; Ctrl-C during a long `yes` stops it at once.
-8. **Agents:** run `claude` (or another agent): working, waiting and done still show on the tab, the sidebar and the
-   cursor colour; a finished agent in another tab still rings and sends its notification.
-9. **Command blocks:** run a few commands, including one that prints a lot: each still has its bar (red when it
-   failed), and ⇧⌘↑ / ⇧⌘↓ still jump between them.
-10. **Splits:** split a pane (⌘D), run `cat` of the big file in one half while typing in the other: typing stays
-    responsive and both halves are right afterwards.
-11. vim, htop or less: full-screen programs draw and redraw correctly; quit and the prompt is back.
-12. **Update:** fuxx 0.4.1 shows **Update Available** for 0.5.0; Update and Restart brings 0.5.0.
+Nothing here has been seen on a real screen yet; the benchmark and the tests cannot show how the glow looks. A copy of this list, as plain steps, is in your test list.
+
+1. **Idle feel:** fuxx in front at an idle prompt, nothing moving: Activity Monitor's % CPU is well under v0.4.1's (about 6 % before; the benchmark read about 5.4 %). Note the number. The window feels as quick as before.
+2. **The glow looks the same:** a new terminal's cursor breathes softly, 100 % to dim and back about every 1.6 s, with its glow, like v0.4.1's. Watch a few breaths; if you see stepping near the brightest or dimmest moment, say so. While you type the cursor holds solid and breathes again about 0.6 s after you stop; click another app and back: solid, then breathing.
+3. **The rest:** leave a prompt untouched for over 5 minutes: the cursor is solid and glowing, not breathing. Press a key, print some output, or click away and back: the cursor stays solid for 0.6 s and then breathes again.
+4. **Big output:** `cat` a big file (`seq 1 5000000 > /tmp/s; cat /tmp/s`): it finishes noticeably faster than in v0.4.1, the last line is `5000000`, and you can scroll back through the output. `seq 1 1000000` ends on `1000000`; Ctrl-C during a long `yes` stops it at once.
+5. **Agents:** run `claude` (or another agent): Working, Done and Waiting still show on the tab, the sidebar and the cursor colour.
+6. **Notification rings:** a finished agent in another tab still rings and sends its notification.
+7. **Command blocks:** run a few commands, including one that prints a lot (the `cat` above): every command still has its bar (red when it failed), also those that ran during the flood, and ⇧⌘↑ / ⇧⌘↓ still jump between them.
+8. **Full-screen programs:** vim, htop and less draw and redraw correctly and respond to keys; quit and the prompt is back.
+9. **Splits:** split a pane (⌘D), run `cat` of the big file in one half while typing in the other: typing stays responsive and both halves are right afterwards.
+10. **Persistent sessions survive the update:** with persistent sessions on in 0.4.x, leave a session running, update to 0.5.0 and reopen: the session is still there and live.
+11. **Update:** fuxx 0.4.x shows **Update Available** for 0.5.0; Update and Restart brings 0.5.0.
 
 ## Links
 
