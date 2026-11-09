@@ -71,6 +71,12 @@ const MAX_CONNECTIONS: usize = 64;
 /// Encoded frames a connection may have waiting for its writer; senders then wait.
 const OUT_QUEUE: usize = 256;
 
+/// Encoded bytes a connection may have waiting for its writer, whichever cap comes first;
+/// senders then wait. Frames carry up to `pty::BATCH_MAX` (64 KiB), so the frame cap alone
+/// would allow 16 MiB; this keeps the old bound (macOS returned about 1 KiB per PTY read, so
+/// 256 frames held about 256 KiB) within 1 MiB. An empty queue always takes a frame.
+const OUT_BYTES: usize = 1 << 20;
+
 /// Bytes of a session's input still unwritten to its child above which the daemon stops
 /// reading the sending client's frames until the child catches up.
 const INPUT_BACKLOG_MAX: usize = 1 << 20;
@@ -834,14 +840,52 @@ struct Out {
     pending: Arc<AtomicUsize>,
     /// The writer has stopped (the client went away).
     closed: Arc<AtomicBool>,
+    /// Encoded bytes queued but not yet written (see `OUT_BYTES`).
+    bytes: Arc<OutBytes>,
+}
+
+/// The encoded bytes in a connection's writer queue, and the wake-up for senders waiting on
+/// `OUT_BYTES`.
+#[derive(Default)]
+struct OutBytes {
+    queued: Mutex<usize>,
+    room: Condvar,
+}
+
+impl OutBytes {
+    /// The writer is done with `len` bytes (written, or it gave up): wake the waiting senders.
+    fn taken(&self, len: usize) {
+        let mut queued = lock(&self.queued);
+        *queued = queued.saturating_sub(len);
+        drop(queued);
+        self.room.notify_all();
+    }
+}
+
+/// A connection's writer queue: the senders' side and the writer's.
+fn out_queue() -> (Out, Receiver<Vec<u8>>) {
+    let (queue, frames) = sync_channel::<Vec<u8>>(OUT_QUEUE);
+    let out = Out {
+        queue,
+        pending: Arc::new(AtomicUsize::new(0)),
+        closed: Arc::new(AtomicBool::new(false)),
+        bytes: Arc::default(),
+    };
+    (out, frames)
 }
 
 impl Out {
-    /// Queue `frame`, waiting while the queue is full. False once the connection is gone.
+    /// Queue `frame`, waiting while the queue is full (`OUT_QUEUE` frames or `OUT_BYTES`).
+    /// False once the connection is gone.
     fn send(&self, frame: &Frame) -> bool {
+        let bytes = mux_proto::encode(frame);
+        let len = bytes.len();
         self.pending.fetch_add(1, Ordering::AcqRel);
-        if self.queue.send(mux_proto::encode(frame)).is_ok() {
-            return true;
+        if self.reserve(len, true) {
+            if self.queue.send(bytes).is_ok() {
+                return true;
+            }
+            self.bytes.taken(len);
         }
         self.pending.fetch_sub(1, Ordering::AcqRel);
         false
@@ -849,12 +893,38 @@ impl Out {
 
     /// Queue `frame` unless the queue is full. False if it wasn't queued.
     fn try_send(&self, frame: &Frame) -> bool {
+        let bytes = mux_proto::encode(frame);
+        let len = bytes.len();
         self.pending.fetch_add(1, Ordering::AcqRel);
-        if self.queue.try_send(mux_proto::encode(frame)).is_ok() {
-            return true;
+        if self.reserve(len, false) {
+            if self.queue.try_send(bytes).is_ok() {
+                return true;
+            }
+            self.bytes.taken(len);
         }
         self.pending.fetch_sub(1, Ordering::AcqRel);
         false
+    }
+
+    /// Count `len` more bytes queued once they fit in `OUT_BYTES`, waiting for the writer if
+    /// `wait`. An empty queue always takes them, so no frame waits forever. False if they
+    /// weren't counted: the writer has stopped, or the queue is full and `!wait`.
+    fn reserve(&self, len: usize, wait: bool) -> bool {
+        let mut queued = lock(&self.bytes.queued);
+        while *queued > 0 && *queued + len > OUT_BYTES {
+            if !wait || self.closed.load(Ordering::Acquire) {
+                return false;
+            }
+            // Timed, so a writer that stopped without a wake-up is still noticed.
+            queued = self
+                .bytes
+                .room
+                .wait_timeout(queued, Duration::from_millis(100))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        *queued += len;
+        true
     }
 
     /// Wait up to `timeout` for everything queued to be written.
@@ -874,16 +944,16 @@ impl Out {
 fn serve(stream: UnixStream, slot: Slot, shared: Arc<Shared>) {
     let id = shared.next_conn.fetch_add(1, Ordering::AcqRel);
     let stream = Arc::new(stream);
-    let (queue, frames) = sync_channel::<Vec<u8>>(OUT_QUEUE);
-    let out = Out {
-        queue,
-        pending: Arc::new(AtomicUsize::new(0)),
-        closed: Arc::new(AtomicBool::new(false)),
-    };
+    let (out, frames) = out_queue();
     let (socket, pending, closed) = (stream.clone(), out.pending.clone(), out.closed.clone());
+    let bytes = out.bytes.clone();
     let writer = std::thread::Builder::new()
         .name("fuxx-daemon-write".into())
-        .spawn(move || write_loop(&socket, &frames, &pending, &closed, slot));
+        .spawn(move || {
+            // `slot` counts the connection as open until the writer is done.
+            let _slot = slot;
+            write_loop(&socket, &frames, &pending, &closed, &bytes);
+        });
     if writer.is_err() {
         return;
     }
@@ -913,24 +983,27 @@ fn serve(stream: UnixStream, slot: Slot, shared: Arc<Shared>) {
     }
 }
 
-/// Write queued frames until every sender is gone or the socket fails. `slot` counts the
-/// connection as open until then.
+/// Write queued frames until every sender is gone or the socket fails, freeing their room in
+/// `queued` as they go.
 fn write_loop(
     socket: &UnixStream,
     frames: &Receiver<Vec<u8>>,
     pending: &AtomicUsize,
     closed: &AtomicBool,
-    _slot: Slot,
+    queued: &OutBytes,
 ) {
     for bytes in frames {
         if (&*socket).write_all(&bytes).is_err() {
             closed.store(true, Ordering::Release);
+            queued.taken(bytes.len());
             let _ = socket.shutdown(std::net::Shutdown::Both);
             return;
         }
         pending.fetch_sub(1, Ordering::AcqRel);
+        queued.taken(bytes.len());
     }
     closed.store(true, Ordering::Release);
+    queued.taken(0);
 }
 
 /// Move one session's frames to the connection's writer until the session lets go of this
@@ -1626,6 +1699,108 @@ mod tests {
     fn daemon(name: &str) -> (Running, PathBuf) {
         let path = temp_sock(name);
         (start(&path, IDLE_EXIT).unwrap(), path)
+    }
+
+    /// An `Output` frame as big as a PTY batch, and its encoded length.
+    fn big_output() -> (Frame, usize) {
+        let frame = Frame::Output {
+            id: 1,
+            seq: 0,
+            notifications: 0,
+            bytes: vec![b'x'; crate::pty::BATCH_MAX],
+        };
+        let len = encode(&frame).len();
+        (frame, len)
+    }
+
+    /// `count` once it has stopped moving for 200 ms (waiting 10 s at most).
+    fn settled(count: &AtomicUsize) -> usize {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last = count.load(Ordering::Acquire);
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            let now = count.load(Ordering::Acquire);
+            if now == last || Instant::now() >= deadline {
+                return now;
+            }
+            last = now;
+        }
+    }
+
+    /// Frames are up to `BATCH_MAX` (64 KiB), so the 256-frame cap alone would let a stalled
+    /// connection's writer queue hold 16 MiB. The byte cap keeps it within 1 MiB plus one
+    /// frame: the sender waits, as at the frame cap, and goes on once the writer takes a frame.
+    #[test]
+    fn a_stalled_connection_queues_at_most_1_mib_plus_a_frame() {
+        assert_eq!(OUT_BYTES, 1 << 20);
+        let (out, frames) = out_queue();
+        let (frame, len) = big_output();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let sender = std::thread::spawn({
+            let (out, sent, frame) = (out.clone(), sent.clone(), frame.clone());
+            move || {
+                while out.send(&frame) {
+                    sent.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+        });
+        // The writer is stalled: it takes nothing.
+        let held = settled(&sent);
+        assert!(
+            held * len <= OUT_BYTES + len,
+            "{held} frames of {len} bytes queued"
+        );
+        assert!(!out.try_send(&frame), "a full queue takes nothing more");
+        // The writer takes one frame: the sender goes on, within the bound.
+        let taken = frames.recv().unwrap();
+        out.bytes.taken(taken.len());
+        assert!(settled(&sent) > held, "room was made");
+        let queued: usize = frames.try_iter().map(|b| b.len()).sum();
+        assert!(queued <= OUT_BYTES + len, "{queued} bytes queued");
+        // The writer stops: the waiting sender gives up.
+        out.closed.store(true, Ordering::Release);
+        drop(frames);
+        out.bytes.taken(0);
+        sender.join().unwrap();
+    }
+
+    /// The writer frees the room it writes out: a reading client gets far more than
+    /// `OUT_BYTES` through.
+    #[test]
+    fn the_writer_frees_room_as_it_writes() {
+        let (out, frames) = out_queue();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (pending, closed, bytes) = (out.pending.clone(), out.closed.clone(), out.bytes.clone());
+        let writer =
+            std::thread::spawn(move || write_loop(&ours, &frames, &pending, &closed, &bytes));
+        let reader = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            (&theirs).read_to_end(&mut got).map(|_| got.len())
+        });
+        let (frame, len) = big_output();
+        let count = 4 * OUT_BYTES / len + 1;
+        let (done, sent) = std::sync::mpsc::channel();
+        // Dropping `out` when done lets the writer finish, which closes the socket.
+        std::thread::spawn(move || done.send((0..count).all(|_| out.send(&frame))));
+        assert_eq!(sent.recv_timeout(Duration::from_secs(10)), Ok(true));
+        writer.join().unwrap();
+        assert_eq!(reader.join().unwrap().unwrap(), count * len);
+    }
+
+    /// A frame bigger than `OUT_BYTES` can't wait forever on an empty queue.
+    #[test]
+    fn an_empty_writer_queue_takes_a_frame_bigger_than_its_byte_cap() {
+        let (out, frames) = out_queue();
+        let frame = Frame::Output {
+            id: 1,
+            seq: 0,
+            notifications: 0,
+            bytes: vec![b'x'; 2 * OUT_BYTES],
+        };
+        let (done, sent) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(out.send(&frame)));
+        assert_eq!(sent.recv_timeout(Duration::from_secs(5)), Ok(true));
+        assert!(frames.try_recv().unwrap().len() > OUT_BYTES);
     }
 
     #[test]
