@@ -260,6 +260,9 @@ pub struct Palette {
     /// It was moved (↑↓) since the list last went back to its first row: a ranking's answer
     /// then keeps it on its item; else the answer's best row is chosen.
     moved: bool,
+    /// Enter came while the files were still being ranked for the query: the chosen row is
+    /// picked once the answer is in (the rows shown were an older query's).
+    enter_pending: bool,
     scroll: ScrollHandle,
     /// The files' ranking: bumped for each new one (a running one stops when it sees it moved).
     generation: Arc<AtomicU64>,
@@ -277,6 +280,13 @@ pub struct Palette {
 }
 
 impl EventEmitter<PaletteEvent> for Palette {}
+
+impl Drop for Palette {
+    /// A ranking still running stops at its next look at the generation.
+    fn drop(&mut self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 impl Focusable for Palette {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -303,7 +313,7 @@ impl Palette {
     ) -> Self {
         let input = cx.new(|cx| NameInput::new(String::new(), window, cx));
         let input_events = cx.subscribe_in(&input, window, |this, _, event, _, cx| match event {
-            NameInputEvent::Confirm(_) => this.pick(this.selected, cx),
+            NameInputEvent::Confirm(_) => this.confirm(cx),
             NameInputEvent::Cancel => cx.emit(PaletteEvent::Cancel),
         });
         let input_changes = cx.observe(&input, |this, _, cx| this.query_changed(cx));
@@ -317,6 +327,7 @@ impl Palette {
             rows: Vec::new(),
             selected: 0,
             moved: false,
+            enter_pending: false,
             scroll: ScrollHandle::new(),
             generation: Arc::default(),
             hits: None,
@@ -373,6 +384,11 @@ impl Palette {
                     self.generation.fetch_add(1, Ordering::Relaxed);
                     self.hits = None;
                     self.ranking = None;
+                    self.relist(true);
+                }
+                // No answer is coming: a waiting Enter picks from the list as it is.
+                if std::mem::take(&mut self.enter_pending) {
+                    self.pick(self.selected, cx);
                 }
                 return;
             }
@@ -400,6 +416,9 @@ impl Palette {
                 this.hits = Some(hits);
                 // Rows chosen from an older answer aren't kept: the best of this one is.
                 this.relist(this.moved);
+                if std::mem::take(&mut this.enter_pending) {
+                    this.pick(this.selected, cx);
+                }
                 cx.notify();
             });
         }));
@@ -420,6 +439,10 @@ impl Palette {
     ) {
         self.data.phase = phase;
         let files_changed = !files.same(&self.data.files);
+        // Back to listing (another folder, or a listing turned away): ask for it again.
+        if matches!(files, FilesData::Listing) && !matches!(self.data.files, FilesData::Listing) {
+            cx.emit(PaletteEvent::WantFiles);
+        }
         if workspaces != self.data.workspaces || files_changed {
             if files_changed && files.root() != self.data.files.root() {
                 // Hits from another folder's listing name files that aren't there.
@@ -462,6 +485,8 @@ impl Palette {
         let query = self.input.read(cx).text().to_string();
         if query != self.query {
             self.query = query;
+            // An Enter waiting on the last query's answer is for a query no longer typed.
+            self.enter_pending = false;
             self.rank_files_for(cx);
             self.relist(false);
             self.want_files(cx);
@@ -509,6 +534,18 @@ impl Palette {
                 self.scroll.scroll_to_item(0);
             }
         }
+    }
+
+    /// Enter: pick the chosen row, unless the files are still being ranked for this query (the
+    /// rows are the last query's), then once the answer is in.
+    fn confirm(&mut self, cx: &mut Context<Self>) {
+        let answered = self.hits.as_ref().map(|(generation, _, _)| *generation)
+            == Some(self.generation.load(Ordering::Relaxed));
+        if self.ranked.is_some() && !answered {
+            self.enter_pending = true;
+            return;
+        }
+        self.pick(self.selected, cx);
     }
 
     fn select_by(&mut self, delta: i32, cx: &mut Context<Self>) {

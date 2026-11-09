@@ -244,6 +244,7 @@ const SCENES: &[(&str, fn())] = &[
     ("palette-refresh", palette_refresh_scene),
     ("palette-recent", palette_recent_scene),
     ("palette-files", palette_files_scene),
+    ("palette-relist", palette_relist_scene),
     ("palette-settings", palette_settings_scene),
     ("palette-narrow", palette_narrow_scene),
     ("palette-motion", palette_motion_scene),
@@ -9842,7 +9843,8 @@ fn count_in(
 /// - `palette-files`: "view" typed on All: `Files in fuxx-cli` first, src/view.rs chosen;
 /// - `palette-files-empty`: the Files scope, nothing typed: `Type to search files in fuxx-cli`.
 ///
-/// Panics unless so, src/view.rs's icon has a pixel in `palette_file_ink(Red)` in its slot and
+/// Panics unless so (Enter typed straight after a letter waits for that letter's ranking),
+/// src/view.rs's icon has a pixel in `palette_file_ink(Red)` in its slot and
 /// its folder (`src`) is drawn in `text_faint` right of its name; and (not shot) Enter opens
 /// src/view.rs in a Plain file tab in the focused pane, the palette closed; with logs (an SSH
 /// terminal) followed, Files says `SSH_NOTE`; with a first listing running, `LISTING` (and on All
@@ -9861,7 +9863,16 @@ fn palette_files_scene() {
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let ui = theme.ui();
-        for stage in ["shot", "enter", "empty", "ssh", "listing", "typing"] {
+        for stage in [
+            "shot",
+            "enter",
+            "empty",
+            "ssh",
+            "listing",
+            "typing",
+            "enter-early",
+            "enter-retyped",
+        ] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = palette_build(theme, slot.clone());
             let seen: Rc<Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
@@ -9886,6 +9897,64 @@ fn palette_files_scene() {
                         cx.simulate_input(window, "main");
                         settle(cx, window);
                         assert_eq!(lines(cx), [Line::Note(SSH_NOTE.into())], "{n}: typed");
+                    }
+                    "enter-early" | "enter-retyped" => {
+                        // "vie" ranked (vie/w.md first), then "w" and Enter at once, before the
+                        // "view" ranking has run: Enter waits for it and opens src/view.rs. A
+                        // letter typed after that Enter (before the answer) drops it.
+                        seed_palette_files(cx, &ws, &["vie/w.md", "src/view.rs"]);
+                        open_palette_on(cx, window, &ws, Scope::Files);
+                        cx.simulate_input(window, "vie");
+                        settle(cx, window);
+                        let vie_w = Key::File(PathBuf::from(PALETTE_ROOT).join("vie/w.md"));
+                        assert_eq!(palette_state(cx, &ws).2, Some(vie_w), "{n}: vie");
+                        // Dispatched without running the executor: no ranking runs between.
+                        cx.dispatch_keystroke(
+                            window,
+                            gpui::Keystroke {
+                                modifiers: gpui::Modifiers::default(),
+                                key: "w".into(),
+                                key_char: Some("w".into()),
+                            },
+                        );
+                        cx.dispatch_keystroke(
+                            window,
+                            gpui::Keystroke::parse("enter").expect("a keystroke"),
+                        );
+                        if stage == "enter-retyped" {
+                            cx.dispatch_keystroke(
+                                window,
+                                gpui::Keystroke {
+                                    modifiers: gpui::Modifiers::default(),
+                                    key: "s".into(),
+                                    key_char: Some("s".into()),
+                                },
+                            );
+                            settle(cx, window);
+                            assert!(palette_of(cx, &ws).is_some(), "{n}: still open");
+                            assert_eq!(
+                                palette_state(cx, &ws).2,
+                                Some(Key::File(view.clone())),
+                                "{n}: \"views\" ranked"
+                            );
+                            slot.borrow_mut().take();
+                            return;
+                        }
+                        settle(cx, window);
+                        assert!(palette_of(cx, &ws).is_none(), "{n}: Enter picked");
+                        let kind = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            let tab = ws.model.focused_tab()?;
+                            ws.model.tab(tab).map(|t| t.kind.clone())
+                        });
+                        assert_eq!(
+                            kind,
+                            Some(TabKind::File {
+                                path: view.clone(),
+                                mode: FileMode::Plain
+                            }),
+                            "{n}: the best for \"view\", not the last answer's"
+                        );
                     }
                     "typing" => {
                         // Typed a letter at a time, each ranking in before the next letter:
@@ -10026,6 +10095,88 @@ fn palette_files_scene() {
             }
             println!("ui-shots: palette-files-{stage}-{slug} ok");
         }
+    }
+}
+
+/// Files listed again while the palette is open (M11j Task 5 fix), not shot: a terminal whose
+/// folder changes while Files is shown (as a `cd` would) gets the new folder listed; a listing
+/// asked for while another ran (and so turned away) is listed once that one ends. Real listings
+/// of two made-up folders (no repo: the walk). Panics unless each ends on its folder's
+/// "Type to search" note, never stuck on `LISTING`.
+fn palette_relist_scene() {
+    use crate::palette_items::{Line, Scope};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    let folder = |name: &str| {
+        let dir = std::env::temp_dir().join(format!("fuxx-ui-shots-relist-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("make the folder");
+        std::fs::write(dir.join(format!("{name}.txt")), name).expect("write a file");
+        std::fs::canonicalize(&dir).expect("its real path")
+    };
+    let (a, b) = (folder("a"), folder("b"));
+    let note = |dir: &std::path::Path| {
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        Line::Note(format!("Type to search files in {name}"))
+    };
+    let theme = shot_theme("Catppuccin Mocha");
+    for stage in ["moved", "turned-away"] {
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let start = a.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            cx.bind_keys(crate::key_bindings());
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws.open_shot_session("api", &start, "", None, window, cx);
+                ws.palette_files.frozen = false;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let n = format!("palette-relist-{stage}");
+        let (a, b) = (a.clone(), b.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let move_to = |ws: &mut Workspace, dir: &std::path::Path| {
+                ws.sessions.get_mut(0).expect("api").project = Some(dir.to_path_buf());
+            };
+            if stage == "moved" {
+                open_palette_on(cx, window, &ws, Scope::Files);
+                settle(cx, window);
+                assert_eq!(palette_state(cx, &ws).0, [note(&a)], "{n}: a listed");
+                cx.update(|cx| {
+                    ws.update(cx, |ws, cx| {
+                        move_to(ws, &b);
+                        cx.notify();
+                    })
+                });
+                settle(cx, window);
+                settle(cx, window);
+            } else {
+                // a's listing starts; before it runs, the terminal moves to b and the palette
+                // opens there (its listing turned away: a's is running).
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        ws.list_palette_files(cx);
+                        move_to(ws, &b);
+                        ws.open_palette(Scope::Files, window, cx);
+                    })
+                })
+                .expect("open");
+                settle(cx, window);
+                settle(cx, window);
+            }
+            assert_eq!(palette_state(cx, &ws).0, [note(&b)], "{n}: b listed");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: palette-relist-{stage} ok");
     }
 }
 

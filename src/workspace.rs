@@ -348,10 +348,11 @@ impl Workspace {
     }
 
     /// List the followed terminal's files when they are due: one listing at a time, on the
-    /// background executor, then the cache is filled and the window redrawn. Nothing is listed
-    /// while the places are frozen (the screenshots give the listing themselves).
+    /// background executor, then the cache is filled and the window redrawn; with the palette
+    /// still open, whatever is due next is listed then (a listing asked for while this one ran
+    /// was turned away). Nothing is listed while frozen (the screenshots give the listings).
     pub(crate) fn list_palette_files(&mut self, cx: &mut Context<Self>) {
-        if self.places.frozen {
+        if self.palette_files.frozen {
             return;
         }
         let Some((folder, false)) = self.palette_folder(cx) else {
@@ -369,6 +370,9 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.palette_files.finished(&folder, answer, Instant::now());
+                if this.palette.is_some() {
+                    this.list_palette_files(cx);
+                }
                 cx.notify();
             });
         })
@@ -3257,6 +3261,7 @@ impl Workspace {
         this.places.home = Some(PathBuf::from("/Users/me"));
         this.programs.frozen = true;
         this.ports.frozen = true;
+        this.palette_files.frozen = true;
         this
     }
 
