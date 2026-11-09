@@ -2136,16 +2136,15 @@ impl Workspace {
         self.sync();
         let keys = self.sidebar_groups();
         self.collapsed.retain(|c| keys.contains(&Some(c.clone())));
-        // An open palette or Welcome card with the keyboard keeps it (a script closed this
-        // terminal under it): focused again before the frame, it never sees itself lose the
-        // focus, and the palette's list follows on the next draw (M11j, M11k).
+        // An open palette with the keyboard keeps it (a script closed this terminal under it):
+        // focused again before the frame, it never sees itself lose the focus, and its list
+        // follows on the next draw (M11j). An open Welcome card keeps it through
+        // `focus_active` (M11k).
         let keeps = self
             .palette
             .as_ref()
             .map(|p| p.focus_handle(cx))
-            .into_iter()
-            .chain(self.welcome.as_ref().map(|w| w.focus_handle(cx)))
-            .find(|f| f.contains_focused(window, cx));
+            .filter(|f| f.contains_focused(window, cx));
         self.activate(window, cx);
         if let Some(keeps) = keeps {
             keeps.focus(window, cx);
@@ -2650,8 +2649,14 @@ impl Workspace {
 
     /// The keyboard to the focused tab: its terminal, a file tab, or a browser tab (GPUI's
     /// focus only: its page takes AppKit's keyboard only on a click in it or a navigation the
-    /// person started).
+    /// person started). While the Welcome card is open it keeps the keyboard instead: terminals
+    /// opened or selected meanwhile (⌘N, ⌘T, a click in the top band, a script) show behind it
+    /// (M11k). What closes the card clears `welcome` before handing the keyboard on.
     pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(card) = &self.welcome {
+            card.focus_handle(cx).focus(window, cx);
+            return;
+        }
         if let Some(tab) = self.focused_browser_tab() {
             tab.read(cx).focus_handle(cx).focus(window, cx);
             return;
