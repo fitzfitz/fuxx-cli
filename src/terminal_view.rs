@@ -835,6 +835,11 @@ impl TerminalView {
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
             TermEvent::Output { notifications } => {
+                // First, before anything renders: tell the parser thread this `Output` has been
+                // heard. A batch it finishes before this is in the frame `cx.notify` asks for
+                // below (the render takes the Term lock after it); one it finishes after sends
+                // a new `Output` (M11n's gate), so the screen is never left an older frame.
+                self.core.output_seen();
                 // The program wrote: the breath holds.
                 self.motion.borrow_mut().changed = Instant::now();
                 self.hear_of_resize();
