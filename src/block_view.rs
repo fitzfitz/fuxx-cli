@@ -167,6 +167,25 @@ pub fn separator_rows(
     out
 }
 
+/// The chip's words in a row `height` tall: their size, their line (the row inside the panel's
+/// 1 pt edges) and the buttons' hover fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChipText {
+    pub size: f32,
+    pub line: f32,
+    pub button: f32,
+}
+
+/// `text::META` (11 pt) on the row's inside; in a row too short for it (a terminal font under
+/// about 11 pt), smaller, so the glyphs stay inside the row. The hover fill is the row less 2 pt
+/// a side, and never shorter than the text (nor taller than the inside).
+pub fn chip_text(height: f32) -> ChipText {
+    let line = (height - 2.0).max(0.0);
+    let size = crate::ui_tokens::text::META.min(line * 0.75);
+    let button = (height - 4.0).max(size + 2.0).min(line);
+    ChipText { size, line, button }
+}
+
 /// The chip's top: the command row's top, moved up so the chip (`height`, one row) stays above
 /// `grid_bottom` (and no higher than `grid_top`).
 pub fn chip_top(cmd_top: f32, grid_top: f32, grid_bottom: f32, height: f32) -> f32 {
@@ -544,6 +563,38 @@ mod tests {
         assert_eq!(run_of("$ a  b  c "), Some(8));
         // A row of nothing but the run.
         assert_eq!(run_of("   12:00 "), Some(3));
+    }
+
+    #[test]
+    fn the_chip_text_fits_its_row() {
+        // The default 13 pt terminal (17 pt rows): 11 pt text, as before, on the row's inside.
+        assert_eq!(
+            chip_text(17.0),
+            ChipText {
+                size: 11.0,
+                line: 15.0,
+                button: 13.0
+            }
+        );
+        // Taller rows keep 11 pt.
+        assert_eq!(chip_text(30.0).size, 11.0);
+        // Short rows (10 pt and 9 pt fonts): smaller text, its glyphs inside the row's edges,
+        // and a hover fill as tall as them.
+        for row in [13.0, 12.0, 8.0, 3.0] {
+            let t = chip_text(row);
+            let inside = row - 2.0;
+            assert_eq!(t.line, inside, "row {row}");
+            assert!(t.size <= inside * 0.75 && t.size < 11.0, "row {row}: {t:?}");
+            assert!(t.button >= t.size && t.button <= inside, "row {row}: {t:?}");
+        }
+        assert_eq!(
+            chip_text(0.0),
+            ChipText {
+                size: 0.0,
+                line: 0.0,
+                button: 0.0
+            }
+        );
     }
 
     #[test]
