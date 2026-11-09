@@ -286,7 +286,7 @@ them, inside M11i's new look, these were the places they would have had to guess
     whole text (and a Waiting entry's question) in the tooltip. Empty states: "No activity yet." and "No terminal
     to follow." Nothing in it animates.
 17. **Nothing new besides.** No new crates, settings, key bindings or menu items; the scripting API is unchanged.
-    Released in the one release after M11n (your rule), not on its own.
+    Released in v0.5.0 (2026-11-10), the one combined release.
 
 ## M11h as built (2026-11-09)
 
@@ -321,7 +321,7 @@ final whole-branch review):
   (its Diff shows "This file no longer exists"; reopen the tab after restoring the repo). The `title-area`
   screenshot check flakes now and then (2 pt), unrelated to M11h.
 
-## M11h on-screen checklist (pending, after the combined release)
+## M11h on-screen checklist (pending; released in v0.5.0)
 
 1. The right sidebar's top shows three tabs, **Files · Changes · Activity**; the active one merges into the panel.
    Switch to Changes, quit and reopen fuxx: Changes is still shown.

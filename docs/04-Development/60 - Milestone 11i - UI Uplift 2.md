@@ -331,7 +331,7 @@ reads at 4.5:1 on every built-in theme, light or dark.
 - The left sidebar as a card; a redesign of its footer (the +, 🔔 and gear stay; only the update button leaves).
 - Showing smart names in the scripting API.
 
-## On-screen checklist (pending, after the combined release)
+## On-screen checklist (pending; released in v0.5.0)
 
 1. A new terminal at a prompt is called `╭∩╮` in its tab and its sidebar row (your names change, 2026-11-09).
 2. A program that sets its own terminal title (e.g. Claude Code) shows that title; when it stops, the name goes

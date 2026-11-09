@@ -313,7 +313,7 @@ final whole-branch review):
   outer repo's listing for up to 10 s; a click on a chip during an IME composition may leave the IME briefly out of
   step.
 
-## On-screen checklist (pending, after the combined release)
+## On-screen checklist (pending; released in v0.5.0)
 
 1. ⌘K opens the palette near the top: the box, the chips All · Actions · Workspaces · Files · Settings, then Recent
    (once you've used it), Workspaces and Actions. Esc closes it and typing goes back to the terminal.
@@ -396,7 +396,7 @@ Re-reading the design as the builder who must plan it, these were the places the
     fixture and expected orders); `tabs-switcher` opens ⌘P (now the palette); `overlays` opens `Overlay::Palette`;
     the `help` scene finds the two new rows. Key tests: `fuxx_keys_still_reach_fuxx_from_a_browser_tab` adds
     `cmd-k`.
-16. **Version:** no release of its own; it ships in the one release after M11n (your rule).
+16. **Version:** no release of its own; released in v0.5.0 (2026-11-10), the one combined release.
 
 ## Left to the builder
 
