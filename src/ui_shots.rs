@@ -15802,19 +15802,24 @@ fn command_blocks_rprompt_scene() {
                 );
                 assert!(right > run_left, "{n}: over the run's start");
             } else {
+                // GPUI rounds the chip's left and its max width to device pixels separately, so
+                // its right edge lands within (strictly less than) one device pixel of
+                // `run_left - cell`: 1 pt at 1x, 0.5 pt at 2x. A real overlap is a whole cell.
+                let scale = shown.width as f32 / f32::from(dims.width);
+                let dp = 1.0 / scale;
                 assert!(
-                    right <= run_left - cell + 0.5,
+                    right < run_left - cell + dp,
                     "{n}: the chip ends at {right}, a cell before the run at {run_left}"
                 );
                 if case == "tight" {
                     assert!(
-                        (right - (run_left - cell)).abs() <= 0.5 && width >= CHIP_MIN_WIDTH,
+                        (right - (run_left - cell)).abs() < dp && width >= CHIP_MIN_WIDTH,
                         "{n}: cut to end a cell before the run ({run_left}), at {right}"
                     );
                 }
                 // From the first device pixel wholly right of the chip: its edge is rounded to
-                // the pixel grid, so it may end up to half a pixel past `run_left - cell`.
-                let scale = shown.width as f32 / f32::from(dims.width);
+                // the pixel grid, so it may end up to (just under) a device pixel past
+                // `run_left - cell`.
                 let from = ((run_left - cell) * scale).ceil() / scale;
                 let change = first_change(
                     &before,
