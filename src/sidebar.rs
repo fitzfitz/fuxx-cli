@@ -45,8 +45,8 @@ use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::title_area::{
-    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, PREFERENCES_GROUP, PREFERENCES_TIP, footer_icon,
-    unseen_dot,
+    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, NOTIFICATIONS_TIP, PREFERENCES_GROUP, PREFERENCES_TIP,
+    footer_icon, unseen_dot,
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SELECTION_BAR, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
@@ -1837,7 +1837,9 @@ impl Workspace {
                     .when(popover, |b| b.bg(hsla(ui.row_hover)))
                     .child(footer_icon(Glyph::Bell, ui, BELL_GROUP, popover))
                     .when(unseen, |b| b.child(unseen_dot(ui)))
-                    .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Notifications".into())).into() })
+                    .tooltip(|_, cx| -> AnyView {
+                        cx.new(|_| Tip(NOTIFICATIONS_TIP.into())).into()
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.open_notifications(window, cx)
                     })),
