@@ -1,6 +1,5 @@
 //! The ⌘K palette's keys, scopes and Recent list, its sources (every action, setting and
 //! workspace) and `compose`, which turns them and the query into the list's lines (M11j). Pure.
-#![allow(dead_code)] // used by the palette view (M11j task 4)
 
 use std::path::{Path, PathBuf};
 
@@ -132,7 +131,7 @@ pub fn palette_step(open: Option<Scope>, asked: Scope) -> Step {
 pub const RECENT_MAX: usize = 20;
 pub const RECENT_SHOWN: usize = 5;
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Recent {
     keys: Vec<Key>,
 }
@@ -536,6 +535,7 @@ pub static COMMANDS: &[Command] = {
 /// Bound or menu actions left out of the palette on purpose: ⌘1–⌘9 (the workspaces are rows of
 /// their own), each preset's key (a `Start` row per preset instead), the palette's own keys, and
 /// Cut and Select All (nothing in fuxx's window answers them).
+#[cfg(test)] // the parity test's
 pub const NOT_IN_PALETTE: &[&str] = &[
     "workspace::SelectSession1",
     "workspace::SelectSession2",
@@ -636,11 +636,13 @@ fn action_row(
 
 pub const NOTHING: &str = "Nothing matches";
 pub const LISTING: &str = "Listing files\u{2026}";
+#[allow(dead_code)] // task 5: the files' notes
 pub const SSH_NOTE: &str = "Files aren't searched for SSH terminals.";
 pub const NO_FOLDER: &str = "No terminal folder to search.";
 pub const FAILED: &str = "Files couldn't be listed.";
 pub const CAPPED: &str = "Only the first 50,000 files are searched.";
 /// The same, for a folder that isn't a repo (its walk is bounded sooner).
+#[allow(dead_code)] // task 5: the files' notes
 pub const CAPPED_WALK: &str = "Only part of this folder is searched.";
 pub const HINT: &str =
     "Enter open \u{b7} \u{2191}\u{2193} choose \u{b7} Tab scope \u{b7} Esc close";

@@ -206,7 +206,7 @@ pub(crate) struct PaletteSetting {
 
 /// Every control the palette can open Preferences at, section by section, top to bottom (the
 /// Cursor heading isn't one), so a control added later is listed by itself.
-#[allow(dead_code)] // used by the palette view (M11j task 4)
+#[allow(dead_code)] // task 5: listed by the palette
 pub(crate) fn palette_settings() -> Vec<PaletteSetting> {
     Section::ALL
         .into_iter()

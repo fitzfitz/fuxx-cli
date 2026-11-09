@@ -56,7 +56,7 @@ pub fn describe(action: &str) -> Describe {
         "workspace::NewSessionInFolder" => Listed(Workspaces, "New Workspace in Folder\u{2026}"),
         "workspace::NewSshSession" => Listed(Workspaces, "New SSH Workspace\u{2026}"),
         "workspace::RenameSession" => Listed(Workspaces, "Rename Workspace\u{2026}"),
-        "workspace::OpenSwitcher" => Listed(Workspaces, "Go to Session\u{2026}"),
+        "workspace::OpenSwitcher" => Listed(Workspaces, "Go to Workspace\u{2026}"),
         "workspace::NextNeedingYou" => Listed(Workspaces, "Go to What Needs You"),
         "workspace::OpenBrowser" => Listed(Workspaces, "Open Browser\u{2026}"),
         "workspace::NextSession" => Listed(Workspaces, "Next workspace"),
@@ -122,6 +122,7 @@ pub fn describe(action: &str) -> Describe {
         "view::Smaller" => Listed(WindowAndApp, "Smaller"),
         "view::ActualSize" => Listed(WindowAndApp, "Actual Size"),
         "help::ShowShortcuts" => Listed(WindowAndApp, "Keyboard Shortcuts"),
+        "workspace::OpenPalette" => Listed(WindowAndApp, "Command Palette\u{2026}"),
 
         "browser_tab::SuggestPrev"
         | "browser_tab::SuggestNext"
@@ -134,7 +135,7 @@ pub fn describe(action: &str) -> Describe {
         | "file_tab::CloseFind" => Unlisted,
         other if other.starts_with("name_input::") => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
-        other if other.starts_with("switcher::") => Unlisted,
+        other if other.starts_with("palette::") => Unlisted,
         // The Files panel's arrows, Return and Escape (in the panel only).
         other if other.starts_with("file_tree::") => Unlisted,
         _ => Describe::Unknown,
@@ -455,5 +456,27 @@ mod tests {
         ] {
             assert!(rows.iter().any(|r| r.group == group), "{group:?} is empty");
         }
+    }
+
+    #[test]
+    fn command_k_and_p_are_listed() {
+        let rows = crate::help_panel::shortcut_list(false);
+        let row = |group, name: &str, keys: &str| {
+            rows.iter()
+                .any(|r| r.group == group && r.name == name && r.keys == keys)
+        };
+        assert!(row(
+            ShortcutGroup::WindowAndApp,
+            "Command Palette\u{2026}",
+            "\u{2318}K"
+        ));
+        assert!(row(
+            ShortcutGroup::Workspaces,
+            "Go to Workspace\u{2026}",
+            "\u{2318}P"
+        ));
+        assert!(!rows.iter().any(|r| r.name.starts_with("Go to Session")));
+        assert_eq!(describe("palette::NextScope"), Describe::Unlisted);
+        assert_eq!(describe("switcher::SelectNext"), Describe::Unknown);
     }
 }

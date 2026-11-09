@@ -1,5 +1,5 @@
-//! The look shared by the three panels that open at the top of the window (the ⌘P switcher, the
-//! host picker and the address box): one surface, edge, shadow and radius, and one filter box
+//! The look shared by the panels that open at the top of the window (the command palette, the
+//! host picker, the address box and the Help panel): one surface, edge, shadow and radius, and one filter box
 //! with its placeholder. The box's own focus edge is the `NameInput`'s.
 
 use gpui::{

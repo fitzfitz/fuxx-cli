@@ -109,11 +109,11 @@ pub struct UiColors {
     /// A waiting row's fill; `done_tint` is the same, subtler, for a finished one.
     pub waiting_tint: Rgb,
     pub done_tint: Rgb,
-    /// A hovered waiting row's fill, and a hovered row of an overlay (switcher, menu).
+    /// A hovered waiting row's fill, and a hovered row of an overlay (palette, menu).
     pub waiting_hover: Rgb,
     pub panel_hover: Rgb,
     pub focus_ring: Rgb,
-    /// Overlays (switcher, popups): a surface raised above the window, its edge and its shadow.
+    /// Overlays (palette, popups): a surface raised above the window, its edge and its shadow.
     pub panel: Rgb,
     pub panel_border: Rgb,
     pub shadow: Rgb,
@@ -368,7 +368,7 @@ impl Theme {
                 min,
             }
         };
-        // Tab colours are drawn as dots wherever a mark is (rows, switcher, menu).
+        // Tab colours are drawn as dots wherever a mark is (rows, palette, menu).
         let tabs: Vec<(&'static str, Rgb)> = TabColor::ALL.map(|c| (c.name(), ui.tab(c))).into();
         // M11i's surfaces. The selected sidebar row keeps its marks and tab dot in their own
         // colours, so they are checked there too.

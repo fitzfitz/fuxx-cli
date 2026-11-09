@@ -349,7 +349,7 @@ impl Workspace {
             rename: self.renaming.is_some(),
             host_picker: self.host_picker.is_some(),
             address_box: self.address_box.is_some(),
-            switcher: self.switcher.is_some(),
+            palette: self.palette.is_some(),
             row_menu: self.sidebar.tab_menu.is_some(),
             tab_menu: self.pane_tab_menu.is_some(),
             pane_actions: self.pane_actions.is_some(),

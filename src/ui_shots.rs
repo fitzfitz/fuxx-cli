@@ -235,7 +235,14 @@ const SCENES: &[(&str, fn())] = &[
     ("default-name", default_name),
     ("names", names),
     ("renames", renames),
-    ("switcher", switcher_scenes),
+    ("rename-box", rename_box_scenes),
+    ("palette", palette_scene),
+    ("palette-workspaces", palette_workspaces_scene),
+    ("palette-actions", palette_actions_scene),
+    ("palette-keys", palette_keys_scene),
+    ("palette-run", palette_run_scene),
+    ("palette-refresh", palette_refresh_scene),
+    ("palette-recent", palette_recent_scene),
     ("overlays", overlays),
     ("help", help_scenes),
     ("panels", panel_scenes),
@@ -1937,11 +1944,11 @@ fn sidebar_selection_scenes() {
 /// - `tabs-hover`: the pointer over codex: a × in its mark's place; `tabs-hover-close`: on the
 ///   × itself; `tabs-hover-active`: over shell, the active row (which shows its mark otherwise).
 /// - `tabs-menu`: codex's tab menu open (right-click), blue ringed.
-/// - `tabs-switcher`: the ⌘P switcher, the dots beside the names, over the split's panes (tests
-///   and shell).
+/// - `tabs-switcher`: ⌘P (the palette on Workspaces), the dots beside the names, over the
+///   split's panes (tests and shell).
 ///
 /// Panics unless the dots are drawn in their colour on the rows, the menu opens on the row
-/// right-clicked and a click on a swatch sets the colour.
+/// right-clicked, a click on a swatch sets the colour, and ⌘P opens the palette on Workspaces.
 fn tab_scenes() {
     use crate::tab_color::TabColor;
     use gpui::{Modifiers, MouseButton};
@@ -2023,10 +2030,21 @@ fn tab_scenes() {
                         assert_eq!(open, Some(true), "{scene}-{slug}: codex's menu opens");
                     }
                     "tabs-switcher" => {
-                        cx.update_window(window, |_, window, cx| {
-                            ws.update(cx, |ws, cx| ws.open_switcher(window, cx))
-                        })
-                        .expect("open the switcher");
+                        cx.update(|cx| {
+                            cx.bind_keys([gpui::KeyBinding::new(
+                                "cmd-p",
+                                crate::workspace::OpenSwitcher,
+                                None,
+                            )])
+                        });
+                        cx.simulate_keystrokes(window, "cmd-p");
+                        let scope =
+                            cx.read(|cx| ws.read(cx).palette.as_ref().map(|p| p.read(cx).scope()));
+                        assert_eq!(
+                            scope,
+                            Some(crate::palette_items::Scope::Workspaces),
+                            "{scene}-{slug}: ⌘P opens the palette on Workspaces"
+                        );
                     }
                     _ => {}
                 }
@@ -8730,7 +8748,9 @@ fn browser_tab_scenes() {
             cx.simulate_keystrokes(window, "cmd-p");
             let rows = cx.read(|cx| {
                 let ws = ws.read(cx);
-                ws.switcher.as_ref().map(|s| s.read(cx).shown().count())
+                ws.palette
+                    .as_ref()
+                    .map(|p| p.read(cx).shown_workspaces().count())
             });
             assert_eq!(rows, Some(2), "{n}: both workspaces in ⌘P");
             // An agent closes its browser tab (api's, not the one shown) while ⌘P is open: the
@@ -8751,9 +8771,9 @@ fn browser_tab_scenes() {
             cx.run_until_parked();
             let still = cx
                 .update_window(window, |_, window, cx| {
-                    let switcher = ws.read(cx).switcher.clone();
-                    switcher
-                        .map(|s| gpui::Focusable::focus_handle(s.read(cx), cx).is_focused(window))
+                    let palette = ws.read(cx).palette.clone();
+                    palette
+                        .map(|p| gpui::Focusable::focus_handle(p.read(cx), cx).is_focused(window))
                 })
                 .expect("read");
             assert_eq!(
@@ -8764,8 +8784,8 @@ fn browser_tab_scenes() {
             // Pop Out of a tab with no page (off-screen): the tab just closes.
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| {
-                    ws.close_overlays(crate::workspace::Overlay::Switcher);
-                    ws.switcher = None;
+                    ws.close_overlays(crate::workspace::Overlay::Palette);
+                    ws.palette = None;
                     let tab = ws.model.focused_tab().expect("a tab");
                     ws.pop_out(tab, window, cx);
                 })
@@ -8780,8 +8800,9 @@ fn browser_tab_scenes() {
     }
 }
 
-/// The switcher's eight sessions: api (waiting with a boxed question, working, done, idle), web
-/// (waiting with no question found, done) and the SSH host build-box (working, idle).
+/// The ⌘P list's eight sessions (the palette scenes'): api (waiting with a boxed question,
+/// working, done, idle), web (waiting with no question found, done) and the SSH host build-box
+/// (working, idle).
 const SWITCHER_EIGHT: [ShotSession; 8] = [
     shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
     shot("codex", API, Status::Working, 32, AGENT_TEXT),
@@ -8810,18 +8831,13 @@ fn switcher_workspace(window: &mut Window, cx: &mut Context<Workspace>) -> Works
     ws
 }
 
-/// The ⌘P switcher over a real workspace, in both themes:
-/// - `switcher`: just opened, every session most urgent first (claude, which waited longest, then
-///   agent, the done ones, the working ones, the idle ones);
-/// - `switcher-filter`: "build" typed, which finds web's build session by name and build-box's
-///   two by group;
+/// The rename box over a real workspace, in both themes:
 /// - `rename`: the rename box just opened on shell (the selected row, tinted with the accent),
 ///   its old name selected; `rename-typed`: "api-2" typed over it.
 ///
-/// Panics unless the rows are in that order, the filter leaves three, the rename box has the
-/// old (or typed) name, and the box's text is drawn in `text` (it reads on the box, whatever the
-/// row under it is filled with).
-fn switcher_scenes() {
+/// Panics unless the rename box has the old (or typed) name, and the box's text is drawn in
+/// `text` (it reads on the box, whatever the row under it is filled with).
+fn rename_box_scenes() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
@@ -8829,7 +8845,7 @@ fn switcher_scenes() {
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let ui = theme.ui();
-        for scene in ["switcher", "switcher-filter", "rename", "rename-typed"] {
+        for scene in ["rename", "rename-typed"] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -8843,63 +8859,35 @@ fn switcher_scenes() {
             let found = renamed.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
-                let renaming = scene.starts_with("rename");
                 cx.update_window(window, |_, window, cx| {
                     ws.update(cx, |ws, cx| {
-                        if renaming {
-                            ws.start_rename(ws.model.display_order()[3], window, cx)
-                        } else {
-                            ws.open_switcher(window, cx)
-                        }
+                        ws.start_rename(ws.model.display_order()[3], window, cx)
                     })
                 })
                 .expect("open it");
                 cx.run_until_parked();
-                match scene {
-                    "switcher-filter" => cx.simulate_input(window, "build"),
-                    "rename-typed" => cx.simulate_input(window, "api-2"),
-                    _ => {}
+                if scene == "rename-typed" {
+                    cx.simulate_input(window, "api-2");
                 }
-                let shown = |cx: &mut VisualTestAppContext| {
-                    cx.read(|cx| {
-                        let switcher = ws.read(cx).switcher.clone().expect("the switcher");
-                        let rows = switcher.read(cx).shown().map(|e| e.label.clone());
-                        rows.collect::<Vec<_>>()
-                    })
-                };
-                match scene {
-                    "switcher" => assert_eq!(
-                        shown(cx),
-                        [
-                            "claude", "agent", "tests", "build", "codex", "deploy", "shell", "logs"
-                        ],
-                        "{scene}-{slug}: most urgent first"
-                    ),
-                    "switcher-filter" => assert_eq!(
-                        shown(cx),
-                        ["build", "deploy", "logs"],
-                        "{scene}-{slug}: filtered by name and group"
-                    ),
-                    _ => cx.read(|cx| {
-                        let ws = ws.read(cx);
-                        let (_, input) = ws.renaming.as_ref().expect("the rename box is open");
-                        let typed = if scene == "rename" { "shell" } else { "api-2" };
-                        assert_eq!(input.read(cx).text(), typed, "{scene}-{slug}");
-                        // shell's row: under api's header, after claude, codex and tests.
-                        let b = ws.sidebar.scroll.bounds_for_item(4).expect("laid out");
-                        found.set(Some((
-                            f32::from(b.left()),
-                            f32::from(b.right()),
-                            f32::from(b.top()),
-                        )));
-                    }),
-                }
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let (_, input) = ws.renaming.as_ref().expect("the rename box is open");
+                    let typed = if scene == "rename" { "shell" } else { "api-2" };
+                    assert_eq!(input.read(cx).text(), typed, "{scene}-{slug}");
+                    // shell's row: under api's header, after claude, codex and tests.
+                    let b = ws.sidebar.scroll.bounds_for_item(4).expect("laid out");
+                    found.set(Some((
+                        f32::from(b.left()),
+                        f32::from(b.right()),
+                        f32::from(b.top()),
+                    )));
+                });
                 // Not kept past the window: a handle left over is reported as a leak.
                 slot.borrow_mut().take();
             };
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
-            if scene.starts_with("rename") {
+            {
                 let shot = render_with(&theme, dims, build, act);
                 let (left, right, top) = renamed.get().expect("the renamed row");
                 // The box, right of the mark, along the name line.
@@ -8917,10 +8905,783 @@ fn switcher_scenes() {
     }
 }
 
-/// One box over the window at a time: opening the rename box, the switcher, the address box or
+/// Frames, so focus changes (and the boxes' blur events) and scrolls run.
+fn settle(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    for _ in 0..3 {
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+            .expect("draw");
+        cx.run_until_parked();
+    }
+}
+
+/// The open palette; none while it's closed.
+fn palette_of(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> Option<gpui::Entity<crate::palette::Palette>> {
+    cx.read(|cx| ws.read(cx).palette.clone())
+}
+
+/// The open palette's lines, scope and selected row's key.
+fn palette_state(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> (
+    Vec<crate::palette_items::Line>,
+    crate::palette_items::Scope,
+    Option<crate::palette_items::Key>,
+) {
+    let palette = palette_of(cx, ws).expect("the palette is open");
+    cx.read(|cx| {
+        let p = palette.read(cx);
+        (p.lines().to_vec(), p.scope(), p.selected_key().cloned())
+    })
+}
+
+/// The names of the workspaces the open palette lists, in order.
+fn palette_names(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>) -> Vec<String> {
+    let palette = palette_of(cx, ws).expect("the palette is open");
+    cx.read(|cx| {
+        palette
+            .read(cx)
+            .shown_workspaces()
+            .map(|e| e.label.clone())
+            .collect()
+    })
+}
+
+/// Open the palette on `scope` as ⌘K / ⌘P do, then let it take the keyboard.
+fn open_palette_on(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+    scope: crate::palette_items::Scope,
+) {
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_palette(scope, window, cx))
+    })
+    .expect("open the palette");
+    settle(cx, window);
+}
+
+/// Press `keys` (space-separated keystrokes), a few frames after each.
+fn press_keys(cx: &mut VisualTestAppContext, window: AnyWindowHandle, keys: &str) {
+    for key in keys.split(' ') {
+        cx.simulate_keystrokes(window, key);
+        settle(cx, window);
+    }
+}
+
+/// The workspaces' ids in display order (#1 first) and the id of the one named `label`.
+fn workspace_ids(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>) -> Vec<u64> {
+    cx.read(|cx| {
+        ws.read(cx)
+            .model
+            .display_order()
+            .iter()
+            .map(|w| w.0)
+            .collect()
+    })
+}
+
+/// Whether the active terminal's view has the keyboard.
+fn active_terminal_focused(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+) -> bool {
+    use gpui::Focusable;
+    cx.update_window(window, |_, window, cx| {
+        let ws = ws.read(cx);
+        let active = ws.sessions.active().expect("an active terminal");
+        active.view.focus_handle(cx).is_focused(window)
+    })
+    .expect("read the focus")
+}
+
+/// `switcher_workspace` with the app's whole key-binding table bound (⌘K, ⌘P, the palette's
+/// keys, the box's Enter and Esc).
+fn palette_build(
+    theme: Theme,
+    keep: Slot,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView + Clone {
+    move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(sidebar_appearance(theme, cx));
+        cx.bind_keys(crate::key_bindings());
+        let ws = cx.new(|cx| switcher_workspace(window, cx));
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    }
+}
+
+/// The ⌘K palette over `switcher_workspace` (shell's terminal focused), in both themes:
+/// `palette`, just opened on All: Workspaces (the five most urgent, then `… 3 more
+/// workspaces`) and Actions (the first five, then how many more), no Recent yet.
+///
+/// Panics unless the lines are exactly those, the first row is selected and filled
+/// `row_active` (the next one isn't), the `All` chip is filled `row_active` (the Actions chip
+/// isn't), and the panel is 600 pt wide.
+fn palette_scene() {
+    use crate::help_shortcuts::binding_pairs;
+    use crate::palette_items::{Focused, Key, Kind, Line, Scope, action_rows};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    type Seen = (
+        gpui::Bounds<Pixels>,
+        [gpui::Bounds<Pixels>; 2],
+        [gpui::Bounds<Pixels>; 2],
+    );
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = palette_build(theme, slot.clone());
+        let seen: Rc<Cell<Option<Seen>>> = Rc::default();
+        let found = seen.clone();
+        let n = format!("palette-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let ids = workspace_ids(cx, &ws);
+            open_palette_on(cx, window, &ws, Scope::All);
+            // The actions a terminal has with persistent sessions off, the presets' rows in.
+            let presets: Vec<String> = cx.read(|cx| {
+                cx.global::<Appearance>()
+                    .presets
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect()
+            });
+            let mut bindings = crate::new_bindings().to_vec();
+            bindings.extend(crate::key_bindings());
+            let actions = action_rows(
+                Focused::Terminal,
+                false,
+                &presets,
+                &binding_pairs(&bindings),
+            );
+            let item = |key| Line::Item {
+                key,
+                positions: Vec::new(),
+            };
+            let mut want = vec![Line::Header("Workspaces".into())];
+            // claude, agent, tests, build, codex: most urgent first.
+            want.extend([0, 4, 2, 5, 1].map(|i| item(Key::Workspace(ids[i]))));
+            want.push(Line::More {
+                kind: Kind::Workspace,
+                count: 3,
+            });
+            want.push(Line::Header("Actions".into()));
+            want.extend(
+                [
+                    "New Workspace",
+                    "New Workspace in Folder\u{2026}",
+                    "New SSH Workspace\u{2026}",
+                    "Rename Workspace\u{2026}",
+                    "Move Workspace Up",
+                ]
+                .map(|a| item(Key::Action(a))),
+            );
+            want.push(Line::More {
+                kind: Kind::Action,
+                count: actions.len() - 5,
+            });
+            let (lines, scope, selected) = palette_state(cx, &ws);
+            assert_eq!(lines, want, "{n}: the lines");
+            assert_eq!(scope, Scope::All, "{n}: on All");
+            assert_eq!(selected, Some(Key::Workspace(ids[0])), "{n}: claude chosen");
+            let palette = palette_of(cx, &ws).expect("open");
+            found.set(cx.read(|cx| {
+                let p = palette.read(cx);
+                Some((
+                    p.panel_bounds()?,
+                    [p.row_bounds(1)?, p.row_bounds(2)?],
+                    [p.chip_bounds(Scope::All)?, p.chip_bounds(Scope::Actions)?],
+                ))
+            }));
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        save_shot("palette", slug, &shot);
+        let (panel, [first, second], [all, actions]) = seen.get().expect("drawn");
+        let n = format!("palette-{slug}");
+        // Inside its 1 pt edge (what an absolute child fills): 600 pt with it, centred in the
+        // window less the 16 pt each side `top_panel` keeps.
+        let outer = f32::from(panel.size.width) + 2.0;
+        assert!(
+            (outer - 600.0).abs() < 0.5,
+            "{n}: the panel is {outer} wide"
+        );
+        let left = f32::from(panel.left()) - 1.0;
+        assert!((left - 180.0).abs() < 0.5, "{n}: centred ({left})");
+        // In a row's left padding, and in a chip's: their fill, clear of any text.
+        let fill = |b: gpui::Bounds<Pixels>, inset: f32| {
+            pixel_at(
+                &shot,
+                dims,
+                f32::from(b.left()) + inset,
+                f32::from(b.center().y),
+            )
+        };
+        assert!(
+            near(fill(first, 4.0), ui.row_active),
+            "{n}: the first row is chosen"
+        );
+        assert!(near(fill(second, 4.0), ui.panel), "{n}: the second isn't");
+        assert!(
+            near(fill(all, 3.0), ui.row_active),
+            "{n}: the All chip is lit"
+        );
+        assert!(
+            near(fill(actions, 3.0), ui.panel),
+            "{n}: the Actions chip isn't"
+        );
+    }
+}
+
+/// ⌘P's list in the palette (its Workspaces scope), in both themes:
+/// `palette-workspaces`: "build" typed, which finds web's build by its name and build-box's two
+/// by their group.
+///
+/// Panics unless, just opened, the list is the old ⌘P one (every workspace, most urgent first,
+/// under a Workspaces heading), "build" leaves build, deploy and logs, and (not shot) Enter goes
+/// to build and closes the palette, its terminal with the keyboard.
+fn palette_workspaces_scene() {
+    use crate::palette_items::{Line, Scope};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for enter in [false, true] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let n = format!("palette-workspaces-{slug}");
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let ids = workspace_ids(cx, &ws);
+                open_palette_on(cx, window, &ws, Scope::Workspaces);
+                let (lines, scope, _) = palette_state(cx, &ws);
+                assert_eq!(scope, Scope::Workspaces, "{n}");
+                assert_eq!(lines[0], Line::Header("Workspaces".into()), "{n}");
+                assert_eq!(
+                    palette_names(cx, &ws),
+                    [
+                        "claude", "agent", "tests", "build", "codex", "deploy", "shell", "logs"
+                    ],
+                    "{n}: most urgent first"
+                );
+                cx.simulate_input(window, "build");
+                settle(cx, window);
+                assert_eq!(
+                    palette_names(cx, &ws),
+                    ["build", "deploy", "logs"],
+                    "{n}: by name and group"
+                );
+                if enter {
+                    press_keys(cx, window, "enter");
+                    assert!(palette_of(cx, &ws).is_none(), "{n}: Enter closes it");
+                    let focused = cx.read(|cx| ws.read(cx).model.focused_workspace());
+                    assert_eq!(focused.map(|w| w.0), Some(ids[5]), "{n}: build is shown");
+                    let active = cx.read(|cx| ws.read(cx).sessions.active().map(|s| s.label()));
+                    assert_eq!(active.as_deref(), Some("build"), "{n}: its terminal");
+                    assert!(
+                        active_terminal_focused(cx, window, &ws),
+                        "{n}: with the keys"
+                    );
+                }
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            if !enter {
+                save_shot("palette-workspaces", slug, &shot);
+            }
+        }
+    }
+}
+
+/// Actions from the palette, in both themes:
+/// - `palette-actions`: "split r" typed: Split Right first, ⌘D on its right;
+/// - `palette-actions-prefix`: ">" typed on All: the Actions chip lit.
+///
+/// Panics unless Split Right is the first row with its keys drawn in `text_dim`, (not shot)
+/// Enter splits shell's pane (two panes, a terminal with the keyboard, the palette closed), and
+/// ">" puts the palette on Actions with that chip filled `row_active` (All's not).
+fn palette_actions_scene() {
+    use crate::palette_items::{Key, Scope, selectable};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for stage in ["shot", "enter", "prefix"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let seen: Rc<Cell<Option<[gpui::Bounds<Pixels>; 2]>>> = Rc::default();
+            let found = seen.clone();
+            let n = format!("palette-actions-{stage}-{slug}");
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                open_palette_on(cx, window, &ws, Scope::All);
+                if stage == "prefix" {
+                    cx.simulate_input(window, ">");
+                    settle(cx, window);
+                    let (_, scope, _) = palette_state(cx, &ws);
+                    assert_eq!(scope, Scope::Actions, "{n}: > searches Actions");
+                    let palette = palette_of(cx, &ws).expect("open");
+                    found.set(cx.read(|cx| {
+                        let p = palette.read(cx);
+                        Some([p.chip_bounds(Scope::Actions)?, p.chip_bounds(Scope::All)?])
+                    }));
+                    slot.borrow_mut().take();
+                    return;
+                }
+                cx.simulate_input(window, "split r");
+                settle(cx, window);
+                let (lines, _, selected) = palette_state(cx, &ws);
+                let first = selectable(&lines)[0];
+                assert_eq!(selected, Some(Key::Action("Split Right")), "{n}: first");
+                let palette = palette_of(cx, &ws).expect("open");
+                let keys = cx.read(|cx| palette.read(cx).action_keys("Split Right"));
+                assert_eq!(keys.as_deref(), Some("\u{2318}D"), "{n}: its keys");
+                let row = cx.read(|cx| palette.read(cx).row_bounds(first));
+                found.set(row.map(|r| [r, r]));
+                if stage == "enter" {
+                    let before = shown_panes(cx, &ws).len();
+                    press_keys(cx, window, "enter");
+                    assert!(palette_of(cx, &ws).is_none(), "{n}: Enter closes it");
+                    assert_eq!(before, 1, "{n}: one pane before");
+                    assert_eq!(shown_panes(cx, &ws).len(), 2, "{n}: split");
+                    let terminal = cx.read(|cx| ws.read(cx).focused_terminal());
+                    assert!(terminal.is_some(), "{n}: a terminal is focused");
+                    assert!(
+                        active_terminal_focused(cx, window, &ws),
+                        "{n}: with the keys"
+                    );
+                }
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            match stage {
+                "shot" => {
+                    save_shot("palette-actions", slug, &shot);
+                    let [row, _] = seen.get().expect("drawn");
+                    // ⌘D, right-aligned in `text_dim`: some of its pixels in the row's last
+                    // 60 pt (anti-aliasing aside, a glyph's stems are the colour itself).
+                    let right = f32::from(row.right());
+                    let ink: usize = (0..12)
+                        .map(|k| f32::from(row.top()) + 8.0 + k as f32)
+                        .map(|y| count_along(&shot, dims, ui.text_dim, y, right - 60.0, right))
+                        .sum();
+                    assert!(ink > 0, "palette-actions-{slug}: ⌘D is drawn ({ink})");
+                }
+                "prefix" => {
+                    save_shot("palette-actions-prefix", slug, &shot);
+                    let [actions, all] = seen.get().expect("drawn");
+                    let fill = |b: gpui::Bounds<Pixels>| {
+                        pixel_at(
+                            &shot,
+                            dims,
+                            f32::from(b.left()) + 3.0,
+                            f32::from(b.center().y),
+                        )
+                    };
+                    assert!(near(fill(actions), ui.row_active), "{slug}: Actions lit");
+                    assert!(near(fill(all), ui.panel), "{slug}: All isn't");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The palette's keys and toggles (not shot): ↓ and ↑ move through the selectable rows (the
+/// `… more` rows among them), round at both ends; Tab and ⇧Tab change scope, round; ⌘K on All
+/// closes it, ⌘K then ⌘P puts it on Workspaces with the text kept; Esc closes it, the keyboard
+/// back to the terminal; Enter on `… 3 more workspaces` goes to Workspaces and stays open; a
+/// replaced palette's late Cancel is ignored; a click on a chip changes scope. Panics on the
+/// first that doesn't hold.
+fn palette_keys_scene() {
+    use crate::palette_items::{Key, Kind, Line, NO_FOLDER, Scope};
+    use gpui::Modifiers;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = palette_build(theme, slot.clone());
+        let n = format!("palette-keys-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let ids = workspace_ids(cx, &ws);
+            let selected = |cx: &mut VisualTestAppContext| palette_state(cx, &ws).2;
+            let scope = |cx: &mut VisualTestAppContext| palette_state(cx, &ws).1;
+            press_keys(cx, window, "cmd-k");
+            assert_eq!(scope(cx), Scope::All, "{n}: ⌘K opens All");
+            assert_eq!(selected(cx), Some(Key::Workspace(ids[0])), "{n}");
+            // Over the `… more` row, into Actions; then up past the top, round to the last.
+            press_keys(cx, window, "down down down down down");
+            assert_eq!(
+                selected(cx),
+                Some(Key::More(Kind::Workspace)),
+                "{n}: ↓ to more"
+            );
+            press_keys(cx, window, "down");
+            assert_eq!(
+                selected(cx),
+                Some(Key::Action("New Workspace")),
+                "{n}: past it"
+            );
+            press_keys(cx, window, "up up up up up up up");
+            assert_eq!(selected(cx), Some(Key::More(Kind::Action)), "{n}: ↑ wraps");
+            press_keys(cx, window, "down");
+            assert_eq!(selected(cx), Some(Key::Workspace(ids[0])), "{n}: ↓ wraps");
+            // Scopes, round both ways.
+            press_keys(cx, window, "tab");
+            assert_eq!(scope(cx), Scope::Actions, "{n}: Tab");
+            press_keys(cx, window, "shift-tab shift-tab");
+            assert_eq!(scope(cx), Scope::Settings, "{n}: ⇧Tab ×2");
+            // ⌘K elsewhere puts it on All; on All it closes.
+            press_keys(cx, window, "cmd-k");
+            assert_eq!(scope(cx), Scope::All, "{n}: ⌘K back to All");
+            press_keys(cx, window, "cmd-k");
+            assert!(palette_of(cx, &ws).is_none(), "{n}: ⌘K on All closes");
+            // ⌘K, "co", ⌘P: Workspaces, with "co" still typed (codex only).
+            press_keys(cx, window, "cmd-k");
+            cx.simulate_input(window, "co");
+            settle(cx, window);
+            press_keys(cx, window, "cmd-p");
+            assert_eq!(scope(cx), Scope::Workspaces, "{n}: ⌘P rescopes");
+            assert_eq!(palette_names(cx, &ws), ["codex"], "{n}: the text kept");
+            press_keys(cx, window, "escape");
+            assert!(palette_of(cx, &ws).is_none(), "{n}: Esc closes");
+            assert!(
+                active_terminal_focused(cx, window, &ws),
+                "{n}: Esc, keys back"
+            );
+            // Enter on `… 3 more workspaces`: Workspaces, still open.
+            press_keys(cx, window, "cmd-k down down down down down enter");
+            assert_eq!(scope(cx), Scope::Workspaces, "{n}: more goes to Workspaces");
+            assert_eq!(palette_names(cx, &ws).len(), 8, "{n}: every workspace");
+            // A palette closed and replaced still reporting "lost focus" (as its box does once the
+            // next frame sees the focus gone): ignored, the new one stays open with the keys.
+            let old = palette_of(cx, &ws).expect("open");
+            press_keys(cx, window, "cmd-p");
+            assert!(
+                palette_of(cx, &ws).is_none(),
+                "{n}: ⌘P on Workspaces closes"
+            );
+            press_keys(cx, window, "cmd-k");
+            let new = palette_of(cx, &ws).expect("opened again");
+            assert_ne!(old, new, "{n}: a new palette");
+            cx.update(|cx| old.update(cx, |_, cx| cx.emit(crate::palette::PaletteEvent::Cancel)));
+            settle(cx, window);
+            assert_eq!(
+                palette_of(cx, &ws),
+                Some(new.clone()),
+                "{n}: the old one's is ignored"
+            );
+            drop(old);
+            press_keys(cx, window, "cmd-p");
+            // A click on the Files chip: Files, which (no folder until M11j task 5) says so.
+            let palette = palette_of(cx, &ws).expect("open");
+            let chip = cx.read(|cx| palette.read(cx).chip_bounds(Scope::Files));
+            let chip = chip.expect("the Files chip is drawn");
+            cx.simulate_click(window, chip.center(), Modifiers::none());
+            settle(cx, window);
+            let (lines, scope_now, _) = palette_state(cx, &ws);
+            assert_eq!(scope_now, Scope::Files, "{n}: a chip click");
+            assert_eq!(lines, [Line::Note(NO_FOLDER.into())], "{n}: the note");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: palette-keys-{slug} ok");
+    }
+}
+
+/// An action from the palette lands where its key would (not shot): with a file tab focused,
+/// "find" lists Find in File… and Enter opens the tab's find bar; with a terminal focused no
+/// Find is listed; Rename Workspace… opens the rename box (the palette closed); Preferences…
+/// reaches the app's handler exactly once. Panics on the first that doesn't hold.
+fn palette_run_scene() {
+    use crate::palette_items::{Key, Line, Scope};
+    use gpui::Focusable;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-palette");
+    std::fs::create_dir_all(&dir).expect("make the folder");
+    let file = dir.join("notes.rs");
+    std::fs::write(&file, "fn main() {\n    let found = 1;\n}\n").expect("write the file");
+    let is_find =
+        |l: &Line| matches!(l, Line::Item { key: Key::Action(a), .. } if a.starts_with("Find"));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+
+        // A file tab focused.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let opened = file.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            cx.bind_keys(crate::key_bindings());
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws.open_shot_session(
+                    "api",
+                    std::path::Path::new(API),
+                    SHELL_TEXT,
+                    None,
+                    window,
+                    cx,
+                );
+                ws.open_file_tab(opened, crate::layout_model::FileMode::Plain, window, cx);
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let n = format!("palette-run-file-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            settle(cx, window);
+            let tab = cx.read(|cx| ws.read(cx).focused_file_tab().cloned());
+            let tab = tab.expect("the file tab is focused");
+            open_palette_on(cx, window, &ws, Scope::All);
+            cx.simulate_input(window, "find");
+            settle(cx, window);
+            let (lines, _, selected) = palette_state(cx, &ws);
+            assert!(lines.iter().any(is_find), "{n}: Find is listed");
+            assert_eq!(selected, Some(Key::Action("Find in File\u{2026}")), "{n}");
+            press_keys(cx, window, "enter");
+            assert!(palette_of(cx, &ws).is_none(), "{n}: closed");
+            let (open, keys) = cx
+                .update_window(window, |_, window, cx| {
+                    let t = tab.read(cx);
+                    (
+                        t.find_open(),
+                        t.focus_handle(cx).contains_focused(window, cx),
+                    )
+                })
+                .expect("read the tab");
+            assert!(open, "{n}: the file tab's find bar is open");
+            assert!(keys, "{n}: the file tab has the keyboard");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+
+        // A terminal focused.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = palette_build(theme, slot.clone());
+        let n = format!("palette-run-terminal-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let preferences = Rc::new(Cell::new(0));
+            let count = preferences.clone();
+            cx.update(|cx| {
+                cx.on_action(move |_: &crate::OpenPreferences, _| count.set(count.get() + 1));
+            });
+            open_palette_on(cx, window, &ws, Scope::All);
+            cx.simulate_input(window, "find");
+            settle(cx, window);
+            let (lines, _, _) = palette_state(cx, &ws);
+            assert!(!lines.iter().any(is_find), "{n}: no Find for a terminal");
+            // Rename Workspace…: the rename box takes over, with the keyboard.
+            press_keys(cx, window, "cmd-backspace");
+            cx.simulate_input(window, "rename workspace");
+            settle(cx, window);
+            assert_eq!(
+                palette_state(cx, &ws).2,
+                Some(Key::Action("Rename Workspace\u{2026}")),
+                "{n}"
+            );
+            press_keys(cx, window, "enter");
+            let renaming = cx
+                .update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    ws.renaming
+                        .as_ref()
+                        .map(|(_, input)| input.focus_handle(cx).is_focused(window))
+                })
+                .expect("read");
+            assert_eq!(renaming, Some(true), "{n}: the rename box, with the keys");
+            assert!(palette_of(cx, &ws).is_none(), "{n}: the palette closed");
+            // Preferences…: the app's handler, once.
+            open_palette_on(cx, window, &ws, Scope::All);
+            cx.simulate_input(window, "preferences");
+            settle(cx, window);
+            assert_eq!(
+                palette_state(cx, &ws).2,
+                Some(Key::Action("Preferences\u{2026}")),
+                "{n}"
+            );
+            press_keys(cx, window, "enter");
+            assert_eq!(preferences.get(), 1, "{n}: Preferences… once");
+            assert!(palette_of(cx, &ws).is_none(), "{n}: closed");
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: palette-run-{slug} ok");
+    }
+}
+
+/// A list that moves while open (not shot): on Workspaces with tests (the third row) chosen,
+/// logs starts waiting and moves above it: tests stays chosen; tests' terminal closes (as a
+/// script's close would): the palette stays open, with the keyboard, and the first row is
+/// chosen. Panics on the first that doesn't hold.
+fn palette_refresh_scene() {
+    use crate::palette_items::{Key, Scope};
+    use gpui::Focusable;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = palette_build(theme, slot.clone());
+        let n = format!("palette-refresh-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let ids = workspace_ids(cx, &ws);
+            open_palette_on(cx, window, &ws, Scope::Workspaces);
+            press_keys(cx, window, "down down");
+            assert_eq!(
+                palette_state(cx, &ws).2,
+                Some(Key::Workspace(ids[2])),
+                "{n}"
+            );
+            // logs (#8) starts waiting: Waiting first, so it moves above tests.
+            cx.update(|cx| {
+                ws.update(cx, |ws, cx| {
+                    let logs = ws.sessions.get_mut(7).expect("logs");
+                    logs.status = Status::Waiting;
+                    logs.status_since = std::time::Instant::now();
+                    cx.notify();
+                })
+            });
+            settle(cx, window);
+            assert_eq!(
+                palette_names(cx, &ws)[..4],
+                ["claude", "agent", "logs", "tests"],
+                "{n}: logs moved up"
+            );
+            assert_eq!(
+                palette_state(cx, &ws).2,
+                Some(Key::Workspace(ids[2])),
+                "{n}: tests is still chosen"
+            );
+            // tests' only terminal closes.
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let tests = ws
+                        .sessions
+                        .position(|s| s.label() == "tests")
+                        .expect("tests");
+                    ws.close_at(tests, window, cx);
+                })
+            })
+            .expect("close tests");
+            settle(cx, window);
+            let palette = palette_of(cx, &ws).expect("{n}: still open");
+            let keys = cx
+                .update_window(window, |_, window, cx| {
+                    palette.read(cx).focus_handle(cx).is_focused(window)
+                })
+                .expect("read");
+            assert!(keys, "{n}: with the keyboard");
+            assert!(
+                !palette_names(cx, &ws).contains(&"tests".to_string()),
+                "{n}"
+            );
+            assert_eq!(
+                palette_state(cx, &ws).2,
+                Some(Key::Workspace(ids[0])),
+                "{n}: the first row is chosen"
+            );
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: palette-refresh-{slug} ok");
+    }
+}
+
+/// Recent (not shot): Split Right picked, the palette reopened shows it under Recent; workspace
+/// #2 picked too, both, newest first. Panics unless so.
+fn palette_recent_scene() {
+    use crate::palette_items::{Key, Line, Scope};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = palette_build(theme, slot.clone());
+        let n = format!("palette-recent-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let ids = workspace_ids(cx, &ws);
+            let item = |key| Line::Item {
+                key,
+                positions: Vec::new(),
+            };
+            open_palette_on(cx, window, &ws, Scope::All);
+            cx.simulate_input(window, "split right");
+            settle(cx, window);
+            press_keys(cx, window, "enter");
+            open_palette_on(cx, window, &ws, Scope::All);
+            let (lines, _, _) = palette_state(cx, &ws);
+            assert_eq!(
+                lines[..3],
+                [
+                    Line::Header("Recent".into()),
+                    item(Key::Action("Split Right")),
+                    Line::Header("Workspaces".into()),
+                ],
+                "{n}: Split Right under Recent"
+            );
+            press_keys(cx, window, "escape");
+            open_palette_on(cx, window, &ws, Scope::Workspaces);
+            cx.simulate_input(window, "2");
+            settle(cx, window);
+            assert_eq!(
+                palette_state(cx, &ws).2,
+                Some(Key::Workspace(ids[1])),
+                "{n}"
+            );
+            press_keys(cx, window, "enter");
+            open_palette_on(cx, window, &ws, Scope::All);
+            let (lines, _, _) = palette_state(cx, &ws);
+            assert_eq!(
+                lines[..4],
+                [
+                    Line::Header("Recent".into()),
+                    item(Key::Workspace(ids[1])),
+                    item(Key::Action("Split Right")),
+                    Line::Header("Workspaces".into()),
+                ],
+                "{n}: newest first"
+            );
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: palette-recent-{slug} ok");
+    }
+}
+
+/// One box over the window at a time: opening the rename box, the palette, the address box or
 /// the Help panel over another closes that one, and the new one keeps the keyboard (the old one's
-/// late "lost focus" must not take it back). Rename -> switcher -> rename -> address box ->
-/// switcher -> help -> rename -> help -> switcher, each checked after frames have run the focus
+/// late "lost focus" must not take it back). Rename -> palette -> rename -> address box ->
+/// palette -> help -> rename -> help -> palette, each checked after frames have run the focus
 /// changes. Then every overlay (`Overlay::ALL`) is opened
 /// in turn: each must count in the in-pane pages' hide signal (`overlays().any()`), and closing
 /// the overlays must clear it. Panics on the first that doesn't hold.
@@ -8948,8 +9709,8 @@ fn overlays() {
                 if let Some((_, input)) = &ws.renaming {
                     open.push(("rename", input.focus_handle(cx).is_focused(window)));
                 }
-                if let Some(s) = &ws.switcher {
-                    open.push(("switcher", s.focus_handle(cx).is_focused(window)));
+                if let Some(p) = &ws.palette {
+                    open.push(("palette", p.focus_handle(cx).is_focused(window)));
                 }
                 if let Some(a) = &ws.address_box {
                     open.push(("address", a.focus_handle(cx).is_focused(window)));
@@ -8966,14 +9727,14 @@ fn overlays() {
         };
         for (step, expect) in [
             ("rename", "rename"),
-            ("switcher", "switcher"),
+            ("palette", "palette"),
             ("rename", "rename"),
             ("address", "address"),
-            ("switcher", "switcher"),
+            ("palette", "palette"),
             ("help", "help"),
             ("rename", "rename"),
             ("help", "help"),
-            ("switcher", "switcher"),
+            ("palette", "palette"),
         ] {
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| match step {
@@ -8982,7 +9743,7 @@ fn overlays() {
                     "help" => {
                         ws.open_help(crate::help_panel::HelpPage::Shortcuts, true, window, cx)
                     }
-                    _ => ws.open_switcher(window, cx),
+                    _ => ws.open_palette(crate::palette_items::Scope::All, window, cx),
                 })
             })
             .expect("open it");
@@ -9013,7 +9774,9 @@ fn overlays() {
                             ws.host_picker = Some(picker);
                         }
                         Overlay::AddressBox => ws.open_address_box(window, cx),
-                        Overlay::Switcher => ws.open_switcher(window, cx),
+                        Overlay::Palette => {
+                            ws.open_palette(crate::palette_items::Scope::All, window, cx)
+                        }
                         Overlay::TabMenu => ws.open_tab_menu(first, at, window, cx),
                         Overlay::PaneTabMenu => {
                             let tab = ws.model.focused_tab().expect("a focused tab");
@@ -9035,7 +9798,7 @@ fn overlays() {
                 .expect("draw");
             cx.run_until_parked();
             let other = if overlay == Overlay::Rename {
-                Overlay::Switcher
+                Overlay::Palette
             } else {
                 Overlay::Rename
             };
@@ -9052,7 +9815,7 @@ fn overlays() {
             });
         }
         // The + menu (no keyboard of its own) hides the pages too, and any box opening closes
-        // it: ⌘P's switcher isn't left under its click-away backdrop.
+        // it: the palette isn't left under its click-away backdrop.
         cx.update(|cx| {
             ws.update(cx, |ws, _| ws.sidebar.new_menu = true);
             assert!(
@@ -9061,14 +9824,16 @@ fn overlays() {
             );
         });
         cx.update_window(window, |_, window, cx| {
-            ws.update(cx, |ws, cx| ws.open_switcher(window, cx))
+            ws.update(cx, |ws, cx| {
+                ws.open_palette(crate::palette_items::Scope::All, window, cx)
+            })
         })
-        .expect("open the switcher");
+        .expect("open the palette");
         cx.update(|cx| {
             let ws = ws.read(cx);
             assert!(
-                !ws.sidebar.new_menu && ws.switcher.is_some(),
-                "overlays: ⌘P closes the + menu"
+                !ws.sidebar.new_menu && ws.palette.is_some(),
+                "overlays: ⌘K closes the + menu"
             );
         });
         cx.update(|cx| ws.update(cx, |ws, _| ws.close_overlays(Overlay::Rename)));
@@ -9080,17 +9845,19 @@ fn overlays() {
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
 }
 
-/// The Help panel (M11d) over the switcher's workspace, in both themes:
+/// The Help panel (M11d) over the ⌘P fixture's workspace, in both themes:
 /// - `help-shortcuts`: Keyboard Shortcuts just opened, every listed binding in its group;
 /// - `help-split`: "split" typed, which leaves Split Right and Split Down;
 /// - `help-none`: "zzz" typed, which finds nothing ("No shortcut matches");
 /// - `help-commands`: the Command Reference with "browser" typed;
-/// - `help-over-switcher`: Keyboard Shortcuts opened while ⌘P's switcher is open;
+/// - `help-palette`: "palette" typed, which finds Command Palette… (⌘K);
+/// - `help-over-palette`: Keyboard Shortcuts opened while the command palette is open;
 /// - `help-toggle`: Keyboard Shortcuts opened and opened again (as ⌘/ twice does);
 /// - `help-tips`: Help → Show Welcome Tips with the sidebar hidden and the tips card closed.
 ///
-/// Panics unless the rows shown are the ones the pure modules list for that text, the panel
-/// opened over the switcher closed it and has the keyboard, and the second open closed the panel
+/// Panics unless the rows shown are the ones the pure modules list for that text (Command
+/// Palette… with ⌘K and Go to Workspace… with ⌘P among them), the panel opened over the palette
+/// closed it and has the keyboard, and the second open closed the panel
 /// and gave the keyboard back to the active terminal. `help-toggle` first checks the panel's
 /// keys: ↓ scrolls the list and ↑ scrolls it back, Enter leaves it open, Esc closes it (the
 /// keyboard back to the terminal), ↓ with nothing found leaves the list at the top once the box
@@ -9115,6 +9882,20 @@ fn help_scenes() {
         .filter(|e| entry_matches(e, "browser"))
         .count();
     assert_eq!(split, 2, "help: \"split\" finds Split Right and Split Down");
+    let palette = shortcuts
+        .iter()
+        .filter(|r| row_matches(r, "palette"))
+        .count();
+    assert_eq!(palette, 1, "help: \"palette\" finds Command Palette…");
+    for (name, keys) in [
+        ("Command Palette\u{2026}", "\u{2318}K"),
+        ("Go to Workspace\u{2026}", "\u{2318}P"),
+    ] {
+        assert!(
+            shortcuts.iter().any(|r| r.name == name && r.keys == keys),
+            "help: {name} {keys} is listed"
+        );
+    }
     assert!(
         browser >= 8,
         "help: every browser command matches \"browser\""
@@ -9127,8 +9908,9 @@ fn help_scenes() {
             "help-shortcuts",
             "help-split",
             "help-none",
+            "help-palette",
             "help-commands",
-            "help-over-switcher",
+            "help-over-palette",
             "help-toggle",
             "help-tips",
         ] {
@@ -9197,11 +9979,12 @@ fn help_scenes() {
                     .expect("read the focus")
                 };
                 match scene {
-                    "help-shortcuts" | "help-split" | "help-none" => {
+                    "help-shortcuts" | "help-split" | "help-none" | "help-palette" => {
                         open(cx, HelpPage::Shortcuts);
                         let (typed, rows) = match scene {
                             "help-split" => ("split", split),
                             "help-none" => ("zzz", 0),
+                            "help-palette" => ("palette", palette),
                             _ => ("", all_shortcuts),
                         };
                         if !typed.is_empty() {
@@ -9222,16 +10005,18 @@ fn help_scenes() {
                             "{n}: the browser commands"
                         );
                     }
-                    "help-over-switcher" => {
+                    "help-over-palette" => {
                         cx.update_window(window, |_, window, cx| {
-                            ws.update(cx, |ws, cx| ws.open_switcher(window, cx))
+                            ws.update(cx, |ws, cx| {
+                                ws.open_palette(crate::palette_items::Scope::All, window, cx)
+                            })
                         })
-                        .expect("open the switcher");
+                        .expect("open the palette");
                         cx.run_until_parked();
                         open(cx, HelpPage::Shortcuts);
                         assert!(
-                            cx.read(|cx| ws.read(cx).switcher.is_none()),
-                            "{n}: the help closed the switcher"
+                            cx.read(|cx| ws.read(cx).palette.is_none()),
+                            "{n}: the help closed the palette"
                         );
                         assert_eq!(
                             help(cx),
@@ -9340,8 +10125,8 @@ fn help_scenes() {
     }
 }
 
-/// The host picker and the address box over the same workspace as the switcher shots, in both
-/// themes (`host-picker-*`, `address-box-*`), to compare with `switcher-*`: one panel look.
+/// The host picker and the address box over the same workspace as the palette shots, in both
+/// themes (`host-picker-*`, `address-box-*`), to compare with `palette-*`: one panel look.
 /// The picker is given made-up recent hosts and no config hosts, so no `ssh -G` runs and
 /// `~/.ssh` is not read. Panics unless the box opened is the one asked for.
 fn panel_scenes() {

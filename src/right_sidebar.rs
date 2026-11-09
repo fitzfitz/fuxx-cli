@@ -251,7 +251,7 @@ pub fn kind_color(kind: FileKind, theme: &Theme) -> Rgb {
 }
 
 /// `kind_color` with the theme's chrome colours (`ui`) already worked out.
-fn kind_ink(kind: FileKind, theme: &Theme, ui: &UiColors) -> Rgb {
+pub(crate) fn kind_ink(kind: FileKind, theme: &Theme, ui: &UiColors) -> Rgb {
     let ansi = match kind {
         FileKind::Red => 1,
         FileKind::Green => 2,
