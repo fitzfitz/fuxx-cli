@@ -2136,16 +2136,19 @@ impl Workspace {
         self.sync();
         let keys = self.sidebar_groups();
         self.collapsed.retain(|c| keys.contains(&Some(c.clone())));
-        // An open palette with the keyboard keeps it (a script closed this terminal under it):
-        // focused again before the frame, it never sees itself lose the focus, and its list
-        // follows on the next draw (M11j).
-        let palette = self
+        // An open palette or Welcome card with the keyboard keeps it (a script closed this
+        // terminal under it): focused again before the frame, it never sees itself lose the
+        // focus, and the palette's list follows on the next draw (M11j, M11k).
+        let keeps = self
             .palette
-            .clone()
-            .filter(|p| p.focus_handle(cx).contains_focused(window, cx));
+            .as_ref()
+            .map(|p| p.focus_handle(cx))
+            .into_iter()
+            .chain(self.welcome.as_ref().map(|w| w.focus_handle(cx)))
+            .find(|f| f.contains_focused(window, cx));
         self.activate(window, cx);
-        if let Some(palette) = palette {
-            palette.focus_handle(cx).focus(window, cx);
+        if let Some(keeps) = keeps {
+            keeps.focus(window, cx);
         }
     }
 
