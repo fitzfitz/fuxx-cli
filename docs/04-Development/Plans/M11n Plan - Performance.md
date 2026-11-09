@@ -12,11 +12,11 @@ updated: 2026-11-10
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[65 - Milestone 11n - Performance]] |
-| **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-10 (every target met); the v0.5.0 release is next |
-| **Tasks done** | 7 / 9 (Tasks 0–5 and 8; Tasks 6 and 7, the merge and the release, are next) |
-| **▶ Pick up here** | Task 7 (the release v0.5.0); then a tiny docs commit flipping "pending" and notes 59–65 to released. |
+| **Status** | ✅ Built, reviewed, merged, pushed and released in v0.5.0 (2026-11-10; every target met); on-screen check pending |
+| **Tasks done** | 9 / 9 (Tasks 0–8) |
+| **▶ Pick up here** | Nothing: the plan is done. Next is your on-screen check (note 65). |
 | **Decisions used** | Yours (2026-11-09): a performance milestone after M11l (now M11n, after the M11m title bar); "push the release after performance milestone" (the one combined release v0.5.0, M11i–M11n, is this plan's Task 7). Everything else: AI's calls in note 65. |
-| **Needs your eyes** | 👀 the on-screen check in note 65 (11 items), after the release |
+| **Needs your eyes** | 👀 the on-screen check in note 65 (11 items), (v0.5.0 is released) |
 
 **Goal:** Cut fuxx's idle CPU with the breathing glow on, and drain output faster, without changing what you see:
 the breath keeps its curve and never takes a bigger step than today, every byte still reaches the screen, the
@@ -269,7 +269,8 @@ are `Copy + PartialEq`), recomputing only when the theme differs. `#[cfg(test)] 
 
 ### Task 6: Merge and push (pre-authorized, autonomous program)
 
-- [ ] Full gate on the branch: `cargo test`, `cargo clippy --all-targets`, `cargo clippy --all-targets --features
+- [x] Merged and pushed: `master` f661d5e..68c134c.
+- [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets`, `cargo clippy --all-targets --features
   ui-shots`, `cargo fmt --check`, the full `cargo run --features ui-shots -- __ui-shots` green; a whole-branch review
   against note 65 and this plan's Review Focus; then merge `m11n-performance` into `master` and push.
 
@@ -280,11 +281,11 @@ must be `v` + the `Cargo.toml` version), `cargo test`, `scripts/bundle-mac.sh --
 --generate-notes`. Earlier releases: `chore(release): 0.4.0 — …` (`28b825f`) touched only `Cargo.toml` and
 `Cargo.lock`.
 
-- [ ] On `master` after Task 6: `version = "0.5.0"` in `Cargo.toml`; `cargo build` (updates `Cargo.lock`);
+- [x] On `master` after Task 6: `version = "0.5.0"` in `Cargo.toml`; `cargo build` (updates `Cargo.lock`);
   `cargo test` green.
-- [ ] Commit `chore(release): 0.5.0 — UI uplift 2, Changes and Activity, ⌘K palette, first-run screen, command
+- [x] Commit (`7f85fad`) `chore(release): 0.5.0 — UI uplift 2, Changes and Activity, ⌘K palette, first-run screen, command
   blocks, title bar, performance (M11i–M11n)`; push `master`.
-- [ ] `git tag v0.5.0 && git push origin v0.5.0`; watch the run: `gh run list --workflow Release --limit 1`, then
+- [x] (tag v0.5.0, run 42662570303 green) `git tag v0.5.0 && git push origin v0.5.0`; watch the run: `gh run list --workflow Release --limit 1`, then
   `gh run watch <id> --exit-status`. Green means the release `fuxx 0.5.0` exists with `fuxx-0.5.0.zip`
   (`gh release view v0.5.0`). A red run: read `gh run view <id> --log-failed`, fix on `master`, delete and re-push the
   tag only after the fix.

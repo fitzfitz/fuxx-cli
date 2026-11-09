@@ -6,7 +6,7 @@ status: built
 # 63 - Milestone 11l - Command Blocks (design)
 
 **Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1251 tests; every detail AI's call; you skipped the design questions, except the chip's shape, which you chose from mockups). On-screen check pending (22 items).
-Not released on its own: it ships in the one combined release (M11i–M11n) after M11n (your rule, 2026-11-09). Ships in v0.5.0 (the release after M11n; pending).**  ·  **Phase 4: an M11 extension.**  ·
+Released in v0.5.0 (2026-11-10).**  ·  **Phase 4: an M11 extension.**  ·
 **Plan:** [[M11l Plan - Command Blocks]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout, a command palette, a first-run screen
 and command blocks"). The last of M11i–M11l; after it come M11m (title bar) and M11n (performance), both listed 2026-11-09 and not designed here.
