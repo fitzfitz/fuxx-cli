@@ -197,13 +197,16 @@ pub fn shows_name(width: f32, full_screen: bool) -> bool {
     width - 2.0 * name_inset(full_screen) >= NAME_MIN
 }
 
-/// Whether the open sidebar's band, `sidebar_width` wide, has room for the title: a
-/// `TITLE_ROOM` box centred on its middle clear of the traffic lights on the left and
-/// `TITLE_GAP` short of the sidebar button on the right. It is drawn whole or not at all.
-pub fn shows_title(sidebar_width: f32, full_screen: bool) -> bool {
+/// Whether the open sidebar's band, `sidebar_width` wide in a window `window_width` wide, has
+/// room for the title: a `TITLE_ROOM` box centred on its middle clear of the traffic lights on
+/// the left and `TITLE_GAP` short of the sidebar button on the right (where it is drawn,
+/// `open_button_at`: brought in from the band's edge in a window narrower than the sidebar). It
+/// is drawn whole or not at all.
+pub fn shows_title(sidebar_width: f32, window_width: f32, full_screen: bool) -> bool {
     let mid = sidebar_width / 2.0;
     mid - TITLE_ROOM / 2.0 >= sidebar_toggle::lights_clear(full_screen)
-        && mid + TITLE_ROOM / 2.0 + TITLE_GAP <= sidebar_toggle::open_button_x(sidebar_width)
+        && mid + TITLE_ROOM / 2.0 + TITLE_GAP
+            <= sidebar_toggle::open_button_at(sidebar_width, window_width)
 }
 
 impl Workspace {
@@ -486,7 +489,8 @@ impl Workspace {
     /// (`shows_title`). It takes no clicks, so the band under it still drags the window and a
     /// double-click still zooms.
     pub(crate) fn render_app_title(&self, ui: UiColors, window: &Window) -> Option<AnyElement> {
-        if !shows_title(self.sidebar.width, window.is_fullscreen()) {
+        let width = window.viewport_size().width.as_f32();
+        if !shows_title(self.sidebar.width, width, window.is_fullscreen()) {
             return None;
         }
         Some(
@@ -862,12 +866,21 @@ mod tests {
 
     #[test]
     fn the_title_shows_where_it_fits() {
-        assert!(shows_title(240.0, false), "the default sidebar shows it");
-        assert!(!shows_title(180.0, false), "too narrow beside the lights");
-        assert!(shows_title(180.0, true), "no lights in full screen");
+        assert!(
+            shows_title(240.0, 960.0, false),
+            "the default sidebar shows it"
+        );
+        assert!(
+            !shows_title(180.0, 960.0, false),
+            "too narrow beside the lights"
+        );
+        assert!(shows_title(180.0, 960.0, true), "no lights in full screen");
         let t = 2.0 * (80.0 + TITLE_ROOM / 2.0);
-        assert!(shows_title(t, false), "at the threshold {t}");
-        assert!(!shows_title(t - 0.5, false), "just under the threshold {t}");
+        assert!(shows_title(t, 960.0, false), "at the threshold {t}");
+        assert!(
+            !shows_title(t - 0.5, 960.0, false),
+            "just under the threshold {t}"
+        );
         assert_eq!(TITLE, "the Fuxx?");
     }
 
@@ -877,7 +890,7 @@ mod tests {
             let mut was = false;
             for k in 0..=440 {
                 let w = 180.0 + k as f32 * 0.5;
-                let shown = shows_title(w, fs);
+                let shown = shows_title(w, w, fs);
                 assert!(
                     shown || !was,
                     "full screen {fs}: shown, then not at {w} (not monotonic)"
@@ -893,6 +906,41 @@ mod tests {
                         "full screen {fs}, width {w}: into the button"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn in_a_window_narrower_than_the_sidebar_the_title_keeps_clear_of_the_button() {
+        use crate::sidebar_toggle::open_button_at;
+        use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+        // 240 pt sidebar, 200 pt window: the button comes in to 168, the title (88..152, 8 short
+        // of it) still fits; at 180 pt the button (148) would meet it, so it goes.
+        assert!(shows_title(240.0, 200.0, false));
+        assert!(!shows_title(240.0, 180.0, false));
+        for fs in [false, true] {
+            let mut s = SIDEBAR_MIN_WIDTH;
+            while s <= SIDEBAR_MAX_WIDTH {
+                for k in 0..=220 {
+                    let w = 60.0 + k as f32 * 2.0;
+                    if shows_title(s, w, fs) {
+                        let (left, right) =
+                            (s / 2.0 - TITLE_ROOM / 2.0, s / 2.0 + TITLE_ROOM / 2.0);
+                        assert!(
+                            left >= lights_clear(fs),
+                            "full screen {fs}, sidebar {s}, window {w}: over the lights"
+                        );
+                        assert!(
+                            right + TITLE_GAP <= open_button_at(s, w),
+                            "full screen {fs}, sidebar {s}, window {w}: into the button"
+                        );
+                    }
+                    // A window at least as wide as the sidebar changes nothing.
+                    if w >= s {
+                        assert_eq!(shows_title(s, w, fs), shows_title(s, s, fs));
+                    }
+                }
+                s += 5.0;
             }
         }
     }

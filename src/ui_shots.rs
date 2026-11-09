@@ -13346,7 +13346,9 @@ fn title_area_scenes() {
 /// - `title-bar-open`: the default 240 pt sidebar: "the Fuxx?" in the middle of its band, the
 ///   sidebar button at the band's right edge, over the footer gear;
 /// - `title-bar-open-narrow`: the narrowest sidebar (180 pt): the button only, no title;
-/// - `title-bar-open-threshold`: the sidebar exactly as wide as the title needs.
+/// - `title-bar-open-threshold`: the sidebar exactly as wide as the title needs;
+/// - `title-bar-open-tiny`: a 200 × 200 window, narrower than the 240 pt sidebar: the button
+///   comes in to the window's edge, and (Mocha) a click on it hides the sidebar.
 ///
 /// Collapsed (760 × 200 unless noted): the workspace's name centred on the window and [🔔] [⚙]
 /// [sidebar] at the band's far right (`band_buttons`):
@@ -13377,7 +13379,9 @@ fn title_area_scenes() {
 /// (band 🔔 then shown, footer 🔔 then ⌘\) closes it, leaves no overlay or backdrop and gives the
 /// terminal the keyboard.
 fn title_bar_scenes() {
-    use crate::sidebar_toggle::{BAND_EDGE, BUTTON_Y, HIT, Slide, lights_clear, open_button_x};
+    use crate::sidebar_toggle::{
+        BAND_EDGE, BUTTON_Y, HIT, Slide, lights_clear, open_button_at, open_button_x,
+    };
     use crate::tab_menu::Dismiss;
     use crate::title_area::{
         DOT, DOT_INSET, EDGE_MARGIN, FOOTER_BUTTON, TITLE_GAP, TITLE_ROOM, band_buttons,
@@ -13501,6 +13505,83 @@ fn title_bar_scenes() {
                 }
             }
         }
+    }
+
+    // A window narrower than the sidebar (200 pt, the default 240 pt sidebar): the open button
+    // comes in to the window's edge (`open_button_at`), wholly inside it, and the title keeps
+    // `TITLE_GAP` short of it.
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
+        let (band, dim) = (bg(ui.sidebar_background), bg(ui.text_dim));
+        let scene = "title-bar-open-tiny";
+        let dims = size(px(200.0), px(200.0));
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = switcher_workspace(window, cx);
+                ws.sidebar.width = SIDEBAR_DEFAULT_WIDTH;
+                ws
+            });
+            ws.into()
+        };
+        let shot = render_with(&theme, dims, build, |_, _| ());
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+        let path = dir.join(format!("{scene}-{slug}.png"));
+        std::fs::write(&path, png(&shot)).expect("write the PNG");
+        println!("ui-shots: {}", path.display());
+        let n = format!("{scene}-{slug}");
+        let x = open_button_at(SIDEBAR_DEFAULT_WIDTH, 200.0);
+        assert!(
+            x + HIT <= 200.0 - BAND_EDGE,
+            "{n}: the button's box inside the window"
+        );
+        let button = ink_box(&shot, dims, (x, BUTTON_Y, HIT, HIT), band, dim)
+            .unwrap_or_else(|| panic!("{n}: no button ink at {x}"));
+        let title = ink_box(&shot, dims, (0.0, 0.0, x, TOP_BAND), band, dim);
+        println!("ui-shots: {n}: button {button:?}, title {title:?}");
+        let mid = (button.0 + button.1) / 2.0;
+        assert!(
+            (mid - (x + HIT / 2.0)).abs() <= 0.5,
+            "{n}: the button's ink is centred at {mid}, its box at {}",
+            x + HIT / 2.0
+        );
+        if let Some(t) = title {
+            assert!(
+                t.1 <= x - TITLE_GAP,
+                "{n}: the title {t:?} runs into the button at {x}"
+            );
+        }
+    }
+    // And (Mocha) a click on it hides the sidebar.
+    {
+        let theme = shot_theme("Catppuccin Mocha");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = switcher_workspace(window, cx);
+                ws.sidebar.width = SIDEBAR_DEFAULT_WIDTH;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let x = open_button_at(SIDEBAR_DEFAULT_WIDTH, 200.0) + HIT / 2.0;
+            let on = point(px(x), px(BUTTON_Y + HIT / 2.0));
+            cx.simulate_click(window, on, Modifiers::none());
+            assert!(
+                cx.read(|cx| ws.read(cx).sidebar.hidden),
+                "title-bar open, 200 pt window: a click on the button hides the sidebar"
+            );
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, size(px(200.0), px(200.0)), build, act);
     }
 
     // Collapsed (M11m Task 2): the workspace's name centred on the window, [🔔] [⚙] [sidebar] at

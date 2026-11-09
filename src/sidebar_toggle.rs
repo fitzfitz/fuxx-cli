@@ -79,6 +79,13 @@ pub fn open_button_x(sidebar_width: f32) -> f32 {
     sidebar_width - BAND_EDGE - HIT
 }
 
+/// Where the open sidebar's button is drawn in a window `window_width` wide: at the sidebar
+/// band's right edge (`open_button_x`), or, in a window narrower than the sidebar (which isn't
+/// clamped to it), `BAND_EDGE` in from the window's right edge so it can still be clicked.
+pub fn open_button_at(sidebar_width: f32, window_width: f32) -> f32 {
+    open_button_x(sidebar_width).min(window_width - BAND_EDGE - HIT)
+}
+
 /// How much of the sidebar's width is on screen `elapsed` into a slide from `from` towards
 /// `showing` (0 to 1), easing out: fast at first, settling at the end.
 pub fn shown_fraction(elapsed: Duration, from: f32, showing: bool) -> f32 {
@@ -202,6 +209,32 @@ mod tests {
         assert_eq!(BUTTON_Y + HIT / 2.0, TOP_BAND / 2.0);
         assert_eq!(lights_clear(false), 80.0);
         assert_eq!(lights_clear(true), 13.0);
+    }
+
+    #[test]
+    fn the_open_button_stays_in_a_window_narrower_than_the_sidebar() {
+        use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+        // As wide as the sidebar or wider: at the sidebar band's right edge, as ever.
+        assert_eq!(open_button_at(240.0, 960.0), open_button_x(240.0));
+        assert_eq!(open_button_at(240.0, 240.0), open_button_x(240.0));
+        // Narrower: `BAND_EDGE` in from the window's right edge.
+        assert_eq!(open_button_at(240.0, 200.0), 200.0 - BAND_EDGE - HIT);
+        let mut s = SIDEBAR_MIN_WIDTH;
+        while s <= SIDEBAR_MAX_WIDTH {
+            for k in 0..=200 {
+                let w = 60.0 + k as f32 * 2.0;
+                let x = open_button_at(s, w);
+                assert!(
+                    x + HIT + BAND_EDGE <= w,
+                    "sidebar {s}, window {w}: off the window"
+                );
+                assert!(
+                    x <= open_button_x(s),
+                    "sidebar {s}, window {w}: past the band's edge"
+                );
+            }
+            s += 10.0;
+        }
     }
 
     #[test]
