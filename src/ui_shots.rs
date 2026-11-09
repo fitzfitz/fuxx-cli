@@ -3046,10 +3046,14 @@ fn tab_bar_scenes() {
                         b: p[2],
                     };
                     let apart = contrast(rgb(above), rgb(px_at(x, y)));
-                    assert!(
-                        apart >= ui_tokens::TAB_BAR_MIN - 0.01,
-                        "{n}: strip vs api tab {apart:.3}"
-                    );
+                    // (Light themes, and dark ones whose card is near black, reach less than the
+                    // minimum: see `Theme::ui`.)
+                    let floor = if theme.is_dark() && ui.tab_bar != rgb([0, 0, 0]) {
+                        ui_tokens::TAB_BAR_MIN
+                    } else {
+                        1.15
+                    };
+                    assert!(apart >= floor - 0.01, "{n}: strip vs api tab {apart:.3}");
                     let (x, y) = fill_at(claude);
                     assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
                     // codex: no fill, no ×.
@@ -10904,8 +10908,9 @@ fn welcome_scene() {
                 pixel_at(&shot, dims, x, band / 2.0),
                 pixel_at(&bare, dims, x, band / 2.0),
             );
+            // (Pure black, as a tab bar can now be, has nothing left to dim.)
             assert!(
-                sum(with) + 6 <= sum(without),
+                sum(with) + 6 <= sum(without) || sum(without) <= 6,
                 "{n}: the top band at {x} is dimmed ({with:?} vs {without:?})"
             );
         }

@@ -216,6 +216,33 @@ impl Theme {
         let waiting_tint = mix(sidebar, waiting, if dark { 0.12 } else { 0.08 });
         let done_tint = mix(sidebar, done, if dark { 0.07 } else { 0.05 });
         let waiting_hover = mix(waiting_tint, fg, 0.06);
+        // M11i's cards and tab bars. The card is the terminal; the tab bar sits halfway between
+        // it and the canvas (the sidebar colour) so it reads as the card's top.
+        let card = bg;
+        let card_hover = mix(card, fg, 0.06);
+        // The bar's empty strip starts at the canvas colour and steps away from the card (dark
+        // themes toward black, light ones toward the foreground) until it stands apart from the
+        // active tab (`TAB_BAR_MIN`), stopping short of reading as a separate band (< 1.6:1
+        // against the canvas).
+        let tab_bar = {
+            let toward = if dark { Rgb { r: 0, g: 0, b: 0 } } else { fg };
+            // Light themes keep the cap lower: a darker bar squeezes text, text_dim and
+            // text_faint (all ≥ 4.5:1 on it) together until they stop looking different.
+            let cap = if dark { 1.6 } else { 1.15 };
+            let mut bar = sidebar;
+            for n in 0..100 {
+                if contrast(bar, card) >= TAB_BAR_MIN {
+                    break;
+                }
+                let next = mix(sidebar, toward, 0.01 * (n + 1) as f32);
+                if contrast(next, sidebar) >= cap {
+                    break;
+                }
+                bar = next;
+            }
+            bar
+        };
+        let tab_hover = mix(tab_bar, fg, 0.06);
         // Every surface something is drawn on: rows, tinted rows, overlays, pane tabs.
         let surfaces = [
             sidebar,
@@ -227,33 +254,11 @@ impl Theme {
             waiting_tint,
             done_tint,
             waiting_hover,
+            tab_bar,
+            tab_hover,
         ];
         let mark = |c: Rgb| readable(c, &surfaces, MARK_MIN);
         let accent = mark(self.palette[4]);
-        // M11i's cards and tab bars. The card is the terminal; the tab bar sits halfway between
-        // it and the canvas (the sidebar colour) so it reads as the card's top.
-        let card = bg;
-        let card_hover = mix(card, fg, 0.06);
-        // The bar's empty strip starts at the canvas colour and steps away from the card (dark
-        // themes toward black, light ones toward the foreground) until it stands apart from the
-        // active tab (`TAB_BAR_MIN`), stopping short of reading as a separate band (< 1.6:1
-        // against the canvas).
-        let tab_bar = {
-            let toward = if dark { Rgb { r: 0, g: 0, b: 0 } } else { fg };
-            let mut bar = sidebar;
-            for n in 0..=50 {
-                if contrast(bar, card) >= TAB_BAR_MIN {
-                    break;
-                }
-                let next = mix(sidebar, toward, 0.01 * (n + 1) as f32);
-                if contrast(next, sidebar) >= 1.6 {
-                    break;
-                }
-                bar = next;
-            }
-            bar
-        };
-        let tab_hover = mix(tab_bar, fg, 0.06);
         // A selection is a soft wash of the accent over its surface, lowered in 2 % steps while
         // the text (as it reads on the other surfaces) would fall below 4.5:1 on it. At 0 it is
         // the surface itself, which the text reads on.
@@ -669,7 +674,15 @@ mod tests {
         for (name, theme) in every_theme() {
             let ui = theme.ui();
             let c = contrast(ui.tab_bar, ui.card);
-            assert!(c >= TAB_BAR_MIN, "{name}: tab bar vs card {c:.3}");
+            // A dark theme whose card is already near black can't reach the minimum: its bar
+            // then goes all the way to black, the most it can get. A light theme's bar is held
+            // to 1.15:1 against the canvas so text, dim and faint text stay distinct.
+            let black = ui.tab_bar == Rgb { r: 0, g: 0, b: 0 };
+            let light = !theme.is_dark();
+            assert!(
+                c >= TAB_BAR_MIN || black || (light && c >= 1.15),
+                "{name}: tab bar vs card {c:.3}"
+            );
             assert!(
                 contrast(ui.tab_bar, ui.sidebar_background) < 1.6,
                 "{name}: still part of the card's top"

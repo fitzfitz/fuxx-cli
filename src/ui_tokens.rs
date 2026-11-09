@@ -17,7 +17,7 @@ pub const MARK_MIN: f32 = 3.0;
 pub const QUIET_LINE_MIN: f32 = 1.4;
 /// The pane tab bar's empty strip against the card (the active tab's colour): enough that the
 /// two read as different surfaces. Stepped to from the canvas colour, within the floors.
-pub const TAB_BAR_MIN: f32 = 1.15;
+pub const TAB_BAR_MIN: f32 = 1.3;
 
 /// Sizes in pixels, from the M11 plan's Global Constraints.
 pub mod size {
