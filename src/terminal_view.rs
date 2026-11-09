@@ -31,7 +31,7 @@ use gpui::{
 use crate::appearance::{Appearance, CursorFun, CursorShapeSetting};
 use crate::block_view::{
     self, BAR_END_GAP, BAR_RADIUS, CHIP_GAP, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS, GUTTER_BAR,
-    GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal, SEPARATOR,
+    GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal,
 };
 use crate::blocks::{Block, Outcome};
 use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
@@ -1556,8 +1556,6 @@ impl Render for TerminalView {
                         let marks = BlockMarks {
                             blocks,
                             runs,
-                            live_prompt: snap.live_prompt,
-                            first_line: snap.display_offset as i32 - snap.history_size as i32,
                             dims: (snap.cols, snap.rows),
                             split,
                             hovered: hovered_block.as_deref(),
@@ -1797,9 +1795,6 @@ struct BlockMarks<'a> {
     /// Each block's right prompt on its command row (`block_view::right_run`), when the row
     /// is in view.
     runs: Vec<Option<usize>>,
-    live_prompt: Option<i32>,
-    /// The viewport row of the first line of scrollback (no hairline there).
-    first_line: i32,
     /// The grid's columns and rows.
     dims: (usize, usize),
     split: bool,
@@ -1807,8 +1802,7 @@ struct BlockMarks<'a> {
 }
 
 impl BlockMarks<'_> {
-    /// Paint the hairlines above prompts (under the text) and the bars in the left padding,
-    /// and say where the bars are. `bounds` is the pane, `origin` the grid's first cell.
+    /// Paint the bars in the left padding, and say where they are. `bounds` is the pane, `origin` the grid's first cell.
     fn paint(
         self,
         ui: &UiColors,
@@ -1823,13 +1817,6 @@ impl BlockMarks<'_> {
             size(m.cell_width * cols as f32, m.line_height * rows as f32),
         );
         let row_y = |r: i32| origin.y + m.line_height * r as f32;
-        for r in block_view::separator_rows(&self.blocks, self.live_prompt, rows, self.first_line) {
-            let line = Bounds::new(
-                point(origin.x, row_y(r)),
-                size(grid.size.width, px(SEPARATOR)),
-            );
-            window.paint_quad(fill(line, hsla(ui.card_border)));
-        }
         let centre = origin.x - px(block_view::gutter_x(self.split));
         let mut painted = GutterPaint {
             strip: (bounds.left(), origin.x),

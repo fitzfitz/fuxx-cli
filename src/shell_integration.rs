@@ -1014,9 +1014,7 @@ fi
 
     /// The prompt's row, counted from the top of the scrollback (stable while it scrolls).
     fn prompt_row(core: &TerminalCore) -> Option<i64> {
-        let snap = core.snapshot_with_blocks(None);
-        snap.live_prompt
-            .map(|row| i64::from(row) + snap.history_size as i64)
+        core.live_prompt_from_top()
     }
 
     /// Send `keys` at the ready prompt that should give a new prompt and no block (an empty
