@@ -59,6 +59,10 @@ const HEADING_BELOW: f32 = 6.0;
 /// A choosable row (the folder field too), and the room between agent rows.
 const ROW: f32 = 28.0;
 const ROW_GAP: f32 = 2.0;
+/// The agent list never shrinks below two rows (one with no presets), so a short window still
+/// shows two. In a window too short for that and the rest (about 445 pt with the built-in
+/// presets), the footer is pushed past the card's foot.
+const LIST_MIN: f32 = ROW * 2.0 + ROW_GAP;
 /// The Choose… button's height.
 const CHOOSE_HEIGHT: f32 = 24.0;
 /// A keycap: its height, least width, side padding, corner and text size; the room between the
@@ -629,6 +633,7 @@ impl Render for Welcome {
         }
         let plain = said.say(PLAIN_TERMINAL);
         agents.push(self.agent_row(Row::Plain, plain, None, None, &ui, cx));
+        let list_min = if agents.len() > 1 { LIST_MIN } else { ROW };
 
         let shortcuts_heading = said.say(HEADING_SHORTCUTS.to_uppercase());
         let mut caps = Vec::new();
@@ -755,7 +760,7 @@ impl Render for Welcome {
                     .flex_col()
                     .gap(px(ROW_GAP))
                     .flex_shrink(1.0)
-                    .min_h(px(0.0))
+                    .min_h(px(list_min))
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .children(agents),
