@@ -14,6 +14,12 @@
 'builtin' 'typeset' -gi _fuxx_running=0
 # 1 once the precmd hook has checked that it runs after the other hooks.
 'builtin' 'typeset' -gi _fuxx_ordered=0
+# Where the marks go: the terminal itself, so a redirected or closed stdout (`exec >file`)
+# neither gets them nor loses them. Stdout if /dev/tty can't be opened. Not passed on to
+# programs the shell runs (cloexec).
+'builtin' 'typeset' -gi _fuxx_fd=1
+{ 'builtin' 'zmodload' zsh/system && 'builtin' 'sysopen' -wu _fuxx_fd -o cloexec /dev/tty } 2>/dev/null ||
+    _fuxx_fd=1
 
 # C, with the command line as typed ($1). Sent without it when there is none or it is over
 # 2,048 bytes of UTF-8. Encoded byte by byte (multibyte off): everything but A-Z a-z 0-9 . _ ~
@@ -22,18 +28,21 @@ _fuxx_preexec() {
     'builtin' 'emulate' -L zsh -o extendedglob +o multibyte
     _fuxx_running=1
     if (( ${#1} == 0 || ${#1} > 2048 )); then
-        builtin print -rn -- $'\e]133;C\a'
+        builtin print -rnu $_fuxx_fd -- $'\e]133;C\a'
     else
-        builtin print -rn -- $'\e]133;C;cmdline_url='"${1//(#m)[^A-Za-z0-9._~\/-]/%${(l:2::0:)$(([##16]#MATCH))}}"$'\a'
+        builtin print -rnu $_fuxx_fd -- $'\e]133;C;cmdline_url='"${1//(#m)[^A-Za-z0-9._~\/-]/%${(l:2::0:)$(([##16]#MATCH))}}"$'\a'
     fi
 }
 
-# Makes sure PS1 starts with A and ends with B, adding what a prompt theme dropped.
+# Makes sure PS1 starts with A and ends with B, once each: adds what a prompt theme dropped,
+# and drops copies a theme kept inside it (pure keeps what follows its prompt's last newline,
+# and with it an A this hook had put there).
 _fuxx_mark_prompt() {
     'builtin' 'emulate' -L zsh -o extendedglob
     local a=$'%{\e]133;A\a%}' b=$'%{\e]133;B\a%}'
-    [[ $PS1 == "$a"* ]] || PS1="$a$PS1"
-    if [[ $PS1 != *"$b" ]]; then
+    [[ $PS1 == "$a"* && ${PS1#"$a"} != *"$a"* ]] || PS1="$a${PS1//"$a"/}"
+    if [[ $PS1 != *"$b" || ${PS1%"$b"} == *"$b"* ]]; then
+        PS1=${PS1//"$b"/}
         # A lone % at the end would read the mark's %{ as %%{, a literal %.
         (( ${#${(M)PS1%%%#}} % 2 )) && PS1+='%'
         PS1+="$b"
@@ -47,7 +56,7 @@ _fuxx_precmd() {
     'builtin' 'emulate' -L zsh
     if (( _fuxx_running )); then
         _fuxx_running=0
-        builtin print -rn -- $'\e]133;D;'"$ret"$'\a'
+        builtin print -rnu $_fuxx_fd -- $'\e]133;D;'"$ret"$'\a'
     fi
     # Without prompt_percent, %{ %} would show as text.
     [[ $percent == on ]] || return 0

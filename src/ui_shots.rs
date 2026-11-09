@@ -12587,17 +12587,28 @@ fn command_blocks_row(
         .unwrap_or_else(|| panic!("{scene}: On isn't chosen"));
     let dir = std::env::temp_dir().join(format!("fuxx-shots-blocks-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let config = dir.join("config");
+    // Laid out as a config home (`<dir>/fuxx/config`), so the reload after the write reads only
+    // from here (`appearance::ShotsHome`), never your own settings.
+    let config = crate::settings::settings_path(&dir, Some(&dir));
+    std::fs::create_dir_all(config.parent().expect("a folder")).expect("temp dir");
     std::fs::write(&config, "theme = Nord\n").expect("write the settings");
     let settings = config.clone();
+    let home = dir.clone();
     let with_file = move |window: &mut Window, cx: &mut App| -> AnyView {
         let view = build(window, cx);
         cx.global_mut::<Appearance>().settings_path = Some(settings.clone());
+        cx.set_global(crate::appearance::ShotsHome(home.clone()));
         view
     };
+    let kept = config.clone();
     let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
         let off = point(px(on_right + 8.0), px(mid));
         cx.simulate_click(window, off, gpui::Modifiers::none());
+        // Reloaded from the temporary file: a second change would go there too.
+        let now = cx.read(|cx| cx.global::<Appearance>().settings_path.clone());
+        assert_eq!(now, Some(kept), "the reload left the temporary settings");
+        let blocks = cx.read(|cx| cx.global::<Appearance>().command_blocks);
+        assert!(!blocks, "the reload didn't read the change");
     };
     render_with(theme, dims, with_file, act);
     let written = std::fs::read_to_string(&config).expect("read the settings");

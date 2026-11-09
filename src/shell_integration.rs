@@ -112,6 +112,31 @@ pub fn env_for(
     env
 }
 
+/// For your login shell: add to `env` what `env_for` gives for `shell` (fuxx's `$SHELL`) with
+/// `user_zdotdir` (fuxx's own `ZDOTDIR`) and `integration` (the installed folder while
+/// `command-blocks` is on). When it injects and you have no `ZDOTDIR`, a `FUXX_ZSH_ZDOTDIR`
+/// inherited from elsewhere is removed, or fuxx's `.zshenv` would set `ZDOTDIR` to it.
+pub fn add_login_shell_env(
+    env: &mut crate::pty::ShellEnv,
+    shell: &OsStr,
+    user_zdotdir: Option<&OsStr>,
+    integration: Option<&Path>,
+) {
+    let added = env_for(
+        Path::new(shell),
+        user_zdotdir,
+        integration.is_some(),
+        integration,
+    );
+    if added.is_empty() {
+        return;
+    }
+    if user_zdotdir.is_none() {
+        env.remove.push("FUXX_ZSH_ZDOTDIR");
+    }
+    env.set.extend(added);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +248,17 @@ mod tests {
         let dir = t.0.join("si");
         install(&dir).unwrap();
         let integration = dir.join("zsh/fuxx-integration.zsh");
-        let out = std::process::Command::new("/bin/zsh")
+        let mut cmd = std::process::Command::new("/bin/zsh");
+        // A new session, without a controlling terminal: no /dev/tty, so the marks come on
+        // stdout, where they are read here.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                setsid();
+                Ok(())
+            });
+        }
+        let out = cmd
             .args(["-f", "-c"])
             .arg(format!(
                 "self={}; source \"$self\"\n{script}",
@@ -238,6 +273,10 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         out.stdout
+    }
+
+    unsafe extern "C" {
+        fn setsid() -> i32;
     }
 
     fn shell_quote(s: &str) -> String {
@@ -316,7 +355,10 @@ mod tests {
              _fuxx_precmd; print -r -- \"[${(V)PS1}]\"\n\
              print -r -- \"[$precmd_functions]\"\n\
              PS1='end%'; _fuxx_precmd; print -r -- \"[${(V)PS1}]\"\n\
-             source \"$self\"; print -r -- \"[$precmd_functions][$preexec_functions]\"",
+             source \"$self\"; print -r -- \"[$precmd_functions][$preexec_functions]\"\n\
+             a=$'%{\\e]133;A\\a%}' b=$'%{\\e]133;B\\a%}'\n\
+             PS1=\"pre\"$'\\n'\"$a%# $b\"; _fuxx_precmd; print -r -- \"[${(V)PS1}]\"\n\
+             PS1=\"$a$b> x$b\"; _fuxx_precmd; print -r -- \"[${(V)PS1}]\"",
         );
         let text = String::from_utf8_lossy(&out);
         let lines: Vec<&str> = text.lines().collect();
@@ -329,6 +371,9 @@ mod tests {
         assert_eq!(lines[3], "[%{^[]133;A^G%}end%%%{^[]133;B^G%}]");
         // Sourced again: nothing added twice.
         assert_eq!(lines[4], "[theme _fuxx_precmd][_fuxx_preexec]");
+        // Copies kept inside by a theme are dropped: one A at the start, one B at the end.
+        assert_eq!(lines[5], "[%{^[]133;A^G%}pre\\n%# %{^[]133;B^G%}]");
+        assert_eq!(lines[6], "[%{^[]133;A^G%}> x%{^[]133;B^G%}]");
     }
 
     // --- A real zsh in a terminal ---
@@ -483,6 +528,35 @@ mod tests {
             core.block_output(&blocks[1].id),
             Some(format!("env:profile:rc:login\n[{}][unset]", zd.display()))
         );
+        drop(core);
+
+        // Your .zshenv sets ZDOTDIR itself: the rest is read from that folder, not HOME.
+        let home3 = t.0.join("home3");
+        let zd3 = home3.join("zd3");
+        t.write(
+            "home3/.zshenv",
+            &format!("export T_ENV=1 ZDOTDIR=\"$HOME/zd3\"\n{LOG}env\"\n"),
+        );
+        for name in [".zprofile", ".zshrc", ".zlogin"] {
+            t.write(&format!("home3/{name}"), &format!("{LOG}:wrong-{name}\"\n"));
+        }
+        t.write("home3/zd3/.zprofile", &format!("{LOG}:profile\"\n"));
+        t.write(
+            "home3/zd3/.zshrc",
+            &format!("PS1='%# '; export T_RC=1\n{LOG}:rc\"\n"),
+        );
+        t.write("home3/zd3/.zlogin", &format!("{LOG}:login\"\n"));
+        let (core, _rx) = spawn_zsh(&home3, None, &dir);
+        let blocks = run(&core, CHECK);
+        assert_eq!(
+            core.block_output(&blocks[0].id),
+            Some(format!("[{}][1][1][unset]", zd3.display()))
+        );
+        let blocks = run(&core, ORDER_AND_CHILD);
+        assert_eq!(
+            core.block_output(&blocks[1].id),
+            Some(format!("env:profile:rc:login\n[{}][unset]", zd3.display()))
+        );
     }
 
     #[test]
@@ -553,5 +627,96 @@ mod tests {
         assert_eq!(cmds(&blocks), ["echo hi", "false"]);
         assert_eq!(outcomes(&blocks), [Outcome::Ok, Outcome::Failed(1)]);
         assert_eq!(core.block_output(&blocks[0].id).as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn a_pure_like_theme_gets_one_prompt_start() {
+        let t = TempDir::new("pure");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        // As pure does: before every prompt, a precmd hook (registered after ours) keeps what
+        // follows PROMPT's last newline and puts its own first line above it.
+        t.write(
+            "home/.zshrc",
+            "PROMPT='%# '\npurish() { PROMPT=\"pre\"$'\\n'\"${PROMPT##*$'\\n'}\" }\n\
+             precmd_functions+=(purish)\n",
+        );
+        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+        run(&core, "echo one");
+        run(&core, "echo two");
+        let blocks = run(&core, "echo three");
+        assert_eq!(cmds(&blocks), ["echo one", "echo two", "echo three"]);
+        for b in &blocks {
+            // The prompt is two lines, "pre" and the command row.
+            assert_eq!(b.cmd_row.0 - b.prompt_top.0, 1, "{b:?}");
+        }
+        // The next prompt's first line is not the output of the command before it.
+        for (b, out) in blocks.iter().zip(["one", "two", "three"]) {
+            assert_eq!(core.block_output(&b.id).as_deref(), Some(out));
+        }
+    }
+
+    #[test]
+    fn marks_go_to_the_terminal_not_a_redirected_stdout() {
+        let t = TempDir::new("tty");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("home/.zshrc", "PS1='%# '\n");
+        let home = t.0.join("home");
+        let (core, _rx) = spawn_zsh(&home, None, &dir);
+        run(&core, "exec >out.txt");
+        let blocks = run(&core, "echo hi");
+        assert_eq!(cmds(&blocks), ["exec >out.txt", "echo hi"]);
+        assert_eq!(outcomes(&blocks), [Outcome::Ok; 2]);
+        // The command's output went to the file, and nothing of fuxx's with it.
+        assert_eq!(
+            std::fs::read_to_string(home.join("out.txt")).unwrap(),
+            "hi\n"
+        );
+        // stdout closed: the marks still reach the terminal, and nothing complains.
+        run(&core, "exec >&-");
+        let blocks = run(&core, "true");
+        assert_eq!(cmds(&blocks)[2..], ["exec >&-", "true"]);
+        assert!(
+            !screen_text(&core).contains("write error"),
+            "{}",
+            screen_text(&core)
+        );
+    }
+
+    #[test]
+    fn a_stray_saved_zdotdir_is_dropped() {
+        // fuxx's own environment has FUXX_ZSH_ZDOTDIR but no ZDOTDIR (left by something
+        // else): the child must not get it, or fuxx's .zshenv would "restore" it.
+        let mut env = crate::pty::ShellEnv {
+            base: None,
+            set: Vec::new(),
+            remove: Vec::new(),
+        };
+        let i = Some(Path::new("/i"));
+        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), None, i);
+        assert_eq!(env.set, kv(&[("ZDOTDIR", "/i/zsh")]));
+        assert_eq!(env.remove, ["FUXX_ZSH_ZDOTDIR"]);
+        // With yours: set, not removed.
+        let mut env = crate::pty::ShellEnv {
+            base: None,
+            set: Vec::new(),
+            remove: Vec::new(),
+        };
+        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), Some(OsStr::new("/u")), i);
+        assert_eq!(
+            env.set,
+            kv(&[("ZDOTDIR", "/i/zsh"), ("FUXX_ZSH_ZDOTDIR", "/u")])
+        );
+        assert!(env.remove.is_empty());
+        // Not injected (bash, or off): nothing changes.
+        let mut env = crate::pty::ShellEnv {
+            base: None,
+            set: Vec::new(),
+            remove: Vec::new(),
+        };
+        add_login_shell_env(&mut env, OsStr::new("/bin/bash"), None, i);
+        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), None, None);
+        assert!(env.set.is_empty() && env.remove.is_empty());
     }
 }
