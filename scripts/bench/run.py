@@ -7,10 +7,14 @@ HOME and only ever signals PIDs it started (and their descendants, found by walk
   run.py --bench DIR APP PHASE [--tag N]   APP: fuxx-base | fuxx-m11n | ghostty
                                            PHASE: launch | mem | tput | cpu_base | cpu_noglow | cpu_rest | grid
                                            -> DIR/results/APP-PHASE[N].json
+  run.py --bench DIR ghostty-bundle        ditto copy of ~/Applications/Ghostty.app -> DIR/apps/Ghostty-bench.app
+                                           (not re-signed; the source is only read)
   run.py --bench DIR summary               the medians (cpu runs counted only when frontmost 15/15)
 
-Ghostty runs from DIR/apps/Ghostty-bench.app, a `ditto` copy of ~/Applications/Ghostty.app, not re-signed.
-Make the data first: make_data.py DIR."""
+Ghostty runs from DIR/apps/Ghostty-bench.app (see ghostty-bundle). Its prefs domain is the real Ghostty's, so every
+Ghostty phase backs up the user's prefs first and restores + verifies them after (see ghostty_restore).
+Every process the harness starts is killed on any exit path (error, SIGTERM, Ctrl-C).
+Make the data first: make_data.py DIR.  Self-test of the cleanup paths: run.py --bench DIR selftest raise|sigterm|wait|badcomm"""
 import glob, json, os, re, shutil, signal, statistics, subprocess, sys, time
 
 args = sys.argv[1:]
@@ -18,12 +22,15 @@ if len(args) < 2 or args[0] != "--bench":
     sys.exit(__doc__)
 B = os.path.abspath(args[1])
 args = args[2:]
+if not args:
+    sys.exit(__doc__)
 HERE = os.path.dirname(os.path.abspath(__file__))
 for d in ("apps", "bin", "data", "homes", "logs", "results"):
     os.makedirs(f"{B}/{d}", exist_ok=True)
 PIDLOG = f"{B}/logs/pids.log"
 WININFO = f"{B}/bin/wininfo"
-TMP_ROOT = "/private/tmp/claude-502"
+TMP_ROOT = f"/private/tmp/claude-{os.getuid()}"
+os.makedirs(TMP_ROOT, exist_ok=True)
 CPU_WINDOW, CPU_SKIP = 30, 10          # ps CPU time over 30 s, from 10 s after ready
 REST_SKIP = 305                        # cpu_rest: past the breath's 300.8 s rest
 FRONT_EVERY = 2                        # s between frontmost checks
@@ -54,9 +61,23 @@ def do_bundle(name, binary):
     plist = open(f"{repo}/packaging/macos/Info.plist").read()
     plist = plist.replace("@VERSION@", "0.0.0-bench").replace(
         "<string>io.github.fitzfitz.fuxx</string>", f"<string>io.github.fitzfitz.fuxx.bench-{name}</string>")
+    if (f"<string>io.github.fitzfitz.fuxx.bench-{name}</string>" not in plist
+            or "<string>io.github.fitzfitz.fuxx</string>" in plist):
+        shutil.rmtree(app, ignore_errors=True)
+        sys.exit("ABORT: the bundle id was not replaced in Info.plist (the bench copy would share the real fuxx's prefs)")
     open(f"{app}/Contents/Info.plist", "w").write(plist)
     subprocess.run(["codesign", "--force", "--sign", "-", app], check=True)
     log("bundle", app, subprocess.run(["lipo", "-archs", binary], capture_output=True, text=True).stdout.strip())
+
+
+def do_ghostty_bundle():
+    src = os.path.expanduser("~/Applications/Ghostty.app")
+    dst = f"{B}/apps/Ghostty-bench.app"
+    if not os.path.isdir(src):
+        sys.exit(f"no {src}")
+    shutil.rmtree(dst, ignore_errors=True)
+    subprocess.run(["ditto", src, dst], check=True)  # not re-signed: a re-signed copy can't load Sparkle
+    log("ghostty-bundle", dst)
 
 
 # ---------------------------------------------------------------- summary
@@ -103,15 +124,28 @@ def do_summary():
 if args[0] == "bundle":
     do_bundle(args[1], os.path.abspath(args[2]))
     sys.exit(0)
+if args[0] == "ghostty-bundle":
+    do_ghostty_bundle()
+    sys.exit(0)
 if args[0] == "summary":
     do_summary()
     sys.exit(0)
 
-app, phase = args[0], args[1]
+SELFTEST = args[0] == "selftest"
+if SELFTEST:
+    app, phase = "selftest", "selftest"
+    selftest_mode = args[1] if len(args) > 1 else "raise"
+elif len(args) < 2:
+    sys.exit(__doc__)
+else:
+    app, phase = args[0], args[1]
 tag = args[args.index("--tag") + 1] if "--tag" in args else ""
-if app not in ("fuxx-base", "fuxx-m11n", "ghostty"):
+if app not in ("fuxx-base", "fuxx-m11n", "ghostty", "selftest"):
     sys.exit("APP must be fuxx-base | fuxx-m11n | ghostty")
-BIN = bin_of(app)
+if app == "ghostty" and phase in ("cpu_noglow", "cpu_rest"):
+    sys.exit(f"{phase} is a fuxx phase (the glow); not for ghostty")
+BIN = bin_of(app) if not SELFTEST else "/bin/sleep"
+ALLOWED = (B,) + (("/bin/sleep",) if SELFTEST and selftest_mode != "badcomm" else ())
 OUT = f"{B}/results/{app}-{phase}{tag}.json"
 HOME_REAL = f"{B}/homes/{app}"
 HOME = f"{TMP_ROOT}/fxb-{app}"  # short symlink -> DIR/homes/APP (fuxx's socket path limit)
@@ -189,6 +223,15 @@ def cpu_secs(t):
 
 
 STARTED = set()
+PROCS = []  # every Popen this run starts
+
+
+def on_sigterm(signum, frame):
+    sys.exit(143)  # runs the top-level finally (kills our children, restores prefs)
+
+
+signal.signal(signal.SIGTERM, on_sigterm)
+signal.signal(signal.SIGINT, signal.default_int_handler)  # also when started in the background (SIGINT ignored)
 
 
 def launch(extra=None):
@@ -196,10 +239,11 @@ def launch(extra=None):
     if extra and "BENCH_MARKER" in extra and os.path.exists(extra["BENCH_MARKER"]):
         os.remove(extra["BENCH_MARKER"])
     t0 = time.time()
-    p = subprocess.Popen([BIN], env=env(extra), cwd=HOME, stdin=subprocess.DEVNULL,
+    p = subprocess.Popen([BIN] + (["60"] if SELFTEST else []), env=env(extra), cwd=HOME, stdin=subprocess.DEVNULL,
                          stdout=open(f"{B}/logs/{app}-stdout.log", "ab"), stderr=subprocess.STDOUT,
                          start_new_session=True)
     STARTED.add(p.pid)
+    PROCS.append(p)
     with open(PIDLOG, "a") as f:
         f.write(f"{time.strftime('%H:%M:%S')} {app} {phase} started pid {p.pid}\n")
     return p, t0
@@ -208,9 +252,13 @@ def launch(extra=None):
 def kill(p):
     rows = ps_table()
     kids = descendants(p.pid, rows)
-    assert p.pid in STARTED
     comm = rows.get(p.pid, (0, 0, "", ""))[3]
-    assert not comm or comm.startswith(B), f"refusing to signal {p.pid} {comm}"
+    if p.pid not in STARTED or (comm and not comm.startswith(ALLOWED)):
+        msg = f"REFUSING to signal pid {p.pid} ({comm!r}): not a process this harness started; it is LEFT RUNNING"
+        print("!!!", msg, file=sys.stderr, flush=True)
+        with open(PIDLOG, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+        raise RuntimeError(msg)
     try:
         os.kill(p.pid, signal.SIGTERM)
         p.wait(5)
@@ -229,6 +277,27 @@ def kill(p):
             pass
     with open(PIDLOG, "a") as f:
         f.write(f"{time.strftime('%H:%M:%S')} {app} {phase} killed pid {p.pid} (descendants {kids}, leftover killed {left})\n")
+
+
+def cleanup_all():
+    """Kill every process this run started that is still alive (the apps run in their own sessions, so a
+    signal to the harness does not reach them). Never raises; returns the pids it could not kill."""
+    bad = []
+    for p in PROCS:
+        if p.poll() is None:
+            try:
+                kill(p)
+            except BaseException as e:
+                print(f"!!! cleanup could not kill pid {p.pid}: {e}", file=sys.stderr, flush=True)
+                bad.append(p.pid)
+    return bad
+
+
+def wait_ready(mk):
+    v = wait_file(mk, 30)
+    if v is None:
+        raise RuntimeError(f"the shell never wrote the ready marker {mk} (app did not start a shell in 30 s)")
+    return float(v)
 
 
 def wait_file(path, timeout):
@@ -288,7 +357,7 @@ def run_launch(n, warm):
         mk = marker_path(f"l{i}")
         p, t0 = launch({"BENCH_MARKER": mk})
         v = wait_file(mk, 30)
-        dt = float(v) - t0 if v else None
+        dt = float(v) - t0 if v else None  # a missing marker is recorded as None, loudly
         log(f"launch run {i} ({'warm-up' if i < warm else 'measured'}): {dt}")
         if i >= warm:
             res.append(dt)
@@ -305,7 +374,7 @@ def run_launch(n, warm):
 def run_mem():
     mk = marker_path("mem")
     p, t0 = launch({"BENCH_MARKER": mk})
-    t_ready = float(wait_file(mk, 30))
+    t_ready = wait_ready(mk)
     r = {"launch_s": t_ready - t0}
     sleep_until(t_ready + 10)
     r["idle10"] = mem_snapshot(p.pid)
@@ -356,7 +425,7 @@ def run_tput(n):
             mk, rf = marker_path(f"t{name}{i}"), f"{HOME}/tmp/result-{name}{i}"
             cmd = f"sleep 2; print $COLUMNS $LINES > {rf}.grid; s=$EPOCHREALTIME; cat {f}; e=$EPOCHREALTIME; print $((e-s)) > {rf}"
             p, t0 = launch({"BENCH_MARKER": mk, "BENCH_CMD": cmd})
-            wait_file(mk, 30)
+            wait_ready(mk)
             time.sleep(2.8)
             wins.append(wininfo(p.pid))
             v = wait_file(rf, 300)
@@ -377,7 +446,7 @@ def run_cpu_once():
     rest = phase == "cpu_rest"
     mk = marker_path("cpu")
     p, t0 = launch({"BENCH_MARKER": mk})
-    t_ready = float(wait_file(mk, 30))
+    t_ready = wait_ready(mk)
     start = t_ready + (REST_SKIP if rest else CPU_SKIP)
     check_from = t_ready if rest else start
     end = start + CPU_WINDOW
@@ -412,13 +481,19 @@ def ghostty_backup():
     """The bench Ghostty copy keeps Ghostty's bundle id and cfprefsd ignores CFFIXED_USER_HOME, so it writes
     the user's real prefs. Back them up before the phase; ghostty_restore puts them back and verifies."""
     os.makedirs(f"{B}/prefs", exist_ok=True)
-    n = len(glob.glob(f"{B}/prefs/ghostty-before-{phase}-*.plist")) + 1
-    path = f"{B}/prefs/ghostty-before-{phase}-{n}.plist"
+    n = len(glob.glob(f"{B}/prefs/ghostty-before-{phase}{tag}-*.plist")) + 1
+    path = f"{B}/prefs/ghostty-before-{phase}{tag}-{n}.plist"
     subprocess.run(["defaults", "export", GHOSTTY_DOMAIN, path], check=True)
     return path
 
 
 def ghostty_restore(path):
+    if SELFTEST:
+        alive = [p.pid for p in PROCS if p.poll() is None]
+        log(f"SELFTEST ghostty_restore called; started children still alive at that moment: {alive}")
+        with open(f"{B}/logs/prefs-restore.log", "a") as f:
+            f.write(f"selftest restore called, children alive: {alive}\n")
+        return
     end = time.time() + 15
     while time.time() < end:  # every bench Ghostty process must have exited first
         if not any(r[3].startswith(f"{B}/apps/Ghostty-bench.app") for r in ps_table().values()):
@@ -440,10 +515,23 @@ def ghostty_restore(path):
         sys.exit("BLOCKED: Ghostty prefs differ from the backup after restore")
 
 
-backup = ghostty_backup() if app == "ghostty" else None
+backup = ghostty_backup() if app == "ghostty" else ("selftest-mock" if SELFTEST else None)
+failed = []
 try:
     setup_home()
-    if phase.startswith("cpu"):
+    if SELFTEST:
+        p, _ = launch()
+        log("selftest child", p.pid, "mode", selftest_mode)
+        if selftest_mode == "raise":
+            raise RuntimeError("selftest: error mid-phase")
+        if selftest_mode == "sigterm":
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(5)
+        if selftest_mode == "badcomm":
+            kill(p)  # refused: raises
+        time.sleep(30)  # wait: for an external SIGTERM / SIGINT
+        res = {}
+    elif phase.startswith("cpu"):
         tries = []
         for t in range(5):
             r = run_cpu_once()
@@ -457,7 +545,10 @@ try:
     elif phase == "grid":
         mk = marker_path("grid"); gf = f"{HOME}/tmp/gridfile"
         p, t0 = launch({"BENCH_MARKER": mk, "BENCH_CMD": f"sleep 1; print $COLUMNS $LINES > {gf}"})
-        v = wait_file(gf, 30); log("grid", v, wininfo(p.pid)); os.remove(gf); kill(p); res = {"grid": v}
+        v = wait_file(gf, 30)
+        if v is None:
+            raise RuntimeError("grid: the shell never wrote the grid file")
+        log("grid", v, wininfo(p.pid)); os.remove(gf); kill(p); res = {"grid": v}
     elif phase == "launch":
         res = run_launch(5, 1)
     elif phase == "mem":
@@ -467,7 +558,10 @@ try:
     else:
         sys.exit(f"unknown phase {phase}")
 finally:
+    failed = cleanup_all()  # first the apps, then the prefs restore (a live Ghostty would rewrite them)
     if backup:
         ghostty_restore(backup)
+    if failed:
+        sys.exit(f"BLOCKED: could not kill {failed}")
 json.dump(res, open(OUT, "w"), indent=1)
 log("wrote", OUT)
