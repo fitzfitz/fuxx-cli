@@ -12683,8 +12683,8 @@ fn command_blocks_row(
 /// 60 ms in, the sidebar partly out and over the pane column).
 ///
 /// Panics unless the icon is drawn at the sidebar band's right edge shown (M11m) and at the
-/// window's right hidden (the collapsed band's last button), the hover paints the hit area, and mid-slide the sidebar has left the
-/// middle of the window (it is only partly out).
+/// window's right hidden (the collapsed band's last button), the hover paints the hit area, and
+/// mid-slide the sidebar has left the middle of the window (it is only partly out).
 fn sidebar_button_scenes() {
     use crate::sidebar_toggle::{BUTTON_Y, Slide, open_button_x};
     use crate::title_area::band_buttons;
