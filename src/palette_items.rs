@@ -506,7 +506,7 @@ pub static COMMANDS: &[Command] = {
         cmd(
             "Welcome to fuxx",
             WindowAndApp,
-            "first run",
+            "first run start agent folder intro",
             A,
             Run::Action(act::<ShowWelcome>),
         ),
@@ -1825,7 +1825,7 @@ mod tests {
         let find = |name: &str| COMMANDS.iter().find(|c| c.name == name).expect(name);
         let welcome = find("Welcome to fuxx");
         let tips = find("Show Tips Card");
-        for query in ["welcome", "first run"] {
+        for query in ["welcome", "first run", "intro", "start agent"] {
             assert!(
                 match_item(query, welcome.name, &[welcome.keywords], None).is_some(),
                 "{query}"
