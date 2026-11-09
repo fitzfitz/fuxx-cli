@@ -3471,12 +3471,12 @@ fn session_env(
         // The shell `pty::command` starts for no program; `$SHELL` unset: no integration.
         let shell = std::env::var_os("SHELL").unwrap_or_default();
         let zdotdir = std::env::var_os("ZDOTDIR");
-        env.set.extend(crate::shell_integration::env_for(
-            Path::new(&shell),
+        crate::shell_integration::add_login_shell_env(
+            &mut env,
+            &shell,
             zdotdir.as_deref(),
-            integration.is_some(),
             integration,
-        ));
+        );
     }
     env
 }
@@ -3826,7 +3826,12 @@ mod tests {
             crate::shell_integration::env_for(Path::new(&shell), zdotdir.as_deref(), true, i);
         assert_eq!(login.set[..program.set.len()], program.set[..]);
         assert_eq!(login.set[program.set.len()..], added[..]);
-        assert_eq!(login.remove, program.remove);
+        // Only a stray saved ZDOTDIR is removed, and only when you have none.
+        let mut removed = program.remove.clone();
+        if !added.is_empty() && zdotdir.is_none() {
+            removed.push("FUXX_ZSH_ZDOTDIR");
+        }
+        assert_eq!(login.remove, removed);
         if Path::new(&shell).file_name() == Some(OsStr::new("zsh")) {
             assert!(keys(&login).contains(&"ZDOTDIR".to_string()));
         }

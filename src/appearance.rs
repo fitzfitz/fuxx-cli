@@ -301,9 +301,11 @@ fn cursor_fun_from_entries(entries: &[Entry]) -> (CursorFun, Vec<String>) {
 /// Read fuxx's settings file and build the appearance. Never fails: anything missing or
 /// unreadable falls back to the defaults.
 pub fn load(cx: &App) -> Appearance {
-    let home = env_path("HOME");
-    let xdg = env_path("XDG_CONFIG_HOME");
+    load_from(cx, env_path("HOME"), env_path("XDG_CONFIG_HOME"))
+}
 
+/// `load`, with `home` and `xdg` for `$HOME` and `$XDG_CONFIG_HOME`.
+fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearance {
     let read_file = |p: &Path| std::fs::read_to_string(p).ok();
     let settings_path = home
         .as_deref()
@@ -425,9 +427,23 @@ pub fn load(cx: &App) -> Appearance {
 
 /// Re-read the settings and replace the global; observers (every view) then redraw.
 pub fn reload(cx: &mut App) {
+    #[cfg(feature = "ui-shots")]
+    if let Some(dir) = cx.try_global::<ShotsHome>().map(|h| h.0.clone()) {
+        let appearance = load_from(cx, Some(dir.clone()), Some(dir));
+        cx.set_global(appearance);
+        return;
+    }
     let appearance = load(cx);
     cx.set_global(appearance);
 }
+
+/// The screenshots: while set, a reload reads the settings and themes from this folder (as
+/// both `HOME` and `XDG_CONFIG_HOME`), never your own.
+#[cfg(feature = "ui-shots")]
+pub struct ShotsHome(pub PathBuf);
+
+#[cfg(feature = "ui-shots")]
+impl Global for ShotsHome {}
 
 #[cfg(test)]
 mod tests {
