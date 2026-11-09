@@ -158,13 +158,16 @@ pub struct Welcome {
     agent: Row,
     /// The choice was moved (↑/↓ or a click): detection's answer then leaves it.
     moved: bool,
+    /// The folder panel is up (asking again meanwhile does nothing).
+    panel_open: bool,
     focus: FocusHandle,
     /// The agent list's (only it scrolls).
     scroll: ScrollHandle,
-    /// Where the card, the folder field and the Start button were last drawn.
+    /// Where the card, the folder field, the Start button and Choose… were last drawn.
     card_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     folder_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     start_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    choose_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     #[cfg(feature = "ui-shots")]
     drawn: Vec<String>,
     /// The UI screenshots' stand-in for the folder panel: its answer, once sent.
@@ -206,11 +209,13 @@ impl Welcome {
             chosen,
             agent: chosen,
             moved: false,
+            panel_open: false,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             card_bounds: Rc::default(),
             folder_bounds: Rc::default(),
             start_bounds: Rc::default(),
+            choose_bounds: Rc::default(),
             #[cfg(feature = "ui-shots")]
             drawn: Vec::new(),
             #[cfg(feature = "ui-shots")]
@@ -242,10 +247,15 @@ impl Welcome {
         self.origin
     }
 
-    /// Choose…, or Return on the folder row: the folder panel (⌘O's), which has the keyboard
-    /// while it's up. A folder picked becomes the card's; picked or not, the card (if it is
-    /// still open) takes the keyboard back with the agent row chosen again.
+    /// A click on the folder field or Choose…, or Return on the folder row: the folder panel
+    /// (⌘O's), which has the keyboard while it's up; one at a time. A folder picked becomes the
+    /// card's; picked or not, the card (if it is still open) takes the keyboard back with the
+    /// agent row chosen again.
     pub fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel_open {
+            return;
+        }
+        self.panel_open = true;
         #[cfg(feature = "ui-shots")]
         if let Some(answer) = self.panel_answer.take() {
             self.when_answered(async move { answer.await.ok().flatten() }, window, cx);
@@ -276,6 +286,7 @@ impl Welcome {
         cx.spawn_in(window, async move |this, cx| {
             let folder = answer.await;
             this.update_in(cx, |card, window, cx| {
+                card.panel_open = false;
                 if let Some(folder) = folder {
                     card.set_folder(folder, cx);
                 }
@@ -513,6 +524,10 @@ impl Welcome {
         self.start_bounds.get()
     }
 
+    pub fn choose_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.choose_bounds.get()
+    }
+
     pub fn folder_bounds(&self) -> Option<Bounds<Pixels>> {
         self.folder_bounds.get()
     }
@@ -544,6 +559,7 @@ impl Render for Welcome {
             .gap(px(8.0))
             .child(
                 div()
+                    .id("welcome-folder-field")
                     .relative()
                     .flex_1()
                     .min_w(px(0.0))
@@ -555,6 +571,10 @@ impl Render for Welcome {
                     .bg(hsla(ui.panel_hover))
                     .border_1()
                     .border_color(hsla(field_edge))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.choose_folder(window, cx)
+                    }))
                     .child(
                         div()
                             .flex_1()
@@ -570,6 +590,7 @@ impl Render for Welcome {
                 let hover = ui.panel_hover;
                 div()
                     .id("welcome-choose")
+                    .relative()
                     .flex_none()
                     .flex()
                     .items_center()
@@ -584,6 +605,7 @@ impl Render for Welcome {
                         this.choose_folder(window, cx)
                     }))
                     .child(choose)
+                    .child(bounds_into(&self.choose_bounds))
             });
 
         let agent_heading = said.say(HEADING_AGENT.to_uppercase());

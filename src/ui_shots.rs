@@ -11289,8 +11289,10 @@ type WelcomeStage = Box<
 /// workspace) and the new terminal has the keyboard; (b) the same with a file tab beside `s1`
 /// opens codex and keeps `s1` (two sessions, two workspaces); (c) Plain terminal in home
 /// opens nothing and keeps `s1`; (d) from Help with two workspaces, claude makes a third and
-/// closes none; (e) when the new terminal can't open (refused while the background service
-/// starts) `s1` stays and fuxx doesn't quit.
+/// closes none, and the new terminal (no project: home) has the keyboard; (e) when the new
+/// terminal can't open (refused while the background service starts) `s1` stays and fuxx
+/// doesn't quit; (f) with `s1` closed by a script under the card (behind a second workspace),
+/// the pick opens its terminal, closes nothing more, and fuxx doesn't quit.
 fn welcome_start_scene() {
     use crate::welcome_items::{Origin, Row};
     use std::cell::{Cell, RefCell};
@@ -11418,6 +11420,66 @@ fn welcome_start_scene() {
                 assert_eq!(workspaces, 3, "{n}: a third workspace");
                 assert_eq!(ids.len(), 3, "{n}: three sessions: {ids:?}");
                 assert!(ids.contains(&s1) && ids.contains(&s2), "{n}: none closed");
+                let project = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let new = ws
+                        .sessions
+                        .items()
+                        .iter()
+                        .find(|s| s.id != s1 && s.id != s2)
+                        .expect("the new terminal");
+                    new.project.clone()
+                });
+                assert_eq!(project, None, "{n}: home is no project");
+                assert!(
+                    active_terminal_focused(cx, window, ws),
+                    "{n}: the new terminal types"
+                );
+            }),
+        );
+
+        // (f) A script closed the first terminal (behind a second workspace) under the card.
+        run(
+            "f",
+            Box::new(|cx, window, ws, s1, n| {
+                let s2 = cx
+                    .update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| {
+                            let home = std::path::Path::new("/Users/me");
+                            ws.open_unnamed_shot_session(Some(home), "", window, cx)
+                        })
+                    })
+                    .expect("a second workspace");
+                settle(cx, window);
+                open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
+                welcome_folder_to(cx, window, ws, "/w/app");
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        let at = ws.index_of(s1).expect("s1");
+                        ws.close_at(at, window, cx)
+                    })
+                })
+                .expect("close s1");
+                settle(cx, window);
+                assert_eq!(welcome_layout(cx, ws), (vec![s2], 1), "{n}: s2 left");
+                let card = welcome_of(cx, ws).expect("the card stays open");
+                let focused = cx
+                    .update_window(window, |_, window, cx| {
+                        use gpui::Focusable;
+                        card.read(cx).focus_handle(cx).is_focused(window)
+                    })
+                    .expect("read the focus");
+                assert!(focused, "{n}: the card keeps the keyboard");
+                press_keys(cx, window, "enter");
+                assert!(
+                    welcome_of(cx, ws).is_none(),
+                    "{n}: the pick closes the card"
+                );
+                let (ids, workspaces) = welcome_layout(cx, ws);
+                assert_eq!(ids.len(), 2, "{n}: s2 and the new one: {ids:?}");
+                assert!(ids.contains(&s2), "{n}: s2 stays: {ids:?}");
+                assert_eq!(workspaces, 2, "{n}: two workspaces");
+                assert!(!cx.read(|cx| ws.read(cx).quitting), "{n}: fuxx stays");
             }),
         );
 
@@ -11458,7 +11520,9 @@ fn welcome_start_scene() {
 /// while it's asked (the keyboard taken from the card), the folder stays; the answer
 /// `/w/other` becomes the folder, Plain terminal is chosen again and the card has the
 /// keyboard back; a cancelled panel leaves the folder, and gives the row and the keyboard back
-/// the same.
+/// the same; a click on the folder field, and one on Choose…, each ask too (answered, the
+/// folder changes and the card has the keyboard back); and asking again while the panel is up
+/// opens no second one (its answer never lands, the first one's does).
 fn welcome_folder_scene() {
     use crate::welcome_items::{Origin, Row};
     use futures::channel::oneshot;
@@ -11532,6 +11596,55 @@ fn welcome_folder_scene() {
             assert!(
                 texts.iter().any(|t| t == "/w/other"),
                 "{n}: the field shows the folder: {texts:?}"
+            );
+
+            // A click on the folder field, or on Choose…, asks too.
+            let field = cx.read(|cx| card.read(cx).folder_bounds());
+            let choose = cx.read(|cx| card.read(cx).choose_bounds());
+            for (what, at, picked) in [
+                ("the field", field, "/w/field"),
+                ("Choose\u{2026}", choose, "/w/choose"),
+            ] {
+                let at = at.unwrap_or_else(|| panic!("{n}: {what} is drawn"));
+                let (tx, rx) = oneshot::channel();
+                cx.update(|cx| card.update(cx, |c, _| c.answer_panel_with(rx)));
+                cx.simulate_click(window, at.center(), gpui::Modifiers::none());
+                settle(cx, window);
+                assert!(
+                    welcome_of(cx, &ws).is_some(),
+                    "{n}: {what}: the card stays open"
+                );
+                panel_up(cx);
+                tx.send(Some(PathBuf::from(picked)))
+                    .expect("answer the panel");
+                settle(cx, window);
+                assert_eq!(folder(cx), PathBuf::from(picked), "{n}: {what} asks");
+                assert!(card_focused(cx), "{n}: the card types after {what}");
+            }
+
+            // One panel at a time: asking again while it's up does nothing.
+            let (first_tx, first_rx) = oneshot::channel();
+            cx.update(|cx| card.update(cx, |c, _| c.answer_panel_with(first_rx)));
+            press_keys(cx, window, "down enter");
+            assert_eq!(welcome_state(cx, &ws).0, Row::Folder, "{n}: the folder row");
+            let (second_tx, second_rx) = oneshot::channel();
+            cx.update(|cx| card.update(cx, |c, _| c.answer_panel_with(second_rx)));
+            press_keys(cx, window, "enter");
+            let _ = second_tx.send(Some(PathBuf::from("/w/second")));
+            settle(cx, window);
+            assert_eq!(
+                folder(cx),
+                PathBuf::from("/w/choose"),
+                "{n}: no second panel while one is up"
+            );
+            first_tx
+                .send(Some(PathBuf::from("/w/first")))
+                .expect("answer the panel");
+            settle(cx, window);
+            assert_eq!(
+                folder(cx),
+                PathBuf::from("/w/first"),
+                "{n}: the first panel's answer"
             );
             slot.borrow_mut().take();
         };
