@@ -925,9 +925,11 @@ impl Workspace {
     /// (one skips). The top band is darkened the same by a strip that is painted only (no
     /// listeners, no `occlude`: no hitbox), so it stays live: the window drags by it, the
     /// traffic lights work and its buttons answer (what they open shows behind the card, which
-    /// keeps the keyboard: `focus_active`). The card is centred in the scrim both ways, `EDGE`
-    /// from the sides and the bottom at least: the two spacers share the room above and below
-    /// it equally, the lower never less than `EDGE`.
+    /// keeps the keyboard: `focus_active`), except the collapsed band's 🔔: its popover is an
+    /// overlay, and one overlay shows at a time, so it closes the card as any overlay does
+    /// (M11m). The card is centred in the scrim both ways, `EDGE` from the sides and the bottom
+    /// at least: the two spacers share the room above and below it equally, the lower never
+    /// less than `EDGE`.
     pub(crate) fn welcome_layer(
         &self,
         card: Entity<Welcome>,
