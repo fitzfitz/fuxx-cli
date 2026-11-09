@@ -219,6 +219,100 @@ impl ClearCounter {
     }
 }
 
+/// Decides which batches tell the UI about themselves (M11n). The UI redraws the whole screen
+/// on any `Output`, so while one it hasn't handled yet is on its way, another plain one adds
+/// nothing: the redraw it asks for reads the Term after the batches parsed so far.
+/// - A batch with notifications always sends its own `Output` with its own count: the agent
+///   state and the notification ring hear every one.
+/// - A plain batch sends `Output { notifications: 0 }` only if no plain one is pending, and
+///   makes it pending until the UI says it has heard it (`seen`).
+///
+/// Why no frame is ever left stale: the view calls `seen` when it starts handling an `Output`,
+/// then renders, taking the Term lock. A batch parsed (lock released) before that render is in
+/// it. A batch whose `after_batch` found `pending` set ran before `seen` cleared it, so its
+/// parse finished before the render's lock. A batch whose `after_batch` runs after `seen`
+/// finds `pending` clear and sends.
+#[derive(Default)]
+pub(crate) struct OutputGate {
+    pending: AtomicBool,
+}
+
+impl OutputGate {
+    /// The event to send for a batch just parsed with `notifications` in it, if any.
+    pub(crate) fn after_batch(&self, notifications: usize) -> Option<TermEvent> {
+        if notifications > 0 {
+            return Some(TermEvent::Output { notifications });
+        }
+        // Mark it pending; send only if it wasn't.
+        (!self.pending.swap(true, Ordering::AcqRel))
+            .then_some(TermEvent::Output { notifications: 0 })
+    }
+
+    /// The UI has heard the last `Output`: the next batch sends one.
+    pub(crate) fn seen(&self) {
+        self.pending.store(false, Ordering::Release);
+    }
+}
+
+/// A local terminal's work for each batch of the child's output, done on the PTY's parser
+/// thread, which owns it (so the scanners, the Term and the event channel see the batches in
+/// read order).
+struct LocalFeed {
+    shared: Arc<FairMutex<Shared>>,
+    // alacritty_terminal ignores notification and folder OSCs, so byte scanners watch the raw
+    // stream.
+    detector: OscDetector,
+    reports: CwdReports,
+    /// The working folder the program last reported, for `TerminalCore::reported_cwd`.
+    cwd: Arc<Mutex<Option<CwdReport>>>,
+    gate: Arc<OutputGate>,
+    events: UnboundedSender<TermEvent>,
+}
+
+impl LocalFeed {
+    fn new(
+        shared: Arc<FairMutex<Shared>>,
+        cwd: Arc<Mutex<Option<CwdReport>>>,
+        gate: Arc<OutputGate>,
+        events: UnboundedSender<TermEvent>,
+    ) -> Self {
+        Self {
+            shared,
+            detector: OscDetector::new(),
+            reports: CwdReports::new(),
+            cwd,
+            gate,
+            events,
+        }
+    }
+
+    /// Scan `bytes`, parse them under one lock, then (unlocked) tell the UI if the gate says
+    /// so. The Term events the parse raised went out first, from inside it.
+    fn batch(&mut self, bytes: &[u8]) {
+        let notifications = self.detector.feed(bytes);
+        if let Some(dir) = self.reports.feed(bytes) {
+            *self.cwd.lock().unwrap() = Some(dir);
+        }
+        {
+            let mut guard = self.shared.lock();
+            let Shared {
+                term,
+                processor,
+                first_output,
+                clears,
+                tagger,
+                marks,
+            } = &mut *guard;
+            first_output.get_or_insert_with(Instant::now);
+            blocks::advance(processor, term, tagger, marks, bytes);
+            clears.feed(bytes);
+        } // lock released before waking the UI
+        if let Some(event) = self.gate.after_batch(notifications) {
+            let _ = self.events.unbounded_send(event);
+        }
+    }
+}
+
 /// Where a terminal's bytes come from and go to.
 #[derive(Clone)]
 enum Backend {
@@ -230,6 +324,8 @@ enum Backend {
         /// Bytes for the child, written by the writer thread so a child that stops reading
         /// can't block the UI.
         input: Sender<Vec<u8>>,
+        /// Shared with the parser thread: which batches send an `Output`.
+        gate: Arc<OutputGate>,
     },
     /// A replica of a daemon session.
     Daemon(Arc<DaemonLink>),
@@ -375,38 +471,15 @@ impl TerminalCore {
             marks: MarkScanner::new(),
         }));
 
-        let reader_shared = shared.clone();
         let eof_events = events.clone();
         let exit = pty.exit_waiter();
-        // alacritty_terminal ignores notification and folder OSCs, so byte scanners watch the
-        // raw stream.
-        let mut detector = OscDetector::new();
-        let mut reports = CwdReports::new();
         let cwd = Arc::new(Mutex::new(None));
-        let reported = cwd.clone();
+        let gate = Arc::new(OutputGate::default());
+        let mut feed = LocalFeed::new(shared.clone(), cwd.clone(), gate.clone(), events);
         pty::spawn_reader(
             reader,
-            move |bytes| {
-                let notifications = detector.feed(bytes);
-                if let Some(dir) = reports.feed(bytes) {
-                    *reported.lock().unwrap() = Some(dir);
-                }
-                {
-                    let mut guard = reader_shared.lock();
-                    let Shared {
-                        term,
-                        processor,
-                        first_output,
-                        clears,
-                        tagger,
-                        marks,
-                    } = &mut *guard;
-                    first_output.get_or_insert_with(Instant::now);
-                    blocks::advance(processor, term, tagger, marks, bytes);
-                    clears.feed(bytes);
-                } // lock released before waking the UI
-                let _ = events.unbounded_send(TermEvent::Output { notifications });
-            },
+            move |bytes| feed.batch(bytes),
+            // After the last batch's `Output`, on the same thread.
             move || {
                 let code = exit.exit_code();
                 let _ = eof_events.unbounded_send(TermEvent::Exited { code });
@@ -424,6 +497,7 @@ impl TerminalCore {
                 pid: pty.pid(),
                 pty: Arc::new(Mutex::new(pty)),
                 input,
+                gate,
             },
             dims: Arc::new(Mutex::new((dims, CellPx::default()))),
             links: Arc::new(Mutex::new(LinkFinder::new())),
@@ -586,6 +660,15 @@ impl TerminalCore {
         match &self.backend {
             Backend::Local { .. } => true,
             Backend::Daemon(link) => link.drawn.load(Ordering::Acquire),
+        }
+    }
+
+    /// The UI has started handling an `Output`: the next batch parsed sends one again (see
+    /// `OutputGate`). Call it before the render that `Output` asks for. A Daemon replica sends
+    /// one `Output` per frame and has no gate: nothing.
+    pub fn output_seen(&self) {
+        if let Backend::Local { gate, .. } = &self.backend {
+            gate.seen();
         }
     }
 
@@ -1206,12 +1289,16 @@ mod clear_equivalence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pty::BATCH_MAX;
     use alacritty_terminal::index::{Column, Line, Point, Side};
     use alacritty_terminal::selection::SelectionType;
     use futures::channel::mpsc::{UnboundedReceiver, unbounded};
     use std::time::Duration;
 
-    /// Poll the channel until `pred` matches or 5 s pass.
+    /// Poll the channel until `pred` matches or 5 s pass. These tests never acknowledge an
+    /// `Output` (`output_seen`), so the gate sends one plain `Output` and the rest of the
+    /// output arrives quietly: while the channel is quiet, `pred` is asked again (with a
+    /// `Wakeup`), so a predicate that reads the screen still sees it change.
     fn wait_for(
         rx: &mut UnboundedReceiver<TermEvent>,
         mut pred: impl FnMut(&TermEvent) -> bool,
@@ -1221,10 +1308,298 @@ mod tests {
             match rx.try_recv() {
                 Ok(ev) if pred(&ev) => return true,
                 Ok(_) => {}
-                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                Err(_) => {
+                    if pred(&TermEvent::Term(Event::Wakeup)) {
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
         }
         false
+    }
+
+    /// The flood of Review Focus 1: 300000 lines (about 2 MB), a notification, then `END`.
+    const FLOOD: &str = "seq 1 300000; printf '\\033]9;done\\007'; echo END";
+
+    /// Run `FLOOD` without ever acknowledging an `Output`; every event until `Exited` (30 s).
+    fn flood_events() -> (TerminalCore, Vec<TermEvent>) {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh(FLOOD),
+            TermDims { cols: 40, rows: 10 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(e) => {
+                    let exited = matches!(e, TermEvent::Exited { .. });
+                    events.push(e);
+                    if exited {
+                        break;
+                    }
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        // Nothing after `Exited`.
+        std::thread::sleep(Duration::from_millis(100));
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+        (core, events)
+    }
+
+    #[test]
+    fn every_byte_of_a_flood_reaches_the_screen() {
+        let (core, events) = flood_events();
+        assert_eq!(core.tail_text(3), "299999\n300000\nEND");
+        // One plain `Output` for the whole unacknowledged flood (one per ~1 KiB read before
+        // M11n), the notification's own, then `Exited`, last.
+        let shape: Vec<String> = events.iter().map(|e| format!("{e:?}")).collect();
+        assert_eq!(events.len(), 3, "{shape:?}");
+        assert!(
+            matches!(events[0], TermEvent::Output { notifications: 0 }),
+            "{shape:?}"
+        );
+        assert!(
+            matches!(events[1], TermEvent::Output { notifications: 1 }),
+            "{shape:?}"
+        );
+        assert!(matches!(events[2], TermEvent::Exited { .. }), "{shape:?}");
+    }
+
+    #[test]
+    fn an_agent_still_settles_after_a_batched_flood() {
+        use crate::status::{IDLE_AFTER, StatusTracker};
+        let (_core, events) = flood_events();
+        let outputs: Vec<usize> = events
+            .iter()
+            .filter_map(|e| match e {
+                TermEvent::Output { notifications } => Some(*notifications),
+                _ => None,
+            })
+            .collect();
+        assert!(!outputs.is_empty());
+        let t0 = Instant::now();
+        let at = |i: usize| t0 + Duration::from_millis(500 + 10 * i as u64);
+        let prompt = || "% ".to_string();
+
+        // The plain batches: Working, then Done once quiet for IDLE_AFTER.
+        let mut plain = StatusTracker::new();
+        plain.on_input(t0); // typed first, outside the echo window
+        let mut last = t0;
+        for (i, _) in outputs.iter().enumerate().filter(|(_, n)| **n == 0) {
+            last = at(i);
+            plain.on_output(last, 0);
+        }
+        assert_eq!(plain.status(), Status::Working);
+        assert_eq!(
+            plain.tick(last + IDLE_AFTER - Duration::from_millis(1), prompt),
+            None
+        );
+        assert_eq!(plain.tick(last + IDLE_AFTER, prompt), Some(Status::Done));
+
+        // Every gate event, the notification's included: settles on the next tick, as today.
+        let mut noted = StatusTracker::new();
+        noted.on_input(t0);
+        for (i, n) in outputs.iter().enumerate() {
+            last = at(i);
+            noted.on_output(last, *n);
+        }
+        assert_eq!(noted.status(), Status::Working);
+        assert_eq!(
+            noted.tick(last + Duration::from_millis(1), prompt),
+            Some(Status::Done)
+        );
+    }
+
+    #[test]
+    fn a_notification_batch_always_sends_its_own_output() {
+        let gate = OutputGate::default();
+        assert!(matches!(
+            gate.after_batch(0),
+            Some(TermEvent::Output { notifications: 0 })
+        ));
+        assert!(gate.after_batch(0).is_none());
+        assert!(matches!(
+            gate.after_batch(2),
+            Some(TermEvent::Output { notifications: 2 })
+        ));
+        // Over a seeded run of batches, never acknowledged: every notification is delivered.
+        let gate = OutputGate::default();
+        let mut state = 5;
+        let (mut fed, mut delivered) = (0, 0);
+        for _ in 0..10_000 {
+            let n = match crate::detector::fixtures::splitmix(&mut state) % 10 {
+                0 => 1,
+                1 => 3,
+                _ => 0,
+            };
+            fed += n;
+            if let Some(TermEvent::Output { notifications }) = gate.after_batch(n) {
+                assert!(n == 0 || notifications == n);
+                delivered += notifications;
+            }
+        }
+        assert!(fed > 0);
+        assert_eq!(delivered, fed);
+    }
+
+    #[test]
+    fn the_batch_after_an_acknowledged_output_always_sends() {
+        let gate = OutputGate::default();
+        assert!(gate.after_batch(0).is_some());
+        gate.seen();
+        assert!(gate.after_batch(0).is_some());
+        assert!(gate.after_batch(0).is_none());
+    }
+
+    #[test]
+    fn output_seen_lets_the_next_batch_send() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf one; sleep 0.3; printf two; sleep 0.3; printf three; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        // As the view does: acknowledge each `Output` as it is handled.
+        let mut outputs = 0;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while outputs < 3 && Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(TermEvent::Output { .. }) => {
+                    core.output_seen();
+                    outputs += 1;
+                }
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        assert_eq!(outputs, 3);
+        assert!(screen_text(&core).contains("onetwothree"));
+    }
+
+    #[test]
+    fn marks_survive_batch_boundaries() {
+        // Three prompts and commands (zsh integration's OSC 133 A/B/C/D), the second with
+        // enough output for several full batches.
+        let mut stream = Vec::new();
+        let mut marks = Vec::new();
+        let mut mark = |stream: &mut Vec<u8>, m: &str| {
+            marks.push(stream.len());
+            stream.extend_from_slice(format!("\x1b]133;{m}\x07").as_bytes());
+        };
+        for (i, cmd) in ["ls", "seq -w 1 1500", "true"].iter().enumerate() {
+            mark(&mut stream, "A");
+            stream.extend_from_slice(b"% ");
+            mark(&mut stream, "B");
+            stream.extend_from_slice(format!("{cmd}\r\n").as_bytes());
+            mark(
+                &mut stream,
+                &format!("C;cmdline_url={}", cmd.replace(' ', "%20")),
+            );
+            // Wide lines, so the output fills batches without scrolling the first block out
+            // of the history.
+            let lines = if i == 1 { 1500 } else { 2 };
+            for n in 1..=lines {
+                stream.extend_from_slice(format!("{n:0>150}\r\n").as_bytes());
+            }
+            mark(&mut stream, "D;0");
+        }
+        mark(&mut stream, "A");
+        stream.extend_from_slice(b"% ");
+        mark(&mut stream, "B");
+        assert!(stream.len() > 3 * BATCH_MAX);
+        // Cut inside every mark (3 bytes in), and nowhere more than BATCH_MAX apart.
+        let mut cuts: Vec<usize> = marks.iter().map(|m| m + 3).collect();
+        cuts.push(stream.len());
+        let mut pieces = Vec::new();
+        let mut from = 0;
+        for cut in cuts {
+            while cut - from > BATCH_MAX {
+                pieces.push(&stream[from..from + BATCH_MAX]);
+                from += BATCH_MAX;
+            }
+            pieces.push(&stream[from..cut]);
+            from = cut;
+        }
+        assert!(pieces.iter().any(|p| p.len() == BATCH_MAX));
+        assert!(pieces.iter().all(|p| p.len() <= BATCH_MAX));
+
+        let dims = TermDims {
+            cols: 160,
+            rows: 10,
+        };
+        let (tx, _rx) = unbounded();
+        let batched = TerminalCore::spawn(sh("sleep 5"), dims, tx, Theme::default()).unwrap();
+        let (tx, _rx) = unbounded();
+        let mut feed = LocalFeed::new(
+            batched.shared.clone(),
+            Arc::new(Mutex::new(None)),
+            Arc::new(OutputGate::default()),
+            tx,
+        );
+        for piece in &pieces {
+            feed.batch(piece);
+        }
+        let (tx, _rx) = unbounded();
+        let whole = TerminalCore::spawn(sh("sleep 5"), dims, tx, Theme::default()).unwrap();
+        whole.show_local(std::str::from_utf8(&stream).unwrap());
+
+        // The taggers' ids are seeded per terminal: compare everything else.
+        let read = |core: &TerminalCore| {
+            core.blocks()
+                .into_iter()
+                .map(|b| {
+                    let out = core.block_output(&b.id);
+                    (b.outcome, b.prompt_top, b.cmd_row, b.output, b.cmd, out)
+                })
+                .collect::<Vec<_>>()
+        };
+        let (got, want) = (read(&batched), read(&whole));
+        assert_eq!(want.len(), 3, "{want:?}");
+        assert_eq!(got, want);
+        assert_eq!(batched.prompt_ready(), whole.prompt_ready());
+    }
+
+    #[test]
+    fn dropping_a_terminal_mid_flood_ends_its_threads() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("yes fuxx-flood"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |e| matches!(e, TermEvent::Output { .. })));
+        std::thread::sleep(Duration::from_millis(100)); // mid-flood
+        drop(core); // the pane closed
+        // The parser thread sends `Exited` after the last batch, then lets go of the last
+        // sender (the Term's listener with it): the channel closes.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut exited = false;
+        let closed = loop {
+            match rx.try_recv() {
+                Ok(TermEvent::Exited { .. }) => exited = true,
+                Ok(_) => {}
+                Err(futures::channel::mpsc::TryRecvError::Closed) => break true,
+                Err(_) if Instant::now() >= deadline => break false,
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        };
+        assert!(exited, "no Exited");
+        assert!(
+            closed,
+            "the parser thread still holds the terminal after 1 s"
+        );
     }
 
     fn sh(script: &str) -> CommandBuilder {
