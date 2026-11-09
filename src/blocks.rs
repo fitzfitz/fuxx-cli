@@ -177,6 +177,10 @@ pub struct Tagger {
     /// The next id's number, seeded from the clock so two taggers' ids don't collide in
     /// practice (a window's replica and the background service's session).
     next_id: u64,
+    /// The last D, with the tagger `Unknown`, found no running tag to finish. Another D before
+    /// any A, B or C is skipped without scanning, so a storm of D marks (hostile output) costs
+    /// nothing.
+    d_missed: bool,
 }
 
 impl Tagger {
@@ -189,6 +193,7 @@ impl Tagger {
         Tagger {
             state: ShellState::Unknown,
             next_id: seed,
+            d_missed: false,
         }
     }
 
@@ -225,8 +230,23 @@ impl Tagger {
 
     fn apply<L>(&mut self, term: &mut Term<L>, mark: Mark) {
         let cursor = term.grid().cursor.point;
+        if !matches!(mark, Mark::Done { .. }) {
+            self.d_missed = false;
+        }
         match mark {
             Mark::PromptStart => {
+                // The prompt always starts a hard line. zsh's PROMPT_SP, after output without
+                // a final newline, prints its EOL mark and `cols - 1` spaces, then `\r`: the
+                // spaces soft-wrap the output's row, so without this the prompt and command
+                // row would be a continuation of the output (B would tag the output's row and
+                // the earlier block would swallow the prompt). With the cursor at column 0,
+                // the row above's `WRAPLINE` is cleared. This is the only grid flag fuxx
+                // writes.
+                let grid = term.grid_mut();
+                if cursor.column == Column(0) && cursor.line > grid.topmost_line() {
+                    let last = grid.last_column();
+                    grid[cursor.line - 1i32][last].flags.remove(Flags::WRAPLINE);
+                }
                 self.state = ShellState::Prompt {
                     lfs: 0,
                     input_start: None,
@@ -238,7 +258,9 @@ impl Tagger {
                     _ => 0,
                 };
                 let row = line_start(term.grid(), cursor.line);
-                // A prompt re-marked (a redraw, or a second integration) keeps its id.
+                // A B repeated with no redraw in between (a second integration) finds this
+                // prompt's tag and keeps its id. A redraw overwrites column 0, which drops the
+                // old tag, so the redrawn prompt gets a fresh id.
                 let id = match tag_at(term.grid(), row) {
                     Some(old) if old.state == BlockState::Prompt => old.id,
                     _ => self.fresh_id(),
@@ -284,15 +306,18 @@ impl Tagger {
                 write_tag(term, row, &tag);
             }
             Mark::Done { exit } => {
+                if self.state == ShellState::Unknown && self.d_missed {
+                    return;
+                }
                 self.state = ShellState::Unknown;
                 let grid = term.grid();
                 let rows = grid.history_size() + grid.screen_lines();
-                let Some((row, mut tag)) = nearest_tag(grid, cursor.line, rows) else {
+                let found = nearest_tag(grid, cursor.line, rows);
+                let Some((row, mut tag)) = found.filter(|(_, t)| t.state == BlockState::Running)
+                else {
+                    self.d_missed = true;
                     return;
                 };
-                if tag.state != BlockState::Running {
-                    return;
-                }
                 let out_start = lines_down(grid, row, tag.cmd_lines.unwrap_or(1));
                 // Output ends above the cursor, or on its row when something is printed there
                 // (output without a final newline).
@@ -842,6 +867,132 @@ mod tests {
             .prompt();
         assert!(sh.blocks().is_empty(), "{:?}", sh.blocks());
         assert!(live_prompt(&sh.term).is_some());
+    }
+
+    #[test]
+    fn an_evicted_first_tag_keeps_the_later_blocks() {
+        // As above, with 50 lines: 58 rows written, rows 0–1 evicted: block 1's tag (row 0)
+        // goes, blocks 2 (row 3) and 3 (row 6) stay.
+        let lines = |n: usize| (0..n).map(|i| format!("{i}\r\n")).collect::<String>();
+        let mut sh = Shell::new();
+        sh.command("one", "a\r\nb\r\n", Some(0))
+            .command("two", "a\r\nb\r\n", Some(0))
+            .command("seq", &lines(50), Some(0))
+            .prompt();
+        let blocks = sh.blocks();
+        let cmds: Vec<_> = blocks.iter().map(|b| b.cmd.as_deref()).collect();
+        assert_eq!(cmds, vec![Some("two"), Some("seq")], "{blocks:?}");
+        assert_eq!(
+            output_text(&sh.term, &blocks[0].id).as_deref(),
+            Some("a\nb")
+        );
+        assert_eq!(blocks[0].cmd_row, sh.term.grid().topmost_line() + 1);
+    }
+
+    /// zsh's PROMPT_SP after output without a final newline: the EOL mark, `cols - 1` spaces
+    /// (which soft-wrap the line), `\r`, a space, `\r`.
+    fn prompt_sp(cols: usize) -> Vec<u8> {
+        format!("%{}\r \r", " ".repeat(cols - 1)).into_bytes()
+    }
+
+    #[test]
+    fn prompt_sp_does_not_join_the_next_prompt_to_the_output() {
+        let mut sh = Shell::new();
+        sh.prompt()
+            .feed(b"printf abc\r\n")
+            .feed(&c(Some("printf%20abc")))
+            .feed(b"abc")
+            .feed(&prompt_sp(20))
+            .feed(&d(Some(0)))
+            .prompt()
+            .feed(b"ls\r\n")
+            .feed(&c(Some("ls")))
+            .feed(b"x\r\n")
+            .feed(&prompt_sp(20))
+            .feed(&d(Some(0)))
+            .prompt();
+        let check = |sh: &Shell, when: &str| {
+            let blocks = sh.blocks();
+            assert_eq!(blocks.len(), 2, "{when}: {blocks:?}");
+            let (printf, ls) = (&blocks[0], &blocks[1]);
+            assert_eq!(printf.cmd.as_deref(), Some("printf abc"), "{when}");
+            assert_eq!(
+                output_text(&sh.term, &printf.id).as_deref(),
+                Some("abc%"),
+                "{when}"
+            );
+            let (_, out_end) = printf.output.unwrap();
+            assert!(out_end < ls.prompt_top, "{when}: {blocks:?}");
+            // The ls command row is the prompt's row, below the printf output.
+            assert_eq!(ls.cmd.as_deref(), Some("ls"), "{when}");
+            assert_eq!(ls.prompt_top, ls.cmd_row, "{when}");
+            assert_eq!(ls.cmd_row, out_end + 1, "{when}");
+            let row = sh.term.bounds_to_string(
+                Point::new(ls.cmd_row, Column(0)),
+                Point::new(ls.cmd_row, sh.term.grid().last_column()),
+            );
+            assert_eq!(row.trim_end(), "$ ls", "{when}");
+            assert_eq!(
+                output_text(&sh.term, &ls.id).as_deref(),
+                Some("x"),
+                "{when}"
+            );
+            assert_eq!(live_prompt(&sh.term), Some(sh.cursor().line), "{when}");
+        };
+        check(&sh, "20 cols");
+        // Reflow does not re-join them.
+        for cols in [10, 40, 6, 20] {
+            sh.term.resize(TermDims { cols, rows: 6 });
+            check(&sh, &format!("{cols} cols"));
+        }
+    }
+
+    #[test]
+    fn a_c_over_the_mark_cap_still_starts_output() {
+        let mut sh = Shell::new();
+        let long = "a".repeat(9 * 1024);
+        sh.prompt().feed(b"x\r\n");
+        assert!(sh.tagger.prompt_ready());
+        sh.feed(&c(Some(&long)));
+        assert!(!sh.tagger.prompt_ready());
+        let t = &tags(&sh.term)[0].1;
+        assert_eq!(t.state, BlockState::Running);
+        assert_eq!(t.cmd, None);
+        assert!(t.truncated);
+        assert!(encode(t).uri().contains("&t=1"));
+        let blocks = sh.blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].outcome, Outcome::Running);
+        assert_eq!(blocks[0].cmd, None);
+    }
+
+    #[test]
+    fn a_storm_of_d_marks_after_a_miss_scans_nothing() {
+        let mut sh = Shell::new();
+        sh.command("ls", "a\r\n", Some(0));
+        // The second D misses (the tag is done), and so do all after it.
+        for _ in 0..1000 {
+            sh.feed(&d(Some(1)));
+        }
+        assert_eq!(sh.blocks()[0].outcome, Outcome::Ok);
+        // Proof the scan is skipped: a running tag written by hand above the cursor is not
+        // finished by another D while the tagger stays Unknown after a miss…
+        let (line, mut t) = tags(&sh.term)[0].clone();
+        t.state = BlockState::Running;
+        t.out_lines = None;
+        t.exit = None;
+        sh.term.grid_mut()[line][Column(0)].set_hyperlink(Some(encode(&t)));
+        sh.feed(&d(Some(0)));
+        assert_eq!(sh.blocks()[0].outcome, Outcome::Running);
+        // …but a C (output of some command started) re-arms it.
+        sh.feed(&c(None)).feed(&d(Some(0)));
+        assert_eq!(sh.blocks()[0].outcome, Outcome::Ok);
+        // A fresh tagger (a reattach) scans on its first D.
+        let mut sh = Shell::new();
+        sh.prompt().feed(b"ls\r\n").feed(&c(Some("ls")));
+        sh.tagger = Tagger::new();
+        sh.feed(&d(Some(0)));
+        assert_eq!(sh.blocks()[0].outcome, Outcome::Ok);
     }
 
     #[test]
