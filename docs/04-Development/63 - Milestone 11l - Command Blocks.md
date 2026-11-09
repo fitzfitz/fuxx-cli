@@ -323,7 +323,7 @@ In `blocks.rs`: `CMD_CAP` 2048, `PROMPT_LINES_CAP` 8, `C_SCAN_ROWS` 500, `MARK_C
 - A terminal find (⌘F) and "select the block's output" as a selection.
 - M11m's title bar and M11n's performance work (listed in the roadmap, designed separately).
 
-## On-screen checklist (pending, after the combined release)
+## On-screen checklist (pending; released in v0.5.0)
 
 1. **A fresh terminal (zsh)**: run `echo hi`, then `false`. Each command gets a thin bar in the left padding beside
    its prompt; `false`'s bar is red; a hairline sits above each prompt; the live prompt has a hairline above it too.

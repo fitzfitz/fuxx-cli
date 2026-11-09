@@ -229,7 +229,7 @@ No new colours. Constants (in `sidebar_toggle.rs` and `title_area.rs`): `BAND_ED
   for your on-screen check (item 20).
 - **Full screen can't be screenshotted** off screen: it is covered by unit tests on the geometry and by your check.
 
-## On-screen checklist (pending, after the combined release)
+## On-screen checklist (pending; released in v0.5.0)
 
 1. **Sidebar open:** the sidebar's top band shows the traffic lights at the left, **"the Fuxx?"** in the middle and
    the sidebar icon at the band's right edge, straight above the footer's ⚙. Nothing sits right of the lights where

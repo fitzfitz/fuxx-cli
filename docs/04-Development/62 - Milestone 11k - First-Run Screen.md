@@ -238,7 +238,7 @@ None in `ui_tokens` or `UiColors` (AI's call). Constants in `welcome.rs`: `CARD_
 - Changing the tips card's content, or retiring it.
 - A welcome in Preferences or popped-out windows; scripting the welcome.
 
-## On-screen checklist (pending, after the combined release)
+## On-screen checklist (pending; released in v0.5.0)
 
 1. **A first run** (with Keep running after quit off): quit fuxx, rename `~/Library/Application Support/fuxx/sessions.json`
    to `sessions.json.bak`, open fuxx: the terminal opens and the Welcome card sits over it, centred, with the window
@@ -345,7 +345,7 @@ Re-reading the design as the builder who must plan it, these were the places the
     Esc skip`; buttons `Skip`, `Start {name}`, `Open Terminal`.
 15. **Existing screenshots that change:** `overlays` (new arm); `help` only if it checks the menu (it doesn't: the
     panel's list is bindings, unchanged). No other scene changes pixels: `for_shots` starts `welcomed = true`.
-16. **Version:** no release of its own; it ships in the one release after M11n (your rule).
+16. **Version:** no release of its own; released in v0.5.0 (2026-11-10), the one combined release.
 
 ## Left to the builder
 
