@@ -8,9 +8,11 @@
 //! - `C` output starts, with an optional `;cmdline_url=<%-encoded command>` (Kitty's key);
 //! - `D` the command finished, with an optional `;<exit>`.
 //!
-//! Other letters and keys are ignored; a mark longer than `MARK_CAP` bytes is dropped.
+//! Other letters and keys are ignored. A mark longer than `MARK_CAP` bytes keeps only its
+//! letter (memory stays bounded): an overlong `C` still reads as output starting, without its
+//! command (`truncated`); any other overlong mark is dropped.
 
-/// The longest mark body (what follows `ESC ]133;`) kept; a longer one is dropped.
+/// The longest mark body (what follows `ESC ]133;`) kept whole; past it only the letter is.
 pub const MARK_CAP: usize = 8192;
 
 /// The intro. It starts with ESC and holds no other ESC, so a failed partial match can only
@@ -37,9 +39,11 @@ pub enum Mark {
 pub struct MarkScanner {
     /// How many leading bytes of `INTRO` have matched so far.
     matched: usize,
-    /// After the intro: the mark's body so far; none while not inside one, or once it has run
-    /// past `MARK_CAP`.
+    /// After the intro: the mark's body so far; none while not inside one.
     body: Option<Vec<u8>>,
+    /// The body ran past `MARK_CAP`: `body` holds only its first two bytes (the letter and
+    /// what follows it) and takes no more.
+    overflow: bool,
     /// The body's last byte was an ESC, which may start its `ESC \` end.
     esc: bool,
 }
@@ -50,6 +54,7 @@ impl MarkScanner {
         MarkScanner {
             matched: 0,
             body: None,
+            overflow: false,
             esc: false,
         }
     }
@@ -63,7 +68,12 @@ impl MarkScanner {
                 let esc = std::mem::take(&mut self.esc);
                 match (esc, b) {
                     (false, 0x07) | (true, b'\\') => {
-                        if let Some(mark) = parse(&body) {
+                        let mark = if self.overflow {
+                            overlong(&body)
+                        } else {
+                            parse(&body)
+                        };
+                        if let Some(mark) = mark {
                             found.push((i + 1, mark));
                         }
                     }
@@ -75,15 +85,20 @@ impl MarkScanner {
                         self.body = Some(body);
                     }
                     (false, _) => {
-                        body.push(b);
-                        if body.len() <= MARK_CAP {
-                            self.body = Some(body);
+                        if !self.overflow {
+                            body.push(b);
+                            if body.len() > MARK_CAP {
+                                body.truncate(2);
+                                self.overflow = true;
+                            }
                         }
+                        self.body = Some(body);
                     }
                 }
             }
             if self.step_intro(b) {
                 self.body = Some(Vec::new());
+                self.overflow = false;
                 self.esc = false;
             }
         }
@@ -139,6 +154,15 @@ fn parse(body: &[u8]) -> Option<Mark> {
         }
         _ => None,
     }
+}
+
+/// A mark that ran past `MARK_CAP`, from its first two bytes: a `C` (with options) still
+/// means output started, its command too long to keep; anything else is dropped.
+fn overlong(start: &[u8]) -> Option<Mark> {
+    (start == b"C;").then_some(Mark::OutputStart {
+        cmd: None,
+        truncated: true,
+    })
 }
 
 /// `%XX`-decodes `encoded` (as `detector::cwd_from_report` does) into UTF-8 text; bad
@@ -271,11 +295,50 @@ mod tests {
 
     #[test]
     fn drops_an_overlong_mark() {
+        // An overlong C still says output started, without its command (fix round 1).
         let mut bytes = b"\x1b]133;C;cmdline_url=".to_vec();
         bytes.extend(std::iter::repeat_n(b'a', 9000));
         bytes.push(0x07);
         let mut scanner = MarkScanner::new();
-        assert!(scanner.feed(&bytes).is_empty());
+        assert_eq!(
+            scanner.feed(&bytes),
+            vec![(
+                bytes.len(),
+                Mark::OutputStart {
+                    cmd: None,
+                    truncated: true
+                }
+            )]
+        );
+        // Split across reads, ended by `ESC \`.
+        let mut scanner = MarkScanner::new();
+        assert!(scanner.feed(&bytes[..9010]).is_empty());
+        let mut rest = bytes[9010..bytes.len() - 1].to_vec();
+        rest.extend_from_slice(b"\x1b\\");
+        assert_eq!(
+            scanner.feed(&rest),
+            vec![(
+                rest.len(),
+                Mark::OutputStart {
+                    cmd: None,
+                    truncated: true
+                }
+            )]
+        );
+        // Any other overlong mark is dropped; the next mark is still found.
+        let mut overlong_a = b"\x1b]133;A;".to_vec();
+        overlong_a.extend(std::iter::repeat_n(b'k', 9000));
+        overlong_a.push(0x07);
+        assert!(scanner.feed(&overlong_a).is_empty());
+        let mut not_c = b"\x1b]133;Cx".to_vec();
+        not_c.extend(std::iter::repeat_n(b'k', 9000));
+        not_c.push(0x07);
+        assert!(scanner.feed(&not_c).is_empty());
+        // An ESC still abandons an overlong mark.
+        let mut abandoned = b"\x1b]133;C;".to_vec();
+        abandoned.extend(std::iter::repeat_n(b'k', 9000));
+        abandoned.extend_from_slice(b"\x1b[0m\x07");
+        assert!(scanner.feed(&abandoned).is_empty());
         assert_eq!(
             scanner.feed(b"\x1b]133;A\x07"),
             vec![(8, Mark::PromptStart)]
