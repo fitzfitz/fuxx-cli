@@ -8,18 +8,21 @@ use objc2_foundation::NSString;
 
 use crate::native_notify::Permission;
 use crate::{
-    ReportIssue, ShowCommands, ShowLogs, ShowNotificationStatus, ShowShortcuts, ShowWelcomeTips,
+    ReportIssue, ShowCommands, ShowLogs, ShowNotificationStatus, ShowShortcuts, ShowWelcome,
+    ShowWelcomeTips,
 };
 
-/// The Help menu: the two panels (Keyboard Shortcuts shows ⌘/, its binding), the notification
-/// status and the tips card, then reporting an issue and the logs.
+/// The Help menu: the Welcome card, the two panels (Keyboard Shortcuts shows ⌘/, its binding),
+/// the notification status and the tips card, then reporting an issue and the logs.
 pub fn menu() -> Menu {
     Menu::new("Help").items([
+        MenuItem::action("Welcome to fuxx", ShowWelcome),
+        MenuItem::separator(),
         MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
         MenuItem::action("fuxx Command Reference", ShowCommands),
         MenuItem::separator(),
         MenuItem::action("Notifications Status\u{2026}", ShowNotificationStatus),
-        MenuItem::action("Show Welcome Tips", ShowWelcomeTips),
+        MenuItem::action("Show Tips Card", ShowWelcomeTips),
         MenuItem::separator(),
         MenuItem::action("Report an Issue\u{2026}", ReportIssue),
         MenuItem::action("Show Logs", ShowLogs),

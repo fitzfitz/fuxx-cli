@@ -243,7 +243,7 @@ pub static COMMANDS: &[Command] = {
     use crate::{
         ActualSize, Bigger, CheckForUpdates, Hide, Minimize, OpenPreferences, Quit,
         QuitAndEndSessions, ReportIssue, ShowCommands, ShowLogs, ShowNotificationStatus,
-        ShowShortcuts, ShowWelcomeTips, Smaller, Zoom,
+        ShowShortcuts, ShowWelcome, ShowWelcomeTips, Smaller, Zoom,
     };
     use Place::{Anywhere as A, Browser as B, File as F, Persistent as P, Terminal as T};
     use ShortcutGroup::*;
@@ -504,9 +504,16 @@ pub static COMMANDS: &[Command] = {
             Run::Action(act::<ShowNotificationStatus>),
         ),
         cmd(
-            "Show Welcome Tips",
+            "Welcome to fuxx",
             WindowAndApp,
-            "",
+            "first run",
+            A,
+            Run::Action(act::<ShowWelcome>),
+        ),
+        cmd(
+            "Show Tips Card",
+            WindowAndApp,
+            "welcome tips",
             A,
             Run::Action(act::<ShowWelcomeTips>),
         ),
@@ -1811,6 +1818,25 @@ mod tests {
             item(Key::Setting("Theme")),
         ];
         assert_eq!(selectable(&lines), [1, 3, 4]);
+    }
+
+    #[test]
+    fn welcome_is_found_in_the_palette() {
+        let find = |name: &str| COMMANDS.iter().find(|c| c.name == name).expect(name);
+        let welcome = find("Welcome to fuxx");
+        let tips = find("Show Tips Card");
+        for query in ["welcome", "first run"] {
+            assert!(
+                match_item(query, welcome.name, &[welcome.keywords], None).is_some(),
+                "{query}"
+            );
+        }
+        assert!(match_item("welcome tips", tips.name, &[tips.keywords], None).is_some());
+        for c in [welcome, tips] {
+            assert_eq!(c.group, ShortcutGroup::WindowAndApp, "{}", c.name);
+            assert_eq!(c.place, Place::Anywhere, "{}", c.name);
+        }
+        assert!(COMMANDS.iter().all(|c| c.name != "Show Welcome Tips"));
     }
 
     #[test]

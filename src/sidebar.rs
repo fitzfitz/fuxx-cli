@@ -1973,7 +1973,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Help → Show Welcome Tips: the tips card back and remembered (`show_hint`), and the sidebar
+    /// Help → Show Tips Card: the tips card back and remembered (`show_hint`), and the sidebar
     /// it lives in shown if it was hidden (as ⌘\ would).
     pub(crate) fn show_welcome_tips(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sidebar.hidden {

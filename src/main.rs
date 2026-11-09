@@ -146,6 +146,7 @@ actions!(
 actions!(
     help,
     [
+        ShowWelcome,
         ShowShortcuts,
         ShowCommands,
         ShowNotificationStatus,
@@ -851,6 +852,11 @@ fn main() {
                     }
                 }
             });
+            cx.on_action(|_: &ShowWelcome, cx: &mut App| {
+                with_help_window(cx, |workspace, _, window, cx| {
+                    workspace.open_welcome(welcome_items::Origin::Help, window, cx)
+                })
+            });
             cx.on_action(|_: &ShowWelcomeTips, cx: &mut App| {
                 with_help_window(cx, |workspace, _, window, cx| {
                     workspace.show_welcome_tips(window, cx)
@@ -958,9 +964,9 @@ mod tests {
 
     use super::{
         ActualSize, Bigger, CheckForUpdates, ReportIssue, ShowCommands, ShowLogs,
-        ShowNotificationStatus, ShowShortcuts, ShowWelcomeTips, Smaller, app_items, edit_menu,
-        file_menu, key_bindings, menu_bar, new_bindings, new_items, quit_title, view_menu,
-        window_menu,
+        ShowNotificationStatus, ShowShortcuts, ShowWelcome, ShowWelcomeTips, Smaller, app_items,
+        edit_menu, file_menu, key_bindings, menu_bar, new_bindings, new_items, quit_title,
+        view_menu, window_menu,
     };
     use crate::browser_tab::{GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::terminal_view::{Copy, Paste};
@@ -1073,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn the_help_menu_comes_last_with_its_eight_items() {
+    fn the_help_menu_comes_last_with_its_ten_items() {
         let bar = menu_bar(vec![], vec![]);
         let menus: Vec<&str> = bar.iter().map(|m| m.name.as_ref()).collect();
         assert_eq!(
@@ -1083,13 +1089,14 @@ mod tests {
         let help = crate::help_menu::menu();
         assert_eq!(help.name.as_ref(), "Help");
         // Each item's name and action ("—" for a separator).
-        let actions: [Box<dyn Action>; 6] = [
+        let actions: [Box<dyn Action>; 7] = [
             Box::new(ShowShortcuts),
             Box::new(ShowCommands),
             Box::new(ShowNotificationStatus),
             Box::new(ShowWelcomeTips),
             Box::new(ReportIssue),
             Box::new(ShowLogs),
+            Box::new(ShowWelcome),
         ];
         let items: Vec<(String, Option<usize>)> = help
             .items
@@ -1104,11 +1111,13 @@ mod tests {
             })
             .collect();
         let want: Vec<(String, Option<usize>)> = [
+            ("Welcome to fuxx", Some(6)),
+            ("\u{2014}", None),
             ("Keyboard Shortcuts", Some(0)),
             ("fuxx Command Reference", Some(1)),
             ("\u{2014}", None),
             ("Notifications Status\u{2026}", Some(2)),
-            ("Show Welcome Tips", Some(3)),
+            ("Show Tips Card", Some(3)),
             ("\u{2014}", None),
             ("Report an Issue\u{2026}", Some(4)),
             ("Show Logs", Some(5)),
