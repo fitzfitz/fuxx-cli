@@ -83,11 +83,13 @@ const BREATH_LOW: f32 = 0.35;
 /// between 1.0 and 0.35 with a 1.6 s period. `clock` is the time since the breath began, so
 /// 0 is full, 0.8 s is the trough and 1.6 s is full again. The caller passes `clock` measured
 /// from the end of the hold (`since_change - 600 ms`) so the breath starts smoothly at full.
+/// 1.0 again once the breath rests (`breath_rests`).
 pub fn breath_alpha(since_change: Duration, clock: Duration) -> f32 {
-    if since_change < HOLD {
+    if since_change < HOLD || breath_rests(clock) {
         return 1.0;
     }
-    let phase = (clock.as_secs_f32() % BREATH_PERIOD) / BREATH_PERIOD;
+    // Whole nanoseconds into the breath: exact however long the clock has run.
+    let phase = breath_phase(clock) as f32 / BREATH_PERIOD;
     let mid = (1.0 + BREATH_LOW) / 2.0;
     mid + (1.0 - mid) * (TAU * phase).cos()
 }
@@ -230,8 +232,66 @@ pub fn spark_at(s: &Spark, now: Instant) -> Option<((f32, f32), f32)> {
     ))
 }
 
-/// The breathing glow's redraw interval: 20 a second (M11f).
-pub const BREATH_TICK: Duration = Duration::from_millis(50);
+/// The opacity step between two breath frames (M11n): the largest one M11f's 20 fps took, at
+/// the cosine's steepest point (0.325 · 2π / 1.6 s · 50 ms ≈ 0.0638).
+pub const BREATH_STEP: f32 = 0.064;
+/// The least time between two breath frames.
+pub const BREATH_MIN: Duration = Duration::from_millis(50);
+/// When the breath rests, on its own clock (after the hold): 188 breaths of 1.6 s, so at a
+/// peak. From then on the cursor stays at full strength and nothing redraws.
+pub const BREATH_REST_AT: Duration = Duration::from_millis(300_800);
+
+/// The breath's period, for the schedule.
+const PERIOD: Duration = Duration::from_millis(1600);
+/// A frame due less than this ahead counts as reached (a timer that fires a little early
+/// draws it, and the next wait aims at the frame after).
+const BREATH_SLACK: f64 = 0.001;
+
+/// Where `clock` is within its breath, in seconds from the breath's peak (0 to 1.6).
+fn breath_phase(clock: Duration) -> f64 {
+    (clock.as_nanos() % PERIOD.as_nanos()) as f64 / 1e9
+}
+
+/// The 22 times within a breath, in seconds from its peak, at which it is drawn: on the way
+/// down each level `1.0 - k·BREATH_STEP` (k = 1..=10), the trough at 0.8 s, on the way up the
+/// same levels the other way round, and the next peak at 1.6 s. Closed form of `breath_alpha`
+/// solved for its clock: `P/(2π)·acos((α - mid)/amp)` falling, `P` minus that rising.
+fn breath_marks() -> Vec<f64> {
+    let p = PERIOD.as_secs_f64();
+    let low = f64::from(BREATH_LOW);
+    let (mid, amp) = ((1.0 + low) / 2.0, (1.0 - low) / 2.0);
+    let falling: Vec<f64> = (1..)
+        .map(|k| 1.0 - f64::from(k) * f64::from(BREATH_STEP))
+        .take_while(|level| *level > low)
+        .map(|level| p / std::f64::consts::TAU * ((level - mid) / amp).acos())
+        .collect();
+    let mut marks = falling.clone();
+    marks.push(p / 2.0);
+    marks.extend(falling.iter().rev().map(|t| p - t));
+    marks.push(p);
+    marks
+}
+
+/// The time from `clock` (the breath's own clock, as `breath_alpha` takes it) to the next
+/// frame: the next level crossing, trough or peak (`breath_marks`) in its direction of
+/// travel, but at least `BREATH_MIN`. Rounded up to the nanosecond, so the timer lands on or
+/// just after the crossing.
+pub fn breath_wait(clock: Duration) -> Duration {
+    let at = breath_phase(clock);
+    let marks = breath_marks();
+    let next = marks
+        .iter()
+        .copied()
+        .chain([PERIOD.as_secs_f64() + marks[0]])
+        .find(|m| *m > at + BREATH_SLACK)
+        .expect("the next breath's first level is always ahead");
+    Duration::from_nanos(((next - at) * 1e9).ceil() as u64).max(BREATH_MIN)
+}
+
+/// Whether the breath is at rest: `BREATH_REST_AT` or more on its clock with no change.
+pub fn breath_rests(clock: Duration) -> bool {
+    clock >= BREATH_REST_AT
+}
 
 /// How often the cursor needs a redraw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +302,8 @@ pub enum Frames {
 }
 
 /// Frames are wanted only for a focused pane in the key window with motion allowed:
-/// every frame while something moves, a 20 fps timer for the breathing glow alone.
+/// every frame while something moves, the breath's timer (`breath_wait`) for the breathing
+/// glow alone. The view passes `glowing` false once the breath rests.
 pub fn needs_frames(
     focused: bool,
     key_window: bool,
@@ -347,6 +408,86 @@ mod tests {
         assert!((breath_alpha(ms(700), ms(1600)) - 1.0).abs() < 1e-5);
         let a = breath_alpha(ms(700), ms(400));
         assert!(a > 0.35 && a < 1.0);
+    }
+
+    /// The schedule, drawn: from clock 0, stepping by `breath_wait`, the clock
+    /// and alpha of every frame up to the end of the tenth breath.
+    fn frames_over(breaths: u32) -> Vec<(Duration, f32)> {
+        let end = ms(1600) * breaths;
+        let mut clock = Duration::ZERO;
+        let mut frames = Vec::new();
+        while clock <= end {
+            let wait = breath_wait(clock);
+            assert!(
+                wait >= BREATH_MIN && wait <= ms(170),
+                "the wait at {clock:?} is {wait:?}"
+            );
+            clock += wait;
+            frames.push((clock, breath_alpha(clock + HOLD, clock)));
+        }
+        frames
+    }
+
+    #[test]
+    fn breath_frames_are_level_crossings() {
+        let frames = frames_over(10);
+        let mut last = breath_alpha(HOLD, Duration::ZERO);
+        for &(clock, alpha) in &frames {
+            assert!(
+                (alpha - last).abs() <= BREATH_STEP + 1e-4,
+                "a step of {} at {clock:?}",
+                (alpha - last).abs()
+            );
+            last = alpha;
+        }
+        // Breath i is (i·1.6 s, (i+1)·1.6 s], its peak frame included (shifted by 1 ms for
+        // the nanosecond each wait is rounded up by).
+        for i in 0..10u32 {
+            let (from, to) = (ms(1600) * i + ms(1), ms(1600) * (i + 1) + ms(1));
+            let breath: Vec<f32> = frames
+                .iter()
+                .filter(|(c, _)| *c > from && *c <= to)
+                .map(|f| f.1)
+                .collect();
+            assert!(breath.len() <= 22, "breath {i}: {} frames", breath.len());
+            assert!(
+                breath.iter().any(|a| (a - 0.35).abs() < 1e-4),
+                "breath {i} draws its trough: {breath:?}"
+            );
+            assert!(
+                breath.iter().any(|a| (a - 1.0).abs() < 1e-4),
+                "breath {i} draws its peak: {breath:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rest_starts_at_a_peak_and_any_change_ends_it() {
+        assert_eq!(
+            BREATH_REST_AT.as_nanos() % ms(1600).as_nanos(),
+            0,
+            "a whole number of breaths"
+        );
+        assert_eq!(breath_alpha(BREATH_REST_AT + HOLD, BREATH_REST_AT), 1.0);
+        assert!(!breath_rests(BREATH_REST_AT - ms(1)));
+        assert!(breath_rests(BREATH_REST_AT));
+        // At rest the cursor is full, where the breath would be at its trough.
+        let trough = BREATH_REST_AT + ms(800);
+        assert_eq!(breath_alpha(trough + HOLD, trough), 1.0);
+        // The schedule's frame that starts the rest is the peak, on the dot.
+        let mut clock = BREATH_REST_AT - ms(1600);
+        while !breath_rests(clock) {
+            clock += breath_wait(clock);
+        }
+        assert!(
+            clock - BREATH_REST_AT < ms(1),
+            "the rest begins at {clock:?}, not at the peak"
+        );
+        // Resting asks for no frames.
+        assert_eq!(needs_frames(true, true, true, false, false), Frames::None);
+        // A change (the time since it back to 0) ends the rest: the breath clock is 0 again.
+        assert!(!breath_rests(Duration::ZERO.saturating_sub(HOLD)));
+        assert!(!breath_rests(ms(700).saturating_sub(HOLD)));
     }
 
     fn glide(now: Instant) -> Glide {
