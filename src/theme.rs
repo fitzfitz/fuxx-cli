@@ -264,6 +264,7 @@ impl Theme {
         ];
         let mark = |c: Rgb| readable(c, &surfaces, MARK_MIN);
         let accent = mark(self.palette[4]);
+        let ring_working = mark(self.palette[3]);
         // A selection is a soft wash of the accent over its surface, lowered in 2 % steps while
         // the text (as it reads on the other surfaces) would fall below 4.5:1 on it. At 0 it is
         // the surface itself, which the text reads on.
@@ -307,7 +308,7 @@ impl Theme {
             text: ink,
             text_dim,
             ring_idle: text_dim,
-            ring_working: mark(self.palette[3]),
+            ring_working,
             // Also text: the browser panel's error on the sidebar, and a waiting row's "Needs
             // input" on its tint (hovered or not) or, selected, on the selection's (M11i).
             ring_waiting: readable(
@@ -345,7 +346,7 @@ impl Theme {
             guide: quiet(mix(card, fg, 0.12), &[card]),
             block_ok: ensure_contrast(self.palette[8], bg, MARK_MIN),
             block_failed: ensure_contrast(self.palette[1], bg, MARK_MIN),
-            block_running: ensure_contrast(mark(self.palette[3]), bg, MARK_MIN),
+            block_running: ensure_contrast(ring_working, bg, MARK_MIN),
         }
     }
 }

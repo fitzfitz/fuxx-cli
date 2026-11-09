@@ -102,6 +102,16 @@ pub fn outcome_ink(outcome: Outcome, ui: &UiColors) -> Rgb {
     }
 }
 
+/// A disabled chip button: `text_dim` at this opacity.
+pub const DISABLED_ALPHA: f32 = 0.5;
+
+/// A disabled chip button's colour: `text_dim` at `DISABLED_ALPHA` over the chip's `panel`.
+/// Disabled controls are exempt from the text floor; this keeps them apart from enabled ones on
+/// every theme (Latte's `text_dim` and `text_faint` are nearly the same colour).
+pub fn disabled_ink(ui: &UiColors) -> Rgb {
+    crate::theme::mix(ui.panel, ui.text_dim, DISABLED_ALPHA)
+}
+
 /// Where a block's gutter can be pointed at, in window points (`top..bottom`): its prompt and
 /// command rows, or the whole block when chosen. `id_index` points into the list of ids painted
 /// with it.
@@ -212,6 +222,25 @@ mod tests {
             assert_eq!(bar_color(Outcome::Unknown, &ui), ui.block_ok);
             assert_eq!(bar_color(Outcome::Failed(2), &ui), ui.block_failed);
             assert_eq!(bar_color(Outcome::Running, &ui), ui.block_running);
+        }
+    }
+
+    #[test]
+    fn disabled_buttons_look_disabled() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let off = disabled_ink(&ui);
+            // `text_dim` at half opacity on the chip's panel.
+            assert_eq!(
+                off,
+                crate::theme::mix(ui.panel, ui.text_dim, DISABLED_ALPHA),
+                "{name}"
+            );
+            let apart = contrast(ui.text_dim, off);
+            assert!(apart >= 1.5, "{name}: enabled vs disabled {apart:.2}");
+            // Still there to see on the chip.
+            let r = contrast(off, ui.panel);
+            assert!(r >= 1.5, "{name}: disabled on the panel {r:.2}");
         }
     }
 

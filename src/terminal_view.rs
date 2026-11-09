@@ -33,7 +33,6 @@ use crate::block_view::{
     self, BAR_END_GAP, BAR_RADIUS, CHIP_GAP, CHIP_HEIGHT, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS,
     GUTTER_BAR, GUTTER_BAR_ACTIVE, GutterHit, SEPARATOR,
 };
-use crate::blocks::Outcome;
 use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
 use crate::daemon_client::DaemonClient;
 use crate::grid::{self, GridSnapshot, TextScope};
@@ -122,30 +121,35 @@ impl GridLayout {
 /// are (window points). Empty with `command-blocks` off and on the alternate screen.
 #[derive(Default)]
 struct GutterPaint {
+    /// The bars drawn; each `id_index` points into `blocks`.
     hits: Vec<GutterHit>,
-    blocks: Vec<ChipBlock>,
+    /// The frame's blocks (taken from its snapshot), and the top of each one's command row,
+    /// where its chip opens.
+    blocks: Vec<grid::BlockView>,
+    cmd_tops: Vec<Pixels>,
     /// The gutter strip: from the pane's left edge to the grid's.
     strip: (Pixels, Pixels),
     pane: Bounds<Pixels>,
     grid: Bounds<Pixels>,
 }
 
-/// A block whose bar was painted: what its chip shows and where it opens.
-struct ChipBlock {
-    id: String,
-    outcome: Outcome,
-    cmd: Option<String>,
-    cmd_top: Pixels,
-}
-
 impl GutterPaint {
     /// The block whose bar is under window position `pos`, if any.
-    fn hit(&self, pos: gpui::Point<Pixels>) -> Option<&ChipBlock> {
+    fn hit(&self, pos: gpui::Point<Pixels>) -> Option<&grid::BlockView> {
         if pos.x < self.strip.0 || pos.x >= self.strip.1 {
             return None;
         }
         let hit = block_view::hit_at(&self.hits, f32::from(pos.y))?;
         self.blocks.get(hit.id_index)
+    }
+
+    /// Block `id`, if its bar was drawn, and its command row's top.
+    fn drawn(&self, id: &str) -> Option<(&grid::BlockView, Pixels)> {
+        self.hits
+            .iter()
+            .map(|h| h.id_index)
+            .find(|&i| self.blocks[i].id == id)
+            .map(|i| (&self.blocks[i], self.cmd_tops[i]))
     }
 }
 
@@ -396,8 +400,7 @@ impl TerminalView {
     pub fn chip_shot(&self) -> Option<(String, [&'static str; 3], Bounds<Pixels>)> {
         let chip = self.chip(&self.core.theme().ui())?;
         let gutter = self.gutter.borrow();
-        let id = self.hovered_block.as_deref()?;
-        let block = gutter.blocks.iter().find(|b| b.id == id)?;
+        let (block, _) = gutter.drawn(self.hovered_block.as_deref()?)?;
         let label = block_view::chip_label(block.outcome, block.cmd.as_deref());
         Some((label, chip.buttons, self.chip_bounds.get()?))
     }
@@ -406,6 +409,19 @@ impl TerminalView {
     #[cfg(feature = "ui-shots")]
     pub fn write_to_program(&self, bytes: &[u8]) {
         self.core.write(bytes);
+    }
+
+    /// Where the grid was last painted (its cells, without the padding).
+    #[cfg(feature = "ui-shots")]
+    pub fn grid_bounds(&self) -> Option<Bounds<Pixels>> {
+        let l = self.layout.get()?;
+        Some(Bounds::new(
+            l.origin,
+            size(
+                l.cell_width * l.dims.cols as f32,
+                l.line_height * l.dims.rows as f32,
+            ),
+        ))
     }
 
     /// The selected text, if any.
@@ -459,7 +475,14 @@ impl TerminalView {
         }
     }
 
-    /// Close the chip now (output, typing, a press or a scroll in the grid). True if it was open.
+    /// Your own key or paste (not a script's, nor Rerun's paste): the chip closes and the picked
+    /// block is dropped (M11l §4).
+    fn user_typed(&mut self) {
+        self.hide_chip();
+        self.chosen_block = None;
+    }
+
+    /// Close the chip now (typing, a press or a scroll in the grid). True if it was open.
     fn hide_chip(&mut self) -> bool {
         self.chip_hide = None;
         self.hovered_block.take().is_some()
@@ -502,11 +525,11 @@ impl TerminalView {
     fn chip(&self, ui: &UiColors) -> Option<Chip> {
         let id = self.hovered_block.as_deref()?;
         let gutter = self.gutter.borrow();
-        let block = gutter.blocks.iter().find(|b| b.id == id)?;
+        let (block, cmd_top) = gutter.drawn(id)?;
         let (pane, grid) = (gutter.pane, gutter.grid);
         let left = grid.left() + px(CHIP_GAP);
         let top = block_view::chip_top(
-            f32::from(block.cmd_top),
+            f32::from(cmd_top),
             f32::from(grid.top()),
             f32::from(grid.bottom()),
         );
@@ -724,10 +747,9 @@ impl TerminalView {
                     self.status_changed(status, cx);
                 }
                 // Link spans are absolute grid lines that shift as output scrolls; the next
-                // mouse move recomputes the hover. Output may move the blocks too: the chip
-                // closes, and the next move over a bar opens it again.
+                // mouse move recomputes the hover. (The chip closes in paint, only if the
+                // output moved its block.)
                 self.hovered = None;
-                self.hide_chip();
                 cx.notify();
             }
             TermEvent::Term(Event::Wakeup) => cx.notify(),
@@ -826,6 +848,7 @@ impl TerminalView {
         if self.disconnected && bytes == b"\r" {
             cx.emit(TerminalEvent::Reconnect);
         }
+        self.user_typed();
         self.input_bytes(bytes, cx);
         cx.stop_propagation();
     }
@@ -837,8 +860,6 @@ impl TerminalView {
             return;
         }
         self.core.input(bytes);
-        self.hide_chip();
-        self.chosen_block = None;
         // You typed: the breath holds.
         self.motion.borrow_mut().changed = Instant::now();
         self.hear_of_resize();
@@ -1065,6 +1086,7 @@ impl TerminalView {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
+        self.user_typed();
         self.paste(&text, cx);
     }
 
@@ -1216,7 +1238,7 @@ impl Render for TerminalView {
                             split,
                             hovered: hovered_block.as_deref(),
                         };
-                        let mut painted = GutterPaint::default();
+                        let mut painted = None;
                         paint_grid(
                             snap,
                             &theme,
@@ -1224,11 +1246,29 @@ impl Render for TerminalView {
                             bounds,
                             origin,
                             look,
-                            |window| painted = marks.paint(&ui, &metrics, bounds, origin, window),
+                            |window| {
+                                painted = Some(marks.paint(&ui, &metrics, bounds, origin, window))
+                            },
                             window,
                             cx,
                         );
+                        let painted = painted.unwrap_or_default();
+                        // The chip stays while output leaves its block where it was; once
+                        // the block moves (output scrolled it, a clear, a reflow) or isn't
+                        // drawn any more, it closes. Compared by where the command row is
+                        // drawn: the scrollback cap can rotate lines with no other sign.
+                        let moved = hovered_block.as_deref().is_some_and(|id| {
+                            let before = gutter.borrow().drawn(id).map(|(_, top)| top);
+                            before != painted.drawn(id).map(|(_, top)| top)
+                        });
                         *gutter.borrow_mut() = painted;
+                        if moved {
+                            view.update(cx, |this, cx| {
+                                if this.hide_chip() {
+                                    cx.notify();
+                                }
+                            });
+                        }
                         // The next redraw the cursor needs (none when still).
                         let frames = motion.borrow().frames;
                         match frames {
@@ -1286,13 +1326,16 @@ fn chip_element(chip: Chip, ui: &UiColors, bounds: Rc<Cell<Option<Bounds<Pixels>
         .min_w(px(0.0))
         .overflow_hidden()
         .gap(px(4.0));
+    let had_outcome = chip.outcome.is_some();
     if let Some((outcome, ink)) = chip.outcome {
         label = label.child(div().flex_none().text_color(hsla(ink)).child(outcome));
-        if has_cmd {
-            label = label.child(div().flex_none().text_color(hsla(ui.text_dim)).child("·"));
-        }
     }
     if let Some(cmd) = chip.cmd {
+        // The dot goes with the command, so a narrow chip cuts both together.
+        let cmd = match had_outcome {
+            true => format!("· {cmd}"),
+            false => cmd,
+        };
         label = label.child(
             div()
                 .flex_shrink(1.0)
@@ -1311,7 +1354,11 @@ fn chip_element(chip: Chip, ui: &UiColors, bounds: Rc<Cell<Option<Bounds<Pixels>
             .h(px(18.0))
             .px(px(5.0))
             .rounded(px(4.0))
-            .text_color(hsla(if enabled { ui.text_dim } else { ui.text_faint }))
+            .text_color(hsla(if enabled {
+                ui.text_dim
+            } else {
+                block_view::disabled_ink(ui)
+            }))
             .child(name);
         match enabled {
             true => button.hover(|style| style.bg(hsla(ui.panel_hover))),
@@ -1383,7 +1430,7 @@ impl BlockMarks<'_> {
     /// Paint the hairlines above prompts (under the text) and the bars in the left padding,
     /// and say where the bars are. `bounds` is the pane, `origin` the grid's first cell.
     fn paint(
-        &self,
+        self,
         ui: &UiColors,
         m: &CellMetrics,
         bounds: Bounds<Pixels>,
@@ -1410,7 +1457,8 @@ impl BlockMarks<'_> {
             grid,
             ..GutterPaint::default()
         };
-        for b in &self.blocks {
+        for (i, b) in self.blocks.iter().enumerate() {
+            painted.cmd_tops.push(row_y(b.cmd_row));
             let Some((top, bottom)) = block_view::bar_rows(b, rows) else {
                 continue;
             };
@@ -1431,17 +1479,12 @@ impl BlockMarks<'_> {
             );
             window.paint_quad(fill(bar, hsla(color)).corner_radii(px(BAR_RADIUS)));
             painted.hits.push(GutterHit {
-                id_index: painted.blocks.len(),
+                id_index: i,
                 top: f32::from(y0),
                 bottom: f32::from(y1),
             });
-            painted.blocks.push(ChipBlock {
-                id: b.id.clone(),
-                outcome: b.outcome,
-                cmd: b.cmd.clone(),
-                cmd_top: row_y(b.cmd_row),
-            });
         }
+        painted.blocks = self.blocks;
         painted
     }
 }

@@ -562,13 +562,14 @@ pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Opti
             floor = row + 1i32;
             continue;
         }
+        // The next tag's row and prompt lines.
         let next = match chosen_outside == Some(row) && row < view_top {
             // Above the view: the next tag between it and the view's bottom.
-            true => next_tag_row(grid, row, below),
-            false => tags.get(i + 1).map(|(r, _)| *r),
+            true => next_tag_row(grid, row, below)
+                .map(|r| (r, tag_at(grid, r).map_or(0, |t| t.prompt_lines))),
+            false => tags.get(i + 1).map(|(r, t)| (*r, t.prompt_lines)),
         };
-        let stop = next.map_or(below, |r| {
-            let next_p = tag_at(grid, r).map_or(0, |t| t.prompt_lines);
+        let stop = next.map_or(below, |(r, next_p)| {
             stop_before(grid, tag, row, r, next_p).min(below)
         });
         let floor_here = match chosen_outside == Some(row) && row > last {
