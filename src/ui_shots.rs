@@ -265,6 +265,10 @@ const SCENES: &[(&str, fn())] = &[
     ("status-bar-narrow", status_bar_narrow_scenes),
     ("update-button", update_button_scenes),
     ("cursor", cursor_scenes),
+    ("command-blocks", command_blocks_scene),
+    ("command-blocks-alt-screen", command_blocks_alt_screen_scene),
+    ("command-blocks-narrow", command_blocks_narrow_scene),
+    ("command-blocks-off", command_blocks_off_scene),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -14116,12 +14120,25 @@ impl CursorRig {
         still: bool,
         tweak: impl FnOnce(&mut Appearance),
     ) -> Self {
+        let dims = size(px(320.0), px(120.0));
+        Self::sized(theme, text, dims, false, (focus, key, still), tweak)
+    }
+
+    /// `new` at `dims`, the pane laid out as one of a split when `split`; `(focus, key, still)`
+    /// as `new` takes them.
+    fn sized(
+        theme: Theme,
+        text: &str,
+        dims: Size<Pixels>,
+        split: bool,
+        (focus, key, still): (bool, bool, bool),
+        tweak: impl FnOnce(&mut Appearance),
+    ) -> Self {
         use crate::terminal_view::TerminalView;
         use gpui::Focusable;
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        let dims = size(px(320.0), px(120.0));
         let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
         fonts::register_bundled_fonts(&cx.text_system().all_font_names());
         let slot = Rc::new(RefCell::new(None));
@@ -14142,6 +14159,7 @@ impl CursorRig {
                     TerminalView::spawn(cx, Some(vec!["/bin/cat".into()]), None, None, &quiet)
                         .expect("start cat");
                 view.read(cx).show_text(&text);
+                view.read(cx).set_split(split);
                 if key {
                     view.read(cx).pretend_key_window();
                 }
@@ -14580,5 +14598,455 @@ fn cursor_scenes() {
                 "{n}: no glide, so no trail"
             );
         }
+    }
+}
+
+/// The shot terminal of the `command-blocks*` scenes: four prompts marked as fuxx's zsh
+/// integration marks them, then a live one. Rows: 0 `$ echo hi` (exit 0), 1 its output,
+/// 2 an older empty prompt, 3-4 a two-line prompt and `false` (exit 1, no output),
+/// 5 `sleep 9` (running, never ended), 6-7 its output, 8 the live prompt.
+fn blocks_text() -> String {
+    const A: &str = "\x1b]133;A\x07";
+    const B: &str = "\x1b]133;B\x07";
+    let c = |cmd: &str| format!("\x1b]133;C;cmdline_url={cmd}\x07");
+    let d = |x: i32| format!("\x1b]133;D;{x}\x07");
+    [
+        format!("{A}$ {B}echo hi\r\n{}hi\r\n{}", c("echo%20hi"), d(0)),
+        format!("{A}$ {B}\r\n{}", d(0)),
+        format!("{A}~/code\r\n$ {B}false\r\n{}{}", c("false"), d(1)),
+        format!("{A}$ {B}sleep 9\r\n{}one\r\ntwo\r\n", c("sleep%209")),
+        format!("{A}$ {B}"),
+    ]
+    .concat()
+}
+
+/// A `command-blocks*` rig: the blocks text in a `cat` terminal, unfocused (its cursor a still
+/// outline), at `dims`, a split's pane when `split`.
+fn blocks_rig(
+    theme: Theme,
+    dims: Size<Pixels>,
+    split: bool,
+    still: bool,
+    tweak: impl FnOnce(&mut Appearance),
+) -> CursorRig {
+    CursorRig::sized(
+        theme,
+        &blocks_text(),
+        dims,
+        split,
+        (false, false, still),
+        tweak,
+    )
+}
+
+/// What a `command-blocks*` check reads off a rig: where row `r`'s middle and top are, and
+/// where the bars' centre is, in points.
+struct BlockGeometry {
+    bar_x: f32,
+    origin_x: f32,
+    sep_x: f32,
+    rows: Vec<(f32, f32)>,
+}
+
+impl BlockGeometry {
+    fn of(rig: &CursorRig, split: bool) -> Self {
+        let first = rig.cell(0, 0);
+        let origin_x = f32::from(first.left());
+        let rows = (0..10)
+            .map(|r| {
+                let c = rig.cell(0, r);
+                (f32::from(c.top()), f32::from(c.center().y))
+            })
+            .collect();
+        Self {
+            bar_x: origin_x - crate::block_view::gutter_x(split),
+            origin_x,
+            // Right of every row's text, inside the grid.
+            sep_x: f32::from(rig.cell(20, 0).left()),
+            rows,
+        }
+    }
+    fn top(&self, r: usize) -> f32 {
+        self.rows[r].0
+    }
+    fn mid(&self, r: usize) -> f32 {
+        self.rows[r].1
+    }
+}
+
+/// How wide, in points, the pixels along `y` from `x0` to `x1` that aren't `bg` are (a
+/// partly covered edge pixel counts by how far it is from `bg`).
+fn ink_width(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    bg: alacritty_terminal::vte::ansi::Rgb,
+    y: f32,
+    x0: f32,
+    x1: f32,
+) -> f32 {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (a, b) = ((x0 * scale) as usize, (x1 * scale) as usize);
+    let mut full = 0.0;
+    let mut far = 0.0f32;
+    for dx in a..b {
+        let p = pixel_at(shot, dims, dx as f32 / scale, y);
+        let d = p
+            .iter()
+            .zip([bg.r, bg.g, bg.b])
+            .map(|(a, b)| a.abs_diff(b) as f32)
+            .fold(0.0, f32::max);
+        far = far.max(d);
+        full += d;
+    }
+    // Each pixel's share: its distance from `bg` over the bar's own (the farthest seen).
+    if far == 0.0 { 0.0 } else { full / far / scale }
+}
+
+/// The view's chip, read for the checks: its label, buttons and painted bounds.
+fn chip_of(rig: &CursorRig) -> Option<(String, [&'static str; 3], gpui::Bounds<Pixels>)> {
+    rig.read(|v| v.chip_shot())
+}
+
+/// Move the pointer to `at` and let the rig settle.
+fn point_at(rig: &mut CursorRig, at: gpui::Point<Pixels>) {
+    let window = rig.window;
+    rig.cx
+        .simulate_mouse_move(window, at, None, gpui::Modifiers::none());
+    rig.cx.run_until_parked();
+}
+
+/// Command blocks (M11l Task 4), in both themes, from a `cat` terminal shown the marked text
+/// of `blocks_text`:
+/// - `command-blocks`: each block's bar, 8 pt left of the grid, in `block_ok`, `block_failed`
+///   (both rows of the two-line prompt) and `block_running`; none beside output or the older
+///   empty prompt. A 1 pt `card_border` hairline at the top of block 2's and 3's first prompt
+///   rows and of the live prompt's, none on the first line of scrollback or above the empty
+///   prompt. Hovering block 2's gutter widens its bar to 3 pt and opens the chip (`exit 1 ·
+///   false`, the three buttons) 4 pt right of the gutter at the command row's top; the chip
+///   stays while the pointer is on it (200 ms on), and goes 150 ms after it leaves both.
+///   Nothing moves: two frames 200 ms apart with the chip open are the same pixels, with
+///   motion on and with Reduce motion on.
+fn command_blocks_scene() {
+    use crate::block_view::{CHIP_GAP, CHIP_HIDE_MS};
+    use std::time::Duration;
+    let dims = size(px(480.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let n = format!("command-blocks-{slug}");
+        for still in [false, true] {
+            let mut rig = blocks_rig(theme, dims, false, still, |_| ());
+            let shot = rig.frame();
+            let g = BlockGeometry::of(&rig, false);
+            let at = |shot: &Shot, x: f32, y: f32, c| is_colour(shot, dims, x, y, c);
+            let seen = |shot: &Shot, x: f32, y: f32| pixel_at(shot, dims, x, y);
+            if !still {
+                save_shot("command-blocks-plain", slug, &shot);
+                for (row, colour, what) in [
+                    (0, ui.block_ok, "echo hi (exit 0)"),
+                    (3, ui.block_failed, "false's first prompt row"),
+                    (4, ui.block_failed, "false (exit 1)"),
+                    (5, ui.block_running, "sleep 9 (running)"),
+                ] {
+                    assert!(
+                        at(&shot, g.bar_x, g.mid(row), colour),
+                        "{n}: row {row}, {what}: {colour:?}, saw {:?}",
+                        seen(&shot, g.bar_x, g.mid(row))
+                    );
+                }
+                for (row, what) in [(1, "output"), (2, "the empty prompt"), (6, "output")] {
+                    assert!(
+                        at(&shot, g.bar_x, g.mid(row), bg),
+                        "{n}: no bar beside {what} (row {row}): {:?}",
+                        seen(&shot, g.bar_x, g.mid(row))
+                    );
+                }
+                let w = ink_width(&shot, dims, bg, g.mid(4), g.bar_x - 4.0, g.bar_x + 4.0);
+                assert!((1.5..=2.5).contains(&w), "{n}: a 2 pt bar, saw {w} pt");
+                for row in [3, 5, 8] {
+                    let y = g.top(row);
+                    assert!(
+                        at(&shot, g.sep_x, y + 0.5, ui.card_border),
+                        "{n}: a hairline above row {row}: {:?}",
+                        seen(&shot, g.sep_x, y + 0.5)
+                    );
+                    assert!(
+                        at(&shot, g.sep_x, y + 1.5, bg),
+                        "{n}: 1 pt only above row {row}: {:?}",
+                        seen(&shot, g.sep_x, y + 1.5)
+                    );
+                }
+                for (row, what) in [(0, "the first line of scrollback"), (2, "an empty prompt")] {
+                    assert!(
+                        at(&shot, g.sep_x, g.top(row) + 0.5, bg),
+                        "{n}: no hairline above {what}"
+                    );
+                }
+            }
+            // Hover block 2's gutter.
+            let ids = rig.read(|v| v.block_ids());
+            assert_eq!(ids.len(), 3, "{n}: three blocks");
+            point_at(&mut rig, point(px(g.bar_x), px(g.mid(4))));
+            assert_eq!(
+                rig.read(|v| v.hovered_block().map(str::to_string)),
+                Some(ids[1].clone()),
+                "{n}: block 2 hovered"
+            );
+            let shown = rig.frame();
+            let (label, buttons, chip) = chip_of(&rig).expect("the chip is open");
+            assert!(label.contains("exit 1 · false"), "{n}: chip says {label:?}");
+            assert_eq!(buttons, ["Copy command", "Copy output", "Rerun"], "{n}");
+            // (Layout snaps boxes to the pixel grid: within half a point.)
+            let left = f32::from(chip.left());
+            assert!(
+                (left - (g.origin_x + CHIP_GAP)).abs() <= 0.5,
+                "{n}: the chip's left edge {left} is 4 pt right of the gutter ({})",
+                g.origin_x
+            );
+            assert!(
+                (f32::from(chip.top()) - g.top(4)).abs() <= 0.5,
+                "{n}: the chip opens at the command row's top"
+            );
+            if !still {
+                save_shot("command-blocks", slug, &shown);
+                // Hovered: 3 pt wide, still red.
+                let w = ink_width(&shown, dims, bg, g.mid(4), g.bar_x - 4.0, g.bar_x + 4.0);
+                assert!(
+                    (2.5..=3.5).contains(&w),
+                    "{n}: the hovered bar is 3 pt, saw {w}"
+                );
+                assert!(
+                    at(&shown, g.bar_x, g.mid(4), ui.block_failed),
+                    "{n}: still red"
+                );
+                let inside = (left + 3.0, f32::from(chip.center().y));
+                assert!(
+                    at(&shown, inside.0, inside.1, ui.panel),
+                    "{n}: the chip is the panel colour: {:?}",
+                    seen(&shown, inside.0, inside.1)
+                );
+            }
+            if !still {
+                // Output closes it, with the pointer still on the bar (`cat` echoes what it
+                // is sent, as a program printing would).
+                rig.read(|v| v.write_to_program(b"z"));
+                let start = std::time::Instant::now();
+                while rig.read(|v| v.hovered_block().is_some())
+                    && start.elapsed() < Duration::from_secs(3)
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                    rig.cx.run_until_parked();
+                }
+                assert!(
+                    rig.read(|v| v.hovered_block().is_none()),
+                    "{n}: output closes it"
+                );
+                // The next move over the bar opens it again.
+                point_at(&mut rig, point(px(g.bar_x), px(g.mid(4) + 1.0)));
+                assert!(rig.read(|v| v.hovered_block().is_some()), "{n}: open again");
+            }
+            let shown = rig.frame();
+            // Nothing animates: 200 ms on (real time for what paints by the clock, the app's
+            // clock for its timers), the same pixels.
+            std::thread::sleep(Duration::from_millis(200));
+            rig.cx.advance_clock(Duration::from_millis(200));
+            let later = rig.frame();
+            assert!(
+                shown.rgba == later.rgba,
+                "{n} (still {still}): the open chip's frames differ 200 ms apart"
+            );
+            // Onto the chip (the app's clock drives the hide timer): it stays.
+            point_at(&mut rig, chip.center());
+            rig.cx.advance_clock(Duration::from_millis(200));
+            rig.cx.run_until_parked();
+            assert!(
+                chip_of(&rig).is_some(),
+                "{n}: the chip stays while pointed at"
+            );
+            // Off both: still there at once and 140 ms on, gone at 150 ms.
+            let away = rig.cell(30, 10).center();
+            point_at(&mut rig, away);
+            assert!(chip_of(&rig).is_some(), "{n}: the chip doesn't go at once");
+            rig.cx
+                .advance_clock(Duration::from_millis(CHIP_HIDE_MS - 10));
+            rig.cx.run_until_parked();
+            assert!(chip_of(&rig).is_some(), "{n}: the chip is there 140 ms on");
+            rig.cx.advance_clock(Duration::from_millis(10));
+            rig.cx.run_until_parked();
+            assert!(rig.read(|v| v.hovered_block().is_none()), "{n}: unhovered");
+            let gone = rig.frame();
+            assert!(chip_of(&rig).is_none(), "{n}: the chip went 150 ms after");
+            assert!(
+                !at(&gone, left + 3.0, f32::from(chip.center().y), ui.panel),
+                "{n}: no chip drawn"
+            );
+            let w = ink_width(&gone, dims, bg, g.mid(4), g.bar_x - 4.0, g.bar_x + 4.0);
+            assert!(
+                (1.5..=2.5).contains(&w),
+                "{n}: the bar is back to 2 pt, saw {w}"
+            );
+            if !still {
+                // The chosen block (picked in Task 5): a 3 pt accent bar down its whole
+                // height, output rows too; typing drops it.
+                let view = rig.view.clone();
+                let third = ids[2].clone();
+                rig.cx
+                    .update(|cx| view.update(cx, |v, cx| v.set_chosen_block(Some(third), cx)));
+                let chosen = rig.frame();
+                save_shot("command-blocks-chosen", slug, &chosen);
+                for row in [5, 6, 7] {
+                    assert!(
+                        at(&chosen, g.bar_x, g.mid(row), ui.accent),
+                        "{n}: the chosen bar at row {row}: {:?}",
+                        seen(&chosen, g.bar_x, g.mid(row))
+                    );
+                }
+                let w = ink_width(&chosen, dims, bg, g.mid(6), g.bar_x - 4.0, g.bar_x + 4.0);
+                assert!(
+                    (2.5..=3.5).contains(&w),
+                    "{n}: the chosen bar is 3 pt, saw {w}"
+                );
+                assert!(
+                    at(&chosen, g.bar_x, g.mid(8), bg),
+                    "{n}: not past the block"
+                );
+                rig.cx
+                    .update(|cx| view.update(cx, |v, cx| v.type_bytes(b"x", cx)));
+                assert!(
+                    rig.read(|v| v.chosen_block().is_none()),
+                    "{n}: typing unpicks"
+                );
+                // A press on a bar dragged into the grid selects nothing; the same drag
+                // from the grid does.
+                let (window, none) = (rig.window, gpui::Modifiers::none());
+                let left = Some(gpui::MouseButton::Left);
+                let to = rig.cell(6, 6).center();
+                for (from, selects) in [
+                    (point(px(g.bar_x), px(g.mid(4))), false),
+                    (rig.cell(1, 4).center(), true),
+                ] {
+                    rig.cx
+                        .simulate_mouse_down(window, from, gpui::MouseButton::Left, none);
+                    rig.cx.simulate_mouse_move(window, to, left, none);
+                    rig.cx
+                        .simulate_mouse_up(window, to, gpui::MouseButton::Left, none);
+                    rig.cx.run_until_parked();
+                    let text = rig.read(|v| v.selection_text()).unwrap_or_default();
+                    assert_eq!(!text.is_empty(), selects, "{n}: from {from:?}: {text:?}");
+                }
+            }
+        }
+    }
+}
+
+/// `command-blocks-alt-screen`: with a full-screen program up (`ESC [?1049h`), no bar, no
+/// hairline and no chip; back on the main screen (`ESC [?1049l`) the blocks are as they were.
+fn command_blocks_alt_screen_scene() {
+    let dims = size(px(480.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let n = format!("command-blocks-alt-screen-{slug}");
+        let mut rig = blocks_rig(theme, dims, false, false, |_| ());
+        let _ = rig.frame();
+        let g = BlockGeometry::of(&rig, false);
+        rig.write("\x1b[?1049hvim, full screen\r\n");
+        let shot = rig.frame();
+        save_shot("command-blocks-alt-screen", slug, &shot);
+        let inks = [ui.block_ok, ui.block_failed, ui.block_running, ui.accent];
+        for row in 0..10 {
+            for c in inks {
+                assert!(
+                    !is_colour(&shot, dims, g.bar_x, g.mid(row), c),
+                    "{n}: a bar on the alternate screen at row {row}"
+                );
+            }
+            assert!(
+                is_colour(&shot, dims, g.sep_x, g.top(row) + 0.5, bg),
+                "{n}: a hairline on the alternate screen above row {row}"
+            );
+        }
+        point_at(&mut rig, point(px(g.bar_x), px(g.mid(4))));
+        assert!(rig.read(|v| v.hovered_block().is_none()), "{n}: no hover");
+        assert!(chip_of(&rig).is_none(), "{n}: no chip");
+        rig.write("\x1b[?1049l");
+        let back = rig.frame();
+        assert!(
+            is_colour(&back, dims, g.bar_x, g.mid(4), ui.block_failed),
+            "{n}: back on the main screen, the bars are back"
+        );
+        assert!(
+            is_colour(&back, dims, g.sep_x, g.top(5) + 0.5, ui.card_border),
+            "{n}: and the hairlines"
+        );
+    }
+}
+
+/// `command-blocks-narrow`: a split's pane with a 200 pt grid: the bars 6 pt left of the grid,
+/// the chip's buttons short (`Cmd`, `Output`, `Rerun`) and the chip inside the pane.
+fn command_blocks_narrow_scene() {
+    // 12 pt of split padding each side: a 200 pt grid area.
+    let dims = size(px(224.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("command-blocks-narrow-{slug}");
+        let mut rig = blocks_rig(theme, dims, true, false, |_| ());
+        let _ = rig.frame();
+        let g = BlockGeometry::of(&rig, true);
+        point_at(&mut rig, point(px(g.bar_x), px(g.mid(4))));
+        let shot = rig.frame();
+        save_shot("command-blocks-narrow", slug, &shot);
+        assert!(
+            is_colour(&shot, dims, g.bar_x, g.mid(0), ui.block_ok),
+            "{n}: the bar 6 pt left of the grid: {:?}",
+            pixel_at(&shot, dims, g.bar_x, g.mid(0))
+        );
+        let (label, buttons, chip) = chip_of(&rig).expect("the chip is open");
+        assert_eq!(buttons, ["Cmd", "Output", "Rerun"], "{n}: {label:?}");
+        assert!(
+            f32::from(chip.right()) <= f32::from(dims.width),
+            "{n}: the chip's right edge {:?} is inside the pane",
+            chip.right()
+        );
+        assert!(
+            f32::from(chip.left()) >= g.origin_x,
+            "{n}: the chip starts right of the gutter"
+        );
+    }
+}
+
+/// `command-blocks-off`: with `command-blocks = off`, the same terminal draws no bar or
+/// hairline, and hovering the gutter opens nothing.
+fn command_blocks_off_scene() {
+    let dims = size(px(480.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let n = format!("command-blocks-off-{slug}");
+        let mut rig = blocks_rig(theme, dims, false, false, |a| a.command_blocks = false);
+        let shot = rig.frame();
+        save_shot("command-blocks-off", slug, &shot);
+        let g = BlockGeometry::of(&rig, false);
+        for row in 0..10 {
+            assert!(
+                is_colour(&shot, dims, g.bar_x, g.mid(row), bg),
+                "{n}: nothing in the gutter at row {row}"
+            );
+            assert!(
+                is_colour(&shot, dims, g.sep_x, g.top(row) + 0.5, bg),
+                "{n}: no hairline above row {row}"
+            );
+        }
+        assert!(
+            !is_colour(&shot, dims, g.bar_x, g.mid(4), ui.block_failed),
+            "{n}: no red bar"
+        );
+        point_at(&mut rig, point(px(g.bar_x), px(g.mid(4))));
+        assert!(rig.read(|v| v.hovered_block().is_none()), "{n}: no hover");
+        assert!(chip_of(&rig).is_none(), "{n}: no chip");
     }
 }
