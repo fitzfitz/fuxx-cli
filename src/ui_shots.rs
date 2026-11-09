@@ -214,6 +214,7 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar-selection", sidebar_selection_scenes),
     ("sidebar-button", sidebar_button_scenes),
     ("title-area", title_area_scenes),
+    ("title-bar", title_bar_scenes),
     ("tabs", tab_scenes),
     ("splits", split_scenes),
     ("cards", card_scenes),
@@ -2205,6 +2206,47 @@ fn pixel_at(shot: &Shot, dims: Size<Pixels>, x: f32, y: f32) -> [u8; 3] {
     let (x, y) = ((x * scale) as usize, (y * scale) as usize);
     let i = (y * shot.width as usize + x) * 4;
     [shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]]
+}
+
+/// The box, `(x0, x1, y0, y1)` in points, round every device pixel inside `area` (`x`, `y`,
+/// `w`, `h` in points) that is drawn in ink: at least half-way from `bg` to `ink` (its squared
+/// distance from `bg`, times 4, at least `ink`'s); `None` when there is none. Every device pixel
+/// is read, so a box edge is the same at 1x and 2x (a point-by-point read rounds each side its
+/// own way, by up to a pixel).
+fn ink_box(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    area: (f32, f32, f32, f32),
+    bg: [u8; 3],
+    ink: [u8; 3],
+) -> Option<(f32, f32, f32, f32)> {
+    let dist = |p: &[u8], c: [u8; 3]| -> i32 {
+        (0..3)
+            .map(|k| (i32::from(p[k]) - i32::from(c[k])).pow(2))
+            .sum()
+    };
+    let full = dist(&ink, bg);
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let step = 1.0 / scale;
+    let (x, y, w, h) = area;
+    let (left, top) = ((x * scale) as usize, (y * scale) as usize);
+    let (cols, rows) = ((w * scale) as usize, (h * scale) as usize);
+    let mut found: Option<(f32, f32, f32, f32)> = None;
+    for py in top..(top + rows).min(shot.height as usize) {
+        for px_ in left..(left + cols).min(shot.width as usize) {
+            let i = (py * shot.width as usize + px_) * 4;
+            if dist(&shot.rgba[i..i + 3], bg) * 4 >= full {
+                let (x, y) = (px_ as f32 / scale, py as f32 / scale);
+                found = Some(match found {
+                    None => (x, x + step, y, y + step),
+                    Some((x0, x1, y0, y1)) => {
+                        (x0.min(x), x1.max(x + step), y0.min(y), y1.max(y + step))
+                    }
+                });
+            }
+        }
+    }
+    found
 }
 
 /// The middle of the pixels that are `c`, in points; none if there are none.
@@ -12640,18 +12682,23 @@ fn command_blocks_row(
 /// `sidebar-button-shown`, `-hidden`, `-hover` (the pointer over it) and `-sliding` (a hide
 /// 60 ms in, the sidebar partly out and over the pane column).
 ///
-/// Panics unless the icon is drawn in the same place shown and hidden, the hover paints the
-/// hit area, and mid-slide the sidebar has left the middle of the window (it is only partly out).
+/// Panics unless the icon is drawn at the sidebar band's right edge shown (M11m) and just right
+/// of the lights hidden, the hover paints the hit area, and mid-slide the sidebar has left the middle of the window (it is only partly out).
 fn sidebar_button_scenes() {
-    use crate::sidebar_toggle::{Slide, button_origin};
+    use crate::sidebar_toggle::{BUTTON_Y, Slide, lights_clear, open_button_x};
+    use crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH;
     use gpui::Modifiers;
     use std::time::{Duration, Instant};
 
     // Tall enough that the pane's terminal still shows above the status bar (M11i).
     let dims = size(px(360.0), px(140.0));
-    let (bx, by) = button_origin(false);
+    // Shown, the button is at the sidebar band's right edge (M11m); hidden, at the lights' edge
+    // until the collapsed band takes it (M11m Task 2).
+    let (bx, by) = (open_button_x(SIDEBAR_DEFAULT_WIDTH), BUTTON_Y);
+    let hx = lights_clear(false);
     // The hit area's left margin (inside it, outside the icon), and the icon's left edge.
     let (margin, edge) = (point(bx + 1.5, by + 12.0), point(bx + 4.75, by + 12.0));
+    let hidden_edge = point(hx + 4.75, by + 12.0);
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -12693,7 +12740,8 @@ fn sidebar_button_scenes() {
             pixel_at(shot, dims, p.x, p.y)
         };
         let bg = |rgb: alacritty_terminal::vte::ansi::Rgb| [rgb.r, rgb.g, rgb.b];
-        // Same place in both states: the icon's left edge is not the band's background.
+        // The icon's left edge is not the band's background: shown, at the sidebar band's
+        // right edge; hidden, at the lights' edge.
         assert_ne!(
             at("shown", edge),
             bg(ui.sidebar_background),
@@ -12701,7 +12749,7 @@ fn sidebar_button_scenes() {
         );
         // (With the sidebar hidden the band is the canvas, the sidebar's colour, since M11i.)
         assert_ne!(
-            at("hidden", edge),
+            at("hidden", hidden_edge),
             bg(ui.sidebar_background),
             "{slug}: icon hidden"
         );
@@ -12775,8 +12823,8 @@ fn shot_notifications(ws: &mut Workspace) {
 }
 
 /// The title area over `switcher_workspace` (shell active), in both themes:
-/// - `title-band`: the sidebar shown, its top band holding only the sidebar button, and the
-///   footer's +, 🔔 and gear, nothing unseen;
+/// - `title-band`: the sidebar shown, its top band holding the title and the sidebar button
+///   (M11m, checked in `title-bar`), and the footer's +, 🔔 and gear, nothing unseen;
 /// - `title-hover`: the same with the pointer on the footer's 🔔 (its fill, its outline brighter);
 /// - `title-unseen`: the same with notifications unseen (the 🔔's dot);
 /// - `title-footer-narrow`: the narrowest sidebar (180 px) with the dot: the three buttons fit;
@@ -12789,7 +12837,7 @@ fn shot_notifications(ws: &mut Workspace) {
 /// - `title-popover-empty`: the popover with none yet.
 ///
 /// Panics unless the dot shows exactly while some are unseen (and never with the sidebar
-/// hidden), the band holds no 🔔 or + where they were, opening the popover sees them all (and it
+/// hidden), the band (sidebar hidden) holds no 🔔 or + where they were, opening the popover sees them all (and it
 /// counts as an overlay), the name is drawn in the band only with the sidebar hidden and never
 /// past its inset; and (Mocha) unless a press where the buttons were still arms a window drag,
 /// a press on the 🔔 doesn't, a click on the 🔔 opens the popover and Escape or a click outside
@@ -12797,7 +12845,7 @@ fn shot_notifications(ws: &mut Workspace) {
 /// script's with no terminal) does nothing, a click on agent's entry shows agent (its workspace
 /// and tab) with the keyboard, and hiding the sidebar closes the popover.
 fn title_area_scenes() {
-    use crate::sidebar_toggle::{HIT, button_origin};
+    use crate::sidebar_toggle::{BUTTON_Y, HIT, lights_clear};
     use crate::tab_menu::Dismiss;
     use crate::title_area::{
         DOT, DOT_INSET, FOOTER_BUTTON, entry_top, footer_buttons, name_inset, popover_anchor,
@@ -12810,8 +12858,9 @@ fn title_area_scenes() {
 
     const LONG_NAME: &str = "Refactor the auth middleware to use the new session store";
     const FOOTER: f32 = 36.0;
-    // Where the 🔔 and + sat in the band, right of the sidebar button, before they moved.
-    let (sx, sy) = button_origin(false);
+    // Where the 🔔 and + sat in the band, right of the sidebar button's old place (where the
+    // collapsed one still is), before they moved. With the sidebar shown the title is there now.
+    let (sx, sy) = (lights_clear(false), BUTTON_Y);
     let old_buttons = (sx + HIT + 2.0, sx + HIT + 2.0 + 2.0 * HIT + 2.0);
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
@@ -12926,36 +12975,11 @@ fn title_area_scenes() {
                         // a box edge is the same at 1x and 2x (a point-by-point read rounds
                         // each side its own way, by up to a pixel).
                         let foot = bg(ui.sidebar_background);
-                        let full = {
-                            let d = bg(ui.text_dim);
-                            (0..3)
-                                .map(|k| (i32::from(d[k]) - i32::from(foot[k])).pow(2))
-                                .sum::<i32>()
-                        };
-                        let scale = shot.width as f32 / width;
+                        let top = centre_y - FOOTER_BUTTON / 2.0;
                         let ink_box = |x0: f32| -> (f32, f32, f32, f32) {
-                            let (mut x_lo, mut x_hi) = (f32::MAX, f32::MIN);
-                            let (mut y_lo, mut y_hi) = (f32::MAX, f32::MIN);
-                            let top = centre_y - FOOTER_BUTTON / 2.0;
-                            let side = (FOOTER_BUTTON * scale) as usize;
-                            for dy in 0..side {
-                                for dx in 0..side {
-                                    let x = (x0 * scale) as usize + dx;
-                                    let y = (top * scale) as usize + dy;
-                                    let i = (y * shot.width as usize + x) * 4;
-                                    let p = &shot.rgba[i..i + 3];
-                                    let d: i32 = (0..3)
-                                        .map(|k| (i32::from(p[k]) - i32::from(foot[k])).pow(2))
-                                        .sum();
-                                    if d * 4 >= full {
-                                        let (x, y) = (x as f32 / scale, y as f32 / scale);
-                                        let step = 1.0 / scale;
-                                        (x_lo, x_hi) = (x_lo.min(x), x_hi.max(x + step));
-                                        (y_lo, y_hi) = (y_lo.min(y), y_hi.max(y + step));
-                                    }
-                                }
-                            }
-                            (x_lo, x_hi, y_lo, y_hi)
+                            let area = (x0, top, FOOTER_BUTTON, FOOTER_BUTTON);
+                            ink_box(&shot, dims, area, foot, bg(ui.text_dim))
+                                .unwrap_or_else(|| panic!("{n}: no ink in the slot at {x0}"))
                         };
                         let boxes = [ink_box(plus_x), ink_box(bell_x), ink_box(gear_x)];
                         println!("ui-shots: {n}: footer ink boxes (x0, x1, y0, y1) {boxes:?}");
@@ -13070,20 +13094,13 @@ fn title_area_scenes() {
                 // No footer, so no 🔔, whatever is unseen: nothing at the foot but the panes.
                 assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
             }
-            // The band holds no 🔔 or + where they were: only the sidebar background (or, with
-            // the sidebar hidden, the canvas the cards sit on, the same colour since M11i)
-            // between the sidebar button and the name.
+            // With the sidebar hidden the band holds no 🔔 or + where they were: only the canvas
+            // the cards sit on (the sidebar's colour since M11i) between the sidebar button and
+            // the name. (With it shown the band holds the title there now: `title-bar`.)
             let band_bg = ui.sidebar_background;
             let inset = name_inset(false);
-            if !matches!(
-                scene,
-                "title-footer-narrow" | "title-bare-narrow" | "title-popover-narrow"
-            ) {
-                let stop = if hidden {
-                    inset - 2.0
-                } else {
-                    old_buttons.1 + HIT
-                };
+            if hidden {
+                let stop = inset - 2.0;
                 for y in [sy + 2.0, sy + HIT / 2.0, sy + HIT - 2.0] {
                     let mut x = sx + HIT + 2.0;
                     while x < stop {
@@ -13173,7 +13190,8 @@ fn title_area_scenes() {
         assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 0);
         cx.simulate_keystrokes(window, "escape");
         assert!(!open(cx), "title-area: Escape closes it");
-        // Where the 🔔 and + were in the band, the band drags the window: no dead hit area.
+        // Where the 🔔 and + were in the band (on the title now), the band drags the window: no
+        // dead hit area.
         let was = point(px(old_buttons.0 + HIT / 2.0), px(sy + HIT / 2.0));
         cx.simulate_mouse_down(window, was, MouseButton::Left, none);
         assert!(
@@ -13311,6 +13329,185 @@ fn title_area_scenes() {
             !open(cx),
             "title-area: hiding the sidebar closes the popover"
         );
+        slot.borrow_mut().take();
+    };
+    render_with(&theme, size(px(960.0), px(600.0)), build, act);
+}
+
+/// The title bar with the sidebar open (M11m) over `switcher_workspace`, 760 × 200, in both
+/// themes:
+/// - `title-bar-open`: the default 240 pt sidebar: "the Fuxx?" in the middle of its band, the
+///   sidebar button at the band's right edge, over the footer gear;
+/// - `title-bar-open-narrow`: the narrowest sidebar (180 pt): the button only, no title;
+/// - `title-bar-open-threshold`: the sidebar exactly as wide as the title needs.
+///
+/// Panics unless the title's ink is centred on the sidebar's middle and the band's, no wider
+/// than `TITLE_ROOM`, clear of the lights' area and short of the button by `TITLE_GAP`; the
+/// button's ink is centred in its `open_button_x` box and on the footer gear's ink; nothing is
+/// drawn where the button used to be (x 0 to 80); and (Mocha) unless a press on the title arms a
+/// window drag, a press on the button doesn't, a click on it hides the sidebar and ⌘\ shows it.
+fn title_bar_scenes() {
+    use crate::sidebar_toggle::{BUTTON_Y, HIT, lights_clear, open_button_x};
+    use crate::title_area::{FOOTER_BUTTON, TITLE_ROOM, footer_buttons};
+    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, STATUS_BAR, TOP_BAND};
+    use gpui::{KeyBinding, Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    const FOOTER: f32 = 36.0;
+    // `title_area`'s room between the title and the button (private there).
+    const TITLE_GAP: f32 = 8.0;
+    // The narrowest sidebar that shows the title, up to the next half point.
+    let threshold = (2.0 * (lights_clear(false) + TITLE_ROOM / 2.0) * 2.0).ceil() / 2.0;
+    let dims = size(px(760.0), px(200.0));
+    let height = f32::from(dims.height);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
+        let (band, dim) = (bg(ui.sidebar_background), bg(ui.text_dim));
+        for (scene, sidebar_width) in [
+            ("title-bar-open", SIDEBAR_DEFAULT_WIDTH),
+            ("title-bar-open-narrow", SIDEBAR_MIN_WIDTH),
+            ("title-bar-open-threshold", threshold),
+        ] {
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = switcher_workspace(window, cx);
+                    ws.sidebar.width = sidebar_width;
+                    ws
+                });
+                ws.into()
+            };
+            let shot = render_with(&theme, dims, build, |_, _| ());
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+            let path = dir.join(format!("{scene}-{slug}.png"));
+            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            println!("ui-shots: {}", path.display());
+            let n = format!("{scene}-{slug}");
+            let button_x = open_button_x(sidebar_width);
+            let title = ink_box(&shot, dims, (0.0, 0.0, button_x, TOP_BAND), band, dim);
+            let button = ink_box(&shot, dims, (button_x, BUTTON_Y, HIT, HIT), band, dim)
+                .unwrap_or_else(|| panic!("{n}: no button ink"));
+            // The footer gear's ink, in its slot centred in the footer under its 1 px edge.
+            let gear_x = footer_buttons(sidebar_width)[2];
+            let centre_y = height - STATUS_BAR - FOOTER + 1.0 + (FOOTER - 1.0) / 2.0;
+            let gear_area = (
+                gear_x,
+                centre_y - FOOTER_BUTTON / 2.0,
+                FOOTER_BUTTON,
+                FOOTER_BUTTON,
+            );
+            let gear = ink_box(&shot, dims, gear_area, band, dim)
+                .unwrap_or_else(|| panic!("{n}: no gear ink"));
+            println!("ui-shots: {n}: title {title:?}, button {button:?}, gear {gear:?}");
+            let mid = |b: (f32, f32, f32, f32)| ((b.0 + b.1) / 2.0, (b.2 + b.3) / 2.0);
+            // The button: centred in its box at the band's right edge, on the gear's centre.
+            let (bx, by) = mid(button);
+            assert!(
+                (bx - (button_x + HIT / 2.0)).abs() <= 0.5,
+                "{n}: the button's ink is centred at {bx}, its box at {}",
+                button_x + HIT / 2.0
+            );
+            assert!(
+                (by - TOP_BAND / 2.0).abs() <= 0.5,
+                "{n}: the button's ink is centred at y {by}, the band's middle {}",
+                TOP_BAND / 2.0
+            );
+            let (gx, _) = mid(gear);
+            assert!(
+                (bx - gx).abs() <= 0.5,
+                "{n}: the button's ink at {bx}, the gear's at {gx}"
+            );
+            // Where the button was (right of the lights, which shots don't draw): nothing.
+            let old = ink_box(&shot, dims, (0.0, 0.0, 80.0, TOP_BAND), band, dim);
+            assert_eq!(old, None, "{n}: ink in the band's left (x 0 to 80)");
+            match scene {
+                "title-bar-open-narrow" => {
+                    let between = (80.0, 0.0, button_x - 80.0, TOP_BAND);
+                    let ink = ink_box(&shot, dims, between, band, dim);
+                    assert_eq!(ink, None, "{n}: no title in a narrow sidebar");
+                }
+                _ => {
+                    let t = title.unwrap_or_else(|| panic!("{n}: no title"));
+                    let (tx, ty) = mid(t);
+                    let wide = t.1 - t.0;
+                    assert!(
+                        (30.0..=TITLE_ROOM).contains(&wide),
+                        "{n}: the title is {wide} wide (TITLE_ROOM {TITLE_ROOM})"
+                    );
+                    assert!(
+                        (tx - sidebar_width / 2.0).abs() <= 1.0,
+                        "{n}: the title is centred at {tx}, the sidebar's middle {}",
+                        sidebar_width / 2.0
+                    );
+                    assert!(
+                        (ty - TOP_BAND / 2.0).abs() <= 1.0,
+                        "{n}: the title's middle at y {ty}"
+                    );
+                    assert!(
+                        t.0 >= 80.0 && t.1 <= button_x - TITLE_GAP,
+                        "{n}: the title {t:?} runs past [80, {}]",
+                        button_x - TITLE_GAP
+                    );
+                }
+            }
+        }
+    }
+
+    // What the band does (Mocha only: the behaviour is the same in every theme).
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(sidebar_appearance(theme, cx));
+        let ws = cx.new(|cx| {
+            let mut ws = switcher_workspace(window, cx);
+            ws.sidebar.width = SIDEBAR_DEFAULT_WIDTH;
+            ws
+        });
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        let none = Modifiers::none();
+        cx.update(|cx| {
+            cx.bind_keys([KeyBinding::new(
+                "cmd-\\",
+                crate::workspace::ToggleSidebar,
+                None,
+            )])
+        });
+        let pressed = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).band_pressed);
+        let hidden = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).sidebar.hidden);
+        // A press on the title arms a window drag: it takes no clicks.
+        let on_title = point(px(SIDEBAR_DEFAULT_WIDTH / 2.0), px(TOP_BAND / 2.0));
+        cx.simulate_mouse_down(window, on_title, MouseButton::Left, none);
+        assert!(
+            pressed(cx),
+            "title-bar: a press on the title arms a window drag"
+        );
+        cx.simulate_mouse_up(window, on_title, MouseButton::Left, none);
+        assert!(!pressed(cx), "title-bar: released");
+        // A press on the button is its own; released, it is a click that hides the sidebar.
+        let x = open_button_x(SIDEBAR_DEFAULT_WIDTH) + HIT / 2.0;
+        let on_button = point(px(x), px(TOP_BAND / 2.0));
+        cx.simulate_mouse_down(window, on_button, MouseButton::Left, none);
+        assert!(
+            !pressed(cx),
+            "title-bar: the button doesn't drag the window"
+        );
+        assert!(!hidden(cx), "title-bar: not before the click");
+        cx.simulate_mouse_up(window, on_button, MouseButton::Left, none);
+        assert!(
+            hidden(cx),
+            "title-bar: a click on the button hides the sidebar"
+        );
+        cx.simulate_keystrokes(window, "cmd-\\");
+        assert!(!hidden(cx), "title-bar: ⌘\\ shows it again");
         slot.borrow_mut().take();
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);

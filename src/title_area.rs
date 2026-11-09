@@ -7,7 +7,8 @@
 //! with the sidebar hidden (the band then runs over the panes). With the sidebar shown the pane
 //! tab bars are the window's top (they drag it) and the selected row, filled with the accent,
 //! already names the workspace, so no band is added to say it again and the terminals keep that
-//! height. The band's one button is the sidebar's (`sidebar_toggle`).
+//! height. The sidebar's band holds the app's title, "the Fuxx?", in its middle (M11m), where it
+//! fits (`shows_title`), and the sidebar button at its right edge (`sidebar_toggle`).
 //!
 //! The popover is one of the overlays (one open at a time): it opens upward from the 🔔, over
 //! the sidebar with its right edge the gear's, and the 🔔 stays lit on its fill while it shows
@@ -17,8 +18,8 @@
 //! a closed one's entry is greyed and does nothing. The dot follows the list, which changes
 //! only when a notification is raised or the popover opens: no timer.
 //!
-//! `footer_buttons`, `popover_anchor`, `list_room`, `entry_top` and `name_inset` are the pure
-//! geometry.
+//! `footer_buttons`, `popover_anchor`, `list_room`, `entry_top`, `name_inset` and `shows_title`
+//! are the pure geometry.
 
 use std::time::Instant;
 
@@ -48,6 +49,13 @@ pub(crate) const FOOTER_GAP: f32 = 4.0;
 /// drawn in (less would show little more than an ellipsis).
 const NAME_GAP: f32 = 12.0;
 const NAME_MIN: f32 = 60.0;
+/// The app's title, drawn in the open sidebar's band (M11m), the least room it is drawn in
+/// (centred on the sidebar's middle), and the least space between it and the sidebar button.
+pub(crate) const TITLE: &str = "the Fuxx?";
+pub(crate) const TITLE_ROOM: f32 = 64.0;
+const TITLE_GAP: f32 = 8.0;
+/// The Preferences gear's tooltip (the footer's, and the collapsed band's).
+pub(crate) const PREFERENCES_TIP: &str = "Preferences (⌘,)";
 /// The unseen dot, at the 🔔's top right, and the ring of the footer's colour that keeps it apart
 /// from the 🔔 (inside `DOT`).
 pub(crate) const DOT: f32 = 10.0;
@@ -127,12 +135,21 @@ pub(crate) fn entry_top(i: usize, count: usize, sidebar_width: f32, viewport_hei
 /// How far in from each side of the band the workspace's name keeps: clear of the sidebar
 /// button on the left, and as far on the right so it stays centred.
 pub fn name_inset(full_screen: bool) -> f32 {
-    sidebar_toggle::button_origin(full_screen).0 + HIT + NAME_GAP
+    sidebar_toggle::lights_clear(full_screen) + HIT + NAME_GAP
 }
 
 /// Whether a band `width` wide has room for the name between its insets.
 pub fn shows_name(width: f32, full_screen: bool) -> bool {
     width - 2.0 * name_inset(full_screen) >= NAME_MIN
+}
+
+/// Whether the open sidebar's band, `sidebar_width` wide, has room for the title: a
+/// `TITLE_ROOM` box centred on its middle clear of the traffic lights on the left and
+/// `TITLE_GAP` short of the sidebar button on the right. It is drawn whole or not at all.
+pub fn shows_title(sidebar_width: f32, full_screen: bool) -> bool {
+    let mid = sidebar_width / 2.0;
+    mid - TITLE_ROOM / 2.0 >= sidebar_toggle::lights_clear(full_screen)
+        && mid + TITLE_ROOM / 2.0 + TITLE_GAP <= sidebar_toggle::open_button_x(sidebar_width)
 }
 
 impl Workspace {
@@ -392,6 +409,37 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The app's title for the open sidebar's band: centred on the band's full width (the
+    /// sidebar's middle), vertically centred, never cut; `None` where it doesn't fit
+    /// (`shows_title`). It takes no clicks, so the band under it still drags the window and a
+    /// double-click still zooms.
+    pub(crate) fn render_app_title(&self, ui: UiColors, window: &Window) -> Option<AnyElement> {
+        if !shows_title(self.sidebar.width, window.is_fullscreen()) {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .text_size(px(text::NAME))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(hsla(ui.text_dim))
+                        .child(TITLE),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The selected workspace's name for the top band over the content (with the sidebar
     /// hidden): centred, clear of the buttons, cut with an ellipsis when the window is narrow
     /// (and left out when there's hardly room for one). It takes no clicks, so the band under
@@ -476,7 +524,7 @@ pub(crate) fn unseen_dot(ui: UiColors) -> Div {
 mod tests {
     use super::*;
     use crate::sidebar::{FOOTER, ROW_INSET};
-    use crate::sidebar_toggle::button_origin;
+    use crate::sidebar_toggle::{lights_clear, open_button_x};
     use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 
     #[test]
@@ -584,8 +632,45 @@ mod tests {
     #[test]
     fn the_name_keeps_clear_of_the_sidebar_button() {
         for full_screen in [false, true] {
-            let (x, _) = button_origin(full_screen);
+            let x = lights_clear(full_screen);
             assert_eq!(name_inset(full_screen), x + HIT + NAME_GAP);
+        }
+    }
+
+    #[test]
+    fn the_title_shows_where_it_fits() {
+        assert!(shows_title(240.0, false), "the default sidebar shows it");
+        assert!(!shows_title(180.0, false), "too narrow beside the lights");
+        assert!(shows_title(180.0, true), "no lights in full screen");
+        let t = 2.0 * (80.0 + TITLE_ROOM / 2.0);
+        assert!(shows_title(t, false), "at the threshold {t}");
+        assert!(!shows_title(t - 0.5, false), "just under the threshold {t}");
+        assert_eq!(TITLE, "the Fuxx?");
+    }
+
+    #[test]
+    fn the_title_never_meets_the_lights_or_the_button() {
+        for fs in [false, true] {
+            let mut was = false;
+            for k in 0..=440 {
+                let w = 180.0 + k as f32 * 0.5;
+                let shown = shows_title(w, fs);
+                assert!(
+                    shown || !was,
+                    "full screen {fs}: shown, then not at {w} (not monotonic)"
+                );
+                was = shown;
+                if shown {
+                    assert!(
+                        w / 2.0 - TITLE_ROOM / 2.0 >= lights_clear(fs),
+                        "full screen {fs}, width {w}: over the lights"
+                    );
+                    assert!(
+                        w / 2.0 + TITLE_ROOM / 2.0 + TITLE_GAP <= open_button_x(w),
+                        "full screen {fs}, width {w}: into the button"
+                    );
+                }
+            }
         }
     }
 

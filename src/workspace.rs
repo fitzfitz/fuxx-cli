@@ -61,7 +61,7 @@ use crate::right_sidebar::RightSidebarState;
 use crate::session_list::SessionList;
 use crate::settings;
 use crate::sidebar::{self, RowGrab, SidebarRow, SidebarState};
-use crate::sidebar_toggle::{self, Slide};
+use crate::sidebar_toggle::{self, Slide, lights_clear};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
@@ -3063,7 +3063,12 @@ impl Render for Workspace {
         let (right_sidebar, sliding_right_sidebar) = self.right_sidebar_layout(ui, window, cx);
         let right_sliding_in = sliding_right_sidebar.is_some() && !self.right_sidebar.hidden;
         let right_width = self.right_sidebar_drawn_width(window);
-        let button = self.render_sidebar_button(ui, window, cx);
+        // With the sidebar shown its button is in its band (`render_sidebar`); hidden, it is at
+        // the window's root just right of the traffic lights (M11m Task 2 moves it).
+        let button = self
+            .sidebar
+            .hidden
+            .then(|| self.render_sidebar_button(ui, lights_clear(window.is_fullscreen()), cx));
         let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
         let welcome = self
@@ -3264,7 +3269,7 @@ impl Render for Workspace {
                     .children(sliding_right_sidebar),
             )
             .child(status_bar)
-            .child(button)
+            .children(button)
             // The host picker, the palette, the Help panel and the address box: over
             // everything, centred near the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {

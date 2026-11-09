@@ -1,6 +1,7 @@
-//! The sidebar button (M11): a sidebar-outline icon in the top band, just right of the window's
-//! traffic lights, that hides or shows the sidebar like ⌘\. It sits in the same spot whether
-//! the sidebar is shown or hidden. With motion on, the sidebar slides in or out over 160 ms
+//! The sidebar button (M11): a sidebar-outline icon in the top band that hides or shows the
+//! sidebar like ⌘\. With the sidebar shown it sits at the right edge of the sidebar's band, over
+//! the footer gear (M11m), and rides the sidebar when it slides; hidden, it sits just right of
+//! the window's traffic lights. With motion on, the sidebar slides in or out over 160 ms
 //! (`shown_fraction`); the pane column takes its final width at once, so the terminals re-fit
 //! one time and not on every frame of the slide.
 
@@ -26,10 +27,15 @@ pub(crate) const HIT_RADIUS: f32 = 6.0;
 const ICON: (f32, f32) = (16.0, 13.0);
 const STROKE: f32 = 1.5;
 const ICON_RADIUS: f32 = 3.0;
-/// The button's left edge: just right of the green button (windowed), or where the traffic
-/// lights would start (full screen).
-const X_WINDOWED: f32 = 80.0;
-const X_FULL_SCREEN: f32 = 13.0;
+/// How far the open sidebar's button keeps from the band's right edge: its centre is then the
+/// footer gear's (`BAND_EDGE + HIT / 2 == ROW_INSET + FOOTER_BUTTON / 2`).
+pub(crate) const BAND_EDGE: f32 = 8.0;
+/// The button's top: its hit area centred in the top band, on the traffic lights' line.
+pub(crate) const BUTTON_Y: f32 = (TOP_BAND - HIT) / 2.0;
+/// Where the traffic lights' area ends: just right of the green button (windowed), or where the
+/// lights would start (full screen, which has none).
+const LIGHTS_CLEAR: f32 = 80.0;
+const LIGHTS_CLEAR_FULL_SCREEN: f32 = 13.0;
 
 /// A slide in progress: towards shown or hidden, since when, and from how much shown (a
 /// slide turned back half way starts where the other one had got to).
@@ -58,15 +64,19 @@ impl Slide {
     }
 }
 
-/// The button's top left in the window: x just right of the traffic lights (13 in full screen),
-/// y so the hit area is centred in the top band, on the lights.
-pub fn button_origin(full_screen: bool) -> (f32, f32) {
-    let x = if full_screen {
-        X_FULL_SCREEN
+/// The first x clear of the traffic lights: 80 windowed, 13 in full screen.
+pub fn lights_clear(full_screen: bool) -> f32 {
+    if full_screen {
+        LIGHTS_CLEAR_FULL_SCREEN
     } else {
-        X_WINDOWED
-    };
-    (x, (TOP_BAND - HIT) / 2.0)
+        LIGHTS_CLEAR
+    }
+}
+
+/// The open sidebar's button's left edge in a sidebar `sidebar_width` wide: at the band's right
+/// edge, `BAND_EDGE` in.
+pub fn open_button_x(sidebar_width: f32) -> f32 {
+    sidebar_width - BAND_EDGE - HIT
 }
 
 /// How much of the sidebar's width is on screen `elapsed` into a slide from `from` towards
@@ -134,21 +144,21 @@ fn icon(ui: UiColors) -> Div {
 }
 
 impl Workspace {
-    /// The sidebar button, absolutely placed over the top band (and over the sliding sidebar).
+    /// The sidebar button, absolutely placed at (`x`, `BUTTON_Y`) in its parent: the sidebar's
+    /// band (at `open_button_x`), or the window with the sidebar hidden.
     pub(crate) fn render_sidebar_button(
         &self,
         ui: UiColors,
-        window: &Window,
+        x: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (x, y) = button_origin(window.is_fullscreen());
         let hidden = self.sidebar.hidden;
         div()
             .id("sidebar-toggle")
             .group("sidebar-toggle")
             .absolute()
             .left(px(x))
-            .top(px(y))
+            .top(px(BUTTON_Y))
             .size(px(HIT))
             .flex()
             .items_center()
@@ -174,12 +184,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_button_sits_right_of_the_traffic_lights_and_moves_to_the_edge_in_full_screen() {
-        let (x, y) = button_origin(false);
-        assert_eq!(x, 80.0);
+    fn the_open_button_sits_at_the_sidebars_right_edge_on_the_gears_centre() {
+        use crate::title_area::{FOOTER_BUTTON, footer_buttons};
+        for w in [180.0, 240.0, 260.0, 340.0, 400.0] {
+            assert_eq!(
+                open_button_x(w) + HIT + BAND_EDGE,
+                w,
+                "width {w}: the band's edge"
+            );
+            assert_eq!(
+                open_button_x(w) + HIT / 2.0,
+                footer_buttons(w)[2] + FOOTER_BUTTON / 2.0,
+                "width {w}: over the footer gear's centre"
+            );
+        }
         // Centred on the lights: the band's middle.
-        assert_eq!(y + HIT / 2.0, TOP_BAND / 2.0);
-        assert_eq!(button_origin(true), (13.0, y));
+        assert_eq!(BUTTON_Y + HIT / 2.0, TOP_BAND / 2.0);
+        assert_eq!(lights_clear(false), 80.0);
+        assert_eq!(lights_clear(true), 13.0);
     }
 
     #[test]

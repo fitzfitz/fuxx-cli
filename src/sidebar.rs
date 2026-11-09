@@ -36,7 +36,7 @@ use crate::presets::MAX_PRESETS;
 use crate::procs::ProgramState;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
-use crate::sidebar_toggle::Tip;
+use crate::sidebar_toggle::{Tip, open_button_x};
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_bar::{DraggedTab, Glyph, hold_closed_hand};
@@ -45,7 +45,8 @@ use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::title_area::{
-    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, PREFERENCES_GROUP, footer_icon, unseen_dot,
+    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, PREFERENCES_GROUP, PREFERENCES_TIP, footer_icon,
+    unseen_dot,
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SELECTION_BAR, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
@@ -1030,7 +1031,15 @@ impl Workspace {
                 }
             })
             .collect();
-        let band = self.render_top_band("sidebar-band", None, window, cx);
+        // The band holds the app's title in its middle and the sidebar button at its right edge
+        // (M11m): both ride the sidebar when it slides.
+        let label = div()
+            .relative()
+            .size_full()
+            .children(self.render_app_title(ui, window))
+            .child(self.render_sidebar_button(ui, open_button_x(self.sidebar.width), cx))
+            .into_any_element();
+        let band = self.render_top_band("sidebar-band", Some(label), window, cx);
         let list = div()
             .id("sidebar-rows")
             .flex()
@@ -1832,6 +1841,7 @@ impl Workspace {
                 button("sidebar-preferences")
                     .group(PREFERENCES_GROUP)
                     .child(footer_icon(Glyph::Gear, ui, PREFERENCES_GROUP, false))
+                    .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip(PREFERENCES_TIP.into())).into() })
                     .on_click(|_: &ClickEvent, _, cx| preferences::open_or_activate(cx)),
             )
             .into_any_element()
