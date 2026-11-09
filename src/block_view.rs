@@ -275,9 +275,15 @@ pub fn rerun_bytes(
 }
 
 /// Which of the chip's three buttons (Copy command, Copy output, Rerun) are enabled: Copy
-/// command needs a recorded command, Copy output always is, Rerun when `rerun` allows it.
-pub fn chip_enabled(has_cmd: bool, rerun: Result<(), Refusal>) -> [bool; 3] {
-    [has_cmd, true, rerun.is_ok()]
+/// command needs a recorded command, Copy output some output, Rerun when `rerun` allows it.
+pub fn chip_enabled(has_cmd: bool, has_output: bool, rerun: Result<(), Refusal>) -> [bool; 3] {
+    [has_cmd, has_output, rerun.is_ok()]
+}
+
+/// What a copy writes to the clipboard: `text`, or nothing when it is empty (an empty copy
+/// would only wipe what was there).
+pub fn clipboard_text(text: Option<String>) -> Option<String> {
+    text.filter(|text| !text.is_empty())
 }
 
 /// What a disabled Rerun's tooltip says.
@@ -596,18 +602,42 @@ mod tests {
 
     #[test]
     fn chip_buttons_enable_by_what_they_need() {
-        // Copy command needs a recorded command (a `t=1` block has none); Copy output is
-        // always there; Rerun follows `rerun`.
-        assert_eq!(chip_enabled(true, Ok(())), [true, true, true]);
+        // Copy command needs a recorded command (a `t=1` block has none); Copy output needs
+        // output; Rerun follows `rerun`.
+        assert_eq!(chip_enabled(true, true, Ok(())), [true, true, true]);
         assert_eq!(
-            chip_enabled(false, Err(Refusal::NoCommand)),
+            chip_enabled(false, true, Err(Refusal::NoCommand)),
             [false, true, false],
             "a t=1 block"
         );
-        assert_eq!(chip_enabled(true, Err(Refusal::Typed)), [true, true, false]);
         assert_eq!(
-            chip_enabled(true, Err(Refusal::NotThisRun)),
+            chip_enabled(true, true, Err(Refusal::Typed)),
             [true, true, false]
+        );
+        assert_eq!(
+            chip_enabled(true, true, Err(Refusal::NotThisRun)),
+            [true, true, false]
+        );
+        assert_eq!(
+            chip_enabled(true, false, Ok(())),
+            [true, false, true],
+            "no output"
+        );
+        assert_eq!(
+            chip_enabled(false, false, Err(Refusal::NoCommand)),
+            [false, false, false]
+        );
+    }
+
+    #[test]
+    fn an_empty_copy_leaves_the_clipboard() {
+        // Nothing to copy (a block without output): nothing written, so what you had stays.
+        assert_eq!(clipboard_text(Some(String::new())), None);
+        assert_eq!(clipboard_text(None), None);
+        assert_eq!(clipboard_text(Some("hi".into())), Some("hi".into()));
+        assert_eq!(
+            clipboard_text(Some(with_command("true", ""))),
+            Some("$ true\n".into())
         );
     }
 
