@@ -15979,9 +15979,7 @@ fn point_at(rig: &mut CursorRig, at: gpui::Point<Pixels>) {
 /// of `blocks_text`:
 /// - `command-blocks`: each block's bar, 8 pt left of the grid, in `block_ok`, `block_failed`
 ///   (both rows of the two-line prompt) and `block_running`; none beside output or the older
-///   empty prompt. A 1 pt `card_border` hairline at the top of block 2's and 3's first prompt
-///   rows and of the live prompt's, none on the first line of scrollback or above the empty
-///   prompt. Hovering block 2's gutter widens its bar to 3 pt and opens the chip (`exit 1 ·
+///   empty prompt. No hairline above any prompt (removed 2026-11-10). Hovering block 2's gutter widens its bar to 3 pt and opens the chip (`exit 1 ·
 ///   false`, the three buttons) 4 pt right of the gutter, one row tall on the command row (the
 ///   pixel rows just above and below it untouched); the chip stays while the pointer is on it
 ///   (200 ms on), and goes 150 ms after it leaves both.
@@ -16025,23 +16023,13 @@ fn command_blocks_scene() {
                 }
                 let w = ink_width(&shot, dims, bg, g.mid(4), g.bar_x - 4.0, g.bar_x + 4.0);
                 assert!((1.5..=2.5).contains(&w), "{n}: a 2 pt bar, saw {w} pt");
-                for row in [3, 5, 8] {
-                    let y = g.top(row);
-                    assert!(
-                        at(&shot, g.sep_x, y + 0.5, ui.card_border),
-                        "{n}: a hairline above row {row}: {:?}",
-                        seen(&shot, g.sep_x, y + 0.5)
-                    );
-                    assert!(
-                        at(&shot, g.sep_x, y + 1.5, bg),
-                        "{n}: 1 pt only above row {row}: {:?}",
-                        seen(&shot, g.sep_x, y + 1.5)
-                    );
-                }
-                for (row, what) in [(0, "the first line of scrollback"), (2, "an empty prompt")] {
+                // No hairline anywhere (removed 2026-11-10, your call): above a block's first
+                // prompt row, the live prompt, the first line of scrollback or an empty prompt.
+                for row in [0, 2, 3, 5, 8] {
                     assert!(
                         at(&shot, g.sep_x, g.top(row) + 0.5, bg),
-                        "{n}: no hairline above {what}"
+                        "{n}: no hairline above row {row}: {:?}",
+                        seen(&shot, g.sep_x, g.top(row) + 0.5)
                     );
                 }
             }
@@ -16314,10 +16302,6 @@ fn command_blocks_alt_screen_scene() {
         assert!(
             is_colour(&back, dims, g.bar_x, g.mid(4), ui.block_failed),
             "{n}: back on the main screen, the bars are back"
-        );
-        assert!(
-            is_colour(&back, dims, g.sep_x, g.top(5) + 0.5, ui.card_border),
-            "{n}: and the hairlines"
         );
     }
 }

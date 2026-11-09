@@ -889,13 +889,21 @@ impl TerminalCore {
     pub fn snapshot_with_blocks(&self, chosen: Option<&str>) -> GridSnapshot {
         let theme = self.theme();
         let shared = self.shared.lock();
-        let (blocks, live_prompt) = blocks::visible(&shared.term, chosen);
+        let blocks = blocks::visible(&shared.term, chosen);
         GridSnapshot {
             clears: shared.clears.count,
             blocks,
-            live_prompt,
             ..grid::snapshot(&shared.term, &theme)
         }
+    }
+
+    /// The top row of the prompt shown now, if it is tagged, counted from the top of the
+    /// scrollback (stable while it scrolls). For tests: the view no longer draws anything there.
+    #[cfg(test)]
+    pub fn live_prompt_from_top(&self) -> Option<i64> {
+        let shared = self.shared.lock();
+        let history = shared.term.grid().history_size() as i64;
+        blocks::live_prompt(&shared.term).map(|line| i64::from(line.0) + history)
     }
 
     /// Every command block in the grid, oldest first (none on the alternate screen). Reads the
@@ -1831,7 +1839,7 @@ mod tests {
         assert_eq!(snap.blocks.len(), 1);
         assert_eq!(snap.blocks[0].prompt, (0, 0));
         assert_eq!(snap.blocks[0].output, Some((1, 1)));
-        assert_eq!(snap.live_prompt, Some(2));
+        assert_eq!(core.live_prompt_from_top(), Some(2));
         // The plain snapshot has no blocks.
         assert!(core.snapshot().blocks.is_empty());
     }
@@ -2909,7 +2917,7 @@ mod daemon_tests {
             cmds()
         );
         // The snapshot carries the block and the prompt's tag...
-        assert!(core.snapshot_with_blocks(None).live_prompt.is_some());
+        assert!(core.live_prompt_from_top().is_some());
         // ...but not where typing starts at that prompt: unknown until the next one.
         assert!(!core.prompt_ready());
         assert!(!core.cursor_at_input_start());

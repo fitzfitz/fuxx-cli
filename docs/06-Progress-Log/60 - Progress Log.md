@@ -22,6 +22,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-10 — The grey line above prompts removed; two chores noted
+- **Did:** On your screenshot of stacked prompts ("ada garis pemisah abu, jelek") and your choice ("ya hapus"), removed the M11l hairline above each prompt and above the live prompt. First checked it was not a bug: replaying a real zsh + powerlevel10k session (a copy of your `.p10k.zsh` in a scratch HOME) through fuxx's parser showed empty prompts make no blocks; the lines were the design's (one above the live prompt even in a fresh terminal). Gone with it: `block_view::SEPARATOR`, `separator_rows`, the snapshot's `live_prompt` and `history_size`; `blocks::live_prompt` is tests only. TDD: the `command-blocks` ui-shot was changed first to expect no line and failed on the old code (it saw `card_border` above row 3), then passed. 1289 tests pass; the command-blocks scenes pass. Noted two chores candidates in the roadmap at your request: shell choice in Preferences, and naming the finished command in notifications (AI's proposal, not yet agreed).
+- **Next:** your look on screen (no grey line above any prompt; the bars unchanged); then merge, and the chores round with you.
+
 ### 2026-11-10 — v0.5.0 released
 - **Did:** Released **v0.5.0**: `chore(release)` `7f85fad`, tag `v0.5.0`, GitHub Release run 42662570303 green, asset `fuxx-0.5.0.zip` (https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.5.0). It bundles M11i (UI uplift 2), M11h (Changes, diff view, Activity), the names revert (names are yours, else the program's title, else ╭∩╮), M11j (⌘K palette), M11k (first-run screen), M11l (command blocks), M11m (title bar) and M11n (performance). Notes 59–65, the roadmap, M11n's plan (Tasks 6 and 7, 9/9) and the tracker now say released.
 - **Next:** your on-screen check of 0.5.0 (129 checks in one list, as an interactive checklist page; per-note lists in notes 59–65), then plan the chores round with you (it may also pick up fuxx-completes). Found for later, from M11n: cache the window chrome so a breath frame doesn't re-render it all.

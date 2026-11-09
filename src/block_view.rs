@@ -1,5 +1,5 @@
-//! How command blocks look (M11l): the gutter bars in the terminal's left padding, the hairline
-//! above each prompt, and the hover chip's words. Pure: `terminal_view` paints and hit-tests
+//! How command blocks look (M11l): the gutter bars in the terminal's left padding and the hover
+//! chip's words (the hairline above each prompt was removed on 2026-11-10). Pure: `terminal_view` paints and hit-tests
 //! with these.
 
 use alacritty_terminal::index::Line;
@@ -18,8 +18,6 @@ pub const GUTTER_INSET: f32 = 8.0;
 pub const SPLIT_GUTTER_INSET: f32 = 6.0;
 /// Bars stop this far short of a block's first and last rows, so stacked blocks stay apart.
 pub const BAR_END_GAP: f32 = 1.0;
-/// The hairline above a prompt.
-pub const SEPARATOR: f32 = 1.0;
 /// The chip (one terminal row tall): its gap right of the gutter, its corner radius and side
 /// padding.
 pub const CHIP_GAP: f32 = 4.0;
@@ -145,26 +143,6 @@ pub fn bar_rows(block: &BlockView, rows: usize) -> Option<(i32, i32)> {
     }
     let (top, bottom) = (top.max(0), bottom.min(rows as i32 - 1));
     (top <= bottom).then_some((top, bottom))
-}
-
-/// The viewport rows that get a hairline at their top edge: each block's first prompt row and
-/// the live prompt's, when on screen and not `first_line`, the very first line of scrollback
-/// (in viewport rows). Top to bottom, each once.
-pub fn separator_rows(
-    blocks: &[BlockView],
-    live_prompt: Option<i32>,
-    rows: usize,
-    first_line: i32,
-) -> Vec<i32> {
-    let mut out: Vec<i32> = blocks
-        .iter()
-        .map(|b| b.prompt.0)
-        .chain(live_prompt)
-        .filter(|&r| r >= 0 && r < rows as i32 && r != first_line)
-        .collect();
-    out.sort_unstable();
-    out.dedup();
-    out
 }
 
 /// The chip's words in a row `height` tall: their size, their line (the row inside the panel's
@@ -366,7 +344,7 @@ pub fn with_command(cmd: &str, output: &str) -> String {
 mod tests {
     use super::*;
     use crate::theme::every_theme;
-    use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, contrast, ensure_contrast};
+    use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast};
 
     #[test]
     fn block_inks_meet_the_floors() {
@@ -411,8 +389,6 @@ mod tests {
             let r = contrast(failed, ui.panel);
             assert!(r >= TEXT_MIN - 0.01, "{name}: exit 1 on the chip {r:.2}");
             assert_eq!(outcome_ink(Outcome::Ok, &ui), ui.text_dim, "{name}");
-            let r = contrast(ui.card_border, bg);
-            assert!(r >= QUIET_LINE_MIN - 0.01, "{name}: separator {r:.2}");
             // Each outcome its colour.
             assert_eq!(bar_color(Outcome::Ok, &ui), ui.block_ok);
             assert_eq!(bar_color(Outcome::Unknown, &ui), ui.block_ok);
@@ -523,16 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn separators_sit_above_prompts() {
-        let blocks = [view((0, 0), Some((1, 1)), false), view((3, 4), None, false)];
-        // Block 1 starts on the first line of scrollback: no line there.
-        assert_eq!(separator_rows(&blocks, Some(5), 10, 0), vec![3, 5]);
-        // Scrolled so it isn't: a line above it too.
-        assert_eq!(separator_rows(&blocks, Some(5), 10, -4), vec![0, 3, 5]);
-        // Off-screen rows get none; the live prompt may be a block's row only once.
-        assert_eq!(separator_rows(&blocks, Some(12), 4, -1), vec![0, 3]);
-        assert_eq!(separator_rows(&blocks, Some(3), 10, -1), vec![0, 3]);
-        assert_eq!(separator_rows(&[], None, 10, 0), Vec::<i32>::new());
+    fn the_chip_stays_inside_the_grid() {
         // The chip, one row (17 pt) tall, stays inside the grid.
         assert_eq!(chip_top(50.0, 10.0, 200.0, 17.0), 50.0);
         assert_eq!(chip_top(190.0, 10.0, 200.0, 17.0), 183.0);
