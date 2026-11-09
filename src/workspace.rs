@@ -2916,10 +2916,11 @@ impl Workspace {
         // A slide already under way turns back from where it has got to.
         let current = self.slide;
         self.slide = (!cx.reduce_motion()).then(|| Slide::start(!self.sidebar.hidden, current));
-        // The + menu and the 🔔's popover hang off the sidebar's footer, and a tab menu off a
-        // row; hidden, they can't stay open.
+        // The + menu hangs off the sidebar's footer, and a tab menu off a row; hidden, they can't
+        // stay open. The 🔔's popover hangs off the footer's 🔔 or the band's (M11m), and every
+        // toggle takes the one it hung from away, so it closes either way.
         self.sidebar.new_menu = false;
-        let popover = self.sidebar.hidden && self.notifications_popover.take().is_some();
+        let popover = self.notifications_popover.take().is_some();
         let menu = self.sidebar.tab_menu.take().is_some();
         let renaming_row = matches!(self.renaming, Some((Renaming::Workspace(_), _)));
         if self.sidebar.hidden && (renaming_row || menu) || popover {

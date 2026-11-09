@@ -13357,6 +13357,9 @@ fn title_area_scenes() {
 /// - `title-bar-collapsed-right`: 960 × 300, the right sidebar shown;
 /// - `title-bar-sliding`: a hide slide 60 ms in (no name until the sidebar has left).
 ///
+/// The popover from the band's 🔔 (collapsed, six notifications): `title-bar-popover` (960 ×
+/// 480), `-narrow` (360 × 480) and `-short` (960 × 300, the list cut to the room).
+///
 /// Panics unless the title's ink is centred on the sidebar's middle and the band's, no wider than
 /// `TITLE_ROOM`, clear of the lights' area and short of the button by `TITLE_GAP`; the button's ink
 /// is centred in its `open_button_x` box and on the footer gear's ink; nothing is drawn where the
@@ -13366,15 +13369,22 @@ fn title_area_scenes() {
 /// slot, the dot shows while some are unseen, and no button is left at x 80; and (Mocha) unless a
 /// press on the title or the collapsed name arms a window drag, a press on any button doesn't, a
 /// click on the open button hides the sidebar and ⌘\ shows it, a click on the band 🔔 opens the
-/// popover (and Escape closes it) and one on the band's sidebar button shows the sidebar.
+/// popover (and Escape closes it) and one on the band's sidebar button shows the sidebar. The
+/// band's popover: its inside exactly at `band_popover_anchor` / `band_popover_width` (top right
+/// under the band, inside the window's margins), its foot `EDGE_MARGIN` above the status bar, the
+/// band 🔔 lit on its fill; and (Mocha) unless its entries are where `band_entry_top` says, a closed
+/// terminal's does nothing, an open one's jumps with the sidebar still hidden, and every toggle
+/// (band 🔔 then shown, footer 🔔 then ⌘\) closes it, leaves no overlay or backdrop and gives the
+/// terminal the keyboard.
 fn title_bar_scenes() {
-    use crate::sidebar_toggle::{BUTTON_Y, HIT, Slide, lights_clear, open_button_x};
+    use crate::sidebar_toggle::{BAND_EDGE, BUTTON_Y, HIT, Slide, lights_clear, open_button_x};
     use crate::tab_menu::Dismiss;
     use crate::title_area::{
-        DOT, DOT_INSET, FOOTER_BUTTON, TITLE_GAP, TITLE_ROOM, band_buttons, footer_buttons,
-        name_inset,
+        DOT, DOT_INSET, EDGE_MARGIN, FOOTER_BUTTON, TITLE_GAP, TITLE_ROOM, band_buttons,
+        band_entry_top, band_popover_anchor, band_popover_width, footer_buttons, name_inset,
     };
     use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, STATUS_BAR, TOP_BAND};
+    use gpui::Focusable;
     use gpui::{KeyBinding, Modifiers, MouseButton};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -13692,6 +13702,292 @@ fn title_bar_scenes() {
             }
         }
     }
+
+    // The popover from the band's 🔔 (M11m Task 3): it drops down from under the band, its right
+    // edge the band's, inside the window however narrow.
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
+        for (scene, w, h) in [
+            ("title-bar-popover", 960.0, 480.0),
+            ("title-bar-popover-narrow", 360.0, 480.0),
+            ("title-bar-popover-short", 960.0, 300.0),
+        ] {
+            let dims = size(px(w), px(h));
+            let b = band_buttons(w);
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = switcher_workspace(window, cx);
+                    ws.sidebar.width = SIDEBAR_DEFAULT_WIDTH;
+                    ws.sidebar.hidden = true;
+                    shot_notifications(&mut ws);
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let n = format!("{scene}-{slug}");
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| ws.open_notifications(window, cx))
+                })
+                .expect("open it");
+                cx.run_until_parked();
+                cx.update(|cx| {
+                    let ws = ws.read(cx);
+                    assert_eq!(ws.notifications.unseen(), 0, "{n}: all seen");
+                    assert!(ws.overlays(cx).any(), "{n}: an overlay");
+                });
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+            let path = dir.join(format!("{scene}-{slug}.png"));
+            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            println!("ui-shots: {}", path.display());
+            let n = format!("{scene}-{slug}");
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let (r, t) = band_popover_anchor(w);
+            let pw = band_popover_width(w);
+            let panel = bg(ui.panel);
+            // Under the band, its right edge the band's, its left `pw` from it.
+            let y = t + 20.0;
+            assert_eq!(at(r - 3.0, y), panel, "{n}: the popover's right");
+            assert_eq!(at(r - pw + 3.0, y), panel, "{n}: the popover's left");
+            assert_ne!(at(r + 3.0, y), panel, "{n}: nothing past its right");
+            assert_ne!(
+                at(r - 20.0, t - 6.0),
+                panel,
+                "{n}: it starts under the band"
+            );
+            // Every device pixel of row `y`: the panel's ink keeps inside the window's margins.
+            let scale = shot.width as f32 / w;
+            let xs: Vec<f32> = (0..shot.width as usize)
+                .map(|x| x as f32 / scale)
+                .filter(|&x| at(x, y) == panel)
+                .collect();
+            let dp = 1.0 / scale;
+            let (first, last) = (xs[0], xs[xs.len() - 1] + dp);
+            println!("ui-shots: {n}: the panel's row {y} runs {first}..{last}");
+            assert!(first >= EDGE_MARGIN, "{n}: the panel starts at {first}");
+            assert!(last <= w - BAND_EDGE, "{n}: the panel ends at {last}");
+            // Exactly where the model says, inside its 1 pt edge: the anchor is in whole points,
+            // so the edges fall on the pixel grid (less than a device pixel off).
+            assert!(
+                (last - (r - 1.0)).abs() < dp && (first - (r - pw + 1.0)).abs() < dp,
+                "{n}: the panel's inside runs {first}..{last}, the model's {}..{}",
+                r - pw + 1.0,
+                r - 1.0
+            );
+            // Down column `r − 20` (clear of the rounded corners), every device pixel: its top
+            // just under the band, inside its edge; its foot above the status bar by the margin
+            // (and, in the short window, the list fills the room down to there).
+            let ys: Vec<f32> = (0..shot.height as usize)
+                .map(|y| y as f32 / scale)
+                .filter(|&y| at(r - 20.0, y) == panel)
+                .collect();
+            let (top, foot) = (ys[0], ys[ys.len() - 1] + dp);
+            println!("ui-shots: {n}: the panel's column runs {top}..{foot}");
+            assert!(
+                (top - (t + 1.0)).abs() < dp,
+                "{n}: the panel's inside starts at {top}, the model's {}",
+                t + 1.0
+            );
+            let floor = h - STATUS_BAR - EDGE_MARGIN;
+            assert!(
+                foot <= floor - 1.0 + dp,
+                "{n}: the panel's foot {foot} past {floor}"
+            );
+            if scene == "title-bar-popover-short" {
+                assert!(
+                    foot >= floor - 1.0 - dp,
+                    "{n}: the list stops at {foot}, short of the room down to {floor}"
+                );
+            }
+            // The band's 🔔 shows its popover is open: lit (its most inked pixel, furthest from
+            // its fill, nearer `text` than `text_dim`), on the hover fill.
+            let dist = |a: [u8; 3], c: [u8; 3]| -> i32 {
+                a.iter()
+                    .zip(c)
+                    .map(|(&x, y)| (i32::from(x) - i32::from(y)).pow(2))
+                    .sum()
+            };
+            // The panel's shadow reaches up into the band (a level or two darker in Mocha, six in
+            // Latte), so the fill is compared, not matched (as `title-area` does for the footer's
+            // 🔔): the slot's corner differs from the band just left of the 🔔, under the same
+            // shadow, by what `panel_hover` differs from the band's colour (±2 a channel).
+            let fill = at(b[0] + 1.5, 19.0);
+            let beside = at(b[0] - 3.0, 19.0);
+            let (hover, band) = (bg(ui.panel_hover), bg(ui.sidebar_background));
+            let off = (0..3).all(|k| {
+                let got = i32::from(fill[k]) - i32::from(beside[k]);
+                let want = i32::from(hover[k]) - i32::from(band[k]);
+                (got - want).abs() <= 2
+            });
+            assert!(
+                off,
+                "{n}: the band 🔔 on its fill ({fill:?} beside {beside:?}; panel_hover {hover:?} \
+                 on the band's {band:?})"
+            );
+            let ink = (0..HIT as usize)
+                .map(|k| at(b[0] + HIT / 2.0, BUTTON_Y + k as f32))
+                .max_by_key(|&p| dist(p, fill))
+                .expect("the bell's column");
+            assert!(
+                dist(ink, bg(ui.text)) < dist(ink, bg(ui.text_dim)),
+                "{n}: the band 🔔, lit while open ({ink:?})"
+            );
+        }
+    }
+
+    // What the popover from the band does (Mocha only), 960 × 600, the sidebar hidden: an
+    // entry is where `band_entry_top` says, a closed terminal's does nothing, one that's open
+    // jumps (the sidebar stays hidden); and every toggle of the sidebar closes the popover,
+    // whichever 🔔 it hung from, and gives the keyboard back to the terminal.
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(sidebar_appearance(theme, cx));
+        let ws = cx.new(|cx| {
+            let mut ws = switcher_workspace(window, cx);
+            ws.sidebar.width = SIDEBAR_DEFAULT_WIDTH;
+            ws.sidebar.hidden = true;
+            shot_notifications(&mut ws);
+            ws
+        });
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        let none = Modifiers::none();
+        let n = "title-bar popover";
+        let (width, height) = (960.0, 600.0);
+        cx.update(|cx| {
+            cx.bind_keys([
+                KeyBinding::new("escape", Dismiss, Some("TabMenu")),
+                KeyBinding::new("cmd-\\", crate::workspace::ToggleSidebar, None),
+            ])
+        });
+        let open = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| ws.read(cx).notifications_popover.is_some())
+        };
+        let hidden = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).sidebar.hidden);
+        let pressed = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).band_pressed);
+        let active = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                ws.sessions.active().map(|s| s.label().to_string())
+            })
+        };
+        let b = band_buttons(width);
+        let band_bell = point(px(b[0] + HIT / 2.0), px(BUTTON_Y + HIT / 2.0));
+        let (r, _) = band_popover_anchor(width);
+        let left = r - band_popover_width(width);
+        let entry = |i: usize| point(px(left + 60.0), px(band_entry_top(i, height) + 20.0));
+        // The closed terminal's entry (the fourth) does nothing.
+        cx.simulate_click(window, band_bell, none);
+        assert!(open(cx), "{n}: the band 🔔 opens it");
+        cx.simulate_click(window, entry(3), none);
+        assert!(open(cx), "{n}: a closed terminal's entry does nothing");
+        assert_eq!(active(cx).as_deref(), Some("shell"));
+        // The hover fill shows where the first entry is (so the click lands on it).
+        cx.simulate_mouse_move(window, entry(0), None, none);
+        cx.run_until_parked();
+        let image = cx.capture_screenshot(window).expect("capture the window");
+        let shot = Shot {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.as_raw().to_vec(),
+        };
+        let ui = theme.ui();
+        let fill = pixel_at(
+            &shot,
+            size(px(width), px(height)),
+            left + 12.0,
+            band_entry_top(0, height) + 2.0,
+        );
+        let hover = [ui.panel_hover.r, ui.panel_hover.g, ui.panel_hover.b];
+        assert_eq!(
+            fill, hover,
+            "{n}: the first entry is where `band_entry_top` says"
+        );
+        // And it starts there: a point above it is the panel's padding, not the entry's fill.
+        let above = pixel_at(
+            &shot,
+            size(px(width), px(height)),
+            left + 12.0,
+            band_entry_top(0, height) - 1.0,
+        );
+        assert_ne!(
+            above, hover,
+            "{n}: the first entry starts at `band_entry_top`"
+        );
+        // A click on it shows agent with the keyboard; the sidebar stays hidden.
+        cx.simulate_click(window, entry(0), none);
+        assert!(!open(cx), "{n}: a jump closes it");
+        assert_eq!(active(cx).as_deref(), Some("agent"), "{n}: agent shown");
+        assert!(hidden(cx), "{n}: the sidebar still hidden");
+        // After a toggle: no popover, no overlay, the active terminal has the keyboard, and no
+        // backdrop is left over the band (a press on it arms a window drag).
+        let closed = |cx: &mut VisualTestAppContext, how: &str| {
+            assert!(!open(cx), "{n}: {how} closes the popover");
+            assert!(
+                !cx.read(|cx| ws.read(cx).overlays(cx).any()),
+                "{n}: {how} leaves no overlay"
+            );
+            cx.update_window(window, |_, window, cx| {
+                let ws = ws.read(cx);
+                let view = &ws.sessions.active().expect("a terminal").view;
+                assert!(
+                    view.focus_handle(cx).is_focused(window),
+                    "{n}: after {how} the terminal has the keyboard"
+                );
+            })
+            .expect("read the focus");
+            let on_band = point(px(width / 2.0), px(TOP_BAND / 2.0));
+            cx.simulate_mouse_down(window, on_band, MouseButton::Left, none);
+            assert!(pressed(cx), "{n}: after {how} the band drags (no backdrop)");
+            cx.simulate_mouse_up(window, on_band, MouseButton::Left, none);
+        };
+        // Open from the band's 🔔, then show the sidebar: the 🔔 it hung from is gone.
+        cx.simulate_click(window, band_bell, none);
+        assert!(open(cx), "{n}: reopened from the band");
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.toggle_sidebar(window, cx))
+        })
+        .expect("show the sidebar");
+        assert!(!hidden(cx), "{n}: shown");
+        closed(cx, "showing the sidebar");
+        // Open from the footer's 🔔 (the slide done), then ⌘\ hides the sidebar: the same.
+        cx.update(|cx| {
+            ws.update(cx, |ws, cx| {
+                ws.slide = None;
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        let bell_x = footer_buttons(SIDEBAR_DEFAULT_WIDTH)[1];
+        let foot_y = height - STATUS_BAR - FOOTER / 2.0;
+        cx.simulate_click(
+            window,
+            point(px(bell_x + FOOTER_BUTTON / 2.0), px(foot_y)),
+            none,
+        );
+        assert!(open(cx), "{n}: opened from the footer");
+        cx.simulate_keystrokes(window, "cmd-\\");
+        assert!(hidden(cx), "{n}: ⌘\\ hides the sidebar");
+        closed(cx, "hiding the sidebar");
+        slot.borrow_mut().take();
+    };
+    render_with(&theme, size(px(960.0), px(600.0)), build, act);
 
     // What the band does (Mocha only: the behaviour is the same in every theme).
     let theme = shot_theme("Catppuccin Mocha");

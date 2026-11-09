@@ -13,16 +13,19 @@
 //! window (drawn at its root over the panes' band and the right sidebar's), and [🔔] [⚙]
 //! [sidebar] at its far right (`band_buttons`), the 🔔 and ⚙ doing what the footer's do.
 //!
-//! The popover is one of the overlays (one open at a time): it opens upward from the 🔔, over
-//! the sidebar with its right edge the gear's, and the 🔔 stays lit on its fill while it shows
+//! The popover is one of the overlays (one open at a time): it opens upward from the footer's
+//! 🔔, over the sidebar with its right edge the gear's, or, with the sidebar hidden, drops down
+//! from the band's 🔔 with its right edge the band's; every sidebar toggle closes it (its 🔔
+//! goes), giving the keyboard back to the terminal. The 🔔 stays lit on its fill while it shows
 //! (as the + with its menu). It holds the keyboard so Escape closes it, and a click anywhere
 //! else, or a shortcut that moves the keyboard (`close_menus`), closes it too. Clicking an entry
 //! whose terminal is still open shows that terminal (its workspace, pane and tab) as ⇧⌘U does;
 //! a closed one's entry is greyed and does nothing. The dot follows the list, which changes
 //! only when a notification is raised or the popover opens: no timer.
 //!
-//! `footer_buttons`, `band_buttons`, `popover_anchor`, `list_room`, `entry_top`, `name_inset`
-//! and `shows_title` are the pure geometry.
+//! `footer_buttons`, `band_buttons`, `popover_anchor`, `list_room`, `entry_top`, the band's
+//! `band_popover_anchor`, `band_popover_width`, `band_list_room` and `band_entry_top`,
+//! `name_inset` and `shows_title` are the pure geometry.
 
 use std::time::Instant;
 
@@ -80,7 +83,7 @@ pub(crate) const DOT_INSET: f32 = 1.5;
 const POPOVER_WIDTH: f32 = 340.0;
 const POPOVER_MIN: f32 = 228.0;
 const POPOVER_DROP: f32 = 4.0;
-const EDGE_MARGIN: f32 = 8.0;
+pub(crate) const EDGE_MARGIN: f32 = 8.0;
 const LIST_MAX: f32 = 420.0;
 /// The popover's inside: its padding (inside a 1 px edge), the space between its header and
 /// list, and the header's height.
@@ -144,6 +147,33 @@ pub(crate) fn entry_top(i: usize, count: usize, sidebar_width: f32, viewport_hei
     let content = count as f32 * ENTRY + count.saturating_sub(1) as f32 * ENTRY_GAP;
     let list = content.min(list_room(viewport_height));
     y - 1.0 - PADDING - list + i as f32 * (ENTRY + ENTRY_GAP)
+}
+
+/// The popover's width from the collapsed band's 🔔 in a window `window_width` wide: inside the
+/// window's margins, from `POPOVER_MIN` to `POPOVER_WIDTH`.
+pub(crate) fn band_popover_width(window_width: f32) -> f32 {
+    (window_width - 2.0 * EDGE_MARGIN).clamp(POPOVER_MIN, POPOVER_WIDTH)
+}
+
+/// The popover's top right corner from the collapsed band's 🔔: just under the band, its right
+/// edge the band's (`BAND_EDGE` from the window's), so it drops down over the band's buttons.
+pub(crate) fn band_popover_anchor(window_width: f32) -> (f32, f32) {
+    (window_width - BAND_EDGE, TOP_BAND + POPOVER_DROP)
+}
+
+/// The most the list may take in the popover from the band, in a window `viewport_height` high:
+/// up to `LIST_MAX`, and short enough that the whole panel stops `EDGE_MARGIN` above the status
+/// bar.
+pub(crate) fn band_list_room(viewport_height: f32) -> f32 {
+    let below = viewport_height - TOP_BAND - POPOVER_DROP - PANEL_CHROME - STATUS_BAR - EDGE_MARGIN;
+    below.clamp(0.0, LIST_MAX)
+}
+
+/// Entry `i`'s top in the window (the list not scrolled), the popover dropped from the band:
+/// counted down from its top, under its edge, padding, header and the gap under it.
+#[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
+pub(crate) fn band_entry_top(i: usize, _viewport_height: f32) -> f32 {
+    TOP_BAND + POPOVER_DROP + 1.0 + PADDING + HEADER + PADDING + i as f32 * (ENTRY + ENTRY_GAP)
 }
 
 /// The left edges, in a window `window_width` wide, of the collapsed band's buttons (🔔, ⚙,
@@ -220,8 +250,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The open popover above the footer's 🔔, with its click-away backdrop: this run's notifications,
-    /// newest first, or a line saying there are none yet.
+    /// The open popover, with its click-away backdrop: this run's notifications, newest first, or
+    /// a line saying there are none yet. Above the footer's 🔔 with the sidebar shown; dropped
+    /// down from the band's 🔔 with it hidden (M11m).
     pub(crate) fn render_notifications(
         &self,
         ui: UiColors,
@@ -229,6 +260,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let focus = self.notifications_popover.as_ref()?;
+        let viewport = window.viewport_size();
+        let (width, height) = (viewport.width.as_f32(), viewport.height.as_f32());
+        // From the collapsed band's 🔔 it drops down; from the footer's it opens upward.
+        let from_band = self.sidebar.hidden;
+        let (panel_width, list_room) = if from_band {
+            (band_popover_width(width), band_list_room(height))
+        } else {
+            (popover_width(self.sidebar.width), list_room(height))
+        };
         let now = Instant::now();
         let rows: Vec<AnyElement> = self
             .notifications
@@ -269,18 +309,19 @@ impl Workspace {
                 )
                 .into_any_element()
         } else {
-            // Up to the top band, at most `LIST_MAX`; the rest scrolls.
+            // Up to the top band (down to the status bar from the band), at most `LIST_MAX`;
+            // the rest scrolls.
             div()
                 .id("notifications-list")
                 .flex()
                 .flex_col()
                 .gap(px(ENTRY_GAP))
-                .max_h(px(list_room(window.viewport_size().height.as_f32())))
+                .max_h(px(list_room))
                 .overflow_y_scroll()
                 .children(rows)
                 .into_any_element()
         };
-        let panel = overlay_panel::shell(&ui, popover_width(self.sidebar.width))
+        let panel = overlay_panel::shell(&ui, panel_width)
             .p(px(PADDING))
             .gap(px(PADDING))
             .track_focus(focus)
@@ -297,7 +338,14 @@ impl Workspace {
             })
             .child(header)
             .child(body);
-        let (x, y) = popover_anchor(self.sidebar.width, window.viewport_size().height.as_f32());
+        let (anchor, (x, y)) = if from_band {
+            (Anchor::TopRight, band_popover_anchor(width))
+        } else {
+            (
+                Anchor::BottomLeft,
+                popover_anchor(self.sidebar.width, height),
+            )
+        };
         Some(
             div()
                 .id("notifications-backdrop")
@@ -320,7 +368,7 @@ impl Workspace {
                 )
                 .child(
                     anchored()
-                        .anchor(Anchor::BottomLeft)
+                        .anchor(anchor)
                         .position(point(px(x), px(y)))
                         .snap_to_window_with_margin(px(EDGE_MARGIN))
                         .child(panel),
@@ -739,6 +787,61 @@ mod tests {
         // sidebar's, which lines it up over the footer gear.
         assert_eq!(BAND_EDGE + HIT / 2.0, ROW_INSET + FOOTER_BUTTON / 2.0);
         assert_eq!(BAND_GROUP, 88.0);
+    }
+
+    #[test]
+    fn the_band_popover_drops_from_the_band_inside_the_window() {
+        use crate::sidebar_toggle::BAND_EDGE;
+        // 300 pt: the window's margins bind the width (284 pt, under `POPOVER_WIDTH`).
+        for w in [300.0, 360.0, 760.0, 960.0, 1600.0] {
+            let (r, t) = band_popover_anchor(w);
+            assert_eq!(r, w - BAND_EDGE, "width {w}: its right edge the band's");
+            assert_eq!(t, TOP_BAND + POPOVER_DROP, "width {w}: just under the band");
+            let pw = band_popover_width(w);
+            assert!(
+                (POPOVER_MIN..=POPOVER_WIDTH).contains(&pw),
+                "width {w}: {pw} wide"
+            );
+            assert!(r - pw >= EDGE_MARGIN, "width {w}: inside the window");
+            assert!(
+                r - pw <= band_buttons(w)[0],
+                "width {w}: it spans the 🔔 ({} vs {})",
+                r - pw,
+                band_buttons(w)[0]
+            );
+        }
+        assert_eq!(band_popover_width(1600.0), POPOVER_WIDTH);
+        assert_eq!(band_popover_width(300.0), 300.0 - 2.0 * EDGE_MARGIN);
+    }
+
+    #[test]
+    fn the_band_popovers_list_stops_above_the_status_bar() {
+        for h in [300.0, 480.0, 600.0, 1000.0] {
+            let (_, t) = band_popover_anchor(960.0);
+            assert!(
+                t + PANEL_CHROME + band_list_room(h) <= h - STATUS_BAR - EDGE_MARGIN,
+                "height {h}: {} vs {}",
+                t + PANEL_CHROME + band_list_room(h),
+                h - STATUS_BAR - EDGE_MARGIN
+            );
+            assert!(
+                band_list_room(h) <= LIST_MAX,
+                "height {h}: at most LIST_MAX"
+            );
+        }
+        assert_eq!(band_list_room(100.0), 0.0);
+    }
+
+    #[test]
+    fn a_band_entrys_place_is_counted_down_from_the_band() {
+        assert_eq!(
+            band_entry_top(0, 600.0),
+            TOP_BAND + POPOVER_DROP + 1.0 + PADDING + HEADER + PADDING
+        );
+        assert_eq!(
+            band_entry_top(1, 600.0),
+            band_entry_top(0, 600.0) + ENTRY + ENTRY_GAP
+        );
     }
 
     #[test]
