@@ -252,6 +252,9 @@ const SCENES: &[(&str, fn())] = &[
     ("welcome-checking", welcome_checking_scene),
     ("welcome-keys", welcome_keys_scene),
     ("welcome-narrow", welcome_narrow_scene),
+    ("welcome-start", welcome_start_scene),
+    ("welcome-folder", welcome_folder_scene),
+    ("welcome-first-run", welcome_first_run_scene),
     ("overlays", overlays),
     ("help", help_scenes),
     ("panels", panel_scenes),
@@ -11088,10 +11091,10 @@ fn welcome_keys_scene() {
             );
 
             open_welcome_on(cx, window, &ws, first);
-            open_palette_on(cx, window, &ws, crate::palette_items::Scope::All);
+            press_keys(cx, window, "cmd-k");
             assert!(
                 welcome_of(cx, &ws).is_none(),
-                "{n}: the palette replaces it"
+                "{n}: ⌘K's palette replaces it"
             );
             assert!(palette_of(cx, &ws).is_some(), "{n}: the palette is open");
 
@@ -11231,6 +11234,386 @@ fn welcome_narrow_scene() {
             wide_shown * 2 > thin_shown * 3,
             "{n}: the folder's end shows ({wide_shown} vs {thin_shown})"
         );
+    }
+}
+
+/// The built-in presets' names with a harmless command each: the pick scenes start real
+/// shells, which then run it.
+fn welcome_quiet_presets() -> Vec<crate::presets::Preset> {
+    crate::presets::builtins()
+        .into_iter()
+        .map(|p| crate::presets::Preset {
+            command: "true".into(),
+            ..p
+        })
+        .collect()
+}
+
+/// The sessions' ids in list order, and how many workspaces there are.
+fn welcome_layout(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> (Vec<u64>, usize) {
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        (
+            ws.sessions.items().iter().map(|s| s.id).collect(),
+            ws.model.workspaces().len(),
+        )
+    })
+}
+
+/// Set the open card's folder, as the folder panel's answer does.
+fn welcome_folder_to(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+    folder: &str,
+) {
+    let card = welcome_of(cx, ws).expect("the card is open");
+    let folder = PathBuf::from(folder);
+    cx.update(|cx| card.update(cx, |c, cx| c.set_folder(folder, cx)));
+    settle(cx, window);
+}
+
+/// One stage of `welcome-start`: given the workspace, `s1`'s id and the stage's name.
+type WelcomeStage = Box<
+    dyn FnOnce(&mut VisualTestAppContext, AnyWindowHandle, &gpui::Entity<Workspace>, u64, &str),
+>;
+
+/// What a pick on the Welcome card opens and closes, in both themes (not shot: the picks start
+/// real shells): `welcome-start`, over `s1`, a terminal in the made-up home.
+///
+/// Panics unless: (a) on a first run with `s1` alone, codex in `/w/app` by Enter closes the
+/// card and replaces `s1` (one session, not `s1`, in `/w/app` with the codex preset, one
+/// workspace) and the new terminal has the keyboard; (b) the same with a file tab beside `s1`
+/// opens codex and keeps `s1` (two sessions, two workspaces); (c) Plain terminal in home
+/// opens nothing and keeps `s1`; (d) from Help with two workspaces, claude makes a third and
+/// closes none; (e) when the new terminal can't open (refused while the background service
+/// starts) `s1` stays and fuxx doesn't quit.
+fn welcome_start_scene() {
+    use crate::welcome_items::{Origin, Row};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let run = |stage: &'static str, act: WelcomeStage| {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let over = Rc::new(Cell::new(0));
+            let build = welcome_build(
+                theme,
+                welcome_quiet_presets(),
+                false,
+                slot.clone(),
+                over.clone(),
+            );
+            let n = format!("welcome-start-{slug}-{stage}");
+            render_with(&theme, dims, build, move |cx, window| {
+                let ws = slotted(&slot);
+                act(cx, window, &ws, over.get(), &n);
+                slot.borrow_mut().take();
+            });
+        };
+
+        // (a) Codex in /w/app replaces the first terminal.
+        run(
+            "a",
+            Box::new(|cx, window, ws, s1, n| {
+                open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
+                welcome_folder_to(cx, window, ws, "/w/app");
+                press_keys(cx, window, "down down");
+                assert_eq!(welcome_state(cx, ws).0, Row::Preset(2), "{n}: codex");
+                press_keys(cx, window, "enter");
+                assert!(
+                    welcome_of(cx, ws).is_none(),
+                    "{n}: the pick closes the card"
+                );
+                let (ids, workspaces) = welcome_layout(cx, ws);
+                assert_eq!(ids.len(), 1, "{n}: one session: {ids:?}");
+                assert_ne!(ids[0], s1, "{n}: the first terminal was replaced");
+                assert_eq!(workspaces, 1, "{n}: one workspace");
+                let (project, preset) = cx.read(|cx| {
+                    let s = &ws.read(cx).sessions.items()[0];
+                    (s.project.clone(), s.preset.as_ref().map(|p| p.name.clone()))
+                });
+                assert_eq!(project, Some(PathBuf::from("/w/app")), "{n}: in /w/app");
+                assert_eq!(preset.as_deref(), Some("codex"), "{n}: the codex preset");
+                assert!(
+                    active_terminal_focused(cx, window, ws),
+                    "{n}: the new terminal types"
+                );
+            }),
+        );
+
+        // (b) A file tab beside the first terminal: it stays.
+        run(
+            "b",
+            Box::new(|cx, window, ws, s1, n| {
+                let file = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        ws.open_file_tab(file, crate::layout_model::FileMode::Plain, window, cx)
+                    })
+                })
+                .expect("open a file tab");
+                settle(cx, window);
+                assert_eq!(welcome_layout(cx, ws), (vec![s1], 1), "{n}: one terminal");
+                open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
+                welcome_folder_to(cx, window, ws, "/w/app");
+                press_keys(cx, window, "down down enter");
+                assert!(
+                    welcome_of(cx, ws).is_none(),
+                    "{n}: the pick closes the card"
+                );
+                let (ids, workspaces) = welcome_layout(cx, ws);
+                assert_eq!(ids.len(), 2, "{n}: two sessions: {ids:?}");
+                assert!(ids.contains(&s1), "{n}: the first terminal stays: {ids:?}");
+                assert_eq!(workspaces, 2, "{n}: two workspaces");
+            }),
+        );
+
+        // (c) Plain terminal in home: what is already open.
+        run(
+            "c",
+            Box::new(|cx, window, ws, s1, n| {
+                open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
+                press_keys(cx, window, "down down down");
+                assert_eq!(welcome_state(cx, ws).0, Row::Plain, "{n}: Plain terminal");
+                press_keys(cx, window, "enter");
+                assert!(
+                    welcome_of(cx, ws).is_none(),
+                    "{n}: the pick closes the card"
+                );
+                assert_eq!(welcome_layout(cx, ws), (vec![s1], 1), "{n}: s1 alone");
+                assert!(
+                    active_terminal_focused(cx, window, ws),
+                    "{n}: the first terminal types"
+                );
+            }),
+        );
+
+        // (d) From Help with two workspaces: a third, none closed.
+        run(
+            "d",
+            Box::new(|cx, window, ws, s1, n| {
+                let s2 = cx
+                    .update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| {
+                            let home = std::path::Path::new("/Users/me");
+                            ws.open_unnamed_shot_session(Some(home), "", window, cx)
+                        })
+                    })
+                    .expect("a second workspace");
+                settle(cx, window);
+                open_welcome_on(cx, window, ws, Origin::Help);
+                assert_eq!(welcome_state(cx, ws).0, Row::Preset(0), "{n}: claude");
+                press_keys(cx, window, "enter");
+                assert!(
+                    welcome_of(cx, ws).is_none(),
+                    "{n}: the pick closes the card"
+                );
+                let (ids, workspaces) = welcome_layout(cx, ws);
+                assert_eq!(workspaces, 3, "{n}: a third workspace");
+                assert_eq!(ids.len(), 3, "{n}: three sessions: {ids:?}");
+                assert!(ids.contains(&s1) && ids.contains(&s2), "{n}: none closed");
+            }),
+        );
+
+        // (e) The new terminal can't open: the first stays, fuxx stays.
+        run(
+            "e",
+            Box::new(|cx, window, ws, s1, n| {
+                open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
+                welcome_folder_to(cx, window, ws, "/w/app");
+                // Opens are refused while the background service starts.
+                cx.update(|cx| {
+                    ws.update(cx, |ws, _| {
+                        ws.service = crate::workspace_daemon::Service::Starting
+                    })
+                });
+                press_keys(cx, window, "enter");
+                assert!(
+                    welcome_of(cx, ws).is_none(),
+                    "{n}: the pick closes the card"
+                );
+                assert_eq!(welcome_layout(cx, ws), (vec![s1], 1), "{n}: s1 stays");
+                assert!(!cx.read(|cx| ws.read(cx).quitting), "{n}: fuxx stays");
+                cx.update(|cx| {
+                    ws.update(cx, |ws, _| {
+                        ws.service = crate::workspace_daemon::Service::Off
+                    })
+                });
+            }),
+        );
+        println!("ui-shots: welcome-start-{slug} ok");
+    }
+}
+
+/// Choose… and Return on the folder row, in both themes: `welcome-folder`, the folder panel
+/// answered by the scene (the off-screen platform has none).
+///
+/// Panics unless, from Plain terminal round to the folder row, Return asks for a folder and,
+/// while it's asked (the keyboard taken from the card), the folder stays; the answer
+/// `/w/other` becomes the folder, Plain terminal is chosen again and the card has the
+/// keyboard back; a cancelled panel leaves the folder, and gives the row and the keyboard back
+/// the same.
+fn welcome_folder_scene() {
+    use crate::welcome_items::{Origin, Row};
+    use futures::channel::oneshot;
+    use gpui::Focusable;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let over = Rc::new(Cell::new(0));
+        let build = welcome_build(
+            theme,
+            crate::presets::builtins(),
+            false,
+            slot.clone(),
+            over.clone(),
+        );
+        let n = format!("welcome-folder-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            open_welcome_on(cx, window, &ws, Origin::FirstRun { over: over.get() });
+            let card = welcome_of(cx, &ws).expect("open");
+            let folder =
+                |cx: &mut VisualTestAppContext| cx.read(|cx| card.read(cx).folder().to_path_buf());
+            let card_focused = |cx: &mut VisualTestAppContext| {
+                cx.update_window(window, |_, window, cx| {
+                    card.read(cx).focus_handle(cx).is_focused(window)
+                })
+                .expect("read the focus")
+            };
+            // The panel takes the keyboard while it's up.
+            let panel_up = |cx: &mut VisualTestAppContext| {
+                cx.update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    let active = ws.sessions.active().expect("a terminal");
+                    active.view.focus_handle(cx).focus(window, cx);
+                })
+                .expect("focus the terminal");
+                settle(cx, window);
+            };
+
+            press_keys(cx, window, "down down down");
+            for (answer, want) in [(Some("/w/other"), "/w/other"), (None, "/w/other")] {
+                let (tx, rx) = oneshot::channel();
+                cx.update(|cx| card.update(cx, |c, _| c.answer_panel_with(rx)));
+                // Plain terminal, then round to the folder row.
+                assert_eq!(welcome_state(cx, &ws).0, Row::Plain, "{n}: Plain terminal");
+                press_keys(cx, window, "down");
+                assert_eq!(welcome_state(cx, &ws).0, Row::Folder, "{n}: the folder row");
+                let before = folder(cx);
+                press_keys(cx, window, "enter");
+                assert!(welcome_of(cx, &ws).is_some(), "{n}: the card stays open");
+                panel_up(cx);
+                assert!(!card_focused(cx), "{n}: the panel has the keyboard");
+                assert_eq!(folder(cx), before, "{n}: unchanged while asked");
+                tx.send(answer.map(PathBuf::from))
+                    .expect("answer the panel");
+                settle(cx, window);
+                assert_eq!(folder(cx), PathBuf::from(want), "{n}: after {answer:?}");
+                assert_eq!(
+                    welcome_state(cx, &ws).0,
+                    Row::Plain,
+                    "{n}: Plain terminal chosen again after {answer:?}"
+                );
+                assert!(card_focused(cx), "{n}: the card types after {answer:?}");
+                assert!(welcome_of(cx, &ws).is_some(), "{n}: still open");
+            }
+            let texts = welcome_state(cx, &ws).1;
+            assert!(
+                texts.iter().any(|t| t == "/w/other"),
+                "{n}: the field shows the folder: {texts:?}"
+            );
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        save_shot("welcome-folder", slug, &shot);
+    }
+}
+
+/// The card on a first run (not shot: a real shell starts): `welcome-first-run`. A workspace
+/// that hasn't welcomed anyone opens its first terminal as a launch with nothing to restore
+/// does.
+///
+/// Panics unless, once it has opened, the card is open over it (`FirstRun` over its id), has
+/// the keyboard, and the workspace counts as welcomed; and unless a workspace that has
+/// welcomed shows no card.
+fn welcome_first_run_scene() {
+    use crate::welcome_items::Origin;
+    use gpui::Focusable;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for welcomed in [false, true] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(Appearance {
+                    presets: welcome_quiet_presets(),
+                    ..shot_appearance(theme, cx)
+                });
+                cx.bind_keys(crate::key_bindings());
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    ws.welcomed = welcomed;
+                    ws.restoring = true;
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let n = format!("welcome-first-run-{slug}-{welcomed}");
+            let m = n.clone();
+            render_with(&theme, dims, build, move |cx, window| {
+                let n = m;
+                let ws = slotted(&slot);
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| ws.open_first(window, cx))
+                })
+                .expect("open the first terminal");
+                settle(cx, window);
+                let (ids, restoring, now_welcomed) = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    (
+                        ws.sessions.items().iter().map(|s| s.id).collect::<Vec<_>>(),
+                        ws.restoring,
+                        ws.welcomed,
+                    )
+                });
+                assert_eq!(ids.len(), 1, "{n}: the first terminal: {ids:?}");
+                assert!(!restoring, "{n}: restoring finished");
+                assert!(now_welcomed, "{n}: welcomed from now on");
+                let card = welcome_of(cx, &ws);
+                if welcomed {
+                    assert!(card.is_none(), "{n}: no card once welcomed");
+                } else {
+                    let card = card.expect("the card on a first run");
+                    let origin = cx.read(|cx| card.read(cx).origin());
+                    assert_eq!(origin, Origin::FirstRun { over: ids[0] }, "{n}: over it");
+                    let focused = cx
+                        .update_window(window, |_, window, cx| {
+                            card.read(cx).focus_handle(cx).is_focused(window)
+                        })
+                        .expect("read the focus");
+                    assert!(focused, "{n}: the card has the keyboard");
+                }
+                slot.borrow_mut().take();
+            });
+            println!("ui-shots: {n} ok");
+        }
     }
 }
 

@@ -181,7 +181,6 @@ fn already_welcomed() -> bool {
 }
 
 /// Whether the Welcome card is due: no readable record, or one that says it was never shown.
-#[allow(dead_code)] // used by the Welcome card (M11k task 3)
 pub fn welcome_due(saved: Option<&SavedState>) -> bool {
     saved.is_none_or(|s| !s.welcomed)
 }

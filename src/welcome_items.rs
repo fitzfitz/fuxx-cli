@@ -33,7 +33,6 @@ pub const SHORTCUTS: [(&str, &str); 3] = [
 ];
 
 /// Why the card is open.
-#[allow(dead_code)] // made by the first run and Help (M11k tasks 3 and 4)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// The first run, over the terminal fuxx opened by itself (its id).
@@ -91,7 +90,6 @@ pub fn default_row(found: &[Found]) -> Row {
 }
 
 /// The session `choice` opens in `folder`; home is no project.
-#[allow(dead_code)] // the pick (M11k task 3)
 pub fn start_launch(folder: &Path, home: Option<&Path>, choice: &Choice) -> Launch {
     let project = (home != Some(folder)).then(|| folder.to_path_buf());
     let (preset, run_preset) = match choice {
@@ -109,7 +107,6 @@ pub fn start_launch(folder: &Path, home: Option<&Path>, choice: &Choice) -> Laun
 }
 
 /// What a pick does.
-#[allow(dead_code)] // the pick (M11k task 3)
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
     /// Nothing to open: the terminal already there is what was asked for.
@@ -121,7 +118,6 @@ pub enum Effect {
 /// A plain terminal in home on the first run is what is already open. Otherwise a pick opens
 /// a new session, and on the first run replaces the first terminal if it is still alive and
 /// alone (`over_alone`).
-#[allow(dead_code)] // the pick (M11k task 3)
 pub fn pick_effect(
     origin: Origin,
     over_alone: bool,

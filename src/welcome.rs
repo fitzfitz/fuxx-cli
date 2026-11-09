@@ -14,6 +14,8 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+#[cfg(feature = "ui-shots")]
+use futures::channel::oneshot;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, ScrollHandle,
@@ -32,11 +34,11 @@ use crate::theme::UiColors;
 use crate::ui_tokens::size::TOP_BAND;
 use crate::ui_tokens::text;
 use crate::welcome_items::{
-    CHOOSE, Choice, HEADING_AGENT, HEADING_FOLDER, HEADING_SHORTCUTS, HINT, NO_PRESETS, Origin,
-    PLAIN_TERMINAL, Row, SHORTCUTS, SKIP, SUBTITLE, TITLE, default_row, rows, start_label,
-    status_word, step,
+    CHOOSE, Choice, Effect, HEADING_AGENT, HEADING_FOLDER, HEADING_SHORTCUTS, HINT, NO_PRESETS,
+    Origin, PLAIN_TERMINAL, Row, SHORTCUTS, SKIP, SUBTITLE, TITLE, default_row, pick_effect, rows,
+    start_label, start_launch, status_word, step,
 };
-use crate::workspace::{Overlay, Workspace};
+use crate::workspace::{At, Opened, Overlay, Workspace, folder_panel};
 
 /// The card's width (less in a narrow window) and its inner padding.
 const CARD_WIDTH: f32 = 520.0;
@@ -121,15 +123,19 @@ fn default_folder(
     }
 }
 
-/// Each string the card draws, in order, as it draws them (the UI screenshots read them).
+/// Each string the card draws, in order, as it draws them (kept only for the UI screenshots,
+/// which read them).
 #[derive(Default)]
-#[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
-struct Said(Vec<String>);
+struct Said {
+    #[cfg(feature = "ui-shots")]
+    drawn: Vec<String>,
+}
 
 impl Said {
     fn say(&mut self, s: impl Into<String>) -> SharedString {
         let s = s.into();
-        self.0.push(s.clone());
+        #[cfg(feature = "ui-shots")]
+        self.drawn.push(s.clone());
         s.into()
     }
 }
@@ -161,6 +167,9 @@ pub struct Welcome {
     start_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     #[cfg(feature = "ui-shots")]
     drawn: Vec<String>,
+    /// The UI screenshots' stand-in for the folder panel: its answer, once sent.
+    #[cfg(feature = "ui-shots")]
+    panel_answer: Option<oneshot::Receiver<Option<PathBuf>>>,
 }
 
 impl EventEmitter<WelcomeEvent> for Welcome {}
@@ -204,6 +213,8 @@ impl Welcome {
             start_bounds: Rc::default(),
             #[cfg(feature = "ui-shots")]
             drawn: Vec::new(),
+            #[cfg(feature = "ui-shots")]
+            panel_answer: None,
         }
     }
 
@@ -221,16 +232,60 @@ impl Welcome {
     }
 
     /// Start in `folder` from now on.
-    #[allow(dead_code)] // the folder panel's answer (M11k task 3)
     pub fn set_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.folder = folder;
         cx.notify();
     }
 
     /// Why the card is open.
-    #[allow(dead_code)] // read by the pick (M11k task 3)
     pub fn origin(&self) -> Origin {
         self.origin
+    }
+
+    /// Choose…, or Return on the folder row: the folder panel (⌘O's), which has the keyboard
+    /// while it's up. A folder picked becomes the card's; picked or not, the card (if it is
+    /// still open) takes the keyboard back with the agent row chosen again.
+    pub fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "ui-shots")]
+        if let Some(answer) = self.panel_answer.take() {
+            self.when_answered(async move { answer.await.ok().flatten() }, window, cx);
+            return;
+        }
+        let picked = cx.prompt_for_paths(folder_panel());
+        let answer = async move {
+            match picked.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) | Err(_) => None,
+                Ok(Err(err)) => {
+                    eprintln!("[fuxx] welcome: folder picker failed: {err}");
+                    None
+                }
+            }
+        };
+        self.when_answered(answer, window, cx);
+    }
+
+    /// Once the folder panel answers: the folder, the agent row and the keyboard back. A card
+    /// closed meanwhile is gone (only the Workspace holds it) and the answer is dropped.
+    fn when_answered(
+        &mut self,
+        answer: impl Future<Output = Option<PathBuf>> + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
+            let folder = answer.await;
+            this.update_in(cx, |card, window, cx| {
+                if let Some(folder) = folder {
+                    card.set_folder(folder, cx);
+                }
+                card.choose(card.agent);
+                card.focus.focus(window, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Choose `row`; an agent row is also what Start starts. The list scrolls it into view.
@@ -280,9 +335,8 @@ impl Welcome {
     }
 
     /// ↑ and ↓ move round the rows; Return starts the chosen agent row (on the folder row it
-    /// will open the folder panel: M11k task 3); Esc skips. Only without modifiers; every other
-    /// key goes on.
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    /// opens the folder panel); Esc skips. Only without modifiers; every other key goes on.
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.modifiers.modified() {
             return;
         }
@@ -293,7 +347,9 @@ impl Welcome {
                 self.move_to(next, cx);
             }
             "enter" => {
-                if self.chosen != Row::Folder {
+                if self.chosen == Row::Folder {
+                    self.choose_folder(window, cx);
+                } else {
                     self.start(cx);
                 }
             }
@@ -423,6 +479,11 @@ impl Welcome {
         &self.found
     }
 
+    /// The next folder panel is answered by `answer` instead of the real one.
+    pub fn answer_panel_with(&mut self, answer: oneshot::Receiver<Option<PathBuf>>) {
+        self.panel_answer = Some(answer);
+    }
+
     /// Each string drawn last, in order.
     pub fn texts(&self) -> Vec<String> {
         self.drawn.clone()
@@ -518,6 +579,10 @@ impl Render for Welcome {
                     .border_1()
                     .border_color(hsla(ui.panel_border))
                     .hover(move |s| s.bg(hsla(hover)))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.choose_folder(window, cx)
+                    }))
                     .child(choose)
             });
 
@@ -563,7 +628,7 @@ impl Render for Welcome {
         let label = said.say(start_label(&self.choice()));
         #[cfg(feature = "ui-shots")]
         {
-            self.drawn = said.0;
+            self.drawn = said.drawn;
         }
 
         let hover = ui.panel_hover;
@@ -707,7 +772,6 @@ impl Workspace {
     /// folder is `default_folder`'s; the presets' `PATH` check runs on the background executor
     /// (`agent_detect::check` blocks on the login shell's environment) and goes to the card if
     /// it is still open. The card takes the keyboard.
-    #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))] // first run, Help (M11k tasks 3, 4)
     pub(crate) fn open_welcome(
         &mut self,
         origin: Origin,
@@ -773,24 +837,63 @@ impl Workspace {
 
     /// Esc, Skip or a click on the scrim: the card closes and the keyboard goes back to the
     /// focused tab.
-    pub(crate) fn skip_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn skip_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.welcome = None;
         self.focus_active(window, cx);
         cx.notify();
     }
 
-    /// A pick: the card closes and the keyboard goes back to the focused tab, then (M11k task
-    /// 3) the pick runs.
+    /// A pick: the card closes and the keyboard goes back to the focused tab, then what was
+    /// picked opens (`pick_effect`): nothing for Plain terminal in home on a first run (that is
+    /// the terminal already there); otherwise `start_launch`'s session in a workspace of its
+    /// own. On a first run the terminal the card was over goes once the new one exists, if it
+    /// is still alone in its workspace: never before (fuxx quits with its last terminal) and
+    /// never if the new one didn't start.
     pub(crate) fn run_welcome_pick(
         &mut self,
-        _folder: PathBuf,
-        _choice: Choice,
+        folder: PathBuf,
+        choice: Choice,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let origin = self
+            .welcome
+            .as_ref()
+            .map_or(Origin::Help, |card| card.read(cx).origin());
         self.welcome = None;
         self.focus_active(window, cx);
         cx.notify();
+        let over_alone = match origin {
+            Origin::FirstRun { over } => self.over_alone(over),
+            Origin::Help => false,
+        };
+        // The home the card wrote the folder against: exactly it is no project.
+        let home = self.places.home.clone();
+        let folder_is_home = home.as_deref() == Some(folder.as_path());
+        let Effect::Open { close_after } = pick_effect(origin, over_alone, &choice, folder_is_home)
+        else {
+            return;
+        };
+        let launch = start_launch(&folder, home.as_deref(), &choice);
+        let then: Opened = Box::new(move |this, opened, window, cx| {
+            // Still alone now: with the background service the open waited for its answer.
+            let Some(old) = close_after.filter(|old| opened.is_some() && this.over_alone(*old))
+            else {
+                return;
+            };
+            if let Some(index) = this.index_of(old) {
+                this.close_at(index, window, cx);
+            }
+        });
+        self.open_session_then(launch, At::New, Some(then), window, cx);
+    }
+
+    /// Whether terminal `over` is open and alone in its workspace (no other tab of any kind).
+    fn over_alone(&self, over: u64) -> bool {
+        self.model
+            .terminal_tab(over)
+            .and_then(|tab| self.model.locate(tab))
+            .is_some_and(|(ws, _)| self.model.tabs_of(ws).len() == 1)
     }
 
     /// The scrim under the card: the window below the top band (which stays live: the window
