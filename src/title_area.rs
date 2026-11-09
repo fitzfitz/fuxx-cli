@@ -44,8 +44,6 @@ use crate::workspace::{Overlay, Workspace};
 /// The footer's buttons (the +, the 🔔, the gear): each one's side, and the space between them.
 pub(crate) const FOOTER_BUTTON: f32 = 28.0;
 pub(crate) const FOOTER_GAP: f32 = 4.0;
-/// The sidebar's right edge (its border): the footer's buttons sit inside it.
-const SIDEBAR_EDGE: f32 = 1.0;
 /// The space between the sidebar button and the workspace's name, and the least room the name is
 /// drawn in (less would show little more than an ellipsis).
 const NAME_GAP: f32 = 12.0;
@@ -58,7 +56,7 @@ pub(crate) const DOT_INSET: f32 = 1.5;
 /// footer it opens, how far from the window's edges it keeps, and the most its list may take
 /// (the rest scrolls).
 const POPOVER_WIDTH: f32 = 340.0;
-const POPOVER_MIN: f32 = 227.0;
+const POPOVER_MIN: f32 = 228.0;
 const POPOVER_DROP: f32 = 4.0;
 const EDGE_MARGIN: f32 = 8.0;
 const LIST_MAX: f32 = 420.0;
@@ -86,17 +84,17 @@ const STROKE: f32 = 1.5;
 const PANEL_CHROME: f32 = 2.0 + 2.0 * PADDING + HEADER + PADDING;
 
 /// The left edges, in the sidebar `width` wide, of the footer's buttons: the + at the footer's
-/// left inset, the gear at the right (the same distance from the sidebar's edge, inside its
-/// border), the 🔔 beside it.
+/// left inset, the gear at the right (the same distance from the sidebar's edge, which has no
+/// border since M11i), the 🔔 beside it.
 pub(crate) fn footer_buttons(width: f32) -> [f32; 3] {
-    let gear = width - SIDEBAR_EDGE - ROW_INSET - FOOTER_BUTTON;
+    let gear = width - ROW_INSET - FOOTER_BUTTON;
     [ROW_INSET, gear - FOOTER_GAP - FOOTER_BUTTON, gear]
 }
 
 /// The popover's width over a sidebar `sidebar_width` wide: the footer's, inside its insets,
 /// from `POPOVER_MIN` to `POPOVER_WIDTH`.
 pub(crate) fn popover_width(sidebar_width: f32) -> f32 {
-    (sidebar_width - SIDEBAR_EDGE - 2.0 * ROW_INSET).clamp(POPOVER_MIN, POPOVER_WIDTH)
+    (sidebar_width - 2.0 * ROW_INSET).clamp(POPOVER_MIN, POPOVER_WIDTH)
 }
 
 /// The popover's bottom left corner in the window, just above the footer. It hangs from the
@@ -487,13 +485,13 @@ mod tests {
             let [plus, bell, gear] = footer_buttons(width);
             assert_eq!(plus, ROW_INSET, "the + at the footer's left inset");
             assert_eq!(
-                gear + FOOTER_BUTTON + ROW_INSET + SIDEBAR_EDGE,
+                gear + FOOTER_BUTTON + ROW_INSET,
                 width,
-                "the gear at the right, inside the sidebar's edge"
+                "the gear at the footer's right inset (the sidebar has no edge since M11i)"
             );
             assert_eq!(
                 plus,
-                width - SIDEBAR_EDGE - (gear + FOOTER_BUTTON),
+                width - (gear + FOOTER_BUTTON),
                 "width {width}: the + and the gear mirror each other"
             );
             assert_eq!(
@@ -530,7 +528,7 @@ mod tests {
                 x <= bell && bell + FOOTER_BUTTON <= right,
                 "width {width}: over the bell"
             );
-            if width - SIDEBAR_EDGE - 2.0 * ROW_INSET >= POPOVER_MIN {
+            if width - 2.0 * ROW_INSET >= POPOVER_MIN {
                 // Its right edge is the gear's, and it stays over the sidebar.
                 assert_eq!(
                     right,
@@ -546,7 +544,7 @@ mod tests {
         // At the default width it fills the sidebar inside the footer's insets.
         assert_eq!(
             popover_width(SIDEBAR_DEFAULT_WIDTH),
-            SIDEBAR_DEFAULT_WIDTH - SIDEBAR_EDGE - 2.0 * ROW_INSET
+            SIDEBAR_DEFAULT_WIDTH - 2.0 * ROW_INSET
         );
     }
 

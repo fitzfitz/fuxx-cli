@@ -12918,8 +12918,11 @@ fn title_area_scenes() {
                         assert!(bell_has(ui.text_dim), "{n}: the bell, dim");
                         // Each icon's drawn ink (pixels at least half-way from the footer's
                         // colour to the dim text colour): 14-16 px tall, the three centred on
-                        // one line, and the + as far from the sidebar's left edge as the gear
-                        // is from its right edge (inside the border).
+                        // one line, each centred in its `footer_buttons` slot, and the + as far
+                        // from the sidebar's left edge as the gear is from its right edge (no
+                        // border there since M11i). Every device pixel of a button is read, so
+                        // a box edge is the same at 1x and 2x (a point-by-point read rounds
+                        // each side its own way, by up to a pixel).
                         let foot = bg(ui.sidebar_background);
                         let full = {
                             let d = bg(ui.text_dim);
@@ -12927,22 +12930,26 @@ fn title_area_scenes() {
                                 .map(|k| (i32::from(d[k]) - i32::from(foot[k])).pow(2))
                                 .sum::<i32>()
                         };
+                        let scale = shot.width as f32 / width;
                         let ink_box = |x0: f32| -> (f32, f32, f32, f32) {
                             let (mut x_lo, mut x_hi) = (f32::MAX, f32::MIN);
                             let (mut y_lo, mut y_hi) = (f32::MAX, f32::MIN);
-                            for dy in 0..FOOTER_BUTTON as usize {
-                                for dx in 0..FOOTER_BUTTON as usize {
-                                    let (x, y) = (
-                                        x0 + dx as f32,
-                                        centre_y - FOOTER_BUTTON / 2.0 + dy as f32,
-                                    );
-                                    let p = at(x, y);
+                            let top = centre_y - FOOTER_BUTTON / 2.0;
+                            let side = (FOOTER_BUTTON * scale) as usize;
+                            for dy in 0..side {
+                                for dx in 0..side {
+                                    let x = (x0 * scale) as usize + dx;
+                                    let y = (top * scale) as usize + dy;
+                                    let i = (y * shot.width as usize + x) * 4;
+                                    let p = &shot.rgba[i..i + 3];
                                     let d: i32 = (0..3)
                                         .map(|k| (i32::from(p[k]) - i32::from(foot[k])).pow(2))
                                         .sum();
                                     if d * 4 >= full {
-                                        (x_lo, x_hi) = (x_lo.min(x), x_hi.max(x + 1.0));
-                                        (y_lo, y_hi) = (y_lo.min(y), y_hi.max(y + 1.0));
+                                        let (x, y) = (x as f32 / scale, y as f32 / scale);
+                                        let step = 1.0 / scale;
+                                        (x_lo, x_hi) = (x_lo.min(x), x_hi.max(x + step));
+                                        (y_lo, y_hi) = (y_lo.min(y), y_hi.max(y + step));
                                     }
                                 }
                             }
@@ -12964,9 +12971,22 @@ fn title_area_scenes() {
                                 "{n}: the icons' centres agree: {mids:?}"
                             );
                         }
-                        let (left, right) = (boxes[0].0, sidebar_width - 1.0 - boxes[2].1);
+                        // Where the model puts each button (the popover hangs from the gear's
+                        // edge) is where it is drawn: the ink's centre is the slot's.
+                        for ((name, slot), b) in ["+", "bell", "gear"]
+                            .iter()
+                            .zip([plus_x, bell_x, gear_x])
+                            .zip(boxes)
+                        {
+                            let (mid, want) = ((b.0 + b.1) / 2.0, slot + FOOTER_BUTTON / 2.0);
+                            assert!(
+                                (mid - want).abs() <= 0.5,
+                                "{n}: the {name}'s ink is centred at {mid}, its slot at {want}"
+                            );
+                        }
+                        let (left, right) = (boxes[0].0, sidebar_width - boxes[2].1);
                         assert!(
-                            (left - right).abs() <= 1.0,
+                            (left - right).abs() <= 0.5,
                             "{n}: the + is {left} from the left, the gear {right} from the right"
                         );
                     }
