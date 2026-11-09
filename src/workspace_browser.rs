@@ -360,6 +360,7 @@ impl Workspace {
                 .any(|v| v.read(cx).suggestions_open(cx)),
             notifications: self.notifications_popover.is_some(),
             help: self.help.is_some(),
+            welcome: self.welcome.is_some(),
         }
     }
 

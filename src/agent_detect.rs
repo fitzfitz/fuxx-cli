@@ -10,7 +10,6 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Found {
     /// Not answered yet.
-    #[allow(dead_code)] // used by the Welcome card (M11k task 2)
     Checking,
     Yes,
     No,
@@ -121,7 +120,6 @@ pub fn find(
 
 /// `find` against your login shell's `PATH` and the real files. Blocks (up to the login
 /// environment's 3 s cap the first time): only from a background task.
-#[allow(dead_code)] // used by the Welcome card (M11k task 3)
 pub fn check(commands: Vec<String>) -> Vec<Found> {
     let path = crate::workspace_ssh::login_env().and_then(|env| {
         env.iter()
@@ -191,6 +189,14 @@ mod tests {
         entries.extend((0..3).map(|i| format!("/nope-after{i}")));
         let long = OsString::from(entries.join(":"));
         assert!(!on_path("claude", &long, is_executable_file));
+        // At the 65th place it is just past the cap.
+        let mut entries: Vec<String> = (0..64).map(|i| format!("/nope{i}")).collect();
+        entries.push(d.display().to_string());
+        assert!(!on_path(
+            "claude",
+            &OsString::from(entries.join(":")),
+            is_executable_file
+        ));
         // The same folder at the 64th place is still looked in.
         let mut entries: Vec<String> = (0..63).map(|i| format!("/nope{i}")).collect();
         entries.push(d.display().to_string());

@@ -987,7 +987,7 @@ impl Render for Palette {
 
 /// The keys' table as `main` binds it (persistent sessions' ⌥⌘Q only while they're on): where
 /// an action row's keys come from, as the Help list's.
-fn binding_table(persistent: bool) -> Vec<(String, String)> {
+pub(crate) fn binding_table(persistent: bool) -> Vec<(String, String)> {
     let mut bindings = crate::new_bindings().to_vec();
     bindings.extend(crate::key_bindings());
     if persistent {

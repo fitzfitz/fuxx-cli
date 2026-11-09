@@ -71,6 +71,7 @@ use crate::tab_bar::TabGrab;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{CARD_GAP, TOP_BAND};
+use crate::welcome::Welcome;
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -551,6 +552,7 @@ overlays!(
     PaneActions,
     Notifications,
     Help,
+    Welcome,
 );
 
 /// What the rename box names: a workspace (its sidebar row) or a terminal (its pane tab).
@@ -638,6 +640,10 @@ pub struct Workspace {
     pub(crate) palette_recent: Recent,
     /// The Help panel (Keyboard Shortcuts or the Command Reference), while it is open (M11d).
     pub(crate) help: Option<Entity<HelpPanel>>,
+    /// The Welcome card, while it is open (M11k).
+    pub(crate) welcome: Option<Entity<Welcome>>,
+    /// The card's agent detection never runs (the UI screenshots set the answers themselves).
+    pub(crate) agents_frozen: bool,
     /// The browser tabs' views (M11b), by tab: one for each browser tab of the model (`sync`
     /// drops those whose tab has gone, and with them their pages).
     pub(crate) browser_tabs: HashMap<TabId, Entity<BrowserTab>>,
@@ -665,7 +671,6 @@ pub struct Workspace {
     /// on): kept in the sessions file until it has been deleted.
     pub(crate) browser_data_kept: bool,
     /// The Welcome card has been shown (M11k): kept in the sessions file.
-    #[allow(dead_code)] // read by the Welcome card (M11k task 3)
     pub(crate) welcomed: bool,
     /// Deleting the saved browser data is under way.
     pub(crate) browser_wiping: bool,
@@ -840,6 +845,8 @@ impl Workspace {
             palette: None,
             palette_recent: Recent::default(),
             help: None,
+            welcome: None,
+            agents_frozen: false,
             browser_tabs: HashMap::new(),
             file_tabs: HashMap::new(),
             browser_titles: HashMap::new(),
@@ -2392,6 +2399,9 @@ impl Workspace {
         if keep != Overlay::Help {
             self.help = None;
         }
+        if keep != Overlay::Welcome {
+            self.welcome = None;
+        }
     }
 
     /// Open the rename box on a workspace's row (opening its group) and focus it.
@@ -3035,6 +3045,10 @@ impl Render for Workspace {
         let button = self.render_sidebar_button(ui, window, cx);
         let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
+        let welcome = self
+            .welcome
+            .clone()
+            .map(|card| self.welcome_layer(card, ui, cx));
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
         let pane_actions = self.render_pane_actions(ui, cx);
@@ -3242,6 +3256,8 @@ impl Render for Workspace {
             .when_some(self.address_box.clone(), |root, address| {
                 root.child(top_panel(address))
             })
+            // The Welcome card over its scrim, below the top band.
+            .children(welcome)
             // The sidebar's + menu and a row's tab menu, over everything, with their
             // click-away backdrops.
             .children(new_menu)
@@ -3268,6 +3284,7 @@ impl Workspace {
         this.programs.frozen = true;
         this.ports.frozen = true;
         this.palette_files.frozen = true;
+        this.agents_frozen = true;
         this
     }
 

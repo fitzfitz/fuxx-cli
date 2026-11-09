@@ -94,6 +94,7 @@ mod ui_tokens;
 mod update_release;
 mod updater;
 mod vt_snapshot;
+mod welcome;
 mod welcome_items;
 mod workspace;
 mod workspace_api;
