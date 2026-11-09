@@ -664,6 +664,9 @@ pub struct Workspace {
     /// The saved browser data may hold something (a window was opened with `browser-keep-data`
     /// on): kept in the sessions file until it has been deleted.
     pub(crate) browser_data_kept: bool,
+    /// The Welcome card has been shown (M11k): kept in the sessions file.
+    #[allow(dead_code)] // read by the Welcome card (M11k task 3)
+    pub(crate) welcomed: bool,
     /// Deleting the saved browser data is under way.
     pub(crate) browser_wiping: bool,
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
@@ -774,6 +777,7 @@ impl Workspace {
         this.listen_for_clicks(clicks, window, cx);
         // Browser data saved by an earlier run, if the setting is off now, goes at once.
         this.browser_data_kept = read_saved_quietly().is_some_and(|s| s.browser_data_kept);
+        this.welcomed = read_saved_quietly().is_some_and(|s| s.welcomed);
         this.wipe_saved_data_if_due(cx);
         if let Some(saved) = read_saved_quietly() {
             this.sidebar.load(&saved);
@@ -848,6 +852,7 @@ impl Workspace {
             browsers_ticking: false,
             address_box: None,
             browser_data_kept: false,
+            welcomed: true,
             browser_wiping: false,
             restoring: true,
             hold_saving: false,
@@ -1206,6 +1211,7 @@ impl Workspace {
             sidebar_hidden: self.sidebar.hidden,
             hint_dismissed: self.sidebar.hint_dismissed,
             browser_data_kept: self.browser_data_kept,
+            welcomed: self.welcomed,
             right_sidebar_hidden: self.right_sidebar.hidden,
             right_sidebar_width: Some(self.right_sidebar.width),
             right_sidebar_panel: Some(self.right_sidebar.panel.key().to_string()),

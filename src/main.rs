@@ -4,6 +4,7 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_detect;
 mod api;
 mod api_client;
 mod api_events;
@@ -93,6 +94,7 @@ mod ui_tokens;
 mod update_release;
 mod updater;
 mod vt_snapshot;
+mod welcome_items;
 mod workspace;
 mod workspace_api;
 mod workspace_browser;
