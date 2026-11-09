@@ -5,7 +5,7 @@ status: approved
 
 # 59 - Milestones 11g–11h - Right Sidebar and File Tabs (design)
 
-**Status:: ✅ Design approved by you 2026-11-08 ("lets go"). 🟨 M11g built and reviewed 2026-11-08 (953 tests), releasing as v0.4.0; on-screen check pending. 🟨 M11h built, reviewed, merged and pushed 2026-11-09 (1089 tests; every gap AI's call, below; not released on its own: one release after M11n): [[M11h Plan - Changes, Diff View, Activity]]; on-screen check pending.**  ·  **Phase 4: M11 extensions.**
+**Status:: ✅ Design approved by you 2026-11-08 ("lets go"). 🟨 M11g built and reviewed 2026-11-08 (953 tests), releasing as v0.4.0; on-screen check pending. 🟨 M11h built, reviewed, merged and pushed 2026-11-09 (1089 tests; every gap AI's call, below; not released on its own: one release after M11n): [[M11h Plan - Changes, Diff View, Activity]]; on-screen check pending. Ships in v0.5.0 (the release after M11n; pending).**  ·  **Phase 4: M11 extensions.**
 **Changes the scope** (your decision, 2026-11-08): [[12 - Scope]] says "Being a general IDE / editor" is out. This
 design brings in a **read-only file viewer**, but **not an editor**. If you approve, Scope is updated before
 planning.

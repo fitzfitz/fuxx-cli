@@ -14,13 +14,45 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11m — title bar 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); next M11n (performance, designed and planned 2026-11-09, not built; it ends with the v0.5.0 release); M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, designed and planned 2026-11-09, not built), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11n — performance 🟨 built, reviewed, merged and pushed 2026-11-10 (every target met); next the v0.5.0 release (M11i–M11n), then your combined on-screen check, then a chores round planned with you (and the fuxx-completes repo, `github.com/fitzfitz/fuxx-completes`, design stage, after the release). M11m — title bar 🟨 built, reviewed, merged and pushed 2026-11-09; M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09; M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release in v0.5.0). Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-10 — M11n performance built, reviewed, merged and pushed
+- **Did:** Built M11n task by task with a fresh builder and reviewer each. The harness came into `scripts/bench/`
+  (it backs up, restores and verifies your Ghostty prefs, and kills every process it starts on any exit). The byte
+  scanners jump over plain text with `memchr`; a parser thread takes the PTY's reads in 64 KiB batches with one UI
+  wake per batch; `Theme::ui()` is computed once per theme; the breath is drawn at level crossings (22 frames per
+  breath instead of 32, never a bigger step), sleeps through the hold and rests at full strength after five minutes
+  untouched. 1289 tests pass, the full ui-shots set passes (147), clippy and fmt are clean.
+- **Measured** (one session, `6fbced0` against the code before M11n, window in front for every CPU run):
+  - idle, glow on: 6.99 → **5.35 %** (5 runs each), **0.765 ×**, target ≤ 0.8 ×. The mean ratio is 0.851 × because
+    of one unexplained low base run (2.83 %, the first of the session; kept, since nothing showed it invalid); without
+    it 0.75 ×, as the frame model predicted;
+  - after five minutes untouched: 6.99 → **0.93 %** (glow off 0.75 %), one run per app;
+  - glow off 0.75 → 0.74 %;
+  - `cat` 100 MiB 0.931 → **0.481 s**, Ghostty 0.338 s = **1.42 ×** (was 2.68–2.93 ×);
+  - 200k coloured lines 0.219 → **0.156 s**, Ghostty 0.155 s = **1.01 ×** (up to 1 MiB can be unparsed when `cat`
+    returns, so maybe 1.07 ×);
+  - launch 163 → 162 ms; RSS 121.1 / 124.6 → 119.2 / 125.0 MB.
+- **Rulings beyond the plan:** `MarkScanner` also cuts at CAN/SUB; one buffer per terminal, so a drained terminal
+  holds at most 64 KiB; the daemon's subscriber and writer queues got a 1 MiB byte cap each, restoring their real old
+  bound (macOS reads were about 1 KiB, so before M11n they held about 1 MiB and 256 KiB; a bigger Snapshot waits and
+  goes in alone); turning the glow, Animations or Reduce motion back on ends the rest, and a hidden cursor
+  reappearing restarts the breath (0.6 s solid, then a peak); a ui-shots `cursor-flood` scene guards `output_seen`.
+  The first Ghostty runs (grid, launch) rewrote your `NSWindowLastPosition` before the restore rule existed; the old
+  value is lost, as I told you.
+- **Found for later:** the breath still costs about 5.3 %, because every breath frame re-renders the whole window
+  chrome and only the panes are cached. Caching the chrome could save more than repainting only the cursor. For the
+  chores round.
+- **Limits:** nothing verified on the real screen yet; `cpu_rest` is one run per app. Details: note 65, "M11n as
+  built".
+- **Next:** release v0.5.0, then your combined on-screen check (note 65 has 11 items), then plan the chores round with
+  you, and the fuxx-completes repo.
 
 ### 2026-11-09 — M11n performance designed and planned
 - **Did:** Profiled fuxx (release build, isolated scratch `HOME`, `sample` and `ps`, test variants built from scratch

@@ -1,6 +1,6 @@
 ---
 tags: [moc, development, plans, tracker]
-updated: 2026-11-09
+updated: 2026-11-10
 ---
 
 # 00 - Plan Tracker (Start Here)
@@ -19,11 +19,11 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M11n — Performance** (requested by you 2026-11-09; designed and planned 2026-11-09, not built: [[M11n Plan - Performance]]), ending with the one combined release v0.5.0 (M11i–M11n). M11m — title bar is built ([[M11m Plan - Title Bar]]). |
-| **Status** | 🟨 M11i, M11h, M11j, M11k, M11l and M11m built, reviewed, merged and pushed 2026-11-08/09 (M11m: 1259 tests); not released on their own. 🟨 M11e/M11f/M11g released (v0.3.0–v0.4.0); on-screen checks pending. |
-| **▶ Next action** | Build M11n from [[M11n Plan - Performance]] (Task 0: the benchmark harness and the baseline); then its Task 7, the v0.5.0 release; then your one combined on-screen check (notes 59–65); then plan a chores round with you. |
+| **Current milestone** | **The v0.5.0 release** (M11i–M11n; [[M11n Plan - Performance]] Task 7), then your combined on-screen check (notes 59–65), then planning the chores round with you. M11n — performance is built, reviewed, merged and pushed 2026-11-10 ([[65 - Milestone 11n - Performance]]). Also: a separate repo, `github.com/fitzfitz/fuxx-completes` (design stage), is to be planned after the release. |
+| **Status** | 🟨 M11i, M11h, M11j, M11k, M11l, M11m and M11n built, reviewed, merged and pushed 2026-11-08/10 (M11n: 1289 tests, every performance target met); released as v0.5.0 (pending). 🟨 M11e/M11f/M11g released (v0.3.0–v0.4.0); on-screen checks pending. |
+| **▶ Next action** | Release v0.5.0 ([[M11n Plan - Performance]] Task 7), then a tiny docs commit flipping "pending" to released; then your one combined on-screen check (notes 59–65; M11n's list is 11 items); then plan a chores round with you, and the fuxx-completes repo. |
 | **Blocked on** | Nothing. |
-| **Last updated** | 2026-11-09 |
+| **Last updated** | 2026-11-10 |
 
 ## Legend
 
@@ -69,7 +69,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M11k | First-run screen | [[M11k Plan - First-Run Screen]] (design: [[62 - Milestone 11k - First-Run Screen]]) | 🟨 built, merged, pushed 2026-11-09; release after M11n; on-screen check pending | 6/7 | Folder, agent, three shortcuts. |
 | M11l | Command blocks | [[M11l Plan - Command Blocks]] (design: [[63 - Milestone 11l - Command Blocks]]) | 🟨 built, reviewed, merged, pushed 2026-11-09; release after M11n; on-screen check pending | 7/8 | OSC 133 marks from a zsh integration; a bar per command, hairlines, a one-row chip, jump and copy keys; a darker tab bar. |
 | M11m | Title bar | [[M11m Plan - Title Bar]] (design: [[64 - Milestone 11m - Title Bar]]) | 🟨 built, reviewed, merged, pushed 2026-11-09; release after M11n; on-screen check pending | 6/6 | Sidebar icon and the title "the Fuxx?" in the sidebar's top band; collapsed: workspace name centred, 🔔 ⚙ and the sidebar button at the right. |
-| M11n | Performance | [[M11n Plan - Performance]] (design: [[65 - Milestone 11n - Performance]]) | 🟨 designed and planned 2026-11-09, not built | 0/9 | Idle CPU (the breath drawn at level crossings, a rest after 5 min, `Theme::ui` once) and output speed (memchr scanners, a parser thread, 64 KiB batches); then the v0.5.0 release. |
+| M11n | Performance | [[M11n Plan - Performance]] (design: [[65 - Milestone 11n - Performance]]) | 🟨 built, reviewed, merged, pushed 2026-11-10; release v0.5.0 pending; on-screen check pending | 7/9 | Idle 6.99 → 5.35 % breathing (0.765×), 0.93 % after 5 min untouched; `cat` 100 MiB 1.42× Ghostty (was 2.7×); the same breath and every byte on screen. |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
