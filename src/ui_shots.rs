@@ -14707,6 +14707,16 @@ fn chip_of(rig: &CursorRig) -> Option<(String, [&'static str; 3], gpui::Bounds<P
     rig.read(|v| v.chip_shot())
 }
 
+/// Draw frames until `done` holds (at most 3 s: the program's echo comes from its own thread).
+fn wait_for(rig: &mut CursorRig, done: impl Fn(&crate::terminal_view::TerminalView) -> bool) {
+    let start = std::time::Instant::now();
+    while !rig.read(&done) && start.elapsed() < std::time::Duration::from_secs(3) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let _ = rig.frame();
+    }
+    let _ = rig.frame();
+}
+
 /// Move the pointer to `at` and let the rig settle.
 fn point_at(rig: &mut CursorRig, at: gpui::Point<Pixels>) {
     let window = rig.window;
@@ -14828,23 +14838,38 @@ fn command_blocks_scene() {
                 );
             }
             if !still {
-                // Output closes it, with the pointer still on the bar (`cat` echoes what it
-                // is sent, as a program printing would).
+                use crate::grid::TextScope;
+                // A program printing on the prompt's row (`cat` echoes what it is sent)
+                // doesn't move the block: the chip stays open.
                 rig.read(|v| v.write_to_program(b"z"));
-                let start = std::time::Instant::now();
-                while rig.read(|v| v.hovered_block().is_some())
-                    && start.elapsed() < Duration::from_secs(3)
-                {
-                    std::thread::sleep(Duration::from_millis(10));
-                    rig.cx.run_until_parked();
-                }
+                wait_for(&mut rig, |v| v.text(TextScope::Screen).contains("$ z"));
                 assert!(
-                    rig.read(|v| v.hovered_block().is_none()),
-                    "{n}: output closes it"
+                    rig.read(|v| v.hovered_block().is_some()) && chip_of(&rig).is_some(),
+                    "{n}: output that leaves the block in place keeps the chip"
                 );
-                // The next move over the bar opens it again.
-                point_at(&mut rig, point(px(g.bar_x), px(g.mid(4) + 1.0)));
-                assert!(rig.read(|v| v.hovered_block().is_some()), "{n}: open again");
+                // Scripted typing and pastes (the scripting API; Rerun's paste in Task 5)
+                // keep the chip and the picked block.
+                let view = rig.view.clone();
+                let first = ids[0].clone();
+                rig.cx.update(|cx| {
+                    view.update(cx, |v, cx| {
+                        v.set_chosen_block(Some(first), cx);
+                        v.type_bytes(b"y", cx);
+                        v.paste("w", cx);
+                    })
+                });
+                wait_for(&mut rig, |v| v.text(TextScope::Screen).contains("$ zyw"));
+                assert!(
+                    chip_of(&rig).is_some(),
+                    "{n}: a scripted paste keeps the chip"
+                );
+                assert_eq!(
+                    rig.read(|v| v.chosen_block().map(str::to_string)),
+                    Some(ids[0].clone()),
+                    "{n}: and the picked block"
+                );
+                rig.cx
+                    .update(|cx| view.update(cx, |v, cx| v.set_chosen_block(None, cx)));
             }
             let shown = rig.frame();
             // Nothing animates: 200 ms on (real time for what paints by the clock, the app's
@@ -14911,12 +14936,6 @@ fn command_blocks_scene() {
                     at(&chosen, g.bar_x, g.mid(8), bg),
                     "{n}: not past the block"
                 );
-                rig.cx
-                    .update(|cx| view.update(cx, |v, cx| v.type_bytes(b"x", cx)));
-                assert!(
-                    rig.read(|v| v.chosen_block().is_none()),
-                    "{n}: typing unpicks"
-                );
                 // A press on a bar dragged into the grid selects nothing; the same drag
                 // from the grid does.
                 let (window, none) = (rig.window, gpui::Modifiers::none());
@@ -14935,6 +14954,52 @@ fn command_blocks_scene() {
                     let text = rig.read(|v| v.selection_text()).unwrap_or_default();
                     assert_eq!(!text.is_empty(), selects, "{n}: from {from:?}: {text:?}");
                 }
+                // An open chip closes on a press in the grid, on a typed key (which also
+                // drops the picked block), and on output that scrolls its block.
+                let open = |rig: &mut CursorRig, dy: f32| {
+                    point_at(rig, point(px(g.bar_x), px(g.mid(4) + dy)));
+                    assert!(chip_of(rig).is_some(), "{n}: the chip opens again");
+                };
+                open(&mut rig, 1.0);
+                let grid_at = rig.cell(10, 2).center();
+                rig.cx
+                    .simulate_mouse_down(window, grid_at, gpui::MouseButton::Left, none);
+                rig.cx
+                    .simulate_mouse_up(window, grid_at, gpui::MouseButton::Left, none);
+                rig.cx.run_until_parked();
+                assert!(chip_of(&rig).is_none(), "{n}: a grid press closes the chip");
+                open(&mut rig, -1.0);
+                let third = ids[2].clone();
+                rig.cx
+                    .update(|cx| view.update(cx, |v, cx| v.set_chosen_block(Some(third), cx)));
+                rig.cx
+                    .update_window(window, |_, window, cx| {
+                        use gpui::Focusable;
+                        view.focus_handle(cx).focus(window, cx)
+                    })
+                    .expect("focus");
+                rig.cx.simulate_keystrokes(window, "q");
+                rig.cx.run_until_parked();
+                assert!(chip_of(&rig).is_none(), "{n}: a typed key closes the chip");
+                assert!(
+                    rig.read(|v| v.chosen_block().is_none()),
+                    "{n}: and drops the picked block"
+                );
+                open(&mut rig, 2.0);
+                // Three Returns: `cat`'s echo and its copy of each line scroll the screen a
+                // few rows, block 2 still on it.
+                rig.read(|v| v.write_to_program(b"\r\r\r"));
+                wait_for(&mut rig, |v| v.hovered_block().is_none());
+                let screen = rig.read(|v| v.text(crate::grid::TextScope::Screen));
+                assert!(
+                    screen.contains("$ false") && !screen.starts_with("$ echo hi"),
+                    "{n}: scrolled, block 2 still shown: {screen:?}"
+                );
+                assert!(
+                    rig.read(|v| v.hovered_block().is_none()),
+                    "{n}: output that moves the block closes the chip"
+                );
+                assert!(chip_of(&rig).is_none(), "{n}: no chip");
             }
         }
     }
@@ -15006,10 +15071,12 @@ fn command_blocks_narrow_scene() {
         );
         let (label, buttons, chip) = chip_of(&rig).expect("the chip is open");
         assert_eq!(buttons, ["Cmd", "Output", "Rerun"], "{n}: {label:?}");
+        let grid = rig.read(|v| v.grid_bounds()).expect("painted");
         assert!(
-            f32::from(chip.right()) <= f32::from(dims.width),
-            "{n}: the chip's right edge {:?} is inside the pane",
-            chip.right()
+            chip.right() <= grid.right(),
+            "{n}: the chip's right edge {:?} is inside the grid ({:?})",
+            chip.right(),
+            grid.right()
         );
         assert!(
             f32::from(chip.left()) >= g.origin_x,
