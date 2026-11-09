@@ -6,7 +6,8 @@ status: built
 # 63 - Milestone 11l - Command Blocks (design)
 
 **Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1251 tests; every detail AI's call; you skipped the design questions, except the chip's shape, which you chose from mockups). On-screen check pending (22 items).
-Released in v0.5.0 (2026-11-10).**  ·  **Phase 4: an M11 extension.**  ·
+Released in v0.5.0 (2026-11-10). Changed 2026-11-10: the hairline above each prompt is gone (your call, see
+"After release").**  ·  **Phase 4: an M11 extension.**  ·
 **Plan:** [[M11l Plan - Command Blocks]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout, a command palette, a first-run screen
 and command blocks"). The last of M11i–M11l; after it come M11m (title bar) and M11n (performance), both listed 2026-11-09 and not designed here.
@@ -14,7 +15,8 @@ and command blocks"). The last of M11i–M11l; after it come M11m (title bar) an
 ## Goal
 
 In a zsh terminal, fuxx knows where each command starts, where its output starts and how it ended. It draws a
-**quiet mark in the left padding** next to each command (red when it failed), a **hairline between commands**, and
+**quiet mark in the left padding** next to each command (red when it failed), ~~a **hairline between commands**~~
+(removed 2026-11-10), and
 on hover a small **chip** with the command, its exit code and three actions: **Copy command**, **Copy output**,
 **Rerun**. **⇧⌘↑ / ⇧⌘↓** jump from command to command, **⇧⌘C** copies the chosen command's output. Without shell
 marks (another shell, SSH, a TUI) the terminal is exactly what it is today.
@@ -179,7 +181,7 @@ reports, the wheel, resize and the cursor work exactly as today. Everything belo
    ▌    │❯ npm test                     ← command row (the tag lives on its first cell)
         │> app@1.0 test …               ← output
         │✗ 2 failing
- ───────┼───────────────────────────────  ← separator: 1 pt hairline above the next prompt
+ ───────┼───────────────────────────────  ← (separator: removed 2026-11-10; nothing is drawn here now)
    ▌    │~/code/app main                   (the bar is red: exit 1)
    ▌    │❯ ▌                            ← the live prompt
 ```
@@ -189,11 +191,11 @@ reports, the wheel, resize and the cursor work exactly as today. Everything belo
   - done, exit 0 or unknown: `block_ok` = the theme's bright black (`palette[8]`) held at 3:1 on the background;
   - done, exit ≠ 0: `block_failed` = the theme's red (`palette[1]`) held at 3:1;
   - running: `block_running` = `ring_working` held at 3:1.
-- **The separator:** a 1 pt line, `card_border` (quiet, ≥ 1.4:1, the hairline rule), across the grid's width at
+- ~~**The separator:**~~ **Removed 2026-11-10 (see "After release").** It was a 1 pt line, `card_border` (quiet, ≥ 1.4:1, the hairline rule), across the grid's width at
   the top edge of each block's first prompt row and of the live prompt's, except when that row is the very first
   line of scrollback.
 - **Empty prompts** (Return on an empty line, ⌃C at the prompt) leave `s=prompt` tags behind; only the newest one
-  (the live prompt) gets a separator. Stacked empty prompts get no lines between them.
+  (the live prompt) got a separator (none since 2026-11-10). Stacked empty prompts get no bars.
 - **The chosen block** (§4): its bar becomes 3 pt `accent` and runs the block's whole height, prompt to last output
   row (to the cursor row while running).
 - **No tint on failed output (AI's call):** a background wash fights programs' own colours and the selection; the
@@ -286,7 +288,7 @@ reports, the wheel, resize and the cursor work exactly as today. Everything belo
   (`ensure_contrast(…, background, MARK_MIN)`); `accent` likewise for the chosen bar.
 - Chip text: `text`, `text_dim`, `text_faint` on `panel` and `panel_hover` ≥ **4.5:1** (already held since M11j);
   `exit N` in `block_failed` re-held at 4.5:1 on `panel`.
-- Separator `card_border` ≥ 1.4:1 on the background (`QUIET_LINE_MIN`).
+- ~~Separator `card_border` ≥ 1.4:1 on the background (`QUIET_LINE_MIN`).~~ (No separator since 2026-11-10.)
 - Nothing animates; Reduce motion has nothing to turn off. The cursor's breathing is untouched.
 
 ## 6. The one new setting (AI's call: `command-blocks = on | off`, default on)
@@ -323,10 +325,20 @@ In `blocks.rs`: `CMD_CAP` 2048, `PROMPT_LINES_CAP` 8, `C_SCAN_ROWS` 500, `MARK_C
 - A terminal find (⌘F) and "select the block's output" as a selection.
 - M11m's title bar and M11n's performance work (listed in the roadmap, designed separately).
 
+## After release
+
+- **2026-11-10, the hairline above each prompt removed** (your words, on a screenshot of stacked prompts: "ada garis
+  pemisah abu, jelek"; asked to choose between removing every line, keeping them only between real commands, or a
+  Preferences switch, you said "ya hapus"). A fresh terminal showed a line above its only prompt, separating
+  nothing. The gutter bars already mark where each command starts (red when it failed), so nothing is lost.
+  Code: `block_view::SEPARATOR` and `separator_rows` and their paint in `terminal_view` are gone, and so are the
+  snapshot's `live_prompt` and `history_size`, which only the line used (`blocks::live_prompt` is now tests only).
+  The `command-blocks` ui-shot now checks that no line is drawn above any prompt row. Not yet released.
+
 ## On-screen checklist (pending; released in v0.5.0)
 
 1. **A fresh terminal (zsh)**: run `echo hi`, then `false`. Each command gets a thin bar in the left padding beside
-   its prompt; `false`'s bar is red; a hairline sits above each prompt; the live prompt has a hairline above it too.
+   its prompt; `false`'s bar is red; **no** grey line above any prompt, the live prompt included (changed 2026-11-10).
 2. Your prompt, `.zshrc`, aliases and history behave as before; `echo $ZDOTDIR` prints what it printed in your old
    terminal (empty for most).
 3. Hover a bar: a **one-row chip** shows `exit 0 · echo hi` (or `exit 1 · false`) and Copy command / Copy output /
@@ -343,7 +355,7 @@ In `blocks.rs`: `CMD_CAP` 2048, `PROMPT_LINES_CAP` 8, `C_SCAN_ROWS` 500, `MARK_C
 9. `vim` (or `htop`): no bars or lines while it's open; after quitting, the blocks above are as before.
 10. Start an agent preset (e.g. claude): its row is one running block while it runs; Claude Code looks and works as
     before.
-11. Resize the window narrower and wider over a long command: bars and hairlines stay on the right lines.
+11. Resize the window narrower and wider over a long command: bars stay on the right lines.
 12. `seq 1 20000`: fuxx stays responsive; afterwards the block for `seq` is gone once its prompt scrolled past the
     scrollback (the output tail is plain); later blocks are fine.
 13. `clear`: the screen clears; new commands get blocks.
@@ -411,7 +423,6 @@ final whole-branch review):
 - p10k's dump cache invalidates between terminals.
 - Rerun's "nothing typed" means the cursor is at the input start: ⌃A then Rerun prepends (it never runs).
 - An RPROMPT with an inner double space is partly covered by the chip.
-- With a one-line prompt the chip covers that row's own hairline.
 - Very narrow splits (under about 200 pt) and a command row scrolled off the top behave as before.
 - Copy output stays enabled for an all-blank output (it does nothing).
 - bash and fish aren't injected.
