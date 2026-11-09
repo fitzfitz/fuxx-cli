@@ -9,7 +9,7 @@
 use crate::settings::{Entry, parse};
 use crate::tab_color::TabColor;
 use crate::ui_tokens::{
-    MARK_MIN, QUIET_LINE_MIN, TAB_BAR_MIN, TEXT_MIN, contrast, ensure_contrast,
+    MARK_MIN, QUIET_LINE_MIN, TAB_BAR_LIGHT_CAP, TAB_BAR_MIN, TEXT_MIN, contrast, ensure_contrast,
 };
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::{Path, PathBuf};
@@ -228,7 +228,7 @@ impl Theme {
             let toward = if dark { Rgb { r: 0, g: 0, b: 0 } } else { fg };
             // Light themes keep the cap lower: a darker bar squeezes text, text_dim and
             // text_faint (all ≥ 4.5:1 on it) together until they stop looking different.
-            let cap = if dark { 1.6 } else { 1.15 };
+            let cap = if dark { 1.6 } else { TAB_BAR_LIGHT_CAP };
             let mut bar = sidebar;
             for n in 0..100 {
                 if contrast(bar, card) >= TAB_BAR_MIN {
@@ -658,7 +658,7 @@ pub(crate) fn every_theme() -> Vec<(&'static str, Theme)> {
 mod tests {
     use super::*;
     use crate::settings::Entry;
-    use crate::ui_tokens::{contrast, hue};
+    use crate::ui_tokens::{TAB_BAR_LOW_MIN, contrast, hue};
     use std::path::{Path, PathBuf};
 
     const MOCHA: &str = "palette = 1=#f38ba8\nbackground = #1e1e2e\nforeground = #cdd6f4\ncursor-color = #f5e0dc\nselection-background = #585b70\ntheme = Nested\nconfig-file = evil";
@@ -676,11 +676,12 @@ mod tests {
             let c = contrast(ui.tab_bar, ui.card);
             // A dark theme whose card is already near black can't reach the minimum: its bar
             // then goes all the way to black, the most it can get. A light theme's bar is held
-            // to 1.15:1 against the canvas so text, dim and faint text stay distinct.
+            // to `TAB_BAR_LIGHT_CAP` against the canvas so text, dim and faint text stay
+            // distinct. Either still reaches `TAB_BAR_LOW_MIN` against the card.
             let black = ui.tab_bar == Rgb { r: 0, g: 0, b: 0 };
             let light = !theme.is_dark();
             assert!(
-                c >= TAB_BAR_MIN || black || (light && c >= 1.15),
+                c >= TAB_BAR_MIN || ((black || light) && c >= TAB_BAR_LOW_MIN),
                 "{name}: tab bar vs card {c:.3}"
             );
             assert!(
@@ -693,6 +694,36 @@ mod tests {
                     "{name}: dark theme's bar is darker than the card"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn light_tab_bars_keep_the_text_hierarchy() {
+        // Text reads ahead of dim text on a light bar by at least this ratio of their
+        // contrasts; a darker bar presses both to the 4.5:1 floor and the step shrinks.
+        const STEP: f32 = 1.15;
+        let light: Vec<_> = every_theme()
+            .into_iter()
+            .filter(|(_, t)| !t.is_dark())
+            .collect();
+        assert!(!light.is_empty(), "a light built-in theme to check");
+        for (name, theme) in light {
+            let ui = theme.ui();
+            let on = |c: Rgb| contrast(c, ui.tab_bar);
+            let (text, dim, faint) = (on(ui.text), on(ui.text_dim), on(ui.text_faint));
+            let n = format!("{name}: text {text:.2}, dim {dim:.2}, faint {faint:.2}");
+            assert!(
+                text / dim >= STEP,
+                "{n}: text and dim text pressed together"
+            );
+            assert!(
+                dim >= faint && faint >= TEXT_MIN,
+                "{n}: the order or the floor"
+            );
+            assert!(
+                contrast(ui.tab_bar, ui.sidebar_background) < TAB_BAR_LIGHT_CAP + 0.01,
+                "{n}: the bar went past the light cap"
+            );
         }
     }
 
