@@ -248,6 +248,10 @@ const SCENES: &[(&str, fn())] = &[
     ("palette-settings", palette_settings_scene),
     ("palette-narrow", palette_narrow_scene),
     ("palette-motion", palette_motion_scene),
+    ("welcome", welcome_scene),
+    ("welcome-checking", welcome_checking_scene),
+    ("welcome-keys", welcome_keys_scene),
+    ("welcome-narrow", welcome_narrow_scene),
     ("overlays", overlays),
     ("help", help_scenes),
     ("panels", panel_scenes),
@@ -10658,6 +10662,578 @@ fn palette_motion_scene() {
     }
 }
 
+/// The Welcome scenes' workspace: `presets`, the app's key bindings, and one terminal in
+/// `/Users/me` (the made-up home) with nothing on its screen; its id goes to `over`.
+fn welcome_build(
+    theme: Theme,
+    presets: Vec<crate::presets::Preset>,
+    still: bool,
+    keep: Slot,
+    over: std::rc::Rc<std::cell::Cell<u64>>,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView + Clone {
+    move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_reduce_motion(still);
+        cx.set_global(Appearance {
+            presets,
+            ..shot_appearance(theme, cx)
+        });
+        cx.bind_keys(crate::key_bindings());
+        let ws = cx.new(|cx| {
+            let mut ws = Workspace::for_shots(window, cx);
+            ws.sidebar.hint_dismissed = true;
+            let home = std::path::Path::new("/Users/me");
+            over.set(ws.open_unnamed_shot_session(Some(home), "", window, cx));
+            ws
+        });
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    }
+}
+
+/// The open Welcome card; none while it's closed.
+fn welcome_of(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> Option<gpui::Entity<crate::welcome::Welcome>> {
+    cx.read(|cx| ws.read(cx).welcome.clone())
+}
+
+/// Open the card as the first run or Help does, then let it take the keyboard.
+fn open_welcome_on(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+    origin: crate::welcome_items::Origin,
+) {
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_welcome(origin, window, cx))
+    })
+    .expect("open the card");
+    settle(cx, window);
+}
+
+/// Give the open card detection's answer, as the background check would.
+fn welcome_found(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+    found: Vec<crate::agent_detect::Found>,
+) {
+    let card = welcome_of(cx, ws).expect("the card is open");
+    cx.update(|cx| card.update(cx, |c, cx| c.set_found(found, cx)));
+    settle(cx, window);
+}
+
+/// The open card's chosen row and the text it drew.
+fn welcome_state(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> (crate::welcome_items::Row, Vec<String>) {
+    let card = welcome_of(cx, ws).expect("the card is open");
+    cx.read(|cx| {
+        let c = card.read(cx);
+        (c.chosen(), c.texts())
+    })
+}
+
+/// The card's place in a shot from its inside bounds (an absolute child's, inside the 1 pt
+/// edge): its outer edges.
+fn outer_edges(b: gpui::Bounds<Pixels>) -> (f32, f32, f32, f32) {
+    (
+        f32::from(b.left()) - 1.0,
+        f32::from(b.right()) + 1.0,
+        f32::from(b.top()) - 1.0,
+        f32::from(b.bottom()) + 1.0,
+    )
+}
+
+/// The Welcome card (M11k Task 2) over one terminal in the made-up home, the built-in presets
+/// (claude, opencode, codex), in both themes: `welcome`, opened as on a first run, detection
+/// answered (claude and codex found, opencode not), then codex clicked.
+///
+/// Panics unless claude is chosen once the answer lands and codex after the click (the Start
+/// button then says `Start codex`); the card is 520 pt wide and centred below the top band;
+/// it drew `Welcome to fuxx`, `~`, `Not found on your PATH` once, `⌃⌘1`, the three shortcuts'
+/// keys and `Start claude`; the chosen row is filled `row_active` and the Start button
+/// `accent`; the scrim darkens the window left of the card but not the top band (each against
+/// the same window with no card). With no presets, it says so and Plain terminal is chosen.
+fn welcome_scene() {
+    use crate::agent_detect::Found;
+    use crate::welcome_items::{Origin, Row};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    type Seen = (
+        gpui::Bounds<Pixels>,
+        gpui::Bounds<Pixels>,
+        gpui::Bounds<Pixels>,
+    );
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("welcome-{slug}");
+        let presets = crate::presets::builtins();
+
+        // The same window without the card.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let over = Rc::new(Cell::new(0));
+        let build = welcome_build(theme, presets.clone(), false, slot.clone(), over.clone());
+        let bare = render_with(&theme, dims, build, move |cx, window| {
+            settle(cx, window);
+            slot.borrow_mut().take();
+        });
+
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = welcome_build(theme, presets.clone(), false, slot.clone(), over.clone());
+        let seen: Rc<Cell<Option<Seen>>> = Rc::default();
+        let found = seen.clone();
+        let m = n.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            open_welcome_on(cx, window, &ws, Origin::FirstRun { over: over.get() });
+            welcome_found(cx, window, &ws, vec![Found::Yes, Found::No, Found::Yes]);
+            let (chosen, texts) = welcome_state(cx, &ws);
+            assert_eq!(chosen, Row::Preset(0), "{m}: the first found is chosen");
+            for want in [
+                "Welcome to fuxx",
+                "~",
+                "\u{2303}\u{2318}1",
+                "\u{2318}K",
+                "\u{2318}N",
+                "\u{21e7}\u{2318}U",
+                "Start claude",
+            ] {
+                assert!(
+                    texts.iter().any(|t| t == want),
+                    "{m}: {want:?} drawn: {texts:?}"
+                );
+            }
+            let missing = texts
+                .iter()
+                .filter(|t| *t == "Not found on your PATH")
+                .count();
+            assert_eq!(missing, 1, "{m}: opencode alone is missing: {texts:?}");
+
+            let card = welcome_of(cx, &ws).expect("open");
+            let codex = cx
+                .read(|cx| card.read(cx).row_bounds(Row::Preset(2)))
+                .expect("codex's row is drawn");
+            cx.simulate_click(window, codex.center(), gpui::Modifiers::none());
+            settle(cx, window);
+            assert!(
+                welcome_of(cx, &ws).is_some(),
+                "{m}: a click on a row keeps the card open"
+            );
+            let (chosen, texts) = welcome_state(cx, &ws);
+            assert_eq!(chosen, Row::Preset(2), "{m}: the click chose codex");
+            assert!(
+                texts.iter().any(|t| t == "Start codex"),
+                "{m}: the button follows: {texts:?}"
+            );
+            found.set(cx.read(|cx| {
+                let c = card.read(cx);
+                Some((
+                    c.card_bounds()?,
+                    c.row_bounds(Row::Preset(2))?,
+                    c.start_bounds()?,
+                ))
+            }));
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        save_shot("welcome", slug, &shot);
+        let (card, codex, start) = seen.get().expect("drawn");
+        let (left, right, top, bottom) = outer_edges(card);
+        assert!(
+            (right - left - 520.0).abs() < 0.5,
+            "{n}: the card is {} wide",
+            right - left
+        );
+        let (cx_, cy) = ((left + right) / 2.0, (top + bottom) / 2.0);
+        let band = ui_tokens::size::TOP_BAND;
+        let below = band + (600.0 - band) / 2.0;
+        assert!(
+            (cx_ - 480.0).abs() <= 1.0 && (cy - below).abs() <= 1.0,
+            "{n}: centred at ({cx_}, {cy}), not (480, {below})"
+        );
+        let fill = |b: gpui::Bounds<Pixels>, inset: f32| {
+            pixel_at(
+                &shot,
+                dims,
+                f32::from(b.left()) + inset,
+                f32::from(b.center().y),
+            )
+        };
+        assert!(
+            near(fill(codex, 4.0), ui.row_active),
+            "{n}: the chosen row is row_active"
+        );
+        assert!(
+            near(fill(start, 3.0), ui.accent),
+            "{n}: the Start button is accent"
+        );
+        let sum = |p: [u8; 3]| p.iter().map(|&c| c as u32).sum::<u32>();
+        let (scrim, plain) = (
+            pixel_at(&shot, dims, 100.0, 300.0),
+            pixel_at(&bare, dims, 100.0, 300.0),
+        );
+        assert!(
+            sum(scrim) + 6 <= sum(plain),
+            "{n}: the scrim darkens ({scrim:?} vs {plain:?})"
+        );
+        for x in [100.0, 480.0, 900.0] {
+            let (with, without) = (
+                pixel_at(&shot, dims, x, band / 2.0),
+                pixel_at(&bare, dims, x, band / 2.0),
+            );
+            assert!(
+                gap(
+                    with,
+                    alacritty_terminal::vte::ansi::Rgb {
+                        r: without[0],
+                        g: without[1],
+                        b: without[2],
+                    }
+                ) <= 2,
+                "{n}: the top band at {x} is untouched ({with:?} vs {without:?})"
+            );
+        }
+
+        // No presets: the note, and the plain terminal chosen.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let over = Rc::new(Cell::new(0));
+        let build = welcome_build(theme, Vec::new(), false, slot.clone(), over.clone());
+        let m = format!("{n}-none");
+        render_with(&theme, dims, build, move |cx, window| {
+            let ws = slotted(&slot);
+            open_welcome_on(cx, window, &ws, Origin::FirstRun { over: over.get() });
+            let (chosen, texts) = welcome_state(cx, &ws);
+            assert_eq!(chosen, Row::Plain, "{m}: Plain terminal chosen");
+            assert!(
+                texts.iter().any(|t| t == "No agent presets set."),
+                "{m}: the note: {texts:?}"
+            );
+            assert!(
+                texts.iter().any(|t| t == "Open Terminal"),
+                "{m}: the button: {texts:?}"
+            );
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+/// The Welcome card while detection hasn't answered, in both themes: `welcome-checking`.
+///
+/// Panics unless every preset row says `Checking…` and claude is chosen; Enter starts claude
+/// in the home folder (the card's `Start` event); two frames 200 ms apart are the same in the
+/// card, with Reduce motion off and on (nothing in it moves); an answer of all missing after ↓
+/// leaves the moved choice (opencode) alone, but on a fresh card chooses Plain terminal.
+fn welcome_checking_scene() {
+    use crate::agent_detect::Found;
+    use crate::welcome::WelcomeEvent;
+    use crate::welcome_items::{Choice, Origin, Row};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for still in [false, true] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let over = Rc::new(Cell::new(0));
+            let presets = crate::presets::builtins();
+            let claude = presets[0].clone();
+            let build = welcome_build(theme, presets, still, slot.clone(), over.clone());
+            let n = format!("welcome-checking-{slug}-{still}");
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let first = Origin::FirstRun { over: over.get() };
+                open_welcome_on(cx, window, &ws, first);
+                let card = welcome_of(cx, &ws).expect("open");
+                let found = cx.read(|cx| card.read(cx).found().to_vec());
+                assert_eq!(found, [Found::Checking; 3], "{n}: nothing answered yet");
+                let (chosen, texts) = welcome_state(cx, &ws);
+                assert_eq!(chosen, Row::Preset(0), "{n}: claude chosen meanwhile");
+                let checking = texts.iter().filter(|t| *t == "Checking\u{2026}").count();
+                assert_eq!(checking, 3, "{n}: each row checking: {texts:?}");
+
+                // Enter starts the chosen row while it's still checking.
+                let heard: Rc<RefCell<Vec<WelcomeEvent>>> = Rc::default();
+                let hear = heard.clone();
+                cx.update(|cx| {
+                    cx.subscribe(&card, move |_, event: &WelcomeEvent, _| {
+                        hear.borrow_mut().push(event.clone())
+                    })
+                    .detach()
+                });
+                press_keys(cx, window, "enter");
+                assert_eq!(
+                    *heard.borrow(),
+                    [WelcomeEvent::Start {
+                        folder: "/Users/me".into(),
+                        choice: Choice::Preset(claude.clone()),
+                    }],
+                    "{n}: Enter starts claude"
+                );
+
+                // An answer after a move leaves the move; on a fresh card it chooses.
+                open_welcome_on(cx, window, &ws, first);
+                press_keys(cx, window, "down");
+                welcome_found(cx, window, &ws, vec![Found::No; 3]);
+                assert_eq!(welcome_state(cx, &ws).0, Row::Preset(1), "{n}: kept moved");
+                open_welcome_on(cx, window, &ws, first);
+                welcome_found(cx, window, &ws, vec![Found::No; 3]);
+                assert_eq!(welcome_state(cx, &ws).0, Row::Plain, "{n}: all missing");
+
+                // Nothing in the card moves.
+                open_welcome_on(cx, window, &ws, first);
+                let card = welcome_of(cx, &ws).expect("open");
+                let b = cx
+                    .read(|cx| card.read(cx).card_bounds())
+                    .expect("the card is drawn");
+                let grab = |cx: &mut VisualTestAppContext| {
+                    let image = cx.capture_screenshot(window).expect("capture");
+                    let (w, raw) = (image.width() as usize, image.as_raw().to_vec());
+                    let scale = w as f32 / f32::from(dims.width);
+                    let (x0, x1) = (
+                        (f32::from(b.left()) * scale) as usize,
+                        (f32::from(b.right()) * scale) as usize,
+                    );
+                    let (y0, y1) = (
+                        (f32::from(b.top()) * scale) as usize,
+                        (f32::from(b.bottom()) * scale) as usize,
+                    );
+                    (y0..y1)
+                        .flat_map(|y| raw[(y * w + x0) * 4..(y * w + x1) * 4].to_vec())
+                        .collect::<Vec<u8>>()
+                };
+                let before = grab(cx);
+                std::thread::sleep(Duration::from_millis(200));
+                cx.advance_clock(Duration::from_millis(200));
+                settle(cx, window);
+                let after = grab(cx);
+                assert!(before == after, "{n}: the card moved");
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            if still {
+                save_shot("welcome-checking", slug, &shot);
+            }
+        }
+    }
+}
+
+/// The Welcome card's keys and what closes it, in both themes: `welcome-keys`.
+///
+/// Panics unless ↓ four times from claude wraps round to the folder row and ↑ then chooses
+/// Plain terminal (the button saying `Open Terminal`); Esc closes the card and gives the
+/// terminal the keyboard; a click on the scrim closes it; ⌘K's palette replaces it; and
+/// losing the keyboard (the terminal focused from code) leaves it open.
+fn welcome_keys_scene() {
+    use crate::welcome_items::{Origin, Row};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let over = Rc::new(Cell::new(0));
+        let build = welcome_build(
+            theme,
+            crate::presets::builtins(),
+            false,
+            slot.clone(),
+            over.clone(),
+        );
+        let n = format!("welcome-keys-{slug}");
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let first = Origin::FirstRun { over: over.get() };
+            open_welcome_on(cx, window, &ws, first);
+            assert_eq!(welcome_state(cx, &ws).0, Row::Preset(0), "{n}: claude");
+            press_keys(cx, window, "down down down down");
+            assert_eq!(
+                welcome_state(cx, &ws).0,
+                Row::Folder,
+                "{n}: round to the folder"
+            );
+            press_keys(cx, window, "up");
+            let (chosen, texts) = welcome_state(cx, &ws);
+            assert_eq!(chosen, Row::Plain, "{n}: up to Plain terminal");
+            assert!(
+                texts.iter().any(|t| t == "Open Terminal"),
+                "{n}: the button: {texts:?}"
+            );
+
+            press_keys(cx, window, "escape");
+            assert!(welcome_of(cx, &ws).is_none(), "{n}: Esc closes it");
+            assert!(
+                active_terminal_focused(cx, window, &ws),
+                "{n}: the terminal types after Esc"
+            );
+
+            open_welcome_on(cx, window, &ws, first);
+            cx.simulate_click(window, point(px(100.0), px(300.0)), gpui::Modifiers::none());
+            settle(cx, window);
+            assert!(
+                welcome_of(cx, &ws).is_none(),
+                "{n}: a scrim click closes it"
+            );
+            assert!(
+                active_terminal_focused(cx, window, &ws),
+                "{n}: the terminal types after the scrim"
+            );
+
+            open_welcome_on(cx, window, &ws, first);
+            open_palette_on(cx, window, &ws, crate::palette_items::Scope::All);
+            assert!(
+                welcome_of(cx, &ws).is_none(),
+                "{n}: the palette replaces it"
+            );
+            assert!(palette_of(cx, &ws).is_some(), "{n}: the palette is open");
+
+            open_welcome_on(cx, window, &ws, first);
+            assert!(
+                palette_of(cx, &ws).is_none(),
+                "{n}: it replaces the palette"
+            );
+            cx.update_window(window, |_, window, cx| {
+                use gpui::Focusable;
+                let ws = ws.read(cx);
+                let active = ws.sessions.active().expect("a terminal");
+                active.view.focus_handle(cx).focus(window, cx);
+            })
+            .expect("focus the terminal");
+            settle(cx, window);
+            assert!(
+                welcome_of(cx, &ws).is_some(),
+                "{n}: losing the keyboard leaves it open"
+            );
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        save_shot("welcome-keys", slug, &shot);
+    }
+}
+
+/// The Welcome card in a small window, in both themes: `welcome-narrow`, 480 × 420, nine
+/// presets, a 120-character folder, the last preset chosen.
+///
+/// Panics unless the card keeps 16 pt from the window's sides and bottom and stays below the
+/// top band; the chosen row (scrolled to) is inside the agent list's visible part; and the
+/// folder is cut at its start (a folder ending in wide letters shows more ink than one ending
+/// in dots).
+fn welcome_narrow_scene() {
+    use crate::welcome_items::{Origin, Row};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let (w, h) = (480.0_f32, 420.0_f32);
+    let dims = size(px(w), px(h));
+    let nine: Vec<crate::presets::Preset> = (1..=9)
+        .map(|i| crate::presets::Preset {
+            name: format!("agent-{i}"),
+            command: format!("agent-{i}"),
+        })
+        .collect();
+    // Dots then wide letters, and the other way round.
+    let wide_end = format!("/{}/{}", ".".repeat(78), "W".repeat(40));
+    let thin_end = format!("/{}/{}", "W".repeat(40), ".".repeat(78));
+    assert_eq!(wide_end.chars().count(), 120);
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("welcome-narrow-{slug}");
+        // The folder field's ink with `folder`, and (for the first) the card's place.
+        type Seen = (
+            gpui::Bounds<Pixels>,
+            gpui::Bounds<Pixels>,
+            gpui::Bounds<Pixels>,
+            gpui::Bounds<Pixels>,
+        );
+        let run = |folder: String| {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let over = Rc::new(Cell::new(0));
+            let build = welcome_build(theme, nine.clone(), false, slot.clone(), over.clone());
+            let seen: Rc<Cell<Option<Seen>>> = Rc::default();
+            let found = seen.clone();
+            let m = n.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                open_welcome_on(cx, window, &ws, Origin::FirstRun { over: over.get() });
+                let card = welcome_of(cx, &ws).expect("open");
+                let path = std::path::PathBuf::from(&folder);
+                cx.update(|cx| card.update(cx, |c, cx| c.set_folder(path.clone(), cx)));
+                settle(cx, window);
+                let shown = cx.read(|cx| card.read(cx).folder().to_path_buf());
+                assert_eq!(shown, path, "{m}: the folder set");
+                press_keys(cx, window, "down down down down down down down down");
+                assert_eq!(welcome_state(cx, &ws).0, Row::Preset(8), "{m}: the last");
+                found.set(cx.read(|cx| {
+                    let c = card.read(cx);
+                    Some((
+                        c.card_bounds()?,
+                        c.list_bounds()?,
+                        c.row_bounds(Row::Preset(8))?,
+                        c.folder_bounds()?,
+                    ))
+                }));
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            (shot, seen.get().expect("drawn"))
+        };
+        let (shot, (card, list, last, field)) = run(wide_end.clone());
+        save_shot("welcome-narrow", slug, &shot);
+        let (left, right, top, bottom) = outer_edges(card);
+        assert!(
+            left >= 16.0 - 0.5 && right <= w - 16.0 + 0.5,
+            "{n}: the sides at {left} and {right}"
+        );
+        assert!(
+            top >= ui_tokens::size::TOP_BAND - 0.5 && bottom <= h - 16.0 + 0.5,
+            "{n}: the top at {top}, the bottom at {bottom}"
+        );
+        assert!(
+            f32::from(last.top()) >= f32::from(list.top()) - 0.5
+                && f32::from(last.bottom()) <= f32::from(list.bottom()) + 0.5,
+            "{n}: the chosen row {last:?} shows in the list {list:?}"
+        );
+        // Inked pixels in the folder field, inside its padding.
+        let ink = |shot: &Shot, field: gpui::Bounds<Pixels>| {
+            let scale = shot.width as f32 / w;
+            let (x0, x1) = (
+                f32::from(field.left()) + 8.0,
+                f32::from(field.right()) - 8.0,
+            );
+            let (y0, y1) = (
+                f32::from(field.top()) + 4.0,
+                f32::from(field.bottom()) - 4.0,
+            );
+            let mut count = 0;
+            for dy in (y0 * scale) as usize..(y1 * scale) as usize {
+                for dx in (x0 * scale) as usize..(x1 * scale) as usize {
+                    let p = pixel_at(shot, dims, dx as f32 / scale, dy as f32 / scale);
+                    if gap(p, ui.panel_hover) >= 40 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        let wide_shown = ink(&shot, field);
+        let (thin_shot, (_, _, _, thin_field)) = run(thin_end.clone());
+        let thin_shown = ink(&thin_shot, thin_field);
+        assert!(
+            wide_shown * 2 > thin_shown * 3,
+            "{n}: the folder's end shows ({wide_shown} vs {thin_shown})"
+        );
+    }
+}
+
 /// One box over the window at a time: opening the rename box, the palette, the address box or
 /// the Help panel over another closes that one, and the new one keeps the keyboard (the old one's
 /// late "lost focus" must not take it back). Rename -> palette -> rename -> address box ->
@@ -10769,6 +11345,9 @@ fn overlays() {
                         Overlay::Notifications => ws.open_notifications(window, cx),
                         Overlay::Help => {
                             ws.open_help(crate::help_panel::HelpPage::Shortcuts, true, window, cx)
+                        }
+                        Overlay::Welcome => {
+                            ws.open_welcome(crate::welcome_items::Origin::Help, window, cx)
                         }
                     }
                 })

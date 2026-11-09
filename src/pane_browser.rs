@@ -95,6 +95,8 @@ pub struct Overlays {
     pub notifications: bool,
     /// The Help panel (M11d).
     pub help: bool,
+    /// The Welcome card (M11k).
+    pub welcome: bool,
 }
 
 impl Overlays {
@@ -111,6 +113,7 @@ impl Overlays {
             suggestions,
             notifications,
             help,
+            welcome,
         } = *self;
         rename
             || host_picker
@@ -123,6 +126,7 @@ impl Overlays {
             || suggestions
             || notifications
             || help
+            || welcome
     }
 }
 
@@ -589,6 +593,10 @@ mod tests {
                 ..none
             },
             Overlays { help: true, ..none },
+            Overlays {
+                welcome: true,
+                ..none
+            },
         ];
         for overlays in each {
             assert!(overlays.any(), "{overlays:?}");
