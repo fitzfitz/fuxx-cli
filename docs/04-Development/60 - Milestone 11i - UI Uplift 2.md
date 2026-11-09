@@ -5,7 +5,8 @@ status: built
 
 # 60 - Milestone 11i - UI Uplift 2 (design)
 
-**Status:: 🟨 Built, reviewed and merged to master 2026-11-08 (every detail AI's call; you skipped the design questions). Released in v0.5.0 (2026-11-10). On-screen check pending (22 items below).**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
+**Status:: 🟨 Built, reviewed and merged to master 2026-11-08 (every detail AI's call; you skipped the design questions). Released in v0.5.0 (2026-11-10). On-screen check pending (22 items below). Changed 2026-11-10: in a repo the branch and
+the folder are two lines (see "After release").**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout…"). Comes **before M11h**, so
 Changes and Activity are built into the new look.
 
@@ -125,7 +126,7 @@ The first that applies wins:
      🔔 pill is gone; the whole question is in the row's tooltip, in ⌘P and in the banner);
   3. a script's note or progress label, in `text_faint`;
   4. **`branch • folder`**, in `text_faint`, fitted as today (`fit_place`: the branch loses its end first, then the
-     folder its start).
+     folder its start). *(Since 2026-11-10: the branch and the folder each on its own line, see "After release".)*
 - A script's **progress bar** stays: 2 pt along the row's bottom edge, inside its padding.
 - **A meaningful mark at the left** (AI's call): Working, Waiting and Done keep their M11 marks (spinning ring,
   pulsing halo, ✓). **Idle** now says one more thing: a **filled 6 pt dot** in `text_dim` when a program is running
@@ -331,6 +332,18 @@ reads at 4.5:1 on every built-in theme, light or dark.
 - The left sidebar as a card; a redesign of its footer (the +, 🔔 and gear stay; only the update button leaves).
 - Showing smart names in the scripting API.
 
+## After release
+
+- **2026-11-10, branch and folder on their own lines** (your words: "bisa ga kalau branch dan folder jadi 2 baris?
+  hilangkan baris branch jika bukan git", then "A langsung kerjakan di master dan langsung push"). A row whose line
+  under the name is where it is, and which knows both its branch and its folder, is three lines and **45 pt**
+  (`SIDEBAR_ROW_THREE`: 17 + 13 + 13 and 2 to spare): the name, the branch (cut at its end when long), the folder
+  (losing its start when long, its own name kept: `fit_place(None, folder)`). Outside a git repo there is no branch
+  line: the folder alone, 32 pt as before. Waiting, a script's note and "not live" keep their single line (32 pt).
+  A dragged row shows the same lines (`place_lines`). AI's calls: no icon on the branch line (the status bar keeps
+  its); both lines in `text_faint`. Code: `sidebar::lines_under`, `row_height`, `place_lines`; the `sidebar-rows`
+  ui-shot checks the heights. Not yet released.
+
 ## On-screen checklist (pending; released in v0.5.0)
 
 1. A new terminal at a prompt is called `╭∩╮` in its tab and its sidebar row (your names change, 2026-11-09).
@@ -341,7 +354,8 @@ reads at 4.5:1 on every built-in theme, light or dark.
 4. Rename a tab (double-click it, or right-click → Rename Tab…) and a workspace (double-click its row, or ⌘R),
    on an idle terminal and on one running a program: the name sticks; clearing it brings the automatic one back.
 5. An SSH terminal reads as its title or `╭∩╮`; the status bar shows `ssh <host>`.
-6. The sidebar rows are two tight lines (name, then `branch • folder`); a waiting row's second line reads
+6. The sidebar rows are tight: name, then in a git repo the branch on one line and the folder under it (outside a
+   repo, the folder alone: no branch line) (changed 2026-11-10); a waiting row's second line reads
    `Needs input · <question>`.
 7. An idle row's mark: a hollow ring at a prompt, a filled dot while a quiet program (a dev server) runs.
 8. The selected row has a soft tint and a thin accent bar at its left, with its text in normal colours; the

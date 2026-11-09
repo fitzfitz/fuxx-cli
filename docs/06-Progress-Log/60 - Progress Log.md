@@ -22,6 +22,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-10 — Sidebar rows: branch and folder on two lines
+- **Did:** On your word, a sidebar row in a git repo now shows the branch on one line and the folder under it (45 pt, `SIDEBAR_ROW_THREE`); outside a repo the folder alone (no branch line, 32 pt); waiting, notes and "not live" unchanged. A dragged row shows the same lines. TDD: the unit test `a_row_in_a_repo_shows_its_branch_and_its_folder_on_their_own_lines` failed first (no `lines_under`, no `SIDEBAR_ROW_THREE`), then passed; `a_dragged_row_shows_the_lines_the_row_has` added; the `sidebar-rows` ui-shot checks the new heights, and `check_selected` samples the tint in the row's right padding (a three-line row has text across its middle). Scope gained "Small changes after v0.5.0". Noted the branch switcher as a chores candidate (a modal, your preference; to design with you).
+- **Next:** the branch switcher's design with you; your look on screen.
+
 ### 2026-11-10 — The grey line above prompts removed; two chores noted
 - **Did:** On your screenshot of stacked prompts ("ada garis pemisah abu, jelek") and your choice ("ya hapus"), removed the M11l hairline above each prompt and above the live prompt. First checked it was not a bug: replaying a real zsh + powerlevel10k session (a copy of your `.p10k.zsh` in a scratch HOME) through fuxx's parser showed empty prompts make no blocks; the lines were the design's (one above the live prompt even in a fresh terminal). Gone with it: `block_view::SEPARATOR`, `separator_rows`, the snapshot's `live_prompt` and `history_size`; `blocks::live_prompt` is tests only. TDD: the `command-blocks` ui-shot was changed first to expect no line and failed on the old code (it saw `card_border` above row 3), then passed. 1289 tests pass; the command-blocks scenes pass. Noted two chores candidates in the roadmap at your request: shell choice in Preferences, and naming the finished command in notifications (AI's proposal, not yet agreed).
 - **Next:** your look on screen (no grey line above any prompt; the bars unchanged); then merge, and the chores round with you.

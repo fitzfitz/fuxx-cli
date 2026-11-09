@@ -53,6 +53,11 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   glow redraws 20×/s; about 0.9 % with it off) against Ghostty's 0.2 %, and drains plain output about 2.7× slower
   (local benchmark, 2026-11-09). Built 2026-11-10 and measured: idle with the glow breathing about 0.77× before, about 0.9 % after five minutes untouched, `cat` of 100 MiB 1.42× Ghostty's time. The one combined release (M11i–M11n, v0.5.0) was released 2026-11-10; a chores round is planned with you next. Caching the window chrome for a cheaper breath is a candidate for that round, not in M11n.
 
+- **Small changes after v0.5.0** (2026-11-10, by you): no grey line above prompts (note 63, "After release"); in
+  a git repo the sidebar row shows its branch and its folder on two lines, no branch line outside one (note 60,
+  "After release"). A branch switcher (pick a local branch, see which are pushed, check out one from origin) is
+  **not** in scope yet: a chores candidate to design with you first (roadmap).
+
 ## Out of scope (for now — resist scope creep)
 
 - Being a general IDE / **editor**. *(Changed 2026-11-08 by you: a **read-only file viewer** is now in scope

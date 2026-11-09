@@ -1627,14 +1627,15 @@ const ROWS: [ShotSession; 6] = [
 /// The sidebar rows (M11b; compact in M11i), from real workspaces in both themes, at 240 pt
 /// (`sidebar-rows`) and 180 pt (`sidebar-rows-narrow`): deploy and claude pinned (📌, above
 /// every group header), claude waiting with "Needs input · question" under its name ("Needs
-/// input" alone at 180 pt); notes in no group, a gap under the pinned rows; each row's
-/// `branch • ~/folder`; payments selected (the selection's tint and the accent bar, its text in
-/// `text`), its long branch cut first, then its long folder at its start (keeping `payments`);
-/// the long name cut; notes in /tmp (no `~`, not in a repo: no branch).
+/// input" alone at 180 pt); notes in no group, a gap under the pinned rows; each row in a repo
+/// with its branch on one line and its `~/folder` under it (2026-11-10); payments selected (the
+/// selection's tint and the accent bar, its text in `text`), its long branch cut at its end, its
+/// long folder at its start (keeping `payments`); the long name cut; notes in /tmp (no `~`, not
+/// in a repo: no branch line).
 ///
-/// Panics unless the pinned rows lead, the rows carry their branch and folder, every row is
-/// 32 pt (two lines), and the selected row is tinted with the accent bar at its left and its
-/// name in `text`.
+/// Panics unless the pinned rows lead, the rows carry their branch and folder, the rows in a
+/// repo are 45 pt (three lines) and claude (waiting) and notes 32 pt (two), and the selected row
+/// is tinted with the accent bar at its left and its name in `text`.
 fn sidebar_row_scenes() {
     use std::cell::{Cell, RefCell};
     use std::path::Path;
@@ -1736,10 +1737,18 @@ fn sidebar_row_scenes() {
                     let bounds = |i: usize| ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                     let gap = f32::from(bounds(2).top() - bounds(1).bottom());
                     assert_eq!(gap, 10.0, "{n}: the gap under the pinned rows");
-                    // Every row has a second line: 32 pt (M11i; the waiting one was 56).
-                    for i in [0, 1, 2, 4, 6, 8] {
-                        let h = f32::from(bounds(i).size.height);
-                        assert_eq!(h, 32.0, "{n}: row {i} is two lines");
+                    // In a repo, the branch and the folder each on a line: 45 pt. Waiting (its
+                    // one line) and outside a repo (the folder alone): 32 pt.
+                    for (i, h) in [
+                        (0, 45.0),
+                        (1, 32.0),
+                        (2, 32.0),
+                        (4, 45.0),
+                        (6, 45.0),
+                        (8, 45.0),
+                    ] {
+                        let seen = f32::from(bounds(i).size.height);
+                        assert_eq!(seen, h, "{n}: row {i}'s height");
                     }
                     let b = ws.sidebar.scroll.bounds_for_item(active).expect("laid out");
                     found.set(Some((
@@ -1765,14 +1774,20 @@ fn sidebar_row_scenes() {
 /// A sidebar row as laid out: (left, right, top, height), in points.
 type RowBox = (f32, f32, f32, f32);
 
-/// A sidebar row's line 1 (17 pt) and line 2 (13 pt), centred in the row (M11i).
+/// A sidebar row's line 1 (17 pt) and the lines under it (13 pt each), centred in the row
+/// (M11i; a third line in a repo since 2026-11-10).
 const ROW_LINE_ONE: f32 = 17.0;
 const ROW_LINE_TWO: f32 = 13.0;
 
 /// The middle of line 1 and of line 2 of a sidebar row `height` tall whose top is at `top`.
 fn row_lines(top: f32, height: f32) -> (f32, f32) {
-    let two = height > crate::ui_tokens::size::SIDEBAR_ROW;
-    let content = ROW_LINE_ONE + if two { ROW_LINE_TWO } else { 0.0 };
+    use crate::ui_tokens::size::{SIDEBAR_ROW, SIDEBAR_ROW_THREE};
+    let under = match height {
+        h if h >= SIDEBAR_ROW_THREE => 2.0,
+        h if h > SIDEBAR_ROW => 1.0,
+        _ => 0.0,
+    };
+    let content = ROW_LINE_ONE + under * ROW_LINE_TWO;
     let first = top + (height - content) / 2.0;
     (
         first + ROW_LINE_ONE / 2.0,
@@ -1806,8 +1821,9 @@ fn check_selected(
     let middle = top + height / 2.0;
     let bar = pixel_at(shot, dims, left + 1.0, middle);
     assert!(near(bar, ui.accent), "{n}: the accent bar: {bar:?}");
-    // Just right of the bar, in the padding left of the mark, and in the row's middle.
-    for (what, x) in [("padding", left + 5.0), ("middle", (left + right) / 2.0)] {
+    // Just right of the bar, in the padding left of the mark, and in the right padding (a row
+    // in a repo has text across its middle: the branch line).
+    for (what, x) in [("padding", left + 5.0), ("right padding", right - 4.0)] {
         let tint = pixel_at(shot, dims, x, middle);
         assert!(
             near(tint, ui.row_selected),
