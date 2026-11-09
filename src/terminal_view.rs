@@ -46,7 +46,6 @@ use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
 use crate::theme::{Theme, UiColors};
 use crate::ui_tokens::size as ui_size;
-use crate::ui_tokens::text as ui_text;
 
 // Bound in main.rs with the "Terminal" key context. GPUI runs key bindings before `on_key_down`,
 // so these win over the byte mapping. The command-block actions (M11l): ⇧⌘↑ / ⇧⌘↓ / ⇧⌘C; Copy
@@ -1643,9 +1642,8 @@ fn chip_element(
 ) -> gpui::Div {
     let (has_cmd, has_output) = (chip.cmd.is_some(), chip.has_output);
     let bounds = slots.chip;
-    // A button's hover fill: the row less the panel's edge and a point inside it, top and
-    // bottom.
-    let button_height = (chip.height - px(4.0)).max(px(0.0));
+    // The words fit the row (smaller under a small terminal font), on the row's inside.
+    let words = block_view::chip_text(f32::from(chip.height));
     let mut label = div()
         .flex()
         .flex_row()
@@ -1681,7 +1679,7 @@ fn chip_element(
             .id(("chip-button", i))
             .flex()
             .items_center()
-            .h(button_height)
+            .h(px(words.button))
             .px(px(5.0))
             .rounded(px(4.0))
             .text_color(hsla(if enabled {
@@ -1740,7 +1738,10 @@ fn chip_element(
         .bg(hsla(ui.panel))
         .border_1()
         .border_color(hsla(ui.panel_border))
-        .text_size(px(ui_text::META))
+        // Nothing drawn past the row, whatever the font.
+        .overflow_hidden()
+        .text_size(px(words.size))
+        .line_height(px(words.line))
         .whitespace_nowrap()
         .child(label)
         .child(

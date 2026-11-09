@@ -269,6 +269,7 @@ const SCENES: &[(&str, fn())] = &[
     ("command-blocks-alt-screen", command_blocks_alt_screen_scene),
     ("command-blocks-narrow", command_blocks_narrow_scene),
     ("command-blocks-rprompt", command_blocks_rprompt_scene),
+    ("command-blocks-small-font", command_blocks_small_font_scene),
     ("command-blocks-off", command_blocks_off_scene),
     ("command-blocks-jump", command_blocks_jump_scene),
     ("command-blocks-copy", command_blocks_copy_scene),
@@ -15168,6 +15169,60 @@ fn command_blocks_narrow_scene() {
     }
 }
 
+/// `command-blocks-small-font`: a 9 pt terminal (12 pt rows): the chip is still one row tall,
+/// its text smaller to fit and inked inside it, and the pixel rows just above and below it are
+/// as they were before it opened.
+fn command_blocks_small_font_scene() {
+    let dims = size(px(480.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("command-blocks-small-font-{slug}");
+        let mut rig = blocks_rig(theme, dims, false, false, |a| a.font_size = 9.0);
+        let before = rig.frame();
+        let g = BlockGeometry::of(&rig, false);
+        point_at(&mut rig, point(px(g.bar_x), px(g.mid(4))));
+        let shown = rig.frame();
+        save_shot("command-blocks-small-font", slug, &shown);
+        let (_, _, chip) = chip_of(&rig).expect("the chip is open");
+        let (row, tall) = (g.top(5) - g.top(4), f32::from(chip.size.height));
+        assert!(row < 13.0, "{n}: a short row, {row} pt");
+        assert!((tall - row).abs() <= 0.5, "{n}: one row tall, saw {tall}");
+        let grid = rig.read(|v| v.grid_bounds()).expect("painted");
+        let scale = shown.width as f32 / f32::from(dims.width);
+        let (x0, x1) = (g.origin_x, f32::from(grid.right()));
+        for (y, what) in [
+            (f32::from(chip.top()) - 1.0 / scale, "above"),
+            (f32::from(chip.bottom()), "below"),
+        ] {
+            let change = first_change(&before, &shown, dims, (x0, y), (x1, y));
+            assert!(
+                change.is_none(),
+                "{n}: the chip changed the pixel row {what} it: {change:?}"
+            );
+        }
+        // Its words are drawn: pixels well off the panel's colour inside it.
+        let inked = (0..(f32::from(chip.size.width) * scale) as usize)
+            .flat_map(|dx| (0..(tall * scale) as usize).map(move |dy| (dx as f32, dy as f32)))
+            .filter(|&(dx, dy)| {
+                let p = pixel_at(
+                    &shown,
+                    dims,
+                    f32::from(chip.left()) + (dx + 0.5) / scale,
+                    f32::from(chip.top()) + (dy + 0.5) / scale,
+                );
+                p.iter()
+                    .zip([ui.panel.r, ui.panel.g, ui.panel.b])
+                    .any(|(a, b)| a.abs_diff(b) > 60)
+            })
+            .count();
+        assert!(
+            inked > 40,
+            "{n}: the chip's text is drawn ({inked} inked pixels)"
+        );
+    }
+}
+
 /// `command-blocks-rprompt`: block 2's command row (`$ false`) given a right prompt, a run of
 /// text after two or more blank cells ending a cell short of the right edge (as zsh draws an
 /// RPROMPT, powerlevel10k's `✔ / 15:05:41` among them):
@@ -15269,11 +15324,15 @@ fn command_blocks_rprompt_scene() {
                         "{n}: cut to end a cell before the run ({run_left}), at {right}"
                     );
                 }
+                // From the first device pixel wholly right of the chip: its edge is rounded to
+                // the pixel grid, so it may end up to half a pixel past `run_left - cell`.
+                let scale = shown.width as f32 / f32::from(dims.width);
+                let from = ((run_left - cell) * scale).ceil() / scale;
                 let change = first_change(
                     &before,
                     &shown,
                     dims,
-                    (run_left - cell, g.top(4)),
+                    (from, g.top(4)),
                     (f32::from(grid.right()), g.top(5)),
                 );
                 assert!(
