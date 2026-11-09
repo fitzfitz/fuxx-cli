@@ -15405,6 +15405,145 @@ fn cursor_scenes() {
             );
         }
 
+        // The breath at rest (M11n): five minutes untouched, solid at full strength with its
+        // glow and no frames; a keystroke, a program's write or a refocus brings it back.
+        // Glide off, so cat's echo moving the cursor leaves the breath's frames, not a glide's.
+        {
+            let mut rig = CursorRig::new(theme, text, true, true, false, |a| {
+                a.cursor_glide = false;
+            });
+            rig.frame();
+            let n = format!("cursor-breath-resumes-{slug}");
+            let cell = rig.cell(2, 1);
+            let left = f32::from(cell.left());
+            let mid = f32::from(cell.top() + cell.bottom()) / 2.0;
+            assert_eq!(rig.read(|v| v.cursor_frames()), Frames::Breath, "{n}");
+            let rest = |rig: &mut CursorRig| {
+                rig.read(|v| v.age_breath(std::time::Duration::from_millis(301_500)));
+                let view = rig.view.clone();
+                rig.cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+                rig.frame()
+            };
+            let shot = rest(&mut rig);
+            save_shot("cursor-breath-resumes", slug, &shot);
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::None,
+                "{n}: at rest after five minutes, no frames"
+            );
+            assert!(
+                is_colour(&shot, rig.dims, left + 0.5, mid, own),
+                "{n}: at rest the bar is the full colour, saw {:?}",
+                pixel_at(&shot, rig.dims, left + 0.5, mid)
+            );
+            assert!(
+                !is_colour(&shot, rig.dims, left - 3.0, mid, bg),
+                "{n}: at rest the glow stays"
+            );
+            // One paint now, before anything else runs, and the frames it asked for (read
+            // before the capture, which paints again): what the very next frame after a change
+            // asks for. (A cursor move ends the rest by itself; cat's echo reaches the `Term`
+            // from the parser thread before its `Output` is heard.)
+            let paint_now = |rig: &mut CursorRig| {
+                rig.cx
+                    .update_window(rig.window, |_, window, cx| window.draw(cx).clear())
+                    .expect("draw");
+                let frames = rig.read(|v| v.cursor_frames());
+                let image = rig
+                    .cx
+                    .capture_screenshot(rig.window)
+                    .expect("capture the window");
+                let shot = Shot {
+                    width: image.width(),
+                    height: image.height(),
+                    rgba: image.as_raw().to_vec(),
+                };
+                (frames, shot)
+            };
+            // A keystroke cat doesn't echo (an erase on its empty line): only the keystroke
+            // itself can end the rest.
+            let view = rig.view.clone();
+            rig.cx
+                .update(|cx| view.update(cx, |v, cx| v.type_bytes(b"\x7f", cx)));
+            assert_eq!(
+                paint_now(&mut rig).0,
+                Frames::Breath,
+                "{n}: a keystroke ends the rest"
+            );
+            // A typed letter.
+            rest(&mut rig);
+            assert_eq!(rig.read(|v| v.cursor_frames()), Frames::None, "{n}");
+            rig.cx
+                .update(|cx| view.update(cx, |v, cx| v.type_bytes(b"x", cx)));
+            assert_eq!(
+                paint_now(&mut rig).0,
+                Frames::Breath,
+                "{n}: typing ends the rest"
+            );
+            // Output that leaves the cursor where it was: cat echoes `a`, then its erase
+            // (`\b \b`), so only the `Output` itself can end the rest.
+            wait_for(&mut rig, |v| {
+                v.text(crate::grid::TextScope::Screen).contains("$ x")
+            });
+            rig.write("\x1b[2;3H\x1b[K");
+            rig.frame();
+            rest(&mut rig);
+            assert_eq!(rig.read(|v| v.cursor_frames()), Frames::None, "{n}");
+            rig.read(|v| v.write_to_program(b"a\x7f"));
+            wait_for(&mut rig, |v| v.cursor_frames() == Frames::Breath);
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::Breath,
+                "{n}: output ends the rest"
+            );
+            // A program's write that moves the cursor.
+            rest(&mut rig);
+            assert_eq!(rig.read(|v| v.cursor_frames()), Frames::None, "{n}");
+            rig.write("y");
+            rig.frame();
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::Breath,
+                "{n}: a cursor move ends the rest"
+            );
+            // Blur, then focus back: breathing again, solid at first, from the first paint.
+            rest(&mut rig);
+            assert_eq!(rig.read(|v| v.cursor_frames()), Frames::None, "{n}");
+            rig.cx
+                .update_window(rig.window, |_, window, _| window.blur())
+                .expect("blur");
+            rig.frame();
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::None,
+                "{n}: blurred"
+            );
+            let window = rig.window;
+            rig.cx
+                .update_window(window, |_, window, cx| {
+                    use gpui::Focusable;
+                    view.focus_handle(cx).focus(window, cx)
+                })
+                .expect("focus");
+            // The focus change paints as the update ends: that one paint must already ask for
+            // the breath (nothing else would paint again in the app).
+            assert_eq!(
+                rig.read(|v| v.cursor_frames()),
+                Frames::Breath,
+                "{n}: a refocus ends the rest, from its first paint"
+            );
+            let (frames, shot) = paint_now(&mut rig);
+            assert_eq!(frames, Frames::Breath, "{n}: a refocus ends the rest");
+            // The bar sits after `$ y` (cat's echo of the `x` was erased by the line above).
+            let at = rig.cell(3, 1);
+            let x = f32::from(at.left()) + 0.5;
+            assert!(
+                is_colour(&shot, rig.dims, x, mid, own),
+                "{n}: back in focus the bar is solid at first, saw {:?}",
+                pixel_at(&shot, rig.dims, x, mid)
+            );
+        }
+
         // Unfocused, and focused in a window that isn't key: a still 1 px outline.
         for (focus, key, label) in [(false, true, "unfocused"), (true, false, "not key")] {
             let mut rig = CursorRig::new(theme, text, focus, key, false, |_| ());

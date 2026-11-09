@@ -507,6 +507,15 @@ impl TerminalView {
         self.motion.borrow().frames
     }
 
+    /// Make the cursor's last change `ago` old, as if nothing had touched it since (the breath's
+    /// rest, M11n, without waiting five minutes).
+    #[cfg(feature = "ui-shots")]
+    pub fn age_breath(&self, ago: Duration) {
+        self.motion.borrow_mut().changed = Instant::now()
+            .checked_sub(ago)
+            .expect("the clock goes back that far");
+    }
+
     /// The cursor's glide, if one was set going.
     #[cfg(feature = "ui-shots")]
     pub fn cursor_glide(&self) -> Option<Glide> {
@@ -643,38 +652,47 @@ impl TerminalView {
         window.is_window_active()
     }
 
-    /// Start the breathing timer unless it runs: a redraw every `BREATH_TICK` (50 ms) while the last paint
-    /// asked for it (`Frames::Breath`) and the terminal is focused in the key window, except
-    /// while the breath holds (`breath_redraw`). It stops, without a redraw, as soon as any of
-    /// that ends.
+    /// Start the breathing timer unless it runs. It sleeps through the hold (`breath_sleep`),
+    /// then wakes only for the breath's frames (its level crossings, trough and peak) and
+    /// redraws at each, while the last paint asked for it (`Frames::Breath`) and the terminal
+    /// is focused in the key window. It stops, without a redraw, as soon as any of that ends,
+    /// and by itself once the breath rests (after drawing that peak); the next paint that wants
+    /// the breath again (any change ends the rest) starts it anew.
     fn breathe(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.breathing {
             return;
         }
         self.breathing = true;
+        let mut wait = breath_sleep(self.motion.borrow().changed.elapsed());
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(cursor_look::BREATH_TICK)
-                    .await;
-                let go = this
+                cx.background_executor().timer(wait).await;
+                let next = this
                     .update_in(cx, |this, window, cx| {
                         let motion = this.motion.borrow();
                         let go = motion.frames == Frames::Breath
                             && this.focus_handle.is_focused(window)
                             && this.key_window(window);
-                        let redraw = breath_redraw(motion.changed.elapsed());
+                        let since = motion.changed.elapsed();
                         drop(motion);
-                        if go && redraw {
-                            cx.notify();
-                        } else if !go {
+                        if !go {
                             this.breathing = false;
+                            return None;
                         }
-                        go
+                        if breath_redraw(since) {
+                            cx.notify();
+                            if cursor_look::breath_rests(since - cursor_look::HOLD) {
+                                this.breathing = false;
+                                return None;
+                            }
+                        }
+                        Some(breath_sleep(since))
                     })
-                    .unwrap_or(false);
-                if !go {
-                    break;
+                    .ok()
+                    .flatten();
+                match next {
+                    Some(next) => wait = next,
+                    None => break,
                 }
             }
         })
@@ -1986,11 +2004,14 @@ impl CursorSettings {
             motion.glide = None;
         }
         let glowing = self.glow && style.is_some_and(|s| s.blinking) && at.is_some();
+        // At rest (five minutes with no change, M11n) the glow stays, solid, with no frames.
+        let since = now.saturating_duration_since(motion.changed);
+        let resting = cursor_look::breath_rests(since.saturating_sub(cursor_look::HOLD));
         motion.frames = cursor_look::needs_frames(
             self.focused,
             self.key_window,
             self.motion,
-            glowing,
+            glowing && !resting,
             animating,
         );
         let (Some(c), Some(style), Some(at)) = (c, style, at) else {
@@ -2005,7 +2026,6 @@ impl CursorSettings {
         motion.drawn = Some((at, style.shape));
         let glow = glowing && self.motion;
         let alpha = if glow {
-            let since = now.saturating_duration_since(motion.changed);
             cursor_look::breath_alpha(since, since.saturating_sub(cursor_look::HOLD))
         } else {
             1.0
@@ -2163,6 +2183,16 @@ fn cursor_cells(line: &[grid::CellView], col: usize) -> usize {
 /// no idle repaints.
 fn breath_redraw(since_change: Duration) -> bool {
     since_change >= cursor_look::HOLD
+}
+
+/// How long the breathing timer sleeps, `since_change` after the cursor last changed: to the
+/// end of the hold while it lasts (it draws nothing new before then), else to the breath's next
+/// frame (`cursor_look::breath_wait`, on the breath's clock, which starts as the hold ends).
+fn breath_sleep(since_change: Duration) -> Duration {
+    match cursor_look::HOLD.checked_sub(since_change) {
+        Some(left) if !left.is_zero() => left,
+        _ => cursor_look::breath_wait(since_change - cursor_look::HOLD),
+    }
 }
 
 /// The cursor's motion between paints (M11f): the cell and screen it was last painted on, its
@@ -2415,7 +2445,8 @@ mod tests {
     use gpui::{Bounds, point, px, size};
 
     use super::{
-        CursorMotion, GridLayout, Screen, breath_redraw, cursor_cells, inset, is_typed_text,
+        CursorMotion, GridLayout, Screen, breath_redraw, breath_sleep, cursor_cells, inset,
+        is_typed_text,
     };
     use crate::grid::CellView;
     use crate::theme::Theme;
@@ -2526,6 +2557,21 @@ mod tests {
         // A plain line feed on the same screen still glides.
         assert_eq!(m.follow(Some((0, 5)), shorter, true, t0), Some((0.0, 4.0)));
         assert_eq!(m.glide.map(|g| g.to), Some((0, 5)));
+    }
+
+    #[test]
+    fn the_breath_sleeps_through_its_hold() {
+        use crate::cursor_look::{BREATH_MIN, HOLD, breath_wait};
+        let ms = Duration::from_millis;
+        // While the breath holds, one sleep to its end, not a wake-up every 50 ms.
+        assert_eq!(breath_sleep(Duration::ZERO), HOLD);
+        assert_eq!(breath_sleep(ms(100)), ms(500));
+        assert_eq!(breath_sleep(ms(599)), ms(1));
+        // Past it, to the breath's next frame (the first level, 162 ms from the peak).
+        assert_eq!(breath_sleep(HOLD), breath_wait(Duration::ZERO));
+        assert!(breath_sleep(HOLD) > ms(160) && breath_sleep(HOLD) < ms(165));
+        assert_eq!(breath_sleep(HOLD + ms(5)), breath_wait(ms(5)));
+        assert!(breath_sleep(ms(5000)) >= BREATH_MIN);
     }
 
     #[test]
