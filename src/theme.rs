@@ -718,6 +718,13 @@ mod tests {
             foreground: hex(0x657b83),
             ..Theme::default()
         };
+        // Whatever an earlier test on this thread left in the cache, start from a theme
+        // neither `t` nor `t2` is, so the counts below don't depend on test order.
+        Theme {
+            background: hex(0x010203),
+            ..Theme::default()
+        }
+        .ui();
         let base = ui_computations();
         let a = t.ui();
         assert_eq!(t.ui(), a);
