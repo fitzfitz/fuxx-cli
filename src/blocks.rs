@@ -309,6 +309,18 @@ impl Tagger {
                 if self.state == ShellState::Unknown && self.d_missed {
                     return;
                 }
+                // Right after an A (no B or C yet), a D ends nothing: shells send it before
+                // the prompt starts. Ignored without a scan, so a storm of A + D pairs (which
+                // clear `d_missed`) costs nothing.
+                if matches!(
+                    self.state,
+                    ShellState::Prompt {
+                        input_start: None,
+                        ..
+                    }
+                ) {
+                    return;
+                }
                 self.state = ShellState::Unknown;
                 let grid = term.grid();
                 let rows = grid.history_size() + grid.screen_lines();
@@ -318,7 +330,12 @@ impl Tagger {
                     self.d_missed = true;
                     return;
                 };
-                let out_start = lines_down(grid, row, tag.cmd_lines.unwrap_or(1));
+                let out_start = lines_down(
+                    grid,
+                    row,
+                    tag.cmd_lines.unwrap_or(1),
+                    grid.bottommost_line(),
+                );
                 // Output ends above the cursor, or on its row when something is printed there
                 // (output without a final newline).
                 let end = cursor.line + i32::from(cursor.column > Column(0));
@@ -380,7 +397,9 @@ pub struct Block {
 }
 
 /// Every running or finished command still in the grid, oldest first; none on the alternate
-/// screen.
+/// screen. Each block keeps to the rows between the tags around it (any tag, a prompt's too),
+/// so no row is in two blocks, whatever a forged tag claims, and the walks add up to one pass
+/// over the grid. Reads the whole scrollback: on a keypress or off the UI thread only.
 #[allow(dead_code)] // wired in M11l task 4
 pub fn list<L>(term: &Term<L>) -> Vec<Block> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
@@ -388,13 +407,67 @@ pub fn list<L>(term: &Term<L>) -> Vec<Block> {
     }
     let grid = term.grid();
     let cursor = grid.cursor.point.line;
-    let (top, bottom) = (grid.topmost_line().0, grid.bottommost_line().0);
-    (top..=bottom)
+    let (top, bottom) = (grid.topmost_line(), grid.bottommost_line());
+    let tags: Vec<(Line, Tag)> = (top.0..=bottom.0)
         .map(Line)
         .filter_map(|row| Some((row, tag_at(grid, row)?)))
-        .filter(|(_, tag)| tag.state != BlockState::Prompt)
-        .map(|(row, tag)| block(grid, row, tag, cursor))
-        .collect()
+        .collect();
+    let mut blocks = Vec::new();
+    // The first row the next block may use: below the last tag and block seen.
+    let mut floor = top;
+    for (i, (row, tag)) in tags.iter().enumerate() {
+        if tag.state == BlockState::Prompt {
+            floor = *row + 1i32;
+            continue;
+        }
+        let stop = tags.get(i + 1).map_or(bottom, |(next, _)| *next - 1i32);
+        let (b, cmd_end) = block(grid, *row, tag.clone(), cursor, Bounds { floor, stop });
+        floor = last_row(&b, cmd_end) + 1i32;
+        blocks.push(b);
+    }
+    blocks
+}
+
+/// A block's last row: its output's, or its command's.
+fn last_row(block: &Block, cmd_end: Line) -> Line {
+    block.output.map_or(cmd_end, |(_, last)| last.max(cmd_end))
+}
+
+/// Block `id`, read as `list` reads it (between the tags around it); none on the alternate
+/// screen, when it is gone, or when it is only a prompt. Column-0 scans only.
+fn find_block<L>(term: &Term<L>, id: &str) -> Option<Block> {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return None;
+    }
+    let grid = term.grid();
+    let (row, tag) = find_tag(grid, id).filter(|(_, tag)| tag.state != BlockState::Prompt)?;
+    let (top, bottom) = (grid.topmost_line(), grid.bottommost_line());
+    let cursor = grid.cursor.point.line;
+    // As `list` bounds it: below the tag above, and below that one's block if it is one.
+    let above = match row > top {
+        true => nearest_tag(grid, row - 1i32, (row.0 - top.0) as usize),
+        false => None,
+    };
+    let floor = match above {
+        None => top,
+        Some((r, t)) if t.state == BlockState::Prompt => r + 1i32,
+        Some((r, t)) => {
+            let bounds = Bounds {
+                floor: r,
+                stop: row - 1i32,
+            };
+            let (b, cmd_end) = block(grid, r, t, cursor, bounds);
+            last_row(&b, cmd_end) + 1i32
+        }
+    };
+    let stop = next_tag_row(grid, row, bottom).map_or(bottom, |r| r - 1i32);
+    Some(block(grid, row, tag, cursor, Bounds { floor, stop }).0)
+}
+
+/// Block `id`'s command line, if it is in the grid and was recorded.
+#[allow(dead_code)] // wired in M11l task 5
+pub fn block_cmd<L>(term: &Term<L>, id: &str) -> Option<String> {
+    find_block(term, id)?.cmd
 }
 
 /// The top row of the prompt shown now: the newest tag's, if it is a prompt's. Looks from the
@@ -409,14 +482,16 @@ pub fn live_prompt<L>(term: &Term<L>) -> Option<Line> {
     let bottom = grid.bottommost_line();
     let below_cursor = (bottom.0 - grid.cursor.point.line.0).max(0) as usize;
     let (row, tag) = nearest_tag(grid, bottom, below_cursor + C_SCAN_ROWS)?;
-    (tag.state == BlockState::Prompt).then(|| lines_up(grid, row, tag.prompt_lines.into()))
+    // A prompt's lines are short: its top is never further up than a `C` would look.
+    let floor = row - C_SCAN_ROWS as i32;
+    (tag.state == BlockState::Prompt).then(|| lines_up(grid, row, tag.prompt_lines.into(), floor))
 }
 
 /// The output of the block `id`, lines right-trimmed and trailing empty lines dropped (empty
 /// when it has none); none when no such block is in the grid.
 #[allow(dead_code)] // wired in M11l task 5
 pub fn output_text<L>(term: &Term<L>, id: &str) -> Option<String> {
-    let block = list(term).into_iter().find(|b| b.id == id)?;
+    let block = find_block(term, id)?;
     let Some((first, last)) = block.output else {
         return Some(String::new());
     };
@@ -436,61 +511,112 @@ const BELOW_VIEW: i32 = 8;
 
 /// The blocks to draw, oldest first, and the live prompt's top, in viewport rows (see
 /// `BlockView`). Reads column 0 of the viewport and `BELOW_VIEW` rows under it, plus, for the
-/// `chosen` block only, the whole scrollback. Nothing on the alternate screen.
+/// `chosen` block only, the scrollback from it to the view. Nothing on the alternate screen.
+///
+/// Every walk is bounded by the view: a block's rows stop at the next tag found (of any state)
+/// or one row past the view's bottom, which then means "continues below" (rows above the view
+/// likewise stop one row above its top). So a frame's work is the viewport's, whatever forged
+/// tags claim. A block whose command row is under the view shows no output rows.
 #[allow(dead_code)] // drawn in M11l task 4
 pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Option<i32>) {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return (Vec::new(), None);
     }
     let grid = term.grid();
+    let (top, bottom) = (grid.topmost_line(), grid.bottommost_line());
     let offset = grid.display_offset() as i32;
-    let top = -offset;
-    let bottom = (top + grid.screen_lines() as i32 - 1 + BELOW_VIEW).min(grid.bottommost_line().0);
-    let mut found: Vec<(Line, Tag)> = (top..=bottom)
+    let view_top = Line(-offset);
+    let view_bottom = view_top + (grid.screen_lines() as i32 - 1);
+    // One row past the view, where there is one.
+    let below = (view_bottom + 1i32).min(bottom);
+    let above = (view_top - 1i32).max(top);
+    let last = (view_bottom + BELOW_VIEW).min(bottom);
+    // Every tag in range (a prompt's bounds the block above it), plus the chosen block's.
+    let mut tags: Vec<(Line, Tag)> = (view_top.0..=last.0)
         .map(Line)
         .filter_map(|row| Some((row, tag_at(grid, row)?)))
-        .filter(|(_, tag)| tag.state != BlockState::Prompt)
         .collect();
+    let mut chosen_outside = None;
     if let Some(id) = chosen
-        && !found.iter().any(|(_, tag)| tag.id == id)
+        && !tags.iter().any(|(_, tag)| tag.id == id)
         && let Some(hit) = find_tag(grid, id).filter(|(_, tag)| tag.state != BlockState::Prompt)
     {
-        found.push(hit);
-        found.sort_by_key(|(row, _)| *row);
+        chosen_outside = Some(hit.0);
+        tags.push(hit);
+        tags.sort_by_key(|(row, _)| *row);
     }
     let cursor = grid.cursor.point.line;
-    let blocks = found
-        .into_iter()
-        .map(|(row, tag)| {
-            // The command's rows end just above the output's first.
-            let cmd_end = (lines_down(grid, row, tag.cmd_lines.unwrap_or(1)) - 1i32)
-                .min(grid.bottommost_line())
-                .max(row);
-            let is_chosen = chosen == Some(tag.id.as_str());
-            let b = block(grid, row, tag, cursor);
-            BlockView {
-                id: b.id,
-                outcome: b.outcome,
-                prompt: (b.prompt_top.0 + offset, cmd_end.0 + offset),
-                output: b
-                    .output
-                    .map(|(first, last)| (first.0 + offset, last.0 + offset)),
-                chosen: is_chosen,
-            }
-        })
-        .collect();
+    let mut blocks = Vec::new();
+    // The first row the next block may use: below the last tag and block seen (above the view,
+    // one row past its top; the chosen block outside it, its own prompt as far as it goes).
+    let mut floor = match chosen_outside {
+        Some(row) if row < view_top => top,
+        _ => above,
+    };
+    for (i, (row, tag)) in tags.iter().enumerate() {
+        let row = *row;
+        if tag.state == BlockState::Prompt {
+            floor = row + 1i32;
+            continue;
+        }
+        let next = match chosen_outside == Some(row) && row < view_top {
+            // Above the view: the next tag between it and the view's bottom.
+            true => next_tag_row(grid, row, below),
+            false => tags.get(i + 1).map(|(r, _)| *r),
+        };
+        let stop = next.map_or(below, |r| (r - 1i32).min(below));
+        let floor_here = match chosen_outside == Some(row) && row > last {
+            // Under the range read: the rows between are unread, so its prompt goes no further
+            // up than a `C` would look.
+            true => floor.max(row - C_SCAN_ROWS as i32),
+            false => floor,
+        };
+        let (b, cmd_end) = block(
+            grid,
+            row,
+            tag.clone(),
+            cursor,
+            Bounds {
+                floor: floor_here,
+                stop,
+            },
+        );
+        floor = (last_row(&b, cmd_end) + 1i32).max(above);
+        blocks.push(BlockView {
+            chosen: chosen == Some(b.id.as_str()),
+            id: b.id,
+            outcome: b.outcome,
+            prompt: (b.prompt_top.0 + offset, cmd_end.0 + offset),
+            output: b
+                .output
+                .map(|(first, last)| (first.0 + offset, last.0 + offset)),
+        });
+    }
     (blocks, live_prompt(term).map(|line| line.0 + offset))
 }
 
-fn block(grid: &Grid<Cell>, row: Line, tag: Tag, cursor: Line) -> Block {
-    let bottom = grid.bottommost_line();
-    let out_start = lines_down(grid, row, tag.cmd_lines.unwrap_or(1));
+/// The rows a block's walks may cover: from `floor` down to `stop`, inclusive.
+#[derive(Clone, Copy)]
+struct Bounds {
+    floor: Line,
+    stop: Line,
+}
+
+/// The block tagged on `row`, and the last row of its command, within `bounds` (rows past them
+/// are clamped to them).
+fn block(grid: &Grid<Cell>, row: Line, tag: Tag, cursor: Line, bounds: Bounds) -> (Block, Line) {
+    let Bounds { floor, stop } = bounds;
+    let out_start = lines_down(grid, row, tag.cmd_lines.unwrap_or(1), stop);
+    let cmd_end = (out_start - 1i32).min(stop).max(row);
     let (outcome, output) = match tag.state {
         // A running command's output so far ends on the cursor's row.
-        BlockState::Running | BlockState::Prompt => (
-            Outcome::Running,
-            (out_start <= cursor).then_some((out_start, cursor)),
-        ),
+        BlockState::Running | BlockState::Prompt => {
+            let end = cursor.min(stop);
+            (
+                Outcome::Running,
+                (out_start <= end).then_some((out_start, end)),
+            )
+        }
         BlockState::Done => {
             let outcome = match tag.exit {
                 Some(0) => Outcome::Ok,
@@ -498,23 +624,24 @@ fn block(grid: &Grid<Cell>, row: Line, tag: Tag, cursor: Line) -> Block {
                 None => Outcome::Unknown,
             };
             let output = match tag.out_lines {
-                Some(o) if o > 0 && out_start <= bottom => {
-                    let last = lines_down(grid, out_start, o - 1).min(bottom);
-                    Some((out_start, line_end(grid, last)))
+                Some(o) if o > 0 && out_start <= stop => {
+                    let last = lines_down(grid, out_start, o - 1, stop).min(stop);
+                    Some((out_start, line_end(grid, last, stop)))
                 }
                 _ => None,
             };
             (outcome, output)
         }
     };
-    Block {
+    let block = Block {
         id: tag.id,
         outcome,
-        prompt_top: lines_up(grid, row, tag.prompt_lines.into()),
+        prompt_top: lines_up(grid, row, tag.prompt_lines.into(), floor),
         cmd_row: row,
         output,
         cmd: tag.cmd,
-    }
+    };
+    (block, cmd_end)
 }
 
 /// The tag on column 0 of `row`, if any.
@@ -538,6 +665,13 @@ fn find_tag(grid: &Grid<Cell>, id: &str) -> Option<(Line, Tag)> {
             }
             Some((row, decode(&link)?))
         })
+}
+
+/// The row of the first tag below `row`, looking no further than `last`.
+fn next_tag_row(grid: &Grid<Cell>, row: Line, last: Line) -> Option<Line> {
+    (row.0 + 1..=last.0)
+        .map(Line)
+        .find(|&r| tag_at(grid, r).is_some())
 }
 
 /// The nearest tag at or above `from`, looking at most `rows` rows (and not past the top).
@@ -564,33 +698,41 @@ fn line_start(grid: &Grid<Cell>, mut row: Line) -> Line {
     row
 }
 
-/// The last row of the logical line `row` is in.
-fn line_end(grid: &Grid<Cell>, mut row: Line) -> Line {
-    while row < grid.bottommost_line() && wraps(grid, row) {
+/// The last row of the logical line `row` is in, going no lower than `stop` (or the grid's
+/// bottom).
+fn line_end(grid: &Grid<Cell>, mut row: Line, stop: Line) -> Line {
+    let stop = stop.min(grid.bottommost_line());
+    while row < stop && wraps(grid, row) {
         row += 1;
     }
     row
 }
 
-/// The first row `n` logical lines below the one at `row`; one past the last row when that
-/// runs off the grid.
-fn lines_down(grid: &Grid<Cell>, mut row: Line, n: u32) -> Line {
+/// The first row `n` logical lines below the one at `row`; one past `stop` (or past the grid)
+/// when that runs further.
+fn lines_down(grid: &Grid<Cell>, mut row: Line, n: u32, stop: Line) -> Line {
+    let stop = stop.min(grid.bottommost_line());
     for _ in 0..n {
-        if row > grid.bottommost_line() {
+        if row > stop {
             break;
         }
-        row = line_end(grid, row) + 1;
+        row = line_end(grid, row, stop) + 1;
     }
     row
 }
 
-/// The first row `n` logical lines above the one at `row`, stopping at the top.
-fn lines_up(grid: &Grid<Cell>, mut row: Line, n: u32) -> Line {
+/// The first row `n` logical lines above the one at `row`, going no higher than `floor` (or
+/// the grid's top).
+fn lines_up(grid: &Grid<Cell>, mut row: Line, n: u32, floor: Line) -> Line {
+    let floor = floor.max(grid.topmost_line());
     for _ in 0..n {
-        if row <= grid.topmost_line() {
+        if row <= floor {
             break;
         }
-        row = line_start(grid, row - 1);
+        row = (row - 1i32).max(floor);
+        while row > floor && wraps(grid, row - 1i32) {
+            row -= 1;
+        }
     }
     row
 }
@@ -1087,6 +1229,11 @@ mod tests {
         t.out_lines = Some(999);
         sh.term.grid_mut()[line][Column(0)].set_hyperlink(Some(encode(&t)));
         let b = &sh.blocks()[0];
+        // The next prompt's tag cuts it short; without it, the grid's bottom does.
+        assert_eq!(b.output, Some((Line(1), Line(2))));
+        let next = tags(&sh.term)[1].0;
+        sh.term.grid_mut()[next][Column(0)].set_hyperlink(None);
+        let b = &sh.blocks()[0];
         assert_eq!(b.output, Some((Line(1), last)));
         assert!(output_text(&sh.term, &b.id).is_some());
         // Output that would start past the grid: none; a prompt taller than the scrollback
@@ -1266,22 +1413,130 @@ mod tests {
             visible(&sh.term, Some("fuxx-block-0")).0,
             vec![two(0), three(0)]
         );
-        // Scrolled back 4: rows move down 4; block 3's tag is under the view, within 8 rows.
+        // Scrolled back 4: rows move down 4; block 3's tag is under the view (rows 0..=5),
+        // within 8 rows: its prompt is there, its output (under the view) is not.
         sh.term.scroll_display(Scroll::Delta(4));
-        assert_eq!(visible(&sh.term, None), (vec![two(4), three(4)], Some(9)));
-        // Scrolled back 10: block 1's tag is the top row; block 3's is 8 rows under the view.
+        let no_output = |v: BlockView| BlockView { output: None, ..v };
+        assert_eq!(
+            visible(&sh.term, None),
+            (vec![two(4), no_output(three(4))], Some(9))
+        );
+        // Scrolled back 10: block 1's tag is the top row and its output runs past the view's
+        // bottom (row 6 = "continues below"); block 3's tag is 8 rows under the view.
         sh.term.scroll_display(Scroll::Delta(6));
         let (blocks, _) = visible(&sh.term, None);
-        let shifted = |v: BlockView| BlockView {
-            prompt: (v.prompt.0 + 10, v.prompt.1 + 10),
-            output: v.output.map(|(a, b)| (a + 10, b + 10)),
-            ..v
+        let one_here = BlockView {
+            prompt: (0, 0),
+            output: Some((1, 6)),
+            ..one(false)
         };
-        assert_eq!(blocks, vec![shifted(one(false)), two(10), three(10)]);
+        assert_eq!(
+            blocks,
+            vec![one_here, no_output(two(10)), no_output(three(10))]
+        );
         // Nothing on the alternate screen.
         sh.term.scroll_display(Scroll::Bottom);
         sh.feed(b"\x1b[?1049h");
         assert_eq!(visible(&sh.term, None), (vec![], None));
         assert_eq!(visible(&sh.term, Some(&ids[0])), (vec![], None));
+    }
+
+    /// Each block's rows, top to bottom: no row belongs to two blocks.
+    fn assert_apart(blocks: &[Block]) {
+        let extent = |b: &Block| (b.prompt_top, b.output.map_or(b.cmd_row, |(_, last)| last));
+        for pair in blocks.windows(2) {
+            let (a, b) = (extent(&pair[0]), extent(&pair[1]));
+            assert!(a.0 <= a.1 && a.1 < b.0, "{a:?} overlaps {b:?}");
+        }
+    }
+
+    /// A forged tag (program output with an OSC 8 link of ours) claiming a finished block
+    /// with 8 prompt lines and `o` lines of output, on a row reading `text`.
+    fn forged(id: &str, o: u32, text: &str) -> String {
+        format!(
+            "\x1b]8;id={id};fuxx-block:?v=1&s=done&p=8&c=1&o={o}&x=0\x1b\\{text}\x1b]8;;\x1b\\\r\n"
+        )
+    }
+
+    #[test]
+    fn forged_tags_cut_blocks_short() {
+        // A forged tag in a real command's output: each keeps to its own rows.
+        let mut sh = Shell::new();
+        let output = format!("a\r\n{}c\r\n", forged("x", 10_000, "b"));
+        sh.command("ls", &output, Some(0)).prompt();
+        let blocks = sh.blocks();
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_apart(&blocks);
+        assert_eq!(output_text(&sh.term, &blocks[0].id).as_deref(), Some("a"));
+        assert_eq!(output_text(&sh.term, "x").as_deref(), Some("c"));
+        assert_eq!(
+            blocks[1].prompt_top, blocks[1].cmd_row,
+            "p=8 stops at the block above"
+        );
+        let (views, _) = visible(&sh.term, None);
+        assert_eq!(views.len(), 2);
+        assert!(views[0].output.unwrap().1 < views[1].prompt.0, "{views:?}");
+    }
+
+    #[test]
+    fn a_grid_of_forged_tags_is_cheap_and_apart() {
+        use alacritty_terminal::grid::Scroll;
+        use std::time::{Duration, Instant};
+        let config = Config {
+            scrolling_history: 10_000,
+            ..term_config()
+        };
+        let mut term = Term::new(config, &TermDims { cols: 20, rows: 10 }, VoidListener);
+        let bytes: String = (0..10_000)
+            .map(|i| forged(&format!("f{i}"), 10_000, "X"))
+            .collect();
+        Processor::<StdSyncHandler>::new().advance(&mut term, bytes.as_bytes());
+        let started = Instant::now();
+        let blocks = list(&term);
+        let took = started.elapsed();
+        assert_eq!(blocks.len(), 10_000);
+        assert_apart(&blocks);
+        // Every block but the last ends at the next one's tag: no output.
+        assert!(
+            blocks[..9_999]
+                .iter()
+                .all(|b| b.output.is_none() && b.prompt_top == b.cmd_row)
+        );
+        // Each walk stops at the next tag: one pass over the grid, not one per block.
+        assert!(took < Duration::from_secs(2), "list took {took:?}");
+        // Scrolled to the top: the viewport and 8 rows under it, each block one row.
+        term.scroll_display(Scroll::Top);
+        let started = Instant::now();
+        let (views, _) = visible(&term, None);
+        let took = started.elapsed();
+        assert_eq!(views.len(), 18);
+        for (i, v) in views.iter().enumerate() {
+            assert_eq!((v.prompt, v.output), ((i as i32, i as i32), None), "{v:?}");
+        }
+        assert!(took < Duration::from_millis(200), "visible took {took:?}");
+    }
+
+    #[test]
+    fn a_d_right_after_an_a_is_ignored() {
+        let mut sh = Shell::new();
+        sh.prompt()
+            .feed(b"sleep\r\n")
+            .feed(&c(Some("sleep")))
+            .feed(b"x\r\n");
+        // A prompt start with no B or C, then D (a storm of such pairs scans nothing): not the
+        // running command's end.
+        for _ in 0..3 {
+            sh.feed(A).feed(&d(Some(0)));
+        }
+        assert_eq!(sh.blocks()[0].outcome, Outcome::Running);
+        // A D before the prompt starts (as zsh's precmd sends it) still ends it.
+        let mut sh2 = Shell::new();
+        sh2.prompt()
+            .feed(b"sleep\r\n")
+            .feed(&c(Some("sleep")))
+            .feed(b"x\r\n")
+            .feed(&d(Some(0)))
+            .prompt();
+        assert_eq!(sh2.blocks()[0].outcome, Outcome::Ok);
     }
 }

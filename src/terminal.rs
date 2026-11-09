@@ -802,26 +802,26 @@ impl TerminalCore {
         }
     }
 
-    /// Every command block in the grid, oldest first (none on the alternate screen).
+    /// Every command block in the grid, oldest first (none on the alternate screen). Reads the
+    /// whole scrollback under the Term lock: on a keypress or off the UI thread only, never per
+    /// frame (`snapshot_with_blocks` is the per-frame read).
     #[allow(dead_code)] // used in M11l tasks 4 and 5
     pub fn blocks(&self) -> Vec<Block> {
         blocks::list(&self.shared.lock().term)
     }
 
-    /// Block `id`'s output text; none when it is gone. Reads the whole scrollback: call it off
-    /// the UI thread.
+    /// Block `id`'s output text; none when it is gone. Finds it with a column-0 scan, then
+    /// reads its rows: call it off the UI thread.
     #[allow(dead_code)] // used in M11l task 5
     pub fn block_output(&self, id: &str) -> Option<String> {
         blocks::output_text(&self.shared.lock().term, id)
     }
 
-    /// Block `id`'s command line, if it is still in the grid and was recorded.
+    /// Block `id`'s command line, if it is still in the grid and was recorded (one column-0
+    /// scan; only the matching tag is decoded).
     #[allow(dead_code)] // used in M11l task 5
     pub fn block_cmd(&self, id: &str) -> Option<String> {
-        blocks::list(&self.shared.lock().term)
-            .into_iter()
-            .find(|b| b.id == id)?
-            .cmd
+        blocks::block_cmd(&self.shared.lock().term, id)
     }
 
     /// A prompt is shown and where typing starts at it is known (false after a reattach until
@@ -911,7 +911,15 @@ impl Replica {
             match self.apply(frame, shared) {
                 Step::Continue => {}
                 // Through the pump, so it stays in order with a `Detach`.
-                Step::Reattach => self.commands.send(Command::Attach),
+                Step::Reattach => {
+                    // Out of step: where typing starts at the prompt is no longer known (so no
+                    // rerun) until the next prompt after the new snapshot.
+                    let mut guard = shared.lock();
+                    guard.tagger = Tagger::new();
+                    guard.marks = MarkScanner::new();
+                    drop(guard);
+                    self.commands.send(Command::Attach);
+                }
                 // Status frames from before the snapshot (or dropped with an overflowed
                 // stream) never arrive: ask. Asked after the snapshot came, so the answer is at
                 // least as new as it, and the frames after it apply on top.
@@ -2331,18 +2339,34 @@ mod daemon_tests {
                 // A new prompt (the replica's tagger knows it), then a gap: re-attach.
                 vec![
                     tagged_snap(0, at_prompt("ls").as_bytes()),
-                    out(1, &new_prompt),
+                    out(1, &format!("\r\nseen{new_prompt}")),
                     out(3, "gap"),
                 ],
-                vec![tagged_snap(10, at_prompt("pwd").as_bytes())],
+                // The re-attach's snapshot waits for the first input; the third attach (after
+                // the `Resync`) gets nothing.
+                vec![],
             ],
-            // Typing: the shell draws a new prompt.
-            vec![vec![out(11, &new_prompt)]],
+            vec![
+                vec![tagged_snap(10, at_prompt("pwd").as_bytes())],
+                // Typing: the shell draws a new prompt.
+                vec![out(11, &new_prompt)],
+                vec![Frame::Resync { id: 7 }],
+            ],
         );
         let client = DaemonClient::connect(&path).unwrap();
         let (tx, _rx) = unbounded();
         let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
         let cmds = || -> Vec<Option<String>> { core.blocks().into_iter().map(|b| b.cmd).collect() };
+        // The prompt before the gap was known; from the gap on it is not, snapshot or not.
+        assert!(eventually(|| core
+            .text(grid::TextScope::All)
+            .contains("seen")));
+        assert!(
+            eventually(|| !core.prompt_ready()),
+            "still ready after the gap"
+        );
+        assert!(!core.cursor_at_input_start());
+        core.input(b"x");
         assert!(
             eventually(|| cmds() == [Some("pwd".to_string())]),
             "{:?}",
@@ -2356,23 +2380,34 @@ mod daemon_tests {
         core.input(b"\r");
         assert!(eventually(|| core.prompt_ready()));
         assert!(core.cursor_at_input_start());
+        // A `Resync` forgets it too.
+        core.input(b"y");
+        assert!(
+            eventually(|| !core.prompt_ready()),
+            "still ready after Resync"
+        );
         drop(core);
-        assert_eq!(fake.join().unwrap(), 2);
+        assert_eq!(fake.join().unwrap(), 3);
     }
 
     #[test]
     fn the_service_and_replica_tag_alike() {
         let (_d, path) = daemon("t-alike");
         let client = DaemonClient::connect(&path).unwrap();
-        // Waits so the replica's first snapshot comes before the output: it tags it itself.
-        let script = r"sleep 0.5; printf '\033]133;A\007dir\n$ \033]133;B\007ls\n\033]133;C;cmdline_url=ls\007a\nb\n\033]133;D;0\007\033]133;A\007$ \033]133;B\007false\n\033]133;C;cmdline_url=false\007\033]133;D;2\007\033]133;A\007$ \033]133;B\007'; sleep 20";
-        let create = mux_proto::Create {
+        // Prints once the replica has its first snapshot (the file appears): it tags the
+        // output itself.
+        let go = temp_sock("t-alike-go").with_file_name("go");
+        let script = r#"while [ ! -e "$GO" ]; do sleep 0.02; done; printf '\033]133;A\007dir\n$ \033]133;B\007ls\n\033]133;C;cmdline_url=ls\007a\nb\n\033]133;D;0\007\033]133;A\007$ \033]133;B\007false\n\033]133;C;cmdline_url=false\007\033]133;D;2\007\033]133;A\007$ \033]133;B\007'; sleep 20"#;
+        let mut create = mux_proto::Create {
             program: Some(vec!["/bin/sh".into(), "-c".into(), script.into()]),
             ..sh_create(40, 8)
         };
+        create.env.insert("GO".into(), go.display().to_string());
         let (tx, _rx) = unbounded();
         let replica =
             TerminalCore::create_daemon(client.clone(), create, tx, Theme::default()).unwrap();
+        assert!(eventually(|| replica.is_drawn()));
+        std::fs::write(&go, b"").unwrap();
         assert!(eventually(
             || replica.prompt_ready() && replica.blocks().len() == 2
         ));
