@@ -11033,8 +11033,11 @@ fn welcome_checking_scene() {
 ///
 /// Panics unless ↓ four times from claude wraps round to the folder row and ↑ then chooses
 /// Plain terminal (the button saying `Open Terminal`); Esc closes the card and gives the
-/// terminal the keyboard; a click on the scrim closes it; ⌘K's palette replaces it; and
-/// losing the keyboard (the terminal focused from code) leaves it open.
+/// terminal the keyboard; a click on the scrim closes it; ⌘K's palette replaces it; the
+/// focused tab given the keyboard from code (`focus_active`) leaves it open with the keyboard;
+/// ⌘T, ⌘N and the tab bar's + (in the top band) open terminals behind it while it keeps the
+/// keyboard, and Esc then gives it to the newest; and ⌘W closes the card, not the only
+/// terminal.
 fn welcome_keys_scene() {
     use crate::welcome_items::{Origin, Row};
     use std::cell::{Cell, RefCell};
@@ -11104,23 +11107,134 @@ fn welcome_keys_scene() {
                 palette_of(cx, &ws).is_none(),
                 "{n}: it replaces the palette"
             );
+            // Code handing the keyboard to the focused tab (a select, a new terminal, a
+            // script) leaves it with the card, which stays open.
             cx.update_window(window, |_, window, cx| {
-                use gpui::Focusable;
-                let ws = ws.read(cx);
-                let active = ws.sessions.active().expect("a terminal");
-                active.view.focus_handle(cx).focus(window, cx);
+                ws.update(cx, |ws, cx| ws.focus_active(window, cx))
             })
-            .expect("focus the terminal");
+            .expect("focus the active tab");
             settle(cx, window);
             assert!(
                 welcome_of(cx, &ws).is_some(),
-                "{n}: losing the keyboard leaves it open"
+                "{n}: focusing the active tab leaves it open"
+            );
+            assert!(
+                welcome_focused(cx, window, &ws),
+                "{n}: the card keeps the keyboard"
+            );
+            assert!(
+                !active_terminal_focused(cx, window, &ws),
+                "{n}: the terminal behind it doesn't type"
             );
             slot.borrow_mut().take();
         };
         let shot = render_with(&theme, dims, build, act);
         save_shot("welcome-keys", slug, &shot);
+
+        // ⌘T, ⌘N and the tab bar's + (in the top band) open terminals behind the card, which
+        // keeps the keyboard; Esc then gives it to the newest. Not shot: real shells.
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let over = Rc::new(Cell::new(0));
+        let build = welcome_build(
+            theme,
+            crate::presets::builtins(),
+            false,
+            slot.clone(),
+            over.clone(),
+        );
+        let n = format!("welcome-keys-{slug}-behind");
+        render_with(&theme, dims, build, move |cx, window| {
+            let ws = slotted(&slot);
+            cx.update(|cx| cx.bind_keys(crate::new_bindings()));
+            let first = Origin::FirstRun { over: over.get() };
+            let count = |cx: &mut VisualTestAppContext| welcome_layout(cx, &ws).0.len();
+            open_welcome_on(cx, window, &ws, first);
+            for (keys, want) in [("cmd-t", 2), ("cmd-n", 3)] {
+                press_keys(cx, window, keys);
+                assert_eq!(count(cx), want, "{n}: {keys} opened a terminal");
+                assert!(welcome_of(cx, &ws).is_some(), "{n}: {keys} leaves it open");
+                assert!(
+                    welcome_focused(cx, window, &ws),
+                    "{n}: the card keeps the keyboard after {keys}"
+                );
+            }
+            press_keys(cx, window, "escape");
+            assert!(welcome_of(cx, &ws).is_none(), "{n}: Esc closes it");
+            let newest = welcome_layout(cx, &ws).0.into_iter().max();
+            let active = cx.read(|cx| ws.read(cx).sessions.active().map(|s| s.id));
+            assert_eq!(active, newest, "{n}: the newest terminal is the active one");
+            assert!(
+                active_terminal_focused(cx, window, &ws),
+                "{n}: the newest terminal types after Esc"
+            );
+
+            // The tab bar's +, in the top band (not under the scrim): a click there still
+            // opens a tab.
+            open_welcome_on(cx, window, &ws, first);
+            let right = 960.0 - GAP - 1.0;
+            let plus = point(
+                px(right - PLUS_FROM_EDGE),
+                px(GAP + 1.0 + ui_tokens::size::TAB_BAR / 2.0),
+            );
+            cx.simulate_click(window, plus, gpui::Modifiers::none());
+            settle(cx, window);
+            assert_eq!(count(cx), 4, "{n}: the band's + opened a tab");
+            assert!(welcome_of(cx, &ws).is_some(), "{n}: the + leaves it open");
+            assert!(
+                welcome_focused(cx, window, &ws),
+                "{n}: the card keeps the keyboard after the +"
+            );
+            slot.borrow_mut().take();
+        });
+
+        // ⌘W while the card has the keyboard closes the card, not the only terminal (fuxx
+        // would quit with it).
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let over = Rc::new(Cell::new(0));
+        let build = welcome_build(
+            theme,
+            crate::presets::builtins(),
+            false,
+            slot.clone(),
+            over.clone(),
+        );
+        let n = format!("welcome-keys-{slug}-close");
+        render_with(&theme, dims, build, move |cx, window| {
+            let ws = slotted(&slot);
+            let first = Origin::FirstRun { over: over.get() };
+            open_welcome_on(cx, window, &ws, first);
+            press_keys(cx, window, "cmd-w");
+            assert!(welcome_of(cx, &ws).is_none(), "{n}: ⌘W closes the card");
+            assert_eq!(
+                welcome_layout(cx, &ws).0,
+                vec![over.get()],
+                "{n}: the terminal stays"
+            );
+            assert!(
+                cx.update_window(window, |_, _, _| ()).is_ok(),
+                "{n}: the window stays (fuxx doesn't quit)"
+            );
+            assert!(
+                active_terminal_focused(cx, window, &ws),
+                "{n}: the terminal types after ⌘W"
+            );
+            slot.borrow_mut().take();
+        });
     }
+}
+
+/// Whether the open Welcome card has the keyboard.
+fn welcome_focused(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+) -> bool {
+    use gpui::Focusable;
+    let card = welcome_of(cx, ws).expect("the card is open");
+    cx.update_window(window, |_, window, cx| {
+        card.focus_handle(cx).is_focused(window)
+    })
+    .expect("read the focus")
 }
 
 /// The Welcome card in a small window, in both themes: `welcome-narrow`, 480 × 420, nine

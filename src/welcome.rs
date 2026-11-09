@@ -38,7 +38,7 @@ use crate::welcome_items::{
     Origin, PLAIN_TERMINAL, Row, SHORTCUTS, SKIP, SUBTITLE, TITLE, default_row, pick_effect, rows,
     start_label, start_launch, status_word, step,
 };
-use crate::workspace::{At, Opened, Overlay, Workspace, folder_panel};
+use crate::workspace::{At, CloseSession, Opened, Overlay, Workspace, folder_panel};
 
 /// The card's width (less in a narrow window) and its inner padding.
 const CARD_WIDTH: f32 = 520.0;
@@ -716,6 +716,9 @@ impl Render for Welcome {
             .track_focus(&self.focus)
             .key_context("Welcome")
             .on_key_down(cx.listener(Self::on_key_down))
+            // ⌘W (Close Tab) closes the card, not the terminal behind it: on a first run that is
+            // the only one, and fuxx would quit with it.
+            .on_action(cx.listener(|_, _: &CloseSession, _, cx| cx.emit(WelcomeEvent::Skip)))
             // Neither the scrim (a click there skips) nor anything under it gets its clicks.
             .occlude()
             .child(
