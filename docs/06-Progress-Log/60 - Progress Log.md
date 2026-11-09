@@ -14,13 +14,40 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11l); next M11l. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, not designed yet), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-09 — M11l command blocks built, reviewed, merged and pushed
+- **Did:** Designed (note 63, every call AI's except the chip's shape) and planned M11l, then built it task by task with
+  a fresh builder and reviewer each: OSC 133 marks read from the raw bytes and kept as hidden tags in the grid itself
+  (so reflow, scrollback and the service's snapshot carry them); a zsh integration injected through `ZDOTDIR` without
+  touching your dotfiles, with the `command-blocks` setting as the off switch; a gutter bar per command (red when it
+  failed), a hairline between commands and a hover chip with Copy command / Copy output / Rerun (types the command,
+  never presses Return); ⇧⌘↑ / ⇧⌘↓ to jump, ⇧⌘C to copy output; palette and Help rows. Your two requests along the
+  way: a darker tab bar (the empty tab area was hard to tell from the tab box), and the one-row chip, chosen from
+  mockups ("oke begitu saja"), which leaves a right prompt visible. Reviews caught and fixed: prompts joining the
+  previous output (PROMPT_SP), a long command never becoming a block, the chip closing on any output, guessable
+  Rerun ids (now a random seed), two A marks per prompt with pure, and, in the final review, `exec zsh` leaving a
+  block running forever and other precmd hooks' prints landing in the finished command's output. Your powerlevel10k
+  bug (only the first command got a block) was root-caused: p10k rebuilds `PROMPT` at every prompt and overwrote the
+  marks; the integration now marks at every prompt and uses p10k's own shell integration. The title-area ui-shot
+  that failed on master too was M11i's removed sidebar edge that the footer model still subtracted; fixed, and the
+  check reads every device pixel. 1251 tests pass (1 ignored: the opt-in real-p10k test, which passed against your
+  install in a temp HOME), clippy (both) adds no warnings, the full ui-shots set passes (145). What the build
+  settled and its limits: note 63's "M11l as built" and "Limits". **Collapse is not in M11l** (alacritty can't fold
+  rows). Not released on its own (one release after M11n).
+- **Also (your decisions, 2026-11-09):** renumbered: **M11m = Title bar** (sidebar open: the sidebar icon at the right
+  edge of the sidebar's top band and the title "the Fuxx?" centred there, 🔔 ⚙ stay in the footer; collapsed: the
+  title hidden, the workspace name centred in the top band, [🔔] [⚙] [sidebar] at the far right; not designed yet)
+  and **M11n = Performance**. The one combined release (M11i–M11n) ships after M11n ("push the release after
+  performance milestone"); a chores round is planned after it.
+- **Next:** M11m (title bar): design it with you first; the on-screen check of note 63's 22 items waits for the
+  release.
 
 ### 2026-11-09 — M11k first-run screen built, reviewed, merged and pushed
 - **Did:** Designed (note 62, every call AI's) and planned M11k, then built it task by task with a fresh builder and

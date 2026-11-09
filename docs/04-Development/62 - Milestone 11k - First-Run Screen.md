@@ -5,7 +5,7 @@ status: built
 
 # 62 - Milestone 11k - First-Run Screen (design)
 
-**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1159 tests; every detail AI's call; you skipped the design questions). Not released on its own: one release after M11l. On-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11k Plan - First-Run Screen]]
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1159 tests; every detail AI's call; you skipped the design questions). Not released on its own: one release after M11n. On-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11k Plan - First-Run Screen]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout, a command palette, a first-run screen…").
 Comes after M11j (merged), before M11l.
 
@@ -345,7 +345,7 @@ Re-reading the design as the builder who must plan it, these were the places the
     Esc skip`; buttons `Skip`, `Start {name}`, `Open Terminal`.
 15. **Existing screenshots that change:** `overlays` (new arm); `help` only if it checks the menu (it doesn't: the
     panel's list is bindings, unchanged). No other scene changes pixels: `for_shots` starts `welcomed = true`.
-16. **Version:** no release of its own; it ships in the one release after M11l (your rule).
+16. **Version:** no release of its own; it ships in the one release after M11n (your rule).
 
 ## Left to the builder
 

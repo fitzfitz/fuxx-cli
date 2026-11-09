@@ -13,10 +13,10 @@ updated: 2026-11-09
 |---|---|
 | **Design (the spec)** | [[62 - Milestone 11k - First-Run Screen]] (incl. "Settled before planning") |
 | **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1159 tests); release with M11l; on-screen check pending |
-| **Tasks done** | 6 / 7 (Task 6, the release, is folded into the one release after M11l) |
+| **Tasks done** | 6 / 7 (Task 6, the release, is folded into the one release after M11n) |
 | **▶ Pick up here** | Nothing to build. Your 18-item on-screen check in note 62 after the combined release |
 | **Decisions used** | Yours (2026-11-08): a first-run screen — pick a folder, start an agent, learn three shortcuts. Everything else: AI's calls in note 62 (you skipped the design questions). |
-| **Needs your eyes** | 👀 Task 6 (folded into the one release after M11l), then the 15-item on-screen check in note 62 |
+| **Needs your eyes** | 👀 Task 6 (folded into the one release after M11n), then the 15-item on-screen check in note 62 |
 
 **Goal:** On a first run a Welcome card over the first terminal lets you pick a folder, start an agent preset (marked
 by whether it's installed) or a plain terminal there, and shows ⌘K, ⌘N, ⇧⌘U; Help → Welcome to fuxx reopens it.
@@ -286,9 +286,9 @@ expectations that name the old label, if any).
 - [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
   full `__ui-shots` green; a whole-branch review; then merge `m11k-first-run` into `master` and push.
 
-### Task 6: Release — folded into the one release after M11l
+### Task 6: Release — folded into the one release after M11n
 
-- [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: one release after M11l
+- [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: one release after M11n
   (your rule, 2026-11-08).
 - [ ] You: the 15-item on-screen checklist in note 62 (after the combined release).
 

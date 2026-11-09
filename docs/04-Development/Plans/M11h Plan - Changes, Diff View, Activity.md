@@ -13,10 +13,10 @@ updated: 2026-11-08
 |---|---|
 | **Design (the spec)** | [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]] (the M11h parts, incl. "M11h settled before planning") |
 | **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1089 tests); release with M11l; on-screen check pending |
-| **Tasks done** | 8 / 9 (Task 8, the release, is folded into the one release after M11l) |
+| **Tasks done** | 8 / 9 (Task 8, the release, is folded into the one release after M11n) |
 | **▶ Pick up here** | Nothing to build. Your 14-item on-screen check in note 59 after the combined release |
 | **Decisions used** | Yours (2026-11-08): note 59's design (Changes since the last commit, a diff mode for file tabs, Activity, two milestones), M11h after M11i. Everything else: AI's calls in note 59's "M11h settled before planning" (you skipped the design questions). |
-| **Needs your eyes** | 👀 Task 8 (folded into the one release after M11l), then the 14-item on-screen check in note 59 |
+| **Needs your eyes** | 👀 Task 8 (folded into the one release after M11n), then the 14-item on-screen check in note 59 |
 
 **Goal:** the right sidebar gets its panel tabs (Files · Changes · Activity); Changes lists what differs from the
 last commit with line counts; a click opens the file tab in a new diff mode (old and new lines in one column,
@@ -442,9 +442,9 @@ note the whole note); `impl Workspace { pub(crate) fn render_activity_panel(&sel
 - [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
   full `__ui-shots` green; a whole-branch review; then merge `m11h-changes-activity` into `master` and push.
 
-### Task 8: Release — folded into the one release after M11l
+### Task 8: Release — folded into the one release after M11n
 
-- [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: one release after M11l
+- [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: one release after M11n
   (your rule, 2026-11-08).
 - [ ] You: the 14-item on-screen checklist in note 59 (after the combined release).
 

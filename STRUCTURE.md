@@ -126,6 +126,10 @@ src/
 ├── welcome.rs            M11k · the Welcome card: folder, agents, three shortcuts; opening it on a first run or from Help; the pick
 ├── welcome_items.rs      M11k · the card's rules: rows, the default row, what a pick opens and closes, the copy (pure)
 ├── agent_detect.rs       M11k · is a preset's program on your login shell's PATH? (pure core; one capped background read)
+├── shell_marks.rs        M11l · OSC 133 mark scanner over raw bytes (A, B, C with the command, D with the exit code; pure)
+├── blocks.rs             M11l · command tags kept as hidden hyperlinks on the grid; `advance` splits at each mark; list, visible, output text, prompt_ready
+├── shell_integration.rs  M11l · installs the zsh scripts, `ZDOTDIR` env for a login zsh, the `command-blocks` switch
+├── block_view.rs         M11l · the view's pure rules: jump, rerun bytes, chip labels, width and right-prompt limit, colours
 ├── overlay_panel.rs      M11 · the shared panel and filter box (switcher, host picker, address box)
 ├── sidebar_toggle.rs     Follow-up · the sidebar button beside the window buttons: position rule, slide curve
 ├── tab_menu.rs           Follow-up · the right-click row menu: actions (close others / to the right), bulk-close text, overlay
@@ -180,7 +184,7 @@ src/
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
 21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6, 150 after M6b + M7 + M8, 243 after M9, and 399 after M10a.
 
-`assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits.
+`assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits. `assets/shell-integration/zsh/` the zsh scripts for command blocks (`.zshenv`, `fuxx-integration.zsh`; M11l), compiled into the binary.
 
 Example `~/.config/fuxx/config` (all optional; fuxx never writes it):
 

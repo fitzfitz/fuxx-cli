@@ -13,10 +13,10 @@ updated: 2026-11-09
 |---|---|
 | **Design (the spec)** | [[61 - Milestone 11j - Command Palette]] (incl. "Settled before planning") |
 | **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1141 tests); release with M11l; on-screen check pending |
-| **Tasks done** | 7 / 8 (Task 7, the release, is folded into the one release after M11l) |
+| **Tasks done** | 7 / 8 (Task 7, the release, is folded into the one release after M11n) |
 | **▶ Pick up here** | Nothing to build. Your on-screen check in note 61 after the combined release |
 | **Decisions used** | Yours (2026-11-08): a ⌘K palette for actions, workspaces, files and settings that replaces ⌘P. Everything else: AI's calls in note 61 (you skipped the design questions). |
-| **Needs your eyes** | 👀 Task 7 (folded into the one release after M11l), then the 19-item on-screen check in note 61 |
+| **Needs your eyes** | 👀 Task 7 (folded into the one release after M11n), then the 19-item on-screen check in note 61 |
 
 **Goal:** ⌘K opens one search over actions, workspaces, files and settings; ⌘P opens it on Workspaces; the ⌘P
 switcher panel goes.
@@ -449,9 +449,9 @@ query or `paths` changed and the scope shows files; answers for an older generat
 - [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
   full `__ui-shots` green; a whole-branch review; then merge `m11j-command-palette` into `master` and push.
 
-### Task 7: Release — folded into the one release after M11l
+### Task 7: Release — folded into the one release after M11n
 
-- [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: one release after M11l
+- [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: one release after M11n
   (your rule, 2026-11-08).
 - [ ] You: the 19-item on-screen checklist in note 61 (after the combined release).
 
