@@ -15563,6 +15563,40 @@ fn cursor_scenes() {
                 "{n}: back in focus the bar is solid at first, saw {:?}",
                 pixel_at(&shot, rig.dims, x, mid)
             );
+            // A setting that stops the breath, turned back on at rest (the glow, Animations,
+            // Reduce motion off): breathing again at once, solid at first.
+            type Toggle = fn(&mut CursorRig, bool);
+            let toggles: [(&str, Toggle); 3] = [
+                ("the glow", |rig, on| rig.appearance(|a| a.cursor_glow = on)),
+                ("Animations", |rig, on| {
+                    rig.appearance(|a| a.animations = on)
+                }),
+                ("Reduce motion off", |rig, on| {
+                    rig.cx.update(|cx| cx.set_reduce_motion(!on))
+                }),
+            ];
+            for (label, set) in toggles {
+                rest(&mut rig);
+                assert_eq!(
+                    rig.read(|v| v.cursor_frames()),
+                    Frames::None,
+                    "{n}: {label}"
+                );
+                set(&mut rig, false);
+                rig.frame();
+                set(&mut rig, true);
+                let shot = rig.frame();
+                assert_eq!(
+                    rig.read(|v| v.cursor_frames()),
+                    Frames::Breath,
+                    "{n}: {label} back on ends the rest"
+                );
+                assert!(
+                    is_colour(&shot, rig.dims, x, mid, own),
+                    "{n}: {label} back on, the bar is solid at first, saw {:?}",
+                    pixel_at(&shot, rig.dims, x, mid)
+                );
+            }
         }
 
         // Unfocused, and focused in a window that isn't key: a still 1 px outline.
