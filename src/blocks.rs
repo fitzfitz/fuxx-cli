@@ -420,7 +420,9 @@ pub fn list<L>(term: &Term<L>) -> Vec<Block> {
             floor = *row + 1i32;
             continue;
         }
-        let stop = tags.get(i + 1).map_or(bottom, |(next, _)| *next - 1i32);
+        let stop = tags.get(i + 1).map_or(bottom, |(next, next_tag)| {
+            stop_before(grid, tag, *row, *next, next_tag.prompt_lines)
+        });
         let (b, cmd_end) = block(grid, *row, tag.clone(), cursor, Bounds { floor, stop });
         floor = last_row(&b, cmd_end) + 1i32;
         blocks.push(b);
@@ -460,7 +462,10 @@ fn find_block<L>(term: &Term<L>, id: &str) -> Option<Block> {
             last_row(&b, cmd_end) + 1i32
         }
     };
-    let stop = next_tag_row(grid, row, bottom).map_or(bottom, |r| r - 1i32);
+    let stop = next_tag_row(grid, row, bottom).map_or(bottom, |r| {
+        let next_p = tag_at(grid, r).map_or(0, |t| t.prompt_lines);
+        stop_before(grid, &tag, row, r, next_p)
+    });
     Some(block(grid, row, tag, cursor, Bounds { floor, stop }).0)
 }
 
@@ -564,7 +569,10 @@ pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Opti
             true => next_tag_row(grid, row, below),
             false => tags.get(i + 1).map(|(r, _)| *r),
         };
-        let stop = next.map_or(below, |r| (r - 1i32).min(below));
+        let stop = next.map_or(below, |r| {
+            let next_p = tag_at(grid, r).map_or(0, |t| t.prompt_lines);
+            stop_before(grid, tag, row, r, next_p).min(below)
+        });
         let floor_here = match chosen_outside == Some(row) && row > last {
             // Under the range read: the rows between are unread, so its prompt goes no further
             // up than a `C` would look.
@@ -600,6 +608,17 @@ pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Opti
 struct Bounds {
     floor: Line,
     stop: Line,
+}
+
+/// The last row the block tagged `tag` on `row` may use, with the next tag on `next` (its
+/// prompt `next_p` logical lines): the row above that tag; for a running command, the row above
+/// that tag's prompt. A running command's output runs to the cursor, so one stranded without a
+/// `D` would otherwise take the next block's prompt rows.
+fn stop_before(grid: &Grid<Cell>, tag: &Tag, row: Line, next: Line, next_p: u8) -> Line {
+    match tag.state {
+        BlockState::Running => lines_up(grid, next, next_p.into(), row + 1i32) - 1i32,
+        BlockState::Done | BlockState::Prompt => next - 1i32,
+    }
 }
 
 /// The block tagged on `row`, and the last row of its command, within `bounds` (rows past them
@@ -1467,15 +1486,21 @@ mod tests {
         let blocks = sh.blocks();
         assert_eq!(blocks.len(), 2, "{blocks:?}");
         assert_apart(&blocks);
-        assert_eq!(output_text(&sh.term, &blocks[0].id).as_deref(), Some("a"));
+        // The forged tag is the nearest to `ls`'s D, which is ignored on a finished tag, so
+        // `ls` stays running and, like any stranded running block, leaves the next tag's
+        // prompt (p=8, as far as the command row above) its rows.
+        assert_eq!(blocks[0].outcome, Outcome::Running);
+        assert_eq!(output_text(&sh.term, &blocks[0].id).as_deref(), Some(""));
         assert_eq!(output_text(&sh.term, "x").as_deref(), Some("c"));
         assert_eq!(
-            blocks[1].prompt_top, blocks[1].cmd_row,
+            blocks[1].prompt_top,
+            blocks[0].cmd_row + 1,
             "p=8 stops at the block above"
         );
         let (views, _) = visible(&sh.term, None);
         assert_eq!(views.len(), 2);
-        assert!(views[0].output.unwrap().1 < views[1].prompt.0, "{views:?}");
+        assert_eq!(views[0].output, None, "{views:?}");
+        assert!(views[0].prompt.1 < views[1].prompt.0, "{views:?}");
     }
 
     #[test]
@@ -1514,6 +1539,51 @@ mod tests {
             assert_eq!((v.prompt, v.output), ((i as i32, i as i32), None), "{v:?}");
         }
         assert!(took < Duration::from_millis(200), "visible took {took:?}");
+    }
+
+    #[test]
+    fn a_stranded_running_block_leaves_the_next_prompt_its_rows() {
+        let mut sh = Shell::new();
+        // `sleep` never reports its end (a bare A after it, as a recorded session replays),
+        // then a command at a two-line prompt.
+        sh.prompt()
+            .feed(b"sleep\r\n")
+            .feed(&c(Some("sleep")))
+            .feed(b"x\r\n")
+            .feed(A)
+            .feed(b"dir\r\n$ ")
+            .feed(B)
+            .feed(b"ls\r\n")
+            .feed(&c(Some("ls")))
+            .feed(b"y\r\n")
+            .feed(&d(Some(0)))
+            .prompt();
+        let blocks = sh.blocks();
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        let (stranded, next) = (&blocks[0], &blocks[1]);
+        assert_eq!(stranded.outcome, Outcome::Running);
+        // The next block keeps its two prompt rows; the stranded output stops above them.
+        assert_eq!(next.prompt_top, next.cmd_row - 1, "{blocks:?}");
+        assert_eq!(
+            stranded.output,
+            Some((stranded.cmd_row + 1, next.prompt_top - 1)),
+            "{blocks:?}"
+        );
+        assert_apart(&blocks);
+        assert_eq!(output_text(&sh.term, &stranded.id).as_deref(), Some("x"));
+        assert_eq!(output_text(&sh.term, &next.id).as_deref(), Some("y"));
+        // The view reads them alike.
+        let (views, _) = visible(&sh.term, None);
+        assert_eq!(views.len(), 2, "{views:?}");
+        assert_eq!(views[1].prompt.0, next.prompt_top.0, "{views:?}");
+        assert_eq!(views[0].output.map(|o| o.1), Some(next.prompt_top.0 - 1));
+        // Chosen while its command row is just above the view, it stops there too.
+        sh.feed(b"\r\n");
+        let (views, _) = visible(&sh.term, Some(&stranded.id));
+        assert_eq!(views.len(), 2, "{views:?}");
+        assert_eq!(views[0].prompt, (-1, -1), "{views:?}");
+        assert_eq!(views[1].prompt.0, 1, "{views:?}");
+        assert_eq!(views[0].output, Some((0, 0)), "{views:?}");
     }
 
     #[test]
