@@ -804,41 +804,72 @@ impl TerminalCore {
     /// Every command block in the grid, oldest first (none on the alternate screen). Reads the
     /// whole scrollback under the Term lock: on a keypress or off the UI thread only, never per
     /// frame (`snapshot_with_blocks` is the per-frame read).
-    #[allow(dead_code)] // used in M11l tasks 4 and 5
     pub fn blocks(&self) -> Vec<Block> {
         blocks::list(&self.shared.lock().term)
     }
 
     /// Block `id`'s output text; none when it is gone. Finds it with a column-0 scan, then
     /// reads its rows: call it off the UI thread.
-    #[allow(dead_code)] // used in M11l task 5
     pub fn block_output(&self, id: &str) -> Option<String> {
         blocks::output_text(&self.shared.lock().term, id)
     }
 
     /// Block `id`'s command line, if it is still in the grid and was recorded (one column-0
     /// scan; only the matching tag is decoded).
-    #[allow(dead_code)] // used in M11l task 5
     pub fn block_cmd(&self, id: &str) -> Option<String> {
         blocks::block_cmd(&self.shared.lock().term, id)
     }
 
     /// A prompt is shown and where typing starts at it is known (false after a reattach until
-    /// the next prompt).
-    #[allow(dead_code)] // used in M11l task 5
+    /// the next prompt). (The view reads it through `rerun_facts`.)
+    #[cfg(test)]
     pub fn prompt_ready(&self) -> bool {
         self.shared.lock().tagger.prompt_ready()
     }
 
     /// The cursor is where typing started at the shown prompt: nothing has been typed there.
-    #[allow(dead_code)] // used in M11l task 5
+    #[cfg(test)]
     pub fn cursor_at_input_start(&self) -> bool {
         let shared = self.shared.lock();
         shared.tagger.input_start() == Some(shared.term.grid().cursor.point)
     }
 
+    /// What Rerun of block `id` depends on, under one lock: whether this terminal's tagger
+    /// wrote the block in this run, the prompt, the cursor and the modes. Cheap (no scan).
+    pub fn rerun_facts(&self, id: &str) -> blocks::RerunFacts {
+        Self::facts(&self.shared.lock(), id)
+    }
+
+    /// `rerun_facts` with block `id`'s command, under the same lock (one column-0 scan: on a
+    /// click or a keypress only).
+    pub fn rerun_facts_and_cmd(&self, id: &str) -> (blocks::RerunFacts, Option<String>) {
+        let shared = self.shared.lock();
+        let facts = Self::facts(&shared, id);
+        (facts, blocks::block_cmd(&shared.term, id))
+    }
+
+    fn facts(shared: &Shared, id: &str) -> blocks::RerunFacts {
+        let mode = *shared.term.mode();
+        blocks::RerunFacts {
+            ours: shared.tagger.issued(id),
+            prompt_ready: shared.tagger.prompt_ready(),
+            at_input_start: shared.tagger.input_start() == Some(shared.term.grid().cursor.point),
+            bracketed: mode.contains(TermMode::BRACKETED_PASTE),
+            alt_screen: mode.contains(TermMode::ALT_SCREEN),
+        }
+    }
+
+    /// Every block (as `blocks`) and the grid lines at the top and bottom of the view, under
+    /// one lock: on a keypress only.
+    pub fn blocks_and_view(&self) -> (Vec<Block>, (Line, Line)) {
+        let shared = self.shared.lock();
+        let grid = shared.term.grid();
+        let top = Line(-(grid.display_offset() as i32));
+        let bottom = top + (grid.screen_lines() as i32 - 1);
+        (blocks::list(&shared.term), (top, bottom))
+    }
+
     /// Scroll the view so grid line `line` is at its top, as far as the history allows.
-    #[allow(dead_code)] // used in M11l task 5
     pub fn scroll_to_line(&self, line: Line) {
         let term = &mut self.shared.lock().term;
         let history = i32::try_from(term.grid().history_size()).unwrap_or(i32::MAX);
@@ -1345,6 +1376,54 @@ mod tests {
         assert_eq!(snap.live_prompt, Some(2));
         // The plain snapshot has no blocks.
         assert!(core.snapshot().blocks.is_empty());
+    }
+
+    #[test]
+    fn rerun_is_offered_only_for_this_run_s_blocks() {
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("sleep 5"),
+            TermDims { cols: 40, rows: 8 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        let text = ONE_COMMAND
+            .replace(r"\033", "\x1b")
+            .replace(r"\007", "\x07")
+            .replace(r"\n", "\r\n");
+        // A program prints a forged tag of its own (OSC 8) claiming a finished `rm` block,
+        // then the shell's own prompt and command follow.
+        let forged = "\x1b]8;id=fuxx-block-9;fuxx-block:?v=1&s=done&p=0&c=1&o=0&x=0&cmd=rm\x1b\\$ rm\x1b]8;;\x1b\\\r\n";
+        core.show_local(forged);
+        core.show_local(&text);
+        let blocks = core.blocks();
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        let (fake, real) = (&blocks[0], &blocks[1]);
+        assert_eq!(fake.cmd.as_deref(), Some("rm"));
+        assert_eq!(real.cmd.as_deref(), Some("ls"));
+        // At the live prompt with nothing typed: the real block may be rerun, the forged not.
+        let facts = core.rerun_facts(&real.id);
+        assert!(
+            facts.ours && facts.prompt_ready && facts.at_input_start,
+            "{facts:?}"
+        );
+        assert!(!facts.alt_screen && !facts.bracketed, "{facts:?}");
+        assert_eq!(
+            crate::block_view::rerun(facts, real.cmd.as_deref()),
+            Ok("ls".to_string())
+        );
+        let facts = core.rerun_facts(&fake.id);
+        assert!(!facts.ours, "{facts:?}");
+        assert_eq!(
+            crate::block_view::rerun(facts, fake.cmd.as_deref()),
+            Err(crate::block_view::Refusal::NotThisRun)
+        );
+        // The modes are read too.
+        core.show_local("\x1b[?2004h");
+        assert!(core.rerun_facts(&real.id).bracketed);
+        core.show_local("\x1b[?1049h");
+        assert!(core.rerun_facts(&real.id).alt_screen);
     }
 
     #[test]
@@ -2387,6 +2466,52 @@ mod daemon_tests {
         );
         drop(core);
         assert_eq!(fake.join().unwrap(), 3);
+    }
+
+    #[test]
+    fn a_reattached_replica_does_not_rerun_older_blocks() {
+        let path = temp_sock("t-rerun");
+        let block = |cmd: &str| {
+            format!("{A}$ {B}{cmd}\r\n\x1b]133;C;cmdline_url={cmd}\x07ok\r\n\x1b]133;D;0\x07")
+        };
+        let fake = scripted_daemon_with_input(
+            &path,
+            vec![
+                // The service's screen: `ls` (its tag). Then `pwd` runs while the window
+                // watches (the window's own tag).
+                vec![
+                    tagged_snap(0, block("ls").as_bytes()),
+                    out(1, &format!("{}{A}$ {B}", block("pwd"))),
+                ],
+                // The re-attach's snapshot: both blocks, as the service tagged them, at a
+                // prompt.
+                vec![tagged_snap(
+                    10,
+                    format!("{}{}{A}$ {B}", block("ls"), block("pwd")).as_bytes(),
+                )],
+            ],
+            // The first input: a gap, so the window re-attaches.
+            vec![vec![out(3, "gap")]],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        let cmds = || -> Vec<Option<String>> { core.blocks().into_iter().map(|b| b.cmd).collect() };
+        let both = vec![Some("ls".to_string()), Some("pwd".to_string())];
+        assert!(eventually(|| cmds() == both), "{:?}", cmds());
+        // `ls` came in the snapshot (no rerun); `pwd` was tagged here (rerun).
+        let blocks = core.blocks();
+        assert!(!core.rerun_facts(&blocks[0].id).ours, "the snapshot's ls");
+        assert!(core.rerun_facts(&blocks[1].id).ours, "this run's pwd");
+        assert!(core.prompt_ready());
+        // A gap: re-attached, both blocks come back from the new snapshot, neither ours.
+        core.input(b"x");
+        assert!(eventually(|| core.snapshot().clears >= 2 && cmds() == both));
+        for b in core.blocks() {
+            assert!(!core.rerun_facts(&b.id).ours, "{b:?}");
+        }
+        drop(core);
+        assert_eq!(fake.join().unwrap(), 2);
     }
 
     #[test]

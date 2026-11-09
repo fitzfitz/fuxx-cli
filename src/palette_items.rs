@@ -238,7 +238,10 @@ const OPEN_BROWSER: &str = "Open Browser\u{2026}";
 pub static COMMANDS: &[Command] = {
     use crate::browser_tab::{FocusAddress, GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::file_tab::{Find, FindNext, FindPrev};
-    use crate::terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
+    use crate::terminal_view::{
+        Copy, CopyCommand, CopyCommandAndOutput, CopyCommandOutput, NextCommand, Paste,
+        PrevCommand, RerunCommand, ScrollPageDown, ScrollPageUp,
+    };
     use crate::workspace::*;
     use crate::{
         ActualSize, Bigger, CheckForUpdates, Hide, Minimize, OpenPreferences, Quit,
@@ -387,6 +390,49 @@ pub static COMMANDS: &[Command] = {
             "",
             T,
             Run::Action(act::<ScrollPageDown>),
+        ),
+        // Command blocks (M11l): the chosen block, else the newest finished one.
+        cmd(
+            "Previous Command",
+            Terminal,
+            "block prompt jump",
+            T,
+            Run::Action(act::<PrevCommand>),
+        ),
+        cmd(
+            "Next Command",
+            Terminal,
+            "block prompt jump",
+            T,
+            Run::Action(act::<NextCommand>),
+        ),
+        cmd(
+            "Copy Command Output",
+            Terminal,
+            "block copy",
+            T,
+            Run::Action(act::<CopyCommandOutput>),
+        ),
+        cmd(
+            "Copy Command",
+            Terminal,
+            "block copy",
+            T,
+            Run::Action(act::<CopyCommand>),
+        ),
+        cmd(
+            "Copy Command and Output",
+            Terminal,
+            "block copy",
+            T,
+            Run::Action(act::<CopyCommandAndOutput>),
+        ),
+        cmd(
+            "Rerun Command",
+            Terminal,
+            "block run again",
+            T,
+            Run::Action(act::<RerunCommand>),
         ),
         cmd(
             "Go to Address Field",
@@ -1839,13 +1885,73 @@ mod tests {
         assert!(COMMANDS.iter().all(|c| c.name != "Show Welcome Tips"));
     }
 
+    const BLOCK_COMMANDS: [&str; 6] = [
+        "Previous Command",
+        "Next Command",
+        "Copy Command Output",
+        "Copy Command",
+        "Copy Command and Output",
+        "Rerun Command",
+    ];
+
+    #[test]
+    fn block_commands_are_found() {
+        let f = Fixture::new();
+        let found = |query: &str| keys(&f.compose(Scope::Actions, query));
+        for query in ["command", "block"] {
+            let got = found(query);
+            for name in BLOCK_COMMANDS {
+                assert!(
+                    got.contains(&Key::Action(name)),
+                    "{query:?} finds {name}: {got:?}"
+                );
+            }
+        }
+        assert!(found("run again").contains(&Key::Action("Rerun Command")));
+        assert!(found("jump").contains(&Key::Action("Previous Command")));
+        for name in BLOCK_COMMANDS {
+            let c = COMMANDS.iter().find(|c| c.name == name).expect(name);
+            assert_eq!(c.place, Place::Terminal, "{name}");
+            assert_eq!(c.group, ShortcutGroup::Terminal, "{name}");
+        }
+        // The three with keys show them.
+        let row = |name: &str| {
+            f.actions
+                .iter()
+                .find(|r| r.name == name)
+                .expect(name)
+                .keys
+                .clone()
+        };
+        assert_eq!(
+            row("Previous Command").as_deref(),
+            Some("\u{21e7}\u{2318}\u{2191}")
+        );
+        assert_eq!(
+            row("Next Command").as_deref(),
+            Some("\u{21e7}\u{2318}\u{2193}")
+        );
+        assert_eq!(
+            row("Copy Command Output").as_deref(),
+            Some("\u{21e7}\u{2318}C")
+        );
+        for name in ["Copy Command", "Copy Command and Output", "Rerun Command"] {
+            assert_eq!(row(name), None, "{name} has no key");
+        }
+        // Not where there is no terminal.
+        let file = action_rows(Focused::File, false, &[], &real_pairs());
+        assert!(!names(&file).contains(&"Rerun Command"));
+    }
+
     #[test]
     fn loose_and_number_matches() {
         let f = Fixture::new();
         let auth = f.compose(Scope::All, "auth.rs");
         assert_eq!(auth[0], Line::Header("Workspaces".into()));
         assert_eq!(auth[1], item(Key::Workspace(10)));
-        let cmd = f.compose(Scope::All, "cmd d");
+        // Keys typed as words find their action. (On All, the command-block rows, whose names
+        // fuzzy-match "cmd d", fill the section first: Split Right is under its "… more".)
+        let cmd = f.compose(Scope::Actions, "cmd d");
         assert!(cmd.contains(&item(Key::Action("Split Right"))));
         let four = f.compose(Scope::All, "#4");
         assert_eq!(keys(&four)[0], Key::Workspace(13));

@@ -20,19 +20,20 @@ use alacritty_terminal::vte::ansi::{self, Rgb};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, Bounds, BoxShadow, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase, Entity,
-    EventEmitter, FocusHandle, Focusable, Font, FontStyle, FontWeight, HitboxBehavior, Hsla,
-    KeyDownEvent, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Rgba, ScrollWheelEvent, SharedString, Subscription, Task, TextAlign,
-    TextRun, TouchPhase, UnderlineStyle, Window, actions, canvas, div, fill, point, prelude::*, px,
-    size,
+    AnyView, App, Bounds, BoxShadow, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase,
+    Entity, EventEmitter, FocusHandle, Focusable, Font, FontStyle, FontWeight, HitboxBehavior,
+    Hsla, KeyDownEvent, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Rgba, ScrollWheelEvent, SharedString, Subscription, Task,
+    TextAlign, TextRun, TouchPhase, UnderlineStyle, Window, actions, canvas, div, fill, point,
+    prelude::*, px, size,
 };
 
 use crate::appearance::{Appearance, CursorFun, CursorShapeSetting};
 use crate::block_view::{
     self, BAR_END_GAP, BAR_RADIUS, CHIP_GAP, CHIP_HEIGHT, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS,
-    GUTTER_BAR, GUTTER_BAR_ACTIVE, GutterHit, SEPARATOR,
+    GUTTER_BAR, GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal, SEPARATOR,
 };
+use crate::blocks::{Block, Outcome};
 use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
 use crate::daemon_client::DaemonClient;
 use crate::grid::{self, GridSnapshot, TextScope};
@@ -40,6 +41,7 @@ use crate::keys;
 use crate::links::Link;
 use crate::mouse::{self, Button, Mods, MouseAction, ScrollAccumulator};
 use crate::pty;
+use crate::sidebar_toggle::Tip;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
 use crate::theme::{Theme, UiColors};
@@ -47,8 +49,23 @@ use crate::ui_tokens::size as ui_size;
 use crate::ui_tokens::text as ui_text;
 
 // Bound in main.rs with the "Terminal" key context. GPUI runs key bindings before `on_key_down`,
-// so these win over the byte mapping.
-actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
+// so these win over the byte mapping. The command-block actions (M11l): ⇧⌘↑ / ⇧⌘↓ / ⇧⌘C; Copy
+// Command, Copy Command and Output and Rerun Command have no keys (the palette, the chip).
+actions!(
+    terminal,
+    [
+        Copy,
+        Paste,
+        ScrollPageUp,
+        ScrollPageDown,
+        PrevCommand,
+        NextCommand,
+        CopyCommandOutput,
+        CopyCommand,
+        CopyCommandAndOutput,
+        RerunCommand
+    ]
+);
 
 /// GPUI's default line height (1.618 x size) is too airy for a terminal.
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
@@ -153,8 +170,16 @@ impl GutterPaint {
     }
 }
 
+/// Where the chip's three buttons were laid out, and whether Rerun is enabled (UI screenshots).
+#[cfg(feature = "ui-shots")]
+pub type ChipButtonsShot = ([Option<Bounds<Pixels>>; 3], Result<(), Refusal>);
+
 /// The chip as `render` lays it out: what it says and where it goes, relative to the pane.
 struct Chip {
+    /// The block it is for.
+    id: String,
+    /// Whether Rerun would type its command now, or why not.
+    rerun: Result<(), Refusal>,
     outcome: Option<(String, Rgb)>,
     cmd: Option<String>,
     buttons: [&'static str; 3],
@@ -231,6 +256,9 @@ pub struct TerminalView {
     chosen_block: Option<String>,
     /// Where the chip was last laid out (written as it prepaints), for the hover.
     chip_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Where its three buttons were laid out (UI screenshots press them).
+    #[cfg(feature = "ui-shots")]
+    chip_button_bounds: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
     /// Hides the chip `CHIP_HIDE_MS` after the pointer left the gutter and the chip; dropped
     /// (cancelled) when it comes back.
     chip_hide: Option<Task<()>>,
@@ -436,6 +464,26 @@ impl TerminalView {
         self.core.blocks().into_iter().map(|b| b.id).collect()
     }
 
+    /// Every block, oldest first.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_blocks(&self) -> Vec<Block> {
+        self.core.blocks()
+    }
+
+    /// Lines the view is scrolled up from the live bottom.
+    #[cfg(feature = "ui-shots")]
+    pub fn display_offset(&self) -> usize {
+        self.core.display_offset()
+    }
+
+    /// The open chip's buttons: where each was laid out, and whether Rerun is enabled (or why
+    /// not).
+    #[cfg(feature = "ui-shots")]
+    pub fn chip_buttons_shot(&self) -> Option<ChipButtonsShot> {
+        let chip = self.chip(&self.core.theme().ui())?;
+        Some((self.chip_button_bounds.get(), chip.rerun))
+    }
+
     /// The redraws the cursor asked for at its last paint.
     #[cfg(feature = "ui-shots")]
     pub fn cursor_frames(&self) -> Frames {
@@ -461,13 +509,12 @@ impl TerminalView {
     }
 
     /// The block picked with ⇧⌘↑ / ⇧⌘↓ or a click on its bar (M11l Task 5), by id.
-    #[allow(dead_code)] // read by the block actions in M11l task 5
+    #[cfg(feature = "ui-shots")]
     pub fn chosen_block(&self) -> Option<&str> {
         self.chosen_block.as_deref()
     }
 
     /// Pick block `id` (or none): its bar runs its whole height in the accent.
-    #[allow(dead_code)] // set by the block keys and gutter clicks in M11l task 5
     pub fn set_chosen_block(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         if self.chosen_block != id {
             self.chosen_block = id;
@@ -533,7 +580,10 @@ impl TerminalView {
             f32::from(grid.top()),
             f32::from(grid.bottom()),
         );
+        let rerun = block_view::rerun(self.core.rerun_facts(id), block.cmd.as_deref()).map(|_| ());
         Some(Chip {
+            id: id.to_string(),
+            rerun,
             outcome: block_view::chip_outcome(block.outcome)
                 .map(|o| (o, block_view::outcome_ink(block.outcome, ui))),
             cmd: block.cmd.as_deref().map(block_view::chip_command),
@@ -726,6 +776,8 @@ impl TerminalView {
             hovered_block: None,
             chosen_block: None,
             chip_bounds: Rc::new(Cell::new(None)),
+            #[cfg(feature = "ui-shots")]
+            chip_button_bounds: Rc::new(Cell::new([None; 3])),
             chip_hide: None,
             #[cfg(feature = "ui-shots")]
             shot_key_window: Cell::new(false),
@@ -946,12 +998,14 @@ impl TerminalView {
 
     fn on_mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
-        // A press on a block's bar never reaches the selection or the program (M11l Task 5
-        // picks the block there).
-        if cx.global::<Appearance>().command_blocks
-            && self.gutter.borrow().hit(e.position).is_some()
-        {
-            return;
+        // A press on a block's bar picks that block (no scroll), and never reaches the
+        // selection or the program.
+        if cx.global::<Appearance>().command_blocks {
+            let hit = self.gutter.borrow().hit(e.position).map(|b| b.id.clone());
+            if let Some(id) = hit {
+                self.set_chosen_block(Some(id), cx);
+                return;
+            }
         }
         // A press in the grid closes the chip and drops the picked block.
         if self.hide_chip() | self.chosen_block.take().is_some() {
@@ -1112,6 +1166,173 @@ impl TerminalView {
         self.core.scroll(scroll);
         cx.notify();
     }
+
+    /// The command-block actions do something: `command-blocks` is on and the alternate screen
+    /// isn't up (M11l §4).
+    fn blocks_active(&self, cx: &App) -> bool {
+        cx.global::<Appearance>().command_blocks && !self.core.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// The block an action applies to (M11l §4): the chosen one, else the newest finished
+    /// one. A chosen block that is gone is dropped, and nothing is done. Reads every block:
+    /// on a keypress only.
+    fn action_block(&mut self, cx: &mut Context<Self>) -> Option<Block> {
+        let blocks = self.core.blocks();
+        let (chosen, gone) = chosen_index(&blocks, self.chosen_block.as_deref());
+        if gone {
+            self.set_chosen_block(None, cx);
+            return None;
+        }
+        let newest_done = blocks.iter().rposition(|b| b.outcome != Outcome::Running);
+        let i = block_view::target(blocks.len(), chosen, newest_done)?;
+        blocks.into_iter().nth(i)
+    }
+
+    /// ⇧⌘↑ / ⇧⌘↓: pick the previous / next block, scrolling its first prompt row to the top
+    /// unless it is all in view; past the newest, back to the bottom with nothing picked.
+    fn jump_to(&mut self, up: bool, cx: &mut Context<Self>) {
+        if !self.blocks_active(cx) {
+            return;
+        }
+        let (blocks, (top, bottom)) = self.core.blocks_and_view();
+        let rows: Vec<_> = blocks
+            .iter()
+            .map(|b| {
+                let last = b.output.map_or(b.cmd_row, |(_, last)| last.max(b.cmd_row));
+                (b.prompt_top, b.prompt_top >= top && last <= bottom)
+            })
+            .collect();
+        // A chosen block that is gone is dropped, and counts as none.
+        let (chosen, gone) = chosen_index(&blocks, self.chosen_block.as_deref());
+        if gone {
+            self.set_chosen_block(None, cx);
+        }
+        match block_view::jump(&rows, chosen, up) {
+            Jump::To(i) => {
+                let (prompt_top, in_view) = rows[i];
+                if !in_view {
+                    self.core.scroll_to_line(prompt_top);
+                }
+                self.chosen_block = Some(blocks[i].id.clone());
+            }
+            Jump::Bottom => {
+                self.chosen_block = None;
+                self.core.scroll(Scroll::Bottom);
+            }
+            Jump::Stay => return,
+        }
+        cx.notify();
+    }
+
+    fn prev_command(&mut self, _: &PrevCommand, _window: &mut Window, cx: &mut Context<Self>) {
+        self.jump_to(true, cx);
+    }
+
+    fn next_command(&mut self, _: &NextCommand, _window: &mut Window, cx: &mut Context<Self>) {
+        self.jump_to(false, cx);
+    }
+
+    fn copy_command_output(
+        &mut self,
+        _: &CopyCommandOutput,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocks_active(cx)
+            && let Some(block) = self.action_block(cx)
+        {
+            self.copy_block(block.id, false, cx);
+        }
+    }
+
+    fn copy_command(&mut self, _: &CopyCommand, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocks_active(cx)
+            && let Some(block) = self.action_block(cx)
+            && let Some(cmd) = block.cmd
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(cmd));
+        }
+    }
+
+    fn copy_command_and_output(
+        &mut self,
+        _: &CopyCommandAndOutput,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocks_active(cx)
+            && let Some(block) = self.action_block(cx)
+            && block.cmd.is_some()
+        {
+            self.copy_block(block.id, true, cx);
+        }
+    }
+
+    fn rerun_command(&mut self, _: &RerunCommand, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocks_active(cx)
+            && let Some(block) = self.action_block(cx)
+        {
+            self.rerun_block(&block.id, cx);
+        }
+    }
+
+    /// Copy block `id`'s output (`with_command`: `$ <command>`, a newline, then it) to the
+    /// clipboard. The text is read off the UI thread (the Term lock held only for the read),
+    /// then written; nothing when the block is gone (or, with the command, has none).
+    fn copy_block(&self, id: String, with_command: bool, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        let text = cx.background_spawn(async move {
+            let output = core.block_output(&id)?;
+            match with_command {
+                true => Some(block_view::with_command(&core.block_cmd(&id)?, &output)),
+                false => Some(output),
+            }
+        });
+        cx.spawn(async move |_, cx| {
+            if let Some(text) = text.await {
+                cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
+            }
+        })
+        .detach();
+    }
+
+    /// Rerun block `id`: type its command at the prompt, never pressing Return, when every
+    /// guard allows it (`block_view::rerun`); otherwise nothing. Pasted like a script's paste
+    /// (bracketed when the shell asked), so the chip and the picked block stay.
+    fn rerun_block(&mut self, id: &str, cx: &mut Context<Self>) {
+        let (facts, cmd) = self.core.rerun_facts_and_cmd(id);
+        if let Ok(text) = block_view::rerun(facts, cmd.as_deref()) {
+            self.paste(&text, cx);
+        }
+    }
+
+    /// A chip button for block `id`: Copy command, Copy output or Rerun (the chip stays, the
+    /// picked block is kept).
+    fn chip_button(&mut self, button: usize, id: &str, cx: &mut Context<Self>) {
+        if !self.blocks_active(cx) {
+            return;
+        }
+        match button {
+            0 => {
+                if let Some(cmd) = self.core.block_cmd(id) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(cmd));
+                }
+            }
+            1 => self.copy_block(id.to_string(), false, cx),
+            _ => self.rerun_block(id, cx),
+        }
+    }
+}
+
+/// Where the block `chosen` is in `blocks`, and whether it was chosen but is gone.
+fn chosen_index(blocks: &[Block], chosen: Option<&str>) -> (Option<usize>, bool) {
+    match chosen {
+        None => (None, false),
+        Some(id) => match blocks.iter().position(|b| b.id == id) {
+            Some(i) => (Some(i), false),
+            None => (None, true),
+        },
+    }
 }
 
 fn mods(m: &Modifiers) -> Mods {
@@ -1169,7 +1390,18 @@ impl Render for TerminalView {
         if chip.is_none() {
             self.chip_bounds.set(None);
         }
-        let chip = chip.map(|chip| chip_element(chip, &ui, self.chip_bounds.clone()));
+        let chip = chip.map(|chip| {
+            chip_element(
+                chip,
+                &ui,
+                ChipSlots {
+                    chip: self.chip_bounds.clone(),
+                    #[cfg(feature = "ui-shots")]
+                    buttons: self.chip_button_bounds.clone(),
+                },
+                cx,
+            )
+        });
 
         div()
             .size_full()
@@ -1185,6 +1417,12 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste_clipboard))
             .on_action(cx.listener(Self::scroll_page_up))
             .on_action(cx.listener(Self::scroll_page_down))
+            .on_action(cx.listener(Self::prev_command))
+            .on_action(cx.listener(Self::next_command))
+            .on_action(cx.listener(Self::copy_command_output))
+            .on_action(cx.listener(Self::copy_command))
+            .on_action(cx.listener(Self::copy_command_and_output))
+            .on_action(cx.listener(Self::rerun_command))
             .child(
                 canvas(
                     // prepaint: measure cells, fit the terminal inside the padding of the space
@@ -1312,13 +1550,27 @@ impl Render for TerminalView {
     }
 }
 
+/// Where the chip records its layout: its own bounds (for the hover) and, for the UI
+/// screenshots, its buttons'.
+struct ChipSlots {
+    chip: Rc<Cell<Option<Bounds<Pixels>>>>,
+    #[cfg(feature = "ui-shots")]
+    buttons: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
+}
+
 /// The chip (M11l): an absolutely placed panel over the grid, 4 pt right of the gutter at the
 /// command row's top: the outcome and the command on the left, three buttons on the right
-/// (they do nothing until M11l Task 5). It blocks presses from the grid under it (so they
-/// never select or reach the program) but not the wheel. Records where it was laid out in
-/// `bounds`, for the hover.
-fn chip_element(chip: Chip, ui: &UiColors, bounds: Rc<Cell<Option<Bounds<Pixels>>>>) -> gpui::Div {
+/// (Copy command, Copy output, Rerun; a press runs one for the chip's block). A disabled
+/// button is dimmed and does nothing; a disabled Rerun's tooltip says why. It blocks presses
+/// from the grid under it (so they never select or reach the program) but not the wheel.
+fn chip_element(
+    chip: Chip,
+    ui: &UiColors,
+    slots: ChipSlots,
+    cx: &mut Context<TerminalView>,
+) -> gpui::Div {
     let has_cmd = chip.cmd.is_some();
+    let bounds = slots.chip;
     let mut label = div()
         .flex()
         .flex_row()
@@ -1345,10 +1597,16 @@ fn chip_element(chip: Chip, ui: &UiColors, bounds: Rc<Cell<Option<Bounds<Pixels>
                 .child(cmd),
         );
     }
+    let (id, rerun) = (chip.id, chip.rerun);
     let buttons = chip.buttons.into_iter().enumerate().map(|(i, name)| {
-        // Copy command and Rerun need a recorded command.
-        let enabled = has_cmd || i == 1;
+        // Copy command needs a recorded command; Rerun every guard of `block_view::rerun`.
+        let enabled = match i {
+            0 => has_cmd,
+            1 => true,
+            _ => rerun.is_ok(),
+        };
         let button = div()
+            .id(("chip-button", i))
             .flex()
             .items_center()
             .h(px(18.0))
@@ -1360,9 +1618,42 @@ fn chip_element(chip: Chip, ui: &UiColors, bounds: Rc<Cell<Option<Bounds<Pixels>
                 block_view::disabled_ink(ui)
             }))
             .child(name);
-        match enabled {
-            true => button.hover(|style| style.bg(hsla(ui.panel_hover))),
-            false => button,
+        #[cfg(feature = "ui-shots")]
+        let button = {
+            let slots = slots.buttons.clone();
+            button.child(
+                canvas(
+                    move |b, _, _| {
+                        let mut all = slots.get();
+                        all[i] = Some(b);
+                        slots.set(all);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+        };
+        match (enabled, rerun) {
+            (true, _) => {
+                let id = id.clone();
+                button
+                    .hover(|style| style.bg(hsla(ui.panel_hover)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.chip_button(i, &id, cx);
+                        }),
+                    )
+            }
+            (false, Err(why)) if i == 2 => {
+                let tip = block_view::refusal_tip(why);
+                button.tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            }
+            (false, _) => button,
         }
     });
     let panel = div()

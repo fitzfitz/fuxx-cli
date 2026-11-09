@@ -178,6 +178,8 @@ pub struct Tagger {
     /// The next id's number, seeded from the clock so two taggers' ids don't collide in
     /// practice (a window's replica and the background service's session).
     next_id: u64,
+    /// The first id's number: this tagger issued `first_id..next_id` (see `issued`).
+    first_id: u64,
     /// The last D, with the tagger `Unknown`, found no running tag to finish. Another D before
     /// any A, B or C is skipped without scanning, so a storm of D marks (hostile output) costs
     /// nothing.
@@ -193,12 +195,12 @@ impl Tagger {
         Tagger {
             state: ShellState::Unknown,
             next_id: seed,
+            first_id: seed,
             d_missed: false,
         }
     }
 
     /// A prompt is shown and the cursor at its end is known (B seen, no C since).
-    #[allow(dead_code)] // wired in M11l task 5
     pub fn prompt_ready(&self) -> bool {
         self.input_start().is_some()
     }
@@ -209,6 +211,22 @@ impl Tagger {
             ShellState::Prompt { input_start, .. } => input_start,
             _ => None,
         }
+    }
+
+    /// Whether this tagger wrote id `id` (a block of this run, not a forged or restored tag).
+    /// Its ids are `first_id..next_id`, so that range is the set of ids it issued. A forged
+    /// tag would have to guess a number seeded from the clock's nanoseconds; a reattach or a
+    /// snapshot starts a fresh tagger, so the blocks it brings are not this run's.
+    pub fn issued(&self, id: &str) -> bool {
+        let Some(n) = id
+            .strip_prefix(ID_PREFIX)
+            .and_then(|n| n.parse::<u64>().ok())
+        else {
+            return false;
+        };
+        // Exactly as `fresh_id` writes it (no `+`, no leading zeros).
+        format!("{ID_PREFIX}{n}") == id
+            && n.wrapping_sub(self.first_id) < self.next_id.wrapping_sub(self.first_id)
     }
 
     fn fresh_id(&mut self) -> String {
@@ -375,6 +393,17 @@ pub fn advance<L: EventListener>(
     tagger.saw(rest);
 }
 
+/// What Rerun needs to know of a terminal, read under one lock (M11l §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RerunFacts {
+    /// The block's tag was written by this terminal's tagger in this run.
+    pub ours: bool,
+    pub prompt_ready: bool,
+    pub at_input_start: bool,
+    pub bracketed: bool,
+    pub alt_screen: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Ok,
@@ -400,7 +429,6 @@ pub struct Block {
 /// screen. Each block keeps to the rows between the tags around it (any tag, a prompt's too),
 /// so no row is in two blocks, whatever a forged tag claims, and the walks add up to one pass
 /// over the grid. Reads the whole scrollback: on a keypress or off the UI thread only.
-#[allow(dead_code)] // wired in M11l task 5 (the ui-shots read it now)
 pub fn list<L>(term: &Term<L>) -> Vec<Block> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return Vec::new();
@@ -470,7 +498,6 @@ fn find_block<L>(term: &Term<L>, id: &str) -> Option<Block> {
 }
 
 /// Block `id`'s command line, if it is in the grid and was recorded.
-#[allow(dead_code)] // wired in M11l task 5
 pub fn block_cmd<L>(term: &Term<L>, id: &str) -> Option<String> {
     find_block(term, id)?.cmd
 }
@@ -493,7 +520,6 @@ pub fn live_prompt<L>(term: &Term<L>) -> Option<Line> {
 
 /// The output of the block `id`, lines right-trimmed and trailing empty lines dropped (empty
 /// when it has none); none when no such block is in the grid.
-#[allow(dead_code)] // wired in M11l task 5
 pub fn output_text<L>(term: &Term<L>, id: &str) -> Option<String> {
     let block = find_block(term, id)?;
     let Some((first, last)) = block.output else {
@@ -1612,5 +1638,51 @@ mod tests {
             .feed(&d(Some(0)))
             .prompt();
         assert_eq!(sh2.blocks()[0].outcome, Outcome::Ok);
+    }
+
+    #[test]
+    fn the_tagger_knows_its_own_ids() {
+        let mut sh = Shell::new();
+        sh.command("ls", "a\r\n", Some(0))
+            .feed(forged("fuxx-block-42", 1, "b").as_bytes())
+            .prompt();
+        let blocks = sh.blocks();
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        let (real, fake) = (&blocks[0].id, &blocks[1].id);
+        assert_eq!(fake, "fuxx-block-42");
+        // The real block is this tagger's; the forged one, though it reads like ours, isn't.
+        assert!(sh.tagger.issued(real), "{real}");
+        assert!(!sh.tagger.issued(fake));
+        // Nor any other id it never wrote: the next one, an unprefixed or padded one.
+        let n: u64 = real.strip_prefix(ID_PREFIX).unwrap().parse().unwrap();
+        for other in [
+            format!("{ID_PREFIX}{}", n.wrapping_add(100)),
+            format!("{ID_PREFIX}0{n}"),
+            format!("{ID_PREFIX}+{n}"),
+            n.to_string(),
+            String::new(),
+        ] {
+            assert!(!sh.tagger.issued(&other), "{other}");
+        }
+        // The live prompt's id was written too.
+        let live = tags(&sh.term).last().unwrap().1.id.clone();
+        assert!(sh.tagger.issued(&live));
+        // After a reattach (a fresh tagger over the same screen), none of the older blocks is.
+        sh.tagger = Tagger::new();
+        assert!(!sh.tagger.issued(real));
+        assert!(!sh.tagger.issued(&live));
+        // A command typed at the restored prompt keeps that prompt's tag and id (a scan's id
+        // is kept), so it isn't this run's either; the next prompt's block is.
+        sh.feed(b"pwd\r\n")
+            .feed(&c(Some("pwd")))
+            .feed(b"/\r\n")
+            .feed(&d(Some(0)));
+        let at_restored = sh.blocks().last().unwrap().clone();
+        assert_eq!(at_restored.id, live);
+        assert!(!sh.tagger.issued(&at_restored.id));
+        sh.command("date", "now\r\n", Some(0)).prompt();
+        let newest = sh.blocks().last().unwrap().clone();
+        assert_eq!(newest.cmd.as_deref(), Some("date"));
+        assert!(sh.tagger.issued(&newest.id), "{newest:?}");
     }
 }

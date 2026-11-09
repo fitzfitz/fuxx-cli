@@ -2,6 +2,7 @@
 //! above each prompt, and the hover chip's words. Pure: `terminal_view` paints and hit-tests
 //! with these.
 
+use alacritty_terminal::index::Line;
 use alacritty_terminal::vte::ansi::Rgb;
 
 use crate::blocks::Outcome;
@@ -164,6 +165,120 @@ pub fn separator_rows(
 /// no higher than `grid_top`).
 pub fn chip_top(cmd_top: f32, grid_top: f32, grid_bottom: f32) -> f32 {
     cmd_top.min(grid_bottom - CHIP_HEIGHT).max(grid_top)
+}
+
+/// What ⇧⌘↑ / ⇧⌘↓ do (M11l §4): pick block `To(i)`, clear the choice and go to the bottom,
+/// or nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Jump {
+    To(usize),
+    Bottom,
+    Stay,
+}
+
+/// ⇧⌘↑ (`up`) or ⇧⌘↓ over `blocks` (each one's first prompt row and whether it is all in
+/// view, oldest first) from the `chosen` one. The caller scrolls to a `To` block's prompt
+/// unless it is all in view.
+pub fn jump(blocks: &[(Line, bool)], chosen: Option<usize>, up: bool) -> Jump {
+    let chosen = chosen.filter(|&i| i < blocks.len());
+    match (chosen, up) {
+        // Nothing chosen: ⇧⌘↑ picks the newest block, ⇧⌘↓ has nowhere to go.
+        (None, true) if !blocks.is_empty() => Jump::To(blocks.len() - 1),
+        (None, _) => Jump::Stay,
+        (Some(0), true) => Jump::Stay,
+        (Some(i), true) => Jump::To(i - 1),
+        // Past the newest: back to the bottom, nothing chosen.
+        (Some(i), false) if i + 1 == blocks.len() => Jump::Bottom,
+        (Some(i), false) => Jump::To(i + 1),
+    }
+}
+
+/// The block an action applies to: the chosen one, else the newest finished one.
+pub fn target(
+    blocks_len: usize,
+    chosen: Option<usize>,
+    newest_done: Option<usize>,
+) -> Option<usize> {
+    chosen.or(newest_done).filter(|&i| i < blocks_len)
+}
+
+/// Why Rerun won't type a block's command (M11l §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The shell isn't at a prompt (or isn't known to be), or the alternate screen is up.
+    NotAtPrompt,
+    /// Something is typed at the prompt already.
+    Typed,
+    /// The block has no recorded command.
+    NoCommand,
+    /// The command holds control characters (other than tab and newline).
+    Control,
+    /// A multi-line command, and the shell didn't ask for bracketed paste.
+    MultiLineUnbracketed,
+    /// The block's tag wasn't written by this terminal's tagger since it started (a forged
+    /// tag, or one from a snapshot).
+    NotThisRun,
+}
+
+/// The text Rerun pastes for `cmd`, never with a `\r`, or why it won't.
+pub fn rerun_text(
+    cmd: Option<&str>,
+    prompt_ready: bool,
+    at_input_start: bool,
+    bracketed: bool,
+    alt_screen: bool,
+) -> Result<String, Refusal> {
+    if !prompt_ready || alt_screen {
+        return Err(Refusal::NotAtPrompt);
+    }
+    if !at_input_start {
+        return Err(Refusal::Typed);
+    }
+    let cmd = cmd.filter(|c| !c.is_empty()).ok_or(Refusal::NoCommand)?;
+    // `char::is_control` is C0, DEL and C1: ESC (so no `ESC [201~` ending a bracketed paste
+    // early), BEL, and `\r` (so it never runs), among them.
+    if cmd
+        .chars()
+        .any(|c| c.is_control() && c != '\t' && c != '\n')
+    {
+        return Err(Refusal::Control);
+    }
+    // Unbracketed, the shell would take each newline as Return.
+    if cmd.contains('\n') && !bracketed {
+        return Err(Refusal::MultiLineUnbracketed);
+    }
+    Ok(cmd.to_string())
+}
+
+/// `rerun_text` for a block this terminal's tagger may not have written.
+pub fn rerun(facts: crate::blocks::RerunFacts, cmd: Option<&str>) -> Result<String, Refusal> {
+    if !facts.ours {
+        return Err(Refusal::NotThisRun);
+    }
+    rerun_text(
+        cmd,
+        facts.prompt_ready,
+        facts.at_input_start,
+        facts.bracketed,
+        facts.alt_screen,
+    )
+}
+
+/// What a disabled Rerun's tooltip says.
+pub fn refusal_tip(refusal: Refusal) -> &'static str {
+    match refusal {
+        Refusal::NotAtPrompt => "Rerun needs the shell at its prompt",
+        Refusal::Typed => "Rerun needs an empty prompt",
+        Refusal::NoCommand => "No command was recorded for this block",
+        Refusal::Control => "The command has control characters",
+        Refusal::MultiLineUnbracketed => "The shell can't take a multi-line command pasted",
+        Refusal::NotThisRun => "Only commands run in this terminal since it opened can be rerun",
+    }
+}
+
+/// Copy Command and Output: `$ <command>`, a newline, the output.
+pub fn with_command(cmd: &str, output: &str) -> String {
+    format!("$ {cmd}\n{output}")
 }
 
 #[cfg(test)]
@@ -336,5 +451,132 @@ mod tests {
         assert_eq!(chip_top(50.0, 10.0, 200.0), 50.0);
         assert_eq!(chip_top(190.0, 10.0, 200.0), 176.0);
         assert_eq!(chip_top(5.0, 10.0, 200.0), 10.0);
+    }
+
+    #[test]
+    fn jump_walks_the_blocks() {
+        let three = [(Line(-9), false), (Line(-5), true), (Line(-2), true)];
+        assert_eq!(jump(&three, None, true), Jump::To(2));
+        assert_eq!(jump(&three, Some(2), true), Jump::To(1));
+        assert_eq!(jump(&three, Some(1), true), Jump::To(0));
+        assert_eq!(jump(&three, Some(0), true), Jump::Stay);
+        assert_eq!(jump(&three, Some(0), false), Jump::To(1));
+        assert_eq!(jump(&three, Some(1), false), Jump::To(2));
+        assert_eq!(jump(&three, Some(2), false), Jump::Bottom);
+        assert_eq!(jump(&three, None, false), Jump::Stay);
+        assert_eq!(jump(&[], None, true), Jump::Stay);
+        assert_eq!(jump(&[], None, false), Jump::Stay);
+        // A chosen index past the list (it changed under it): as if none was chosen.
+        assert_eq!(jump(&three, Some(7), true), Jump::To(2));
+        assert_eq!(jump(&three, Some(7), false), Jump::Stay);
+    }
+
+    #[test]
+    fn actions_target_the_chosen_or_newest_done() {
+        assert_eq!(target(3, Some(1), Some(2)), Some(1));
+        assert_eq!(target(3, None, Some(1)), Some(1));
+        assert_eq!(target(3, None, None), None);
+        assert_eq!(target(0, None, None), None);
+        // Out of range: nothing.
+        assert_eq!(target(3, Some(3), Some(2)), None);
+        assert_eq!(target(2, None, Some(2)), None);
+    }
+
+    #[test]
+    fn rerun_refusals() {
+        use Refusal::*;
+        let ok = |cmd: &str, bracketed: bool| rerun_text(Some(cmd), true, true, bracketed, false);
+        assert_eq!(
+            rerun_text(Some("ls"), true, true, true, false),
+            Ok("ls".into())
+        );
+        assert_eq!(
+            rerun_text(Some("ls"), false, true, true, false),
+            Err(NotAtPrompt)
+        );
+        assert_eq!(
+            rerun_text(Some("ls"), true, true, true, true),
+            Err(NotAtPrompt)
+        );
+        assert_eq!(rerun_text(Some("ls"), true, false, true, false), Err(Typed));
+        assert_eq!(rerun_text(None, true, true, true, false), Err(NoCommand));
+        assert_eq!(ok("", true), Err(NoCommand));
+        assert_eq!(ok("ls\x1b[201~rm", true), Err(Control));
+        assert_eq!(ok("a\x07", true), Err(Control));
+        assert_eq!(ok("ls\r", true), Err(Control));
+        assert_eq!(ok("a\u{9b}2J", true), Err(Control), "a C1 control too");
+        assert_eq!(ok("a\x7f", true), Err(Control));
+        assert_eq!(ok("a\tb", false), Ok("a\tb".into()));
+        assert_eq!(ok("a\nb", false), Err(MultiLineUnbracketed));
+        assert_eq!(ok("a\nb", true), Ok("a\nb".into()));
+        // Refusals in order: the prompt first, then typed input, then the command.
+        assert_eq!(
+            rerun_text(None, false, false, false, false),
+            Err(NotAtPrompt)
+        );
+        assert_eq!(
+            rerun_text(Some("a\x07"), true, false, false, false),
+            Err(Typed)
+        );
+        // Never a carriage return in what is pasted, whatever the command.
+        for cmd in ["ls", "a\tb", "a\nb", "a\r\nb", "\r", "x\u{85}y"] {
+            for bracketed in [false, true] {
+                if let Ok(text) = ok(cmd, bracketed) {
+                    assert!(!text.contains('\r'), "{cmd:?}: {text:?}");
+                    assert_eq!(text, cmd);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rerun_needs_a_block_from_this_run() {
+        use crate::blocks::RerunFacts;
+        let ready = RerunFacts {
+            ours: true,
+            prompt_ready: true,
+            at_input_start: true,
+            bracketed: true,
+            alt_screen: false,
+        };
+        assert_eq!(rerun(ready, Some("ls")), Ok("ls".into()));
+        let theirs = RerunFacts {
+            ours: false,
+            ..ready
+        };
+        assert_eq!(rerun(theirs, Some("ls")), Err(Refusal::NotThisRun));
+        // The other guards still apply to our own blocks.
+        let typed = RerunFacts {
+            at_input_start: false,
+            ..ready
+        };
+        assert_eq!(rerun(typed, Some("ls")), Err(Refusal::Typed));
+        assert_eq!(rerun(ready, Some("a\x1bb")), Err(Refusal::Control));
+        // Each refusal says why.
+        use Refusal::*;
+        let tips: Vec<&str> = [
+            NotAtPrompt,
+            Typed,
+            NoCommand,
+            Control,
+            MultiLineUnbracketed,
+            NotThisRun,
+        ]
+        .into_iter()
+        .map(refusal_tip)
+        .collect();
+        assert!(tips.iter().all(|t| !t.is_empty()), "{tips:?}");
+        let mut unique = tips.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), tips.len(), "{tips:?}");
+        assert!(refusal_tip(NotThisRun).contains("this terminal"));
+    }
+
+    #[test]
+    fn with_command_formats() {
+        assert_eq!(with_command("ls", "a\nb"), "$ ls\na\nb");
+        assert_eq!(with_command("echo hi", "hi"), "$ echo hi\nhi");
+        assert_eq!(with_command("true", ""), "$ true\n");
     }
 }
