@@ -53,7 +53,9 @@ const NAME_MIN: f32 = 60.0;
 /// (centred on the sidebar's middle), and the least space between it and the sidebar button.
 pub(crate) const TITLE: &str = "the Fuxx?";
 pub(crate) const TITLE_ROOM: f32 = 64.0;
-const TITLE_GAP: f32 = 8.0;
+/// `TITLE_GAP` never binds at today's widths (the lights' clearance always does first): it is
+/// the safeguard should `TITLE_ROOM` grow past 100.
+pub(crate) const TITLE_GAP: f32 = 8.0;
 /// The Preferences gear's tooltip (the footer's, and the collapsed band's).
 pub(crate) const PREFERENCES_TIP: &str = "Preferences (⌘,)";
 /// The unseen dot, at the 🔔's top right, and the ring of the footer's colour that keeps it apart
