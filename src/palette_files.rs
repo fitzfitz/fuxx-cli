@@ -229,6 +229,8 @@ pub struct CachedFiles {
 pub struct PaletteFiles {
     listings: HashMap<PathBuf, CachedFiles>,
     running: bool,
+    /// Nothing is listed (the screenshots give their listings themselves).
+    pub frozen: bool,
 }
 
 impl PaletteFiles {
