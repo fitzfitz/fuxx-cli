@@ -15,6 +15,9 @@ pub const MARK_MIN: f32 = 3.0;
 /// `MARK_MIN`: the spec wants dividers "1 px and quiet", and a 3:1 hairline reads as heavy. Lines
 /// that carry meaning (the accent bar, a divider while hovered or dragged) use `MARK_MIN`.
 pub const QUIET_LINE_MIN: f32 = 1.4;
+/// The pane tab bar's empty strip against the card (the active tab's colour): enough that the
+/// two read as different surfaces. Stepped to from the canvas colour, within the floors.
+pub const TAB_BAR_MIN: f32 = 1.15;
 
 /// Sizes in pixels, from the M11 plan's Global Constraints.
 pub mod size {
