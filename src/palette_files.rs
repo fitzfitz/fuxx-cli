@@ -85,20 +85,51 @@ fn assemble(all: &[u8], deleted: &[u8], cap: usize) -> Listed {
     }
 }
 
-/// A breadth-first walk of `root` for a folder that isn't a repo: dot-folders skipped (and
-/// `~/Library` when `root` is the home folder), symlinked folders not followed (so no loops), and
-/// stopped at `max_files` files, `max_depth` folders deep or `max_time`. `more` is non-zero when
-/// files were left out by the file or time cap.
+/// A breadth-first walk of `root` for a folder that isn't a repo: dot-folders skipped (and, in
+/// the home folder and at `/`, the folders `skipped` names), symlinked folders not followed (so
+/// no loops), and stopped at `max_files` files, `max_depth` folders deep or `max_time`. `more` is
+/// non-zero when files were left out by the file or time cap.
 pub fn walk(root: &Path, max_files: usize, max_depth: usize, max_time: Duration) -> Listed {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     walk_with_home(root, home.as_deref(), max_files, max_depth, max_time)
 }
 
+/// The home folder's folders the walk never enters: Library, and those macOS asks permission
+/// to read (a walk into them would put its dialog up, in fuxx's name).
+const HOME_SKIPPED: [&str; 7] = [
+    "Library",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Movies",
+    "Music",
+];
+/// The disk's (`/`) folders the walk never enters: the system's, other disks', devices.
+const ROOT_SKIPPED: [&str; 8] = [
+    "Volumes",
+    "System",
+    "dev",
+    "private",
+    "Library",
+    "Applications",
+    "cores",
+    "opt",
+];
+
+/// Whether the walk skips folder `name` in the folder it is reading: the home folder
+/// (`at_home`) or the disk's top (`at_fs_root`). A terminal inside one of them is still walked:
+/// its root is that folder, not home.
+fn skipped(name: &std::ffi::OsStr, at_home: bool, at_fs_root: bool) -> bool {
+    (at_home && HOME_SKIPPED.iter().any(|s| name == *s))
+        || (at_fs_root && ROOT_SKIPPED.iter().any(|s| name == *s))
+}
+
 /// How many entries the walk reads between looks at the clock.
 const WALK_CLOCK_EVERY: usize = 256;
 
-/// `walk`, with `home` as the folder whose `Library` is skipped (macOS asks for permission to
-/// read into some of it).
+/// `walk`, with `home` as the folder whose `HOME_SKIPPED` folders are skipped, whether the walk
+/// starts there or reaches it from above (a walk of `/` or `/Users`).
 pub(crate) fn walk_with_home(
     root: &Path,
     home: Option<&Path>,
@@ -108,12 +139,15 @@ pub(crate) fn walk_with_home(
 ) -> Listed {
     let started = Instant::now();
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let at_home = home.is_some_and(|h| real(h) == real(root));
+    // From the real root, every folder queued is a real path too (links aren't entered), so
+    // the home folder is found by a plain comparison.
+    let real_root = real(root);
+    let real_home = home.map(real);
     let mut paths: Vec<String> = Vec::new();
     let mut more = 0;
     let mut seen = 0usize;
     let mut queue: VecDeque<(PathBuf, String, usize)> = VecDeque::new();
-    queue.push_back((root.to_path_buf(), String::new(), 0));
+    queue.push_back((real_root, String::new(), 0));
     'dirs: while let Some((dir, rel, depth)) = queue.pop_front() {
         if started.elapsed() >= max_time {
             more = more.max(1);
@@ -122,6 +156,8 @@ pub(crate) fn walk_with_home(
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
+        let at_home = real_home.as_deref() == Some(dir.as_path());
+        let at_fs_root = depth == 0 && dir == Path::new("/");
         for entry in entries.flatten() {
             seen += 1;
             if seen.is_multiple_of(WALK_CLOCK_EVERY) && started.elapsed() >= max_time {
@@ -134,8 +170,7 @@ pub(crate) fn walk_with_home(
             let raw = entry.file_name();
             let is_file = if kind.is_dir() {
                 let hidden = raw.as_encoded_bytes().first() == Some(&b'.');
-                let library = at_home && depth == 0 && raw == "Library";
-                if depth < max_depth && !hidden && !library {
+                if depth < max_depth && !hidden && !skipped(&raw, at_home, at_fs_root) {
                     let name = nfc(&raw.to_string_lossy());
                     queue.push_back((entry.path(), format!("{rel}{name}/"), depth + 1));
                 }
@@ -234,12 +269,11 @@ pub struct PaletteFiles {
 }
 
 impl PaletteFiles {
-    /// Whether to list `folder` now: nothing running, and no listing, a failed one, or one
-    /// older than `FRESH`.
+    /// Whether to list `folder` now: nothing running, and no listing (`get`), a failed one, or
+    /// one older than `FRESH`.
     pub fn due(&self, folder: &Path, now: Instant) -> bool {
         !self.running
             && self
-                .listings
                 .get(folder)
                 .is_none_or(|c| now.saturating_duration_since(c.listed_at) >= c.wait)
     }
@@ -294,8 +328,17 @@ impl PaletteFiles {
         self.listings.insert(folder.to_path_buf(), cached);
     }
 
+    /// `folder`'s listing: its own, else the freshest repo listing (git's, not failed) whose
+    /// root it is inside (a `cd src` in a listed repo isn't listed again until that one is
+    /// older than `FRESH`).
     pub fn get(&self, folder: &Path) -> Option<&CachedFiles> {
-        self.listings.get(folder)
+        self.listings.get(folder).or_else(|| {
+            self.listings
+                .values()
+                .filter(|c| !c.failed && !c.walked && !c.root.as_os_str().is_empty())
+                .filter(|c| folder.starts_with(&c.root))
+                .max_by_key(|c| c.listed_at)
+        })
     }
 
     /// Whether a listing is running (the palette shows `Listing` for any folder not listed yet,
@@ -578,6 +621,8 @@ mod tests {
         let home = temp("home");
         fs::create_dir_all(home.join("Library")).unwrap();
         fs::write(home.join("Library/secret"), "").unwrap();
+        fs::create_dir_all(home.join("Desktop")).unwrap();
+        fs::write(home.join("Desktop/secret"), "").unwrap();
         fs::create_dir_all(home.join("proj/Library")).unwrap();
         fs::write(home.join("proj/Library/ok"), "").unwrap();
         fs::write(home.join("notes"), "").unwrap();
@@ -586,6 +631,114 @@ mod tests {
         assert_eq!(at_home.paths, ["notes", "proj/Library/ok"]);
         let elsewhere = walk_with_home(&home, Some(Path::new("/nonexistent-home")), 100, 12, t);
         assert!(elsewhere.paths.contains(&"Library/secret".to_string()));
+        assert!(elsewhere.paths.contains(&"Desktop/secret".to_string()));
+    }
+
+    /// The folders macOS asks permission for (and Library) are skipped in the home folder,
+    /// whether the walk starts there or reaches it from above; a terminal inside one of them is
+    /// still walked as its root, and the same names elsewhere are walked.
+    #[test]
+    fn walk_skips_the_protected_folders_in_the_home_folder() {
+        let outer = temp("protected");
+        let home = outer.join("me");
+        let protected = [
+            "Library",
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Pictures",
+            "Movies",
+            "Music",
+        ];
+        for name in protected {
+            fs::create_dir_all(home.join(name)).unwrap();
+            fs::write(home.join(name).join("secret"), "").unwrap();
+            fs::create_dir_all(home.join("proj").join(name)).unwrap();
+            fs::write(home.join("proj").join(name).join("ok"), "").unwrap();
+        }
+        fs::write(home.join("notes"), "").unwrap();
+        let t = Duration::from_secs(2);
+        let mut want: Vec<String> = protected.iter().map(|n| format!("proj/{n}/ok")).collect();
+        want.insert(0, "notes".into());
+        want.sort_unstable();
+        let at_home = walk_with_home(&home, Some(&home), 100, 12, t);
+        assert_eq!(at_home.paths, want);
+        // Reached from above (a walk of the folder the home folder is in): skipped there too.
+        let above = walk_with_home(&outer, Some(&home), 100, 12, t);
+        assert!(
+            above.paths.iter().all(|p| !p.ends_with("secret")),
+            "{:?}",
+            above.paths
+        );
+        assert!(above.paths.contains(&"me/proj/Desktop/ok".to_string()));
+        // A terminal in ~/Documents: walked as its root.
+        let inside = walk_with_home(&home.join("Documents"), Some(&home), 100, 12, t);
+        assert_eq!(inside.paths, ["secret"]);
+    }
+
+    #[test]
+    fn a_walk_of_the_disk_skips_the_system_folders() {
+        for name in [
+            "Volumes",
+            "System",
+            "dev",
+            "private",
+            "Library",
+            "Applications",
+            "cores",
+            "opt",
+        ] {
+            assert!(skipped(name.as_ref(), false, true), "{name} at /");
+            assert!(!skipped(name.as_ref(), false, false), "{name} elsewhere");
+        }
+        assert!(!skipped("Users".as_ref(), false, true));
+        assert!(!skipped("usr".as_ref(), false, true));
+        assert!(skipped("Desktop".as_ref(), true, false));
+        assert!(!skipped("src".as_ref(), true, false));
+    }
+
+    fn git_answer(folder: &Path, root: &Path, walked: bool) -> FilesAnswer {
+        FilesAnswer {
+            folder: folder.to_path_buf(),
+            root: root.to_path_buf(),
+            listed: Some(Listed {
+                paths: vec!["src/a.rs".into()],
+                more: 0,
+                walked,
+            }),
+        }
+    }
+
+    /// `cd src` inside a listed repo: its listing is reused (not listed again, so no
+    /// "Listing files…") until it is older than `FRESH`.
+    #[test]
+    fn a_folder_inside_a_listed_repo_reuses_its_listing() {
+        let (repo, src) = (Path::new("/r"), Path::new("/r/src/deep"));
+        let mut files = PaletteFiles::default();
+        let t = Instant::now();
+        let secs = Duration::from_secs;
+        files.started(repo);
+        files.finished(repo, Some(git_answer(repo, repo, false)), t);
+        let reused = files.get(src).expect("the repo's listing");
+        assert_eq!(reused.root, repo);
+        assert!(Arc::ptr_eq(&reused.paths, &files.get(repo).unwrap().paths));
+        assert!(!files.due(src, t + secs(9)));
+        assert!(files.due(src, t + secs(10)));
+        // Listed for itself, its own listing is the one used.
+        files.started(src);
+        files.finished(src, Some(git_answer(src, Path::new("/r/src"), false)), t);
+        assert_eq!(files.get(src).unwrap().root, Path::new("/r/src"));
+        // Not a folder inside: a sibling whose name starts the same.
+        assert!(files.get(Path::new("/rx")).is_none());
+        // A walk (not a repo) or a failed listing isn't reused.
+        let mut files = PaletteFiles::default();
+        files.started(repo);
+        files.finished(repo, Some(git_answer(repo, repo, true)), t);
+        assert!(files.get(src).is_none() && files.due(src, t));
+        let mut files = PaletteFiles::default();
+        files.started(repo);
+        files.finished(repo, None, t);
+        assert!(files.get(src).is_none() && files.due(src, t));
     }
 
     fn strings(list: &[&str]) -> Vec<String> {

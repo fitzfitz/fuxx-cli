@@ -91,6 +91,13 @@ impl NameInput {
         &self.text
     }
 
+    /// Put `text` in the box, the caret at its end (the ⌘K palette drops a `>` it no longer
+    /// means).
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.caret_to_end();
+    }
+
     /// Select the whole text: typing (or pasting) replaces it, Backspace erases it.
     pub fn select_all(&mut self) {
         self.marked = None;

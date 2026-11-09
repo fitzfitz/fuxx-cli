@@ -35,7 +35,7 @@ use crate::palette_files::{CachedFiles, rank_files};
 use crate::palette_items::{
     ActionRow, COMMANDS, FILE_RESULTS, FileHit, Files, Focused, HINT, Key, Line, NO_FOLDER, Recent,
     Run, SSH_NOTE, Scope, Sources, Step, action_rows, compose, more_label, palette_step,
-    parse_query, selectable,
+    parse_query, selectable, text_for_scope,
 };
 use crate::palette_match::byte_ranges;
 use crate::preferences::PaletteSetting;
@@ -118,6 +118,38 @@ pub(crate) fn files_data(
                 walked: c.walked,
             },
         },
+    }
+}
+
+/// Whether a Recent key still stands, as far as the palette knows (`compose` checks the rest):
+/// a file while the last listing has it or a file tab has it open (`open`).
+fn recent_valid(files: &FilesData, open: &[PathBuf], key: &Key) -> bool {
+    match key {
+        Key::File(path) => files.lists(path) || open.contains(path),
+        _ => true,
+    }
+}
+
+/// Whether Enter waits instead of picking now: the scope shows files (`shows_files`) for a typed
+/// `query` and their first listing is still running, or a ranking for the query is running
+/// (`ranking`) and hasn't answered. Either way the rows shown aren't the query's yet.
+fn enter_waits(
+    files: &FilesData,
+    shows_files: bool,
+    query: &str,
+    ranking: bool,
+    answered: bool,
+) -> bool {
+    let listing = shows_files && !query.trim().is_empty() && matches!(files, FilesData::Listing);
+    listing || (ranking && !answered)
+}
+
+/// The name a listing's root goes by in the headings: its folder's name, or `/` for the disk.
+fn root_name(root: &Path) -> &str {
+    match root.file_name() {
+        Some(name) => name.to_str().unwrap_or(""),
+        None if root == Path::new("/") => "/",
+        None => "",
     }
 }
 
@@ -213,7 +245,7 @@ impl FilesData {
                 root, more, walked, ..
             } => Files::Ready {
                 root,
-                root_name: root.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                root_name: root_name(root),
                 hits: hits.map_or(&[], |(_, hits, _)| hits.as_slice()),
                 total: hits.map_or(0, |(_, _, total)| *total),
                 capped: *more > 0,
@@ -224,12 +256,14 @@ impl FilesData {
 }
 
 /// What the palette lists from, as the Workspace has it now: the workspaces in display order,
-/// the actions that apply where the focus was, the settings, the files, and the marks' clock.
+/// the actions that apply where the focus was, the settings, the files, the files open in tabs
+/// (as it opened: a Recent file open in one still stands), and the marks' clock.
 pub struct PaletteData {
     pub workspaces: Vec<Entry>,
     pub actions: Vec<ActionRow>,
     pub settings: Vec<PaletteSetting>,
     pub files: FilesData,
+    pub open_files: Vec<PathBuf>,
     pub phase: f32,
 }
 
@@ -347,9 +381,19 @@ impl Palette {
         parse_query(self.base, &self.query).0
     }
 
-    /// Show `scope` (a chip, Tab, ⌘K or ⌘P, a `… more` row), the text kept, the first row
-    /// chosen.
+    /// Show `scope` (a chip, Tab, ⌘K or ⌘P, a `… more` row), the text kept (but a `>` typed on
+    /// All: `text_for_scope`), the first row chosen. An Enter still waiting was for the scope
+    /// shown before: it is dropped.
     pub fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
+        self.enter_pending = false;
+        if let Some(text) = text_for_scope(self.base, &self.query).map(str::to_string) {
+            self.input.update(cx, |input, cx| {
+                input.set_text(text.clone());
+                cx.notify();
+            });
+            // Already listed for: the box's change then finds nothing new.
+            self.query = text;
+        }
         self.base = scope;
         self.relist(false);
         self.rank_files_for(cx);
@@ -499,12 +543,8 @@ impl Palette {
     fn relist(&mut self, keep: bool) {
         let before = self.selected_key().cloned().filter(|_| keep);
         let (scope, query) = parse_query(self.base, &self.query);
-        // A Recent file is shown while its listing still has it; compose checks the rest.
-        let files = &self.data.files;
-        let valid = |key: &Key| match key {
-            Key::File(path) => files.lists(path),
-            _ => true,
-        };
+        let (files, open) = (&self.data.files, &self.data.open_files);
+        let valid = |key: &Key| recent_valid(files, open, key);
         self.lines = compose(&Sources {
             scope,
             query,
@@ -536,12 +576,20 @@ impl Palette {
         }
     }
 
-    /// Enter: pick the chosen row, unless the files are still being ranked for this query (the
-    /// rows are the last query's), then once the answer is in.
+    /// Enter: pick the chosen row, unless the files are still being listed for the first time
+    /// or ranked for this query (the rows aren't the query's yet), then once the listing and
+    /// the ranking's answer are in (`rank_files_for`).
     fn confirm(&mut self, cx: &mut Context<Self>) {
         let answered = self.hits.as_ref().map(|(generation, _, _)| *generation)
             == Some(self.generation.load(Ordering::Relaxed));
-        if self.ranked.is_some() && !answered {
+        let query = parse_query(self.base, &self.query).1;
+        if enter_waits(
+            &self.data.files,
+            self.shows_files(),
+            query,
+            self.ranked.is_some(),
+            answered,
+        ) {
             self.enter_pending = true;
             return;
         }
@@ -836,6 +884,11 @@ impl Palette {
         self.panel_bounds.get()
     }
 
+    /// The box's text, as shown.
+    pub fn box_text(&self, cx: &App) -> String {
+        self.input.read(cx).text().to_string()
+    }
+
     pub fn chip_bounds(&self, scope: Scope) -> Option<Bounds<Pixels>> {
         let at = Scope::ALL.iter().position(|s| *s == scope)?;
         self.chip_bounds.borrow()[at]
@@ -963,8 +1016,23 @@ impl Workspace {
             actions,
             settings: crate::preferences::palette_settings(),
             files: self.palette_files_data(cx),
+            open_files: self.open_file_paths(),
             phase: self.phase,
         }
+    }
+
+    /// The files open in file tabs, in every workspace.
+    fn open_file_paths(&self) -> Vec<PathBuf> {
+        self.model
+            .workspaces()
+            .iter()
+            .flat_map(|w| &w.panes)
+            .flat_map(|p| &p.tabs)
+            .filter_map(|t| match &t.kind {
+                TabKind::File { path, .. } => Some(path.clone()),
+                TabKind::Terminal(_) | TabKind::Browser { .. } => None,
+            })
+            .collect()
     }
 
     /// What the palette has of the followed terminal's files (`files_data`).
@@ -1276,6 +1344,75 @@ mod tests {
             ("\u{e9}t\u{e9}.md", "d\u{fc}r")
         );
         assert_eq!(at, [0, 1]);
+    }
+
+    #[test]
+    fn a_listing_of_the_disk_is_named_slash() {
+        let data = |root: &str| FilesData::Ready {
+            root: PathBuf::from(root),
+            paths: Arc::new(vec!["a".into()]),
+            more: 0,
+            walked: true,
+        };
+        let name = |data: &FilesData| match data.as_files(None) {
+            Files::Ready { root_name, .. } => root_name.to_string(),
+            _ => panic!("ready"),
+        };
+        assert_eq!(name(&data("/")), "/");
+        assert_eq!(name(&data("/w/fuxx-cli")), "fuxx-cli");
+    }
+
+    /// A Recent file shows while the last listing has it or a file tab has it open.
+    #[test]
+    fn a_recent_file_stands_while_listed_or_open_in_a_tab() {
+        let data = FilesData::Ready {
+            root: PathBuf::from("/w/fuxx-cli"),
+            paths: Arc::new(vec!["src/a.rs".into()]),
+            more: 0,
+            walked: false,
+        };
+        let open = [PathBuf::from("/elsewhere/notes.md")];
+        let file = |p: &str| Key::File(PathBuf::from(p));
+        assert!(recent_valid(&data, &open, &file("/w/fuxx-cli/src/a.rs")));
+        assert!(recent_valid(&data, &open, &file("/elsewhere/notes.md")));
+        assert!(!recent_valid(&data, &open, &file("/w/fuxx-cli/gone.rs")));
+        // Open in a tab while the first listing is still running.
+        assert!(recent_valid(
+            &FilesData::Listing,
+            &open,
+            &file("/elsewhere/notes.md")
+        ));
+        assert!(!recent_valid(&FilesData::Listing, &[], &file("/w/x")));
+        assert!(recent_valid(&data, &[], &Key::Workspace(3)));
+    }
+
+    /// Enter waits while the files can show for the query and their first listing is still
+    /// running, or while the query's ranking hasn't answered; else it picks at once.
+    #[test]
+    fn enter_waits_for_a_first_listing_or_a_ranking() {
+        let listing = FilesData::Listing;
+        let ready = FilesData::Ready {
+            root: PathBuf::from("/w"),
+            paths: Arc::new(Vec::new()),
+            more: 0,
+            walked: false,
+        };
+        // (files, shows files, query typed, ranking running, answered)
+        assert!(enter_waits(&listing, true, "view", false, false));
+        assert!(!enter_waits(&listing, false, "view", false, false));
+        // Nothing typed: the files add no rows, so nothing to wait for.
+        assert!(!enter_waits(&listing, true, " ", false, false));
+        assert!(!enter_waits(&FilesData::Failed, true, "view", false, false));
+        assert!(!enter_waits(
+            &FilesData::Note(NO_FOLDER),
+            true,
+            "view",
+            false,
+            false
+        ));
+        assert!(enter_waits(&ready, true, "view", true, false));
+        assert!(!enter_waits(&ready, true, "view", true, true));
+        assert!(!enter_waits(&ready, true, "view", false, false));
     }
 
     #[test]

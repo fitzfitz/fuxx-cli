@@ -112,6 +112,16 @@ pub fn parse_query(scope: Scope, text: &str) -> (Scope, &str) {
     }
 }
 
+/// The box's text once a scope is chosen (a chip, Tab, ⇧Tab, ⌘P, a `… more` row), when it
+/// changes: a `>` typed on All was the Actions shortcut, so choosing a scope replaces it and the
+/// `>` goes (with the spaces after it). None: the text is kept as typed.
+pub fn text_for_scope(base: Scope, text: &str) -> Option<&str> {
+    match (base, text.strip_prefix('>')) {
+        (Scope::All, Some(rest)) => Some(rest.trim_start()),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Open,
@@ -561,6 +571,13 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     "edit::SelectAll",
 ];
 
+/// ⋯ menu items (`pane_actions`) the palette lists under another name: the same action.
+#[cfg(test)] // the parity test's
+pub const PANE_MENU_AS: &[(&str, &str)] = &[("New Terminal Tab", "New Tab")];
+/// ⋯ menu items left out of the palette on purpose (none: each is an entry).
+#[cfg(test)] // the parity test's
+pub const PANE_MENU_LEFT_OUT: &[&str] = &[];
+
 /// One action as the palette lists it: `rest` is what a loose match searches (its keywords, its
 /// group's label and its keys).
 #[derive(Clone, Debug, PartialEq)]
@@ -951,8 +968,12 @@ fn compose_all_typed(s: &Sources) -> Vec<Line> {
 
 /// Nothing typed on a narrowed scope: Recent of that kind, then all of it (Workspaces by
 /// urgency, Actions under their groups, Settings under their sections), or the files' note.
+/// Workspaces (what ⌘P opens on) has no Recent: it is exactly the old ⌘P list.
 fn compose_kind_empty(s: &Sources, kind: Kind) -> Vec<Line> {
-    let recent = recent_shown(s, Some(kind));
+    let recent = match kind {
+        Kind::Workspace => Vec::new(),
+        _ => recent_shown(s, Some(kind)),
+    };
     let mut lines = Vec::new();
     push_recent(&mut lines, &recent);
     match kind {
@@ -1140,6 +1161,20 @@ mod tests {
         assert_eq!(parse_query(Scope::All, "split"), (Scope::All, "split"));
     }
 
+    /// Choosing a scope with `>` typed on All (Actions shown): the `>` was the Actions shortcut,
+    /// so it goes (with the spaces after it) and the rest of the text stays; otherwise the
+    /// text is kept as typed.
+    #[test]
+    fn choosing_a_scope_drops_the_actions_prefix() {
+        assert_eq!(text_for_scope(Scope::All, "> split"), Some("split"));
+        assert_eq!(text_for_scope(Scope::All, ">"), Some(""));
+        assert_eq!(text_for_scope(Scope::All, "split"), None);
+        assert_eq!(text_for_scope(Scope::All, " >split"), None);
+        // On a narrowed scope `>` is just a letter.
+        assert_eq!(text_for_scope(Scope::Workspaces, ">x"), None);
+        assert_eq!(text_for_scope(Scope::Actions, ">x"), None);
+    }
+
     #[test]
     fn palette_step_toggles_and_rescopes() {
         assert_eq!(palette_step(None, Scope::All), Step::Open);
@@ -1234,6 +1269,31 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), COMMANDS.len(), "COMMANDS names unique");
+    }
+
+    /// The ⋯ menu's items (`pane_actions`) are palette entries too: each by its own name, by
+    /// the name the palette gives the same action (`PANE_MENU_AS`), or left out on purpose
+    /// (`PANE_MENU_LEFT_OUT`).
+    #[test]
+    fn every_pane_menu_item_is_in_the_palette_or_left_out() {
+        use crate::pane_actions::PaneAction;
+        let in_palette = |name: &str| COMMANDS.iter().any(|c| c.name == name);
+        for action in PaneAction::ALL {
+            let label = action.label();
+            let decided = in_palette(label)
+                || PANE_MENU_AS
+                    .iter()
+                    .any(|(item, entry)| *item == label && in_palette(entry))
+                || PANE_MENU_LEFT_OUT.contains(&label);
+            assert!(decided, "⋯ menu {label}");
+        }
+        // Each alias names an item still in the menu.
+        for (item, _) in PANE_MENU_AS {
+            assert!(
+                PaneAction::ALL.iter().any(|a| a.label() == *item),
+                "{item} is no ⋯ item"
+            );
+        }
     }
 
     fn names(rows: &[ActionRow]) -> Vec<&str> {
@@ -1653,14 +1713,24 @@ mod tests {
         assert_eq!(keys(&lines).len(), 3);
         assert_eq!(lines.last(), Some(&Line::Note(CAPPED.into())));
 
-        // Nothing typed: Recent of that kind first, not repeated below.
+        // Nothing typed: Recent of that kind first, not repeated below; but Workspaces (⌘P) is
+        // exactly the old list, with no Recent.
         f.recent.push(Key::Workspace(17));
         f.recent.push(Key::Action("Split Right"));
         let ws = f.compose(Scope::Workspaces, "");
-        assert_eq!(ws[0], Line::Header("Recent".into()));
-        assert_eq!(ws[1], item(Key::Workspace(17)));
-        assert_eq!(ws[2], Line::Header("Workspaces".into()));
-        assert_eq!(keys(&ws).len(), 8);
+        assert_eq!(ws[0], Line::Header("Workspaces".into()));
+        assert!(!headers(&ws).contains(&"Recent"));
+        assert_eq!(keys(&ws), URGENT.map(Key::Workspace));
+        let actions = f.compose(Scope::Actions, "");
+        assert_eq!(actions[0], Line::Header("Recent".into()));
+        assert_eq!(actions[1], item(Key::Action("Split Right")));
+        assert_eq!(
+            keys(&actions)
+                .iter()
+                .filter(|k| **k == Key::Action("Split Right"))
+                .count(),
+            1
+        );
         let file = Key::File(root.join("src/a.rs"));
         f.recent.push(file.clone());
         assert_eq!(
