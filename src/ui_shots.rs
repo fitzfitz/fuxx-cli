@@ -13972,7 +13972,7 @@ fn title_bar_scenes() {
         let band_bell = point(px(b[0] + HIT / 2.0), px(BUTTON_Y + HIT / 2.0));
         let (r, _) = band_popover_anchor(width);
         let left = r - band_popover_width(width);
-        let entry = |i: usize| point(px(left + 60.0), px(band_entry_top(i, height) + 20.0));
+        let entry = |i: usize| point(px(left + 60.0), px(band_entry_top(i) + 20.0));
         // The closed terminal's entry (the fourth) does nothing.
         cx.simulate_click(window, band_bell, none);
         assert!(open(cx), "{n}: the band 🔔 opens it");
@@ -13993,7 +13993,7 @@ fn title_bar_scenes() {
             &shot,
             size(px(width), px(height)),
             left + 12.0,
-            band_entry_top(0, height) + 2.0,
+            band_entry_top(0) + 2.0,
         );
         let hover = [ui.panel_hover.r, ui.panel_hover.g, ui.panel_hover.b];
         assert_eq!(
@@ -14005,7 +14005,7 @@ fn title_bar_scenes() {
             &shot,
             size(px(width), px(height)),
             left + 12.0,
-            band_entry_top(0, height) - 1.0,
+            band_entry_top(0) - 1.0,
         );
         assert_ne!(
             above, hover,
