@@ -13902,14 +13902,16 @@ fn title_bar_scenes() {
             // The panel's shadow reaches up into the band (a level or two darker in Mocha, six in
             // Latte), so the fill is compared, not matched (as `title-area` does for the footer's
             // 🔔): the slot's corner differs from the band just left of the 🔔, under the same
-            // shadow, by what `panel_hover` differs from the band's colour (±2 a channel).
+            // shadow, by what `panel_hover` differs from the band's colour: within 1 a channel,
+            // and the same way on every channel that differs at all (in Latte that is 3, 1, 1, so
+            // an unlit slot, which differs by nothing, fails on all three).
             let fill = at(b[0] + 1.5, 19.0);
             let beside = at(b[0] - 3.0, 19.0);
             let (hover, band) = (bg(ui.panel_hover), bg(ui.sidebar_background));
             let off = (0..3).all(|k| {
                 let got = i32::from(fill[k]) - i32::from(beside[k]);
                 let want = i32::from(hover[k]) - i32::from(band[k]);
-                (got - want).abs() <= 2
+                (got - want).abs() <= 1 && (want == 0 || got.signum() == want.signum())
             });
             assert!(
                 off,
@@ -14202,6 +14204,24 @@ fn title_bar_scenes() {
             assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 0);
             cx.simulate_keystrokes(window, "escape");
             assert!(!open(cx), "{n}: Escape closes it");
+            // And the 🔔 is no longer lit: its slot's fill is gone (the pointer moved off it, so
+            // no hover fill either), the band's own colour again.
+            cx.simulate_mouse_move(window, point(px(480.0), px(300.0)), None, none);
+            cx.run_until_parked();
+            let image = cx.capture_screenshot(window).expect("capture the window");
+            let shot = Shot {
+                width: image.width(),
+                height: image.height(),
+                rgba: image.as_raw().to_vec(),
+            };
+            let ui = theme.ui();
+            let corner = pixel_at(&shot, size(px(960.0), px(600.0)), b[0] + 1.5, 19.0);
+            let band = [
+                ui.sidebar_background.r,
+                ui.sidebar_background.g,
+                ui.sidebar_background.b,
+            ];
+            assert_eq!(corner, band, "{n}: after Escape the 🔔's fill is gone");
             // A click on the sidebar button shows the sidebar.
             cx.simulate_click(window, point(px(b[2] + HIT / 2.0), px(y)), none);
             assert!(!hidden(cx), "{n}: the sidebar button shows the sidebar");
