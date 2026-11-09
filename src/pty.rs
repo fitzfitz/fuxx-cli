@@ -186,7 +186,8 @@ pub const BATCH_MAX: usize = 64 * 1024;
 /// child then blocks on a full PTY, as it would in any terminal that parses slower than it
 /// prints.
 pub const INBOX_CAP: usize = 1 << 20;
-/// The buffer capacity a drained inbox keeps, so an idle terminal holds no flood-sized buffer.
+/// The buffer capacity a drained terminal keeps, its inbox and batch buffer together, so an
+/// idle terminal holds no flood-sized buffer.
 pub const IDLE_KEEP: usize = 64 * 1024;
 
 /// What the reader thread has read and the parser thread hasn't taken yet.
@@ -266,13 +267,24 @@ impl Inbox {
             }
             q = self.bytes.wait(q).unwrap_or_else(PoisonError::into_inner);
         }
-        let end = q.read + q.queued().min(BATCH_MAX);
-        into.extend_from_slice(&q.bytes[q.read..end]);
-        q.read = end;
+        if q.read == 0 && q.queued() <= BATCH_MAX {
+            // The whole queue is one batch: hand over its buffer and keep `into`'s (now
+            // empty) one, so the two sides trade buffers instead of copying.
+            std::mem::swap(into, &mut q.bytes);
+        } else {
+            let end = q.read + q.queued().min(BATCH_MAX);
+            into.extend_from_slice(&q.bytes[q.read..end]);
+            q.read = end;
+        }
         if q.queued() == 0 {
             q.bytes.clear();
             q.read = 0;
-            q.bytes.shrink_to(IDLE_KEEP);
+            // Drained: the batch and the inbox together keep at most `IDLE_KEEP`. The batch
+            // holds at most `BATCH_MAX` (= `IDLE_KEEP`) bytes, so it shrinks to that bound
+            // and the inbox keeps what is left of it (often nothing).
+            into.shrink_to(IDLE_KEEP);
+            let room = IDLE_KEEP.saturating_sub(into.capacity());
+            q.bytes.shrink_to(room);
         } else if q.read >= q.queued() {
             // Drop the taken front once it outweighs the rest, so each byte is moved at most
             // a constant number of times on average.
@@ -345,7 +357,9 @@ pub fn spawn_reader(
     std::thread::Builder::new()
         .name("fuxx-pty-parser".into())
         .spawn(move || {
-            let mut batch = Vec::with_capacity(BATCH_MAX);
+            // Starts empty: `take` hands it the inbox's buffer, so a terminal holds one
+            // buffer, not two.
+            let mut batch = Vec::new();
             while taking.0.take(&mut batch) {
                 on_output(&batch);
             }
@@ -568,20 +582,54 @@ mod tests {
         assert!(!inbox.push(b"x"));
     }
 
+    /// The plan's idle bound is a total: the inbox and the parser's batch buffer (which starts
+    /// empty, as `spawn_reader`'s does) together keep at most `IDLE_KEEP` once drained.
     #[test]
     fn a_drained_inbox_keeps_at_most_idle_keep() {
         let inbox = Inbox::new();
+        let mut batch = Vec::new();
+        let total = |inbox: &Inbox, batch: &Vec<u8>| inbox.capacity() + batch.capacity();
+        // A flood, drained.
         for _ in 0..INBOX_CAP / 8192 {
             assert!(inbox.push(&[b'x'; 8192]));
         }
-        let mut batch = Vec::new();
         let mut taken = 0;
         while taken < INBOX_CAP {
             assert!(inbox.take(&mut batch));
             taken += batch.len();
         }
-        assert!(inbox.capacity() <= IDLE_KEEP, "{}", inbox.capacity());
-        assert!(batch.capacity() <= IDLE_KEEP.max(BATCH_MAX));
+        assert!(
+            total(&inbox, &batch) <= IDLE_KEEP,
+            "{}",
+            total(&inbox, &batch)
+        );
+        // Then ordinary small output: still within the bound after each take.
+        for n in [1, 100, 5000, 40_000, 7] {
+            assert!(inbox.push(&vec![b'y'; n]));
+            assert!(inbox.take(&mut batch));
+            assert_eq!(batch.len(), n);
+            assert!(
+                total(&inbox, &batch) <= IDLE_KEEP,
+                "{}",
+                total(&inbox, &batch)
+            );
+        }
+        // And a flood of an uneven size, drained.
+        for _ in 0..INBOX_CAP / 8192 - 1 {
+            assert!(inbox.push(&[b'z'; 8192]));
+        }
+        assert!(inbox.push(&[b'z'; 5000]));
+        loop {
+            assert!(inbox.take(&mut batch));
+            if lock(&inbox.queue).queued() == 0 {
+                break;
+            }
+        }
+        assert!(
+            total(&inbox, &batch) <= IDLE_KEEP,
+            "{}",
+            total(&inbox, &batch)
+        );
     }
 
     /// Sets its flag when dropped: the thread that owns it has finished.
