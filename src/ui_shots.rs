@@ -13350,22 +13350,23 @@ fn title_area_scenes() {
 ///
 /// Collapsed (760 × 200 unless noted): the workspace's name centred on the window and [🔔] [⚙]
 /// [sidebar] at the band's far right (`band_buttons`):
-/// - `title-bar-collapsed`: nothing unseen; `-hover` and `-hover-sidebar`: the pointer on the ⚙
-///   or the sidebar button; `title-bar-unseen`: the 🔔's dot;
+/// - `title-bar-collapsed`: nothing unseen, a hide slide just finished; `-hover` and
+///   `-hover-sidebar`: the pointer on the ⚙ or the sidebar button; `title-bar-unseen`: the 🔔's
+///   dot;
 /// - `title-bar-collapsed-narrow` (360 pt, a long name, cut) and `-tiny` (240 pt, no name);
 /// - `title-bar-collapsed-right`: 960 × 300, the right sidebar shown;
-/// - `title-bar-sliding`: a hide slide 60 ms in.
+/// - `title-bar-sliding`: a hide slide 60 ms in (no name until the sidebar has left).
 ///
-/// Panics unless the title's ink is centred on the sidebar's middle and the band's, no wider
-/// than `TITLE_ROOM`, clear of the lights' area and short of the button by `TITLE_GAP`; the
-/// button's ink is centred in its `open_button_x` box and on the footer gear's ink; nothing is
-/// drawn where the button used to be (x 0 to 80); collapsed, each band icon's ink is centred in
-/// its slot (over the right sidebar's band too, and mid-slide), the name's on the window's middle
-/// inside its insets (cut, or left out under 260 pt), the hover fills the slot, the dot shows
-/// while some are unseen, and no button is left at x 80; and (Mocha) unless a press on the title
-/// or the collapsed name arms a window drag, a press on any button doesn't, a click on the open
-/// button hides the sidebar and ⌘\ shows it, a click on the band 🔔 opens the popover (and
-/// Escape closes it) and one on the band's sidebar button shows the sidebar.
+/// Panics unless the title's ink is centred on the sidebar's middle and the band's, no wider than
+/// `TITLE_ROOM`, clear of the lights' area and short of the button by `TITLE_GAP`; the button's ink
+/// is centred in its `open_button_x` box and on the footer gear's ink; nothing is drawn where the
+/// button used to be (x 0 to 80); collapsed, each band icon's ink is centred in its slot (over the
+/// right sidebar's band too, and mid-slide), the name's on the window's middle inside its insets
+/// (cut, or left out under 260 pt, and not drawn until a hide slide has ended), the hover fills the
+/// slot, the dot shows while some are unseen, and no button is left at x 80; and (Mocha) unless a
+/// press on the title or the collapsed name arms a window drag, a press on any button doesn't, a
+/// click on the open button hides the sidebar and ⌘\ shows it, a click on the band 🔔 opens the
+/// popover (and Escape closes it) and one on the band's sidebar button shows the sidebar.
 fn title_bar_scenes() {
     use crate::sidebar_toggle::{BUTTON_Y, HIT, Slide, lights_clear, open_button_x};
     use crate::tab_menu::Dismiss;
@@ -13535,6 +13536,14 @@ fn title_bar_scenes() {
                             from: 1.0,
                         });
                     }
+                    if scene == "title-bar-collapsed" {
+                        // A hide slide that has finished: the name is back.
+                        ws.slide = Some(Slide {
+                            showing: false,
+                            since: Instant::now() - Duration::from_millis(400),
+                            from: 1.0,
+                        });
+                    }
                     ws
                 });
                 ws.into()
@@ -13672,6 +13681,12 @@ fn title_bar_scenes() {
                     assert!(own.is_some(), "{n}: the sliding sidebar's button");
                     let old = ink_box(&shot, dims, (80.0, BUTTON_Y, HIT, HIT), band, dim);
                     assert_eq!(old, None, "{n}: a button at the old place (x 80)");
+                    // The name waits for the sidebar to leave: none in the band between its
+                    // insets (it would paint over the sliding sidebar's title and rows).
+                    let inset = name_inset(false);
+                    let room = (inset, 0.0, w - 2.0 * inset, TOP_BAND);
+                    let name = ink_box(&shot, dims, room, band, full);
+                    assert_eq!(name, None, "{n}: the name drawn mid-slide");
                 }
                 _ => unreachable!(),
             }

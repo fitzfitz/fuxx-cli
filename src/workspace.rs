@@ -3067,8 +3067,10 @@ impl Render for Workspace {
         // With the sidebar shown its button is in its band (`render_sidebar`); hidden, the
         // window's band is the title bar (M11m): the workspace's name centred on the window and
         // [🔔] [⚙] [sidebar] at its far right, at the root so they sit over the panes' band and
-        // the right sidebar's alike (and over a sidebar sliding out).
-        let name = if self.sidebar.hidden {
+        // the right sidebar's alike (and over a sidebar sliding out). The name waits for the
+        // hide slide to end, so it never paints over the sliding sidebar's title and rows; it
+        // shows at once when the sidebar has left.
+        let name = if self.sidebar.hidden && slide.is_none() {
             self.render_workspace_name(ui, window)
         } else {
             None
