@@ -19,11 +19,11 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M11c — Native notifications** (Phase 4, an M11 extension): built and reviewed 2026-11-06 (742 tests), on-screen check pending: [[M11c Plan - Native Notifications]]. Next: M11d (Help menu). M10b, M10c, M11, the follow-up and M11b are merged and pushed; their on-screen checks are still to come. |
-| **Status** | 🟨 M11c built and reviewed (app icon added 2026-11-07); 🟨 M11d built and reviewed 2026-11-08 (merged into `master` locally, not pushed; 786 tests). 🟨 M11e released as v0.3.0 and v0.3.1 2026-11-08 (button seen on your Mac). 🟨 M11f built and reviewed 2026-11-08 (868 tests). 🟨 M10b, M10c, M11, the follow-up and M11b built, reviewed and merged; on-screen checks pending. M10a ✅ done 2026-11-05. |
-| **▶ Next action** | Your M11d on-screen check (17 items in [[56 - Milestone 11d - Help Menu]]); your M11c on-screen check (19 items in [[55 - Milestone 11c - Native Notifications]]); the batched checks for notes 51–54 and the follow-up plan stay open. |
+| **Current milestone** | **M11m — Title bar** (requested by you 2026-11-09; not designed yet), then **M11n — Performance**, then the one combined release (M11i–M11n). |
+| **Status** | 🟨 M11i, M11h, M11j, M11k and M11l built, reviewed, merged and pushed 2026-11-08/09 (M11l: 1251 tests); not released on their own. 🟨 M11e/M11f/M11g released (v0.3.0–v0.4.0); on-screen checks pending. |
+| **▶ Next action** | Design and plan M11m ([[40 - Roadmap]]), build it, then M11n; release v0.5.0; then your one combined on-screen check (notes 59–63 and the M11m/M11n notes); then plan a chores round with you. |
 | **Blocked on** | Nothing. |
-| **Last updated** | 2026-11-08 |
+| **Last updated** | 2026-11-09 |
 
 ## Legend
 
