@@ -24,12 +24,14 @@
 # C, with the command line as typed ($1). Sent without it when there is none or it is over
 # 2,048 bytes of UTF-8. Encoded byte by byte (multibyte off): everything but A-Z a-z 0-9 . _ ~
 # / - becomes %XX, so the mark holds printable ASCII only, and never a `;`.
-# Not for an `exec` that replaces the shell (`exec zsh`, also after `builtin` or `command`; not
-# `exec >file`, which only redirects): the new shell never sends D, nor marks at all.
+# Not for an `exec` that replaces the shell (`exec zsh`, also after `NAME=value` assignments,
+# `builtin` or `command`; not `exec >file`, which only redirects): the new shell never sends D,
+# nor marks at all.
 _fuxx_preexec() {
     'builtin' 'emulate' -L zsh -o extendedglob +o multibyte
     if [[ $1 == *exec* ]]; then
         local -a w=(${(z)1})
+        while [[ $w[1] == [A-Za-z_][A-Za-z0-9_]#=* ]]; do 'builtin' 'shift' w; done
         while [[ $w[1] == (builtin|command) ]]; do 'builtin' 'shift' w; done
         [[ $w[1] == exec && -n $w[2] && $w[2] != ([0-9]#(\<|\>|\&\>)*|\{*\}) ]] && return 0
     fi

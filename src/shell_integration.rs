@@ -401,6 +401,10 @@ mod tests {
             "command exec zsh",
             "builtin command exec /bin/zsh -l",
             "  exec   zsh",
+            // Parameter assignments before it (for the new shell's environment).
+            "FOO=1 exec zsh",
+            "FOO=1 BAR_2=x exec -l zsh",
+            "FOO='a b' builtin exec zsh",
         ] {
             let out = zsh_f(&t, &format!("_fuxx_preexec {}{show}", shell_quote(line)));
             assert_eq!(String::from_utf8_lossy(&out), "[0]\n", "{line:?}");
@@ -416,6 +420,10 @@ mod tests {
             "exec",
             "echo exec zsh",
             "execute zsh",
+            "FOO=1 ls",
+            "FOO=1 exec >out.txt",
+            "FOO=1",
+            "echo x; exec zsh",
         ] {
             let out = zsh_f(&t, &format!("_fuxx_preexec {}{show}", shell_quote(line)));
             let text = String::from_utf8_lossy(&out);
@@ -894,26 +902,29 @@ mod tests {
     fn exec_zsh_leaves_no_block_running() {
         // `exec zsh` (oh-my-zsh's `omz reload`): the new zsh reads your files only, without
         // fuxx's hooks. No block is left running, and no later command makes one (the
-        // integration is lost until a new terminal: a limit).
-        let t = TempDir::new("exec-zsh");
-        let dir = t.0.join("si");
-        install(&dir).unwrap();
-        t.write("home/.zshrc", "PS1='%# '\n");
-        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
-        let blocks = run(&core, "echo a");
-        assert_eq!(outcomes(&blocks), [Outcome::Ok]);
-        assert!(until(|| core.prompt_ready() && core.cursor_at_input_start()));
-        core.input(b"exec zsh\r");
-        core.input(b"echo after-$((6*7))\r");
-        assert!(
-            until(|| screen_text(&core).contains("after-42")),
-            "{}",
-            screen_text(&core)
-        );
-        std::thread::sleep(Duration::from_millis(300));
-        let blocks = core.blocks();
-        assert_eq!(cmds(&blocks), ["echo a"], "{blocks:?}");
-        assert_eq!(outcomes(&blocks), [Outcome::Ok]);
+        // integration is lost until a new terminal: a limit). The same with an assignment
+        // before it.
+        for (i, line) in ["exec zsh", "FOO=1 exec zsh"].into_iter().enumerate() {
+            let t = TempDir::new(&format!("exec-zsh-{i}"));
+            let dir = t.0.join("si");
+            install(&dir).unwrap();
+            t.write("home/.zshrc", "PS1='%# '\n");
+            let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+            let blocks = run(&core, "echo a");
+            assert_eq!(outcomes(&blocks), [Outcome::Ok]);
+            assert!(until(|| core.prompt_ready() && core.cursor_at_input_start()));
+            core.input(format!("{line}\r").as_bytes());
+            core.input(b"echo after-$((6*7))\r");
+            assert!(
+                until(|| screen_text(&core).contains("after-42")),
+                "{line}: {}",
+                screen_text(&core)
+            );
+            std::thread::sleep(Duration::from_millis(300));
+            let blocks = core.blocks();
+            assert_eq!(cmds(&blocks), ["echo a"], "{line}: {blocks:?}");
+            assert_eq!(outcomes(&blocks), [Outcome::Ok], "{line}");
+        }
     }
 
     #[test]
