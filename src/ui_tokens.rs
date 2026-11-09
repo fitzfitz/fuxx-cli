@@ -35,6 +35,9 @@ pub mod size {
     /// is, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
     pub const SIDEBAR_ROW: f32 = 22.0;
     pub const SIDEBAR_ROW_TWO: f32 = 32.0;
+    /// A row in a git repo: its branch and its folder, each on its own line under the name
+    /// (2026-11-10, your call).
+    pub const SIDEBAR_ROW_THREE: f32 = 45.0;
     pub const GROUP_HEADER: f32 = 24.0;
     /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i).
     pub const TAB_BAR: f32 = 30.0;

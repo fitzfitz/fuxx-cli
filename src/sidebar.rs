@@ -50,7 +50,7 @@ use crate::title_area::{
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SELECTION_BAR, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
-    SIDEBAR_MIN_WIDTH, SIDEBAR_ROW, SIDEBAR_ROW_TWO, STATUS_BAR, STATUS_MARK,
+    SIDEBAR_MIN_WIDTH, SIDEBAR_ROW, SIDEBAR_ROW_THREE, SIDEBAR_ROW_TWO, STATUS_BAR, STATUS_MARK,
 };
 use crate::ui_tokens::text;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
@@ -130,7 +130,8 @@ pub struct WorkspaceRow {
     pub color: Option<TabColor>,
     /// Pinned: at the top, out of its group, with a 📌.
     pub pinned: bool,
-    /// The second line, `branch • folder` (the branch only inside a git repo).
+    /// Where it is: the branch (only inside a git repo) and the folder, each on its own line
+    /// under the name (2026-11-10; it was one `branch • folder` line).
     pub branch: Option<String>,
     pub folder: Option<String>,
     /// A program other than the shell runs in its subject: idle, its mark is a filled dot, not
@@ -350,13 +351,13 @@ pub enum LineTwo {
     Waiting(Option<String>),
     /// A script's note or progress label.
     Note(String),
-    /// `branch • folder`.
+    /// Where it is: the branch and the folder, each on its own line (`lines_under`).
     Place,
 }
 
 /// What a row shows under its name (M11i), the first that applies: "not live" for a lost
 /// background session; waiting, "Needs input" and its question; a script's note; else where it
-/// is (`branch • folder`). None when there's nothing to say.
+/// is (its branch and folder). None when there's nothing to say.
 pub fn line_two(row: &WorkspaceRow) -> Option<LineTwo> {
     match &row.sub {
         Some(Sub::NotLive) => Some(LineTwo::NotLive),
@@ -367,12 +368,39 @@ pub fn line_two(row: &WorkspaceRow) -> Option<LineTwo> {
     }
 }
 
-/// A row's height: its name line alone, or with the line under it (`line_two`).
+/// How many lines a row has under its name: none, the one `line_two` says, or two when that is
+/// where it is and it knows both its branch and its folder (the branch, then the folder). No
+/// branch line outside a git repo.
+pub fn lines_under(row: &WorkspaceRow) -> usize {
+    match line_two(row) {
+        None => 0,
+        Some(LineTwo::Place) if row.branch.is_some() && row.folder.is_some() => 2,
+        Some(_) => 1,
+    }
+}
+
+/// What a dragged row shows under its name, as tall as the row itself: its branch and its
+/// folder on their own lines when the row has both (`lines_under` is 2), else what it knows of
+/// its place on one line (`branch • folder` under a waiting row's single line, as before).
+pub fn place_lines(row: &WorkspaceRow) -> Vec<String> {
+    let (branch, folder) = (row.branch.as_deref(), row.folder.as_deref());
+    match lines_under(row) {
+        2 => [branch, folder]
+            .into_iter()
+            .flatten()
+            .map(String::from)
+            .collect(),
+        _ if branch.is_some() || folder.is_some() => vec![fit_place(branch, folder, |_| true)],
+        _ => Vec::new(),
+    }
+}
+
+/// A row's height: its name line alone, or with the lines under it (`lines_under`).
 pub fn row_height(row: &WorkspaceRow) -> f32 {
-    if line_two(row).is_some() {
-        SIDEBAR_ROW_TWO
-    } else {
-        SIDEBAR_ROW
+    match lines_under(row) {
+        0 => SIDEBAR_ROW,
+        1 => SIDEBAR_ROW_TWO,
+        _ => SIDEBAR_ROW_THREE,
     }
 }
 
@@ -655,8 +683,8 @@ pub(crate) struct RowGrab {
 /// The row that follows the pointer during a drag: the row itself, lifted.
 struct DragPreview {
     label: SharedString,
-    /// Its place line, if it has one.
-    place: Option<SharedString>,
+    /// Its place lines (`place_lines`): none, one, or its branch and its folder.
+    place: Vec<SharedString>,
     status: Status,
     /// Idle, its mark is a dot (a program runs) or a ring.
     running: bool,
@@ -689,7 +717,7 @@ impl Render for DragPreview {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(self.label.clone()),
             );
-        let place = self.place.clone().map(|place| {
+        let place = self.place.iter().cloned().map(|place| {
             div()
                 .h(px(SUB_LINE))
                 .pl(px(MARK_SLOT + SLOT_GAP))
@@ -1369,8 +1397,8 @@ impl Workspace {
                     ))
                 }),
             LineTwo::Note(note) => under().child(text(note, ui.text_faint)),
-            // Short of room, the branch loses its end, then the folder its start (its own name
-            // stays): `fit_place`, measured as drawn.
+            // The branch on its own line, cut at its end when long; the folder under it, short
+            // of room losing its start (its own name stays): `fit_place`, measured as drawn.
             LineTwo::Place => {
                 let room = row_width - 2.0 * ROW_PAD - MARK_SLOT - SLOT_GAP;
                 let wrapper = std::cell::RefCell::new(
@@ -1384,15 +1412,21 @@ impl Workspace {
                         .should_truncate_line(s, px(room), "…", TruncateFrom::End)
                         .is_none()
                 };
-                let line = fit_place(row.branch.as_deref(), row.folder.as_deref(), fits);
-                under().child(text(line, ui.text_faint))
+                let branch = row
+                    .branch
+                    .clone()
+                    .map(|b| under().child(text(b, ui.text_faint)));
+                let folder = row
+                    .folder
+                    .as_deref()
+                    .map(|f| under().child(text(fit_place(None, Some(f), fits), ui.text_faint)));
+                div().flex().flex_col().children(branch).children(folder)
             }
         });
         let (source, tab_source) = (self.sidebar.drag_source.clone(), self.tab_drag.clone());
         let preview = DragPreview {
             label: row.label.clone().into(),
-            place: (row.branch.is_some() || row.folder.is_some())
-                .then(|| fit_place(row.branch.as_deref(), row.folder.as_deref(), |_| true).into()),
+            place: place_lines(row).into_iter().map(Into::into).collect(),
             status: row.status,
             running: row.running,
             width: self.sidebar.width,
@@ -2654,6 +2688,63 @@ mod tests {
                 SIDEBAR_ROW_TWO
             ]
         );
+    }
+
+    #[test]
+    fn a_row_in_a_repo_shows_its_branch_and_its_folder_on_their_own_lines() {
+        assert_eq!(
+            SIDEBAR_ROW_THREE, 45.0,
+            "17 + 13 + 13, and 2 to spare as at 32"
+        );
+        let now = Instant::now();
+        let under = |f: WorkspaceFacts| {
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            let row = session(&rows[0]);
+            (lines_under(row), row_height(row))
+        };
+        // In a repo: the branch, then the folder under it.
+        let mut both = facts("api", Status::Idle, now, None);
+        both.folder = Some("~/api".into());
+        both.branch = Some("main");
+        assert_eq!(under(both), (2, SIDEBAR_ROW_THREE));
+        // Not in a repo: no branch line, the folder alone.
+        let mut folder_only = facts("api", Status::Idle, now, None);
+        folder_only.folder = Some("/tmp/scratch".into());
+        assert_eq!(under(folder_only), (1, SIDEBAR_ROW_TWO));
+        let mut branch_only = facts("api", Status::Idle, now, None);
+        branch_only.branch = Some("main");
+        assert_eq!(under(branch_only), (1, SIDEBAR_ROW_TWO));
+        // Waiting, a note or lost: that one line, as before (the place is not shown).
+        let mut waiting = facts("claude", Status::Waiting, now, None);
+        waiting.folder = Some("~/api".into());
+        waiting.branch = Some("main");
+        assert_eq!(under(waiting), (1, SIDEBAR_ROW_TWO));
+        assert_eq!(
+            under(facts("shell", Status::Idle, now, None)),
+            (0, SIDEBAR_ROW)
+        );
+    }
+
+    #[test]
+    fn a_dragged_row_shows_the_lines_the_row_has() {
+        let now = Instant::now();
+        let lines = |f: WorkspaceFacts| {
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            place_lines(session(&rows[0]))
+        };
+        let mut both = facts("api", Status::Idle, now, None);
+        both.folder = Some("~/api".into());
+        both.branch = Some("main");
+        assert_eq!(lines(both), ["main", "~/api"]);
+        let mut folder_only = facts("api", Status::Idle, now, None);
+        folder_only.folder = Some("/tmp/scratch".into());
+        assert_eq!(lines(folder_only), ["/tmp/scratch"]);
+        // A waiting row is two lines tall: its place on one, as before.
+        let mut waiting = facts("claude", Status::Waiting, now, None);
+        waiting.folder = Some("~/api".into());
+        waiting.branch = Some("main");
+        assert_eq!(lines(waiting), ["main • ~/api"]);
+        assert!(lines(facts("shell", Status::Idle, now, None)).is_empty());
     }
 
     #[test]
