@@ -14121,6 +14121,21 @@ fn title_bar_scenes() {
         );
         cx.simulate_keystrokes(window, "cmd-\\");
         assert!(!hidden(cx), "title-bar: ⌘\\ shows it again");
+        // With the sidebar shown there are no band buttons: where the band's sidebar button would
+        // be is the pane tab bar's own control (◧, the right sidebar), which opens the right
+        // sidebar and leaves this one shown.
+        let right = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).right_sidebar.hidden);
+        assert!(right(cx), "title-bar: the right sidebar starts hidden");
+        let slot_x = band_buttons(960.0)[2] + HIT / 2.0;
+        cx.simulate_click(window, point(px(slot_x), px(TOP_BAND / 2.0)), none);
+        assert!(
+            !hidden(cx),
+            "title-bar: no band sidebar button while the sidebar is shown"
+        );
+        assert!(
+            !right(cx),
+            "title-bar: the tab bar's ◧ opened the right sidebar"
+        );
         slot.borrow_mut().take();
     };
     render_with(&theme, size(px(960.0), px(600.0)), build, act);
