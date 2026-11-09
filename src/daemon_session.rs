@@ -45,6 +45,10 @@ use crate::vt_snapshot;
 /// Frames a subscriber may have queued before it is cut off with `Resync`.
 #[allow(dead_code)] // used by the daemon from M10a Task 4
 pub const QUEUE_CAPACITY: usize = 1024;
+/// Output bytes a subscriber may have queued before it is cut off with `Resync`, whichever
+/// cap comes first. Frames carry up to `pty::BATCH_MAX` (64 KiB), so the frame cap alone would
+/// allow 64 MiB; this keeps the bound the frame cap gave with 8 KiB reads (1024 × 8 KiB).
+pub const QUEUE_BYTES: usize = 8 << 20;
 /// Room left in a `Snapshot` frame for its binary header and JSON metadata (title excluded).
 const SNAPSHOT_HEADROOM: usize = 64 * 1024;
 /// Largest terminal a session takes, so even a snapshot with no history fits in a frame.
@@ -264,6 +268,8 @@ struct Queue {
 #[derive(Default)]
 struct QueueInner {
     frames: VecDeque<Frame>,
+    /// Output bytes in `frames` (see `QUEUE_BYTES`).
+    bytes: usize,
     /// The session let go of this subscriber: nothing more will come.
     closed: bool,
     /// The receiver was dropped: the session should let go.
@@ -276,8 +282,24 @@ impl Queue {
     }
 }
 
-/// A subscriber queue holding at most `capacity` frames, identified by `id` (unique per
-/// session; attaching again with the same id replaces the old one).
+impl QueueInner {
+    fn pop(&mut self) -> Option<Frame> {
+        let frame = self.frames.pop_front()?;
+        self.bytes -= output_len(&frame);
+        Some(frame)
+    }
+}
+
+/// The output bytes `frame` carries, which is what `QUEUE_BYTES` counts.
+fn output_len(frame: &Frame) -> usize {
+    match frame {
+        Frame::Output { bytes, .. } => bytes.len(),
+        _ => 0,
+    }
+}
+
+/// A subscriber queue holding at most `capacity` frames and `QUEUE_BYTES` of output, identified
+/// by `id` (unique per session; attaching again with the same id replaces the old one).
 #[allow(dead_code)] // used by the daemon from M10a Task 4
 pub fn subscriber(id: u64, capacity: usize) -> (Subscriber, FrameReceiver) {
     let queue = Arc::new(Queue {
@@ -301,18 +323,21 @@ impl Subscriber {
     }
 
     /// Queue `frame`. False when this subscriber is done: its receiver is gone, or the queue was
-    /// full, in which case the backlog was dropped and replaced by `Resync{session}` (the client
+    /// full (`QUEUE_CAPACITY` frames or `QUEUE_BYTES` of output, whichever first), in which case the backlog was dropped and replaced by `Resync{session}` (the client
     /// re-attaches for a fresh snapshot, so memory stays bounded and a flood skips frames).
     fn push(&self, frame: Frame, session: u64) -> bool {
         let mut q = self.queue.lock();
         if q.receiver_gone {
             return false;
         }
-        let keep = q.frames.len() < self.queue.capacity;
+        let len = output_len(&frame);
+        let keep = q.frames.len() < self.queue.capacity && q.bytes + len <= QUEUE_BYTES;
         if keep {
+            q.bytes += len;
             q.frames.push_back(frame);
         } else {
             q.frames.clear();
+            q.bytes = 0;
             q.frames.push_back(Frame::Resync { id: session });
         }
         self.queue.ready.notify_all();
@@ -332,7 +357,7 @@ impl FrameReceiver {
     pub fn recv(&self) -> Result<Frame, RecvError> {
         let mut q = self.queue.lock();
         loop {
-            if let Some(frame) = q.frames.pop_front() {
+            if let Some(frame) = q.pop() {
                 return Ok(frame);
             }
             if q.closed {
@@ -352,7 +377,7 @@ impl FrameReceiver {
         };
         let mut q = self.queue.lock();
         loop {
-            if let Some(frame) = q.frames.pop_front() {
+            if let Some(frame) = q.pop() {
                 return Ok(frame);
             }
             if q.closed {
@@ -373,7 +398,7 @@ impl FrameReceiver {
 
     pub fn try_recv(&self) -> Result<Frame, TryRecvError> {
         let mut q = self.queue.lock();
-        match q.frames.pop_front() {
+        match q.pop() {
             Some(frame) => Ok(frame),
             None if q.closed => Err(TryRecvError::Disconnected),
             None => Err(TryRecvError::Empty),
@@ -1026,6 +1051,34 @@ mod tests {
             "a full queue cuts it off"
         );
         drop(sub); // the session lets go of it
+        assert_eq!(rx.try_recv(), Ok(Frame::Resync { id: ID }));
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    }
+
+    /// Frames are now up to `BATCH_MAX` (64 KiB), so 1024 frames alone would let a stalled
+    /// client hold 64 MiB. The byte cap restores the old bound (1024 frames of 8 KiB reads).
+    #[test]
+    fn a_stalled_subscriber_resyncs_by_8_mib_of_big_frames() {
+        let big = |seq| Frame::Output {
+            id: ID,
+            seq,
+            notifications: 0,
+            bytes: vec![b'x'; crate::pty::BATCH_MAX],
+        };
+        let fits = (QUEUE_BYTES / crate::pty::BATCH_MAX) as u64;
+        assert_eq!(QUEUE_BYTES, 8 << 20);
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        for seq in 1..=fits {
+            assert!(sub.push(big(seq), ID), "frame {seq} is within 8 MiB");
+        }
+        // Taking one frame makes room for one more: the count follows what is taken.
+        assert!(matches!(rx.try_recv(), Ok(Frame::Output { seq: 1, .. })));
+        assert!(sub.push(big(fits + 1), ID), "room was made");
+        assert!(
+            !sub.push(big(fits + 2), ID),
+            "past 8 MiB queued, a stalled subscriber is cut off"
+        );
+        drop(sub);
         assert_eq!(rx.try_recv(), Ok(Frame::Resync { id: ID }));
         assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     }
