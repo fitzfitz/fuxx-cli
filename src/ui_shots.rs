@@ -15181,7 +15181,7 @@ fn copied(rig: &mut CursorRig, was: &str) -> Option<String> {
 
 /// Press chip button `i` (0 Copy command, 1 Copy output, 2 Rerun) of the open chip.
 fn press_chip_button(rig: &mut CursorRig, i: usize) {
-    let (buttons, _) = rig
+    let (buttons, _, _) = rig
         .read(|v| v.chip_buttons_shot())
         .expect("the chip is open");
     let at = buttons[i].expect("the button was laid out").center();
@@ -15316,6 +15316,7 @@ fn command_blocks_copy_scene() {
         let theme = shot_theme(name);
         let n = format!("command-blocks-copy-{slug}");
         let mut rig = blocks_rig(theme, dims, false, false, |_| ());
+        let _keep = ClipboardKeeper::new(&rig);
         keyed(&mut rig);
         let _ = rig.frame();
         let g = BlockGeometry::of(&rig, false);
@@ -15427,7 +15428,7 @@ fn command_blocks_rerun_scene() {
 
         point_at(&mut rig, point(px(g.bar_x), px(g.mid(0))));
         let _ = rig.frame();
-        let (_, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+        let (_, _, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
         assert_eq!(rerun, Ok(()), "{n}: Rerun offered at the empty prompt");
         let shown = rig.frame();
         save_shot("command-blocks-rerun", slug, &shown);
@@ -15454,7 +15455,8 @@ fn command_blocks_rerun_scene() {
         assert!(chip_of(&rig).is_some(), "{n}: the chip stays");
 
         // Typed now (the cursor left the input start): Rerun is disabled.
-        let (buttons, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+        let (buttons, enabled_now, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+        assert_eq!(enabled_now, [true, true, false], "{n}");
         assert_eq!(rerun, Err(Refusal::Typed), "{n}");
         let dim = rig.frame();
         save_shot("command-blocks-rerun-disabled", slug, &dim);
@@ -15490,5 +15492,122 @@ fn command_blocks_rerun_scene() {
         let _ = rig.frame();
         assert_eq!(screen(&rig), settled, "{n}: a disabled Rerun types nothing");
         let _ = ids;
+
+        rerun_odd_blocks(theme, &n);
+    }
+}
+
+/// The `command-blocks-rerun` checks on a second terminal: a `t=1` block (its command was too
+/// long to record) and a two-line command, at a live prompt whose shell asked for bracketed
+/// paste. The `t=1` block's chip has Copy command and Rerun disabled; pressing them keeps the
+/// chip open and sends and copies nothing. The two-line command's Rerun sends exactly
+/// `ESC [200~echo a\necho b ESC [201~`: wrapped, with no `\r`.
+fn rerun_odd_blocks(theme: Theme, n: &str) {
+    use crate::block_view::Refusal;
+    const A: &str = "\x1b]133;A\x07";
+    const B: &str = "\x1b]133;B\x07";
+    let c = |cmd: &str| format!("\x1b]133;C;cmdline_url={cmd}\x07");
+    let d0 = "\x1b]133;D;0\x07";
+    let text = [
+        // Row 0: a command longer than CMD_CAP (recorded as t=1, no command).
+        format!("{A}$ {B}long\r\n{}{d0}", c(&"x".repeat(2100))),
+        // Rows 1-2: a two-line command; rows 3-4 its output.
+        format!(
+            "{A}$ {B}echo a\r\n> echo b\r\n{}a\r\nb\r\n{d0}",
+            c("echo%20a%0Aecho%20b")
+        ),
+        // Row 5: the live prompt, the shell asking for bracketed paste (as zsh does).
+        format!("{A}$ {B}\x1b[?2004h"),
+    ]
+    .concat();
+    let dims = size(px(480.0), px(240.0));
+    let mut rig = CursorRig::sized(theme, &text, dims, false, (false, false, false), |_| ());
+    let _keep = ClipboardKeeper::new(&rig);
+    keyed(&mut rig);
+    let _ = rig.frame();
+    let g = BlockGeometry::of(&rig, false);
+    let blocks = rig.read(|v| v.shot_blocks());
+    assert_eq!(blocks.len(), 2, "{n}: {blocks:?}");
+    assert_eq!(blocks[0].cmd, None, "{n}: t=1, no command");
+    let view = rig.view.clone();
+    let take_sent = |rig: &mut CursorRig| rig.cx.update(|cx| view.update(cx, |v, _| v.take_sent()));
+    let _ = take_sent(&mut rig);
+
+    // The t=1 block: Copy command and Rerun disabled.
+    point_at(&mut rig, point(px(g.bar_x), px(g.mid(0))));
+    let _ = rig.frame();
+    let (_, enabled, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+    assert_eq!(enabled, [false, true, false], "{n}: t=1 block's buttons");
+    assert_eq!(rerun, Err(Refusal::NoCommand), "{n}");
+    set_clipboard(&mut rig, "before");
+    for i in [0, 2] {
+        press_chip_button(&mut rig, i);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = rig.frame();
+        assert!(
+            chip_of(&rig).is_some(),
+            "{n}: a disabled button keeps the chip"
+        );
+        assert_eq!(
+            rig.read(|v| v.hovered_block().map(str::to_string)),
+            Some(blocks[0].id.clone()),
+            "{n}: still the t=1 block's chip"
+        );
+        assert_eq!(
+            clipboard(&mut rig).as_deref(),
+            Some("before"),
+            "{n}: copied nothing"
+        );
+        assert!(take_sent(&mut rig).is_empty(), "{n}: sent nothing");
+        assert_eq!(chosen(&rig), None, "{n}: picked nothing");
+    }
+
+    // The two-line command: Rerun sends it wrapped, no `\r`.
+    point_at(&mut rig, point(px(g.bar_x), px(g.mid(1))));
+    let _ = rig.frame();
+    assert_eq!(
+        rig.read(|v| v.hovered_block().map(str::to_string)),
+        Some(blocks[1].id.clone()),
+        "{n}: the two-line command's chip"
+    );
+    let (_, enabled, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+    assert_eq!((enabled, rerun), ([true, true, true], Ok(())), "{n}");
+    press_chip_button(&mut rig, 2);
+    let sent = take_sent(&mut rig);
+    assert_eq!(
+        sent,
+        b"\x1b[200~echo a\necho b\x1b[201~",
+        "{n}: {:?}",
+        String::from_utf8_lossy(&sent)
+    );
+    assert!(!sent.contains(&b'\r'), "{n}: no carriage return");
+}
+
+/// Keeps the clipboard as it was before a scene that copies (the shots run on the real
+/// macOS platform, so they use your clipboard): saved when made, put back when dropped, a
+/// failing scene's unwinding included. Made after its rig, so dropped before it.
+struct ClipboardKeeper {
+    app: std::rc::Rc<gpui::AppCell>,
+    saved: Option<gpui::ClipboardItem>,
+}
+
+impl ClipboardKeeper {
+    fn new(rig: &CursorRig) -> Self {
+        let app = rig.cx.app.clone();
+        let saved = app.borrow().read_from_clipboard();
+        Self { app, saved }
+    }
+}
+
+impl Drop for ClipboardKeeper {
+    fn drop(&mut self) {
+        // Not while the app is borrowed (a panic inside an update): never a second panic.
+        if let Ok(app) = self.app.try_borrow_mut() {
+            let item = self
+                .saved
+                .take()
+                .unwrap_or_else(|| gpui::ClipboardItem::new_string(String::new()));
+            app.write_to_clipboard(item);
+        }
     }
 }

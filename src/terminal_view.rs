@@ -170,9 +170,10 @@ impl GutterPaint {
     }
 }
 
-/// Where the chip's three buttons were laid out, and whether Rerun is enabled (UI screenshots).
+/// Where the chip's three buttons were laid out, which are enabled, and whether Rerun is (UI
+/// screenshots).
 #[cfg(feature = "ui-shots")]
-pub type ChipButtonsShot = ([Option<Bounds<Pixels>>; 3], Result<(), Refusal>);
+pub type ChipButtonsShot = ([Option<Bounds<Pixels>>; 3], [bool; 3], Result<(), Refusal>);
 
 /// The chip as `render` lays it out: what it says and where it goes, relative to the pane.
 struct Chip {
@@ -259,6 +260,9 @@ pub struct TerminalView {
     /// Where its three buttons were laid out (UI screenshots press them).
     #[cfg(feature = "ui-shots")]
     chip_button_bounds: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
+    /// Every byte sent as input (UI screenshots read what Rerun sent).
+    #[cfg(feature = "ui-shots")]
+    sent: Vec<u8>,
     /// Hides the chip `CHIP_HIDE_MS` after the pointer left the gutter and the chip; dropped
     /// (cancelled) when it comes back.
     chip_hide: Option<Task<()>>,
@@ -476,12 +480,19 @@ impl TerminalView {
         self.core.display_offset()
     }
 
-    /// The open chip's buttons: where each was laid out, and whether Rerun is enabled (or why
-    /// not).
+    /// The open chip's buttons: where each was laid out, which are enabled, and whether
+    /// Rerun is (or why not).
     #[cfg(feature = "ui-shots")]
     pub fn chip_buttons_shot(&self) -> Option<ChipButtonsShot> {
         let chip = self.chip(&self.core.theme().ui())?;
-        Some((self.chip_button_bounds.get(), chip.rerun))
+        let enabled = block_view::chip_enabled(chip.cmd.is_some(), chip.rerun);
+        Some((self.chip_button_bounds.get(), enabled, chip.rerun))
+    }
+
+    /// The bytes sent as input since the last call.
+    #[cfg(feature = "ui-shots")]
+    pub fn take_sent(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.sent)
     }
 
     /// The redraws the cursor asked for at its last paint.
@@ -714,7 +725,18 @@ impl TerminalView {
     /// Paste text, bracketed when the program asked for it.
     pub fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
         let bracketed = self.core.mode().contains(TermMode::BRACKETED_PASTE);
-        self.input_bytes(&keys::paste_bytes(text, bracketed), cx);
+        self.paste_with(text, bracketed, cx);
+    }
+
+    /// Paste text, bracketed exactly when `bracketed` (the mode as the caller read it).
+    pub fn paste_with(&mut self, text: &str, bracketed: bool, cx: &mut Context<Self>) {
+        self.send_paste(&keys::paste_bytes(text, bracketed), cx);
+    }
+
+    /// Send pasted bytes as input (a paste by script or Rerun: the chip and the picked block
+    /// stay).
+    fn send_paste(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.input_bytes(bytes, cx);
         cx.notify();
     }
 
@@ -778,6 +800,8 @@ impl TerminalView {
             chip_bounds: Rc::new(Cell::new(None)),
             #[cfg(feature = "ui-shots")]
             chip_button_bounds: Rc::new(Cell::new([None; 3])),
+            #[cfg(feature = "ui-shots")]
+            sent: Vec::new(),
             chip_hide: None,
             #[cfg(feature = "ui-shots")]
             shot_key_window: Cell::new(false),
@@ -911,6 +935,8 @@ impl TerminalView {
         if self.disconnected {
             return;
         }
+        #[cfg(feature = "ui-shots")]
+        self.sent.extend_from_slice(bytes);
         self.core.input(bytes);
         // You typed: the breath holds.
         self.motion.borrow_mut().changed = Instant::now();
@@ -1297,12 +1323,14 @@ impl TerminalView {
     }
 
     /// Rerun block `id`: type its command at the prompt, never pressing Return, when every
-    /// guard allows it (`block_view::rerun`); otherwise nothing. Pasted like a script's paste
-    /// (bracketed when the shell asked), so the chip and the picked block stay.
+    /// guard allows it (`block_view::rerun_bytes`); otherwise nothing. Pasted like a script's
+    /// paste (bracketed when the shell asked), so the chip and the picked block stay.
     fn rerun_block(&mut self, id: &str, cx: &mut Context<Self>) {
         let (facts, cmd) = self.core.rerun_facts_and_cmd(id);
-        if let Ok(text) = block_view::rerun(facts, cmd.as_deref()) {
-            self.paste(&text, cx);
+        // Bracketed exactly as the facts that allowed it said: a `?2004l` arriving since can't
+        // turn a newline into a Return.
+        if let Ok(bytes) = block_view::rerun_bytes(facts, cmd.as_deref()) {
+            self.send_paste(&bytes, cx);
         }
     }
 
@@ -1600,11 +1628,7 @@ fn chip_element(
     let (id, rerun) = (chip.id, chip.rerun);
     let buttons = chip.buttons.into_iter().enumerate().map(|(i, name)| {
         // Copy command needs a recorded command; Rerun every guard of `block_view::rerun`.
-        let enabled = match i {
-            0 => has_cmd,
-            1 => true,
-            _ => rerun.is_ok(),
-        };
+        let enabled = block_view::chip_enabled(has_cmd, rerun)[i];
         let button = div()
             .id(("chip-button", i))
             .flex()

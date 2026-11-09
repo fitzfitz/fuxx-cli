@@ -264,6 +264,22 @@ pub fn rerun(facts: crate::blocks::RerunFacts, cmd: Option<&str>) -> Result<Stri
     )
 }
 
+/// The bytes Rerun sends for `cmd`: `rerun`'s text, pasted bracketed exactly when the facts
+/// that allowed it said the shell asked for bracketed paste (the mode is read once).
+pub fn rerun_bytes(
+    facts: crate::blocks::RerunFacts,
+    cmd: Option<&str>,
+) -> Result<Vec<u8>, Refusal> {
+    let text = rerun(facts, cmd)?;
+    Ok(crate::keys::paste_bytes(&text, facts.bracketed))
+}
+
+/// Which of the chip's three buttons (Copy command, Copy output, Rerun) are enabled: Copy
+/// command needs a recorded command, Copy output always is, Rerun when `rerun` allows it.
+pub fn chip_enabled(has_cmd: bool, rerun: Result<(), Refusal>) -> [bool; 3] {
+    [has_cmd, true, rerun.is_ok()]
+}
+
 /// What a disabled Rerun's tooltip says.
 pub fn refusal_tip(refusal: Refusal) -> &'static str {
     match refusal {
@@ -272,7 +288,9 @@ pub fn refusal_tip(refusal: Refusal) -> &'static str {
         Refusal::NoCommand => "No command was recorded for this block",
         Refusal::Control => "The command has control characters",
         Refusal::MultiLineUnbracketed => "The shell can't take a multi-line command pasted",
-        Refusal::NotThisRun => "Only commands run in this terminal since it opened can be rerun",
+        Refusal::NotThisRun => {
+            "Only commands run since fuxx connected to this session can be rerun"
+        }
     }
 }
 
@@ -570,7 +588,49 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), tips.len(), "{tips:?}");
-        assert!(refusal_tip(NotThisRun).contains("this terminal"));
+        assert_eq!(
+            refusal_tip(NotThisRun),
+            "Only commands run since fuxx connected to this session can be rerun"
+        );
+    }
+
+    #[test]
+    fn chip_buttons_enable_by_what_they_need() {
+        // Copy command needs a recorded command (a `t=1` block has none); Copy output is
+        // always there; Rerun follows `rerun`.
+        assert_eq!(chip_enabled(true, Ok(())), [true, true, true]);
+        assert_eq!(
+            chip_enabled(false, Err(Refusal::NoCommand)),
+            [false, true, false],
+            "a t=1 block"
+        );
+        assert_eq!(chip_enabled(true, Err(Refusal::Typed)), [true, true, false]);
+        assert_eq!(
+            chip_enabled(true, Err(Refusal::NotThisRun)),
+            [true, true, false]
+        );
+    }
+
+    #[test]
+    fn rerun_bytes_are_what_was_checked() {
+        use crate::blocks::RerunFacts;
+        let facts = |bracketed| RerunFacts {
+            ours: true,
+            prompt_ready: true,
+            at_input_start: true,
+            bracketed,
+            alt_screen: false,
+        };
+        // Bracketed: wrapped, the newline kept as it is (the shell won't run it).
+        let wrapped = rerun_bytes(facts(true), Some("echo a\necho b")).unwrap();
+        assert_eq!(wrapped, b"\x1b[200~echo a\necho b\x1b[201~");
+        assert!(!wrapped.contains(&b'\r'));
+        // Unbracketed, one line: as it is; multi-line: refused (never turned into `\r`).
+        assert_eq!(rerun_bytes(facts(false), Some("ls -l")).unwrap(), b"ls -l");
+        assert_eq!(
+            rerun_bytes(facts(false), Some("a\nb")),
+            Err(Refusal::MultiLineUnbracketed)
+        );
     }
 
     #[test]
