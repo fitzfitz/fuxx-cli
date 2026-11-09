@@ -44,7 +44,13 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - **A modern layout, a command palette, a first-run screen and command blocks** (M11i–M11l, added 2026-11-08 by you,
   "I love all 1-11"): smart names, compact rows, a subtle selection, a richer Files tree, floating panels, terminal
   padding, a status bar and a cleaner tab bar (M11i); a ⌘K palette for actions, workspaces, files and settings (M11j);
-  a first-run screen (M11k); Warp-style command blocks (M11l). Each is designed, planned and released on its own.
+  a first-run screen (M11k); Warp-style command blocks (M11l). Each is designed and planned on its own.
+  *(M11l as designed 2026-11-09, AI's calls: blocks come from OSC 133 marks sent by fuxx's own zsh integration,
+  injected through `ZDOTDIR` without touching your dotfiles; copy and rerun are in; **collapse is out** (alacritty
+  can't fold rows), and bash and fish aren't injected. See [[63 - Milestone 11l - Command Blocks]].)*
+- **Performance** (M11m, added 2026-11-09 by you, after M11l): fuxx idles at about 6 % CPU (the cursor's breathing
+  glow redraws 20×/s; about 0.9 % with it off) against Ghostty's 0.2 %, and drains plain output about 2.7× slower
+  (local benchmark, 2026-11-09). The one combined release (M11i–M11m) ships after M11m.
 
 ## Out of scope (for now — resist scope creep)
 
