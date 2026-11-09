@@ -255,6 +255,7 @@ const SCENES: &[(&str, fn())] = &[
     ("welcome-start", welcome_start_scene),
     ("welcome-folder", welcome_folder_scene),
     ("welcome-first-run", welcome_first_run_scene),
+    ("welcome-reopen", welcome_reopen_scene),
     ("overlays", overlays),
     ("help", help_scenes),
     ("panels", panel_scenes),
@@ -11653,6 +11654,59 @@ fn welcome_folder_scene() {
     }
 }
 
+/// Help → Welcome to fuxx over a terminal in a project (M11k Task 4), in both themes:
+/// `welcome-reopen`, not shot. The menu item runs `open_welcome` with `Origin::Help` (the
+/// action's handler needs real windows, so the scene makes that call itself).
+///
+/// Panics unless the card is open with `origin() == Help` and its folder is the active
+/// terminal's project (`/Users/me/work/api`, not the home), and Esc closes it.
+fn welcome_reopen_scene() {
+    use crate::welcome_items::Origin;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(Appearance {
+                presets: welcome_quiet_presets(),
+                ..shot_appearance(theme, cx)
+            });
+            cx.bind_keys(crate::key_bindings());
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                let project = std::path::Path::new("/Users/me/work/api");
+                ws.open_unnamed_shot_session(Some(project), "", window, cx);
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let n = format!("welcome-reopen-{slug}");
+        render_with(&theme, dims, build, move |cx, window| {
+            let ws = slotted(&slot);
+            assert!(welcome_of(cx, &ws).is_none(), "{n}: no card yet");
+            open_welcome_on(cx, window, &ws, Origin::Help);
+            let card = welcome_of(cx, &ws).expect("the card is open");
+            let (origin, folder) =
+                cx.read(|cx| (card.read(cx).origin(), card.read(cx).folder().to_path_buf()));
+            assert_eq!(origin, Origin::Help, "{n}: opened from Help");
+            assert_eq!(
+                folder,
+                std::path::PathBuf::from("/Users/me/work/api"),
+                "{n}: the active terminal's project"
+            );
+            press_keys(cx, window, "escape");
+            assert!(welcome_of(cx, &ws).is_none(), "{n}: Esc closes it");
+            println!("ui-shots: {n} ok");
+        });
+    }
+}
+
 /// The card on a first run (not shot: a real shell starts): `welcome-first-run`. A workspace
 /// that hasn't welcomed anyone opens its first terminal as a launch with nothing to restore
 /// does.
@@ -11908,7 +11962,7 @@ fn overlays() {
 /// - `help-palette`: "palette" typed, which finds Command Palette… (⌘K);
 /// - `help-over-palette`: Keyboard Shortcuts opened while the command palette is open;
 /// - `help-toggle`: Keyboard Shortcuts opened and opened again (as ⌘/ twice does);
-/// - `help-tips`: Help → Show Welcome Tips with the sidebar hidden and the tips card closed.
+/// - `help-tips`: Help → Show Tips Card with the sidebar hidden and the tips card closed.
 ///
 /// Panics unless the rows shown are the ones the pure modules list for that text (Command
 /// Palette… with ⌘K and Go to Workspace… with ⌘P among them), the panel opened over the palette
