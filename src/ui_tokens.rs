@@ -18,6 +18,14 @@ pub const QUIET_LINE_MIN: f32 = 1.4;
 /// The pane tab bar's empty strip against the card (the active tab's colour): enough that the
 /// two read as different surfaces. Stepped to from the canvas colour, within the floors.
 pub const TAB_BAR_MIN: f32 = 1.3;
+/// How far a light theme's tab bar may step from the canvas colour: further, and text, dim
+/// and faint text (all held to 4.5:1 on it) press together.
+pub const TAB_BAR_LIGHT_CAP: f32 = 1.15;
+/// What the strip still reaches against the card where `TAB_BAR_MIN` can't be had (a light
+/// theme at its cap, or a dark one whose bar is already black): checked by the unit test and
+/// the `tab-bars` ui-shot.
+#[cfg(any(test, feature = "ui-shots"))]
+pub const TAB_BAR_LOW_MIN: f32 = 1.15;
 
 /// Sizes in pixels, from the M11 plan's Global Constraints.
 pub mod size {

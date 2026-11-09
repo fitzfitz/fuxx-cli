@@ -3052,7 +3052,7 @@ fn tab_bar_scenes() {
                     let floor = if theme.is_dark() && ui.tab_bar != rgb([0, 0, 0]) {
                         ui_tokens::TAB_BAR_MIN
                     } else {
-                        1.15
+                        ui_tokens::TAB_BAR_LOW_MIN
                     };
                     assert!(apart >= floor - 0.01, "{n}: strip vs api tab {apart:.3}");
                     let (x, y) = fill_at(claude);
@@ -10909,11 +10909,19 @@ fn welcome_scene() {
                 pixel_at(&shot, dims, x, band / 2.0),
                 pixel_at(&bare, dims, x, band / 2.0),
             );
-            // (Pure black, as a tab bar can now be, has nothing left to dim.)
-            assert!(
-                sum(with) + 6 <= sum(without) || sum(without) <= 6,
-                "{n}: the top band at {x} is dimmed ({with:?} vs {without:?})"
-            );
+            // (Pure black, as a tab bar can now be, has nothing left to dim: it must not
+            // brighten either.)
+            if sum(without) <= 6 {
+                assert!(
+                    sum(with) <= sum(without),
+                    "{n}: the black top band at {x} brightened ({with:?} vs {without:?})"
+                );
+            } else {
+                assert!(
+                    sum(with) + 6 <= sum(without),
+                    "{n}: the top band at {x} is dimmed ({with:?} vs {without:?})"
+                );
+            }
         }
         let (above, below) = (
             pixel_at(&shot, dims, 480.0, band - 1.0),
