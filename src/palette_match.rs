@@ -34,35 +34,44 @@ fn is_word_start(text: &[char], j: usize) -> bool {
     " /-_.:(".contains(prev) || (prev.is_lowercase() && text[j].is_uppercase())
 }
 
+/// Whether `word` is a subsequence of `text` (case-insensitive): the O(n) check before a word's
+/// placement, so a text that can't match skips it.
+fn is_subsequence(word: &[char], text: &str) -> bool {
+    let mut letters = word.iter().peekable();
+    for c in text.chars() {
+        match letters.peek() {
+            None => break,
+            Some(&&w) if eq_ci(w, c) => {
+                letters.next();
+            }
+            Some(_) => {}
+        }
+    }
+    letters.peek().is_none()
+}
+
 /// Best placement of one word as a subsequence of `text`: DP over (word letter, text char),
-/// O(word * text) with a constant-size gap window plus a running prefix maximum. `bonus[j]` is
-/// added for a letter matched at `j`. Returns the score and the char positions.
-fn place_word(word: &[char], text: &[char], bonus: &[i32]) -> Option<(i32, Vec<usize>)> {
+/// O(word * text) with a constant-size gap window plus a running prefix maximum. `letter[j]` is
+/// what a letter matched at `j` scores. Returns the score and the char positions.
+fn place_word(word: &[char], text: &[char], letter: &[i32]) -> Option<(i32, Vec<usize>)> {
     let (q, n) = (word.len(), text.len());
     if q == 0 || q > n {
         return None;
     }
-    let letter: Vec<i32> = (0..n)
-        .map(|j| {
-            LETTER
-                + bonus[j]
-                + if is_word_start(text, j) {
-                    WORD_START
-                } else {
-                    0
-                }
-        })
-        .collect();
-    let mut dp = vec![vec![NEG; n]; q];
-    let mut from = vec![vec![usize::MAX; n]; q];
+    // Row `i` of the table is `dp[i * n..(i + 1) * n]` (one buffer, not one per row).
+    let mut dp = vec![NEG; q * n];
+    let mut from = vec![usize::MAX; q * n];
     for j in 0..n {
         if eq_ci(word[0], text[j]) {
-            dp[0][j] = letter[j] - (j as i32).min(LEAD_CAP);
+            dp[j] = letter[j] - (j as i32).min(LEAD_CAP);
         }
     }
     for i in 1..q {
+        let (done, rest) = dp.split_at_mut(i * n);
+        let prev_row = &done[(i - 1) * n..];
+        let row = &mut rest[..n];
+        let from_row = &mut from[i * n..(i + 1) * n];
         // Best (score, index) over k <= j - 14, whose gap penalty is the cap for every k.
-        let prev_row = dp[i - 1].clone();
         let mut far: (i32, usize) = (NEG, usize::MAX);
         for j in i..n {
             if j >= 14 {
@@ -97,13 +106,13 @@ fn place_word(word: &[char], text: &[char], bonus: &[i32]) -> Option<(i32, Vec<u
                 }
             }
             if best.0 != NEG {
-                dp[i][j] = best.0 + letter[j];
-                from[i][j] = best.1;
+                row[j] = best.0 + letter[j];
+                from_row[j] = best.1;
             }
         }
     }
     let (mut j, mut score) = (usize::MAX, NEG);
-    for (k, &v) in dp[q - 1].iter().enumerate() {
+    for (k, &v) in dp[(q - 1) * n..].iter().enumerate() {
         if v > score {
             score = v;
             j = k;
@@ -116,7 +125,7 @@ fn place_word(word: &[char], text: &[char], bonus: &[i32]) -> Option<(i32, Vec<u
     for i in (0..q).rev() {
         positions[i] = j;
         if i > 0 {
-            j = from[i][j];
+            j = from[i * n + j];
         }
     }
     Some((score, positions))
@@ -133,17 +142,31 @@ fn match_words(query: &str, text: &str, name_from: Option<usize>) -> Option<Matc
             positions: Vec::new(),
         });
     }
+    // Most paths can't match: they skip the placement (and its buffers) altogether.
+    if !words.iter().all(|w| is_subsequence(w, text)) {
+        return None;
+    }
     let chars: Vec<char> = text.chars().collect();
-    let bonus: Vec<i32> = (0..chars.len())
-        .map(|j| match name_from {
-            Some(from) if j >= from => NAME_BONUS,
-            _ => 0,
+    // What a letter matched at each char scores, the same for every word.
+    let letter: Vec<i32> = (0..chars.len())
+        .map(|j| {
+            let bonus = match name_from {
+                Some(from) if j >= from => NAME_BONUS,
+                _ => 0,
+            };
+            LETTER
+                + bonus
+                + if is_word_start(&chars, j) {
+                    WORD_START
+                } else {
+                    0
+                }
         })
         .collect();
     let mut score = 0;
     let mut positions = Vec::new();
     for w in &words {
-        let (s, p) = place_word(w, &chars, &bonus)?;
+        let (s, p) = place_word(w, &chars, &letter)?;
         score += s;
         positions.extend(p);
     }
@@ -297,6 +320,18 @@ mod tests {
         let m = fuzzy("ab", "xa_ab").unwrap();
         assert_eq!(m.positions, vec![3, 4]);
         assert_eq!(m.score, (40 - 3) + (16 + 16));
+    }
+
+    /// The O(n) check run before each word's placement: a case-insensitive subsequence.
+    #[test]
+    fn palette_subsequence_precheck() {
+        let chars = |s: &str| s.chars().collect::<Vec<char>>();
+        assert!(is_subsequence(&chars("sr"), "Split Right"));
+        assert!(is_subsequence(&chars("SPLIT"), "Split Right"));
+        assert!(!is_subsequence(&chars("rs"), "Split Right"));
+        assert!(!is_subsequence(&chars("abc"), "ab"));
+        assert!(is_subsequence(&chars("ü"), "new dir/Ü.txt"));
+        assert!(is_subsequence(&[], "x"));
     }
 
     #[test]

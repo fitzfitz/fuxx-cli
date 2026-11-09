@@ -9256,6 +9256,9 @@ fn palette_actions_scene() {
                 let row = cx.read(|cx| palette.read(cx).row_bounds(first));
                 found.set(row.map(|r| [r, r]));
                 if stage == "enter" {
+                    // A first listing in (the scenes list nothing themselves): Enter doesn't
+                    // wait for one.
+                    seed_palette_files(cx, &ws, &[]);
                     let before = shown_panes(cx, &ws).len();
                     press_keys(cx, window, "enter");
                     assert!(palette_of(cx, &ws).is_none(), "{n}: Enter closes it");
@@ -9412,6 +9415,44 @@ fn palette_keys_scene() {
             assert_eq!(scope(cx), Scope::Actions, "{n}: > shows Actions");
             press_keys(cx, window, "cmd-k");
             assert!(palette_of(cx, &ws).is_none(), "{n}: ⌘K on All (>) closes");
+            // ">" typed on All (Actions shown), then a scope chosen: the ">" goes, the rest
+            // stays. ⇧Tab steps from the shown Actions to All; the All chip does the same; Tab
+            // goes on to Workspaces.
+            let typed = |cx: &mut VisualTestAppContext| {
+                let palette = palette_of(cx, &ws).expect("open");
+                cx.read(|cx| palette.read(cx).box_text(cx))
+            };
+            press_keys(cx, window, "cmd-k");
+            cx.simulate_input(window, "> split");
+            settle(cx, window);
+            assert_eq!(scope(cx), Scope::Actions, "{n}: > shows Actions");
+            press_keys(cx, window, "shift-tab");
+            assert_eq!(scope(cx), Scope::All, "{n}: ⇧Tab from Actions (>)");
+            assert_eq!(typed(cx), "split", "{n}: ⇧Tab dropped the >");
+            assert_eq!(
+                palette_state(cx, &ws).2,
+                Some(Key::Action("Split Right")),
+                "{n}: All, split typed"
+            );
+            press_keys(cx, window, "cmd-backspace");
+            cx.simulate_input(window, "> split");
+            settle(cx, window);
+            let palette = palette_of(cx, &ws).expect("open");
+            let chip = cx.read(|cx| palette.read(cx).chip_bounds(Scope::All));
+            cx.simulate_click(
+                window,
+                chip.expect("the All chip").center(),
+                Modifiers::none(),
+            );
+            settle(cx, window);
+            assert_eq!(scope(cx), Scope::All, "{n}: the All chip (>)");
+            assert_eq!(typed(cx), "split", "{n}: the chip dropped the >");
+            press_keys(cx, window, "cmd-backspace");
+            cx.simulate_input(window, "> co");
+            settle(cx, window);
+            press_keys(cx, window, "tab");
+            assert_eq!(scope(cx), Scope::Workspaces, "{n}: Tab from Actions (>)");
+            assert_eq!(palette_names(cx, &ws), ["codex"], "{n}: co, without the >");
             slot.borrow_mut().take();
         };
         render_with(&theme, dims, build, act);
@@ -9430,7 +9471,8 @@ fn palette_run_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-palette");
+    // Its own name (another run's can't clash), removed at the end.
+    let dir = std::env::temp_dir().join(format!("fuxx-ui-shots-palette-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("make the folder");
     let file = dir.join("notes.rs");
     std::fs::write(&file, "fn main() {\n    let found = 1;\n}\n").expect("write the file");
@@ -9469,6 +9511,8 @@ fn palette_run_scene() {
             settle(cx, window);
             let tab = cx.read(|cx| ws.read(cx).focused_file_tab().cloned());
             let tab = tab.expect("the file tab is focused");
+            // A first listing in (the scenes list nothing themselves): Enter doesn't wait.
+            seed_palette_files(cx, &ws, &[]);
             open_palette_on(cx, window, &ws, Scope::All);
             cx.simulate_input(window, "find");
             settle(cx, window);
@@ -9503,6 +9547,8 @@ fn palette_run_scene() {
             cx.update(|cx| {
                 cx.on_action(move |_: &crate::OpenPreferences, _| count.set(count.get() + 1));
             });
+            // A first listing in (the scenes list nothing themselves): Enter doesn't wait.
+            seed_palette_files(cx, &ws, &[]);
             open_palette_on(cx, window, &ws, Scope::All);
             cx.simulate_input(window, "find");
             settle(cx, window);
@@ -9545,6 +9591,7 @@ fn palette_run_scene() {
         render_with(&theme, dims, build, act);
         println!("ui-shots: palette-run-{slug} ok");
     }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A list that moves while open (not shot): on Workspaces with tests (the third row) chosen,
@@ -9649,6 +9696,8 @@ fn palette_recent_scene() {
                 key,
                 positions: Vec::new(),
             };
+            // A first listing in (the scenes list nothing themselves): Enter doesn't wait.
+            seed_palette_files(cx, &ws, &[]);
             open_palette_on(cx, window, &ws, Scope::All);
             cx.simulate_input(window, "split right");
             settle(cx, window);
@@ -9686,6 +9735,20 @@ fn palette_recent_scene() {
                 ],
                 "{n}: newest first"
             );
+            // ⌘P (Workspaces, nothing typed): exactly the old list, no Recent.
+            press_keys(cx, window, "escape");
+            open_palette_on(cx, window, &ws, Scope::Workspaces);
+            let (lines, _, _) = palette_state(cx, &ws);
+            assert_eq!(lines[0], Line::Header("Workspaces".into()), "{n}: ⌘P");
+            assert!(
+                !lines.contains(&Line::Header("Recent".into())),
+                "{n}: no Recent on ⌘P"
+            );
+            assert_eq!(
+                palette_names(cx, &ws).len(),
+                8,
+                "{n}: every workspace, once"
+            );
             // A file and a setting picked too: first, newest first.
             press_keys(cx, window, "escape");
             seed_palette_files(cx, &ws, &PALETTE_FILES);
@@ -9713,6 +9776,20 @@ fn palette_recent_scene() {
                     Line::Header("Workspaces".into()),
                 ],
                 "{n}: the setting, the file, then the rest"
+            );
+            // A listing without src/view.rs: still Recent, its file tab is open.
+            press_keys(cx, window, "escape");
+            seed_palette_files(cx, &ws, &["Cargo.toml"]);
+            open_palette_on(cx, window, &ws, Scope::All);
+            let (lines, _, _) = palette_state(cx, &ws);
+            assert_eq!(
+                lines[..3],
+                [
+                    Line::Header("Recent".into()),
+                    item(glow.clone()),
+                    item(view.clone()),
+                ],
+                "{n}: open in a tab, so still Recent"
             );
             slot.borrow_mut().take();
         };
@@ -9872,6 +9949,8 @@ fn palette_files_scene() {
             "typing",
             "enter-early",
             "enter-retyped",
+            "enter-listing",
+            "enter-rescoped",
         ] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = palette_build(theme, slot.clone());
@@ -9897,6 +9976,55 @@ fn palette_files_scene() {
                         cx.simulate_input(window, "main");
                         settle(cx, window);
                         assert_eq!(lines(cx), [Line::Note(SSH_NOTE.into())], "{n}: typed");
+                    }
+                    "enter-listing" | "enter-rescoped" => {
+                        // The first listing still running: Enter waits for it (and the
+                        // query's ranking), then picks the best for the query.
+                        cx.update(|cx| {
+                            ws.update(cx, |ws, cx| {
+                                let (folder, _) = ws.palette_folder(cx).expect("a folder");
+                                ws.palette_files.started(&folder);
+                            })
+                        });
+                        open_palette_on(cx, window, &ws, Scope::All);
+                        if stage == "enter-rescoped" {
+                            // A waiting Enter then Tab: the Enter was for All, so nothing is
+                            // picked on Actions (Split Right isn't run), nor once listed.
+                            cx.simulate_input(window, "split right");
+                            settle(cx, window);
+                            press_keys(cx, window, "enter");
+                            assert!(palette_of(cx, &ws).is_some(), "{n}: Enter waits");
+                            press_keys(cx, window, "tab");
+                            assert_eq!(palette_state(cx, &ws).1, Scope::Actions, "{n}: Tab");
+                            assert!(palette_of(cx, &ws).is_some(), "{n}: open after Tab");
+                            assert_eq!(shown_panes(cx, &ws).len(), 1, "{n}: nothing split");
+                            seed_palette_files(cx, &ws, &PALETTE_FILES);
+                            settle(cx, window);
+                            assert!(palette_of(cx, &ws).is_some(), "{n}: open once listed");
+                            assert_eq!(shown_panes(cx, &ws).len(), 1, "{n}: still one pane");
+                            slot.borrow_mut().take();
+                            return;
+                        }
+                        cx.simulate_input(window, "view");
+                        settle(cx, window);
+                        press_keys(cx, window, "enter");
+                        assert!(palette_of(cx, &ws).is_some(), "{n}: Enter waits");
+                        seed_palette_files(cx, &ws, &PALETTE_FILES);
+                        settle(cx, window);
+                        assert!(palette_of(cx, &ws).is_none(), "{n}: picked once listed");
+                        let kind = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            let tab = ws.model.focused_tab()?;
+                            ws.model.tab(tab).map(|t| t.kind.clone())
+                        });
+                        assert_eq!(
+                            kind,
+                            Some(TabKind::File {
+                                path: view.clone(),
+                                mode: FileMode::Plain
+                            }),
+                            "{n}: the best for \"view\""
+                        );
                     }
                     "enter-early" | "enter-retyped" => {
                         // "vie" ranked (vie/w.md first), then "w" and Enter at once, before the
@@ -10110,7 +10238,11 @@ fn palette_relist_scene() {
 
     let dims = size(px(960.0), px(600.0));
     let folder = |name: &str| {
-        let dir = std::env::temp_dir().join(format!("fuxx-ui-shots-relist-{name}"));
+        // Its own name (another run's can't clash), removed at the end.
+        let dir = std::env::temp_dir().join(format!(
+            "fuxx-ui-shots-relist-{}-{name}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("make the folder");
         std::fs::write(dir.join(format!("{name}.txt")), name).expect("write a file");
@@ -10178,6 +10310,9 @@ fn palette_relist_scene() {
         render_with(&theme, dims, build, act);
         println!("ui-shots: palette-relist-{stage} ok");
     }
+    for dir in [&a, &b] {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 /// Settings in the palette (M11j Task 5), in both themes: `palette-settings`: "glow" typed on
@@ -10206,6 +10341,11 @@ fn palette_settings_scene() {
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
                 let preferences = enter.then(|| shot_preferences_window(cx));
+                if enter {
+                    // A first listing in (the scenes list nothing themselves): Enter doesn't
+                    // wait for one.
+                    seed_palette_files(cx, &ws, &[]);
+                }
                 open_palette_on(cx, window, &ws, Scope::All);
                 cx.simulate_input(window, "glow");
                 settle(cx, window);
