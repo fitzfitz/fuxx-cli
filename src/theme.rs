@@ -12,6 +12,7 @@ use crate::ui_tokens::{
     MARK_MIN, QUIET_LINE_MIN, TAB_BAR_LIGHT_CAP, TAB_BAR_MIN, TEXT_MIN, contrast, ensure_contrast,
 };
 use alacritty_terminal::vte::ansi::Rgb;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 const fn hex(v: u32) -> Rgb {
@@ -182,6 +183,19 @@ pub(crate) fn readable(mut fg: Rgb, bgs: &[Rgb], min: f32) -> Rgb {
     fg
 }
 
+thread_local! {
+    /// The last theme `ui()` saw and its chrome colours.
+    static UI_CACHE: Cell<Option<(Theme, UiColors)>> = const { Cell::new(None) };
+    #[cfg(test)]
+    static UI_COMPUTATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many times `ui_uncached` has run on this thread.
+#[cfg(test)]
+fn ui_computations() -> usize {
+    UI_COMPUTATIONS.with(Cell::get)
+}
+
 impl Theme {
     /// Whether the background is dark (the chrome, and the browser windows, go dark with it).
     pub fn is_dark(&self) -> bool {
@@ -192,6 +206,24 @@ impl Theme {
     /// pushed (hue kept) to the contrast floors in `ui_tokens`, so light themes read as well as
     /// dark ones.
     pub fn ui(&self) -> UiColors {
+        // The contrast math is about 8 % of a frame and `ui()` runs many times per render, so the
+        // last theme's result is kept. The key is the whole `Theme` value, not a name, so a switch,
+        // a light/dark change, a reload or a live edit of one colour all recompute.
+        UI_CACHE.with(|cache| {
+            if let Some((theme, ui)) = cache.get()
+                && theme == *self
+            {
+                return ui;
+            }
+            let ui = self.ui_uncached();
+            cache.set(Some((*self, ui)));
+            ui
+        })
+    }
+
+    fn ui_uncached(&self) -> UiColors {
+        #[cfg(test)]
+        UI_COMPUTATIONS.with(|n| n.set(n.get() + 1));
         let (bg, fg) = (self.background, self.foreground);
         let black = hex(0x000000);
         let white = hex(0xffffff);
@@ -676,6 +708,45 @@ mod tests {
     }
     fn read(name: &str) -> Option<String> {
         (name == "Catppuccin Mocha").then(|| MOCHA.to_string())
+    }
+
+    #[test]
+    fn ui_is_computed_once_per_theme() {
+        let t = Theme::default();
+        let t2 = Theme {
+            background: hex(0xfdf6e3),
+            foreground: hex(0x657b83),
+            ..Theme::default()
+        };
+        let base = ui_computations();
+        let a = t.ui();
+        assert_eq!(t.ui(), a);
+        assert_eq!(ui_computations() - base, 1);
+        let b = t2.ui();
+        assert_eq!(ui_computations() - base, 2);
+        assert_ne!(a, b);
+        assert_eq!(t.ui(), a);
+        assert_eq!(ui_computations() - base, 3);
+        for (name, theme) in every_theme() {
+            assert_eq!(theme.ui(), theme.ui_uncached(), "{name}");
+            assert_eq!(theme.ui(), theme.ui_uncached(), "{name} (cached)");
+        }
+    }
+
+    #[test]
+    fn ui_follows_a_live_edit_of_one_colour() {
+        let mut t = Theme::default();
+        let before = t.ui();
+        // Same name-less theme, one field changed: the cache must not hand back the old chrome.
+        t.background = hex(0x203040);
+        assert_ne!(t.ui(), before);
+        assert_eq!(t.ui(), t.ui_uncached());
+        let mut u = t;
+        u.palette[4] = hex(0x123456);
+        assert_eq!(u.ui(), u.ui_uncached());
+        let mut v = t;
+        v.cursor = Some(hex(0xff0000));
+        assert_eq!(v.ui(), v.ui_uncached());
     }
 
     #[test]
