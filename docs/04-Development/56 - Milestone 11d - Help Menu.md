@@ -51,6 +51,7 @@ Help
   order of the binding table.
 - **Keys shown the Mac way:** `⇧⌘D`, `⌃⌘=`, `⌘←`, `⇞`/`⇟` (Page Up/Down), `⌃⇥`. One action with several keys shows
   them as `⌘= / ⌘+`. Numbered runs collapse: Go to workspace 1–9 `⌘1 – ⌘9`; Start agent preset 1–9 `⌃⌘1 – ⌃⌘9`.
+> [!note] M11l (2026-11-09) added three rows to the **Terminal** group: **Previous command** (⇧⌘↑), **Next command** (⇧⌘↓) and **Copy command output** (⇧⌘C). See [[63 - Milestone 11l - Command Blocks]].
 - **Search** matches a row's name, its group or its keys, ignoring case. "split" finds Split Right and Split Down;
   "⌘d" and "cmd d" both find Split Right. With nothing found it says "No shortcut matches".
 - **Read only.** Enter does nothing and clicking a row does nothing. ↑/↓ scroll the list. **Esc**, a click outside,

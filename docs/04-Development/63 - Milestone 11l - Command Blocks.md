@@ -1,15 +1,15 @@
 ---
 tags: [development, milestone, design]
-status: planned
+status: built
 ---
 
 # 63 - Milestone 11l - Command Blocks (design)
 
-**Status:: 🟨 Designed and planned 2026-11-09 (every detail AI's call; you skipped the design questions). Not built.
-Not released on its own: it ships in the one combined release (M11i–M11m) after M11m (your rule, 2026-11-09).**  ·  **Phase 4: an M11 extension.**  ·
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1251 tests; every detail AI's call; you skipped the design questions, except the chip's shape, which you chose from mockups). On-screen check pending (22 items).
+Not released on its own: it ships in the one combined release (M11i–M11n) after M11n (your rule, 2026-11-09).**  ·  **Phase 4: an M11 extension.**  ·
 **Plan:** [[M11l Plan - Command Blocks]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout, a command palette, a first-run screen
-and command blocks"). The last of M11i–M11l; after it comes M11m (performance, listed 2026-11-09, not designed here).
+and command blocks"). The last of M11i–M11l; after it come M11m (title bar) and M11n (performance), both listed 2026-11-09 and not designed here.
 
 ## Goal
 
@@ -133,14 +133,30 @@ scrolling, the cap, reflow, clears and the service's snapshot: a **hyperlink on 
   3. for an interactive shell, sources `fuxx-integration.zsh`.
   zsh then reads your `.zprofile`, `.zshrc` and `.zlogin` from your own `ZDOTDIR` as always. Child processes never
   see fuxx's `ZDOTDIR`.
-- **`fuxx-integration.zsh`** (zsh ≥ 5.1; macOS ships 5.9): a `preexec` hook (C with the command, percent-encoded in
-  zsh, skipped above 2,048 bytes) and a `precmd` hook (D with `$?` when a command ran, then makes sure `PS1` starts
-  with `%{ESC]133;A BEL%}` and ends with `%{ESC]133;B BEL%}`, adding them if a prompt theme rebuilt `PS1`). The
-  `precmd` hook moves itself to the end of `precmd_functions` on its first run, so it runs after prompt themes
-  (powerlevel10k, starship, pure). No marks in `PS2` or `RPROMPT`. Guarded so sourcing it twice does nothing.
+- **`fuxx-integration.zsh`** (zsh ≥ 5.1; macOS ships 5.9), as built:
+  - **`_fuxx_preexec`** sends C with the command, percent-encoded in zsh, skipped above 2,048 bytes. It sends **no C
+    for an `exec` that replaces the shell**: the first word is `exec`, also after `builtin` / `command` and after
+    `NAME=value` words (`FOO=1 exec zsh`), unless the next word is a redirection (`exec >file` stays a block).
+  - **`_fuxx_done`** sends D with `$?` when a command ran. It is **first** in `precmd_functions` (put back first if
+    something moved it), so another hook's prints (a timing plugin, pure's spacing) land after D and not in the
+    finished command's output.
+  - **`_fuxx_precmd`** moves itself **last** in `precmd_functions` at **every** prompt, and the line-init hook runs
+    at **every** prompt (not once), marking the `PS1` the theme just built: `%{ESC]133;A BEL%}` at its start and
+    `%{ESC]133;B BEL%}` at its end, with any stray inner A stripped first (pure's split prompt). Powerlevel10k
+    moves its own hook last and rebuilds `PROMPT` from scratch at every prompt, so marking only once lost every
+    block after the first.
+  - **powerlevel10k:** when p10k is loaded and you haven't set it, fuxx turns on `POWERLEVEL9K_TERM_SHELL_INTEGRATION`
+    at the first prompt (not in `.zshenv`: `.p10k.zsh` unsets `POWERLEVEL9K_*`). Once p10k reports it marks, fuxx
+    stops touching `PS1` and turns off p10k's own C and D (they fire on an empty Return and on ⌃C and made bogus
+    blocks). A missing p10k internal falls back to the hook-order path.
+  - **`add-zle-hook-widget`** is autoloaded behind a guard (`autoload -Uz +X … 2>/dev/null`); without it the
+    fallback `zle-line-init` path is used.
+  - No marks in `PS2` or `RPROMPT`. Guarded so sourcing it twice does nothing.
 - **Where the files live:** compiled into fuxx (`include_str!`), written at startup to
   `~/Library/Application Support/fuxx/shell-integration/zsh/` (`.zshenv`, `fuxx-integration.zsh`) only when missing
   or different, before the first terminal starts. A failed write = no injection (logged), never a broken shell.
+  The scripts are checked again at **each spawn** (`.zshenv` must exist, or fuxx re-installs it and doesn't inject
+  when that fails).
 - **What can stop it, and what then:** `ZDOTDIR` set in `/etc/zshenv`, `zsh -f`, a nested `zsh` (it doesn't inherit
   the injection), `sudo -s`, `su`: no marks, so no blocks, a plain terminal.
 - **bash: not injected (AI's call).** macOS's `/bin/bash` is 3.2 (no `PS0`); injecting means rewriting the argv to
@@ -193,16 +209,21 @@ reports, the wheel, resize and the cursor work exactly as today. Everything belo
 └──────────────────────────────────────────────────────────┘
 ```
 
-- `overlay_panel` look: `panel` fill, 1 pt `panel_border`, radius 6, 24 pt tall, 8 pt side padding, a soft shadow.
-  Anchored 4 pt right of the gutter, its top at the command row's top; kept inside the grid's bounds (shifted up
-  when it would cross the bottom).
+- `overlay_panel` look: `panel` fill, 1 pt `panel_border`, radius 6, 8 pt side padding. **Built as one terminal row
+  tall with no shadow** (you chose this from mockups on 2026-11-09, "oke begitu saja"; the first design was 24 pt
+  with a soft shadow and covered the rows around it). Anchored 4 pt right of the gutter on the command row, so it
+  covers no row above or below; kept inside the grid's bounds. Its text is 11 pt and shrinks to fit the row at small
+  terminal fonts.
+- **A right prompt stays visible:** on the command row, if a text run at the right follows at least 2 blank cells
+  (zsh's RPROMPT), the chip stops 1 cell before that run; otherwise it may reach the grid's right edge. It is never
+  narrower than `CHIP_MIN_WIDTH` (197 pt).
 - **Left:** the outcome — `exit 0` (`text_dim`), `exit 1` (`block_failed` held at 4.5:1 on `panel`), `running`,
   or nothing when unknown; then ` · ` and the command's first line, at most 40 characters with `…` (`text`). It
   shows exactly what Copy command and Rerun will use, so a faked mark shows its fake command.
-- **Right:** three text buttons, `text::META` size, `text_dim`, `panel_hover` on hover; a disabled one in
-  `text_faint` (Copy command / Rerun with no command; Rerun when not at an empty prompt, §4).
-- **Narrow panes:** the command text is cut first, then the outcome; below 220 pt of grid the buttons read `Cmd`,
-  `Output`, `Rerun`.
+- **Right:** three text buttons, `text::META` size, `text_dim`, `panel_hover` on hover; a disabled one at
+  50 % opacity of `text_dim` (Copy command / Rerun with no command; Rerun when not at an empty prompt, §4).
+- **Narrow panes:** the command text is cut first, then the outcome. The buttons read `Cmd`, `Output`, `Rerun` below
+  220 pt of grid (`CHIP_NARROW`), and also when the room to the right prompt is under 282 pt (`CHIP_LONG_MIN`).
 - Shown while the pointer is over the block's gutter or the chip; hidden 150 ms after it leaves both (no fade);
   hidden on any output that moves the block, on typing, and while a mouse button is down in the grid.
 
@@ -236,6 +257,7 @@ reports, the wheel, resize and the cursor work exactly as today. Everything belo
 - **⇧⌘C Copy Command Output (AI's call):** the output's logical lines as text (trailing blank lines dropped). A
   running block: up to the cursor row. Built on the background executor (`TerminalCore` is `Arc`'d; the Term lock is
   held only for the read), then written to the clipboard.
+- **Copy output with no output** leaves the clipboard alone, and the chip's button is disabled.
 - **Copy command:** the shell-reported `cmd`, exactly. **Copy command and output** (palette only): `$ <command>` +
   newline + the output, ready to paste to an agent.
 - **Rerun (AI's call: types it, never runs it):** pastes the command at the prompt and **does not press Return**;
@@ -245,8 +267,8 @@ reports, the wheel, resize and the cursor work exactly as today. Everything belo
   on. Sent through `TerminalView::paste` (bracketed when the shell asked), so it snaps to the bottom like typing.
   Otherwise the button is disabled and the palette command does nothing.
 - **Mouse:** hover the gutter → chip; click a bar → choose that block (no scroll); click a chip button → its action
-  (the chip stays, the choice is kept). A press in the gutter never starts a selection or a mouse report; a press in
-  the grid behaves as today.
+  (the chip stays, the choice is kept). A press in the gutter on a bar never starts a selection or a mouse report; a press
+  in the gutter **off a bar behaves as before**; a press in the grid behaves as today.
 - **The palette** (Terminal place): `Previous Command` (⇧⌘↑), `Next Command` (⇧⌘↓), `Copy Command Output` (⇧⌘C),
   `Copy Command`, `Copy Command and Output`, `Rerun Command`. Keywords: `block prompt jump`, `block copy`, `block
   run again`.
@@ -281,7 +303,7 @@ reports, the wheel, resize and the cursor work exactly as today. Everything belo
 
 In `theme.rs` `UiColors` (fitted per theme, tested on every built-in theme): `block_ok`, `block_failed`,
 `block_running`. Constants in the new `block_view.rs`: `GUTTER_BAR` 2.0, `GUTTER_BAR_ACTIVE` 3.0, `GUTTER_INSET` 8.0
-(6.0 in a split), `CHIP_HEIGHT` 24.0, `CHIP_GAP` 4.0, `CHIP_HIDE_MS` 150, `CHIP_NARROW` 220.0, `CHIP_CMD_CHARS` 40.
+(6.0 in a split), `CHIP_GAP` 4.0 (the chip is one row tall: `CHIP_HEIGHT` was dropped), `CHIP_MIN_WIDTH` 197.0, `CHIP_LONG_MIN` 282.0, `CHIP_HIDE_MS` 150, `CHIP_NARROW` 220.0, `CHIP_CMD_CHARS` 40.
 In `blocks.rs`: `CMD_CAP` 2048, `PROMPT_LINES_CAP` 8, `C_SCAN_ROWS` 500, `MARK_CAP` 8 KiB.
 
 ## Not in M11l
@@ -299,7 +321,7 @@ In `blocks.rs`: `CMD_CAP` 2048, `PROMPT_LINES_CAP` 8, `C_SCAN_ROWS` 500, `MARK_C
 - Activity entries for shell commands; status changes from exit codes; notifications when a long command ends.
 - Exposing blocks to the scripting API, MCP or the CLI (`fuxx text` stays as is).
 - A terminal find (⌘F) and "select the block's output" as a selection.
-- M11m's performance work (listed in the roadmap, designed separately).
+- M11m's title bar and M11n's performance work (listed in the roadmap, designed separately).
 
 ## On-screen checklist (pending, after the combined release)
 
@@ -307,29 +329,92 @@ In `blocks.rs`: `CMD_CAP` 2048, `PROMPT_LINES_CAP` 8, `C_SCAN_ROWS` 500, `MARK_C
    its prompt; `false`'s bar is red; a hairline sits above each prompt; the live prompt has a hairline above it too.
 2. Your prompt, `.zshrc`, aliases and history behave as before; `echo $ZDOTDIR` prints what it printed in your old
    terminal (empty for most).
-3. Hover a bar: the chip shows `exit 0 · echo hi` (or `exit 1 · false`) and Copy command / Copy output / Rerun;
-   moving off hides it.
-4. Copy output of `ls -la`, paste somewhere: exactly the listing, no prompt. Copy command: `ls -la`.
-5. Rerun on `echo hi`: `echo hi` appears at the prompt, not run; Return runs it. With something typed at the prompt,
+3. Hover a bar: a **one-row chip** shows `exit 0 · echo hi` (or `exit 1 · false`) and Copy command / Copy output /
+   Rerun; it covers no row above or below and has no shadow; moving off hides it.
+4. **Right prompt:** with a right prompt (RPROMPT, or powerlevel10k's right side), hover its command's bar: the chip
+   stops before the right prompt and the prompt stays readable.
+5. Copy output of `ls -la`, paste somewhere: exactly the listing, no prompt. Copy command: `ls -la`. Copy output on a
+   command with no output leaves your clipboard as it was and its button is greyed.
+6. Rerun on `echo hi`: `echo hi` appears at the prompt, not run; Return runs it. With something typed at the prompt,
    Rerun is greyed.
-6. ⇧⌘↑ ×3 walks back through the last three commands (the chosen one gets a full-height accent bar and its prompt
+7. ⇧⌘↑ ×3 walks back through the last three commands (the chosen one gets a full-height accent bar and its prompt
    comes to the top); ⇧⌘↓ walks forward and past the newest returns to the bottom. ⌘↑ / ⌘↓ still scroll a page.
-7. ⇧⌘C with nothing chosen copies the last command's output; after ⇧⌘↑ it copies the chosen one's.
-8. `vim` (or `htop`): no bars or lines while it's open; after quitting, the blocks above are as before.
-9. Start an agent preset (e.g. claude): its row is one running block while it runs; Claude Code looks and works as
-   before.
-10. Resize the window narrower and wider over a long command: bars and hairlines stay on the right lines.
-11. `seq 1 20000`: fuxx stays responsive; afterwards the block for `seq` is gone once its prompt scrolled past the
+8. ⇧⌘C with nothing chosen copies the last command's output; after ⇧⌘↑ it copies the chosen one's.
+9. `vim` (or `htop`): no bars or lines while it's open; after quitting, the blocks above are as before.
+10. Start an agent preset (e.g. claude): its row is one running block while it runs; Claude Code looks and works as
+    before.
+11. Resize the window narrower and wider over a long command: bars and hairlines stay on the right lines.
+12. `seq 1 20000`: fuxx stays responsive; afterwards the block for `seq` is gone once its prompt scrolled past the
     scrollback (the output tail is plain); later blocks are fine.
-12. `clear`: the screen clears; new commands get blocks.
-13. An SSH workspace (⇧⌘S): no bars inside the remote shell.
-14. Persistent sessions on: quit and reopen fuxx; the blocks from before are still there; new ones appear.
-15. ⌘K, type "command": Previous Command, Next Command, Copy Command Output, Copy Command, Copy Command and Output,
+13. `clear`: the screen clears; new commands get blocks.
+14. An SSH workspace (⇧⌘S): no bars inside the remote shell.
+15. Persistent sessions on: quit and reopen fuxx; the blocks from before are still there; new ones appear.
+16. ⌘K, type "command": Previous Command, Next Command, Copy Command Output, Copy Command, Copy Command and Output,
     Rerun Command. ⌘/ lists ⇧⌘↑, ⇧⌘↓, ⇧⌘C under Terminal.
-16. Preferences → Sessions → Command blocks off; open a new terminal: no bars, `echo $ZDOTDIR` as before; the old
+17. Preferences → Sessions → Command blocks off; open a new terminal: no bars, `echo $ZDOTDIR` as before; the old
     terminal keeps its bars until closed. Turn it back on.
-17. Light and dark (Latte, Mocha, one more of each): bars visible, red bar clearly red, chip text readable.
-18. A split pane: bars sit in the narrower padding; the chip stays inside the pane.
+18. Light and dark (Latte, Mocha, one more of each): bars visible, red bar clearly red, chip text readable.
+19. A split pane: bars sit in the narrower padding; the chip stays inside the pane.
+20. **powerlevel10k** (your own setup): every command gets a block, not just the first; an empty Return or ⌃C at the
+    prompt leaves no bogus block.
+21. `FOO=1 exec zsh`, then `echo hi`: the new shell's prompt appears and no block stays "running" from the `exec`.
+    (After an `exec zsh` the new shell has no integration, so no further blocks: a known limit.)
+22. **The darker tab bar:** the empty part of a pane's tab bar is clearly darker than the tab box (card), on Mocha
+    and on a light theme; the right sidebar's panel strip matches.
+
+## M11l as built (2026-11-09)
+
+Where the build settled something the plan left open, or changed it (AI's rulings after each task's review and the
+final whole-branch review):
+
+- **Ids start from a random u64** (Settled 3): the first review found clock-seeded ids guessable, so a local process
+  could forge an OSC 8 id and make Rerun accept it. The range check stays.
+- **§1 shell integration was rewritten after the p10k bug and the final review** (see §1): `_fuxx_done` first in
+  `precmd_functions`, the PS1 marking last at every prompt and the line-init at every prompt, p10k's own shell
+  integration on and its C/D off, the guarded `add-zle-hook-widget`, no C for an `exec` that replaces the shell
+  (also after `builtin` / `command` / `NAME=value`), and the scripts checked at each spawn. A multi-line prompt that
+  starts `\r\n ESC[A` no longer counts `p` one too high.
+- **§2 chip:** one row tall, no shadow, 11 pt text that shrinks at small fonts, 1 cell before a right prompt,
+  short labels also under 282 pt (see §2). You chose this from mockups on 2026-11-09. The chip closes only when its
+  block moves, not on any output (the first build closed it on any output and was unusable while an agent printed).
+- **§4 gutter press:** a press off a bar behaves as before.
+- **Copy output with no output** leaves the clipboard alone and is disabled.
+- **Rerun** sends the bracketed state it checked (one read). Only blocks this terminal's tagger issued this run can be
+  rerun; a restored or forged one offers Copy only (tooltip: "Only commands run since fuxx connected to this
+  session can be rerun"). Palette Rerun with nothing chosen targets the newest finished block.
+- **Task 2b, a darker tab bar (your request, 2026-11-09: "the color of the empty tab is hard to tell apart with the
+  tab box"):** `tab_bar` is the canvas colour pushed away from `card` until the contrast reaches `TAB_BAR_MIN` (1.3),
+  capped below 1.6:1 against the canvas; light themes cap at `TAB_BAR_LIGHT_CAP` (1.15) to keep the text hierarchy.
+  `tab_hover` follows; text and mark floors on both are kept. It applies to pane tab bars and the right sidebar's
+  panel strip.
+- **The title-area ui-shot failed on master too:** M11i removed the sidebar's right edge, but `footer_buttons` and
+  `popover_width` still subtracted 1 pt, and the check read one sample per point, which hid it at 1x. The model now
+  matches what is drawn, and the check reads every device pixel.
+- **Recorded from the reviews:** a service and its replica may diverge on a stalled sync update; attaching between
+  A and B gives `p=0` once; without `PROMPT_SP` (bash, fish) an output's last row shared with the next prompt goes to
+  the next command row; a bare A then the shell's D (a `cat` of a recorded session) strands a block running; nested
+  shells: the outer D takes the nearest (inner) tag; the first command at a reattach-restored prompt is copy-only;
+  forged OSC 133 marks in `cat`-ed output can make a "this run" block with a chosen command (the plan accepts it:
+  Rerun never presses Return and the chip shows the command); ui-shots restore the user's clipboard as text only.
+- **Collapse is NOT in M11l** (AI's call: alacritty can't fold rows; see "Not in M11l").
+
+## Limits (known, accepted)
+
+- A plain `precmd()` function's prints land in the previous block (zsh runs it before `precmd_functions`); pinned by
+  a test.
+- `echo x; exec zsh` strands a block (only the first word is checked), and integration is lost after any `exec zsh`
+  (no re-arm).
+- p10k with an explicit `POWERLEVEL9K_TERM_SHELL_INTEGRATION=false` and a transient prompt loses blocks (likely async
+  p10k redraws too).
+- A user `zle-line-init` that returns non-zero, or is redefined after the first prompt, in the fallback mode.
+- A prompt that goes up and back down inside `PS1` undercounts `p`.
+- p10k's dump cache invalidates between terminals.
+- Rerun's "nothing typed" means the cursor is at the input start: ⌃A then Rerun prepends (it never runs).
+- An RPROMPT with an inner double space is partly covered by the chip.
+- With a one-line prompt the chip covers that row's own hairline.
+- Very narrow splits (under about 200 pt) and a command row scrolled off the top behave as before.
+- Copy output stays enabled for an all-blank output (it does nothing).
+- bash and fish aren't injected.
 
 ## Settled before planning (AI's calls after a builder's read, 2026-11-09)
 
@@ -343,8 +428,8 @@ Re-reading the design as the builder who must plan it, these were the places the
 2. **`Mark`:** `PromptStart`, `CommandStart`, `OutputStart { cmd: Option<String>, truncated: bool }`,
    `Done { exit: Option<i32> }`. `cmdline_url` decoding as `detector::cwd_from_report` does (`%XX`); bad encoding →
    `cmd: None`.
-3. **Ids:** `fuxx-block-<n>`, `n` from a per-`Tagger` counter seeded from the clock's nanoseconds, so a window's and
-   the service's tags don't collide in practice; an id found by a scan is kept when rewriting. The view refers to a
+3. **Ids:** `fuxx-block-<n>`, `n` from a per-`Tagger` counter seeded from a **random u64** (as built: a clock seed was guessable, and Rerun trusts
+   an id only if this terminal's tagger issued it), so a window's and the service's tags don't collide; an id found by a scan is kept when rewriting. The view refers to a
    block by id; an id it can't find any more clears the choice.
 4. **The tagger's own state** (`Unknown`, `Prompt { a: Point, lfs: usize, input_start: Option<Point> }`, `Running`)
    lives next to the Term in `Shared`, in the `Replica`, and in the service's `State`. It starts `Unknown` (and after a
@@ -380,7 +465,7 @@ Re-reading the design as the builder who must plan it, these were the places the
     `Terminal`; the last three without keys.
 15. **Existing screenshots that change:** none by pixels: shot terminals are `cat` with no marks. New scenes are
     named `command-blocks*` (not `marks`, which already exists).
-16. **Version:** no release of its own. The one combined release (M11i–M11m) ships after M11m (your rule,
+16. **Version:** no release of its own. The one combined release (M11i–M11n) ships after M11n (your rule,
     2026-11-09: "push the release after performance milestone"); its version is that release's call.
 
 ## Left to the builder

@@ -142,6 +142,16 @@ file to open it as a **read-only tab** in the pane, with syntax colours, line nu
 last commit; it updates live while an agent edits it. ⌘F finds; "Open in Editor" opens it in your text editor (it
 never runs a file). fuxx never changes your files.
 
+## Command blocks (M11l)
+
+In a zsh terminal fuxx marks each command with a thin bar in the left padding (red when it failed) and a hairline
+between commands. Hover a bar for a one-row chip with **Copy command**, **Copy output** and **Rerun** (Rerun types
+the command at an empty prompt and never presses Return). **⇧⌘↑** / **⇧⌘↓** jump to the previous / next command and
+**⇧⌘C** copies the chosen command's output. fuxx finds commands through a small zsh integration it injects with
+`ZDOTDIR`: your dotfiles are not touched, and it works with powerlevel10k. Turn it off with `command-blocks = off`
+in `~/.config/fuxx/config` (or Preferences → Sessions); new terminals only. bash and fish aren't injected, and
+collapsing a block isn't supported. Built and reviewed, not yet tried on screen.
+
 ## The first launch (M11k)
 
 The very first time fuxx opens, a Welcome card asks for a folder and an agent (your presets, each checked on your

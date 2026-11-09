@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11l
-status: planned
+status: built
 updated: 2026-11-09
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-11-09
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[63 - Milestone 11l - Command Blocks]] (incl. "Settled before planning") |
-| **Status** | 🟨 Designed and planned 2026-11-09; not built |
-| **Tasks done** | 0 / 8 (Task 7, the release, is folded into the one release after M11m) |
-| **▶ Pick up here** | Task 1 |
-| **Decisions used** | Yours (2026-11-08): Warp-style blocks per command and its output (collapse, copy, rerun), the riskiest, last, with its own careful design. Yours (2026-11-09): the one combined release ships after M11m. Everything else: AI's calls in note 63 (you skipped the design questions), including **collapse moved to "Not in M11l"**. |
-| **Needs your eyes** | 👀 the 18-item on-screen check in note 63, after the combined release |
+| **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1251 tests); on-screen check pending |
+| **Tasks done** | 7 / 8 (Task 7, the release, is folded into the one release after M11n) |
+| **▶ Pick up here** | Nothing to build. M11m (title bar, not designed yet) is next; the one release ships after M11n. |
+| **Decisions used** | Yours (2026-11-08): Warp-style blocks per command and its output (collapse, copy, rerun), the riskiest, last, with its own careful design. Yours (2026-11-09): the one combined release ships after M11n. Everything else: AI's calls in note 63 (you skipped the design questions), including **collapse moved to "Not in M11l"**. |
+| **Needs your eyes** | 👀 the 22-item on-screen check in note 63, after the combined release |
 
 **Goal:** In zsh terminals fuxx finds each command through OSC 133 marks from its own injected integration, keeps
 each command's record as a hidden hyperlink on the command row's first cell, and draws a gutter bar, a hairline
@@ -143,7 +143,7 @@ and nothing on OSC 133); GPUI at the pinned rev (`1d2a4b3f…`), only APIs alrea
     `pub fn live_prompt<L>(term: &Term<L>) -> Option<Line>` (newest `s=prompt` tag's prompt top, if it is the newest tag);
     `pub fn output_text<L>(term: &Term<L>, id: &str) -> Option<String>`.
 
-- [ ] **Step 1: failing tests** (`shell_marks`):
+- [x] **Step 1: failing tests** (`shell_marks`):
   - `reads_the_four_marks`: `feed(b"\x1b]133;A\x07x\x1b]133;B\x1b\\")` → `[(8, PromptStart), (18, CommandStart)]`;
     `b"\x1b]133;C;cmdline_url=echo%20hi\x07"` → `OutputStart { cmd: Some("echo hi"), truncated: false }`;
     `b"\x1b]133;D;1\x07"` → `Done { exit: Some(1) }`; `b"\x1b]133;D\x07"` → `Done { exit: None }`.
@@ -153,7 +153,7 @@ and nothing on OSC 133); GPUI at the pinned rev (`1d2a4b3f…`), only APIs alrea
   - `ignores_other_letters_and_bad_input`: `133;P`, `133;Z`, `1330;A`, `133;D;x` (→ `Done { exit: None }`), a bad
     `%G1` (→ `cmd: None`) — none panics; an `ESC` inside a mark abandons it.
   - `drops_an_overlong_mark`: `C;cmdline_url=` + 9,000 bytes + BEL → nothing; the next `A` still found.
-- [ ] **Step 2: failing tests** (`blocks`, on a real `Term` with a no-op listener, 20 cols × 6 rows, history 50 via
+- [x] **Step 2: failing tests** (`blocks`, on a real `Term` with a no-op listener, 20 cols × 6 rows, history 50 via
   `Config { scrolling_history: 50, ..term_config() }`, fed with `advance`):
   - `tag_round_trips`: `decode(&encode(&t)) == Some(t)` for a full tag and one with `cmd` containing `; & % é \n`;
     the URI has only 0x21–0x7E and no `;`.
@@ -179,13 +179,13 @@ and nothing on OSC 133); GPUI at the pinned rev (`1d2a4b3f…`), only APIs alrea
   - `an_overlong_command_is_kept_without_text`: C with a 3,000-byte command → `cmd None`, `truncated true`.
   - `empty_prompts_are_not_blocks`: A,B,`\r\n`,A,B (no C) → `list` empty; `live_prompt` = the second.
   - `the_tagger_knows_the_prompt`: after B → `prompt_ready()` and `input_start() == Some(cursor)`; after C → false.
-- [ ] **Step 3: run** `cargo test shell_marks blocks` → FAIL (undefined).
-- [ ] **Step 4: implement** per Interfaces, Global Constraints and note 63 §1. `advance`: scan the chunk, then for
+- [x] **Step 3: run** `cargo test shell_marks blocks` → FAIL (undefined).
+- [x] **Step 4: implement** per Interfaces, Global Constraints and note 63 §1. `advance`: scan the chunk, then for
   each `(end, mark)` advance the processor over `bytes[from..end]` and apply the mark (skipped on the alt screen or
   with `sync_bytes_count() > 0`), then the rest. Logical lines: a row continues the one above when the row above's
   last cell has `Flags::WRAPLINE`. Ids: `fuxx-block-{n}`, counter seeded from `SystemTime` nanoseconds.
-- [ ] **Step 5: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
-- [ ] **Step 6: commit** `feat(m11l): OSC 133 marks and command tags kept in the grid (pure)`.
+- [x] **Step 5: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
+- [x] **Step 6: commit** `feat(m11l): OSC 133 marks and command tags kept in the grid (pure)`.
 
 ### Task 2: Every terminal tags its output
 
@@ -207,7 +207,7 @@ and nothing on OSC 133); GPUI at the pinned rev (`1d2a4b3f…`), only APIs alrea
   (`display_offset = clamp(-line, 0, history_size)`).
 - `blocks.rs`: `pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Option<i32>)`.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - (`terminal`) `a_local_shell_s_marks_become_blocks`: spawn `sh -c` printing `\033]133;A\007$ \033]133;B\007` …
     `C;cmdline_url=ls` … `ok\n` … `D;0` … A/B → `core.blocks()` has one block `cmd Some("ls")`, `Ok`;
     `block_output == Some("ok")`; `prompt_ready()`.
@@ -225,10 +225,10 @@ and nothing on OSC 133); GPUI at the pinned rev (`1d2a4b3f…`), only APIs alrea
   - (`blocks`) `visible_rows_and_the_chosen_block`: 3 blocks with history scrolled so block 1 is above the viewport;
     `visible(term, Some(id1))` includes block 1 with `chosen: true` and negative rows; without `chosen`, block 1 is
     absent; on the alt screen both are empty.
-- [ ] **Step 2: run** `cargo test terminal blocks vt_snapshot links daemon_session` → FAIL.
-- [ ] **Step 3: implement** (the existing `OscDetector`, `CwdReports`, `ClearCounter` still see whole chunks).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt.
-- [ ] **Step 5: commit** `feat(m11l): local, replica and service terminals tag commands; snapshots carry them`.
+- [x] **Step 2: run** `cargo test terminal blocks vt_snapshot links daemon_session` → FAIL.
+- [x] **Step 3: implement** (the existing `OscDetector`, `CwdReports`, `ClearCounter` still see whole chunks).
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt.
+- [x] **Step 5: commit** `feat(m11l): local, replica and service terminals tag commands; snapshots carry them`.
 
 ### Task 3: zsh integration and the `command-blocks` setting
 
@@ -248,7 +248,7 @@ sub-line per Global Constraints), `src/ui_shots.rs` (the Preferences scenes' Ses
   Vec<(String, String)>`.
 - `Appearance.command_blocks` (read by Tasks 4–5).
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `env_for_zsh_only`: `/bin/zsh`, none, on, `Some("/i")` → `[("ZDOTDIR", "/i/zsh")]`; with `Some("/u/zd")` → also
     `("FUXX_ZSH_ZDOTDIR", "/u/zd")`; `/opt/homebrew/bin/zsh` → same; `/bin/bash`, `/usr/local/bin/fish`, `/bin/sh`,
     `/bin/zsh5` → `[]`; `enabled false` → `[]`; `dir None` → `[]`.
@@ -266,14 +266,14 @@ sub-line per Global Constraints), `src/ui_shots.rs` (the Preferences scenes' Ses
     `command-blocks "maybe": expected on or off`; `OnOff::CommandBlocks.key() == "command-blocks"`.
   - ui-shots (Mocha, Latte) `preferences` Sessions: the `Command blocks` row and sub-line present; toggling writes
     `command-blocks = off`.
-- [ ] **Step 2: run** `cargo test shell_integration workspace appearance preferences terminal` → FAIL.
-- [ ] **Step 3: implement.** `.zshenv` and `fuxx-integration.zsh` per note 63 §1 "Shell integration" (restore
+- [x] **Step 2: run** `cargo test shell_integration workspace appearance preferences terminal` → FAIL.
+- [x] **Step 3: implement.** `.zshenv` and `fuxx-integration.zsh` per note 63 §1 "Shell integration" (restore
   `ZDOTDIR`, source the user's `.zshenv`, interactive → source the integration; `preexec` → C with percent-encoded
   `$1` unless over 2,048 bytes; `precmd` → `D;$?` only after a `preexec`, re-add `%{…133;A…%}` / `%{…133;B…%}` to
   `PS1` when missing, move itself to the end of `precmd_functions` once; guard against double sourcing). `install`
   failure is logged once (`[fuxx] shell integration: …`) and leaves injection off.
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots preferences`.
-- [ ] **Step 5: commit** `feat(m11l): zsh shell integration via ZDOTDIR; the command-blocks setting`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots preferences`.
+- [x] **Step 5: commit** `feat(m11l): zsh shell integration via ZDOTDIR; the command-blocks setting`.
 
 ### Task 4: The overlay — gutter bars, separators, the chip
 
@@ -292,7 +292,7 @@ absolute child of the root `div`; the hide timer), `src/main.rs` (`mod block_vie
 - `TerminalView`: `pub fn chosen_block(&self) -> Option<&str>`; `pub fn set_chosen_block(&mut self, id:
   Option<String>, cx)`; ui-shots: `pub fn hovered_block(&self) -> Option<&str>`.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `block_inks_meet_the_floors` (block_view): per Global Constraints "Contrast" on every built-in theme.
   - `chip_texts`: `chip_outcome(Failed(1)) == Some("exit 1")`, `Ok` → `Some("exit 0")`, `Running` → `Some("running")`,
     `Unknown` → `None`; `chip_command("npm test\nsecond")  == "npm test"`; a 50-char command → 40 chars + `…`;
@@ -312,11 +312,11 @@ absolute child of the root `div`; the hide timer), `src/main.rs` (`mod block_vie
     - `command-blocks-narrow`: the pane split to a 200 pt grid → chip buttons `Cmd`, `Output`, `Rerun`, the chip's
       right edge inside the pane; bars at `gutter_x(true)`.
     - `command-blocks-off`: `command_blocks = false` → no gutter or separator pixels; hover does nothing.
-- [ ] **Step 2: run** `cargo test block_view`, `__ui-shots command-blocks` → FAIL.
-- [ ] **Step 3: implement** (chip buttons render but do nothing until Task 5; a gutter press never reaches selection
+- [x] **Step 2: run** `cargo test block_view`, `__ui-shots command-blocks` → FAIL.
+- [x] **Step 3: implement** (chip buttons render but do nothing until Task 5; a gutter press never reaches selection
   or mouse reporting; any output, typing or a grid press hides the chip).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots command-blocks`, the full `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11l): gutter bars, separators and the hover chip for command blocks`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots command-blocks`, the full `__ui-shots`.
+- [x] **Step 5: commit** `feat(m11l): gutter bars, separators and the hover chip for command blocks`.
 
 ### Task 5: Jump, copy, rerun — keys, chip buttons, palette, Help
 
@@ -334,7 +334,7 @@ gutter click), `src/main.rs` (actions and bindings), `src/help_shortcuts.rs` (th
   `pub fn rerun_text(cmd: Option<&str>, prompt_ready: bool, at_input_start: bool, bracketed: bool, alt_screen: bool)
   -> Result<String, Refusal>`; `pub fn with_command(cmd: &str, output: &str) -> String` (`"$ {cmd}\n{output}"`).
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `jump_walks_the_blocks` (block_view): 3 blocks, none chosen, up → `To(2)`; chosen 2 up → `To(1)`; chosen 0 up →
     `Stay`; chosen 2 down → `Bottom`; none, down → `Stay`; no blocks → `Stay`.
   - `actions_target_the_chosen_or_newest_done`: `target(3, Some(1), Some(2)) == Some(1)`; `target(3, None, Some(1)) ==
@@ -359,30 +359,43 @@ gutter click), `src/main.rs` (actions and bindings), `src/help_shortcuts.rs` (th
     - `command-blocks-rerun`: live prompt ready → chip Rerun on block 1 → the shot terminal's screen shows `echo hi`
       after the live prompt (the PTY's echo of what was sent) and the cursor stays on that row (no Return); then the
       chip shows Rerun in `text_faint` (the cursor left the input start) and clicking it changes nothing on screen.
-- [ ] **Step 2: run** `cargo test block_view help_shortcuts palette_items`, `__ui-shots command-blocks` → FAIL.
-- [ ] **Step 3: implement** (Copy output / command and output built in `cx.background_spawn` from a cloned core;
+- [x] **Step 2: run** `cargo test block_view help_shortcuts palette_items`, `__ui-shots command-blocks` → FAIL.
+- [x] **Step 3: implement** (Copy output / command and output built in `cx.background_spawn` from a cloned core;
   all block actions no-op when `command_blocks` is off, on the alt screen, or with no target; ⇧⌘↑ / ⇧⌘↓ scroll with
   `scroll_to_line`, at once).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, the full `__ui-shots`, `scripts/bundle-mac.sh --app-only`.
-- [ ] **Step 5: commit** `feat(m11l): jump between commands, copy command and output, rerun at the prompt`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, the full `__ui-shots`, `scripts/bundle-mac.sh --app-only`.
+- [x] **Step 5: commit** `feat(m11l): jump between commands, copy command and output, rerun at the prompt`.
 
 ### Task 6: Merge and push (pre-authorized, autonomous program)
 
-- [ ] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
+- [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
   full `__ui-shots` green; a whole-branch review against note 63 and this plan's Review Focus; then merge
   `m11l-command-blocks` into `master` and push.
 
-### Task 7: Release — folded into the one release after M11m
+### Task 7: Release — folded into the one release after M11n
 
 - [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: the one combined release
-  (M11i–M11m) ships after M11m (your rule, 2026-11-09: "push the release after performance milestone").
-- [ ] You: the 18-item on-screen checklist in note 63 (after the combined release).
+  (M11i–M11n) ships after M11n (your rule, 2026-11-09: "push the release after performance milestone").
+- [ ] You: the 22-item on-screen checklist in note 63 (after the combined release).
+
+### Added during the build (not in the first plan)
+
+- [x] **Task 2b: a darker tab bar** (you, 2026-11-09: the empty part of the tab bar is hard to tell apart from the
+  tab box). `tab_bar` pushed from `card` to a contrast of `TAB_BAR_MIN` 1.3 (light themes capped at 1.15), `tab_hover`
+  follows, floors kept; a contrast test on every theme. Run right after Task 2.
+- [x] **Task 3b: powerlevel10k.** From prompt 2 on, p10k rebuilt `PROMPT` and overwrote fuxx's marks. The integration
+  marks at every prompt, turns p10k's own shell integration on and its C/D off; the final fix wave added `_fuxx_done`
+  first, no C for an `exec` that replaces the shell, the guarded `add-zle-hook-widget` and a check of the scripts at
+  each spawn.
+- [x] **Task 4b: the one-row chip and the title-area root cause.** You chose a one-row chip with no shadow from
+  mockups (2026-11-09, "oke begitu saja"); it leaves a right prompt visible. The title-area ui-shot failure was M11i's
+  removed sidebar edge that the footer model still subtracted.
 
 ### Task 8: Docs
 
-- [ ] Note 63: status, an "M11l as built" section (what the build settled or changed), the checklist's state. This
+- [x] Note 63: status, an "M11l as built" section (what the build settled or changed), the checklist's state. This
   plan (ticks, header). The roadmap (`40 - Roadmap.md`). The Plan Tracker. The Progress Log. Note 56 (Help: the three
   Terminal rows). `STRUCTURE.md` (`shell_marks.rs`, `blocks.rs`, `shell_integration.rs`, `block_view.rs`,
   `assets/shell-integration/`). `README.md` (command blocks, ⇧⌘↑ / ⇧⌘↓ / ⇧⌘C, the zsh integration and
   `command-blocks = off`).
-- [ ] Commit `docs(m11l): …`.
+- [x] Commit `docs(m11l): …`.

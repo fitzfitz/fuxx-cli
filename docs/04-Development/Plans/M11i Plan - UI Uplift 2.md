@@ -13,7 +13,7 @@ updated: 2026-11-08
 |---|---|
 | **Design (the spec)** | [[60 - Milestone 11i - UI Uplift 2]] (incl. "Settled before planning") |
 | **Status** | 🟨 Built, reviewed and merged to master 2026-11-08; release with M11l; on-screen check pending |
-| **Tasks done** | 9 / 10 (Task 9, the release, is folded into the one release after M11l) |
+| **Tasks done** | 9 / 10 (Task 9, the release, is folded into the one release after M11n) |
 | **▶ Pick up here** | Nothing to build. Your on-screen check (22 items in note 60) after the combined release |
 | **Decisions used** | Yours (2026-11-08): the eight items, in M11i, before M11h. Everything else: AI's calls in note 60 (you skipped the design questions). |
 | **Needs your eyes** | 👀 Tasks 8–9 (merge/push/release on your word, then the 20-item on-screen check in note 60) |
@@ -375,7 +375,7 @@ status bar's terminal), `src/tab_bar.rs` (`Glyph::Branch`), `src/main.rs` (`mod`
 
 ### Task 9: Release (your word) and on screen — 👀
 
-- [ ] ~~On your word: version **0.5.0** in `Cargo.toml` (a new look), `cargo test`, commit~~ Skipped by ruling: one release after M11l (your rule, 2026-11-08).
+- [ ] ~~On your word: version **0.5.0** in `Cargo.toml` (a new look), `cargo test`, commit~~ Skipped by ruling: one release after M11n (your rule, 2026-11-08).
   `chore(release): 0.5.0 — UI uplift 2 (M11i)`, push, tag `v0.5.0`, watch the Release run to green.
 - [ ] You: the 22-item on-screen checklist in note 60 (after the combined release).
 
