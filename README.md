@@ -55,8 +55,8 @@ terminal or a web page. Built and reviewed, not yet tried on screen.
   **⌘−** / **⌘0** zoom the page; **⌘W**, **⌘T**, **⌘N**, **⌘D**, **⌘1…⌘9**, **⌘P**, **⇧⌘U** and **⌃Tab** still do
   fuxx's thing.
 - **Footer:** the 🔔 beside the Preferences gear lists this run's notifications (a dot while some are unseen; click one
-  to jump to that terminal). The **+** opens the new-workspace menu. With the sidebar hidden, the footer is hidden too and
-  the workspace name shows at the top.
+  to jump to that terminal). The **+** opens the new-workspace menu. With the sidebar hidden, the footer goes too: the 🔔 and ⚙ move to
+  the top band's right, and the workspace name shows in its middle.
 - **Restore:** workspaces, panes, tabs, pins and pages' addresses come back after a restart.
 - **Resizing** the window no longer makes an idle terminal look busy.
 
@@ -86,7 +86,7 @@ themes too. Each session shows a shaped status mark: a hollow ring (idle), a spi
 its name. New shortcuts: **⇧⌘U** jumps to the session that needs you, **⌘K** searches everything and **⌘P** switches workspaces (most urgent first),
 **⌘\** hides the sidebar, **⌘=** / **⌘−** / **⌘0** change the font size. Split panes each get a tab bar.
 Preferences (⌘,) has sections down the left (General, Appearance, Sessions, Browser) and remembers the last one; Appearance has theme swatches and a live preview, General has **Animations** On/Off (`animations = off` in the config; macOS
-"Reduce motion" is respected too) and "Show the tips card again". A sidebar button beside the window buttons hides and shows the sidebar (same as ⌘\). Rows in the sidebar behave like tabs: hover shows a × to close, middle-click closes, and right-click opens a menu (Close Workspace, Close Other Workspaces, Close Workspaces Below, Show All Workspaces, Rename Workspace…, Pin, Workspace Color); closing several at once always asks first. Rows show ⌘1…⌘9 on the right. Screenshots of every screen, in a dark and a light theme, come from
+"Reduce motion" is respected too) and "Show the tips card again". The top band is a title bar: with the sidebar open it shows the window buttons, the title **the Fuxx?** and a sidebar button at the band's right edge (hides the sidebar, same as ⌘\); with it hidden the band shows the workspace's name in the middle and **🔔 ⚙ and the sidebar button** at the far right (the 🔔 list drops down from there, with the unseen dot). Rows in the sidebar behave like tabs: hover shows a × to close, middle-click closes, and right-click opens a menu (Close Workspace, Close Other Workspaces, Close Workspaces Below, Show All Workspaces, Rename Workspace…, Pin, Workspace Color); closing several at once always asks first. Rows show ⌘1…⌘9 on the right. Screenshots of every screen, in a dark and a light theme, come from
 `cargo run --features ui-shots -- __ui-shots` (PNGs in `target/ui-shots/`). Built and reviewed, not yet tried on screen.
 
 ## The 2026 look (M11i)

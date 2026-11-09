@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **M11m — Title bar** (requested by you 2026-11-09; designed and planned 2026-11-09, not built: [[M11m Plan - Title Bar]]), then **M11n — Performance**, then the one combined release (M11i–M11n). |
-| **Status** | 🟨 M11i, M11h, M11j, M11k and M11l built, reviewed, merged and pushed 2026-11-08/09 (M11l: 1251 tests); not released on their own. 🟨 M11e/M11f/M11g released (v0.3.0–v0.4.0); on-screen checks pending. |
-| **▶ Next action** | Build M11m from [[M11m Plan - Title Bar]] (Task 1), then M11n; release v0.5.0; then your one combined on-screen check (notes 59–63 and the M11m/M11n notes); then plan a chores round with you. |
+| **Current milestone** | **M11n — Performance** (requested by you 2026-11-09; to design and plan), then the one combined release (M11i–M11n). M11m — title bar is built ([[M11m Plan - Title Bar]]). |
+| **Status** | 🟨 M11i, M11h, M11j, M11k, M11l and M11m built, reviewed, merged and pushed 2026-11-08/09 (M11m: 1259 tests); not released on their own. 🟨 M11e/M11f/M11g released (v0.3.0–v0.4.0); on-screen checks pending. |
+| **▶ Next action** | Design and plan M11n; then the v0.5.0 release; then your one combined on-screen check (notes 59–64 and the M11n note); then plan a chores round with you. |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-11-09 |
 
@@ -68,7 +68,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M11j | Command palette (⌘K) | [[M11j Plan - Command Palette]] (design: [[61 - Milestone 11j - Command Palette]]) | 🟨 built, merged, pushed 2026-11-09; release after M11n; on-screen check pending | 7/8 | Actions, workspaces, files, settings in one search. |
 | M11k | First-run screen | [[M11k Plan - First-Run Screen]] (design: [[62 - Milestone 11k - First-Run Screen]]) | 🟨 built, merged, pushed 2026-11-09; release after M11n; on-screen check pending | 6/7 | Folder, agent, three shortcuts. |
 | M11l | Command blocks | [[M11l Plan - Command Blocks]] (design: [[63 - Milestone 11l - Command Blocks]]) | 🟨 built, reviewed, merged, pushed 2026-11-09; release after M11n; on-screen check pending | 7/8 | OSC 133 marks from a zsh integration; a bar per command, hairlines, a one-row chip, jump and copy keys; a darker tab bar. |
-| M11m | Title bar | [[M11m Plan - Title Bar]] (design: [[64 - Milestone 11m - Title Bar]]) | 🟨 designed and planned 2026-11-09, not built | 0/6 | Sidebar icon and the title "the Fuxx?" in the sidebar's top band; collapsed: workspace name centred, 🔔 ⚙ and the sidebar button at the right. |
+| M11m | Title bar | [[M11m Plan - Title Bar]] (design: [[64 - Milestone 11m - Title Bar]]) | 🟨 built, reviewed, merged, pushed 2026-11-09; release after M11n; on-screen check pending | 6/6 | Sidebar icon and the title "the Fuxx?" in the sidebar's top band; collapsed: workspace name centred, 🔔 ⚙ and the sidebar button at the right. |
 | M11n | Performance | — | ⬜ requested 2026-11-09 | 0 | Idle CPU and output speed. The one combined release (M11i–M11n) ships after it. |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach

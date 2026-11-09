@@ -14,13 +14,32 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, designed and planned 2026-11-09, not built), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11m — title bar 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); next M11n (performance); M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, designed and planned 2026-11-09, not built), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-09 — M11m title bar built, reviewed, merged and pushed
+- **Did:** Built the title bar task by task with a fresh builder and reviewer each. Open: the sidebar button at the
+  right edge of the sidebar's band (lined up with the footer ⚙) and **"the Fuxx?"** centred there. Collapsed: the
+  workspace name centred on the window and **[🔔] [⚙] [sidebar]** at the far right, the 🔔 carrying the unseen dot,
+  and its popover dropping down from under the band. Every toggle closes the popover; both ⚙ say "Preferences (⌘,)".
+  The reviews led to: the collapsed name waiting for the hide slide (it painted over the outgoing sidebar for up to
+  160 ms), the open button clamped to a window narrower than the sidebar, one shared band-button shell and tooltip
+  constant, and sharper shots (the title's ink held to a measured −1 pt baseline, the lit 🔔 fill, no band buttons
+  while the sidebar shows). The band 🔔 closes the Welcome card, as any overlay does (accepted). The full ui-shots
+  run also exposed the M11l `command-blocks-rprompt-tight` failure: a test bug (GPUI rounds the chip's edge and width
+  separately; 0.5 pt is half a device pixel at 1x), fixed with a 1-device-pixel tolerance; the product was fine.
+  1259 tests pass, clippy (both) adds no warnings, the full ui-shots set passes, built in its own target directory
+  (the shared one served another worktree's binary).
+- **Limits:** no minimum window size (under about 170 pt the band icons can reach the traffic lights); the Latte
+  hover fill is faint (pre-existing); nothing verified at 2x or in the real app. What the build settled: note 64's
+  "M11m as built".
+- **Next:** design and plan M11n (performance), then the v0.5.0 release, then your combined on-screen check (note 64
+  has 20 items), then a chores round planned with you.
 
 ### 2026-11-09 — M11m title bar designed and planned
 - **Did:** Wrote the design ([[64 - Milestone 11m - Title Bar]]) and the plan ([[M11m Plan - Title Bar]], 3 build

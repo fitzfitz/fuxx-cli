@@ -1,12 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: designed
+status: built
 ---
 
 # 64 - Milestone 11m - Title Bar (design)
 
-**Status:: 🟨 Designed and planned 2026-11-09 (the layout is yours; every detail beyond it is AI's call, marked below). Not built.
-Not released on its own: it ships in the one combined release (M11i–M11n) after M11n (your rule, 2026-11-09).**  ·  **Phase 4: an M11 extension.**  ·
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1259 tests; the full ui-shots set passes). The on-screen check is pending (20 items, below). Not released on its own: it ships in the one combined release (M11i–M11n) after M11n (your rule, 2026-11-09).**  ·  **Phase 4: an M11 extension.**  ·
 **Plan:** [[M11m Plan - Title Bar]]
 **Added to the plan 2026-11-09 by you** (see [[12 - Scope]], "Title bar"), as its own milestone after M11l
 ("own milestone after M11l"). After it comes M11n (performance), then the one combined release.
@@ -224,6 +223,10 @@ No new colours. Constants (in `sidebar_toggle.rs` and `title_area.rs`): `BAND_ED
   clear of the green light, since M11; if a later macOS draws the lights wider, `LIGHTS_CLEAR` is the one number to change.
 - **`TITLE_ROOM` (64 pt) is checked against the UI font** in the ui-shots (the drawn ink must fit it); a different
   system font could need it adjusted.
+- **Nothing is verified at 2x or in the real app.** The ui-shots ran at 1x (the external display); your on-screen
+  checklist covers 2x and the real window.
+- **The Latte hover fill is faint** (`panel_hover` is close to the band's colour). It was so before M11m and is left
+  for your on-screen check (item 20).
 - **Full screen can't be screenshotted** off screen: it is covered by unit tests on the geometry and by your check.
 
 ## On-screen checklist (pending, after the combined release)
@@ -247,7 +250,8 @@ No new colours. Constants (in `sidebar_toggle.rs` and `title_area.rs`): `BAND_ED
 9. Click the band's 🔔: the list drops down from under the band, its right edge lined up with the sidebar icon, inside
    the window; the dot goes. Click an entry: its terminal shows and the sidebar stays collapsed. Escape and a click
    outside close the list.
-10. Open the list (from the band or from the footer) and press ⌘\\: it closes and typing goes to the terminal.
+10. Open the list (from the band or from the footer), then toggle the sidebar any way (⌘\\, either icon): the list
+    closes and typing goes to the terminal.
 11. Collapsed, click ⚙: Preferences opens, as from the footer. Hover ⚙ and 🔔: a fill and the tooltips "Preferences
     (⌘,)" and "Notifications". The footer's ⚙ now shows "Preferences (⌘,)" too.
 12. **Narrow sidebar:** drag the sidebar's edge to its narrowest: the title disappears (below about 224 pt) and the
@@ -261,7 +265,44 @@ No new colours. Constants (in `sidebar_toggle.rs` and `title_area.rs`): `BAND_ED
     narrow sidebar; the band doesn't move anything.
 16. **Light and dark** (Latte, Mocha, one more of each): the title, the name and the icons are readable; hover fills
     and the dot are visible.
-17. With the sidebar collapsed, Help → Welcome to fuxx: the band and its icons are dimmed with the rest.
+17. With the sidebar collapsed, Help → Welcome to fuxx: the band and its icons are dimmed with the rest. Click the
+    band's 🔔: the card closes and the list opens (one overlay at a time).
+18. **The name waits for the slide:** with the sidebar open, hide it (⌘\\) and watch the top band: the workspace's
+    name does not show over the outgoing sidebar; it appears at once when the slide ends (about 0.16 s). With
+    animations off it is simply there.
+19. **A window narrower than the sidebar:** shrink the window to about 200 pt wide with the sidebar open: the
+    sidebar icon is still inside the window and clickable (it follows the window's right edge). Collapsed, under about
+    170 pt the three icons can reach the traffic lights (known, see Limits).
+20. **Latte hover:** in Latte, hover the band's 🔔, ⚙ and sidebar icon: the fill is faint (pre-existing); say if it
+    should be stronger.
+
+## M11m as built (2026-11-09)
+
+Where the build settled something the design left open, or changed it (AI's rulings after each task's review and the
+final whole-branch review):
+
+- **`TITLE_ROOM` stays 64 pt.** The title's ink measured 60 pt wide, so the 224 pt threshold holds. **`TITLE_INK_SHIFT`
+  = −1 pt:** the title's ink centre sits 1 pt left of the sidebar's middle, measured; it is GPUI's text-origin
+  snapping, not a centring bug. The shots hold the ink to that baseline (±0.5) and to ±1.5 of the middle as a sanity
+  bound; rebaseline it if the system font or the GPUI rev changes. `TITLE_GAP` (8 pt) never binds at today's
+  widths; it is the safeguard if `TITLE_ROOM` grows past 100.
+- **The name waits for the hide slide (AI's call):** while the sidebar slides out, the collapsed name is not drawn;
+  it appears at once when the slide ends. Before this it painted over the outgoing sidebar for up to 160 ms.
+- **The band 🔔 closes the Welcome card**, as any overlay does (one overlay at a time). You accepted this.
+- **The open button is clamped to the window** (`open_button_at(sidebar_w, window_w)`): a window narrower than the
+  sidebar keeps it reachable, and the title's rule measures against the clamped button.
+- **Both ⚙ show "Preferences (⌘,)"** and the 🔔 tooltip is one shared constant (`NOTIFICATIONS_TIP`); the band
+  buttons share one button shell (`sidebar_toggle::band_button`).
+- **Every sidebar toggle closes the popover**, and the keyboard returns to the terminal.
+- **The popover drops down from the band 🔔:** right edge at W − 8, top at 42 (`TOP_BAND` + 4), width 228–340. The
+  list's first entry starts at `band_entry_top`.
+- **With the sidebar shown there are no band buttons:** a click where the band's sidebar slot would be is the tab
+  bar's ◧ (tested).
+- **The M11l `command-blocks-rprompt-tight` shot was fixed here.** It was a test bug, not a product bug: GPUI rounds
+  the chip's left edge and its width separately, so the 0.5 pt tolerance failed at 1x. The tolerance is now 1 device
+  pixel; a real overlap is a whole cell, so it is still caught. The RPROMPT stayed fully visible throughout.
+- **M11m used its own build directory** (`CARGO_TARGET_DIR`), because the shared one served a stale binary from
+  another worktree; the merge gate ran there.
 
 ## Links
 
