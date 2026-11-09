@@ -82,6 +82,27 @@ pub fn setup() {
     }
 }
 
+/// Whether the scripts in `dir` (`installed`) can be given to a new shell, checked at each
+/// spawn: `<dir>/zsh/.zshenv` is there (a stat), or, if it was deleted while fuxx runs,
+/// installing it again worked. Otherwise `ZDOTDIR` would point at a missing folder, and zsh
+/// would start without your own files.
+pub fn usable(dir: &Path) -> bool {
+    if dir.join("zsh/.zshenv").is_file() {
+        return true;
+    }
+    match install(dir) {
+        Ok(_) => true,
+        Err(err) => {
+            eprintln!(
+                "[fuxx] shell integration: {} is gone and could not be written again: {err}; \
+                 zsh starts without it",
+                dir.display()
+            );
+            false
+        }
+    }
+}
+
 /// Where the scripts were installed at startup; none before, or if that failed.
 pub fn installed() -> Option<&'static Path> {
     INSTALLED.get().map(PathBuf::as_path)
@@ -233,6 +254,28 @@ mod tests {
     }
 
     #[test]
+    fn usable_checks_the_scripts_at_each_spawn() {
+        let t = TempDir::new("usable");
+        let dir = t.0.join("shell-integration");
+        install(&dir).unwrap();
+        assert!(usable(&dir));
+        // Deleted while fuxx runs: installed again, once.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(usable(&dir));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zsh/.zshenv")).unwrap(),
+            ZSHENV
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zsh/fuxx-integration.zsh")).unwrap(),
+            INTEGRATION
+        );
+        // Gone and can't be written again (its parent is a file): not usable, no ZDOTDIR.
+        let file = t.write("a-file", "x");
+        assert!(!usable(&file.join("shell-integration")));
+    }
+
+    #[test]
     fn integration_dir_is_under_application_support() {
         let home = std::env::var_os("HOME").filter(|h| !h.is_empty());
         assert_eq!(
@@ -335,14 +378,82 @@ mod tests {
     fn precmd_sends_done_only_after_a_command_ran() {
         let t = TempDir::new("done");
         // No command since the last prompt: no D.
-        let marks = marks_in(&zsh_f(&t, "false; _fuxx_precmd"));
+        let marks = marks_in(&zsh_f(&t, "false; _fuxx_done; _fuxx_precmd"));
         assert_eq!(marks, Vec::<String>::new());
-        // A command ran: D with its status, once.
+        // A command ran: D with its status, once, from `_fuxx_done` (the prompt hook sends none).
         let marks = marks_in(&zsh_f(
             &t,
-            "_fuxx_preexec 'false'; (exit 3); _fuxx_precmd; true; _fuxx_precmd",
+            "_fuxx_preexec 'false'; (exit 3); _fuxx_done; _fuxx_precmd; true; _fuxx_done",
         ));
         assert_eq!(marks, ["C;cmdline_url=false", "D;3"]);
+    }
+
+    #[test]
+    fn preexec_sends_no_c_for_an_exec_that_replaces_the_shell() {
+        // The new shell never marks (fuxx's ZDOTDIR is gone by then), so a C would leave a
+        // block running for good: an `exec` that replaces the shell is not a block.
+        let t = TempDir::new("exec");
+        let show = "; print -r -- \"[$_fuxx_running]\"";
+        for line in [
+            "exec zsh",
+            "exec -l zsh",
+            "builtin exec zsh",
+            "command exec zsh",
+            "builtin command exec /bin/zsh -l",
+            "  exec   zsh",
+        ] {
+            let out = zsh_f(&t, &format!("_fuxx_preexec {}{show}", shell_quote(line)));
+            assert_eq!(String::from_utf8_lossy(&out), "[0]\n", "{line:?}");
+        }
+        // Only redirections (the shell stays), a bare exec, or exec not the command: a block.
+        for line in [
+            "exec >out.txt",
+            "exec 2>&1",
+            "exec {fd}>f",
+            "exec &>f",
+            "exec <in",
+            "exec >&-",
+            "exec",
+            "echo exec zsh",
+            "execute zsh",
+        ] {
+            let out = zsh_f(&t, &format!("_fuxx_preexec {}{show}", shell_quote(line)));
+            let text = String::from_utf8_lossy(&out);
+            assert!(
+                text.starts_with("\x1b]133;C;cmdline_url=") && text.ends_with("\x07[1]\n"),
+                "{line:?}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn done_is_first_in_precmd_and_stays_first() {
+        // D goes before every other precmd hook, so what they print (a timing plugin) is not
+        // the command's output; the prompt's hook stays last.
+        let t = TempDir::new("done-first");
+        let out = zsh_f(
+            &t,
+            "PS1='%# '; print -r -- \"[$precmd_functions]\"\n\
+             front() { :; }; back() { :; }; precmd_functions=(front $precmd_functions back)\n\
+             _fuxx_precmd; print -r -- \"[$precmd_functions]\"\n\
+             precmd_functions=(front ${precmd_functions:#front})\n\
+             _fuxx_line_init; print -r -- \"[$precmd_functions]\"\n\
+             typeset -gi _POWERLEVEL9K_TERM_SHELL_INTEGRATION=1\n\
+             precmd_functions=(front ${precmd_functions:#front})\n\
+             _fuxx_line_init; print -r -- \"[$precmd_functions]\"",
+        );
+        let text = String::from_utf8_lossy(&out);
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            [
+                "[_fuxx_done _fuxx_precmd]",
+                "[_fuxx_done front back _fuxx_precmd]",
+                "[_fuxx_done front back _fuxx_precmd]",
+                // powerlevel10k marking its prompts: D still put first.
+                "[_fuxx_done front back _fuxx_precmd]",
+            ],
+            "{text}"
+        );
     }
 
     #[test]
@@ -366,11 +477,11 @@ mod tests {
         assert_eq!(lines[0], marked);
         // Already marked: unchanged.
         assert_eq!(lines[1], marked);
-        assert_eq!(lines[2], "[theme _fuxx_precmd]");
+        assert_eq!(lines[2], "[_fuxx_done theme _fuxx_precmd]");
         // A lone % at the end is doubled, so it can't eat the B mark's `%{`.
         assert_eq!(lines[3], "[%{^[]133;A^G%}end%%%{^[]133;B^G%}]");
         // Sourced again: nothing added twice.
-        assert_eq!(lines[4], "[theme _fuxx_precmd][_fuxx_preexec]");
+        assert_eq!(lines[4], "[_fuxx_done theme _fuxx_precmd][_fuxx_preexec]");
         // Copies kept inside by a theme are dropped: one A at the start, one B at the end.
         assert_eq!(lines[5], "[%{^[]133;A^G%}pre\\n%# %{^[]133;B^G%}]");
         assert_eq!(lines[6], "[%{^[]133;A^G%}> x%{^[]133;B^G%}]");
@@ -397,9 +508,9 @@ mod tests {
         assert_eq!(
             text.lines().collect::<Vec<_>>(),
             [
-                "[_fuxx_precmd theme][theme _fuxx_precmd]",
-                "[theme _fuxx_precmd][theme _fuxx_precmd]",
-                "[theme _fuxx_precmd][theme _fuxx_precmd]"
+                "[_fuxx_done _fuxx_precmd theme][_fuxx_done theme _fuxx_precmd]",
+                "[_fuxx_done theme _fuxx_precmd][_fuxx_done theme _fuxx_precmd]",
+                "[_fuxx_done theme _fuxx_precmd][_fuxx_done theme _fuxx_precmd]"
             ],
             "{text}"
         );
@@ -434,7 +545,7 @@ mod tests {
             &t,
             "exec 2>&1; p10k() { :; }\n\
              typeset -gi _POWERLEVEL9K_TERM_SHELL_INTEGRATION=1 _p9k__iterm_cmd=1\n\
-             PS1='%# '; _fuxx_preexec 'false'; (exit 1); _fuxx_precmd\n\
+             PS1='%# '; _fuxx_preexec 'false'; (exit 1); _fuxx_done; _fuxx_precmd\n\
              print -r -- \"[${(V)PS1}][${_p9k__iterm_cmd-unset}]\"",
         );
         assert_eq!(
@@ -744,6 +855,85 @@ mod tests {
     }
 
     #[test]
+    fn what_other_precmd_hooks_print_is_not_the_commands_output() {
+        let t = TempDir::new("took");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        // Timing plugins' hooks: one put first in precmd_functions, one added at the end.
+        t.write(
+            "home/.zshrc",
+            "PS1='%# '\nfront() { print \"took 3s\" }; back() { print \"took 4s\" }\n\
+             precmd_functions=(front $precmd_functions back)\n",
+        );
+        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+        run(&core, "echo hi");
+        let blocks = run(&core, "echo two");
+        assert_eq!(cmds(&blocks), ["echo hi", "echo two"]);
+        for (b, out) in blocks.iter().zip(["hi", "two"]) {
+            assert_eq!(core.block_output(&b.id).as_deref(), Some(out));
+        }
+    }
+
+    #[test]
+    fn a_precmd_function_still_prints_into_the_block() {
+        // A limit: zsh runs a function named `precmd` before every precmd_functions hook, so
+        // what it prints comes before D, and is the command's output.
+        let t = TempDir::new("precmd-fn");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("home/.zshrc", "PS1='%# '\nprecmd() { print \"took 3s\" }\n");
+        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+        let blocks = run(&core, "echo hi");
+        assert_eq!(
+            core.block_output(&blocks[0].id).as_deref(),
+            Some("hi\ntook 3s")
+        );
+    }
+
+    #[test]
+    fn exec_zsh_leaves_no_block_running() {
+        // `exec zsh` (oh-my-zsh's `omz reload`): the new zsh reads your files only, without
+        // fuxx's hooks. No block is left running, and no later command makes one (the
+        // integration is lost until a new terminal: a limit).
+        let t = TempDir::new("exec-zsh");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("home/.zshrc", "PS1='%# '\n");
+        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+        let blocks = run(&core, "echo a");
+        assert_eq!(outcomes(&blocks), [Outcome::Ok]);
+        assert!(until(|| core.prompt_ready() && core.cursor_at_input_start()));
+        core.input(b"exec zsh\r");
+        core.input(b"echo after-$((6*7))\r");
+        assert!(
+            until(|| screen_text(&core).contains("after-42")),
+            "{}",
+            screen_text(&core)
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let blocks = core.blocks();
+        assert_eq!(cmds(&blocks), ["echo a"], "{blocks:?}");
+        assert_eq!(outcomes(&blocks), [Outcome::Ok]);
+    }
+
+    #[test]
+    fn no_add_zle_hook_widget_is_no_error() {
+        // zsh before 5.3 has no add-zle-hook-widget (here: an empty fpath, so it can't be
+        // loaded): the line-init hook is left out, quietly, and blocks still come.
+        let t = TempDir::new("no-azhw");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("home/.zshrc", "PS1='%# '; fpath=()\n");
+        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+        run(&core, "echo hi");
+        let blocks = run(&core, "false");
+        assert_eq!(outcomes(&blocks), [Outcome::Ok, Outcome::Failed(1)]);
+        let screen = screen_text(&core);
+        assert!(!screen.contains("not found"), "{screen}");
+        assert!(!screen.contains("add-zle-hook-widget"), "{screen}");
+    }
+
+    #[test]
     fn a_pure_like_theme_gets_one_prompt_start() {
         let t = TempDir::new("pure");
         let dir = t.0.join("si");
@@ -896,6 +1086,11 @@ fi
     fn p10k_gets_command_blocks() {
         let (_t, core) = sim_p10k("p10k", "", "");
         p10k_scenario(&core);
+        let blocks = run(&core, FIRST_HOOK);
+        assert_eq!(
+            core.block_output(&blocks[4].id).as_deref(),
+            Some("_fuxx_done")
+        );
     }
 
     #[test]
@@ -981,8 +1176,17 @@ fi
                 // The lean config's prompt is two lines.
                 assert_eq!(b.cmd_row.0 - b.prompt_top.0, 1, "{b:?}");
             }
+            // p10k puts its own hooks first and last at every prompt: D is still sent first.
+            let blocks = run(&core, FIRST_HOOK);
+            assert_eq!(
+                core.block_output(&blocks[3].id).as_deref(),
+                Some("_fuxx_done")
+            );
         }
     }
+
+    /// Prints the first precmd hook.
+    const FIRST_HOOK: &str = "print -r -- ${precmd_functions[1]}";
 
     #[test]
     fn marks_go_to_the_terminal_not_a_redirected_stdout() {

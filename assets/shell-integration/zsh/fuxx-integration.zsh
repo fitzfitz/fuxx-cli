@@ -5,7 +5,7 @@
 #   A  prompt starts   (at the start of PS1)
 #   B  prompt ends     (at the end of PS1)
 #   C  output starts   (preexec), with the command line percent-encoded as cmdline_url
-#   D  command done    (precmd, only after a command ran), with its exit status
+#   D  command done    (first in precmd, only after a command ran), with its exit status
 
 # Sourced again (a .zshrc that sources it): everything is in place already.
 (( ${+_fuxx_running} )) && 'builtin' 'return' 0
@@ -24,8 +24,15 @@
 # C, with the command line as typed ($1). Sent without it when there is none or it is over
 # 2,048 bytes of UTF-8. Encoded byte by byte (multibyte off): everything but A-Z a-z 0-9 . _ ~
 # / - becomes %XX, so the mark holds printable ASCII only, and never a `;`.
+# Not for an `exec` that replaces the shell (`exec zsh`, also after `builtin` or `command`; not
+# `exec >file`, which only redirects): the new shell never sends D, nor marks at all.
 _fuxx_preexec() {
     'builtin' 'emulate' -L zsh -o extendedglob +o multibyte
+    if [[ $1 == *exec* ]]; then
+        local -a w=(${(z)1})
+        while [[ $w[1] == (builtin|command) ]]; do 'builtin' 'shift' w; done
+        [[ $w[1] == exec && -n $w[2] && $w[2] != ([0-9]#(\<|\>|\&\>)*|\{*\}) ]] && return 0
+    fi
     _fuxx_running=1
     if (( ${#1} == 0 || ${#1} > 2048 )); then
         builtin print -rnu $_fuxx_fd -- $'\e]133;C\a'
@@ -49,16 +56,32 @@ _fuxx_mark_prompt() {
     fi
 }
 
-# D with the status when a command ran, then the prompt's marks. It moves itself after the other
-# precmd hooks, so a theme's rebuilt PS1 is marked; for a theme that moves its own hook last at
-# every prompt too (powerlevel10k), the line-init hook below moves it back once the prompt is up.
-_fuxx_precmd() {
-    local ret=$? percent=${options[promptpercent]} zle_on=${options[zle]}
+# D with the status, when a command ran. First in precmd_functions, so what the other hooks
+# print (a timing plugin's line) is not the command's output. $? is read before anything.
+_fuxx_done() {
+    local ret=$?
     'builtin' 'emulate' -L zsh
-    if (( _fuxx_running )); then
-        _fuxx_running=0
-        builtin print -rnu $_fuxx_fd -- $'\e]133;D;'"$ret"$'\a'
-    fi
+    (( _fuxx_running )) || return 0
+    _fuxx_running=0
+    builtin print -rnu $_fuxx_fd -- $'\e]133;D;'"$ret"$'\a'
+}
+
+# _fuxx_done first in precmd_functions and, unless $1 is `first`, _fuxx_precmd last, whatever
+# moved them.
+_fuxx_order() {
+    'builtin' 'emulate' -L zsh
+    [[ ${precmd_functions[1]} == _fuxx_done ]] ||
+        precmd_functions=(_fuxx_done ${precmd_functions:#_fuxx_done})
+    [[ $1 == first || ${precmd_functions[-1]} == _fuxx_precmd ]] ||
+        precmd_functions=(${precmd_functions:#_fuxx_precmd} _fuxx_precmd)
+}
+
+# The prompt's marks. It moves itself after the other precmd hooks, so a theme's rebuilt PS1 is
+# marked; for a theme that moves its own hook last at every prompt too (powerlevel10k), the
+# line-init hook below moves it back once the prompt is up.
+_fuxx_precmd() {
+    local percent=${options[promptpercent]} zle_on=${options[zle]}
+    'builtin' 'emulate' -L zsh
     # powerlevel10k builds PS1 again where no hook can mark it (its transient prompt, Ctrl-C,
     # instant prompt): have it put A and B in every prompt it builds, as it does for kitty and
     # Warp. Not if you set this yourself. It reads it at its first prompt, after this hook.
@@ -67,12 +90,16 @@ _fuxx_precmd() {
     # Without prompt_percent, %{ %} would show as text.
     [[ $percent == on ]] || return 0
     _fuxx_p10k_marks || _fuxx_mark_prompt
-    [[ ${precmd_functions[-1]} == _fuxx_precmd ]] ||
-        precmd_functions=(${precmd_functions:#_fuxx_precmd} _fuxx_precmd)
+    _fuxx_order
     if (( ! _fuxx_hooked )) && [[ $zle_on == on ]]; then
         _fuxx_hooked=1
-        builtin autoload -Uz add-zle-hook-widget
-        add-zle-hook-widget line-init _fuxx_line_init
+        # zsh 5.3 or later; without it, no line-init hook. +X loads it now, and fails if it
+        # can't be found, or if something loaded it already (then it is no autoload stub).
+        if builtin autoload -Uz +X add-zle-hook-widget 2>/dev/null ||
+            [[ ${functions[add-zle-hook-widget]-builtin autoload -X} != 'builtin autoload -X'* ]]
+        then
+            add-zle-hook-widget line-init _fuxx_line_init
+        fi
     fi
 }
 
@@ -83,13 +110,16 @@ _fuxx_p10k_marks() {
     (( ! $+_p9k__iterm_cmd )) || unset _p9k__iterm_cmd
 }
 
-# At every prompt, once it is up: put _fuxx_precmd last again (a theme's hook may have moved
-# itself after it), and if a hook that ran after it built PS1 again, mark it and redraw. No
-# emulate here: the prompt is drawn again with your options (prompt_subst and all).
+# At every prompt, once it is up: put _fuxx_done first again and _fuxx_precmd last (a theme's
+# hook may have moved itself before or after them), and if a hook that ran after it built PS1
+# again, mark it and redraw. No emulate here: the prompt is drawn again with your options
+# (prompt_subst and all).
 _fuxx_line_init() {
-    _fuxx_p10k_marks && return 0
-    [[ ${precmd_functions[-1]} == _fuxx_precmd ]] ||
-        precmd_functions=(${precmd_functions:#_fuxx_precmd} _fuxx_precmd)
+    if _fuxx_p10k_marks; then
+        _fuxx_order first
+        return 0
+    fi
+    _fuxx_order
     [[ ${options[promptpercent]} == on ]] || return 0
     local before=$PS1
     _fuxx_mark_prompt
@@ -97,5 +127,5 @@ _fuxx_line_init() {
 }
 
 'builtin' 'typeset' -ga precmd_functions preexec_functions
-precmd_functions+=(_fuxx_precmd)
+precmd_functions=(_fuxx_done $precmd_functions _fuxx_precmd)
 preexec_functions+=(_fuxx_preexec)

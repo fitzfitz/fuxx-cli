@@ -3481,13 +3481,15 @@ fn session_env(
     env
 }
 
-/// The installed zsh integration's folder while `command-blocks` is on; none otherwise (read
-/// when a terminal is spawned, so the setting applies to new terminals only).
+/// The installed zsh integration's folder while `command-blocks` is on and its scripts are
+/// still there (`shell_integration::usable`); none otherwise (read when a terminal is
+/// spawned, so the setting applies to new terminals only).
 fn zsh_integration(cx: &App) -> Option<&'static Path> {
     cx.global::<Appearance>()
         .command_blocks
         .then(crate::shell_integration::installed)
         .flatten()
+        .filter(|dir| crate::shell_integration::usable(dir))
 }
 
 /// An SSH session's base environment: the login shell's, once read (`ssh_program` reads it

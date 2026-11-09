@@ -183,6 +183,8 @@ struct Chip {
     rerun: Result<(), Refusal>,
     outcome: Option<(String, Rgb)>,
     cmd: Option<String>,
+    /// Whether the block has output (Copy output is disabled without).
+    has_output: bool,
     buttons: [&'static str; 3],
     left: Pixels,
     top: Pixels,
@@ -485,7 +487,7 @@ impl TerminalView {
     #[cfg(feature = "ui-shots")]
     pub fn chip_buttons_shot(&self) -> Option<ChipButtonsShot> {
         let chip = self.chip(&self.core.theme().ui())?;
-        let enabled = block_view::chip_enabled(chip.cmd.is_some(), chip.rerun);
+        let enabled = block_view::chip_enabled(chip.cmd.is_some(), chip.has_output, chip.rerun);
         Some((self.chip_button_bounds.get(), enabled, chip.rerun))
     }
 
@@ -598,6 +600,7 @@ impl TerminalView {
             outcome: block_view::chip_outcome(block.outcome)
                 .map(|o| (o, block_view::outcome_ink(block.outcome, ui))),
             cmd: block.cmd.as_deref().map(block_view::chip_command),
+            has_output: block.output.is_some(),
             buttons: block_view::chip_buttons(f32::from(grid.size.width)),
             left: left - pane.left(),
             top: px(top) - pane.top(),
@@ -1304,7 +1307,8 @@ impl TerminalView {
 
     /// Copy block `id`'s output (`with_command`: `$ <command>`, a newline, then it) to the
     /// clipboard. The text is read off the UI thread (the Term lock held only for the read),
-    /// then written; nothing when the block is gone (or, with the command, has none).
+    /// then written; nothing when the block is gone (or, with the command, has none), or when
+    /// there is no text (no output): the clipboard keeps what it had.
     fn copy_block(&self, id: String, with_command: bool, cx: &mut Context<Self>) {
         let core = self.core.clone();
         let text = cx.background_spawn(async move {
@@ -1315,7 +1319,7 @@ impl TerminalView {
             }
         });
         cx.spawn(async move |_, cx| {
-            if let Some(text) = text.await {
+            if let Some(text) = block_view::clipboard_text(text.await) {
                 cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
             }
         })
@@ -1597,7 +1601,7 @@ fn chip_element(
     slots: ChipSlots,
     cx: &mut Context<TerminalView>,
 ) -> gpui::Div {
-    let has_cmd = chip.cmd.is_some();
+    let (has_cmd, has_output) = (chip.cmd.is_some(), chip.has_output);
     let bounds = slots.chip;
     let mut label = div()
         .flex()
@@ -1627,8 +1631,9 @@ fn chip_element(
     }
     let (id, rerun) = (chip.id, chip.rerun);
     let buttons = chip.buttons.into_iter().enumerate().map(|(i, name)| {
-        // Copy command needs a recorded command; Rerun every guard of `block_view::rerun`.
-        let enabled = block_view::chip_enabled(has_cmd, rerun)[i];
+        // Copy command needs a recorded command, Copy output some output; Rerun every guard
+        // of `block_view::rerun`.
+        let enabled = block_view::chip_enabled(has_cmd, has_output, rerun)[i];
         let button = div()
             .id(("chip-button", i))
             .flex()

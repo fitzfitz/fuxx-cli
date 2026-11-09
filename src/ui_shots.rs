@@ -15304,7 +15304,8 @@ fn command_blocks_jump_scene() {
 }
 
 /// `command-blocks-copy` (M11l Task 5), in both themes, the blocks text: with nothing picked
-/// ⇧⌘C copies the newest finished block's output (`false`: none, so empty); a click on
+/// ⇧⌘C copies the newest finished block's output (`false`: none, so the clipboard is left
+/// as it was); a click on
 /// `echo hi`'s bar picks it (no scroll) and ⇧⌘C copies `hi`; its chip's Copy command copies
 /// `echo hi` and Copy output `hi`; the palette's Copy Command and Output copies
 /// `$ echo hi\nhi`; a click on `sleep 9`'s bar picks it, still no scroll, and ⇧⌘C copies its
@@ -15326,11 +15327,11 @@ fn command_blocks_copy_scene() {
 
         set_clipboard(&mut rig, "before");
         press(&mut rig, "cmd-shift-c");
-        // (macOS reads an empty string back as no text.)
+        // Waits the full 3 s for a change that never comes: nothing is written.
         assert_eq!(
-            copied(&mut rig, "before").unwrap_or_default(),
-            "",
-            "{n}: false's (empty) output"
+            copied(&mut rig, "before").as_deref(),
+            Some("before"),
+            "{n}: false's output is empty: the clipboard keeps what it had"
         );
         assert_eq!(chosen(&rig), None, "{n}: ⇧⌘C picks nothing");
 
@@ -15498,9 +15499,9 @@ fn command_blocks_rerun_scene() {
 }
 
 /// The `command-blocks-rerun` checks on a second terminal: a `t=1` block (its command was too
-/// long to record) and a two-line command, at a live prompt whose shell asked for bracketed
-/// paste. The `t=1` block's chip has Copy command and Rerun disabled; pressing them keeps the
-/// chip open and sends and copies nothing. The two-line command's Rerun sends exactly
+/// long to record; no output either) and a two-line command, at a live prompt whose shell
+/// asked for bracketed paste. The `t=1` block's chip has all three buttons disabled; pressing
+/// them keeps the chip open and sends and copies nothing. The two-line command's Rerun sends exactly
 /// `ESC [200~echo a\necho b ESC [201~`: wrapped, with no `\r`.
 fn rerun_odd_blocks(theme: Theme, n: &str) {
     use crate::block_view::Refusal;
@@ -15533,14 +15534,14 @@ fn rerun_odd_blocks(theme: Theme, n: &str) {
     let take_sent = |rig: &mut CursorRig| rig.cx.update(|cx| view.update(cx, |v, _| v.take_sent()));
     let _ = take_sent(&mut rig);
 
-    // The t=1 block: Copy command and Rerun disabled.
+    // The t=1 block (no output either): every button disabled.
     point_at(&mut rig, point(px(g.bar_x), px(g.mid(0))));
     let _ = rig.frame();
     let (_, enabled, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
-    assert_eq!(enabled, [false, true, false], "{n}: t=1 block's buttons");
+    assert_eq!(enabled, [false, false, false], "{n}: t=1 block's buttons");
     assert_eq!(rerun, Err(Refusal::NoCommand), "{n}");
     set_clipboard(&mut rig, "before");
-    for i in [0, 2] {
+    for i in [0, 1, 2] {
         press_chip_button(&mut rig, i);
         std::thread::sleep(std::time::Duration::from_millis(50));
         let _ = rig.frame();
