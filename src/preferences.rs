@@ -118,6 +118,7 @@ fn window_height() -> f32 {
 const ANIMATIONS_NOTE: &str = "Also off when macOS Reduce motion is on.";
 const CHECK_UPDATES_NOTE: &str = "Asks GitHub once a day whether a newer fuxx is out.";
 const KEEP_NOTE: &str = "Takes effect the next time fuxx starts.";
+const COMMAND_BLOCKS_NOTE: &str = "Marks each command in zsh. New terminals only.";
 const CURSOR_NOTE: &str =
     "Programs that set their own cursor (vim, for example) still choose their shape.";
 /// A group's heading inside a section (Appearance's "Cursor"): one 16 px line.
@@ -178,7 +179,11 @@ impl Section {
                 Switch(OnOff::CursorColor),
                 CursorFun,
             ],
-            Section::Sessions => &[Restore, Switch(OnOff::KeepRunning)],
+            Section::Sessions => &[
+                Restore,
+                Switch(OnOff::KeepRunning),
+                Switch(OnOff::CommandBlocks),
+            ],
             Section::Browser => &[Switch(OnOff::AddressBar), Switch(OnOff::KeepData)],
         }
     }
@@ -255,6 +260,7 @@ impl Control {
             Control::Switch(OnOff::Animations) => "Animations",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
+            Control::Switch(OnOff::CommandBlocks) => "Command blocks",
             Control::Switch(OnOff::AddressBar) => "Show address bar",
             Control::Switch(OnOff::KeepData) => "Keep history and data",
             Control::Switch(OnOff::CursorGlide) => "Glide",
@@ -352,6 +358,8 @@ enum OnOff {
     Animations,
     CheckUpdates,
     KeepRunning,
+    /// `command-blocks`: new terminals' zsh gets fuxx's integration (M11l).
+    CommandBlocks,
     AddressBar,
     KeepData,
     CursorGlide,
@@ -367,6 +375,7 @@ impl OnOff {
             OnOff::Animations => "animations",
             OnOff::CheckUpdates => "check-updates",
             OnOff::KeepRunning => "persistent-sessions",
+            OnOff::CommandBlocks => "command-blocks",
             OnOff::AddressBar => "browser-address-bar",
             OnOff::KeepData => "browser-keep-data",
             OnOff::CursorGlide => "cursor-glide",
@@ -381,6 +390,7 @@ impl OnOff {
             OnOff::Animations => prefs::animations_values(on),
             OnOff::CheckUpdates => prefs::check_updates_values(on),
             OnOff::KeepRunning => prefs::persistence_values(on),
+            OnOff::CommandBlocks => prefs::command_blocks_values(on),
             OnOff::AddressBar => prefs::browser_address_bar_values(on),
             OnOff::KeepData => prefs::browser_keep_data_values(on),
             OnOff::CursorGlide => prefs::cursor_glide_values(on),
@@ -395,6 +405,7 @@ impl OnOff {
             OnOff::Animations => a.animations,
             OnOff::CheckUpdates => a.check_updates,
             OnOff::KeepRunning => a.persistent,
+            OnOff::CommandBlocks => a.command_blocks,
             OnOff::AddressBar => a.browser_address_bar,
             OnOff::KeepData => a.browser_keep_data,
             OnOff::CursorGlide => a.cursor_glide,
@@ -409,6 +420,7 @@ impl OnOff {
             OnOff::Animations => &[ANIMATIONS_NOTE],
             OnOff::CheckUpdates => &[CHECK_UPDATES_NOTE],
             OnOff::KeepRunning => &[KEEP_NOTE],
+            OnOff::CommandBlocks => &[COMMAND_BLOCKS_NOTE],
             OnOff::AddressBar => &[],
             OnOff::KeepData => &KEEP_DATA_NOTE,
             OnOff::CursorGlide | OnOff::CursorGlow | OnOff::CursorColor => &[],
@@ -515,6 +527,30 @@ pub(crate) fn preview_area() -> (f32, f32, f32, f32) {
 pub(crate) fn last_control_area() -> (f32, f32, f32, f32) {
     let x = SECTIONS_WIDTH + PAD + LABEL_WIDTH + LABEL_GAP;
     (x, window_height() - PAD - SWITCH, CONTROL_WIDTH, SWITCH)
+}
+
+/// Where Sessions' Command blocks row is drawn: its label, its switch and its note line, each
+/// as (x, y, width, height).
+#[cfg(feature = "ui-shots")]
+pub(crate) fn command_blocks_areas() -> [(f32, f32, f32, f32); 3] {
+    let controls = Section::Sessions.controls();
+    let row = Control::Switch(OnOff::CommandBlocks);
+    let index = controls
+        .iter()
+        .position(|&c| c == row)
+        .expect("Command blocks is in Sessions");
+    let y = PAD
+        + HEADER
+        + controls[..index]
+            .iter()
+            .map(|c| c.height() + FIELD_GAP)
+            .sum::<f32>();
+    let x = SECTIONS_WIDTH + PAD + LABEL_WIDTH + LABEL_GAP;
+    [
+        (SECTIONS_WIDTH + PAD, y, LABEL_WIDTH, SWITCH),
+        (x, y, CONTROL_WIDTH, SWITCH),
+        (x, y + SWITCH + NOTE - NOTE_LINE, NOTE_WIDTH, NOTE_LINE),
+    ]
 }
 
 /// Where the section list's row for `section` is drawn, as (x, y, width, height).
@@ -1573,11 +1609,11 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        assert_eq!(all.len(), 16);
+        assert_eq!(all.len(), 17);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 16, "names unique");
+        assert_eq!(names.len(), 17, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -1591,7 +1627,7 @@ mod tests {
         assert!(glow.keywords.contains(&"cursor-glow"));
         assert!(all.iter().all(|s| s.name != "Cursor"));
         assert_eq!(all[0].name, "Animations");
-        assert_eq!(all[15].name, "Keep history and data");
+        assert_eq!(all[16].name, "Keep history and data");
         for section in Section::ALL {
             for control in section.controls() {
                 if let Control::Switch(switch) = control {
@@ -1745,7 +1781,11 @@ mod tests {
         );
         assert_eq!(
             Section::Sessions.controls(),
-            [Restore, Switch(OnOff::KeepRunning)]
+            [
+                Restore,
+                Switch(OnOff::KeepRunning),
+                Switch(OnOff::CommandBlocks)
+            ]
         );
         assert_eq!(
             Section::Browser.controls(),
@@ -1765,6 +1805,7 @@ mod tests {
             Switch(OnOff::Animations),
             Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),
+            Switch(OnOff::CommandBlocks),
             Switch(OnOff::AddressBar),
             Switch(OnOff::KeepData),
             Switch(OnOff::CursorGlide),
@@ -1805,6 +1846,41 @@ mod tests {
         }
         assert_eq!(OnOff::Animations.note(), [ANIMATIONS_NOTE]);
         assert_eq!(OnOff::KeepRunning.note(), [KEEP_NOTE]);
+    }
+
+    #[test]
+    fn command_blocks_switch() {
+        // Preferences → Sessions, after Keep running (note 63 §6), word for word.
+        assert_eq!(
+            Section::Sessions.controls().last(),
+            Some(&Control::Switch(OnOff::CommandBlocks))
+        );
+        assert_eq!(OnOff::CommandBlocks.key(), "command-blocks");
+        assert_eq!(
+            Control::Switch(OnOff::CommandBlocks).label(),
+            "Command blocks"
+        );
+        assert_eq!(
+            OnOff::CommandBlocks.note(),
+            ["Marks each command in zsh. New terminals only."]
+        );
+        // On by default: only off is written.
+        assert!(OnOff::CommandBlocks.values(true).is_empty());
+        assert_eq!(OnOff::CommandBlocks.values(false), ["off"]);
+        let dir = std::env::temp_dir().join(format!("fuxx-blocks-values-{}", std::process::id()));
+        let path = dir.join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "theme = Nord\n").unwrap();
+        let read = || std::fs::read_to_string(&path).unwrap();
+        let set = |on: bool| {
+            let s = OnOff::CommandBlocks;
+            write_setting(&path, s.key(), &s.values(on)).unwrap()
+        };
+        set(false);
+        assert_eq!(read(), "theme = Nord\ncommand-blocks = off\n");
+        set(true);
+        assert_eq!(read(), "theme = Nord\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

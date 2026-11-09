@@ -825,6 +825,7 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         cursor_glow: true,
         cursor_follows_status: true,
         cursor_fun: Default::default(),
+        command_blocks: true,
     }
 }
 
@@ -12517,6 +12518,9 @@ fn preferences_scenes() {
                 assert_eq!(filled, 0, "{scene}: the {s:?} row is highlighted");
             }
         }
+        if section == Section::Sessions {
+            command_blocks_row(&shot, &theme, &scene, build);
+        }
         if section != Section::Appearance {
             println!("ui-shots: {}", path.display());
             continue;
@@ -12542,6 +12546,66 @@ fn preferences_scenes() {
         );
         println!("ui-shots: {}", path.display());
     }
+}
+
+/// Preferences → Sessions' Command blocks row (M11l) in `shot`: its label, its switch and its
+/// note line are drawn where the layout puts them. Then, in a second window over a temporary
+/// settings file, clicking its Off writes `command-blocks = off` (and nothing else).
+fn command_blocks_row(
+    shot: &Shot,
+    theme: &Theme,
+    scene: &str,
+    build: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+) {
+    use crate::preferences;
+
+    let dims = preferences::window_size();
+    let ui = theme.ui();
+    let inked = |(x, y, w, h): (f32, f32, f32, f32)| {
+        (0..h as usize).any(|dy| {
+            let along = count_along(shot, dims, ui.sidebar_background, y + dy as f32, x, x + w);
+            let scale = shot.width as f32 / f32::from(dims.width);
+            along < ((x + w) * scale) as usize - (x * scale) as usize
+        })
+    };
+    let [label, switch, note] = preferences::command_blocks_areas();
+    assert!(inked(label), "{scene}: no Command blocks label");
+    assert!(inked(switch), "{scene}: no Command blocks switch");
+    assert!(inked(note), "{scene}: no Command blocks note line");
+    // On is chosen (the default): its option is filled. Off starts just past that fill.
+    let (sx, sy, sw, sh) = switch;
+    let mid = sy + sh / 2.0;
+    let on_right = (0..(sw * 2.0) as usize)
+        .rev()
+        .map(|i| sx + i as f32 / 2.0)
+        .find(|&x| {
+            let p = pixel_at(shot, dims, x, mid);
+            p.iter()
+                .zip([ui.row_active.r, ui.row_active.g, ui.row_active.b])
+                .all(|(a, b)| a.abs_diff(b) <= 3)
+        })
+        .unwrap_or_else(|| panic!("{scene}: On isn't chosen"));
+    let dir = std::env::temp_dir().join(format!("fuxx-shots-blocks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let config = dir.join("config");
+    std::fs::write(&config, "theme = Nord\n").expect("write the settings");
+    let settings = config.clone();
+    let with_file = move |window: &mut Window, cx: &mut App| -> AnyView {
+        let view = build(window, cx);
+        cx.global_mut::<Appearance>().settings_path = Some(settings.clone());
+        view
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let off = point(px(on_right + 8.0), px(mid));
+        cx.simulate_click(window, off, gpui::Modifiers::none());
+    };
+    render_with(theme, dims, with_file, act);
+    let written = std::fs::read_to_string(&config).expect("read the settings");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        written, "theme = Nord\ncommand-blocks = off\n",
+        "{scene}: Off didn't write the setting"
+    );
 }
 
 /// The sidebar button in the top band, as small windows of the top left corner, in both themes:

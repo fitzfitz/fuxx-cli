@@ -142,6 +142,12 @@ pub fn cursor_glide_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
+/// `command-blocks` values to write: nothing when on (the default, so no line), `off`
+/// otherwise.
+pub fn command_blocks_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
 /// `cursor-glow` values to write: nothing when on (the default, so no line), `off` otherwise.
 pub fn cursor_glow_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }

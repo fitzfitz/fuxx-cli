@@ -55,6 +55,9 @@ pub struct Appearance {
     pub cursor_follows_status: bool,
     /// `cursor-fun = off|trail|sparks`: an optional effect on the cursor (default off).
     pub cursor_fun: CursorFun,
+    /// `command-blocks = on|off`: new terminals' zsh gets fuxx's integration, and the window
+    /// draws command blocks (default on, M11l).
+    pub command_blocks: bool,
 }
 
 impl Global for Appearance {}
@@ -262,6 +265,11 @@ fn cursor_style_from_entries(entries: &[Entry]) -> (CursorShapeSetting, Vec<Stri
     )
 }
 
+/// `command-blocks`, on by default (see `switch_from_entries`).
+fn command_blocks_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "command-blocks", true)
+}
+
 /// `cursor-glide`, on by default (see `switch_from_entries`).
 fn cursor_glide_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "cursor-glide", true)
@@ -370,6 +378,7 @@ pub fn load(cx: &App) -> Appearance {
     let (cursor_glow, cursor_glow_warnings) = cursor_glow_from_entries(&entries);
     let (cursor_follows_status, cursor_color_warnings) = cursor_color_from_entries(&entries);
     let (cursor_fun, cursor_fun_warnings) = cursor_fun_from_entries(&entries);
+    let (command_blocks, command_blocks_warnings) = command_blocks_from_entries(&entries);
     for warning in preset_warnings
         .iter()
         .chain(&restore_warnings)
@@ -384,6 +393,7 @@ pub fn load(cx: &App) -> Appearance {
         .chain(&cursor_glow_warnings)
         .chain(&cursor_color_warnings)
         .chain(&cursor_fun_warnings)
+        .chain(&command_blocks_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
     }
@@ -409,6 +419,7 @@ pub fn load(cx: &App) -> Appearance {
         cursor_glow,
         cursor_follows_status,
         cursor_fun,
+        command_blocks,
     }
 }
 
@@ -700,5 +711,21 @@ mod tests {
         );
         assert_eq!(CursorShapeSetting::default(), CursorShapeSetting::Bar);
         assert_eq!(CursorFun::default(), CursorFun::Off);
+    }
+
+    #[test]
+    fn command_blocks_setting() {
+        assert_eq!(command_blocks_from_entries(&[]), (true, vec![]));
+        assert_eq!(
+            command_blocks_from_entries(&[entry("command-blocks", "off")]),
+            (false, vec![])
+        );
+        assert_eq!(
+            command_blocks_from_entries(&[entry("command-blocks", "maybe")]),
+            (
+                true,
+                vec!["command-blocks \"maybe\": expected on or off".to_string()]
+            )
+        );
     }
 }
