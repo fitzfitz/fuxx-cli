@@ -118,7 +118,11 @@ src/
 ├── status_mark.rs        M11 · the drawn status marks (ring, arc, pulsing dot, check), pop curve, ticker rule
 ├── reduce_motion.rs      M11 · macOS "Reduce motion": read at start, refreshed by its change notification
 ├── sidebar.rs            M11 · the sidebar: row model, rows, headers, scroll, resize, footer, hint card, drag
-├── switcher.rs           M11 · the ⌘P session switcher; urgency order and ⇧⌘U's next-needing-you
+├── switcher.rs           M11 · workspace facts for the palette's Workspaces: urgency order, the row, ⇧⌘U's next-needing-you (M11j: the ⌘P panel itself is gone)
+├── palette.rs            M11j · the ⌘K command palette: the overlay, chips, list, picks (⌘P opens it on Workspaces)
+├── palette_items.rs      M11j · scopes, keys, Recent, every action and setting, `compose` into the list's lines (pure)
+├── palette_match.rs      M11j · the fuzzy matcher: word starts, runs, gaps, a file-name bonus (pure)
+├── palette_files.rs      M11j · the palette's files: git ls-files or a bounded walk, ranked off the UI thread
 ├── overlay_panel.rs      M11 · the shared panel and filter box (switcher, host picker, address box)
 ├── sidebar_toggle.rs     Follow-up · the sidebar button beside the window buttons: position rule, slide curve
 ├── tab_menu.rs           Follow-up · the right-click row menu: actions (close others / to the right), bulk-close text, overlay

@@ -14,13 +14,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (both release after M11l); next M11j. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11l); next M11k. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-09 — M11j command palette (⌘K) built, reviewed, merged and pushed
+- **Did:** Designed (note 61, every call AI's) and planned M11j, then built it task by task with a fresh builder and
+  reviewer each: an in-house fuzzy matcher; every action (a parity test against the real key bindings, menus and the
+  ⋯ menu), setting and workspace in one list; files from `git ls-files` or a bounded walk, ranked off the UI thread;
+  the palette view (⌘K on All, ⌘P on Workspaces, the old ⌘P panel gone, File menu "Command Palette…" and "Go to
+  Workspace…"); files and settings. Reviews caught and fixed: ⌘V not pasting, Enter opening an earlier query's
+  file, a stuck "Listing files…", a retry storm after a failed listing, and macOS privacy prompts from walking the
+  home folder. 1141 tests pass, clippy (both) adds no warnings, the full ui-shots set passes. What the build
+  settled: note 61's "M11j as built". Not released on its own (one release after M11l).
+- **Also:** a local benchmark (fuxx 0.4.1, fuxx master, Ghostty 1.4) and web research on Warp and cmux: fuxx is on
+  par with Ghostty on size and memory, about 35 ms slower to launch, about 2.7× slower on raw output, and uses about
+  6 % CPU at idle (the cursor's breathing glow redraws 20×/s; about 0.9 % with it off) against Ghostty's 0.2 %.
+- **Next:** M11k (first-run screen); your call on a performance follow-up for the idle CPU.
 
 ### 2026-11-09 — Names back to ╭∩╮ (your change to M11i)
 - **Did:** On your word ("I still want the ╭∩╮ to be my default terminal name. It's my signature." … "we go back as
