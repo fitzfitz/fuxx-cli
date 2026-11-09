@@ -77,7 +77,11 @@ pub fn cursor_color(status: Status, follows: bool, ui: &UiColors, theme: &Theme)
 
 /// How long the breath holds at full strength after the cursor changes.
 pub const HOLD: Duration = Duration::from_millis(600);
-const BREATH_PERIOD: f32 = 1.6;
+/// The breath's period in milliseconds (1.6 s); `PERIOD`, `BREATH_PERIOD` and `BREATH_REST_AT`
+/// all come from it.
+const PERIOD_MS: u64 = 1600;
+/// The breath's period in seconds, for the cosine (1600 / 1000, the same `f32` as `1.6`).
+const BREATH_PERIOD: f32 = PERIOD_MS as f32 / 1000.0;
 const BREATH_LOW: f32 = 0.35;
 
 /// The breathing opacity: 1.0 while the cursor changed less than 0.6 s ago, then a cosine
@@ -240,10 +244,10 @@ pub const BREATH_STEP: f32 = 0.064;
 pub const BREATH_MIN: Duration = Duration::from_millis(50);
 /// When the breath rests, on its own clock (after the hold): 188 breaths of 1.6 s, so at a
 /// peak. From then on the cursor stays at full strength and nothing redraws.
-pub const BREATH_REST_AT: Duration = Duration::from_millis(300_800);
+pub const BREATH_REST_AT: Duration = Duration::from_millis(PERIOD_MS * 188);
 
 /// The breath's period, for the schedule.
-const PERIOD: Duration = Duration::from_millis(1600);
+const PERIOD: Duration = Duration::from_millis(PERIOD_MS);
 /// A frame due less than this ahead counts as reached (a timer that fires a little early
 /// draws it, and the next wait aims at the frame after).
 const BREATH_SLACK: f64 = 0.001;
@@ -412,7 +416,7 @@ mod tests {
         assert!((breath_alpha(ms(600), ms(800)) - 0.35).abs() < 1e-5);
         assert!((breath_alpha(ms(700), ms(0)) - 1.0).abs() < 1e-5);
         assert!((breath_alpha(ms(700), ms(800)) - 0.35).abs() < 1e-5);
-        assert!((breath_alpha(ms(700), ms(1600)) - 1.0).abs() < 1e-5);
+        assert!((breath_alpha(ms(700), PERIOD) - 1.0).abs() < 1e-5);
         let a = breath_alpha(ms(700), ms(400));
         assert!(a > 0.35 && a < 1.0);
     }
@@ -420,7 +424,7 @@ mod tests {
     /// The schedule, drawn: from clock 0, stepping by `breath_wait`, the clock
     /// and alpha of every frame up to the end of the tenth breath.
     fn frames_over(breaths: u32) -> Vec<(Duration, f32)> {
-        let end = ms(1600) * breaths;
+        let end = PERIOD * breaths;
         let mut clock = Duration::ZERO;
         let mut frames = Vec::new();
         while clock <= end {
@@ -450,7 +454,7 @@ mod tests {
         // Breath i is (i·1.6 s, (i+1)·1.6 s], its peak frame included (shifted by 1 ms for
         // the nanosecond each wait is rounded up by).
         for i in 0..10u32 {
-            let (from, to) = (ms(1600) * i + ms(1), ms(1600) * (i + 1) + ms(1));
+            let (from, to) = (PERIOD * i + ms(1), PERIOD * (i + 1) + ms(1));
             let breath: Vec<f32> = frames
                 .iter()
                 .filter(|(c, _)| *c > from && *c <= to)
@@ -471,7 +475,7 @@ mod tests {
     #[test]
     fn the_rest_starts_at_a_peak_and_any_change_ends_it() {
         assert_eq!(
-            BREATH_REST_AT.as_nanos() % ms(1600).as_nanos(),
+            BREATH_REST_AT.as_nanos() % PERIOD.as_nanos(),
             0,
             "a whole number of breaths"
         );
@@ -479,10 +483,10 @@ mod tests {
         assert!(!breath_rests(BREATH_REST_AT - ms(1)));
         assert!(breath_rests(BREATH_REST_AT));
         // At rest the cursor is full, where the breath would be at its trough.
-        let trough = BREATH_REST_AT + ms(800);
+        let trough = BREATH_REST_AT + PERIOD / 2;
         assert_eq!(breath_alpha(trough + HOLD, trough), 1.0);
         // The schedule's frame that starts the rest is the peak, on the dot.
-        let mut clock = BREATH_REST_AT - ms(1600);
+        let mut clock = BREATH_REST_AT - PERIOD;
         while !breath_rests(clock) {
             clock += breath_wait(clock);
         }
