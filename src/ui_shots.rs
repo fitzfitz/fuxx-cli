@@ -10759,8 +10759,8 @@ fn outer_edges(b: gpui::Bounds<Pixels>) -> (f32, f32, f32, f32) {
 /// button then says `Start codex`); the card is 520 pt wide and centred below the top band;
 /// it drew `Welcome to fuxx`, `~`, `Not found on your PATH` once, `⌃⌘1`, the three shortcuts'
 /// keys and `Start claude`; the chosen row is filled `row_active` and the Start button
-/// `accent`; the scrim darkens the window left of the card but not the top band (each against
-/// the same window with no card). With no presets, it says so and Plain terminal is chosen.
+/// `accent`; the scrim darkens the window left of the card and the top band too, down to its
+/// foot (each against the same window with no card). With no presets, it says so and Plain terminal is chosen.
 fn welcome_scene() {
     use crate::agent_detect::Found;
     use crate::welcome_items::{Origin, Row};
@@ -10886,23 +10886,26 @@ fn welcome_scene() {
             sum(scrim) + 6 <= sum(plain),
             "{n}: the scrim darkens ({scrim:?} vs {plain:?})"
         );
+        // The top band is dimmed as much (painted only: its clicks still land, `welcome-keys`),
+        // so no seam runs along its foot.
         for x in [100.0, 480.0, 900.0] {
             let (with, without) = (
                 pixel_at(&shot, dims, x, band / 2.0),
                 pixel_at(&bare, dims, x, band / 2.0),
             );
             assert!(
-                gap(
-                    with,
-                    alacritty_terminal::vte::ansi::Rgb {
-                        r: without[0],
-                        g: without[1],
-                        b: without[2],
-                    }
-                ) <= 2,
-                "{n}: the top band at {x} is untouched ({with:?} vs {without:?})"
+                sum(with) + 6 <= sum(without),
+                "{n}: the top band at {x} is dimmed ({with:?} vs {without:?})"
             );
         }
+        let (above, below) = (
+            pixel_at(&shot, dims, 480.0, band - 1.0),
+            pixel_at(&bare, dims, 480.0, band - 1.0),
+        );
+        assert!(
+            sum(above) + 6 <= sum(below),
+            "{n}: dimmed down to the band's foot ({above:?} vs {below:?})"
+        );
 
         // No presets: the note, and the plain terminal chosen.
         let slot: Slot = Rc::new(RefCell::new(None));

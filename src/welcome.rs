@@ -45,7 +45,7 @@ const CARD_WIDTH: f32 = 520.0;
 const CARD_PADDING: f32 = 20.0;
 /// How far the card keeps from the window's sides and bottom (and, centred, the top band).
 const EDGE: f32 = 16.0;
-/// The scrim: the theme's `shadow` at this alpha, below the top band.
+/// The scrim: the theme's `shadow` at this alpha, over the whole window (the top band too).
 const SCRIM_ALPHA: f32 = 0.35;
 /// The title's size and line.
 const TITLE_SIZE: f32 = 18.0;
@@ -921,26 +921,37 @@ impl Workspace {
             .is_some_and(|(ws, _)| self.model.tabs_of(ws).len() == 1)
     }
 
-    /// The scrim under the card: the window below the top band (which stays live: the window
-    /// drags by it and the traffic lights work), darkened, taking every click (one skips). The
-    /// card is centred in it both ways, `EDGE` from the sides and the bottom at least: the two
-    /// spacers share the room above and below it equally, the lower never less than `EDGE`.
+    /// The scrim under the card: the window below the top band darkened, taking every click
+    /// (one skips). The top band is darkened the same by a strip that is painted only (no
+    /// listeners, no `occlude`: no hitbox), so it stays live: the window drags by it, the
+    /// traffic lights work and its buttons answer (what they open shows behind the card, which
+    /// keeps the keyboard: `focus_active`). The card is centred in the scrim both ways, `EDGE`
+    /// from the sides and the bottom at least: the two spacers share the room above and below
+    /// it equally, the lower never less than `EDGE`.
     pub(crate) fn welcome_layer(
         &self,
         card: Entity<Welcome>,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
+        let dim = Hsla {
+            a: SCRIM_ALPHA,
+            ..hsla(ui.shadow)
+        };
+        let band = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(TOP_BAND))
+            .bg(dim);
+        let scrim = div()
             .absolute()
             .top(px(TOP_BAND))
             .left_0()
             .right_0()
             .bottom_0()
-            .bg(Hsla {
-                a: SCRIM_ALPHA,
-                ..hsla(ui.shadow)
-            })
+            .bg(dim)
             .occlude()
             .on_mouse_down(
                 MouseButton::Left,
@@ -952,7 +963,14 @@ impl Workspace {
             .px(px(EDGE))
             .child(div().flex_grow(1.0).flex_basis(px(0.0)).min_h(px(0.0)))
             .child(card)
-            .child(div().flex_grow(1.0).flex_basis(px(0.0)).min_h(px(EDGE)))
+            .child(div().flex_grow(1.0).flex_basis(px(0.0)).min_h(px(EDGE)));
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(band)
+            .child(scrim)
     }
 }
 
