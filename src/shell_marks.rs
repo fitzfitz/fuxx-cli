@@ -306,14 +306,39 @@ mod equivalence {
 
     #[test]
     fn fast_scanners_match_bytewise_split_at_every_offset() {
-        let stream = every_sequence();
-        let ones: Vec<&[u8]> = stream.chunks(1).collect();
-        let want = run(&ones, false);
-        assert!(want.len() >= 6, "the stream holds several marks");
-        for cut in 0..=stream.len() {
-            let (a, b) = stream.split_at(cut);
-            assert_eq!(run(&[a, b], true), want, "cut {cut}");
+        for (k, stream) in exhaustive_streams().iter().enumerate() {
+            let ones: Vec<&[u8]> = stream.chunks(1).collect();
+            let want = run(&ones, false);
+            if k == 0 {
+                assert!(want.len() >= 6, "the stream holds several marks");
+            }
+            for cut in 0..=stream.len() {
+                let (a, b) = stream.split_at(cut);
+                assert_eq!(run(&[a, b], true), want, "stream {k}, cut {cut}");
+            }
         }
+    }
+
+    /// The limit fixtures sit where they claim (as the oracle has it): a `D` body of
+    /// `MARK_CAP` bytes is read, one byte more is dropped whole (a long `D` too), and an
+    /// overlong `C` still reads as output starting, without its command.
+    #[test]
+    fn the_mark_cap_fixtures_straddle_the_cap() {
+        let marks = |s: &[u8]| -> Vec<Mark> {
+            let ones: Vec<&[u8]> = s.chunks(1).collect();
+            run(&ones, false).into_iter().map(|(_, m)| m).collect()
+        };
+        let done = vec![Mark::Done { exit: Some(0) }];
+        let overlong_c = vec![Mark::OutputStart {
+            cmd: None,
+            truncated: true,
+        }];
+        let l = limits();
+        let got: Vec<Vec<Mark>> = l[5..].iter().map(|s| marks(s)).collect();
+        assert_eq!(got[..4], [done.clone(), done.clone(), done, Vec::new()]);
+        assert_eq!(got[4].len(), 1, "a `C` at the cap is read: {:?}", got[4]);
+        assert_eq!(got[5], overlong_c);
+        assert_eq!(got[6], Vec::new(), "a long `D` is dropped, not read cut");
     }
 }
 

@@ -325,11 +325,47 @@ pub(crate) mod fixtures {
         z ^ (z >> 31)
     }
 
-    /// Every sequence the scanners read, and near misses.
+    /// `intro`, then a body of exactly `len` bytes (`start`, then `fill`), then `end`.
+    fn sized(intro: &[u8], start: &[u8], fill: u8, len: usize, end: &[u8]) -> Vec<u8> {
+        let mut out = intro.to_vec();
+        out.extend_from_slice(start);
+        out.extend(std::iter::repeat_n(fill, len - start.len()));
+        out.extend_from_slice(end);
+        out
+    }
+
+    /// Bodies at each length limit (`CWD_LIMIT`, `MARK_CAP`) and one byte either side.
+    pub fn limits() -> Vec<Vec<u8>> {
+        use super::CWD_LIMIT;
+        use crate::shell_marks::MARK_CAP;
+        let cwd = |len, end: &[u8]| sized(b"\x1b]7;", b"file://h/", b'a', len, end);
+        let mark = |start: &[u8], len, end: &[u8]| sized(b"\x1b]133;", start, b'k', len, end);
+        vec![
+            cwd(CWD_LIMIT - 1, b"\x07"),
+            cwd(CWD_LIMIT, b"\x07"),
+            cwd(CWD_LIMIT, b"\x1b\\"),
+            cwd(CWD_LIMIT + 1, b"\x07"),
+            cwd(CWD_LIMIT + 1, b"\x1b\\"),
+            mark(b"D;0;", MARK_CAP - 1, b"\x07"),
+            mark(b"D;0;", MARK_CAP, b"\x07"),
+            mark(b"D;0;", MARK_CAP, b"\x1b\\"),
+            mark(b"D;0;", MARK_CAP + 1, b"\x07"),
+            mark(b"C;cmdline_url=", MARK_CAP, b"\x07"),
+            mark(b"C;cmdline_url=", MARK_CAP + 1, b"\x1b\\"),
+            // An overlong mark that isn't `C` is dropped whole, not read from a cut body.
+            mark(b"D;0;", 9000, b"\x07"),
+        ]
+    }
+
+    /// Every sequence the scanners read, and near misses (`limits` included).
     pub fn sequences() -> Vec<Vec<u8>> {
-        let mut long_cwd = b"\x1b]7;file://h/".to_vec();
-        long_cwd.extend(std::iter::repeat_n(b'a', 4097 - 9));
-        long_cwd.push(0x07);
+        let mut all = base_sequences();
+        all.extend(limits());
+        all
+    }
+
+    /// `sequences` without `limits`.
+    fn base_sequences() -> Vec<Vec<u8>> {
         let mut long_mark = b"\x1b]133;C;cmdline_url=".to_vec();
         long_mark.extend(std::iter::repeat_n(b'a', 9000));
         long_mark.push(0x07);
@@ -364,7 +400,6 @@ pub(crate) mod fixtures {
             b"\x1b[".to_vec(),
             b"\x1b[2".to_vec(),
             b"\x1b]9".to_vec(),
-            long_cwd,
             long_mark,
             huge_cwd_st,
         ]
@@ -391,10 +426,23 @@ pub(crate) mod fixtures {
         out
     }
 
-    /// One stream holding every sequence, each between bits of text.
+    /// The streams to cut at every offset: `every_sequence`, then each of `limits` alone
+    /// between bits of text (one stream of them all would make that test quadratic in their
+    /// many kilobytes).
+    pub fn exhaustive_streams() -> Vec<Vec<u8>> {
+        let mut out = vec![every_sequence()];
+        out.extend(
+            limits()
+                .into_iter()
+                .map(|s| [&b"text "[..], &s, b" tail"].concat()),
+        );
+        out
+    }
+
+    /// One stream holding every sequence but `limits`, each between bits of text.
     pub fn every_sequence() -> Vec<u8> {
         let mut out = Vec::new();
-        for s in sequences() {
+        for s in base_sequences() {
             out.extend_from_slice(b"text ");
             out.extend(s);
         }
@@ -451,27 +499,42 @@ mod equivalence {
 
     #[test]
     fn fast_scanners_match_bytewise_split_at_every_offset() {
-        let stream = every_sequence();
-        let mut slow = OscDetector::new();
-        let want_n = slow.feed_bytewise(&stream);
-        let mut slow = CwdReports::new();
-        let want_c = stream
-            .chunks(1)
-            .fold(None, |last, c| slow.feed_bytewise(c).or(last));
-        assert!(want_n > 0 && want_c.is_some());
-        for cut in 0..=stream.len() {
-            let (a, b) = stream.split_at(cut);
-            let mut fast = OscDetector::new();
-            assert_eq!(
-                fast.feed(a) + fast.feed(b),
-                want_n,
-                "notifications, cut {cut}"
-            );
-            let mut fast = CwdReports::new();
-            let got = fast.feed(a);
-            let got = fast.feed(b).or(got);
-            assert_eq!(got, want_c, "cwd, cut {cut}");
+        for (k, stream) in exhaustive_streams().iter().enumerate() {
+            let mut slow = OscDetector::new();
+            let want_n = slow.feed_bytewise(stream);
+            let mut slow = CwdReports::new();
+            let want_c = stream
+                .chunks(1)
+                .fold(None, |last, c| slow.feed_bytewise(c).or(last));
+            if k == 0 {
+                assert!(want_n > 0 && want_c.is_some());
+            }
+            for cut in 0..=stream.len() {
+                let (a, b) = stream.split_at(cut);
+                let mut fast = OscDetector::new();
+                assert_eq!(
+                    fast.feed(a) + fast.feed(b),
+                    want_n,
+                    "notifications, stream {k}, cut {cut}"
+                );
+                let mut fast = CwdReports::new();
+                let got = fast.feed(a);
+                let got = fast.feed(b).or(got);
+                assert_eq!(got, want_c, "cwd, stream {k}, cut {cut}");
+            }
         }
+    }
+
+    /// The limit fixtures sit where they claim: a report of `CWD_LIMIT` bytes is read, one
+    /// byte more is dropped (as the oracle has it).
+    #[test]
+    fn the_cwd_limit_fixtures_straddle_the_limit() {
+        let read = |s: &[u8]| CwdReports::new().feed_bytewise(s).is_some();
+        let l = limits();
+        assert_eq!(
+            l[..5].iter().map(|s| read(s)).collect::<Vec<_>>(),
+            [true, true, true, false, false]
+        );
     }
 }
 
