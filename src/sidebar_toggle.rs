@@ -1,9 +1,9 @@
 //! The sidebar button (M11): a sidebar-outline icon in the top band that hides or shows the
 //! sidebar like ⌘\. With the sidebar shown it sits at the right edge of the sidebar's band, over
-//! the footer gear (M11m), and rides the sidebar when it slides; hidden, it sits just right of
-//! the window's traffic lights. With motion on, the sidebar slides in or out over 160 ms
-//! (`shown_fraction`); the pane column takes its final width at once, so the terminals re-fit
-//! one time and not on every frame of the slide.
+//! the footer gear (M11m), and rides the sidebar when it slides; hidden, it is the last of the
+//! collapsed band's buttons at the window's far right (`title_area::band_buttons`). With motion
+//! on, the sidebar slides in or out over 160 ms (`shown_fraction`); the pane column takes its
+//! final width at once, so the terminals re-fit one time and not on every frame of the slide.
 
 use std::time::{Duration, Instant};
 
@@ -145,7 +145,7 @@ fn icon(ui: UiColors) -> Div {
 
 impl Workspace {
     /// The sidebar button, absolutely placed at (`x`, `BUTTON_Y`) in its parent: the sidebar's
-    /// band (at `open_button_x`), or the window with the sidebar hidden.
+    /// band (at `open_button_x`), or the collapsed band's buttons (at `band_buttons(W)[2]`).
     pub(crate) fn render_sidebar_button(
         &self,
         ui: UiColors,

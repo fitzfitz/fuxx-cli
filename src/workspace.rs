@@ -61,7 +61,7 @@ use crate::right_sidebar::RightSidebarState;
 use crate::session_list::SessionList;
 use crate::settings;
 use crate::sidebar::{self, RowGrab, SidebarRow, SidebarState};
-use crate::sidebar_toggle::{self, Slide, lights_clear};
+use crate::sidebar_toggle::{self, Slide};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
@@ -2861,8 +2861,8 @@ impl Workspace {
     /// window, and a double-click does what the macOS setting "Double-click a window's title bar
     /// to" says. In full screen, which has no traffic lights, it is a strip that moves nothing.
     /// `label`, if any, is drawn in the band: the open sidebar's title and sidebar button
-    /// (`render_sidebar`, M11m), or the workspace's name over the content with the sidebar
-    /// hidden (`title_area`).
+    /// (`render_sidebar`, M11m). With the sidebar hidden the bands have none: the workspace's
+    /// name and the band's buttons are drawn at the window's root over them (`title_area`).
     pub(crate) fn render_top_band(
         &self,
         id: &'static str,
@@ -3064,12 +3064,16 @@ impl Render for Workspace {
         let (right_sidebar, sliding_right_sidebar) = self.right_sidebar_layout(ui, window, cx);
         let right_sliding_in = sliding_right_sidebar.is_some() && !self.right_sidebar.hidden;
         let right_width = self.right_sidebar_drawn_width(window);
-        // With the sidebar shown its button is in its band (`render_sidebar`); hidden, it is at
-        // the window's root just right of the traffic lights (M11m Task 2 moves it).
-        let button = self
-            .sidebar
-            .hidden
-            .then(|| self.render_sidebar_button(ui, lights_clear(window.is_fullscreen()), cx));
+        // With the sidebar shown its button is in its band (`render_sidebar`); hidden, the
+        // window's band is the title bar (M11m): the workspace's name centred on the window and
+        // [🔔] [⚙] [sidebar] at its far right, at the root so they sit over the panes' band and
+        // the right sidebar's alike (and over a sidebar sliding out).
+        let name = if self.sidebar.hidden {
+            self.render_workspace_name(ui, window)
+        } else {
+            None
+        };
+        let band_buttons = self.render_band_buttons(ui, window, cx);
         let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
         let welcome = self
@@ -3082,11 +3086,10 @@ impl Render for Workspace {
         self.refresh_palette(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
-        // Above the cards: with the sidebar hidden, the window's top band (the workspace's name
-        // in it); else the 6 pt canvas strip, which drags the window too (M11i).
+        // Above the cards: with the sidebar hidden, the window's top band (the name over it is
+        // drawn at the root); else the 6 pt canvas strip, which drags the window too (M11i).
         let pane_band = if self.sidebar.hidden {
-            let name = self.render_workspace_name(ui, window);
-            self.render_top_band("pane-band", name, window, cx)
+            self.render_top_band("pane-band", None, window, cx)
         } else {
             Some(self.render_drag_strip("pane-strip", window, cx))
         };
@@ -3270,7 +3273,10 @@ impl Render for Workspace {
                     .children(sliding_right_sidebar),
             )
             .child(status_bar)
-            .children(button)
+            // The collapsed title bar's name and buttons, over the bands (below the overlays, so
+            // the Welcome scrim and the popovers stay above them).
+            .children(name)
+            .children(band_buttons)
             // The host picker, the palette, the Help panel and the address box: over
             // everything, centred near the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {
