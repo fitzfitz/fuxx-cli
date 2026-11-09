@@ -8,7 +8,9 @@
 
 use crate::settings::{Entry, parse};
 use crate::tab_color::TabColor;
-use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, contrast, ensure_contrast};
+use crate::ui_tokens::{
+    MARK_MIN, QUIET_LINE_MIN, TAB_BAR_MIN, TEXT_MIN, contrast, ensure_contrast,
+};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::path::{Path, PathBuf};
 
@@ -232,7 +234,25 @@ impl Theme {
         // it and the canvas (the sidebar colour) so it reads as the card's top.
         let card = bg;
         let card_hover = mix(card, fg, 0.06);
-        let tab_bar = mix(bg, sidebar, 0.5);
+        // The bar's empty strip starts at the canvas colour and steps away from the card (dark
+        // themes toward black, light ones toward the foreground) until it stands apart from the
+        // active tab (`TAB_BAR_MIN`), stopping short of reading as a separate band (< 1.6:1
+        // against the canvas).
+        let tab_bar = {
+            let toward = if dark { Rgb { r: 0, g: 0, b: 0 } } else { fg };
+            let mut bar = sidebar;
+            for n in 0..=50 {
+                if contrast(bar, card) >= TAB_BAR_MIN {
+                    break;
+                }
+                let next = mix(sidebar, toward, 0.01 * (n + 1) as f32);
+                if contrast(next, sidebar) >= 1.6 {
+                    break;
+                }
+                bar = next;
+            }
+            bar
+        };
         let tab_hover = mix(tab_bar, fg, 0.06);
         // A selection is a soft wash of the accent over its surface, lowered in 2 % steps while
         // the text (as it reads on the other surfaces) would fall below 4.5:1 on it. At 0 it is
@@ -642,6 +662,25 @@ mod tests {
     }
     fn read(name: &str) -> Option<String> {
         (name == "Catppuccin Mocha").then(|| MOCHA.to_string())
+    }
+
+    #[test]
+    fn the_tab_bar_stands_apart_from_the_card() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let c = contrast(ui.tab_bar, ui.card);
+            assert!(c >= TAB_BAR_MIN, "{name}: tab bar vs card {c:.3}");
+            assert!(
+                contrast(ui.tab_bar, ui.sidebar_background) < 1.6,
+                "{name}: still part of the card's top"
+            );
+            if luminance(theme.background) < 0.5 {
+                assert!(
+                    luminance(ui.tab_bar) < luminance(ui.card),
+                    "{name}: dark theme's bar is darker than the card"
+                );
+            }
+        }
     }
 
     #[test]

@@ -3039,6 +3039,17 @@ fn tab_bar_scenes() {
                     // Above the tabs, the bar.
                     let above = px_at(x, bar_top + 2.0);
                     assert!(is(above, ui.tab_bar), "{n}: the bar above api: {above:?}");
+                    // The empty strip stands apart from the active tab's card colour.
+                    let rgb = |p: [u8; 3]| alacritty_terminal::vte::ansi::Rgb {
+                        r: p[0],
+                        g: p[1],
+                        b: p[2],
+                    };
+                    let apart = contrast(rgb(above), rgb(px_at(x, y)));
+                    assert!(
+                        apart >= ui_tokens::TAB_BAR_MIN - 0.01,
+                        "{n}: strip vs api tab {apart:.3}"
+                    );
                     let (x, y) = fill_at(claude);
                     assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
                     // codex: no fill, no ×.
