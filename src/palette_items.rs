@@ -1953,6 +1953,18 @@ mod tests {
         // fuzzy-match "cmd d", fill the section first: Split Right is under its "… more".)
         let cmd = f.compose(Scope::Actions, "cmd d");
         assert!(cmd.contains(&item(Key::Action("Split Right"))));
+        // On All it is still found, under the actions' "… more" (which opens that list).
+        let all = f.compose(Scope::All, "cmd d");
+        let shown = keys(&all);
+        assert!(!shown.contains(&Key::Action("Split Right")), "{shown:?}");
+        let matched = keys(&cmd).len();
+        assert!(
+            all.contains(&Line::More {
+                kind: Kind::Action,
+                count: matched - SECTION_CAP
+            }),
+            "{all:?}"
+        );
         let four = f.compose(Scope::All, "#4");
         assert_eq!(keys(&four)[0], Key::Workspace(13));
         // A group finds its workspaces, most urgent first.

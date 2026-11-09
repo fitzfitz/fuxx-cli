@@ -14,7 +14,9 @@
 //! applied. Nothing is written on the alternate screen or while a synchronized update is
 //! being buffered.
 
+use std::collections::hash_map::RandomState;
 use std::fmt::Write as _;
+use std::hash::{BuildHasher, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alacritty_terminal::event::EventListener;
@@ -175,8 +177,9 @@ enum ShellState {
 /// Writes the tags for one terminal; lives next to its `Term`.
 pub struct Tagger {
     state: ShellState,
-    /// The next id's number, seeded from the clock so two taggers' ids don't collide in
-    /// practice (a window's replica and the background service's session).
+    /// The next id's number. The first is random (see `Tagger::new`), so two taggers' ids
+    /// don't collide in practice (a window's replica and the background service's session)
+    /// and a program can't guess them.
     next_id: u64,
     /// The first id's number: this tagger issued `first_id..next_id` (see `issued`).
     first_id: u64,
@@ -187,11 +190,18 @@ pub struct Tagger {
 }
 
 impl Tagger {
+    /// A tagger knowing nothing yet. Its ids start at a random number: the clock's
+    /// nanoseconds hashed with a std `RandomState` (keyed from the OS's randomness, no crate),
+    /// never the clock itself, which a local program can learn (the shell's start time) and
+    /// macOS keeps to the microsecond.
     pub fn new() -> Self {
-        let seed = SystemTime::now()
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
+            .map(|d| d.as_nanos())
             .unwrap_or(0);
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u128(nanos);
+        let seed = hasher.finish();
         Tagger {
             state: ShellState::Unknown,
             next_id: seed,
@@ -215,7 +225,7 @@ impl Tagger {
 
     /// Whether this tagger wrote id `id` (a block of this run, not a forged or restored tag).
     /// Its ids are `first_id..next_id`, so that range is the set of ids it issued. A forged
-    /// tag would have to guess a number seeded from the clock's nanoseconds; a reattach or a
+    /// tag would have to guess a random 64-bit start (see `new`); a reattach or a
     /// snapshot starts a fresh tagger, so the blocks it brings are not this run's.
     pub fn issued(&self, id: &str) -> bool {
         let Some(n) = id
@@ -1684,5 +1694,24 @@ mod tests {
         let newest = sh.blocks().last().unwrap().clone();
         assert_eq!(newest.cmd.as_deref(), Some("date"));
         assert!(sh.tagger.issued(&newest.id), "{newest:?}");
+    }
+
+    #[test]
+    fn two_taggers_get_unrelated_ranges() {
+        // Each tagger's ids start at a random number (a std `RandomState` hash of the clock),
+        // not at the clock itself, which a local process can learn (the shell's start time)
+        // and macOS keeps to the microsecond. Two made back to back (well inside one
+        // microsecond) are as far apart as random numbers: more than 2^32 either way, which
+        // two clock seeds never are (they differ by the time between them, here under 1 ms).
+        let (a, b) = (Tagger::new(), Tagger::new());
+        let apart = a
+            .first_id
+            .wrapping_sub(b.first_id)
+            .min(b.first_id.wrapping_sub(a.first_id));
+        assert!(apart > 1 << 32, "{:#x} and {:#x}", a.first_id, b.first_id);
+        // Each still issues its own range: its first id is its, not the other's.
+        let (mut a, b) = (a, b);
+        let id = a.fresh_id();
+        assert!(a.issued(&id) && !b.issued(&id), "{id}");
     }
 }
