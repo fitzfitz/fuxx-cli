@@ -1,6 +1,6 @@
 //! The look shared by the panels that open at the top of the window (the command palette, the
-//! host picker, the address box and the Help panel): one surface, edge, shadow and radius, and one filter box
-//! with its placeholder. The box's own focus edge is the `NameInput`'s.
+//! host picker, the address box and the Help panel): one surface, edge, shadow and radius, and
+//! one filter box with its placeholder. The box's own focus edge is the `NameInput`'s.
 
 use gpui::{
     AnyElement, BoxShadow, Div, Entity, Hsla, IntoElement, ParentElement, Styled, div, point,
