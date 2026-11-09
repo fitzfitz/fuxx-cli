@@ -71,11 +71,6 @@ pub struct GridSnapshot {
     /// The command blocks shown (M11l), oldest first; `TerminalCore::snapshot_with_blocks`
     /// fills them in (empty here, and on the alternate screen).
     pub blocks: Vec<BlockView>,
-    /// The viewport row of the top of the prompt shown now, if it is tagged (`None` here).
-    pub live_prompt: Option<i32>,
-    /// Lines of scrollback above the screen: the first of them is viewport row
-    /// `display_offset - history_size`.
-    pub history_size: usize,
 }
 
 /// One command block as the view draws it. Rows are viewport rows (row 0 = top of the visible
@@ -274,8 +269,6 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
         display_offset: content.display_offset,
         clears: 0,
         blocks: Vec::new(),
-        live_prompt: None,
-        history_size: term.grid().history_size(),
     }
 }
 

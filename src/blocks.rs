@@ -563,7 +563,8 @@ pub fn block_cmd<L>(term: &Term<L>, id: &str) -> Option<String> {
 
 /// The top row of the prompt shown now: the newest tag's, if it is a prompt's. Looks from the
 /// bottom of the screen to `C_SCAN_ROWS` above the cursor (as far as a `C` looks for its
-/// prompt), so it is cheap enough for every frame.
+/// prompt). Tests only, since the hairline above it went (2026-11-10).
+#[cfg(test)]
 pub fn live_prompt<L>(term: &Term<L>) -> Option<Line> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return None;
@@ -598,17 +599,16 @@ pub fn output_text<L>(term: &Term<L>, id: &str) -> Option<String> {
 /// while its tag (on the command row) is still just under the view.
 const BELOW_VIEW: i32 = 8;
 
-/// The blocks to draw, oldest first, and the live prompt's top, in viewport rows (see
-/// `BlockView`). Reads column 0 of the viewport and `BELOW_VIEW` rows under it, plus, for the
+/// The blocks to draw, oldest first, in viewport rows (see `BlockView`). Reads column 0 of the viewport and `BELOW_VIEW` rows under it, plus, for the
 /// `chosen` block only, the scrollback from it to the view. Nothing on the alternate screen.
 ///
 /// Every walk is bounded by the view: a block's rows stop at the next tag found (of any state)
 /// or one row past the view's bottom, which then means "continues below" (rows above the view
 /// likewise stop one row above its top). So a frame's work is the viewport's, whatever forged
 /// tags claim. A block whose command row is under the view shows no output rows.
-pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Option<i32>) {
+pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> Vec<BlockView> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
-        return (Vec::new(), None);
+        return Vec::new();
     }
     let grid = term.grid();
     let (top, bottom) = (grid.topmost_line(), grid.bottommost_line());
@@ -686,7 +686,7 @@ pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Opti
                 .map(|(first, last)| (first.0 + offset, last.0 + offset)),
         });
     }
-    (blocks, live_prompt(term).map(|line| line.0 + offset))
+    blocks
 }
 
 /// The rows a block's walks may cover: from `floor` down to `stop`, inclusive.
@@ -1551,31 +1551,29 @@ mod tests {
         };
         assert_eq!(
             visible(&sh.term, None),
-            (vec![two(0), three(0)], Some(5)),
+            vec![two(0), three(0)],
             "block 1 is above the view"
         );
+        assert_eq!(live_prompt(&sh.term), Some(Line(5)));
         assert_eq!(
             visible(&sh.term, Some(&ids[0])),
-            (vec![one(true), two(0), three(0)], Some(5)),
+            vec![one(true), two(0), three(0)],
             "the chosen block is found in scrollback"
         );
         // An unknown id changes nothing.
         assert_eq!(
-            visible(&sh.term, Some("fuxx-block-0")).0,
+            visible(&sh.term, Some("fuxx-block-0")),
             vec![two(0), three(0)]
         );
         // Scrolled back 4: rows move down 4; block 3's tag is under the view (rows 0..=5),
         // within 8 rows: its prompt is there, its output (under the view) is not.
         sh.term.scroll_display(Scroll::Delta(4));
         let no_output = |v: BlockView| BlockView { output: None, ..v };
-        assert_eq!(
-            visible(&sh.term, None),
-            (vec![two(4), no_output(three(4))], Some(9))
-        );
+        assert_eq!(visible(&sh.term, None), vec![two(4), no_output(three(4))]);
         // Scrolled back 10: block 1's tag is the top row and its output runs past the view's
         // bottom (row 6 = "continues below"); block 3's tag is 8 rows under the view.
         sh.term.scroll_display(Scroll::Delta(6));
-        let (blocks, _) = visible(&sh.term, None);
+        let blocks = visible(&sh.term, None);
         let one_here = BlockView {
             prompt: (0, 0),
             cmd_row: 0,
@@ -1589,8 +1587,8 @@ mod tests {
         // Nothing on the alternate screen.
         sh.term.scroll_display(Scroll::Bottom);
         sh.feed(b"\x1b[?1049h");
-        assert_eq!(visible(&sh.term, None), (vec![], None));
-        assert_eq!(visible(&sh.term, Some(&ids[0])), (vec![], None));
+        assert_eq!(visible(&sh.term, None), vec![]);
+        assert_eq!(visible(&sh.term, Some(&ids[0])), vec![]);
     }
 
     /// Each block's rows, top to bottom: no row belongs to two blocks.
@@ -1630,7 +1628,7 @@ mod tests {
             blocks[0].cmd_row + 1,
             "p=8 stops at the block above"
         );
-        let (views, _) = visible(&sh.term, None);
+        let views = visible(&sh.term, None);
         assert_eq!(views.len(), 2);
         assert_eq!(views[0].output, None, "{views:?}");
         assert!(views[0].prompt.1 < views[1].prompt.0, "{views:?}");
@@ -1665,7 +1663,7 @@ mod tests {
         // Scrolled to the top: the viewport and 8 rows under it, each block one row.
         term.scroll_display(Scroll::Top);
         let started = Instant::now();
-        let (views, _) = visible(&term, None);
+        let views = visible(&term, None);
         let took = started.elapsed();
         assert_eq!(views.len(), 18);
         for (i, v) in views.iter().enumerate() {
@@ -1706,7 +1704,7 @@ mod tests {
         assert_eq!(output_text(&sh.term, &stranded.id).as_deref(), Some("x"));
         assert_eq!(output_text(&sh.term, &next.id).as_deref(), Some("y"));
         // The view reads them alike.
-        let (views, _) = visible(&sh.term, None);
+        let views = visible(&sh.term, None);
         assert_eq!(views.len(), 2, "{views:?}");
         assert_eq!(views[1].prompt.0, next.prompt_top.0, "{views:?}");
         assert_eq!(
@@ -1717,7 +1715,7 @@ mod tests {
         assert_eq!(views[0].output.map(|o| o.1), Some(next.prompt_top.0 - 1));
         // Chosen while its command row is just above the view, it stops there too.
         sh.feed(b"\r\n");
-        let (views, _) = visible(&sh.term, Some(&stranded.id));
+        let views = visible(&sh.term, Some(&stranded.id));
         assert_eq!(views.len(), 2, "{views:?}");
         assert_eq!(views[0].prompt, (-1, -1), "{views:?}");
         assert_eq!(views[1].prompt.0, 1, "{views:?}");
