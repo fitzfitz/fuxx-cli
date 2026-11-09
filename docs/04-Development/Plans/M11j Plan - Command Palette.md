@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11j
-status: planned
+status: built
 updated: 2026-11-09
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-11-09
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[61 - Milestone 11j - Command Palette]] (incl. "Settled before planning") |
-| **Status** | ⬜ Planned 2026-11-09 |
-| **Tasks done** | 0 / 8 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1141 tests); release with M11l; on-screen check pending |
+| **Tasks done** | 7 / 8 (Task 7, the release, is folded into the one release after M11l) |
+| **▶ Pick up here** | Nothing to build. Your on-screen check in note 61 after the combined release |
 | **Decisions used** | Yours (2026-11-08): a ⌘K palette for actions, workspaces, files and settings that replaces ⌘P. Everything else: AI's calls in note 61 (you skipped the design questions). |
 | **Needs your eyes** | 👀 Task 7 (folded into the one release after M11l), then the 19-item on-screen check in note 61 |
 
@@ -179,7 +179,7 @@ palette_items;`).
   Key)` (More ignored; dedupe to front; cap), `pub fn iter(&self) -> impl Iterator<Item = &Key>` (newest first),
   `pub fn rank(&self, key: &Key) -> Option<usize>` (0 = newest).
 
-- [ ] **Step 1: failing tests** (`palette_match`):
+- [x] **Step 1: failing tests** (`palette_match`):
   - `fuzzy_finds_letters_in_order`: `fuzzy("sr", "Split Right")` positions `[0, 6]`; `fuzzy("SPLIT", "Split
     Right")` some; `fuzzy("zz", "Split Right")` None; `fuzzy("rs", "Split Right")` None (order matters).
   - `word_starts_and_runs_rank_higher`: ranking `["Toggle Right Sidebar", "Toggle Sidebar"]` by `fuzzy("tsb", _)`
@@ -202,11 +202,11 @@ palette_items;`).
     Rescope; `(Some(Files), All)` Rescope.
   - `recent_keeps_the_last_twenty_newest_first`: push 25 distinct keys → 20, newest first; pushing an old key moves
     it to the front; `More(_)` isn't kept; `rank` of the newest is `Some(0)`.
-- [ ] **Step 2: run** `cargo test palette_` → FAIL (undefined).
-- [ ] **Step 3: implement.** `fuzzy` per word is a DP over (query letter i, text char j) keeping the best score
+- [x] **Step 2: run** `cargo test palette_` → FAIL (undefined).
+- [x] **Step 3: implement.** `fuzzy` per word is a DP over (query letter i, text char j) keeping the best score
   ending with letter i at j (with and without a run), O(q·t); chars compared by `to_lowercase()` equality.
-- [ ] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
-- [ ] **Step 5: commit** `feat(m11j): palette matcher, scopes, keys and Recent`.
+- [x] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
+- [x] **Step 5: commit** `feat(m11j): palette matcher, scopes, keys and Recent`.
 
 ### Task 2: The sources and the list (pure)
 
@@ -244,7 +244,7 @@ binding_pairs, key_label}`.
   `pub fn selectable(lines: &[Line]) -> Vec<usize>`; `pub fn more_label(kind: Kind, n: usize) -> String`; the copy
   constants in Global Constraints (`NOTHING`, `LISTING`, `SSH_NOTE`, `NO_FOLDER`, `FAILED`, `CAPPED`, `HINT`).
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `every_bound_or_menu_action_is_in_the_palette_or_left_out`: for each `(action, _)` of `binding_pairs(key_bindings
     + new_bindings + persistent_bindings)` with `describe` `Listed`, and each name in `menu_action_names()`: it is
     `(c.run)()`'s `name()` for some `Action` command, or in `NOT_IN_PALETTE`; `COMMANDS` names unique.
@@ -277,10 +277,10 @@ binding_pairs, key_label}`.
     `selectable` skips headings and notes.
   - `loose_and_number_matches`: query `auth.rs` finds the waiting workspace by its question (no positions);
     `cmd d` finds `Split Right` by its keys; `#4` puts #4 first; `more_label(File, 1) == "… 1 more file"`.
-- [ ] **Step 2: run** `cargo test palette_items preferences help_shortcuts` → FAIL.
-- [ ] **Step 3: implement** as the signatures; `rest` = keywords + group label + keys; `valid` filters Recent only.
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt → green.
-- [ ] **Step 5: commit** `feat(m11j): palette sources — every action, setting and workspace, composed into a list`.
+- [x] **Step 2: run** `cargo test palette_items preferences help_shortcuts` → FAIL.
+- [x] **Step 3: implement** as the signatures; `rest` = keywords + group label + keys; `valid` filters Recent only.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt → green.
+- [x] **Step 5: commit** `feat(m11j): palette sources — every action, setting and workspace, composed into a list`.
 
 ### Task 3: Files — listing and ranking off the UI thread
 
@@ -314,7 +314,7 @@ binding_pairs, key_label}`.
   `started`, then `list_files` on the background executor, then `finished` and `cx.notify()`).
 - ui-shots only: `PaletteFiles::set_for_shots(&mut self, folder: PathBuf, root: PathBuf, paths: Vec<String>)`.
 
-- [ ] **Step 1: failing tests** (temp repos as `git_status`'s tests make them):
+- [x] **Step 1: failing tests** (temp repos as `git_status`'s tests make them):
   - `parse_z_splits_and_normalises`: `b"a.rs\0dir/b c.txt\0\0"` → `["a.rs", "dir/b c.txt"]`; an NFD `u\u{308}.txt`
     → `"ü.txt"`.
   - `list_repo_end_to_end`: commit `a.rs`, `src/b.rs`, `gone.rs`; delete `gone.rs`; add untracked `new dir/ü.txt`;
@@ -330,11 +330,11 @@ binding_pairs, key_label}`.
     `main`, limit 2 → `src/main.rs`, `docs/maintenance.md`, total 3.
   - `rank_files_stops_when_a_newer_query_starts`: 10,000 paths, `current` set to `generation + 1` before the call →
     `None`.
-- [ ] **Step 2: run** `cargo test palette_files` → FAIL.
-- [ ] **Step 3: implement** (`list_repo`: the two `ls-files` calls, set difference, NFC, dedupe, sort, cap;
+- [x] **Step 2: run** `cargo test palette_files` → FAIL.
+- [x] **Step 3: implement** (`list_repo`: the two `ls-files` calls, set difference, NFC, dedupe, sort, cap;
   `list_files`: `find_root`, then `list_repo` in a repo else `walk`).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt → green.
-- [ ] **Step 5: commit** `feat(m11j): palette files — git or a bounded walk, ranked off the UI thread`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt → green.
+- [x] **Step 5: commit** `feat(m11j): palette files — git or a bounded walk, ranked off the UI thread`.
 
 ### Task 4: The palette view — workspaces and actions, ⌘K, ⌘P
 
@@ -370,7 +370,7 @@ f32, ui: &UiColors) -> Div`), `src/workspace.rs` (`Overlay::Palette` in `overlay
   usize } }` (mapped to `palette_items::Files` for `compose`); in this task the Workspace always passes
   `FilesData::Note(NO_FOLDER)`, so the Files scope shows that note until Task 5.
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - `command_k_and_p_are_listed` (help_shortcuts): `shortcut_list(false)` has `("Command Palette…", "⌘K")` under
     Window & app and `("Go to Workspace…", "⌘P")` under Workspaces; `describe("palette::NextScope") == Unlisted`.
   - `palette_inks_meet_the_floors` (palette.rs): every built-in theme, the Global Constraints contrast list.
@@ -396,15 +396,15 @@ f32, ui: &UiColors) -> Div`), `src/workspace.rs` (`Overlay::Palette` in `overlay
       #2, reopen → Recent `[Workspace(#2), Action("Split Right")]`.
     - update `overlays` (opens `Overlay::Palette` via `open_palette(All)`), `tabs-switcher` (⌘P opens the palette),
       `help` (finds both new rows).
-- [ ] **Step 2: run** `cargo test` → FAIL; `__ui-shots palette` → FAIL.
-- [ ] **Step 3: implement:** the view rebuilds lines from `PaletteData` on each `refresh` and query change
+- [x] **Step 2: run** `cargo test` → FAIL; `__ui-shots palette` → FAIL.
+- [x] **Step 3: implement:** the view rebuilds lines from `PaletteData` on each `refresh` and query change
   (`parse_query` then `compose`), keeps `selected: usize` into `selectable(lines)` and a `selected_key`; renders box,
   chips, list (`max_h` per Global Constraints, `track_scroll`, `scroll_to_item` on moves), footer; `key_context(
   "Palette")`, `occlude`, `on_mouse_down_out` → Cancel; picks emit `Pick(key)`, More handled in the view. The
   Workspace ignores events from a palette that isn't `self.palette` (as the switcher did).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots palette`, `__ui-shots overlays`, `__ui-shots
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots palette`, `__ui-shots overlays`, `__ui-shots
   help`, the full `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11j): ⌘K command palette — actions and workspaces; ⌘P opens it on Workspaces`.
+- [x] **Step 5: commit** `feat(m11j): ⌘K command palette — actions and workspaces; ⌘P opens it on Workspaces`.
 
 ### Task 5: Files and settings in the palette
 
@@ -421,7 +421,7 @@ query or `paths` changed and the scope shows files; answers for an older generat
 `preferences::open_at` (sets `LastSection`; an open window switches to it and is activated; else
 `open_or_activate`).
 
-- [ ] **Step 1: failing tests:**
+- [x] **Step 1: failing tests:**
   - ui-shots (Mocha, Latte):
     - `palette-files`: `set_for_shots(folder, root "/w/fuxx-cli", ["src/main.rs", "src/view.rs", "docs/a.md", …])`,
       type `view` → `Header("Files in fuxx-cli")`, first item `File("/w/fuxx-cli/src/view.rs")`; the row has a
@@ -436,17 +436,17 @@ query or `paths` changed and the scope shows files; answers for an older generat
     - `palette-motion`: Reduce motion on, a Working workspace in the list → two frames 200 ms apart pixel-identical
       in the panel.
     - `palette-recent` extended: pick a file and a setting → Recent shows them first, newest first.
-- [ ] **Step 2: run** → FAIL.
-- [ ] **Step 3: implement** (`palette_data` maps `palette_folder` + `palette_files.get` to `FilesData`; SSH →
+- [x] **Step 2: run** → FAIL.
+- [x] **Step 3: implement** (`palette_data` maps `palette_folder` + `palette_files.get` to `FilesData`; SSH →
   `Note(SSH_NOTE)`, none → `Note(NO_FOLDER)`, failed → `Failed`, running with nothing cached → `Listing`;
   `Ready` with `more > 0` → `capped`).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots palette`, the full `__ui-shots`, and
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots palette`, the full `__ui-shots`, and
   `scripts/bundle-mac.sh --app-only` (a release build).
-- [ ] **Step 5: commit** `feat(m11j): files and settings in the palette`.
+- [x] **Step 5: commit** `feat(m11j): files and settings in the palette`.
 
 ### Task 6: Merge and push (pre-authorized, autonomous program)
 
-- [ ] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
+- [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
   full `__ui-shots` green; a whole-branch review; then merge `m11j-command-palette` into `master` and push.
 
 ### Task 7: Release — folded into the one release after M11l
@@ -457,8 +457,8 @@ query or `paths` changed and the scope shows files; answers for an older generat
 
 ### Task 8: Docs
 
-- [ ] Note 61: status, an "M11j as built" section (what the build settled or changed), the checklist's state. This
+- [x] Note 61: status, an "M11j as built" section (what the build settled or changed), the checklist's state. This
   plan (ticks, header). The roadmap (`40 - Roadmap.md`). The Plan Tracker. The Progress Log. `STRUCTURE.md`
   (`palette.rs`, `palette_items.rs`, `palette_match.rs`, `palette_files.rs`; `switcher.rs` now the workspace facts
   and ⇧⌘U). `README.md` (⌘K, ⌘P now the palette on Workspaces).
-- [ ] Commit `docs(m11j): …`.
+- [x] Commit `docs(m11j): …`.

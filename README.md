@@ -39,7 +39,7 @@ terminal or a web page. Built and reviewed, not yet tried on screen.
   **⌘D** / **⇧⌘D** split the focused pane right / down. **⌘W** closes the focused tab; closing a pane's last tab closes
   the pane, and a workspace's last pane closes the workspace (closing a workspace with two or more terminals asks first).
 - **Moving around:** **⌘1…⌘9** pick a workspace, **⇧⌘]** / **⇧⌘[** go to the next / previous one, **⌃Tab** / **⌃⇧Tab**
-  cycle the tabs of the focused pane, **⌘[** / **⌘]** and **⌥⌘ arrows** move between panes, **⌘P** switches workspaces
+  cycle the tabs of the focused pane, **⌘[** / **⌘]** and **⌥⌘ arrows** move between panes, **⌘K** opens the command palette (actions, workspaces, files, settings), **⌘P** opens it on workspaces
   (most urgent first), **⇧⌘U** jumps to the one that needs you, **⌘\** hides the sidebar.
 - **Rows:** a bold name, `branch • ~/folder` underneath (the branch only inside a git repo), and, when an agent waits, its
   question and a 🔔 **Needs input** badge. The selected row is filled with the accent colour. Right-click a row to
@@ -83,7 +83,7 @@ Built and reviewed, not yet tried on screen.
 The window is now the app: no grey titlebar, padding around the terminal, and colours that hold up in light
 themes too. Each session shows a shaped status mark: a hollow ring (idle), a spinning arc (working), a pulsing dot
 (waiting) and a dot with a check that pops once (done). A waiting session also shows the question it's asking under
-its name. New shortcuts: **⇧⌘U** jumps to the session that needs you, **⌘P** switches sessions (most urgent first),
+its name. New shortcuts: **⇧⌘U** jumps to the session that needs you, **⌘K** searches everything and **⌘P** switches workspaces (most urgent first),
 **⌘\** hides the sidebar, **⌘=** / **⌘−** / **⌘0** change the font size. Split panes each get a tab bar.
 Preferences (⌘,) has sections down the left (General, Appearance, Sessions, Browser) and remembers the last one; Appearance has theme swatches and a live preview, General has **Animations** On/Off (`animations = off` in the config; macOS
 "Reduce motion" is respected too) and "Show the tips card again". A sidebar button beside the window buttons hides and shows the sidebar (same as ⌘\). Rows in the sidebar behave like tabs: hover shows a × to close, middle-click closes, and right-click opens a menu (Close Workspace, Close Other Workspaces, Close Workspaces Below, Show All Workspaces, Rename Workspace…, Pin, Workspace Color); closing several at once always asks first. Rows show ⌘1…⌘9 on the right. Screenshots of every screen, in a dark and a light theme, come from

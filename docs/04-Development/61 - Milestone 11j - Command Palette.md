@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: planned
+status: built
 ---
 
 # 61 - Milestone 11j - Command Palette (design)
 
-**Status:: ⬜ Designed and planned 2026-11-09 (every detail AI's call; you skipped the design questions). Not built yet. Not released on its own: one release after M11l.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11j Plan - Command Palette]]
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1141 tests; every detail AI's call; you skipped the design questions). Not released on its own: one release after M11l. On-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11j Plan - Command Palette]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout, a command palette…"). Comes after
 M11i and M11h (both merged), before M11k.
 
@@ -283,6 +283,35 @@ with its own constants in `palette.rs` (`PANEL_WIDTH` 600, `CHIP` 22, `LIST_MAX`
 - Saving Recent across launches; a palette in Preferences or popped-out page windows.
 - Changing the first-run tips card (M11k's first-run screen teaches the shortcuts).
 - Scripting the palette.
+
+## M11j as built (2026-11-09)
+
+Where the build settled something the plan left open, or changed it (AI's rulings after each task's review and the
+final whole-branch review):
+
+- **⌘P lands on exactly the old list**: on the Workspaces scope with nothing typed there is no Recent section (this
+  note's §1 promise won over the Lists rule). Other scopes' empty lists show their heading even with no Recent, and
+  leave Recent items out of the list below them.
+- **Toggling:** ⌘K / ⌘P follow the chip you chose, so ⌘K with `>` typed on All closes. Choosing any scope while `>`
+  is typed on All drops the `>` from the box.
+- **⌘V pastes** in the box (a binding for `Palette > NameInput`, as the address bar has).
+- **Enter never acts on an old answer:** while the files for what you typed are still being ranked, or a first
+  listing is still running and you've typed something, Enter waits and then opens the best row of *that* query
+  (your ↑/↓ choice is kept if it is still listed). Typing again or changing scope cancels the waiting Enter.
+- **Files:** a folder inside a repo that is already listed reuses that listing (no new `git ls-files` on `cd`); a
+  failed listing waits 2 → 4 → … 30 s before trying again; a listing that was turned away (another running) or a
+  folder that moves while the palette is open is listed again. Outside a repo the walk skips, wherever it passes
+  through your home folder, `Library`, `Desktop`, `Documents`, `Downloads`, `Pictures`, `Movies` and `Music`
+  (so macOS doesn't ask for access out of the blue), and at `/` the system folders (`/Volumes`, `/System`, …).
+  A cut-short walk says **"Only part of this folder is searched."** (not "first 50,000"). The folder followed is
+  the terminal's own reported folder first. Recent files show while listed or open in a tab.
+- **Matching:** an exact match scores EXACT on top of PREFIX; a quick subsequence check skips paths that can't match.
+- **⌘W while the palette is open** closes the tab behind it and leaves the palette open.
+- Known and parked: key hints are the Help list's even where a focused browser page takes the same key (⌘R shows
+  on Rename Workspace and Reload Page); the list isn't virtualised (at most about 210 rows); a git submodule or a
+  link to a folder is listed as a file (picking it shows the "too large or binary" note); a nested repo shows the
+  outer repo's listing for up to 10 s; a click on a chip during an IME composition may leave the IME briefly out of
+  step.
 
 ## On-screen checklist (pending, after the combined release)
 

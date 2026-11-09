@@ -65,7 +65,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M11g | Right sidebar, Files, file tabs | [[M11g Plan - Right Sidebar and File Tabs]] (design: [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]) | 🟨 released v0.4.0, check pending | 8/9 | One right sidebar; Files with git markers; read-only file tabs with colours, line numbers, change bars. |
 | M11i | UI uplift 2 | [[M11i Plan - UI Uplift 2]] (design: [[60 - Milestone 11i - UI Uplift 2]]) | 🟨 built, merged, pushed 2026-11-08; release after M11l; on-screen check pending | 9/10 | Smart names, compact rows, subtle selection, Files icons, floating panels, padding, status bar, cleaner tab bar. |
 | M11h | Changes, diff view, Activity | [[M11h Plan - Changes, Diff View, Activity]] (design: [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]) | 🟨 built, merged, pushed 2026-11-09; release after M11l; on-screen check pending | 8/9 | Changes since HEAD with diffs; a per-terminal activity log. |
-| M11j | Command palette (⌘K) | — | ⬜ requested | 0 | Actions, workspaces, files, settings in one search. |
+| M11j | Command palette (⌘K) | [[M11j Plan - Command Palette]] (design: [[61 - Milestone 11j - Command Palette]]) | 🟨 built, merged, pushed 2026-11-09; release after M11l; on-screen check pending | 7/8 | Actions, workspaces, files, settings in one search. |
 | M11k | First-run screen | — | ⬜ requested | 0 | Folder, agent, three shortcuts. |
 | M11l | Command blocks | — | ⬜ requested | 0 | Warp-style blocks per command. |
 
