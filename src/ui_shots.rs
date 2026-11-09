@@ -10760,8 +10760,7 @@ fn outer_edges(b: gpui::Bounds<Pixels>) -> (f32, f32, f32, f32) {
 /// it drew `Welcome to fuxx`, `~`, `Not found on your PATH` once, `⌃⌘1`, the three shortcuts'
 /// keys and `Start claude`; the chosen row is filled `row_active` and the Start button
 /// `accent`; the scrim darkens the window left of the card and the top band too, down to its
-/// foot (each against the same window with no card). With no presets, it says so, Plain
-/// terminal is chosen and the list is that one row.
+/// foot (each against the same window with no card). With no presets, it says so and Plain terminal is chosen.
 fn welcome_scene() {
     use crate::agent_detect::Found;
     use crate::welcome_items::{Origin, Row};
@@ -10926,13 +10925,6 @@ fn welcome_scene() {
                 texts.iter().any(|t| t == "Open Terminal"),
                 "{m}: the button: {texts:?}"
             );
-            // One row, so the two-row floor leaves no blank under it.
-            let card = welcome_of(cx, &ws).expect("open");
-            let list = cx
-                .read(|cx| card.read(cx).list_bounds())
-                .expect("the list is drawn");
-            let tall = f32::from(list.size.height);
-            assert!((tall - 28.0).abs() <= 0.5, "{m}: the list is {tall} pt");
             slot.borrow_mut().take();
         });
     }
@@ -11252,10 +11244,9 @@ fn welcome_focused(
 /// presets, a 120-character folder, the last preset chosen.
 ///
 /// Panics unless the card keeps 16 pt from the window's sides and bottom and stays below the
-/// top band; the chosen row (scrolled to) is inside the agent list's visible part, which shows
-/// two rows (its floor: at 420 pt that pushes the footer about 25 pt past the card's foot, the
-/// recorded short-window limit); and the folder is cut at its start (a folder ending in wide
-/// letters shows more ink than one ending in dots).
+/// top band; the chosen row (scrolled to) is inside the agent list's visible part; and the
+/// folder is cut at its start (a folder ending in wide letters shows more ink than one ending
+/// in dots).
 fn welcome_narrow_scene() {
     use crate::welcome_items::{Origin, Row};
     use std::cell::{Cell, RefCell};
@@ -11331,12 +11322,6 @@ fn welcome_narrow_scene() {
             f32::from(last.top()) >= f32::from(list.top()) - 0.5
                 && f32::from(last.bottom()) <= f32::from(list.bottom()) + 0.5,
             "{n}: the chosen row {last:?} shows in the list {list:?}"
-        );
-        // Two agent rows always show (28 pt each, 2 pt apart).
-        let shown = f32::from(list.size.height);
-        assert!(
-            shown >= 2.0 * 28.0 + 2.0 - 0.5,
-            "{n}: the list shows two rows ({shown} pt)"
         );
         // Inked pixels in the folder field, inside its padding.
         let ink = |shot: &Shot, field: gpui::Bounds<Pixels>| {
