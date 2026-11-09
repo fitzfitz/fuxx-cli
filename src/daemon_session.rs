@@ -324,8 +324,9 @@ impl Subscriber {
     }
 
     /// Queue `frame`. False when this subscriber is done: its receiver is gone, or the queue was
-    /// full (`QUEUE_CAPACITY` frames or `QUEUE_BYTES` of output, whichever first), in which case the backlog was dropped and replaced by `Resync{session}` (the client
-    /// re-attaches for a fresh snapshot, so memory stays bounded and a flood skips frames).
+    /// full (`QUEUE_CAPACITY` frames or `QUEUE_BYTES` of output, whichever first), in which
+    /// case the backlog was dropped and replaced by `Resync{session}` (the client re-attaches
+    /// for a fresh snapshot, so memory stays bounded and a flood skips frames).
     fn push(&self, frame: Frame, session: u64) -> bool {
         let mut q = self.queue.lock();
         if q.receiver_gone {
