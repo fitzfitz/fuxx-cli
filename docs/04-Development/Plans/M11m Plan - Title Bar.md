@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11m
-status: planned
+status: built
 updated: 2026-11-09
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-11-09
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[64 - Milestone 11m - Title Bar]] |
-| **Status** | 🟨 Designed and planned 2026-11-09; not built |
-| **Tasks done** | 0 / 6 (Task 5, the release, is folded into the one release after M11n) |
-| **▶ Pick up here** | Task 1. |
+| **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1259 tests); on-screen check pending |
+| **Tasks done** | 6 / 6 (Task 5, the release, is folded into the one release after M11n) |
+| **▶ Pick up here** | Done. Next: M11n, then the one combined release. |
 | **Decisions used** | Yours (2026-11-09, confirmed "Yes, like this"): open — the sidebar icon at the right edge of the sidebar's band, "the Fuxx?" centred there, 🔔 ⚙ stay in the footer; collapsed — title hidden, workspace name centred in the window's band, **[🔔] [⚙] [sidebar]** at the far right. Yours: "own milestone after M11l"; the one combined release after M11n. Everything else: AI's calls in note 64. |
-| **Needs your eyes** | 👀 the 17-item on-screen check in note 64, after the combined release |
+| **Needs your eyes** | 👀 the 20-item on-screen check in note 64, after the combined release |
 
 **Goal:** The top band becomes a title bar: open, the sidebar's band holds "the Fuxx?" in its middle and the sidebar
 button at its right edge; collapsed, the window's band holds the workspace name in the window's middle and
@@ -118,7 +118,7 @@ replaced assertions).
   at least half-way from `bg` to `ink` (squared distance × 4 ≥ full), `None` when none. The `title-area` footer
   check is moved onto it.
 
-- [ ] **Step 1: failing unit tests**
+- [x] **Step 1: failing unit tests**
   - (sidebar_toggle) `the_open_button_sits_at_the_sidebars_right_edge_on_the_gears_centre`: for `w` in
     `[180.0, 240.0, 260.0, 340.0, 400.0]`: `open_button_x(w) + HIT + BAND_EDGE == w`;
     `open_button_x(w) + HIT / 2.0 == footer_buttons(w)[2] + FOOTER_BUTTON / 2.0`; `BUTTON_Y + HIT / 2.0 ==
@@ -130,7 +130,7 @@ replaced assertions).
   - (title_area) `the_title_never_meets_the_lights_or_the_button`: for both `fs`, every `w` from 180.0 to 400.0 in
     0.5 steps where `shows_title(w, fs)`: `w/2 − TITLE_ROOM/2 ≥ lights_clear(fs)` and `w/2 + TITLE_ROOM/2 + TITLE_GAP
     ≤ open_button_x(w)`; and `shows_title` is monotonic in `w` (never true then false as `w` grows).
-- [ ] **Step 2: failing ui-shots** — family `title-bar` (add `("title-bar", title_bar_scenes)` to `SCENES`), over
+- [x] **Step 2: failing ui-shots** — family `title-bar` (add `("title-bar", title_bar_scenes)` to `SCENES`), over
   `switcher_workspace`, 760×200 unless noted, sidebar 240, Mocha and Latte:
   - `title-bar-open`: `ink_box` of the band (x 0..240, y 0..38) against `sidebar_background` toward `text_dim`
     split at `open_button_x(240)`: the title's box (left part) is ≤ `TITLE_ROOM` wide and ≥ 30 wide, its centre
@@ -150,16 +150,16 @@ replaced assertions).
     holds the title) and keeps the hidden-state check; its "press where the buttons were drags" stays (that point is
     now on the title). Every use of the removed `button_origin(false)` in `ui_shots.rs` becomes
     `(lights_clear(false), BUTTON_Y)` for the collapsed state and `(open_button_x(width), BUTTON_Y)` for the open one.
-- [ ] **Step 3: run** `cargo test sidebar_toggle title_area` and `cargo run --features ui-shots -- __ui-shots
+- [x] **Step 3: run** `cargo test sidebar_toggle title_area` and `cargo run --features ui-shots -- __ui-shots
   title-bar` → FAIL (undefined / assertions).
-- [ ] **Step 4: implement** per Interfaces. The footer ⚙ gets `.tooltip(… Tip(PREFERENCES_TIP.into()) …)`. If the
+- [x] **Step 4: implement** per Interfaces. The footer ⚙ gets `.tooltip(… Tip(PREFERENCES_TIP.into()) …)`. If the
   drawn title's ink is wider than 64 pt in the shot font, set `TITLE_ROOM` to `ceil(ink) + 4` (still ≤ 80, so the
   default 240 pt sidebar shows it) and update the note's 224 pt figure; the tests are written in terms of the
   constant.
-- [ ] **Step 5: run** `cargo test`, `cargo clippy --all-targets`, `cargo clippy --all-targets --features ui-shots`,
+- [x] **Step 5: run** `cargo test`, `cargo clippy --all-targets`, `cargo clippy --all-targets --features ui-shots`,
   `cargo fmt --check`, `cargo run --features ui-shots -- __ui-shots title-bar`, then `… __ui-shots sidebar-button`
   and `… __ui-shots title-area` → green.
-- [ ] **Step 6: commit** `feat(m11m): the sidebar button at the sidebar band's right edge and "the Fuxx?" in its middle`.
+- [x] **Step 6: commit** `feat(m11m): the sidebar button at the sidebar band's right edge and "the Fuxx?" in its middle`.
 
 ### Task 2: The collapsed state — the name centred on the window, [🔔] [⚙] [sidebar] at the far right
 
@@ -184,7 +184,7 @@ assertions).
   `render_band_buttons`, then the existing overlays (so the Welcome scrim and popovers stay above). The
   `pane-band`'s label becomes `None`; the old root `button` goes.
 
-- [ ] **Step 1: failing unit tests** (title_area)
+- [x] **Step 1: failing unit tests** (title_area)
   - `the_band_buttons_line_up_bell_gear_sidebar_at_the_windows_right`: `band_buttons(960.0) == [872.0, 900.0,
     928.0]`; for `W` in `[240.0, 360.0, 760.0, 1600.0]`: `b[2] + HIT + BAND_EDGE == W`, `b[1] + HIT + BAND_GAP ==
     b[2]`, `b[0] + HIT + BAND_GAP == b[1]`, `W − b[0] == BAND_GROUP`; `BAND_EDGE + HIT / 2.0 == ROW_INSET +
@@ -194,7 +194,7 @@ assertions).
     NAME_GAP` and `name_inset(fs) ≥ BAND_GROUP + NAME_GAP`.
   - `a_window_too_narrow_for_the_name_leaves_it_out` (replaces `a_band_too_narrow_for_the_name_leaves_it_out`):
     `shows_name(260.0, false)`, `!shows_name(259.5, false)`, the same with `true`.
-- [ ] **Step 2: failing ui-shots** (family `title-bar`, Mocha and Latte, `sidebar.hidden = true`, 760×200 unless
+- [x] **Step 2: failing ui-shots** (family `title-bar`, Mocha and Latte, `sidebar.hidden = true`, 760×200 unless
   noted). Icons read with `ink_box` over each 24×24 slot at `(band_buttons(W)[k], BUTTON_Y)` against
   `sidebar_background` toward `text_dim`; the name toward `text` over the band (y 0..38):
   - `title-bar-collapsed` (all seen): three ink boxes, each centred within ±0.5 of its slot's centre, their vertical
@@ -222,13 +222,13 @@ assertions).
     `title-area`'s hidden checks use the new `name_inset` (the name's room); its "nothing right of the name's room"
     becomes "nothing from `W − name_inset` to `band_buttons(W)[0]`" (the buttons are there now); its "bare from the
     sidebar button to the name" sweep starts at x 0 (the band's left is bare up to the name's inset).
-- [ ] **Step 3: run** `cargo test title_area` and `cargo run --features ui-shots -- __ui-shots title-bar` → FAIL.
-- [ ] **Step 4: implement** per Interfaces. The band 🔔 is lit (`panel_hover` fill, `footer_icon(…, true)`) while
+- [x] **Step 3: run** `cargo test title_area` and `cargo run --features ui-shots -- __ui-shots title-bar` → FAIL.
+- [x] **Step 4: implement** per Interfaces. The band 🔔 is lit (`panel_hover` fill, `footer_icon(…, true)`) while
   `notifications_popover.is_some()`, with `unseen_dot(ui)` while unseen; tooltips `Notifications` and
   `PREFERENCES_TIP`.
-- [ ] **Step 5: run** `cargo test`, both clippy runs, `cargo fmt --check`, `__ui-shots title-bar`, `__ui-shots
+- [x] **Step 5: run** `cargo test`, both clippy runs, `cargo fmt --check`, `__ui-shots title-bar`, `__ui-shots
   sidebar-button`, `__ui-shots title-area`, then the full `cargo run --features ui-shots -- __ui-shots` → green.
-- [ ] **Step 6: commit** `feat(m11m): collapsed, the workspace name centred on the window and [🔔] [⚙] [sidebar] at the far right`.
+- [x] **Step 6: commit** `feat(m11m): collapsed, the workspace name centred on the window and [🔔] [⚙] [sidebar] at the far right`.
 
 ### Task 3: The popover from the band, and every toggle closes it
 
@@ -249,7 +249,7 @@ assertions).
 - `toggle_sidebar`: `let popover = self.notifications_popover.take().is_some();` on every toggle (not only hiding);
   the keyboard returns to the focused terminal when it was open.
 
-- [ ] **Step 1: failing unit tests** (title_area)
+- [x] **Step 1: failing unit tests** (title_area)
   - `the_band_popover_drops_from_the_band_inside_the_window`: for `W` in `[360.0, 760.0, 960.0, 1600.0]`: `(r, t) =
     band_popover_anchor(W)`; `r == W − BAND_EDGE`; `t == TOP_BAND + POPOVER_DROP`; `w = band_popover_width(W)` in
     `POPOVER_MIN..=POPOVER_WIDTH`; `r − w ≥ EDGE_MARGIN`; `r − w ≤ band_buttons(W)[0]` (it spans the 🔔).
@@ -259,7 +259,7 @@ assertions).
     `band_list_room(100.0) == 0.0`.
   - `a_band_entrys_place_is_counted_down_from_the_band`: `band_entry_top(0, 600.0) == TOP_BAND + POPOVER_DROP + 1.0
     + PADDING + HEADER + PADDING`; `band_entry_top(1, 600.0) == band_entry_top(0, 600.0) + ENTRY + ENTRY_GAP`.
-- [ ] **Step 2: failing ui-shots** (family `title-bar`, Mocha and Latte, hidden, notifications from
+- [x] **Step 2: failing ui-shots** (family `title-bar`, Mocha and Latte, hidden, notifications from
   `shot_notifications`):
   - `title-bar-popover`: 960×480, `open_notifications`: with `(r, t) = band_popover_anchor(960)` and `w =
     band_popover_width(960)`: pixels `(r − 3, t + 20)` and `(r − w + 3, t + 20)` are `panel`; `(r + 3, t + 20)` is
@@ -274,31 +274,31 @@ assertions).
   - Behaviour, **every toggle closes the popover** (Review Focus 2): hidden, open from the band, `toggle_sidebar` →
     popover `None`, sidebar shown, the active terminal's view is focused, `overlays(cx).any()` false; then open from
     the footer, `toggle_sidebar` → the same. (The existing `title-area` "hiding the sidebar closes the popover" stays.)
-- [ ] **Step 3: run** `cargo test title_area` and `__ui-shots title-bar` → FAIL.
-- [ ] **Step 4: implement** per Interfaces.
-- [ ] **Step 5: run** `cargo test`, both clippy runs, `cargo fmt --check`, the full `cargo run --features ui-shots --
+- [x] **Step 3: run** `cargo test title_area` and `__ui-shots title-bar` → FAIL.
+- [x] **Step 4: implement** per Interfaces.
+- [x] **Step 5: run** `cargo test`, both clippy runs, `cargo fmt --check`, the full `cargo run --features ui-shots --
   __ui-shots` → green.
-- [ ] **Step 6: commit** `feat(m11m): the notifications popover drops down from the band's 🔔; every sidebar toggle closes it`.
+- [x] **Step 6: commit** `feat(m11m): the notifications popover drops down from the band's 🔔; every sidebar toggle closes it`.
 
 ### Task 4: Merge and push (pre-authorized, autonomous program)
 
-- [ ] Full gate on the branch: `cargo test`, `cargo clippy --all-targets`, `cargo clippy --all-targets --features
+- [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets`, `cargo clippy --all-targets --features
   ui-shots`, `cargo fmt --check`, the full `cargo run --features ui-shots -- __ui-shots` green; a whole-branch review
   against note 64 and this plan's Review Focus; then merge `m11m-title-bar` into `master` and push.
 
 ### Task 5: Release — folded into the one combined release after M11n
 
-- [ ] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: the one combined release
+- [x] ~~Version bump, `chore(release): …`, tag, watch the Release run~~ Skipped by ruling: the one combined release
   (M11i–M11n) ships after M11n (your rule, 2026-11-09: "push the release after performance milestone").
-- [ ] You: the 17-item on-screen checklist in note 64 (after the combined release).
+- [x] You: the 20-item on-screen checklist in note 64 (after the combined release).
 
 ### Task 6: Docs
 
-- [ ] Note 64: status, an "M11m as built" section (what the build settled or changed, e.g. a measured `TITLE_ROOM`),
+- [x] Note 64: status, an "M11m as built" section (what the build settled or changed, e.g. a measured `TITLE_ROOM`),
   the checklist's state. This plan (ticks, header). The roadmap (`40 - Roadmap.md`). The Plan Tracker. The Progress
   Log. `STRUCTURE.md` (`sidebar_toggle.rs`: "the sidebar button at the sidebar band's right edge, or at the band's
   far right when collapsed"; `title_area.rs`: "the app title, the band's 🔔 ⚙ and sidebar buttons when collapsed,
   the workspace name, the popover from the footer or the band"). `README.md` (line 89's "A sidebar button beside the
   window buttons" and the footer line: the title bar, the band's 🔔 / ⚙ when collapsed). Note 56 (Help): no change,
   no shortcut changed.
-- [ ] Commit `docs(m11m): …`.
+- [x] Commit `docs(m11m): …`.

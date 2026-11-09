@@ -131,7 +131,7 @@ src/
 ├── shell_integration.rs  M11l · installs the zsh scripts, `ZDOTDIR` env for a login zsh, the `command-blocks` switch
 ├── block_view.rs         M11l · the view's pure rules: jump, rerun bytes, chip labels, width and right-prompt limit, colours
 ├── overlay_panel.rs      M11 · the shared panel and filter box (switcher, host picker, address box)
-├── sidebar_toggle.rs     Follow-up · the sidebar button beside the window buttons: position rule, slide curve
+├── sidebar_toggle.rs     M11m · the sidebar button at the sidebar band's right edge, or at the band's far right when collapsed: position rules, slide curve
 ├── tab_menu.rs           Follow-up · the right-click row menu: actions (close others / to the right), bulk-close text, overlay
 ├── tab_color.rs          Follow-up · the 11 tab colours and their saved names
 │
@@ -146,7 +146,7 @@ src/
 ├── browser_history.rs    M11b · visited pages for the address suggestions; kept only with "Keep history and data" On
 ├── git_branch.rs         M11b · a workspace's folder (OSC 7 or the shell's cwd) and git branch for the row's second line, cached off the UI thread
 ├── notification_list.rs  M11b · this run's notifications for the 🔔 popover: newest first, unseen dot, closed terminals greyed
-├── title_area.rs         M11b · the workspace name in the top band and the 🔔 button and popover in the sidebar footer
+├── title_area.rs         M11m · the app title, the band's 🔔 ⚙ and sidebar buttons when collapsed, the workspace name, the popover from the footer or the band
 │
 │   settings window
 ├── prefs.rs              M6b · the window's choices (themes, fonts, size, ligatures), GPUI-free
