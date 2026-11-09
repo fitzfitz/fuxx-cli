@@ -31,14 +31,14 @@ use std::time::Instant;
 
 use gpui::{
     Anchor, AnyElement, AnyView, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent,
-    Stateful, Window, anchored, div, point, prelude::*, px,
+    Window, anchored, div, point, prelude::*, px,
 };
 
 use crate::notification_list::Entry;
 use crate::overlay_panel;
 use crate::preferences;
 use crate::sidebar::{FOOTER, MARK_SLOT, ROW_INSET, mark_size, mark_slot, tabular};
-use crate::sidebar_toggle::{self, BAND_EDGE, BUTTON_Y, HIT, HIT_RADIUS, Tip};
+use crate::sidebar_toggle::{self, BAND_EDGE, HIT, Tip, band_button};
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_bar::{Glyph, footer_glyph};
@@ -66,6 +66,8 @@ pub(crate) const TITLE_ROOM: f32 = 64.0;
 pub(crate) const TITLE_GAP: f32 = 8.0;
 /// The Preferences gear's tooltip (the footer's, and the collapsed band's).
 pub(crate) const PREFERENCES_TIP: &str = "Preferences (⌘,)";
+/// The 🔔's tooltip (the footer's, and the collapsed band's).
+pub(crate) const NOTIFICATIONS_TIP: &str = "Notifications";
 /// The collapsed band's buttons (M11m), [🔔] [⚙] [sidebar] at the window's right: the space
 /// between them, and the group's width from the 🔔's left edge to the window's right edge.
 pub(crate) const BAND_GAP: f32 = 4.0;
@@ -573,34 +575,15 @@ impl Workspace {
         let [bell_x, gear_x, sidebar_x] = band_buttons(window.viewport_size().width.as_f32());
         let popover = self.notifications_popover.is_some();
         let unseen = self.notifications.unseen() > 0;
-        let button = |id: &'static str, group: &'static str, x: f32| -> Stateful<Div> {
-            div()
-                .id(id)
-                .group(group)
-                .absolute()
-                .left(px(x))
-                .top(px(BUTTON_Y))
-                .size(px(HIT))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(HIT_RADIUS))
-                .hover(move |s| s.bg(hsla(ui.panel_hover)))
-                .occlude()
-                // The band under it starts a window drag on a press; this press is the button's.
-                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation()
-                })
-        };
-        let bell = button("band-notifications", BAND_BELL_GROUP, bell_x)
+        let bell = band_button("band-notifications", BAND_BELL_GROUP, bell_x, ui)
             .when(popover, |b| b.bg(hsla(ui.panel_hover)))
             .child(footer_icon(Glyph::Bell, ui, BAND_BELL_GROUP, popover))
             .when(unseen, |b| b.child(unseen_dot(ui)))
-            .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Notifications".into())).into() })
+            .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip(NOTIFICATIONS_TIP.into())).into() })
             .on_click(
                 cx.listener(|this, _: &ClickEvent, window, cx| this.open_notifications(window, cx)),
             );
-        let gear = button("band-preferences", BAND_PREFERENCES_GROUP, gear_x)
+        let gear = band_button("band-preferences", BAND_PREFERENCES_GROUP, gear_x, ui)
             .child(footer_icon(Glyph::Gear, ui, BAND_PREFERENCES_GROUP, false))
             .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip(PREFERENCES_TIP.into())).into() })
             .on_click(|_: &ClickEvent, _, cx| preferences::open_or_activate(cx));

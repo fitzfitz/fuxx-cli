@@ -8,8 +8,8 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, AnyView, Context, Div, MouseButton, MouseDownEvent, SharedString, Window, div,
-    prelude::*, px,
+    AnyElement, AnyView, Context, Div, MouseButton, MouseDownEvent, SharedString, Stateful, Window,
+    div, prelude::*, px,
 };
 
 use crate::appearance::Appearance;
@@ -150,6 +150,35 @@ fn icon(ui: UiColors) -> Div {
         .child(divider)
 }
 
+/// A band button's shell, absolutely placed at (`x`, `BUTTON_Y`) in its parent: a `HIT` square
+/// with `HIT_RADIUS` corners, its contents centred, `panel_hover` under the pointer. Its press is
+/// its own: it occludes the band under it, which would start a window drag on a press. The
+/// sidebar button and the collapsed band's 🔔 and ⚙ (M11m) share it.
+pub(crate) fn band_button(
+    id: &'static str,
+    group: &'static str,
+    x: f32,
+    ui: UiColors,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .group(group)
+        .absolute()
+        .left(px(x))
+        .top(px(BUTTON_Y))
+        .size(px(HIT))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(HIT_RADIUS))
+        .hover(move |s| s.bg(hsla(ui.panel_hover)))
+        .occlude()
+        // The band under it starts a window drag on a press; this press is the button's.
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+            cx.stop_propagation()
+        })
+}
+
 impl Workspace {
     /// The sidebar button, absolutely placed at (`x`, `BUTTON_Y`) in its parent: the sidebar's
     /// band (at `open_button_x`), or the collapsed band's buttons (at `band_buttons(W)[2]`).
@@ -160,24 +189,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let hidden = self.sidebar.hidden;
-        div()
-            .id("sidebar-toggle")
-            .group("sidebar-toggle")
-            .absolute()
-            .left(px(x))
-            .top(px(BUTTON_Y))
-            .size(px(HIT))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(HIT_RADIUS))
-            .hover(move |s| s.bg(hsla(ui.panel_hover)))
+        band_button("sidebar-toggle", "sidebar-toggle", x, ui)
             .child(icon(ui))
-            .occlude()
-            // The band under it starts a window drag on a press; this press is the button's.
-            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                cx.stop_propagation()
-            })
             .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx)))
             .tooltip(move |_, cx| -> AnyView {
                 cx.new(|_| Tip(tooltip_text(hidden).into())).into()
