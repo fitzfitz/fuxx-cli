@@ -47,6 +47,8 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::native_notify::{self, PendingShow, Terminal};
 use crate::notification_list::{self, NotificationList};
 use crate::notifier;
+use crate::palette::Palette;
+use crate::palette_items::{Recent, Scope};
 use crate::pane_actions::PaneActionsMenu;
 use crate::pane_tab_menu::PaneTabMenu;
 use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
@@ -65,7 +67,6 @@ use crate::ssh_target::SshTarget;
 use crate::status::{self, Status};
 use crate::status_bar::Ports;
 use crate::status_mark;
-use crate::switcher::Switcher;
 use crate::tab_bar::TabGrab;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
@@ -121,6 +122,7 @@ actions!(
         ToggleRightSidebar,
         NextNeedingYou,
         OpenSwitcher,
+        OpenPalette,
         NextTab,
         PrevTab,
     ]
@@ -534,7 +536,7 @@ overlays!(
     Rename,
     HostPicker,
     AddressBox,
-    Switcher,
+    Palette,
     TabMenu,
     PaneTabMenu,
     PaneActions,
@@ -621,8 +623,10 @@ pub struct Workspace {
     pub(crate) drag_slides: RefCell<Slides>,
     /// The SSH host picker, while it is open (M10b).
     pub(crate) host_picker: Option<Entity<HostPicker>>,
-    /// The ⌘P session switcher, while it is open (M11).
-    pub(crate) switcher: Option<Entity<Switcher>>,
+    /// The ⌘K command palette (⌘P opens it on Workspaces), while it is open (M11j).
+    pub(crate) palette: Option<Entity<Palette>>,
+    /// What the palette picked last, newest first (kept while it's closed; never saved).
+    pub(crate) palette_recent: Recent,
     /// The Help panel (Keyboard Shortcuts or the Command Reference), while it is open (M11d).
     pub(crate) help: Option<Entity<HelpPanel>>,
     /// The browser tabs' views (M11b), by tab: one for each browser tab of the model (`sync`
@@ -821,7 +825,8 @@ impl Workspace {
             tab_drop: None,
             drag_slides: RefCell::default(),
             host_picker: None,
-            switcher: None,
+            palette: None,
+            palette_recent: Recent::default(),
             help: None,
             browser_tabs: HashMap::new(),
             file_tabs: HashMap::new(),
@@ -2108,7 +2113,17 @@ impl Workspace {
         self.sync();
         let keys = self.sidebar_groups();
         self.collapsed.retain(|c| keys.contains(&Some(c.clone())));
+        // An open palette with the keyboard keeps it (a script closed this terminal under it):
+        // focused again before the frame, it never sees itself lose the focus, and its list
+        // follows on the next draw (M11j).
+        let palette = self
+            .palette
+            .clone()
+            .filter(|p| p.focus_handle(cx).contains_focused(window, cx));
         self.activate(window, cx);
+        if let Some(palette) = palette {
+            palette.focus_handle(cx).focus(window, cx);
+        }
     }
 
     /// Show session `index` (its tab, pane and workspace) and make it the active one.
@@ -2299,7 +2314,7 @@ impl Workspace {
     /// The keyboard is going to the focused tab, so the menus and the 🔔's popover close: the
     /// tab menus and the popover hold it (left open, Escape would go to the terminal), and every
     /// one of them, the + menu too, hides the pages while it's open. The boxes (rename, address,
-    /// picker, switcher) end on losing the keyboard themselves.
+    /// picker, palette) end on losing the keyboard themselves.
     pub(crate) fn close_menus(&mut self) {
         self.sidebar.tab_menu = None;
         self.pane_tab_menu = None;
@@ -2345,8 +2360,8 @@ impl Workspace {
         if keep != Overlay::AddressBox {
             self.address_box = None;
         }
-        if keep != Overlay::Switcher {
-            self.switcher = None;
+        if keep != Overlay::Palette {
+            self.palette = None;
         }
         if keep != Overlay::TabMenu {
             self.sidebar.tab_menu = None;
@@ -2874,13 +2889,9 @@ impl Workspace {
         let animations = cx.global::<Appearance>().animations;
         let reduce = cx.try_global::<SystemReduceMotion>().is_some_and(|r| r.on);
         let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
-        // The switcher's rows too, while it's open.
+        // The palette's workspace rows too, while it's open.
         let mut on_screen = self.visible_statuses();
-        on_screen.extend(
-            self.switcher_shown(cx)
-                .into_iter()
-                .map(|(status, _)| status),
-        );
+        on_screen.extend(self.palette_shown(cx).into_iter().map(|(status, _)| status));
         status_mark::should_tick(animations, reduce, seen, &on_screen)
     }
 
@@ -3013,7 +3024,7 @@ impl Render for Workspace {
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
         let pane_actions = self.render_pane_actions(ui, cx);
-        self.refresh_switcher(cx);
+        self.refresh_palette(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
         // Above the cards: with the sidebar hidden, the window's top band (the workspace's name
@@ -3106,7 +3117,12 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &NextNeedingYou, w, cx| this.jump_to_needing_you(w, cx)),
             )
-            .on_action(cx.listener(|this, _: &OpenSwitcher, w, cx| this.open_switcher(w, cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenPalette, w, cx| this.open_palette(Scope::All, w, cx)),
+            )
+            .on_action(cx.listener(|this, _: &OpenSwitcher, w, cx| {
+                this.open_palette(Scope::Workspaces, w, cx)
+            }))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle_tab(true, w, cx)))
             .on_action(cx.listener(|this, _: &PrevTab, w, cx| this.cycle_tab(false, w, cx)))
             .on_action(
@@ -3200,13 +3216,13 @@ impl Render for Workspace {
             )
             .child(status_bar)
             .child(button)
-            // The host picker, the switcher, the Help panel and the address box: over
+            // The host picker, the palette, the Help panel and the address box: over
             // everything, centred near the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {
                 root.child(top_panel(picker))
             })
-            .when_some(self.switcher.clone(), |root, switcher| {
-                root.child(top_panel(switcher))
+            .when_some(self.palette.clone(), |root, palette| {
+                root.child(top_panel(palette))
             })
             .when_some(self.help.clone(), |root, help| root.child(top_panel(help)))
             .when_some(self.address_box.clone(), |root, address| {

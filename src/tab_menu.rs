@@ -187,7 +187,9 @@ impl Workspace {
                     .collect();
                 self.confirm_close(chosen, window, cx);
             }
-            TabAction::ShowAll => self.open_switcher(window, cx),
+            TabAction::ShowAll => {
+                self.open_palette(crate::palette_items::Scope::Workspaces, window, cx)
+            }
             TabAction::Rename => self.start_rename(ws, window, cx),
             TabAction::Pin(pinned) => {
                 // Pinned ones lead the sidebar (out of their groups); unpinned, it goes back to

@@ -51,6 +51,7 @@ mod native_notify;
 mod notification_list;
 mod notifier;
 mod overlay_panel;
+mod palette;
 mod palette_files;
 mod palette_items;
 mod palette_match;
@@ -121,7 +122,7 @@ use workspace::{
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
     LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp,
     NewSessionInFolder, NewSshSession, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextSession,
-    NextTab, OpenBrowser, OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession,
+    NextTab, OpenBrowser, OpenPalette, OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession,
     SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6,
     SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, ToggleRightSidebar,
     ToggleSidebar, Workspace,
@@ -228,6 +229,7 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("alt-cmd-\\", ToggleRightSidebar, None),
         KeyBinding::new("cmd-shift-u", NextNeedingYou, None),
+        KeyBinding::new("cmd-k", OpenPalette, None),
         KeyBinding::new("cmd-p", OpenSwitcher, None),
         KeyBinding::new("cmd-/", ShowShortcuts, None),
         // The first binding is the one a menu shows: ⌘=, with ⌘+ (shift-=) as well.
@@ -278,9 +280,12 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("down", host_picker::SelectNext, Some("HostPicker")),
         KeyBinding::new("tab", host_picker::ToggleTmux, Some("HostPicker")),
         KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
-        // The session switcher: its box is a NameInput too; these keys move through it.
-        KeyBinding::new("up", switcher::SelectPrev, Some("Switcher")),
-        KeyBinding::new("down", switcher::SelectNext, Some("Switcher")),
+        // The command palette: its box is a NameInput too; these keys move through its list
+        // and change its scope.
+        KeyBinding::new("up", palette::SelectPrev, Some("Palette")),
+        KeyBinding::new("down", palette::SelectNext, Some("Palette")),
+        KeyBinding::new("tab", palette::NextScope, Some("Palette")),
+        KeyBinding::new("shift-tab", palette::PrevScope, Some("Palette")),
         // The Help panel: its box is a NameInput too; these keys scroll its list a row.
         KeyBinding::new("up", help_panel::ScrollUp, Some("HelpPanel")),
         KeyBinding::new("down", help_panel::ScrollDown, Some("HelpPanel")),
@@ -348,7 +353,8 @@ fn file_menu(preset_items: Vec<MenuItem>) -> Menu {
         MenuItem::action("Move Workspace Up", MoveSessionUp),
         MenuItem::action("Move Workspace Down", MoveSessionDown),
         MenuItem::separator(),
-        MenuItem::action("Go to Session\u{2026}", OpenSwitcher),
+        MenuItem::action("Command Palette\u{2026}", OpenPalette),
+        MenuItem::action("Go to Workspace\u{2026}", OpenSwitcher),
         MenuItem::action("Go to What Needs You", NextNeedingYou),
         MenuItem::separator(),
         MenuItem::action("Open Browser\u{2026}", OpenBrowser),
@@ -956,8 +962,8 @@ mod tests {
     use crate::terminal_view::{Copy, Paste};
     use crate::workspace::{
         CloseSession, EqualizePanes, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextTab,
-        OpenSwitcher, PrevPane, PrevTab, RenameSession, SelectSession1, SelectSession9, SplitDown,
-        SplitRight, ToggleRightSidebar, ToggleSidebar,
+        OpenPalette, OpenSwitcher, PrevPane, PrevTab, RenameSession, SelectSession1,
+        SelectSession9, SplitDown, SplitRight, ToggleRightSidebar, ToggleSidebar,
     };
     use gpui::{Action, KeyContext, Keymap, Keystroke};
 
@@ -1221,7 +1227,7 @@ mod tests {
     #[test]
     fn fuxx_keys_still_reach_fuxx_from_a_browser_tab() {
         let keymap = keymap();
-        let keys: [(&str, Box<dyn Action>); 11] = [
+        let keys: [(&str, Box<dyn Action>); 12] = [
             ("cmd-w", Box::new(CloseSession)),
             ("cmd-t", Box::new(NewTab)),
             ("cmd-n", Box::new(NewWorkspace)),
@@ -1230,6 +1236,7 @@ mod tests {
             ("cmd-1", Box::new(SelectSession1)),
             ("cmd-9", Box::new(SelectSession9)),
             ("cmd-p", Box::new(OpenSwitcher)),
+            ("cmd-k", Box::new(OpenPalette)),
             ("cmd-shift-u", Box::new(NextNeedingYou)),
             ("ctrl-cmd-=", Box::new(EqualizePanes)),
             ("ctrl-tab", Box::new(NextTab)),
@@ -1241,6 +1248,10 @@ mod tests {
             }
         }
         assert!(runs(&keymap, "ctrl-shift-tab", PAGE).partial_eq(&PrevTab));
+        // And from a file tab (its own key context), ⌘K and ⌘P still open the palette.
+        let file_tab: &[&str] = &["Workspace", "FileTab"];
+        assert!(runs(&keymap, "cmd-k", file_tab).partial_eq(&OpenPalette));
+        assert!(runs(&keymap, "cmd-p", file_tab).partial_eq(&OpenSwitcher));
     }
 
     #[test]
@@ -1397,6 +1408,30 @@ mod tests {
                 "New Agent Workspace ▸"
             ]
         );
+    }
+
+    #[test]
+    fn the_file_menu_goes_to_the_palette_then_a_workspace_then_what_needs_you() {
+        let menu = file_menu(vec![]);
+        let named: Vec<(String, Box<dyn Action>)> = menu
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, action, .. } => {
+                    Some((name.to_string(), action.boxed_clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let at = named
+            .iter()
+            .position(|(name, _)| name == "Command Palette\u{2026}")
+            .expect("Command Palette…");
+        assert!(named[at].1.partial_eq(&OpenPalette));
+        assert_eq!(named[at + 1].0, "Go to Workspace\u{2026}");
+        assert!(named[at + 1].1.partial_eq(&OpenSwitcher));
+        assert_eq!(named[at + 2].0, "Go to What Needs You");
+        assert!(named[at + 2].1.partial_eq(&NextNeedingYou));
     }
 
     #[test]

@@ -186,7 +186,6 @@ pub fn loose(query: &str, rest: &[&str]) -> bool {
 }
 
 /// Byte ranges of the chars at `positions` (sorted char indices); adjacent chars merge.
-#[allow(dead_code)] // used by the palette view (M11j task 4)
 pub fn byte_ranges(text: &str, positions: &[usize]) -> Vec<Range<usize>> {
     let mut out: Vec<Range<usize>> = Vec::new();
     let mut wanted = positions.iter().copied().peekable();

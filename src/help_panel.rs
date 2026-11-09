@@ -1,18 +1,18 @@
-//! M11d: the Help panel, a panel near the top of the window like ⌘P's switcher, on one of two
-//! pages. Keyboard Shortcuts (⌘/, or Help → Keyboard Shortcuts) lists every shortcut the
+//! M11d: the Help panel, a panel near the top of the window like the command palette, on one of
+//! two pages. Keyboard Shortcuts (⌘/, or Help → Keyboard Shortcuts) lists every shortcut the
 //! key-binding table has, by group, each name with its keys on the right; the fuxx Command
 //! Reference (Help → fuxx Command Reference) lists `fuxx help`'s commands, each usage in the
 //! terminal's font with what it does under it, then the usage text's closing notes.
 //!
 //! Read only: the box filters the list, ↑/↓ scroll it a row, and Enter does nothing. The box is
-//! the sidebar's rename box (`NameInput`), as in the switcher: its Escape (or losing focus) and
+//! the sidebar's rename box (`NameInput`), as in the palette: its Escape (or losing focus) and
 //! a click outside close the panel.
 
 use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseDownEvent, Point,
-    ScrollHandle, Subscription, Window, actions, div, prelude::*, px,
+    ScrollHandle, SharedString, Subscription, Window, actions, div, prelude::*, px,
 };
 
 use crate::appearance::Appearance;
@@ -29,13 +29,31 @@ use crate::workspace::{Overlay, Workspace};
 // Bound in main.rs with the "HelpPanel" key context; Escape is the box's own.
 actions!(help_panel, [ScrollUp, ScrollDown]);
 
-/// Wider than the switcher: a shortcut row has its name on the left and its keys on the right.
+/// Wider than the old switcher: a shortcut row has its name on the left and its keys on the right.
 const PANEL_WIDTH: f32 = 560.0;
 /// The room between a shortcut's name and its keys.
 const KEYS_GAP: f32 = 12.0;
 /// A command's usage, in the terminal's font: a point under the names, as mono text runs wide.
 const USAGE_SIZE: f32 = text::NAME - 1.0;
 const HINT: &str = "Esc closes";
+
+/// A group's heading: faint, small, with room above it unless it is the first line (the
+/// command palette's headings too).
+pub(crate) fn render_group(
+    label: impl Into<SharedString>,
+    first: bool,
+    ui: &UiColors,
+) -> AnyElement {
+    div()
+        .flex_none()
+        .px(px(8.0))
+        .pt(px(if first { 2.0 } else { 8.0 }))
+        .pb(px(2.0))
+        .text_size(px(text::META))
+        .text_color(hsla(ui.text_faint))
+        .child(label.into())
+        .into_any_element()
+}
 
 /// Which list the panel shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,19 +267,6 @@ impl HelpPanel {
         cx.notify();
     }
 
-    /// A group's heading: faint, small, with room above it unless it is the first line.
-    fn render_group(label: &'static str, first: bool, ui: &UiColors) -> AnyElement {
-        div()
-            .flex_none()
-            .px(px(8.0))
-            .pt(px(if first { 2.0 } else { 8.0 }))
-            .pb(px(2.0))
-            .text_size(px(text::META))
-            .text_color(hsla(ui.text_faint))
-            .child(label)
-            .into_any_element()
-    }
-
     /// A shortcut: what it does on the left, its keys on the right, dimmer.
     fn render_shortcut(row: &ShortcutRow, ui: &UiColors) -> AnyElement {
         div()
@@ -319,7 +324,7 @@ impl Render for HelpPanel {
             .iter()
             .enumerate()
             .map(|(at, line)| match line {
-                Line::Group(label) => Self::render_group(label, at == 0, &ui),
+                Line::Group(label) => render_group(*label, at == 0, &ui),
                 Line::Shortcut(row) => Self::render_shortcut(row, &ui),
                 Line::Command(entry) => Self::render_command(entry, &ui, mono.clone()),
             })

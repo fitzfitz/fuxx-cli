@@ -1,5 +1,5 @@
 //! Tab colours (M11): a colour you can give a session from its sidebar row's menu. It shows as a
-//! dot on the row and on its ⌘P switcher row, and is saved with the session.
+//! dot on the row and on its row in the palette's workspaces, and is saved with the session.
 //!
 //! Each colour is a fixed hue; `Theme::ui` fits it to the theme (`UiColors::tab`) so the dot
 //! stands out from every surface it's drawn on, as the status marks do.

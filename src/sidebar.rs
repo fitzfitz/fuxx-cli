@@ -956,14 +956,14 @@ impl Workspace {
             let sinces = rows
                 .map(|i| self.sessions.items()[i].status_since)
                 .chain(followed);
-            // And the switcher's rows, while it's open.
-            let switcher = self
-                .switcher_shown(cx)
+            // And the palette's workspace rows, while it's open.
+            let palette = self
+                .palette_shown(cx)
                 .into_iter()
                 .filter(|(status, _)| *status != Status::Idle)
                 .map(|(_, since)| since);
             sinces
-                .chain(switcher)
+                .chain(palette)
                 .map(|since| next_age_change(now.saturating_duration_since(since)))
                 .min()
         };

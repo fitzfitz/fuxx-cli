@@ -79,8 +79,8 @@ pub struct Overlays {
     pub host_picker: bool,
     /// File → Open Browser…'s address box.
     pub address_box: bool,
-    /// ⌘P.
-    pub switcher: bool,
+    /// The command palette (⌘K, ⌘P).
+    pub palette: bool,
     /// A sidebar row's right-click menu.
     pub row_menu: bool,
     /// A pane tab's right-click menu.
@@ -103,7 +103,7 @@ impl Overlays {
             rename,
             host_picker,
             address_box,
-            switcher,
+            palette,
             row_menu,
             tab_menu,
             pane_actions,
@@ -115,7 +115,7 @@ impl Overlays {
         rename
             || host_picker
             || address_box
-            || switcher
+            || palette
             || row_menu
             || tab_menu
             || pane_actions
@@ -561,7 +561,7 @@ mod tests {
                 ..none
             },
             Overlays {
-                switcher: true,
+                palette: true,
                 ..none
             },
             Overlays {
