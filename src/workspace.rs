@@ -72,6 +72,7 @@ use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{CARD_GAP, TOP_BAND};
 use crate::welcome::Welcome;
+use crate::welcome_items::Origin;
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -782,7 +783,7 @@ impl Workspace {
         this.listen_for_clicks(clicks, window, cx);
         // Browser data saved by an earlier run, if the setting is off now, goes at once.
         this.browser_data_kept = read_saved_quietly().is_some_and(|s| s.browser_data_kept);
-        this.welcomed = read_saved_quietly().is_some_and(|s| s.welcomed);
+        this.welcomed = !restore::welcome_due(read_saved_quietly().as_ref());
         this.wipe_saved_data_if_due(cx);
         if let Some(saved) = read_saved_quietly() {
             this.sidebar.load(&saved);
@@ -1058,9 +1059,15 @@ impl Workspace {
         self.sessions.items().iter().map(|s| s.id).collect()
     }
 
-    /// One plain session, then saving starts.
+    /// One plain session, then saving starts; on a first run (nothing says the Welcome card was
+    /// shown) the card opens over it once it has.
     pub(crate) fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let done: Opened = Box::new(|this, _, window, cx| this.finish_restoring(window, cx));
+        let done: Opened = Box::new(|this, opened, window, cx| {
+            this.finish_restoring(window, cx);
+            if let Some(over) = opened.filter(|_| !this.welcomed) {
+                this.open_welcome(Origin::FirstRun { over }, window, cx);
+            }
+        });
         // Part of the restore, so not refused as other opens are meanwhile.
         self.open_now(Launch::default(), At::New, None, Some(done), window, cx);
     }
@@ -1784,12 +1791,7 @@ impl Workspace {
 
     /// Ask for a folder, then open a session in it. Cancel does nothing.
     pub(crate) fn new_session_in_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open".into()),
-        });
+        let picked = cx.prompt_for_paths(folder_panel());
         cx.spawn_in(window, async move |this, cx| {
             let folder = match picked.await {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
@@ -3494,6 +3496,16 @@ fn start_in(saved: &SavedSession, run_preset: bool) -> (Option<PathBuf>, Option<
         .filter(|_| run_preset)
         .map(|p| p.command.clone());
     (cwd, startup)
+}
+
+/// The panel that asks for one folder (⌘O's, and the Welcome card's Choose…).
+pub(crate) fn folder_panel() -> PathPromptOptions {
+    PathPromptOptions {
+        files: false,
+        directories: true,
+        multiple: false,
+        prompt: Some("Open".into()),
+    }
 }
 
 /// The folder of the running `fuxx` program (put on the shells' `PATH`).
