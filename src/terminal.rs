@@ -185,7 +185,16 @@ struct ClearCounter {
 
 impl ClearCounter {
     fn feed(&mut self, bytes: &[u8]) {
-        for &b in bytes {
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.at_rest() {
+                match memchr::memchr(0x1b, &bytes[i..]) {
+                    Some(skip) => i += skip,
+                    None => break,
+                }
+            }
+            let b = bytes[i];
+            i += 1;
             self.state = match (self.state, b) {
                 (_, 0x1b) => 1,
                 (1, b'[') => 2,
@@ -197,6 +206,11 @@ impl ClearCounter {
                 _ => 0,
             };
         }
+    }
+
+    /// Nothing of a clear partly matched: a byte that is not ESC changes nothing.
+    fn at_rest(&self) -> bool {
+        self.state == 0
     }
 
     fn bump(&mut self) {
@@ -1117,6 +1131,75 @@ fn wire_dims(cols: u16, rows: u16) -> TermDims {
     TermDims {
         cols: usize::from(cols).max(1),
         rows: usize::from(rows).max(1),
+    }
+}
+
+/// The verbatim byte-at-a-time `feed` from before M11n: the oracle the fast one is proven against.
+#[cfg(test)]
+mod clear_bytewise {
+    use super::*;
+
+    impl ClearCounter {
+        pub(super) fn feed_bytewise(&mut self, bytes: &[u8]) {
+            for &b in bytes {
+                self.state = match (self.state, b) {
+                    (_, 0x1b) => 1,
+                    (1, b'[') => 2,
+                    (2, b'2' | b'3') => 3,
+                    (1, b'c') | (3, b'J') => {
+                        self.count += 1;
+                        0
+                    }
+                    _ => 0,
+                };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod clear_equivalence {
+    use super::*;
+    use crate::detector::fixtures::*;
+
+    #[test]
+    fn fast_scanners_match_bytewise_at_every_split() {
+        let _ = ClearCounter::default().at_rest();
+        for seed in 1..=200u64 {
+            let stream = random_stream(seed);
+            let mut slow = ClearCounter::default();
+            for c in stream.chunks(1) {
+                slow.feed_bytewise(c);
+            }
+            let mut fast = ClearCounter::default();
+            for c in random_chunks(seed, &stream) {
+                fast.feed(c);
+            }
+            assert_eq!(
+                (fast.count, fast.state),
+                (slow.count, slow.state),
+                "seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn fast_scanners_match_bytewise_split_at_every_offset() {
+        let stream = every_sequence();
+        let mut slow = ClearCounter::default();
+        slow.feed_bytewise(&stream);
+        assert!(slow.count >= 3);
+        for cut in 0..=stream.len() {
+            let (a, b) = stream.split_at(cut);
+            let mut fast = ClearCounter::default();
+            fast.feed(a);
+            fast.feed(b);
+            assert_eq!(
+                (fast.count, fast.state),
+                (slow.count, slow.state),
+                "cut {cut}"
+            );
+        }
     }
 }
 
