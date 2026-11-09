@@ -12,6 +12,8 @@
 //! letter (memory stays bounded): an overlong `C` still reads as output starting, without its
 //! command (`truncated`); any other overlong mark is dropped.
 
+use memchr::{memchr, memchr2};
+
 /// The longest mark body (what follows `ESC ]133;`) kept whole; past it only the letter is.
 pub const MARK_CAP: usize = 8192;
 
@@ -62,7 +64,39 @@ impl MarkScanner {
     /// across calls is reported by the call that ends it.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<(usize, Mark)> {
         let mut found = Vec::new();
-        for (i, &b) in bytes.iter().enumerate() {
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.at_rest() {
+                match memchr(0x1b, &bytes[i..]) {
+                    Some(skip) => i += skip,
+                    None => break,
+                }
+            } else if self.in_plain_body() {
+                // Inside a mark, up to the next BEL, ESC, CAN or SUB every byte is just appended.
+                let rest = &bytes[i..];
+                let mut span = memchr2(0x07, 0x1b, rest).unwrap_or(rest.len());
+                if let Some(cancel) = memchr2(0x18, 0x1a, &rest[..span]) {
+                    span = cancel;
+                }
+                if !self.overflow
+                    && let Some(body) = self.body.as_mut()
+                {
+                    // One past the cap is enough to know the mark overflows.
+                    let room = (MARK_CAP + 1).saturating_sub(body.len());
+                    body.extend_from_slice(&rest[..span.min(room)]);
+                    if body.len() > MARK_CAP {
+                        body.truncate(2);
+                        self.overflow = true;
+                    }
+                }
+                if span > 0 {
+                    i += span;
+                    continue;
+                }
+            }
+            let b = bytes[i];
+            let at = i;
+            i += 1;
             if let Some(mut body) = self.body.take() {
                 let esc = std::mem::take(&mut self.esc);
                 match (esc, b) {
@@ -73,7 +107,7 @@ impl MarkScanner {
                             parse(&body)
                         };
                         if let Some(mark) = mark {
-                            found.push((i + 1, mark));
+                            found.push((at + 1, mark));
                         }
                     }
                     // An ESC that doesn't end it, or a CAN / SUB (which cancel any sequence
@@ -102,6 +136,16 @@ impl MarkScanner {
             }
         }
         found
+    }
+
+    /// No intro partly matched and no mark open: a byte that is not ESC changes nothing.
+    fn at_rest(&self) -> bool {
+        self.body.is_none() && self.matched == 0
+    }
+
+    /// Inside a mark whose last byte was not an ESC, with no intro partly matched.
+    fn in_plain_body(&self) -> bool {
+        self.body.is_some() && !self.esc && self.matched == 0
     }
 
     /// Feeds one byte to the intro match; true when the whole intro has just matched.
@@ -178,6 +222,99 @@ pub fn percent_decode(encoded: &[u8]) -> Option<String> {
         out.push((hex(bytes.next())? * 16 + hex(bytes.next())?) as u8);
     }
     String::from_utf8(out).ok()
+}
+
+/// The verbatim byte-at-a-time `feed` from before M11n: the oracle the fast one is proven against.
+#[cfg(test)]
+mod bytewise {
+    use super::*;
+
+    impl MarkScanner {
+        pub(super) fn feed_bytewise(&mut self, bytes: &[u8]) -> Vec<(usize, Mark)> {
+            let mut found = Vec::new();
+            for (i, &b) in bytes.iter().enumerate() {
+                if let Some(mut body) = self.body.take() {
+                    let esc = std::mem::take(&mut self.esc);
+                    match (esc, b) {
+                        (false, 0x07) | (true, b'\\') => {
+                            let mark = if self.overflow {
+                                overlong(&body)
+                            } else {
+                                parse(&body)
+                            };
+                            if let Some(mark) = mark {
+                                found.push((i + 1, mark));
+                            }
+                        }
+                        (true, _) | (false, 0x18 | 0x1a) => {}
+                        (false, 0x1b) => {
+                            self.esc = true;
+                            self.body = Some(body);
+                        }
+                        (false, _) => {
+                            if !self.overflow {
+                                body.push(b);
+                                if body.len() > MARK_CAP {
+                                    body.truncate(2);
+                                    self.overflow = true;
+                                }
+                            }
+                            self.body = Some(body);
+                        }
+                    }
+                }
+                if self.step_intro(b) {
+                    self.body = Some(Vec::new());
+                    self.overflow = false;
+                    self.esc = false;
+                }
+            }
+            found
+        }
+    }
+}
+
+#[cfg(test)]
+mod equivalence {
+    use super::*;
+    use crate::detector::fixtures::*;
+
+    /// Marks with offsets made absolute, fed in `chunks`.
+    fn run(chunks: &[&[u8]], fast: bool) -> Vec<(usize, Mark)> {
+        let mut s = MarkScanner::new();
+        let mut at = 0;
+        let mut out = Vec::new();
+        for c in chunks {
+            let marks = if fast { s.feed(c) } else { s.feed_bytewise(c) };
+            out.extend(marks.into_iter().map(|(i, m)| (at + i, m)));
+            at += c.len();
+        }
+        out
+    }
+
+    #[test]
+    fn fast_scanners_match_bytewise_at_every_split() {
+        let _ = MarkScanner::new().at_rest();
+        for seed in 1..=200u64 {
+            let stream = random_stream(seed);
+            let ones: Vec<&[u8]> = stream.chunks(1).collect();
+            let want = run(&ones, false);
+            let got = run(&random_chunks(seed, &stream), true);
+            assert_eq!(got, want, "marks, seed {seed}");
+        }
+    }
+
+    #[test]
+    fn fast_scanners_match_bytewise_split_at_every_offset() {
+        let stream = every_sequence();
+        let ones: Vec<&[u8]> = stream.chunks(1).collect();
+        let want = run(&ones, false);
+        assert!(want.len() >= 6, "the stream holds several marks");
+        for cut in 0..=stream.len() {
+            let (a, b) = stream.split_at(cut);
+            assert_eq!(run(&[a, b], true), want, "cut {cut}");
+        }
+    }
 }
 
 #[cfg(test)]

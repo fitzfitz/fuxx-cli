@@ -16,6 +16,8 @@ alacritty_terminal = "0.26.0"
 portable-pty = "0.9.0"
 # Channel from the PTY reader thread to the UI (decision D3). Already in Cargo.lock via GPUI.
 futures = "0.3"
+# Jump over plain text in the byte scanners (M11n). Already in Cargo.lock via GPUI.
+memchr = "2.8"
 # Derive Serialize/Deserialize for the restore file. Already in Cargo.lock via GPUI.
 serde = { version = "1.0.228", features = ["derive"] }
 # JSON for the restore file. Already in Cargo.lock via GPUI.

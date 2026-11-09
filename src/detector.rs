@@ -9,6 +9,7 @@
 //! `CwdReports` reads OSC 7 (`ESC ]7;file://host/path`), the working folder a shell reports
 //! after each `cd` when it's set up to (M11b: the sidebar row's folder and git branch).
 
+use memchr::{memchr, memchr2};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -72,7 +73,17 @@ impl OscDetector {
     /// bytes after its intro, once it's clear it isn't a progress bar.
     pub fn feed(&mut self, bytes: &[u8]) -> usize {
         let mut detections = 0;
-        for &b in bytes {
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.at_rest() {
+                // Nothing partly matched: only an ESC can begin anything, so jump to the next.
+                match memchr(0x1b, &bytes[i..]) {
+                    Some(skip) => i += skip,
+                    None => break,
+                }
+            }
+            let b = bytes[i];
+            i += 1;
             if let Some(seen) = self.after_osc9 {
                 if b != PROGRESS[seen] {
                     detections += 1; // a real OSC 9 notification
@@ -94,6 +105,15 @@ impl OscDetector {
             }
         }
         detections
+    }
+
+    /// No intro partly matched and no OSC 9 look-ahead pending: a byte that is not ESC changes
+    /// nothing.
+    fn at_rest(&self) -> bool {
+        self.osc9.matched == 0
+            && self.osc99.matched == 0
+            && self.osc777.matched == 0
+            && self.after_osc9.is_none()
     }
 }
 
@@ -130,7 +150,32 @@ impl CwdReports {
     /// The last folder reported in full in `bytes`, if any.
     pub fn feed(&mut self, bytes: &[u8]) -> Option<CwdReport> {
         let mut found = None;
-        for &b in bytes {
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.at_rest() {
+                match memchr(0x1b, &bytes[i..]) {
+                    Some(skip) => i += skip,
+                    None => break,
+                }
+            } else if self.in_plain_body() {
+                // Inside a report, up to the next BEL or ESC every byte is just appended.
+                let rest = &bytes[i..];
+                let span = memchr2(0x07, 0x1b, rest).unwrap_or(rest.len());
+                if let Some(report) = self.report.as_mut() {
+                    // One past the limit is enough to know the report is dropped.
+                    let room = (CWD_LIMIT + 1).saturating_sub(report.len());
+                    report.extend_from_slice(&rest[..span.min(room)]);
+                    if report.len() > CWD_LIMIT {
+                        self.report = None;
+                    }
+                }
+                if span > 0 {
+                    i += span;
+                    continue;
+                }
+            }
+            let b = bytes[i];
+            i += 1;
             if let Some(mut report) = self.report.take() {
                 let esc = std::mem::take(&mut self.esc);
                 match (esc, b) {
@@ -155,6 +200,16 @@ impl CwdReports {
             }
         }
         found
+    }
+
+    /// No intro partly matched and no report open: a byte that is not ESC changes nothing.
+    fn at_rest(&self) -> bool {
+        self.report.is_none() && self.intro.matched == 0
+    }
+
+    /// Inside a report whose last byte was not an ESC, with no intro partly matched.
+    fn in_plain_body(&self) -> bool {
+        self.report.is_some() && !self.esc && self.intro.matched == 0
     }
 }
 
@@ -190,6 +245,234 @@ pub fn cwd_from_report(report: &[u8]) -> Option<CwdReport> {
         host,
         path: PathBuf::from(OsStr::from_bytes(&out)),
     })
+}
+
+/// The verbatim byte-at-a-time `feed` bodies from before M11n, kept as the oracle the fast
+/// scanners are proven against.
+#[cfg(test)]
+mod bytewise {
+    use super::*;
+
+    impl OscDetector {
+        pub(super) fn feed_bytewise(&mut self, bytes: &[u8]) -> usize {
+            let mut detections = 0;
+            for &b in bytes {
+                if let Some(seen) = self.after_osc9 {
+                    if b != PROGRESS[seen] {
+                        detections += 1; // a real OSC 9 notification
+                        self.after_osc9 = None;
+                    } else if seen + 1 == PROGRESS.len() {
+                        self.after_osc9 = None; // `ESC ]9;4;`: a progress bar
+                    } else {
+                        self.after_osc9 = Some(seen + 1);
+                    }
+                }
+                if self.osc9.step(b) {
+                    self.after_osc9 = Some(0);
+                }
+                if self.osc99.step(b) {
+                    detections += 1;
+                }
+                if self.osc777.step(b) {
+                    detections += 1;
+                }
+            }
+            detections
+        }
+    }
+
+    impl CwdReports {
+        pub(super) fn feed_bytewise(&mut self, bytes: &[u8]) -> Option<CwdReport> {
+            let mut found = None;
+            for &b in bytes {
+                if let Some(mut report) = self.report.take() {
+                    let esc = std::mem::take(&mut self.esc);
+                    match (esc, b) {
+                        (false, 0x07) | (true, b'\\') => found = cwd_from_report(&report).or(found),
+                        // An ESC that doesn't end it: something else began; this one is abandoned.
+                        (true, _) => {}
+                        (false, 0x1b) => {
+                            self.esc = true;
+                            self.report = Some(report);
+                        }
+                        (false, _) => {
+                            report.push(b);
+                            if report.len() <= CWD_LIMIT {
+                                self.report = Some(report);
+                            }
+                        }
+                    }
+                }
+                if self.intro.step(b) {
+                    self.report = Some(Vec::new());
+                    self.esc = false;
+                }
+            }
+            found
+        }
+    }
+}
+
+/// Streams shared by the three scanner files' equivalence tests (detector, shell marks, clear
+/// counter): seeded plain text mixed with every sequence they read.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    pub fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// Every sequence the scanners read, and near misses.
+    pub fn sequences() -> Vec<Vec<u8>> {
+        let mut long_cwd = b"\x1b]7;file://h/".to_vec();
+        long_cwd.extend(std::iter::repeat_n(b'a', 4097 - 9));
+        long_cwd.push(0x07);
+        let mut long_mark = b"\x1b]133;C;cmdline_url=".to_vec();
+        long_mark.extend(std::iter::repeat_n(b'a', 9000));
+        long_mark.push(0x07);
+        let mut huge_cwd_st = b"\x1b]7;file://h/".to_vec();
+        huge_cwd_st.extend(std::iter::repeat_n(b'b', 4090));
+        huge_cwd_st.extend_from_slice(b"\x1b\\");
+        vec![
+            b"\x1b]9;msg\x07".to_vec(),
+            b"\x1b]9;4;1;50\x07".to_vec(),
+            b"\x1b]9;4;3\x1b\\".to_vec(),
+            b"\x1b]99;i=1;hello\x1b\\".to_vec(),
+            b"\x1b]777;notify;title;body\x07".to_vec(),
+            b"\x1b]7;file://h/p\x07".to_vec(),
+            b"\x1b]7;file://h/a%20b\x1b\\".to_vec(),
+            b"\x1b]133;A\x07".to_vec(),
+            b"\x1b]133;B\x07".to_vec(),
+            b"\x1b]133;C;cmdline_url=ls%20-la\x07".to_vec(),
+            b"\x1b]133;D;0\x07".to_vec(),
+            b"\x1b]133;D;127\x1b\\".to_vec(),
+            b"\x1b[2J".to_vec(),
+            b"\x1b[3J".to_vec(),
+            b"\x1bc".to_vec(),
+            b"\x1b".to_vec(),
+            b"\x1b\x1b".to_vec(),
+            b"\x1b]7;file://h/x\x1b]9;m\x07".to_vec(),
+            b"\x1b]133;C;a\x18b\x07".to_vec(),
+            b"\x1b]133;C;a\x1ab\x07".to_vec(),
+            b"\x1b]7;ab\x18cd\x07".to_vec(),
+            b"\x18".to_vec(),
+            b"\x1a".to_vec(),
+            b"\x1b]13".to_vec(),
+            b"\x1b[".to_vec(),
+            b"\x1b[2".to_vec(),
+            b"\x1b]9".to_vec(),
+            long_cwd,
+            long_mark,
+            huge_cwd_st,
+        ]
+    }
+
+    fn plain(state: &mut u64) -> Vec<u8> {
+        const ALPHABET: &[u8] = b"abc xyz[]2379;4cJ\\\n\r\t\x07";
+        let n = (splitmix(state) % 40) as usize;
+        (0..n)
+            .map(|_| ALPHABET[(splitmix(state) % ALPHABET.len() as u64) as usize])
+            .collect()
+    }
+
+    pub fn random_stream(seed: u64) -> Vec<u8> {
+        let mut state = seed;
+        let seqs = sequences();
+        let mut out = Vec::new();
+        for _ in 0..(20 + splitmix(&mut state) % 40) {
+            out.extend(plain(&mut state));
+            let k = (splitmix(&mut state) % seqs.len() as u64) as usize;
+            out.extend(&seqs[k]);
+        }
+        out.extend(plain(&mut state));
+        out
+    }
+
+    /// One stream holding every sequence, each between bits of text.
+    pub fn every_sequence() -> Vec<u8> {
+        let mut out = Vec::new();
+        for s in sequences() {
+            out.extend_from_slice(b"text ");
+            out.extend(s);
+        }
+        out.extend_from_slice(b" tail");
+        out
+    }
+
+    /// `bytes` cut into random chunks of 1..=4096 bytes.
+    pub fn random_chunks(seed: u64, bytes: &[u8]) -> Vec<&[u8]> {
+        let mut state = seed ^ 0xdead_beef;
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < bytes.len() {
+            let n = (1 + splitmix(&mut state) % 4096) as usize;
+            let end = (at + n).min(bytes.len());
+            out.push(&bytes[at..end]);
+            at = end;
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod equivalence {
+    use super::fixtures::*;
+    use super::*;
+
+    #[test]
+    fn fast_scanners_match_bytewise_at_every_split() {
+        let _ = OscDetector::new().at_rest();
+        let _ = CwdReports::new().at_rest();
+        for seed in 1..=200u64 {
+            let stream = random_stream(seed);
+            let mut slow = OscDetector::new();
+            let want: usize = stream.chunks(1).map(|c| slow.feed_bytewise(c)).sum();
+            let mut fast = OscDetector::new();
+            let got: usize = random_chunks(seed, &stream)
+                .iter()
+                .map(|c| fast.feed(c))
+                .sum();
+            assert_eq!(got, want, "notifications, seed {seed}");
+
+            let mut slow = CwdReports::new();
+            let want = stream
+                .chunks(1)
+                .fold(None, |last, c| slow.feed_bytewise(c).or(last));
+            let mut fast = CwdReports::new();
+            let got = random_chunks(seed, &stream)
+                .iter()
+                .fold(None, |last, c| fast.feed(c).or(last));
+            assert_eq!(got, want, "last cwd, seed {seed}");
+        }
+    }
+
+    #[test]
+    fn fast_scanners_match_bytewise_split_at_every_offset() {
+        let stream = every_sequence();
+        let mut slow = OscDetector::new();
+        let want_n = slow.feed_bytewise(&stream);
+        let mut slow = CwdReports::new();
+        let want_c = stream
+            .chunks(1)
+            .fold(None, |last, c| slow.feed_bytewise(c).or(last));
+        assert!(want_n > 0 && want_c.is_some());
+        for cut in 0..=stream.len() {
+            let (a, b) = stream.split_at(cut);
+            let mut fast = OscDetector::new();
+            assert_eq!(
+                fast.feed(a) + fast.feed(b),
+                want_n,
+                "notifications, cut {cut}"
+            );
+            let mut fast = CwdReports::new();
+            let got = fast.feed(a);
+            let got = fast.feed(b).or(got);
+            assert_eq!(got, want_c, "cwd, cut {cut}");
+        }
+    }
 }
 
 #[cfg(test)]
