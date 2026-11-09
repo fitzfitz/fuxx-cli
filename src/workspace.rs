@@ -2859,9 +2859,10 @@ impl Workspace {
 
     /// The window's top band, the traffic lights' place: pressing it and moving drags the
     /// window, and a double-click does what the macOS setting "Double-click a window's title bar
-    /// to" says. In full screen, which has no traffic lights, it is an empty strip that holds
-    /// the sidebar button, and moves nothing. `label`, if any, is drawn in the band (the
-    /// workspace's name over the content, `title_area`).
+    /// to" says. In full screen, which has no traffic lights, it is a strip that moves nothing.
+    /// `label`, if any, is drawn in the band: the open sidebar's title and sidebar button
+    /// (`render_sidebar`, M11m), or the workspace's name over the content with the sidebar
+    /// hidden (`title_area`).
     pub(crate) fn render_top_band(
         &self,
         id: &'static str,

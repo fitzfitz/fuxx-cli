@@ -12683,7 +12683,8 @@ fn command_blocks_row(
 /// 60 ms in, the sidebar partly out and over the pane column).
 ///
 /// Panics unless the icon is drawn at the sidebar band's right edge shown (M11m) and just right
-/// of the lights hidden, the hover paints the hit area, and mid-slide the sidebar has left the middle of the window (it is only partly out).
+/// of the lights hidden, the hover paints the hit area, and mid-slide the sidebar has left the
+/// middle of the window (it is only partly out).
 fn sidebar_button_scenes() {
     use crate::sidebar_toggle::{BUTTON_Y, Slide, lights_clear, open_button_x};
     use crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH;
@@ -12837,13 +12838,13 @@ fn shot_notifications(ws: &mut Workspace) {
 /// - `title-popover-empty`: the popover with none yet.
 ///
 /// Panics unless the dot shows exactly while some are unseen (and never with the sidebar
-/// hidden), the band (sidebar hidden) holds no 🔔 or + where they were, opening the popover sees them all (and it
-/// counts as an overlay), the name is drawn in the band only with the sidebar hidden and never
-/// past its inset; and (Mocha) unless a press where the buttons were still arms a window drag,
-/// a press on the 🔔 doesn't, a click on the 🔔 opens the popover and Escape or a click outside
-/// closes it, a click on the + opens its menu, a click on a closed terminal's entry (or a
-/// script's with no terminal) does nothing, a click on agent's entry shows agent (its workspace
-/// and tab) with the keyboard, and hiding the sidebar closes the popover.
+/// hidden), the band (sidebar hidden) holds no 🔔 or + where they were, opening the popover sees
+/// them all (and it counts as an overlay), the name is drawn in the band only with the sidebar
+/// hidden and never past its inset; and (Mocha) unless a press where the buttons were still arms
+/// a window drag, a press on the 🔔 doesn't, a click on the 🔔 opens the popover and Escape or a
+/// click outside closes it, a click on the + opens its menu, a click on a closed terminal's entry
+/// (or a script's with no terminal) does nothing, a click on agent's entry shows agent (its
+/// workspace and tab) with the keyboard, and hiding the sidebar closes the popover.
 fn title_area_scenes() {
     use crate::sidebar_toggle::{BUTTON_Y, HIT, lights_clear};
     use crate::tab_menu::Dismiss;
@@ -12976,12 +12977,12 @@ fn title_area_scenes() {
                         // each side its own way, by up to a pixel).
                         let foot = bg(ui.sidebar_background);
                         let top = centre_y - FOOTER_BUTTON / 2.0;
-                        let ink_box = |x0: f32| -> (f32, f32, f32, f32) {
+                        let slot_box = |x0: f32| -> (f32, f32, f32, f32) {
                             let area = (x0, top, FOOTER_BUTTON, FOOTER_BUTTON);
                             ink_box(&shot, dims, area, foot, bg(ui.text_dim))
                                 .unwrap_or_else(|| panic!("{n}: no ink in the slot at {x0}"))
                         };
-                        let boxes = [ink_box(plus_x), ink_box(bell_x), ink_box(gear_x)];
+                        let boxes = [slot_box(plus_x), slot_box(bell_x), slot_box(gear_x)];
                         println!("ui-shots: {n}: footer ink boxes (x0, x1, y0, y1) {boxes:?}");
                         for (name, b) in ["+", "bell", "gear"].iter().zip(boxes) {
                             let tall = b.3 - b.2;
@@ -13348,15 +13349,17 @@ fn title_area_scenes() {
 /// window drag, a press on the button doesn't, a click on it hides the sidebar and ⌘\ shows it.
 fn title_bar_scenes() {
     use crate::sidebar_toggle::{BUTTON_Y, HIT, lights_clear, open_button_x};
-    use crate::title_area::{FOOTER_BUTTON, TITLE_ROOM, footer_buttons};
+    use crate::title_area::{FOOTER_BUTTON, TITLE_GAP, TITLE_ROOM, footer_buttons};
     use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, STATUS_BAR, TOP_BAND};
     use gpui::{KeyBinding, Modifiers, MouseButton};
     use std::cell::RefCell;
     use std::rc::Rc;
 
     const FOOTER: f32 = 36.0;
-    // `title_area`'s room between the title and the button (private there).
-    const TITLE_GAP: f32 = 8.0;
+    // Where the title's ink centre sits against its box's centre: measured 1 pt left (GPUI
+    // snaps the text's origin, and the glyphs' side bearings are uneven). Rebaseline it if the
+    // system font or the GPUI rev changes.
+    const TITLE_INK_SHIFT: f32 = -1.0;
     // The narrowest sidebar that shows the title, up to the next half point.
     let threshold = (2.0 * (lights_clear(false) + TITLE_ROOM / 2.0) * 2.0).ceil() / 2.0;
     let dims = size(px(760.0), px(200.0));
@@ -13437,6 +13440,13 @@ fn title_bar_scenes() {
                     assert!(
                         (30.0..=TITLE_ROOM).contains(&wide),
                         "{n}: the title is {wide} wide (TITLE_ROOM {TITLE_ROOM})"
+                    );
+                    // Against the measured baseline (both ways within half a point), and
+                    // never more than a point off the sidebar's middle.
+                    assert!(
+                        (tx - (sidebar_width / 2.0 + TITLE_INK_SHIFT)).abs() <= 0.5,
+                        "{n}: the title's ink is centred at {tx}, its baseline {}",
+                        sidebar_width / 2.0 + TITLE_INK_SHIFT
                     );
                     assert!(
                         (tx - sidebar_width / 2.0).abs() <= 1.0,
