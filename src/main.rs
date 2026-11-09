@@ -72,6 +72,7 @@ mod restore;
 mod right_sidebar;
 mod session_list;
 mod settings;
+mod shell_integration;
 mod shell_marks;
 mod sidebar;
 mod sidebar_toggle;
@@ -766,6 +767,9 @@ fn main() {
     if let Some(home) = home_dir() {
         app_log::start(&home);
     }
+    // Before any terminal starts (M11l): the zsh integration's scripts, written only when
+    // missing or changed. A failure is logged and leaves it off.
+    shell_integration::setup();
     // Clicks on fuxx's banners, heard from before the app runs (a click that opened fuxx comes
     // as it starts), wait here for the workspace (from the app bundle only).
     let (clicked, clicks) = futures::channel::mpsc::unbounded();

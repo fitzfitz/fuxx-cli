@@ -1321,6 +1321,8 @@ impl Workspace {
             Some(session_id),
             exe_dir().as_deref(),
             ssh_login_env(&saved),
+            program.is_none(),
+            zsh_integration(cx),
         );
         let spawned = TerminalView::spawn(cx, program, cwd.as_deref(), startup.as_deref(), &env);
         let view = match spawned {
@@ -1347,7 +1349,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ssh = launch.saved.ssh.is_some();
-        let create = self.create_for(&launch, program);
+        let create = self.create_for(&launch, program, cx);
         let pending = client.create_in_background(create);
         cx.spawn_in(window, async move |this, cx| {
             let answer = pending.await;
@@ -1371,26 +1373,35 @@ impl Workspace {
     /// The `Create` for `launch`: the environment as `open_local` gives it, except
     /// `FUXX_SESSION`, which the service sets (it knows the id). `program`: run instead of a
     /// login shell.
-    pub(crate) fn create_for(&self, launch: &Launch, program: Option<Vec<String>>) -> Create {
+    pub(crate) fn create_for(
+        &self,
+        launch: &Launch,
+        program: Option<Vec<String>>,
+        cx: &App,
+    ) -> Create {
         let (cwd, startup) = start_in(&launch.saved, launch.run_preset);
+        let env = self.create_env(&launch.saved, program.is_none(), cx);
         Create {
             program,
-            ..daemon_create(
-                cwd.as_deref(),
-                startup.as_deref(),
-                self.create_env(&launch.saved),
-                &launch.saved,
-            )
+            ..daemon_create(cwd.as_deref(), startup.as_deref(), env, &launch.saved)
         }
     }
 
-    /// The environment a background-service session for `saved` starts with.
-    pub(crate) fn create_env(&self, saved: &SavedSession) -> BTreeMap<String, String> {
+    /// The environment a background-service session for `saved` starts with; `login_shell`:
+    /// it runs your login shell (no `program`), which may get the zsh integration.
+    pub(crate) fn create_env(
+        &self,
+        saved: &SavedSession,
+        login_shell: bool,
+        cx: &App,
+    ) -> BTreeMap<String, String> {
         daemon_client::create_env(&session_env(
             self.socket.as_deref(),
             None,
             exe_dir().as_deref(),
             ssh_login_env(saved),
+            login_shell,
+            zsh_integration(cx),
         ))
     }
 
@@ -3434,12 +3445,16 @@ fn scripting_env(
 }
 
 /// A session's environment: `scripting_env` on fuxx's own, or with `login` (an SSH session's,
-/// M10b: your login shell's) on that, its `PATH` included.
+/// M10b: your login shell's) on that, its `PATH` included. For your login shell
+/// (`login_shell`: no `program`), also what `shell_integration::env_for` adds for `$SHELL` with
+/// `integration`, the installed scripts' folder while `command-blocks` is on (M11l).
 fn session_env(
     socket: Option<&Path>,
     id: Option<u64>,
     exe_dir: Option<&Path>,
     login: Option<&[(String, String)]>,
+    login_shell: bool,
+    integration: Option<&Path>,
 ) -> ShellEnv {
     let path = match login {
         Some(login) => login
@@ -3448,10 +3463,31 @@ fn session_env(
             .map(|(_, path)| OsString::from(path)),
         None => std::env::var_os("PATH"),
     };
-    ShellEnv {
+    let mut env = ShellEnv {
         base: login.map(<[_]>::to_vec),
         ..scripting_env(socket, id, exe_dir, path.as_deref())
+    };
+    if login_shell {
+        // The shell `pty::command` starts for no program; `$SHELL` unset: no integration.
+        let shell = std::env::var_os("SHELL").unwrap_or_default();
+        let zdotdir = std::env::var_os("ZDOTDIR");
+        env.set.extend(crate::shell_integration::env_for(
+            Path::new(&shell),
+            zdotdir.as_deref(),
+            integration.is_some(),
+            integration,
+        ));
     }
+    env
+}
+
+/// The installed zsh integration's folder while `command-blocks` is on; none otherwise (read
+/// when a terminal is spawned, so the setting applies to new terminals only).
+fn zsh_integration(cx: &App) -> Option<&'static Path> {
+    cx.global::<Appearance>()
+        .command_blocks
+        .then(crate::shell_integration::installed)
+        .flatten()
 }
 
 /// An SSH session's base environment: the login shell's, once read (`ssh_program` reads it
@@ -3740,7 +3776,7 @@ mod tests {
             ("PATH".to_string(), "/opt/homebrew/bin:/usr/bin".to_string()),
             ("SSH_AUTH_SOCK".to_string(), "/agent".to_string()),
         ];
-        let env = session_env(Some(ours), Some(4), Some(exe), Some(&login));
+        let env = session_env(Some(ours), Some(4), Some(exe), Some(&login), false, None);
         assert_eq!(env.base.as_deref(), Some(&login[..]));
         let var = |k: &str| {
             env.set
@@ -3755,7 +3791,7 @@ mod tests {
         );
         assert_eq!(var("FUXX_SESSION"), Some("s4"));
         // Without it (a local session, or none read): fuxx's own, as before.
-        let own = session_env(Some(ours), Some(4), Some(exe), None);
+        let own = session_env(Some(ours), Some(4), Some(exe), None, false, None);
         assert!(own.base.is_none());
         let path = std::env::var("PATH").unwrap_or_default();
         let expected = if path.is_empty() {
@@ -3767,6 +3803,33 @@ mod tests {
             own.set.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v),
             Some(&expected)
         );
+    }
+
+    #[test]
+    fn session_env_injects_only_a_login_shell() {
+        let ours = Path::new("/me/fuxx.sock");
+        let i = Some(Path::new("/i"));
+        let keys = |env: &crate::pty::ShellEnv| -> Vec<String> {
+            env.set.iter().map(|(k, _)| k.clone()).collect()
+        };
+        // Not a login shell (SSH's `ssh`, a program): nothing added.
+        let program = session_env(Some(ours), Some(4), None, None, false, i);
+        assert!(!keys(&program).iter().any(|k| k.contains("ZDOTDIR")));
+        // No integration (off, or not installed): nothing added either.
+        let off = session_env(Some(ours), Some(4), None, None, true, None);
+        assert_eq!(off.set, program.set);
+        // A login shell: what `env_for` gives for `$SHELL`, after the rest; nothing removed.
+        let login = session_env(Some(ours), Some(4), None, None, true, i);
+        let shell = std::env::var_os("SHELL").unwrap_or_default();
+        let zdotdir = std::env::var_os("ZDOTDIR");
+        let added =
+            crate::shell_integration::env_for(Path::new(&shell), zdotdir.as_deref(), true, i);
+        assert_eq!(login.set[..program.set.len()], program.set[..]);
+        assert_eq!(login.set[program.set.len()..], added[..]);
+        assert_eq!(login.remove, program.remove);
+        if Path::new(&shell).file_name() == Some(OsStr::new("zsh")) {
+            assert!(keys(&login).contains(&"ZDOTDIR".to_string()));
+        }
     }
 
     #[test]

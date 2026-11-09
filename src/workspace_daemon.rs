@@ -252,7 +252,10 @@ impl Workspace {
                                 cx.background_spawn(async move { ssh_program(&target, None) });
                             create.program = Some(program.await);
                             // Again, now the login shell's environment has been read for it.
-                            if let Ok(env) = this.update(cx, |this, _| this.create_env(&saved)) {
+                            // Runs `ssh`, not your login shell: no zsh integration.
+                            if let Ok(env) =
+                                this.update(cx, |this, cx| this.create_env(&saved, false, cx))
+                            {
                                 create.env = env;
                             }
                         }
@@ -317,7 +320,7 @@ impl Workspace {
             .iter()
             .map(|slot| match slot {
                 Slot::Restore(launch) => {
-                    Some((self.create_for(launch, None), launch.saved.ssh.clone()))
+                    Some((self.create_for(launch, None, cx), launch.saved.ssh.clone()))
                 }
                 Slot::Live(_) => None,
             })
