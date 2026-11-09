@@ -3,7 +3,7 @@
 //! A session owns the child's PTY, the authoritative `Term` and its parser, the notification
 //! detector and the status tracker. Everything that changes the Term happens under one lock,
 //! together with numbering it and queueing it to subscribers (the ordering invariant, §2.3.3):
-//! - the reader thread: `Term.advance`, `seq += 1`, queue `Output{seq}`;
+//! - the parser thread: `Term.advance`, `seq += 1`, queue `Output{seq}`;
 //! - `resize`: `Term.resize`, `seq += 1`, queue `Resized{seq}`, then resize the PTY;
 //! - `attach`: encode a snapshot at the current `seq` and register the subscriber.
 //!
