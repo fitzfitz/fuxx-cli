@@ -12,6 +12,7 @@ mod api_server;
 mod app_icon;
 mod app_log;
 mod appearance;
+mod block_view;
 mod blocks;
 mod browser;
 mod browser_history;

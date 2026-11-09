@@ -70,11 +70,12 @@ pub struct GridSnapshot {
     pub clears: u64,
     /// The command blocks shown (M11l), oldest first; `TerminalCore::snapshot_with_blocks`
     /// fills them in (empty here, and on the alternate screen).
-    #[allow(dead_code)] // drawn in M11l task 4
     pub blocks: Vec<BlockView>,
     /// The viewport row of the top of the prompt shown now, if it is tagged (`None` here).
-    #[allow(dead_code)] // drawn in M11l task 4
     pub live_prompt: Option<i32>,
+    /// Lines of scrollback above the screen: the first of them is viewport row
+    /// `display_offset - history_size`.
+    pub history_size: usize,
 }
 
 /// One command block as the view draws it. Rows are viewport rows (row 0 = top of the visible
@@ -85,6 +86,10 @@ pub struct BlockView {
     pub outcome: Outcome,
     /// The prompt's rows and the command's, top to bottom.
     pub prompt: (i32, i32),
+    /// The command's first row (the tag's), where the chip opens.
+    pub cmd_row: i32,
+    /// The command line the shell reported, if any: what the chip shows.
+    pub cmd: Option<String>,
     /// The output's rows; none when there is no output.
     pub output: Option<(i32, i32)>,
     /// The block the user picked (drawn whole, found anywhere in scrollback).
@@ -270,6 +275,7 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
         clears: 0,
         blocks: Vec::new(),
         live_prompt: None,
+        history_size: term.grid().history_size(),
     }
 }
 

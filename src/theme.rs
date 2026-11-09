@@ -140,6 +140,11 @@ pub struct UiColors {
     pub tab_hover: Rgb,
     /// The Files tree's 1 px indent guides, quiet on the card.
     pub guide: Rgb,
+    /// Command blocks' gutter bars (M11l), held to `MARK_MIN` on the terminal: a finished
+    /// command (exit 0 or not reported), a failed one, a running one.
+    pub block_ok: Rgb,
+    pub block_failed: Rgb,
+    pub block_running: Rgb,
 }
 
 impl UiColors {
@@ -338,6 +343,9 @@ impl Theme {
             tab_bar,
             tab_hover,
             guide: quiet(mix(card, fg, 0.12), &[card]),
+            block_ok: ensure_contrast(self.palette[8], bg, MARK_MIN),
+            block_failed: ensure_contrast(self.palette[1], bg, MARK_MIN),
+            block_running: ensure_contrast(mark(self.palette[3]), bg, MARK_MIN),
         }
     }
 }

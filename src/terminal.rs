@@ -789,7 +789,6 @@ impl TerminalCore {
 
     /// `snapshot` with the command blocks to draw (M11l), under the same lock: the viewport
     /// and 8 rows below it, plus the `chosen` block wherever it is in scrollback.
-    #[allow(dead_code)] // drawn in M11l task 4
     pub fn snapshot_with_blocks(&self, chosen: Option<&str>) -> GridSnapshot {
         let theme = self.theme();
         let shared = self.shared.lock();

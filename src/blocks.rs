@@ -400,7 +400,7 @@ pub struct Block {
 /// screen. Each block keeps to the rows between the tags around it (any tag, a prompt's too),
 /// so no row is in two blocks, whatever a forged tag claims, and the walks add up to one pass
 /// over the grid. Reads the whole scrollback: on a keypress or off the UI thread only.
-#[allow(dead_code)] // wired in M11l task 4
+#[allow(dead_code)] // wired in M11l task 5 (the ui-shots read it now)
 pub fn list<L>(term: &Term<L>) -> Vec<Block> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return Vec::new();
@@ -478,7 +478,6 @@ pub fn block_cmd<L>(term: &Term<L>, id: &str) -> Option<String> {
 /// The top row of the prompt shown now: the newest tag's, if it is a prompt's. Looks from the
 /// bottom of the screen to `C_SCAN_ROWS` above the cursor (as far as a `C` looks for its
 /// prompt), so it is cheap enough for every frame.
-#[allow(dead_code)] // drawn in M11l task 4 (through `visible`)
 pub fn live_prompt<L>(term: &Term<L>) -> Option<Line> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return None;
@@ -522,7 +521,6 @@ const BELOW_VIEW: i32 = 8;
 /// or one row past the view's bottom, which then means "continues below" (rows above the view
 /// likewise stop one row above its top). So a frame's work is the viewport's, whatever forged
 /// tags claim. A block whose command row is under the view shows no output rows.
-#[allow(dead_code)] // drawn in M11l task 4
 pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Option<i32>) {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return (Vec::new(), None);
@@ -595,6 +593,8 @@ pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Opti
             id: b.id,
             outcome: b.outcome,
             prompt: (b.prompt_top.0 + offset, cmd_end.0 + offset),
+            cmd_row: b.cmd_row.0 + offset,
+            cmd: b.cmd,
             output: b
                 .output
                 .map(|(first, last)| (first.0 + offset, last.0 + offset)),
@@ -1395,27 +1395,24 @@ mod tests {
         // 16 rows on a 6-row screen: block 1's command row is Line(-10), above the view.
         let ids: Vec<String> = sh.blocks().into_iter().map(|b| b.id).collect();
         assert_eq!(ids.len(), 3);
-        let view = |id: &str, outcome, prompt, output, chosen| BlockView {
-            id: id.to_string(),
+        let names = ["one", "two", "three"];
+        let view = |i: usize, outcome, prompt: (i32, i32), output, chosen| BlockView {
+            id: ids[i].clone(),
             outcome,
             prompt,
+            cmd_row: prompt.1,
+            cmd: Some(names[i].to_string()),
             output,
             chosen,
         };
-        let one = |chosen| view(&ids[0], Outcome::Ok, (-10, -10), Some((-9, 0)), chosen);
+        let one = |chosen| view(0, Outcome::Ok, (-10, -10), Some((-9, 0)), chosen);
         let two = |shift: i32| {
             let o = Some((2 + shift, 2 + shift));
-            view(
-                &ids[1],
-                Outcome::Failed(1),
-                (1 + shift, 1 + shift),
-                o,
-                false,
-            )
+            view(1, Outcome::Failed(1), (1 + shift, 1 + shift), o, false)
         };
         let three = |shift: i32| {
             let o = Some((4 + shift, 4 + shift));
-            view(&ids[2], Outcome::Unknown, (3 + shift, 3 + shift), o, false)
+            view(2, Outcome::Unknown, (3 + shift, 3 + shift), o, false)
         };
         assert_eq!(
             visible(&sh.term, None),
@@ -1446,6 +1443,7 @@ mod tests {
         let (blocks, _) = visible(&sh.term, None);
         let one_here = BlockView {
             prompt: (0, 0),
+            cmd_row: 0,
             output: Some((1, 6)),
             ..one(false)
         };
@@ -1576,6 +1574,11 @@ mod tests {
         let (views, _) = visible(&sh.term, None);
         assert_eq!(views.len(), 2, "{views:?}");
         assert_eq!(views[1].prompt.0, next.prompt_top.0, "{views:?}");
+        assert_eq!(
+            views[1].cmd_row, next.cmd_row.0,
+            "the command row, under the prompt's"
+        );
+        assert_eq!(views[1].cmd.as_deref(), Some("ls"));
         assert_eq!(views[0].output.map(|o| o.1), Some(next.prompt_top.0 - 1));
         // Chosen while its command row is just above the view, it stops there too.
         sh.feed(b"\r\n");

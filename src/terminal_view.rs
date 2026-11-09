@@ -29,6 +29,11 @@ use gpui::{
 };
 
 use crate::appearance::{Appearance, CursorFun, CursorShapeSetting};
+use crate::block_view::{
+    self, BAR_END_GAP, BAR_RADIUS, CHIP_GAP, CHIP_HEIGHT, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS,
+    GUTTER_BAR, GUTTER_BAR_ACTIVE, GutterHit, SEPARATOR,
+};
+use crate::blocks::Outcome;
 use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
 use crate::daemon_client::DaemonClient;
 use crate::grid::{self, GridSnapshot, TextScope};
@@ -38,8 +43,9 @@ use crate::mouse::{self, Button, Mods, MouseAction, ScrollAccumulator};
 use crate::pty;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, TermEvent, TerminalCore};
-use crate::theme::Theme;
+use crate::theme::{Theme, UiColors};
 use crate::ui_tokens::size as ui_size;
+use crate::ui_tokens::text as ui_text;
 
 // Bound in main.rs with the "Terminal" key context. GPUI runs key bindings before `on_key_down`,
 // so these win over the byte mapping.
@@ -111,6 +117,48 @@ impl GridLayout {
     }
 }
 
+/// What the last paint drew of the command blocks (M11l), for the hover, the chip and gutter
+/// presses: the bars' hit areas, the blocks they belong to, and where the gutter and the grid
+/// are (window points). Empty with `command-blocks` off and on the alternate screen.
+#[derive(Default)]
+struct GutterPaint {
+    hits: Vec<GutterHit>,
+    blocks: Vec<ChipBlock>,
+    /// The gutter strip: from the pane's left edge to the grid's.
+    strip: (Pixels, Pixels),
+    pane: Bounds<Pixels>,
+    grid: Bounds<Pixels>,
+}
+
+/// A block whose bar was painted: what its chip shows and where it opens.
+struct ChipBlock {
+    id: String,
+    outcome: Outcome,
+    cmd: Option<String>,
+    cmd_top: Pixels,
+}
+
+impl GutterPaint {
+    /// The block whose bar is under window position `pos`, if any.
+    fn hit(&self, pos: gpui::Point<Pixels>) -> Option<&ChipBlock> {
+        if pos.x < self.strip.0 || pos.x >= self.strip.1 {
+            return None;
+        }
+        let hit = block_view::hit_at(&self.hits, f32::from(pos.y))?;
+        self.blocks.get(hit.id_index)
+    }
+}
+
+/// The chip as `render` lays it out: what it says and where it goes, relative to the pane.
+struct Chip {
+    outcome: Option<(String, Rgb)>,
+    cmd: Option<String>,
+    buttons: [&'static str; 3],
+    left: Pixels,
+    top: Pixels,
+    max_width: Pixels,
+}
+
 /// The space inside a terminal's padding (16 px sides, 12 px top and bottom; 12 and 10 in a
 /// split). The grid is fitted into it (`GridLayout::fit`); the padding is painted with the
 /// background.
@@ -169,6 +217,19 @@ pub struct TerminalView {
     motion: Rc<RefCell<CursorMotion>>,
     /// The breathing timer is running (`breathe`).
     breathing: bool,
+    /// Command blocks (M11l): what the last paint drew in the gutter, written by the canvas.
+    gutter: Rc<RefCell<GutterPaint>>,
+    /// The block whose gutter the pointer is over (or was, until `chip_hide` runs out): its
+    /// bar is wide and its chip open.
+    hovered_block: Option<String>,
+    /// The block picked (M11l Task 5: ⇧⌘↑ / ⇧⌘↓ or a click on its bar): its bar runs its
+    /// whole height in the accent. Cleared by typing and by a press in the grid.
+    chosen_block: Option<String>,
+    /// Where the chip was last laid out (written as it prepaints), for the hover.
+    chip_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Hides the chip `CHIP_HIDE_MS` after the pointer left the gutter and the chip; dropped
+    /// (cancelled) when it comes back.
+    chip_hide: Option<Task<()>>,
     /// UI screenshots: count the window as the key one (an off-screen window never is).
     #[cfg(feature = "ui-shots")]
     shot_key_window: Cell<bool>,
@@ -324,6 +385,41 @@ impl TerminalView {
         ))
     }
 
+    /// The block whose gutter the pointer is over (or was, until the chip goes).
+    #[cfg(feature = "ui-shots")]
+    pub fn hovered_block(&self) -> Option<&str> {
+        self.hovered_block.as_deref()
+    }
+
+    /// The open chip: its label, buttons and where it was laid out.
+    #[cfg(feature = "ui-shots")]
+    pub fn chip_shot(&self) -> Option<(String, [&'static str; 3], Bounds<Pixels>)> {
+        let chip = self.chip(&self.core.theme().ui())?;
+        let gutter = self.gutter.borrow();
+        let id = self.hovered_block.as_deref()?;
+        let block = gutter.blocks.iter().find(|b| b.id == id)?;
+        let label = block_view::chip_label(block.outcome, block.cmd.as_deref());
+        Some((label, chip.buttons, self.chip_bounds.get()?))
+    }
+
+    /// Send `bytes` to the program as a query reply would go (not typed: no snap, no hide).
+    #[cfg(feature = "ui-shots")]
+    pub fn write_to_program(&self, bytes: &[u8]) {
+        self.core.write(bytes);
+    }
+
+    /// The selected text, if any.
+    #[cfg(feature = "ui-shots")]
+    pub fn selection_text(&self) -> Option<String> {
+        self.core.selection_text()
+    }
+
+    /// Every block's id, oldest first.
+    #[cfg(feature = "ui-shots")]
+    pub fn block_ids(&self) -> Vec<String> {
+        self.core.blocks().into_iter().map(|b| b.id).collect()
+    }
+
     /// The redraws the cursor asked for at its last paint.
     #[cfg(feature = "ui-shots")]
     pub fn cursor_frames(&self) -> Frames {
@@ -346,6 +442,83 @@ impl TerminalView {
     #[cfg(feature = "ui-shots")]
     pub fn spark_bursts(&self) -> u64 {
         self.motion.borrow().seed
+    }
+
+    /// The block picked with ⇧⌘↑ / ⇧⌘↓ or a click on its bar (M11l Task 5), by id.
+    #[allow(dead_code)] // read by the block actions in M11l task 5
+    pub fn chosen_block(&self) -> Option<&str> {
+        self.chosen_block.as_deref()
+    }
+
+    /// Pick block `id` (or none): its bar runs its whole height in the accent.
+    #[allow(dead_code)] // set by the block keys and gutter clicks in M11l task 5
+    pub fn set_chosen_block(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        if self.chosen_block != id {
+            self.chosen_block = id;
+            cx.notify();
+        }
+    }
+
+    /// Close the chip now (output, typing, a press or a scroll in the grid). True if it was open.
+    fn hide_chip(&mut self) -> bool {
+        self.chip_hide = None;
+        self.hovered_block.take().is_some()
+    }
+
+    /// Follow the pointer over the gutter: over a block's bar, open its chip; over the chip,
+    /// keep it; anywhere else, close it `CHIP_HIDE_MS` later. `can_hover`: the pointer is over
+    /// this pane with no button down.
+    fn follow_gutter(&mut self, pos: gpui::Point<Pixels>, can_hover: bool, cx: &mut Context<Self>) {
+        let over = match can_hover && cx.global::<Appearance>().command_blocks {
+            true => self.gutter.borrow().hit(pos).map(|b| b.id.clone()),
+            false => None,
+        };
+        let on_chip = self.hovered_block.is_some()
+            && self.chip_bounds.get().is_some_and(|b| b.contains(&pos));
+        if let Some(id) = over {
+            self.chip_hide = None;
+            if self.hovered_block.as_ref() != Some(&id) {
+                self.hovered_block = Some(id);
+                cx.notify();
+            }
+        } else if on_chip {
+            self.chip_hide = None;
+        } else if self.hovered_block.is_some() && self.chip_hide.is_none() {
+            self.chip_hide = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(CHIP_HIDE_MS))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.hide_chip() {
+                        cx.notify();
+                    }
+                });
+            }));
+        }
+    }
+
+    /// The hovered block's chip, from the last paint's gutter: none when the block isn't drawn
+    /// (scrolled off, the alternate screen, `command-blocks` off).
+    fn chip(&self, ui: &UiColors) -> Option<Chip> {
+        let id = self.hovered_block.as_deref()?;
+        let gutter = self.gutter.borrow();
+        let block = gutter.blocks.iter().find(|b| b.id == id)?;
+        let (pane, grid) = (gutter.pane, gutter.grid);
+        let left = grid.left() + px(CHIP_GAP);
+        let top = block_view::chip_top(
+            f32::from(block.cmd_top),
+            f32::from(grid.top()),
+            f32::from(grid.bottom()),
+        );
+        Some(Chip {
+            outcome: block_view::chip_outcome(block.outcome)
+                .map(|o| (o, block_view::outcome_ink(block.outcome, ui))),
+            cmd: block.cmd.as_deref().map(block_view::chip_command),
+            buttons: block_view::chip_buttons(f32::from(grid.size.width)),
+            left: left - pane.left(),
+            top: px(top) - pane.top(),
+            max_width: (grid.right() - left).max(px(0.0)),
+        })
     }
 
     /// The status of this terminal's session, for the cursor's colour; redraws on a change.
@@ -526,6 +699,11 @@ impl TerminalView {
             status: Status::Idle,
             motion: Rc::new(RefCell::new(CursorMotion::new(Instant::now()))),
             breathing: false,
+            gutter: Rc::new(RefCell::new(GutterPaint::default())),
+            hovered_block: None,
+            chosen_block: None,
+            chip_bounds: Rc::new(Cell::new(None)),
+            chip_hide: None,
             #[cfg(feature = "ui-shots")]
             shot_key_window: Cell::new(false),
             _events: events,
@@ -546,8 +724,10 @@ impl TerminalView {
                     self.status_changed(status, cx);
                 }
                 // Link spans are absolute grid lines that shift as output scrolls; the next
-                // mouse move recomputes the hover.
+                // mouse move recomputes the hover. Output may move the blocks too: the chip
+                // closes, and the next move over a bar opens it again.
                 self.hovered = None;
+                self.hide_chip();
                 cx.notify();
             }
             TermEvent::Term(Event::Wakeup) => cx.notify(),
@@ -657,6 +837,8 @@ impl TerminalView {
             return;
         }
         self.core.input(bytes);
+        self.hide_chip();
+        self.chosen_block = None;
         // You typed: the breath holds.
         self.motion.borrow_mut().changed = Instant::now();
         self.hear_of_resize();
@@ -708,6 +890,8 @@ impl TerminalView {
         if lines == 0 {
             return;
         }
+        // The blocks move (or the program has the wheel): the chip closes.
+        self.hide_chip();
         let mode = self.core.mode();
         let shift = e.modifiers.shift;
         if mouse::wants_mouse(mode, shift) {
@@ -741,6 +925,17 @@ impl TerminalView {
 
     fn on_mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
+        // A press on a block's bar never reaches the selection or the program (M11l Task 5
+        // picks the block there).
+        if cx.global::<Appearance>().command_blocks
+            && self.gutter.borrow().hit(e.position).is_some()
+        {
+            return;
+        }
+        // A press in the grid closes the chip and drops the picked block.
+        if self.hide_chip() | self.chosen_block.take().is_some() {
+            cx.notify();
+        }
         let Some((point, side, col, row)) = self.point_at(e.position) else {
             return;
         };
@@ -812,6 +1007,7 @@ impl TerminalView {
             self.hovered = hovered;
             cx.notify();
         }
+        self.follow_gutter(e.position, over_pane && e.pressed_button.is_none(), cx);
     }
 
     /// Window-wide (registered in paint), so a release outside the pane still ends a drag.
@@ -919,6 +1115,8 @@ impl Render for TerminalView {
         let key_window = self.key_window(window);
         let appearance = cx.global::<Appearance>();
         let theme = self.core.theme();
+        let ui = theme.ui();
+        let blocks_on = appearance.command_blocks;
         let cursor = CursorSettings {
             setting: appearance.cursor_style,
             focused,
@@ -930,7 +1128,7 @@ impl Render for TerminalView {
             color: cursor_look::cursor_color(
                 self.status,
                 appearance.cursor_follows_status,
-                &theme.ui(),
+                &ui,
                 &theme,
             ),
         };
@@ -942,6 +1140,14 @@ impl Render for TerminalView {
         let hovered = self.hovered.clone();
         let split = self.split.get();
         let view = cx.entity();
+        let gutter = self.gutter.clone();
+        let chosen = self.chosen_block.clone().filter(|_| blocks_on);
+        let hovered_block = self.hovered_block.clone().filter(|_| blocks_on);
+        let chip = if blocks_on { self.chip(&ui) } else { None };
+        if chip.is_none() {
+            self.chip_bounds.set(None);
+        }
+        let chip = chip.map(|chip| chip_element(chip, &ui, self.chip_bounds.clone()));
 
         div()
             .size_full()
@@ -989,14 +1195,40 @@ impl Render for TerminalView {
                     },
                     // paint: draw the current screen, set the pointer, follow the mouse.
                     move |bounds, (metrics, origin, hitbox), window, cx| {
-                        let mut snap = paint_core.snapshot();
+                        // With command blocks on, the blocks in view come with the screen,
+                        // under the same lock (the viewport and 8 rows below, plus the chosen
+                        // block); nothing is read for them otherwise.
+                        let mut snap = match blocks_on {
+                            true => paint_core.snapshot_with_blocks(chosen.as_deref()),
+                            false => paint_core.snapshot(),
+                        };
                         if let Some(link) = &hovered {
                             let offset = paint_core.display_offset();
                             grid::underline_cells(&mut snap, link.start, link.end, offset);
                         }
                         let look =
                             cursor.look(&snap, &theme, &mut motion.borrow_mut(), Instant::now());
-                        paint_grid(snap, &theme, &metrics, bounds, origin, look, window, cx);
+                        let marks = BlockMarks {
+                            blocks: std::mem::take(&mut snap.blocks),
+                            live_prompt: snap.live_prompt,
+                            first_line: snap.display_offset as i32 - snap.history_size as i32,
+                            dims: (snap.cols, snap.rows),
+                            split,
+                            hovered: hovered_block.as_deref(),
+                        };
+                        let mut painted = GutterPaint::default();
+                        paint_grid(
+                            snap,
+                            &theme,
+                            &metrics,
+                            bounds,
+                            origin,
+                            look,
+                            |window| painted = marks.paint(&ui, &metrics, bounds, origin, window),
+                            window,
+                            cx,
+                        );
+                        *gutter.borrow_mut() = painted;
                         // The next redraw the cursor needs (none when still).
                         let frames = motion.borrow().frames;
                         match frames {
@@ -1036,6 +1268,181 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             )
+            .children(chip)
+    }
+}
+
+/// The chip (M11l): an absolutely placed panel over the grid, 4 pt right of the gutter at the
+/// command row's top: the outcome and the command on the left, three buttons on the right
+/// (they do nothing until M11l Task 5). It blocks presses from the grid under it (so they
+/// never select or reach the program) but not the wheel. Records where it was laid out in
+/// `bounds`, for the hover.
+fn chip_element(chip: Chip, ui: &UiColors, bounds: Rc<Cell<Option<Bounds<Pixels>>>>) -> gpui::Div {
+    let has_cmd = chip.cmd.is_some();
+    let mut label = div()
+        .flex()
+        .flex_row()
+        .flex_shrink(1.0)
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .gap(px(4.0));
+    if let Some((outcome, ink)) = chip.outcome {
+        label = label.child(div().flex_none().text_color(hsla(ink)).child(outcome));
+        if has_cmd {
+            label = label.child(div().flex_none().text_color(hsla(ui.text_dim)).child("·"));
+        }
+    }
+    if let Some(cmd) = chip.cmd {
+        label = label.child(
+            div()
+                .flex_shrink(1.0)
+                .min_w(px(0.0))
+                .truncate()
+                .text_color(hsla(ui.text))
+                .child(cmd),
+        );
+    }
+    let buttons = chip.buttons.into_iter().enumerate().map(|(i, name)| {
+        // Copy command and Rerun need a recorded command.
+        let enabled = has_cmd || i == 1;
+        let button = div()
+            .flex()
+            .items_center()
+            .h(px(18.0))
+            .px(px(5.0))
+            .rounded(px(4.0))
+            .text_color(hsla(if enabled { ui.text_dim } else { ui.text_faint }))
+            .child(name);
+        match enabled {
+            true => button.hover(|style| style.bg(hsla(ui.panel_hover))),
+            false => button,
+        }
+    });
+    let panel = div()
+        .max_w(chip.max_width)
+        .h(px(CHIP_HEIGHT))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(CHIP_PAD))
+        .rounded(px(CHIP_RADIUS))
+        .bg(hsla(ui.panel))
+        .border_1()
+        .border_color(hsla(ui.panel_border))
+        .shadow(vec![BoxShadow {
+            color: Hsla {
+                a: 0.2,
+                ..hsla(ui.shadow)
+            },
+            offset: point(px(0.0), px(2.0)),
+            blur_radius: px(8.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .text_size(px(ui_text::META))
+        .whitespace_nowrap()
+        .child(label)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_none()
+                .gap(px(2.0))
+                .children(buttons),
+        );
+    // The panel in a bare box of its size, so the box's bounds are the panel's.
+    div()
+        .absolute()
+        .left(chip.left)
+        .top(chip.top)
+        .block_mouse_except_scroll()
+        .child(
+            canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+        )
+        .child(panel)
+}
+
+/// The command blocks a frame draws (M11l), taken from its snapshot: in viewport rows.
+struct BlockMarks<'a> {
+    blocks: Vec<grid::BlockView>,
+    live_prompt: Option<i32>,
+    /// The viewport row of the first line of scrollback (no hairline there).
+    first_line: i32,
+    /// The grid's columns and rows.
+    dims: (usize, usize),
+    split: bool,
+    hovered: Option<&'a str>,
+}
+
+impl BlockMarks<'_> {
+    /// Paint the hairlines above prompts (under the text) and the bars in the left padding,
+    /// and say where the bars are. `bounds` is the pane, `origin` the grid's first cell.
+    fn paint(
+        &self,
+        ui: &UiColors,
+        m: &CellMetrics,
+        bounds: Bounds<Pixels>,
+        origin: gpui::Point<Pixels>,
+        window: &mut Window,
+    ) -> GutterPaint {
+        let (cols, rows) = self.dims;
+        let grid = Bounds::new(
+            origin,
+            size(m.cell_width * cols as f32, m.line_height * rows as f32),
+        );
+        let row_y = |r: i32| origin.y + m.line_height * r as f32;
+        for r in block_view::separator_rows(&self.blocks, self.live_prompt, rows, self.first_line) {
+            let line = Bounds::new(
+                point(origin.x, row_y(r)),
+                size(grid.size.width, px(SEPARATOR)),
+            );
+            window.paint_quad(fill(line, hsla(ui.card_border)));
+        }
+        let centre = origin.x - px(block_view::gutter_x(self.split));
+        let mut painted = GutterPaint {
+            strip: (bounds.left(), origin.x),
+            pane: bounds,
+            grid,
+            ..GutterPaint::default()
+        };
+        for b in &self.blocks {
+            let Some((top, bottom)) = block_view::bar_rows(b, rows) else {
+                continue;
+            };
+            let active = b.chosen || self.hovered == Some(b.id.as_str());
+            let width = px(if active {
+                GUTTER_BAR_ACTIVE
+            } else {
+                GUTTER_BAR
+            });
+            let color = match b.chosen {
+                true => ui.accent,
+                false => block_view::bar_color(b.outcome, ui),
+            };
+            let (y0, y1) = (row_y(top), row_y(bottom + 1));
+            let bar = Bounds::new(
+                point(centre - width / 2.0, y0 + px(BAR_END_GAP)),
+                size(width, (y1 - y0 - px(2.0 * BAR_END_GAP)).max(px(0.0))),
+            );
+            window.paint_quad(fill(bar, hsla(color)).corner_radii(px(BAR_RADIUS)));
+            painted.hits.push(GutterHit {
+                id_index: painted.blocks.len(),
+                top: f32::from(y0),
+                bottom: f32::from(y1),
+            });
+            painted.blocks.push(ChipBlock {
+                id: b.id.clone(),
+                outcome: b.outcome,
+                cmd: b.cmd.clone(),
+                cmd_top: row_y(b.cmd_row),
+            });
+        }
+        painted
     }
 }
 
@@ -1090,7 +1497,17 @@ pub fn paint_fixed_screen(
         .cursor
         .filter(|c| c.row < snap.rows && c.col < snap.cols)
         .map(|c| CursorLook::outline(c, cursor_cells(&snap.lines[c.row], c.col), theme));
-    paint_grid(snap, theme, &metrics, bounds, grid.origin, look, window, cx);
+    paint_grid(
+        snap,
+        theme,
+        &metrics,
+        bounds,
+        grid.origin,
+        look,
+        |_| {},
+        window,
+        cx,
+    );
 }
 
 pub fn hsla(c: Rgb) -> Hsla {
@@ -1443,7 +1860,8 @@ impl CursorMotion {
 /// Paint `snap` with its first cell at `origin`, over `bounds` (the whole pane, padding
 /// included) filled with the theme background, and `cursor` over it: its trail and glow under
 /// the text, a block under its letter (which takes the block's text colour), any other shape
-/// over the text, then the sparks.
+/// over the text, then the sparks. `under_text` paints over the cells' backgrounds, before the
+/// cursor and the text.
 #[allow(clippy::too_many_arguments)]
 fn paint_grid(
     mut snap: GridSnapshot,
@@ -1452,6 +1870,7 @@ fn paint_grid(
     bounds: Bounds<Pixels>,
     origin: gpui::Point<Pixels>,
     cursor: Option<CursorLook>,
+    under_text: impl FnOnce(&mut Window),
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1490,6 +1909,8 @@ fn paint_grid(
             ));
         }
     }
+    // Over the cells' backgrounds, under the cursor and the text (M11l's command blocks).
+    under_text(window);
 
     if let Some(c) = &cursor {
         for &(x, y, scale, alpha) in &c.trail {
