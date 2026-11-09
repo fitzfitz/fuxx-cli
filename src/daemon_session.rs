@@ -30,11 +30,13 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use portable_pty::CommandBuilder;
 
+use crate::blocks::{self, Tagger};
 use crate::colors;
 use crate::detector::OscDetector;
 use crate::grid::{self, TextScope};
 use crate::mux_proto::{self, Dims, Frame, MAX_FRAME, SessionInfo, SetMeta, Snapshot};
 use crate::pty::{self, Pty};
+use crate::shell_marks::MarkScanner;
 use crate::status::{Status, StatusTracker, TAIL_LINES};
 use crate::terminal::{CellPx, TermDims, query_reply, term_config, window_size};
 use crate::theme::Theme;
@@ -410,6 +412,11 @@ struct State {
     id: u64,
     term: Term<Listener>,
     processor: Processor<StdSyncHandler>,
+    /// Writes the command-block tags (M11l), as a window's replica does with the same bytes;
+    /// snapshots carry them.
+    tagger: Tagger,
+    /// Finds the OSC 133 marks in the output, also when one is split over two reads.
+    marks: MarkScanner,
     /// What the Term raised (titles, bells, queries), drained by `handle_events`.
     events: mpsc::Receiver<Event>,
     /// Number of the last Output or Resized frame.
@@ -449,7 +456,13 @@ impl State {
         if !self.alive {
             return; // closed: what the dying child still wrote goes nowhere
         }
-        self.processor.advance(&mut self.term, bytes);
+        blocks::advance(
+            &mut self.processor,
+            &mut self.term,
+            &mut self.tagger,
+            &mut self.marks,
+            bytes,
+        );
         self.tail.feed(bytes);
         self.seq += 1;
         self.broadcast(Frame::Output {
@@ -592,6 +605,8 @@ impl DaemonSession {
             id,
             term: Term::new(term_config(), &dims, Listener(events_tx)),
             processor: Processor::new(),
+            tagger: Tagger::new(),
+            marks: MarkScanner::new(),
             events,
             seq: 0,
             subscribers: Vec::new(),
@@ -1669,5 +1684,29 @@ mod tests {
         s.close();
         until_exited(&rx);
         assert!(!s.info().alive);
+    }
+
+    #[test]
+    fn the_service_tags_its_session() {
+        use crate::blocks::{self, Outcome};
+        let s = spawn(
+            r"printf '\033]133;A\007$ \033]133;B\007ls\n\033]133;C;cmdline_url=ls\007a\n\033]133;D;0\007\033]133;A\007$ \033]133;B\007'; sleep 5",
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut found = Vec::new();
+        while Instant::now() < deadline {
+            found = blocks::list(&s.state.lock().term);
+            if found.first().is_some_and(|b| b.outcome != Outcome::Running) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].outcome, Outcome::Ok);
+        assert_eq!(found[0].cmd.as_deref(), Some("ls"));
+        assert_eq!(
+            blocks::output_text(&s.state.lock().term, &found[0].id).as_deref(),
+            Some("a")
+        );
     }
 }

@@ -11,6 +11,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor, Rgb, StdSyncHandler};
 
+use crate::blocks::Outcome;
 use crate::colors;
 use crate::terminal::TermDims;
 use crate::theme::Theme;
@@ -67,6 +68,27 @@ pub struct GridSnapshot {
     pub display_offset: usize,
     /// How many times the screen was cleared (`TerminalCore::snapshot` fills it in; 0 here).
     pub clears: u64,
+    /// The command blocks shown (M11l), oldest first; `TerminalCore::snapshot_with_blocks`
+    /// fills them in (empty here, and on the alternate screen).
+    #[allow(dead_code)] // drawn in M11l task 4
+    pub blocks: Vec<BlockView>,
+    /// The viewport row of the top of the prompt shown now, if it is tagged (`None` here).
+    #[allow(dead_code)] // drawn in M11l task 4
+    pub live_prompt: Option<i32>,
+}
+
+/// One command block as the view draws it. Rows are viewport rows (row 0 = top of the visible
+/// screen), inclusive, and may lie above row 0 or below the last row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockView {
+    pub id: String,
+    pub outcome: Outcome,
+    /// The prompt's rows and the command's, top to bottom.
+    pub prompt: (i32, i32),
+    /// The output's rows; none when there is no output.
+    pub output: Option<(i32, i32)>,
+    /// The block the user picked (drawn whole, found anywhere in scrollback).
+    pub chosen: bool,
 }
 
 /// The last `n` non-blank lines of the *live* screen (top to bottom), trailing spaces trimmed.
@@ -246,6 +268,8 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
         alt_screen: term.mode().contains(TermMode::ALT_SCREEN),
         display_offset: content.display_offset,
         clears: 0,
+        blocks: Vec::new(),
+        live_prompt: None,
     }
 }
 

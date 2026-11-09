@@ -24,6 +24,7 @@ use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
+use crate::grid::BlockView;
 use crate::shell_marks::{Mark, MarkScanner, percent_decode};
 
 /// Every tag's URI starts with this (`links.rs` ignores such hyperlinks).
@@ -184,7 +185,6 @@ pub struct Tagger {
 }
 
 impl Tagger {
-    #[allow(dead_code)] // wired in M11l task 2
     pub fn new() -> Self {
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -334,7 +334,6 @@ impl Tagger {
 /// Feeds a terminal's raw output to its `Term`, writing the tags its OSC 133 marks call for:
 /// the processor is advanced exactly to the end of each mark before the mark is applied
 /// (`vte` carries its state across calls, so the screen is the same as unsplit).
-#[allow(dead_code)] // wired in M11l task 2
 pub fn advance<L: EventListener>(
     processor: &mut Processor<StdSyncHandler>,
     term: &mut Term<L>,
@@ -398,18 +397,18 @@ pub fn list<L>(term: &Term<L>) -> Vec<Block> {
         .collect()
 }
 
-/// The top row of the prompt shown now: the newest tag's, if it is a prompt's.
-#[allow(dead_code)] // wired in M11l task 4
+/// The top row of the prompt shown now: the newest tag's, if it is a prompt's. Looks from the
+/// bottom of the screen to `C_SCAN_ROWS` above the cursor (as far as a `C` looks for its
+/// prompt), so it is cheap enough for every frame.
+#[allow(dead_code)] // drawn in M11l task 4 (through `visible`)
 pub fn live_prompt<L>(term: &Term<L>) -> Option<Line> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return None;
     }
     let grid = term.grid();
-    let (top, bottom) = (grid.topmost_line().0, grid.bottommost_line().0);
-    let (row, tag) = (top..=bottom)
-        .rev()
-        .map(Line)
-        .find_map(|row| Some((row, tag_at(grid, row)?)))?;
+    let bottom = grid.bottommost_line();
+    let below_cursor = (bottom.0 - grid.cursor.point.line.0).max(0) as usize;
+    let (row, tag) = nearest_tag(grid, bottom, below_cursor + C_SCAN_ROWS)?;
     (tag.state == BlockState::Prompt).then(|| lines_up(grid, row, tag.prompt_lines.into()))
 }
 
@@ -429,6 +428,58 @@ pub fn output_text<L>(term: &Term<L>, id: &str) -> Option<String> {
         lines.pop();
     }
     Some(lines.join("\n"))
+}
+
+/// Rows under the viewport whose tags `visible` also reads: a block's prompt can be shown
+/// while its tag (on the command row) is still just under the view.
+const BELOW_VIEW: i32 = 8;
+
+/// The blocks to draw, oldest first, and the live prompt's top, in viewport rows (see
+/// `BlockView`). Reads column 0 of the viewport and `BELOW_VIEW` rows under it, plus, for the
+/// `chosen` block only, the whole scrollback. Nothing on the alternate screen.
+#[allow(dead_code)] // drawn in M11l task 4
+pub fn visible<L>(term: &Term<L>, chosen: Option<&str>) -> (Vec<BlockView>, Option<i32>) {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return (Vec::new(), None);
+    }
+    let grid = term.grid();
+    let offset = grid.display_offset() as i32;
+    let top = -offset;
+    let bottom = (top + grid.screen_lines() as i32 - 1 + BELOW_VIEW).min(grid.bottommost_line().0);
+    let mut found: Vec<(Line, Tag)> = (top..=bottom)
+        .map(Line)
+        .filter_map(|row| Some((row, tag_at(grid, row)?)))
+        .filter(|(_, tag)| tag.state != BlockState::Prompt)
+        .collect();
+    if let Some(id) = chosen
+        && !found.iter().any(|(_, tag)| tag.id == id)
+        && let Some(hit) = find_tag(grid, id).filter(|(_, tag)| tag.state != BlockState::Prompt)
+    {
+        found.push(hit);
+        found.sort_by_key(|(row, _)| *row);
+    }
+    let cursor = grid.cursor.point.line;
+    let blocks = found
+        .into_iter()
+        .map(|(row, tag)| {
+            // The command's rows end just above the output's first.
+            let cmd_end = (lines_down(grid, row, tag.cmd_lines.unwrap_or(1)) - 1i32)
+                .min(grid.bottommost_line())
+                .max(row);
+            let is_chosen = chosen == Some(tag.id.as_str());
+            let b = block(grid, row, tag, cursor);
+            BlockView {
+                id: b.id,
+                outcome: b.outcome,
+                prompt: (b.prompt_top.0 + offset, cmd_end.0 + offset),
+                output: b
+                    .output
+                    .map(|(first, last)| (first.0 + offset, last.0 + offset)),
+                chosen: is_chosen,
+            }
+        })
+        .collect();
+    (blocks, live_prompt(term).map(|line| line.0 + offset))
 }
 
 fn block(grid: &Grid<Cell>, row: Line, tag: Tag, cursor: Line) -> Block {
@@ -473,6 +524,20 @@ fn tag_at(grid: &Grid<Cell>, row: Line) -> Option<Tag> {
 
 fn write_tag<L>(term: &mut Term<L>, row: Line, tag: &Tag) {
     term.grid_mut()[row][Column(0)].set_hyperlink(Some(encode(tag)));
+}
+
+/// The tag whose id is `id`, anywhere in the grid (column 0 of every row; only the matching
+/// one is decoded).
+fn find_tag(grid: &Grid<Cell>, id: &str) -> Option<(Line, Tag)> {
+    (grid.topmost_line().0..=grid.bottommost_line().0)
+        .map(Line)
+        .find_map(|row| {
+            let link = grid[row][Column(0)].hyperlink()?;
+            if link.id() != id {
+                return None;
+            }
+            Some((row, decode(&link)?))
+        })
 }
 
 /// The nearest tag at or above `from`, looking at most `rows` rows (and not past the top).
@@ -1150,5 +1215,73 @@ mod tests {
         sh.tagger = Tagger::new();
         sh.feed(&d(Some(0)));
         assert_eq!(sh.blocks()[0].outcome, Outcome::Ok);
+    }
+
+    #[test]
+    fn visible_rows_and_the_chosen_block() {
+        use alacritty_terminal::grid::Scroll;
+        let mut sh = Shell::new();
+        let ten: String = (1..=10).map(|i| format!("{i}\r\n")).collect();
+        sh.command("one", &ten, Some(0))
+            .command("two", "x\r\n", Some(1))
+            .command("three", "y\r\n", None)
+            .prompt();
+        // 16 rows on a 6-row screen: block 1's command row is Line(-10), above the view.
+        let ids: Vec<String> = sh.blocks().into_iter().map(|b| b.id).collect();
+        assert_eq!(ids.len(), 3);
+        let view = |id: &str, outcome, prompt, output, chosen| BlockView {
+            id: id.to_string(),
+            outcome,
+            prompt,
+            output,
+            chosen,
+        };
+        let one = |chosen| view(&ids[0], Outcome::Ok, (-10, -10), Some((-9, 0)), chosen);
+        let two = |shift: i32| {
+            let o = Some((2 + shift, 2 + shift));
+            view(
+                &ids[1],
+                Outcome::Failed(1),
+                (1 + shift, 1 + shift),
+                o,
+                false,
+            )
+        };
+        let three = |shift: i32| {
+            let o = Some((4 + shift, 4 + shift));
+            view(&ids[2], Outcome::Unknown, (3 + shift, 3 + shift), o, false)
+        };
+        assert_eq!(
+            visible(&sh.term, None),
+            (vec![two(0), three(0)], Some(5)),
+            "block 1 is above the view"
+        );
+        assert_eq!(
+            visible(&sh.term, Some(&ids[0])),
+            (vec![one(true), two(0), three(0)], Some(5)),
+            "the chosen block is found in scrollback"
+        );
+        // An unknown id changes nothing.
+        assert_eq!(
+            visible(&sh.term, Some("fuxx-block-0")).0,
+            vec![two(0), three(0)]
+        );
+        // Scrolled back 4: rows move down 4; block 3's tag is under the view, within 8 rows.
+        sh.term.scroll_display(Scroll::Delta(4));
+        assert_eq!(visible(&sh.term, None), (vec![two(4), three(4)], Some(9)));
+        // Scrolled back 10: block 1's tag is the top row; block 3's is 8 rows under the view.
+        sh.term.scroll_display(Scroll::Delta(6));
+        let (blocks, _) = visible(&sh.term, None);
+        let shifted = |v: BlockView| BlockView {
+            prompt: (v.prompt.0 + 10, v.prompt.1 + 10),
+            output: v.output.map(|(a, b)| (a + 10, b + 10)),
+            ..v
+        };
+        assert_eq!(blocks, vec![shifted(one(false)), two(10), three(10)]);
+        // Nothing on the alternate screen.
+        sh.term.scroll_display(Scroll::Bottom);
+        sh.feed(b"\x1b[?1049h");
+        assert_eq!(visible(&sh.term, None), (vec![], None));
+        assert_eq!(visible(&sh.term, Some(&ids[0])), (vec![], None));
     }
 }

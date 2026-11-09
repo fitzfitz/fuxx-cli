@@ -1,4 +1,6 @@
-//! Link detection under a grid point: OSC 8 hyperlinks first, then plain-text URLs.
+//! Link detection under a grid point: OSC 8 hyperlinks first, then plain-text URLs. Command
+//! block tags (`fuxx-block:` hyperlinks, M11l) are never links: they are not shown, hovered
+//! or opened, and the plain-text search still runs on their cell.
 //!
 //! Security boundary: only `http://`, `https://` and `mailto:` are ever returned (`allowed`),
 //! so program output can never make fuxx open `file://` or other schemes. Plain-text matching
@@ -9,6 +11,8 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Boundary, Direction, Point};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
+
+use crate::blocks::URI_PREFIX;
 
 /// Zed's `URL_REGEX`, narrowed to the allowed schemes.
 const URL_REGEX: &str =
@@ -47,8 +51,13 @@ impl LinkFinder {
         allowed(&link.url).then_some(link)
     }
 
+    /// The cell's OSC 8 link. A command block's tag (M11l) is not one: the cell is read as
+    /// plain text.
     fn osc8<L: EventListener>(term: &Term<L>, point: Point) -> Option<Link> {
         let uri = term.grid()[point].hyperlink()?.uri().to_string();
+        if uri.starts_with(URI_PREFIX) {
+            return None;
+        }
         let same = |col: usize| {
             term.grid()[Point::new(point.line, alacritty_terminal::index::Column(col))]
                 .hyperlink()
@@ -183,5 +192,34 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn block_tags_are_not_links() {
+        // A command block's tag on column 0 of a row whose text is a URL (M11l).
+        let term = term_with(
+            b"\x1b]8;id=fuxx-block-1;fuxx-block:?v=1&s=done&p=0&cmd=https%3A%2F%2Fx.io\x1b\\h\x1b]8;;\x1b\\ttps://x.io",
+            40,
+        );
+        assert!(term.grid()[Line(0)][Column(0)].hyperlink().is_some());
+        let mut finder = LinkFinder::new();
+        for col in [0, 3] {
+            let link = finder.find(&term, Point::new(Line(0), Column(col)));
+            assert_eq!(
+                link,
+                Some(Link {
+                    url: "https://x.io".into(),
+                    start: Point::new(Line(0), Column(0)),
+                    end: Point::new(Line(0), Column(11)),
+                }),
+                "column {col}"
+            );
+        }
+        // A tag on plain text is no link at all.
+        let term = term_with(
+            b"\x1b]8;id=fuxx-block-2;fuxx-block:?v=1&s=prompt&p=0\x1b\\$\x1b]8;;\x1b\\ ls",
+            40,
+        );
+        assert_eq!(finder.find(&term, Point::new(Line(0), Column(0))), None);
     }
 }
