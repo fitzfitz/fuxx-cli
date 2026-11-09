@@ -30,8 +30,8 @@ use gpui::{
 
 use crate::appearance::{Appearance, CursorFun, CursorShapeSetting};
 use crate::block_view::{
-    self, BAR_END_GAP, BAR_RADIUS, CHIP_GAP, CHIP_HEIGHT, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS,
-    GUTTER_BAR, GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal, SEPARATOR,
+    self, BAR_END_GAP, BAR_RADIUS, CHIP_GAP, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS, GUTTER_BAR,
+    GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal, SEPARATOR,
 };
 use crate::blocks::{Block, Outcome};
 use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
@@ -140,10 +140,13 @@ impl GridLayout {
 struct GutterPaint {
     /// The bars drawn; each `id_index` points into `blocks`.
     hits: Vec<GutterHit>,
-    /// The frame's blocks (taken from its snapshot), and the top of each one's command row,
-    /// where its chip opens.
+    /// The frame's blocks (taken from its snapshot), the top of each one's command row, where
+    /// its chip opens, and the column of a right prompt on that row (`block_view::right_run`).
     blocks: Vec<grid::BlockView>,
     cmd_tops: Vec<Pixels>,
+    runs: Vec<Option<usize>>,
+    /// A cell's width and a row's height.
+    cell: (Pixels, Pixels),
     /// The gutter strip: from the pane's left edge to the grid's.
     strip: (Pixels, Pixels),
     pane: Bounds<Pixels>,
@@ -160,13 +163,13 @@ impl GutterPaint {
         self.blocks.get(hit.id_index)
     }
 
-    /// Block `id`, if its bar was drawn, and its command row's top.
-    fn drawn(&self, id: &str) -> Option<(&grid::BlockView, Pixels)> {
+    /// Block `id`, if its bar was drawn, its command row's top and that row's right prompt.
+    fn drawn(&self, id: &str) -> Option<(&grid::BlockView, Pixels, Option<usize>)> {
         self.hits
             .iter()
             .map(|h| h.id_index)
             .find(|&i| self.blocks[i].id == id)
-            .map(|i| (&self.blocks[i], self.cmd_tops[i]))
+            .map(|i| (&self.blocks[i], self.cmd_tops[i], self.runs[i]))
     }
 }
 
@@ -188,6 +191,8 @@ struct Chip {
     buttons: [&'static str; 3],
     left: Pixels,
     top: Pixels,
+    /// One terminal row.
+    height: Pixels,
     max_width: Pixels,
 }
 
@@ -434,7 +439,7 @@ impl TerminalView {
     pub fn chip_shot(&self) -> Option<(String, [&'static str; 3], Bounds<Pixels>)> {
         let chip = self.chip(&self.core.theme().ui())?;
         let gutter = self.gutter.borrow();
-        let (block, _) = gutter.drawn(self.hovered_block.as_deref()?)?;
+        let (block, _, _) = gutter.drawn(self.hovered_block.as_deref()?)?;
         let label = block_view::chip_label(block.outcome, block.cmd.as_deref());
         Some((label, chip.buttons, self.chip_bounds.get()?))
     }
@@ -585,14 +590,24 @@ impl TerminalView {
     fn chip(&self, ui: &UiColors) -> Option<Chip> {
         let id = self.hovered_block.as_deref()?;
         let gutter = self.gutter.borrow();
-        let (block, cmd_top) = gutter.drawn(id)?;
-        let (pane, grid) = (gutter.pane, gutter.grid);
+        let (block, cmd_top, run) = gutter.drawn(id)?;
+        let (pane, grid, (cell_width, height)) = (gutter.pane, gutter.grid, gutter.cell);
         let left = grid.left() + px(CHIP_GAP);
         let top = block_view::chip_top(
             f32::from(cmd_top),
             f32::from(grid.top()),
             f32::from(grid.bottom()),
+            f32::from(height),
         );
+        // Up to a cell before a right prompt on the command row (the grid's edge without one),
+        // never narrower than its least (over the prompt then), never past the grid.
+        let limit = block_view::chip_limit(
+            f32::from(grid.left()),
+            f32::from(grid.right()),
+            f32::from(cell_width),
+            run,
+        );
+        let room = limit - f32::from(left);
         let rerun = block_view::rerun(self.core.rerun_facts(id), block.cmd.as_deref()).map(|_| ());
         Some(Chip {
             id: id.to_string(),
@@ -601,10 +616,14 @@ impl TerminalView {
                 .map(|o| (o, block_view::outcome_ink(block.outcome, ui))),
             cmd: block.cmd.as_deref().map(block_view::chip_command),
             has_output: block.output.is_some(),
-            buttons: block_view::chip_buttons(f32::from(grid.size.width)),
+            buttons: block_view::chip_buttons(f32::from(grid.size.width), room),
             left: left - pane.left(),
             top: px(top) - pane.top(),
-            max_width: (grid.right() - left).max(px(0.0)),
+            height,
+            max_width: px(block_view::chip_max_width(
+                room,
+                f32::from(grid.right() - left),
+            )),
         })
     }
 
@@ -1500,8 +1519,21 @@ impl Render for TerminalView {
                         }
                         let look =
                             cursor.look(&snap, &theme, &mut motion.borrow_mut(), Instant::now());
+                        let blocks = std::mem::take(&mut snap.blocks);
+                        // The chip stops before a right prompt: each command row's cells, from
+                        // this frame's screen (one row per block in view).
+                        let runs = blocks
+                            .iter()
+                            .map(|b| {
+                                let row = usize::try_from(b.cmd_row).ok()?;
+                                block_view::right_run(snap.lines.get(row)?, |c| {
+                                    (c.ch == ' ' || c.ch == '\0') && !c.spacer
+                                })
+                            })
+                            .collect();
                         let marks = BlockMarks {
-                            blocks: std::mem::take(&mut snap.blocks),
+                            blocks,
+                            runs,
                             live_prompt: snap.live_prompt,
                             first_line: snap.display_offset as i32 - snap.history_size as i32,
                             dims: (snap.cols, snap.rows),
@@ -1526,11 +1558,16 @@ impl Render for TerminalView {
                         // The chip stays while output leaves its block where it was; once
                         // the block moves (output scrolled it, a clear, a reflow) or isn't
                         // drawn any more, it closes. Compared by where the command row is
-                        // drawn: the scrollback cap can rotate lines with no other sign.
-                        let moved = hovered_block.as_deref().is_some_and(|id| {
-                            let before = gutter.borrow().drawn(id).map(|(_, top)| top);
-                            before != painted.drawn(id).map(|(_, top)| top)
-                        });
+                        // drawn: the scrollback cap can rotate lines with no other sign. A right
+                        // prompt that came or went on its row only lays the chip out again.
+                        let (moved, run_changed) = match hovered_block.as_deref() {
+                            Some(id) => {
+                                let before = gutter.borrow().drawn(id).map(|(_, t, r)| (t, r));
+                                let after = painted.drawn(id).map(|(_, t, r)| (t, r));
+                                (before.map(|b| b.0) != after.map(|a| a.0), before != after)
+                            }
+                            None => (false, false),
+                        };
                         *gutter.borrow_mut() = painted;
                         if moved {
                             view.update(cx, |this, cx| {
@@ -1538,6 +1575,8 @@ impl Render for TerminalView {
                                     cx.notify();
                                 }
                             });
+                        } else if run_changed {
+                            view.update(cx, |_, cx| cx.notify());
                         }
                         // The next redraw the cursor needs (none when still).
                         let frames = motion.borrow().frames;
@@ -1590,9 +1629,10 @@ struct ChipSlots {
     buttons: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
 }
 
-/// The chip (M11l): an absolutely placed panel over the grid, 4 pt right of the gutter at the
-/// command row's top: the outcome and the command on the left, three buttons on the right
-/// (Copy command, Copy output, Rerun; a press runs one for the chip's block). A disabled
+/// The chip (M11l): an absolutely placed panel over the grid, 4 pt right of the gutter, exactly
+/// on the command row (one row tall, no shadow, so the rows above and below show whole): the
+/// outcome and the command on the left, three buttons on the right (Copy command, Copy
+/// output, Rerun; a press runs one for the chip's block). A disabled
 /// button is dimmed and does nothing; a disabled Rerun's tooltip says why. It blocks presses
 /// from the grid under it (so they never select or reach the program) but not the wheel.
 fn chip_element(
@@ -1603,6 +1643,9 @@ fn chip_element(
 ) -> gpui::Div {
     let (has_cmd, has_output) = (chip.cmd.is_some(), chip.has_output);
     let bounds = slots.chip;
+    // A button's hover fill: the row less the panel's edge and a point inside it, top and
+    // bottom.
+    let button_height = (chip.height - px(4.0)).max(px(0.0));
     let mut label = div()
         .flex()
         .flex_row()
@@ -1638,7 +1681,7 @@ fn chip_element(
             .id(("chip-button", i))
             .flex()
             .items_center()
-            .h(px(18.0))
+            .h(button_height)
             .px(px(5.0))
             .rounded(px(4.0))
             .text_color(hsla(if enabled {
@@ -1687,7 +1730,7 @@ fn chip_element(
     });
     let panel = div()
         .max_w(chip.max_width)
-        .h(px(CHIP_HEIGHT))
+        .h(chip.height)
         .flex()
         .flex_row()
         .items_center()
@@ -1697,16 +1740,6 @@ fn chip_element(
         .bg(hsla(ui.panel))
         .border_1()
         .border_color(hsla(ui.panel_border))
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.2,
-                ..hsla(ui.shadow)
-            },
-            offset: point(px(0.0), px(2.0)),
-            blur_radius: px(8.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }])
         .text_size(px(ui_text::META))
         .whitespace_nowrap()
         .child(label)
@@ -1737,6 +1770,9 @@ fn chip_element(
 /// The command blocks a frame draws (M11l), taken from its snapshot: in viewport rows.
 struct BlockMarks<'a> {
     blocks: Vec<grid::BlockView>,
+    /// Each block's right prompt on its command row (`block_view::right_run`), when the row
+    /// is in view.
+    runs: Vec<Option<usize>>,
     live_prompt: Option<i32>,
     /// The viewport row of the first line of scrollback (no hairline there).
     first_line: i32,
@@ -1775,6 +1811,8 @@ impl BlockMarks<'_> {
             strip: (bounds.left(), origin.x),
             pane: bounds,
             grid,
+            runs: self.runs,
+            cell: (m.cell_width, m.line_height),
             ..GutterPaint::default()
         };
         for (i, b) in self.blocks.iter().enumerate() {

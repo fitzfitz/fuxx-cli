@@ -268,6 +268,7 @@ const SCENES: &[(&str, fn())] = &[
     ("command-blocks", command_blocks_scene),
     ("command-blocks-alt-screen", command_blocks_alt_screen_scene),
     ("command-blocks-narrow", command_blocks_narrow_scene),
+    ("command-blocks-rprompt", command_blocks_rprompt_scene),
     ("command-blocks-off", command_blocks_off_scene),
     ("command-blocks-jump", command_blocks_jump_scene),
     ("command-blocks-copy", command_blocks_copy_scene),
@@ -14737,6 +14738,27 @@ fn ink_width(
     if far == 0.0 { 0.0 } else { full / far / scale }
 }
 
+/// The first device pixel (in points) that differs between shots `a` and `b` in the box from
+/// (`x0`, `y0`) to (`x1`, `y1`), if any.
+fn first_change(
+    a: &Shot,
+    b: &Shot,
+    dims: Size<Pixels>,
+    (x0, y0): (f32, f32),
+    (x1, y1): (f32, f32),
+) -> Option<(f32, f32, [u8; 3], [u8; 3])> {
+    let scale = a.width as f32 / f32::from(dims.width);
+    let (px0, px1) = ((x0 * scale) as usize, (x1 * scale).ceil() as usize);
+    let (py0, py1) = ((y0 * scale) as usize, (y1 * scale).ceil() as usize);
+    (py0..py1.max(py0 + 1)).find_map(|py| {
+        (px0..px1).find_map(|px_| {
+            let (x, y) = (px_ as f32 / scale, py as f32 / scale);
+            let (p, q) = (pixel_at(a, dims, x, y), pixel_at(b, dims, x, y));
+            (p != q).then_some((x, y, p, q))
+        })
+    })
+}
+
 /// The view's chip, read for the checks: its label, buttons and painted bounds.
 fn chip_of(rig: &CursorRig) -> Option<(String, [&'static str; 3], gpui::Bounds<Pixels>)> {
     rig.read(|v| v.chip_shot())
@@ -14767,8 +14789,9 @@ fn point_at(rig: &mut CursorRig, at: gpui::Point<Pixels>) {
 ///   empty prompt. A 1 pt `card_border` hairline at the top of block 2's and 3's first prompt
 ///   rows and of the live prompt's, none on the first line of scrollback or above the empty
 ///   prompt. Hovering block 2's gutter widens its bar to 3 pt and opens the chip (`exit 1 ·
-///   false`, the three buttons) 4 pt right of the gutter at the command row's top; the chip
-///   stays while the pointer is on it (200 ms on), and goes 150 ms after it leaves both.
+///   false`, the three buttons) 4 pt right of the gutter, one row tall on the command row (the
+///   pixel rows just above and below it untouched); the chip stays while the pointer is on it
+///   (200 ms on), and goes 150 ms after it leaves both.
 ///   Nothing moves: two frames 200 ms apart with the chip open are the same pixels, with
 ///   motion on and with Reduce motion on.
 fn command_blocks_scene() {
@@ -14853,8 +14876,30 @@ fn command_blocks_scene() {
                 (f32::from(chip.top()) - g.top(4)).abs() <= 0.5,
                 "{n}: the chip opens at the command row's top"
             );
+            let row = g.top(5) - g.top(4);
+            let tall = f32::from(chip.size.height);
+            assert!(
+                (tall - row).abs() <= 0.5,
+                "{n}: the chip is one row tall ({row} pt), saw {tall}"
+            );
             if !still {
                 save_shot("command-blocks", slug, &shown);
+                // It covers its row only: the pixel rows just above and just below it (the
+                // row under it starts with block 3's hairline) are as they were before it
+                // opened, across the grid (the gutter's bar widens; it is left of this).
+                let grid = rig.read(|v| v.grid_bounds()).expect("painted");
+                let scale = shown.width as f32 / f32::from(dims.width);
+                let (x0, x1) = (g.origin_x, f32::from(grid.right()));
+                for (y, what) in [
+                    (f32::from(chip.top()) - 1.0 / scale, "above"),
+                    (f32::from(chip.bottom()), "below"),
+                ] {
+                    let change = first_change(&shot, &shown, dims, (x0, y), (x1, y));
+                    assert!(
+                        change.is_none(),
+                        "{n}: the chip changed the pixel row {what} it: {change:?}"
+                    );
+                }
                 // Hovered: 3 pt wide, still red.
                 let w = ink_width(&shown, dims, bg, g.mid(4), g.bar_x - 4.0, g.bar_x + 4.0);
                 assert!(
@@ -15085,7 +15130,8 @@ fn command_blocks_alt_screen_scene() {
 }
 
 /// `command-blocks-narrow`: a split's pane with a 200 pt grid: the bars 6 pt left of the grid,
-/// the chip's buttons short (`Cmd`, `Output`, `Rerun`) and the chip inside the pane.
+/// the chip's buttons short (`Cmd`, `Output`, `Rerun`), the chip one row tall and inside the
+/// pane.
 fn command_blocks_narrow_scene() {
     // 12 pt of split padding each side: a 200 pt grid area.
     let dims = size(px(224.0), px(240.0));
@@ -15117,6 +15163,125 @@ fn command_blocks_narrow_scene() {
             f32::from(chip.left()) >= g.origin_x,
             "{n}: the chip starts right of the gutter"
         );
+        let (row, tall) = (g.top(5) - g.top(4), f32::from(chip.size.height));
+        assert!((tall - row).abs() <= 0.5, "{n}: one row tall, saw {tall}");
+    }
+}
+
+/// `command-blocks-rprompt`: block 2's command row (`$ false`) given a right prompt, a run of
+/// text after two or more blank cells ending a cell short of the right edge (as zsh draws an
+/// RPROMPT, powerlevel10k's `✔ / 15:05:41` among them):
+/// - `-room`: a short one leaves room for the chip with its long buttons: they stay long and
+///   the chip ends before it;
+/// - `-tight`: a longer one leaves less than the short chip would take whole (but more than
+///   its narrowest): the buttons go short (`Cmd`, `Output`, `Rerun`), the command is cut, and
+///   the chip ends exactly a cell before it;
+/// - `-overlap`: one that leaves less than the chip's narrowest: the chip keeps that width,
+///   its short buttons inside it, over the start of the run.
+///
+/// Where the chip ends before the run, the run's pixels are as they were before it opened.
+fn command_blocks_rprompt_scene() {
+    use crate::block_view::{CHIP_GAP, CHIP_MIN_WIDTH, CHIP_PAD};
+    let dims = size(px(480.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for (case, run, long) in [
+            ("room", "ok / 15:05:41", true),
+            ("tight", "", false),
+            (
+                "overlap",
+                "ok / 15:05:41 / ~/code/fuxx-cli / main / x",
+                false,
+            ),
+        ] {
+            let n = format!("command-blocks-rprompt-{case}-{slug}");
+            let mut rig = blocks_rig(theme, dims, false, false, |_| ());
+            let _ = rig.frame();
+            let g = BlockGeometry::of(&rig, false);
+            let grid = rig.read(|v| v.grid_bounds()).expect("painted");
+            let cell = f32::from(rig.cell(0, 0).size.width);
+            let cols = (f32::from(grid.size.width) / cell).round() as usize;
+            // The run ends one cell short of the right edge (zsh's ZLE_RPROMPT_INDENT). The
+            // tight one starts a cell past where the narrowest chip would end.
+            let run = match case {
+                "tight" => {
+                    let start = ((CHIP_GAP + CHIP_MIN_WIDTH) / cell).ceil() as usize + 2;
+                    let text = "ok / 15:05:41 / ~/code/fuxx-cli/src/terminal_view.rs";
+                    let cut: String = text.chars().take(cols - 1 - start).collect();
+                    cut.trim_end().to_string()
+                }
+                _ => run.to_string(),
+            };
+            let run = run.as_str();
+            let len = run.chars().count();
+            let start = cols - 1 - len;
+            rig.write(&format!("\x1b7\x1b[5;{}H{run}\x1b8", start + 1));
+            let before = rig.frame();
+            assert!(
+                rig.read(|v| v.text(crate::grid::TextScope::Screen))
+                    .contains(&format!("$ false{}{run}", " ".repeat(start - 7))),
+                "{n}: the run is on the command row"
+            );
+            point_at(&mut rig, point(px(g.bar_x), px(g.mid(4))));
+            let shown = rig.frame();
+            save_shot(&format!("command-blocks-rprompt-{case}"), slug, &shown);
+            let (label, buttons, chip) = chip_of(&rig).expect("the chip is open");
+            assert!(label.contains("exit 1"), "{n}: {label:?}");
+            let (row, tall) = (g.top(5) - g.top(4), f32::from(chip.size.height));
+            assert!((tall - row).abs() <= 0.5, "{n}: one row tall, saw {tall}");
+            let want = if long {
+                ["Copy command", "Copy output", "Rerun"]
+            } else {
+                ["Cmd", "Output", "Rerun"]
+            };
+            assert_eq!(buttons, want, "{n}");
+            let run_left = f32::from(rig.cell(start, 4).left());
+            let right = f32::from(chip.right());
+            let (left, width) = (f32::from(chip.left()), f32::from(chip.size.width));
+            assert!(
+                (left - (g.origin_x + CHIP_GAP)).abs() <= 0.5,
+                "{n}: the left anchor is the gutter's"
+            );
+            // Whatever its width, the buttons fit inside it.
+            let (bounds, _, _) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+            for (i, b) in bounds.iter().enumerate() {
+                let b = b.expect("laid out");
+                assert!(
+                    f32::from(b.right()) <= right - CHIP_PAD + 0.5,
+                    "{n}: button {i} ({:?}) inside the chip ({right})",
+                    b.right()
+                );
+            }
+            if case == "overlap" {
+                assert!(
+                    (width - CHIP_MIN_WIDTH).abs() <= 0.5,
+                    "{n}: at its narrowest ({CHIP_MIN_WIDTH}), saw {width}"
+                );
+                assert!(right > run_left, "{n}: over the run's start");
+            } else {
+                assert!(
+                    right <= run_left - cell + 0.5,
+                    "{n}: the chip ends at {right}, a cell before the run at {run_left}"
+                );
+                if case == "tight" {
+                    assert!(
+                        (right - (run_left - cell)).abs() <= 0.5 && width >= CHIP_MIN_WIDTH,
+                        "{n}: cut to end a cell before the run ({run_left}), at {right}"
+                    );
+                }
+                let change = first_change(
+                    &before,
+                    &shown,
+                    dims,
+                    (run_left - cell, g.top(4)),
+                    (f32::from(grid.right()), g.top(5)),
+                );
+                assert!(
+                    change.is_none(),
+                    "{n}: the run's pixels changed: {change:?}"
+                );
+            }
+        }
     }
 }
 

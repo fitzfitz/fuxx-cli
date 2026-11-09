@@ -20,8 +20,8 @@ pub const SPLIT_GUTTER_INSET: f32 = 6.0;
 pub const BAR_END_GAP: f32 = 1.0;
 /// The hairline above a prompt.
 pub const SEPARATOR: f32 = 1.0;
-/// The chip: its height, its gap right of the gutter, its corner radius and side padding.
-pub const CHIP_HEIGHT: f32 = 24.0;
+/// The chip (one terminal row tall): its gap right of the gutter, its corner radius and side
+/// padding.
 pub const CHIP_GAP: f32 = 4.0;
 pub const CHIP_RADIUS: f32 = 6.0;
 pub const CHIP_PAD: f32 = 8.0;
@@ -29,6 +29,11 @@ pub const CHIP_PAD: f32 = 8.0;
 pub const CHIP_CMD_CHARS: usize = 40;
 /// Below this grid width the buttons take their short names.
 pub const CHIP_NARROW: f32 = 220.0;
+/// The chip at its narrowest: the short buttons and the outcome, the command hidden. It keeps
+/// this width over a right prompt that leaves less room (it overlaps it then).
+pub const CHIP_MIN_WIDTH: f32 = 197.0;
+/// The least room the long buttons and the outcome fit in; with less, the buttons are short.
+pub const CHIP_LONG_MIN: f32 = 282.0;
 /// The chip goes this long after the pointer leaves the gutter and the chip.
 pub const CHIP_HIDE_MS: u64 = 150;
 
@@ -72,9 +77,10 @@ pub fn chip_command(cmd: &str) -> String {
     cut
 }
 
-/// The chip's three buttons, short in a grid narrower than `CHIP_NARROW`.
-pub fn chip_buttons(grid_width: f32) -> [&'static str; 3] {
-    if grid_width < CHIP_NARROW {
+/// The chip's three buttons: short in a grid narrower than `CHIP_NARROW`, or when the chip has
+/// less `room` (to a right prompt, or the grid's edge) than the long ones need.
+pub fn chip_buttons(grid_width: f32, room: f32) -> [&'static str; 3] {
+    if grid_width < CHIP_NARROW || room < CHIP_LONG_MIN {
         ["Cmd", "Output", "Rerun"]
     } else {
         ["Copy command", "Copy output", "Rerun"]
@@ -161,10 +167,42 @@ pub fn separator_rows(
     out
 }
 
-/// The chip's top: the command row's top, moved up so the chip stays above `grid_bottom` (and
-/// no higher than `grid_top`).
-pub fn chip_top(cmd_top: f32, grid_top: f32, grid_bottom: f32) -> f32 {
-    cmd_top.min(grid_bottom - CHIP_HEIGHT).max(grid_top)
+/// The chip's top: the command row's top, moved up so the chip (`height`, one row) stays above
+/// `grid_bottom` (and no higher than `grid_top`).
+pub fn chip_top(cmd_top: f32, grid_top: f32, grid_bottom: f32, height: f32) -> f32 {
+    cmd_top.min(grid_bottom - height).max(grid_top)
+}
+
+/// Where a row's right prompt starts: the column of its last run of text when two or more
+/// blank cells come before it (zsh's RPROMPT, drawn at the right with a gap). None when the
+/// row's text runs from its start with at most one blank between words, or there is none.
+pub fn right_run<T>(cells: &[T], blank: impl Fn(&T) -> bool) -> Option<usize> {
+    let end = cells.iter().rposition(|c| !blank(c))?;
+    let mut col = end;
+    loop {
+        // `col` is the run's first cell so far; look at the two before it.
+        match col {
+            0 | 1 => return None,
+            _ if blank(&cells[col - 1]) && blank(&cells[col - 2]) => return Some(col),
+            _ => col -= 1,
+        }
+    }
+}
+
+/// The furthest right the chip may reach: a cell before a right prompt starting at column
+/// `run`, else the grid's right edge (and never past it).
+pub fn chip_limit(grid_left: f32, grid_right: f32, cell_width: f32, run: Option<usize>) -> f32 {
+    match run {
+        Some(col) => (grid_left + cell_width * (col as f32 - 1.0)).min(grid_right),
+        None => grid_right,
+    }
+}
+
+/// The chip's widest: its `room` (from its left edge to `chip_limit`), but never under
+/// `CHIP_MIN_WIDTH` (it overlaps a right prompt then), and never past the grid's edge (`grid_room`
+/// from its left edge).
+pub fn chip_max_width(room: f32, grid_room: f32) -> f32 {
+    room.max(CHIP_MIN_WIDTH).min(grid_room).max(0.0)
 }
 
 /// What ⇧⌘↑ / ⇧⌘↓ do (M11l §4): pick block `To(i)`, clear the choice and go to the bottom,
@@ -398,10 +436,15 @@ mod tests {
             "é".repeat(40),
             "40 chars stay"
         );
-        assert_eq!(chip_buttons(219.0), ["Cmd", "Output", "Rerun"]);
+        // Short in a grid under `CHIP_NARROW`, or with less room than the long ones need.
+        assert_eq!(chip_buttons(219.0, 400.0), ["Cmd", "Output", "Rerun"]);
         assert_eq!(
-            chip_buttons(220.0),
+            chip_buttons(400.0, CHIP_LONG_MIN),
             ["Copy command", "Copy output", "Rerun"]
+        );
+        assert_eq!(
+            chip_buttons(400.0, CHIP_LONG_MIN - 1.0),
+            ["Cmd", "Output", "Rerun"]
         );
         assert_eq!(gutter_x(false), 8.0);
         assert_eq!(gutter_x(true), 6.0);
@@ -471,10 +514,54 @@ mod tests {
         assert_eq!(separator_rows(&blocks, Some(12), 4, -1), vec![0, 3]);
         assert_eq!(separator_rows(&blocks, Some(3), 10, -1), vec![0, 3]);
         assert_eq!(separator_rows(&[], None, 10, 0), Vec::<i32>::new());
-        // The chip stays inside the grid.
-        assert_eq!(chip_top(50.0, 10.0, 200.0), 50.0);
-        assert_eq!(chip_top(190.0, 10.0, 200.0), 176.0);
-        assert_eq!(chip_top(5.0, 10.0, 200.0), 10.0);
+        // The chip, one row (17 pt) tall, stays inside the grid.
+        assert_eq!(chip_top(50.0, 10.0, 200.0, 17.0), 50.0);
+        assert_eq!(chip_top(190.0, 10.0, 200.0, 17.0), 183.0);
+        assert_eq!(chip_top(183.0, 10.0, 200.0, 17.0), 183.0, "the last row");
+        assert_eq!(chip_top(5.0, 10.0, 200.0, 17.0), 10.0);
+    }
+
+    /// A row's cells as `right_run` reads them: a space is blank.
+    fn run_of(row: &str) -> Option<usize> {
+        let cells: Vec<char> = row.chars().collect();
+        right_run(&cells, |&c| c == ' ')
+    }
+
+    #[test]
+    fn a_right_prompt_is_a_run_after_two_blanks() {
+        // powerlevel10k's right prompt, a cell short of the edge.
+        let row = format!("$ false{}✔ / 15:05:41 ⏱ ", " ".repeat(20));
+        assert_eq!(run_of(&row), Some(27));
+        // Flush with the edge, and after exactly two blanks.
+        assert_eq!(run_of("$ ls  12:00"), Some(6));
+        // No run after two blanks: the command row alone, one blank between words, nothing.
+        assert_eq!(run_of("$ ls -la"), None);
+        assert_eq!(run_of("$ ls -la      "), None);
+        assert_eq!(run_of("$ ls 12:00"), None);
+        assert_eq!(run_of(""), None);
+        assert_eq!(run_of("      "), None);
+        // Only the last run counts.
+        assert_eq!(run_of("$ a  b  c "), Some(8));
+        // A row of nothing but the run.
+        assert_eq!(run_of("   12:00 "), Some(3));
+    }
+
+    #[test]
+    fn the_chip_stops_a_cell_before_a_right_prompt() {
+        // Grid from 20 to 420, 8 pt cells: a run at column 30 starts at 260; the chip may
+        // reach 252, a cell before it.
+        assert_eq!(chip_limit(20.0, 420.0, 8.0, Some(30)), 252.0);
+        assert_eq!(chip_limit(20.0, 420.0, 8.0, None), 420.0);
+        // Never past the grid.
+        assert_eq!(chip_limit(20.0, 420.0, 8.0, Some(60)), 420.0);
+        // Its widest: the room to that limit, at least its narrowest (over the run then), and
+        // never past the grid's edge.
+        assert_eq!(chip_max_width(300.0, 396.0), 300.0);
+        assert_eq!(chip_max_width(40.0, 396.0), CHIP_MIN_WIDTH);
+        assert_eq!(chip_max_width(-8.0, 396.0), CHIP_MIN_WIDTH);
+        assert_eq!(chip_max_width(40.0, 150.0), 150.0, "a narrow grid wins");
+        assert_eq!(chip_max_width(500.0, 396.0), 396.0);
+        assert_eq!(chip_max_width(40.0, -2.0), 0.0);
     }
 
     #[test]
