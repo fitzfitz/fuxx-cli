@@ -165,13 +165,29 @@ pub fn decode(link: &Hyperlink) -> Option<Tag> {
 enum ShellState {
     /// Nothing known yet (a new terminal, a reattach, after a command finished).
     Unknown,
-    /// Between A and the next C: `lfs` counts the line feeds from A to B; `input_start` is
-    /// the cursor at B (none until B).
+    /// Between A and the next C: `lfs` counts the prompt's lines from A to B (line feeds, less
+    /// those a cursor-up took back); `seq` is where that count is in an escape sequence;
+    /// `input_start` is the cursor at B (none until B).
     Prompt {
         lfs: usize,
+        seq: Seq,
         input_start: Option<Point>,
     },
     Running,
+}
+
+/// Where the prompt's line count is in an escape sequence, carried from one read to the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seq {
+    Ground,
+    /// After `ESC`.
+    Esc,
+    /// In a CSI (`ESC [`): its parameter so far, and `plain` while it is digits only (no
+    /// private marker, second parameter or intermediate byte).
+    Csi {
+        n: u16,
+        plain: bool,
+    },
 }
 
 /// Writes the tags for one terminal; lives next to its `Term`.
@@ -245,14 +261,45 @@ impl Tagger {
         format!("{ID_PREFIX}{n}")
     }
 
-    /// Counts the line feeds of a prompt being drawn (between A and B).
+    /// Counts the lines of a prompt being drawn (between A and B): each line feed adds one,
+    /// and a cursor up (`ESC [ n A`) takes back the line feeds before it. powerlevel10k starts
+    /// a multi-line prompt with `\r\n ESC [ A` (room made below, then back up), so counting
+    /// line feeds alone would put the prompt's top one row too high.
     fn saw(&mut self, bytes: &[u8]) {
-        if let ShellState::Prompt {
+        let ShellState::Prompt {
             lfs,
+            seq,
             input_start: None,
         } = &mut self.state
-        {
-            *lfs += bytes.iter().filter(|&&b| b == b'\n').count();
+        else {
+            return;
+        };
+        for &b in bytes {
+            *seq = match (*seq, b) {
+                // A line feed moves the cursor even inside a sequence.
+                (s, b'\n') => {
+                    *lfs += 1;
+                    s
+                }
+                (_, 0x1b) => Seq::Esc,
+                // CAN and SUB cancel a sequence.
+                (_, 0x18 | 0x1a) => Seq::Ground,
+                (Seq::Esc, b'[') => Seq::Csi { n: 0, plain: true },
+                (Seq::Csi { n, plain }, b'0'..=b'9') => Seq::Csi {
+                    n: n.saturating_mul(10).saturating_add(u16::from(b - b'0')),
+                    plain,
+                },
+                (Seq::Csi { n, .. }, 0x20..=0x3f) => Seq::Csi { n, plain: false },
+                (Seq::Csi { n, plain }, 0x40..=0x7e) => {
+                    if b == b'A' && plain {
+                        *lfs = lfs.saturating_sub(usize::from(n.max(1)));
+                    }
+                    Seq::Ground
+                }
+                // Other control bytes inside a CSI run without ending it.
+                (s @ Seq::Csi { .. }, ..0x20) => s,
+                _ => Seq::Ground,
+            };
         }
     }
 
@@ -277,6 +324,7 @@ impl Tagger {
                 }
                 self.state = ShellState::Prompt {
                     lfs: 0,
+                    seq: Seq::Ground,
                     input_start: None,
                 };
             }
@@ -306,6 +354,7 @@ impl Tagger {
                 write_tag(term, row, &tag);
                 self.state = ShellState::Prompt {
                     lfs,
+                    seq: Seq::Ground,
                     input_start: Some(cursor),
                 };
             }
@@ -1389,6 +1438,55 @@ mod tests {
         assert!(sh.blocks().is_empty());
         assert_eq!(tags(&sh.term).len(), 2);
         assert_eq!(live_prompt(&sh.term), Some(Line(1)));
+    }
+
+    /// A powerlevel10k two-line prompt: `\r\n` then cursor up (it makes room below), then the
+    /// two lines. `split` cuts the cursor-up between two reads.
+    fn p10k_prompt(sh: &mut Shell, split: bool) {
+        sh.feed(A);
+        if split {
+            sh.feed(b"\r\n\x1b").feed(b"[A");
+        } else {
+            sh.feed(b"\r\n\x1b[A");
+        }
+        sh.feed(b"top\r\n> ").feed(B);
+    }
+
+    #[test]
+    fn a_cursor_up_in_the_prompt_cancels_a_line_feed() {
+        for split in [false, true] {
+            let mut sh = Shell::new();
+            sh.command("ls", "a\r\nb\r\n", Some(0));
+            p10k_prompt(&mut sh, split);
+            sh.feed(b"pwd\r\n")
+                .feed(&c(Some("pwd")))
+                .feed(b"/x\r\n")
+                .feed(&d(Some(0)));
+            p10k_prompt(&mut sh, split);
+            let blocks = sh.blocks();
+            assert_eq!(blocks.len(), 2, "{blocks:?}");
+            // The prompt is two lines: "top" and the command row; the row above it is the
+            // output of the command before, not the prompt's.
+            assert_eq!(blocks[1].prompt_top, blocks[1].cmd_row - 1, "{blocks:?}");
+            assert_eq!(
+                output_text(&sh.term, &blocks[0].id).as_deref(),
+                Some("a\nb")
+            );
+            assert_eq!(output_text(&sh.term, &blocks[1].id).as_deref(), Some("/x"));
+            assert_eq!(live_prompt(&sh.term), Some(sh.cursor().line - 1));
+            // "$ " for `ls`, then the two p10k prompts.
+            let counts: Vec<u8> = tags(&sh.term).iter().map(|(_, t)| t.prompt_lines).collect();
+            assert_eq!(counts, [0, 1, 1]);
+        }
+        // A cursor up cancels only line feeds before it, and takes its count (`ESC [ 2 A`);
+        // other sequences (colors, a private `?` one, cursor right) count nothing. Three
+        // lines down, two up, one down: B is two rows below A.
+        let mut sh = Shell::new();
+        sh.feed(A)
+            .feed(b"\x1b[A\x1b[1;31m1\r\n2\r\n3\r\n\x1b[2A\r\n\x1b[?25h\x1b[5C> ")
+            .feed(B);
+        assert_eq!(tags(&sh.term)[0].1.prompt_lines, 2);
+        assert_eq!(sh.cursor().line, Line(2));
     }
 
     #[test]

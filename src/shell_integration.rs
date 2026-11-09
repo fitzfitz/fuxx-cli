@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn precmd_marks_the_prompt_once_and_moves_last_once() {
+    fn precmd_marks_the_prompt_once_and_moves_last() {
         let t = TempDir::new("prompt");
         let out = zsh_f(
             &t,
@@ -374,6 +374,95 @@ mod tests {
         // Copies kept inside by a theme are dropped: one A at the start, one B at the end.
         assert_eq!(lines[5], "[%{^[]133;A^G%}pre\\n%# %{^[]133;B^G%}]");
         assert_eq!(lines[6], "[%{^[]133;A^G%}> x%{^[]133;B^G%}]");
+    }
+
+    #[test]
+    fn precmd_moves_last_at_every_prompt() {
+        // A theme that moves its own hook last before every prompt (powerlevel10k). At the
+        // first prompt it runs after fuxx's anyway (the hooks were listed before either
+        // moved), and the line-init hook, once the prompt is up, puts fuxx's last again. From
+        // then on fuxx's hook runs last and stays last after each prompt.
+        let t = TempDir::new("order");
+        let out = zsh_f(
+            &t,
+            "PS1='%# '; theme() { precmd_functions=(${precmd_functions:#theme} theme) }\n\
+             precmd_functions+=(theme)\n\
+             for i in 1 2 3; do\n\
+               for f in $precmd_functions; do $f; done\n\
+               print -rn -- \"[$precmd_functions]\"\n\
+               _fuxx_line_init; print -r -- \"[$precmd_functions]\"\n\
+             done",
+        );
+        let text = String::from_utf8_lossy(&out);
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            [
+                "[_fuxx_precmd theme][theme _fuxx_precmd]",
+                "[theme _fuxx_precmd][theme _fuxx_precmd]",
+                "[theme _fuxx_precmd][theme _fuxx_precmd]"
+            ],
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn precmd_turns_on_p10k_marks_only_when_unset() {
+        let t = TempDir::new("p10k-param");
+        let show = "print -r -- \"[${POWERLEVEL9K_TERM_SHELL_INTEGRATION-unset}]\"";
+        // p10k loaded, the setting unset: turned on.
+        let out = zsh_f(&t, &format!("p10k() {{ :; }}; _fuxx_precmd; {show}"));
+        assert_eq!(String::from_utf8_lossy(&out), "[true]\n");
+        // Set by you (even to false): kept.
+        let out = zsh_f(
+            &t,
+            &format!(
+                "p10k() {{ :; }}; POWERLEVEL9K_TERM_SHELL_INTEGRATION=false; _fuxx_precmd; {show}"
+            ),
+        );
+        assert_eq!(String::from_utf8_lossy(&out), "[false]\n");
+        // No p10k: not set.
+        let out = zsh_f(&t, &format!("_fuxx_precmd; {show}"));
+        assert_eq!(String::from_utf8_lossy(&out), "[unset]\n");
+    }
+
+    #[test]
+    fn p10k_marking_itself_leaves_ps1_and_turns_its_c_and_d_off() {
+        let t = TempDir::new("p10k-native");
+        // p10k reports that it marks its prompts: PS1 is left alone, its own C and D are
+        // turned off (`_p9k__iterm_cmd` unset), and fuxx's D still comes after a command.
+        let out = zsh_f(
+            &t,
+            "exec 2>&1; p10k() { :; }\n\
+             typeset -gi _POWERLEVEL9K_TERM_SHELL_INTEGRATION=1 _p9k__iterm_cmd=1\n\
+             PS1='%# '; _fuxx_preexec 'false'; (exit 1); _fuxx_precmd\n\
+             print -r -- \"[${(V)PS1}][${_p9k__iterm_cmd-unset}]\"",
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "\x1b]133;C;cmdline_url=false\x07\x1b]133;D;1\x07[%# ][unset]\n"
+        );
+        // Without those internals (another p10k version), or with its marks off: fuxx marks
+        // PS1 itself, and nothing errs.
+        for setup in [
+            "p10k() { :; }",
+            "p10k() { :; }; typeset -gi _POWERLEVEL9K_TERM_SHELL_INTEGRATION=0 _p9k__iterm_cmd=1",
+            "p10k() { :; }; typeset -gi _POWERLEVEL9K_TERM_SHELL_INTEGRATION=1",
+        ] {
+            let out = zsh_f(
+                &t,
+                &format!(
+                    "exec 2>&1; {setup}\nPS1='%# '; _fuxx_precmd; _fuxx_precmd\n\
+                     print -r -- \"[${{(V)PS1}}]\""
+                ),
+            );
+            let text = String::from_utf8_lossy(&out);
+            let expect = if setup.ends_with("INTEGRATION=1") {
+                "[%# ]\n"
+            } else {
+                "[%{^[]133;A^G%}%# %{^[]133;B^G%}]\n"
+            };
+            assert_eq!(text, expect, "{setup}");
+        }
     }
 
     // --- A real zsh in a terminal ---
@@ -608,6 +697,31 @@ mod tests {
     }
 
     #[test]
+    fn your_zle_line_init_widget_still_runs_at_every_prompt() {
+        let t = TempDir::new("line-init");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        // Your own zle-line-init (a plain widget, as many configs have), and a theme that
+        // builds PS1 again after fuxx's hook: fuxx's line-init hook joins yours, never
+        // replaces it.
+        t.write(
+            "home/.zshrc",
+            "typeset -gi T_LI=0\nzle-line-init() { T_LI+=1 }\nzle -N zle-line-init\n\
+             theme() { PS1=\"%# $RANDOM \"; precmd_functions=(${precmd_functions:#theme} theme) }\n\
+             precmd_functions+=(theme)\n",
+        );
+        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+        run(&core, "print -r -- $T_LI");
+        let blocks = run(&core, "print -r -- $T_LI");
+        assert_eq!(cmds(&blocks).len(), 2);
+        let counts: Vec<String> = blocks
+            .iter()
+            .map(|b| core.block_output(&b.id).unwrap_or_default())
+            .collect();
+        assert_eq!(counts, ["1", "2"]);
+    }
+
+    #[test]
     fn iterm2_marks_as_well_change_nothing() {
         let t = TempDir::new("iterm");
         let dir = t.0.join("si");
@@ -653,6 +767,220 @@ mod tests {
         // The next prompt's first line is not the output of the command before it.
         for (b, out) in blocks.iter().zip(["one", "two", "three"]) {
             assert_eq!(core.block_output(&b.id).as_deref(), Some(out));
+        }
+    }
+
+    // --- powerlevel10k ---
+
+    /// A stand-in for powerlevel10k's hooks, as its `internal/p10k.zsh` has them: at its first
+    /// prompt it reads `POWERLEVEL9K_TERM_SHELL_INTEGRATION` (`_p9k_init_params`) and, when
+    /// true, puts A and B in every prompt it builds and sends its own C and D
+    /// (`_p9k_iterm2_precmd`/`_preexec`, a C and D for an empty line too); before every prompt
+    /// it builds `PROMPT` from scratch (`_p9k_set_prompt`) and moves its hook after the others
+    /// (`_p9k_precmd`). `SIM_TRANSIENT` = `POWERLEVEL9K_TRANSIENT_PROMPT=always`: the prompt
+    /// is drawn again, shorter, when Return is pressed.
+    const SIM_P10K: &str = r#"# A faithful stand-in for powerlevel10k's hooks (internal/p10k.zsh: _p9k_setup, _p9k_precmd_impl's
+# reordering, _p9k_set_prompt, _p9k_iterm2_precmd/_preexec, _p9k_on_widget_zle-line-finish).
+setopt prompt_subst
+p10k() { :; }
+_sim_precmd() {
+  local st=$?
+  if (( ! ${+_POWERLEVEL9K_TERM_SHELL_INTEGRATION} )); then   # _p9k_init_params, first prompt
+    typeset -gi _POWERLEVEL9K_TERM_SHELL_INTEGRATION=0
+    [[ $POWERLEVEL9K_TERM_SHELL_INTEGRATION == true ]] && _POWERLEVEL9K_TERM_SHELL_INTEGRATION=1
+    (( _POWERLEVEL9K_TERM_SHELL_INTEGRATION )) && typeset -gi _p9k__iterm_cmd=0   # _p9k_init
+  fi
+  if (( ${+_p9k__iterm_cmd} )); then                          # _p9k_iterm2_precmd
+    (( _p9k__iterm_cmd == 1 )) && print -n '\e]133;C;\a'
+    (( _p9k__iterm_cmd )) && printf '\e]133;D;%s\a' $st
+    _p9k__iterm_cmd=1
+  fi
+  local a= b=
+  (( _POWERLEVEL9K_TERM_SHELL_INTEGRATION )) && a=$'%{\e]133;A\a%}' b=$'%{\e]133;B\a%}'
+  typeset -g _sim_a=$a _sim_b=$b
+  PROMPT='${:-}%b'$a'%~ ${:-sim}%# '$b                        # _p9k_set_prompt: from scratch
+  [[ $precmd_functions[-1] == _sim_precmd ]] ||               # every prompt
+    precmd_functions=(${precmd_functions:#_sim_precmd} _sim_precmd)
+}
+_sim_preexec() { (( ! ${+_p9k__iterm_cmd} )) || { print -n '\e]133;C;\a'; _p9k__iterm_cmd=2 } }
+precmd_functions+=(_sim_precmd)
+preexec_functions+=(_sim_preexec)
+if [[ -n $SIM_TRANSIENT ]]; then                              # POWERLEVEL9K_TRANSIENT_PROMPT=always
+  _sim_finish() { PROMPT=$_sim_a'%# '$_sim_b; zle .reset-prompt }
+  autoload -Uz add-zle-hook-widget; add-zle-hook-widget line-finish _sim_finish
+fi
+"#;
+
+    /// The prompt's row, counted from the top of the scrollback (stable while it scrolls).
+    fn prompt_row(core: &TerminalCore) -> Option<i64> {
+        let snap = core.snapshot_with_blocks(None);
+        snap.live_prompt
+            .map(|row| i64::from(row) + snap.history_size as i64)
+    }
+
+    /// Send `keys` at the ready prompt that should give a new prompt and no block (an empty
+    /// Return, Ctrl-C): wait for the new prompt to be ready, then check no block came.
+    fn no_block_for(core: &TerminalCore, keys: &[u8]) {
+        assert!(
+            until(|| core.prompt_ready() && core.cursor_at_input_start()),
+            "no ready prompt before {keys:?}; screen:\n{}",
+            screen_text(core)
+        );
+        let before = (core.blocks(), prompt_row(core));
+        core.input(keys);
+        let moved = until(|| {
+            core.prompt_ready() && core.cursor_at_input_start() && prompt_row(core) != before.1
+        });
+        assert!(
+            moved,
+            "no new prompt after {keys:?}; screen:\n{}",
+            screen_text(core)
+        );
+        // Anything late (a D) has had time to come.
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(core.blocks(), before.0, "{keys:?} made a block");
+    }
+
+    /// `echo hi`, `false`, `sleep 1` (seen running, then done), an empty Return, Ctrl-C over
+    /// typed text, and `true`: four blocks, none for the Return or Ctrl-C.
+    fn p10k_scenario(core: &TerminalCore) {
+        run(core, "echo hi");
+        run(core, "false");
+        assert!(until(|| core.prompt_ready() && core.cursor_at_input_start()));
+        core.input(b"sleep 1\r");
+        let running = until(|| {
+            let blocks = core.blocks();
+            blocks.len() == 3 && blocks[2].outcome == Outcome::Running
+        });
+        assert!(
+            running,
+            "{:?}; screen:\n{}",
+            core.blocks(),
+            screen_text(core)
+        );
+        assert!(until(|| {
+            core.blocks()
+                .get(2)
+                .is_some_and(|b| b.outcome == Outcome::Ok)
+                && core.prompt_ready()
+        }));
+        no_block_for(core, b"\r");
+        no_block_for(core, b"abc\x03");
+        let blocks = run(core, "true");
+        assert_eq!(cmds(&blocks), ["echo hi", "false", "sleep 1", "true"]);
+        assert_eq!(
+            outcomes(&blocks),
+            [Outcome::Ok, Outcome::Failed(1), Outcome::Ok, Outcome::Ok]
+        );
+        assert_eq!(core.block_output(&blocks[0].id).as_deref(), Some("hi"));
+        for b in &blocks {
+            assert_eq!(b.prompt_top, b.cmd_row, "a one-line prompt: {b:?}");
+        }
+    }
+
+    /// zsh with the powerlevel10k stand-in, `before` and `after` in `.zshrc` around it.
+    fn sim_p10k(name: &str, before: &str, after: &str) -> (TempDir, TerminalCore) {
+        let t = TempDir::new(name);
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("home/sim-p10k.zsh", SIM_P10K);
+        t.write(
+            "home/.zshrc",
+            &format!("{before}\nsource ~/sim-p10k.zsh\n{after}\n"),
+        );
+        let (core, _rx) = spawn_zsh(&t.0.join("home"), None, &dir);
+        (t, core)
+    }
+
+    #[test]
+    fn p10k_gets_command_blocks() {
+        let (_t, core) = sim_p10k("p10k", "", "");
+        p10k_scenario(&core);
+    }
+
+    #[test]
+    fn p10k_with_its_marks_turned_off_gets_command_blocks() {
+        // Your own setting is kept: fuxx marks the prompt itself, after p10k's hook.
+        let (_t, core) = sim_p10k("p10k-off", "", "POWERLEVEL9K_TERM_SHELL_INTEGRATION=false");
+        p10k_scenario(&core);
+        let blocks = run(&core, "print -r -- $POWERLEVEL9K_TERM_SHELL_INTEGRATION");
+        assert_eq!(core.block_output(&blocks[4].id).as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn p10k_with_a_transient_prompt_gets_command_blocks() {
+        let (_t, core) = sim_p10k("p10k-transient", "SIM_TRANSIENT=1", "");
+        p10k_scenario(&core);
+    }
+
+    #[test]
+    fn p10k_transient_prompt_without_its_marks_loses_the_blocks() {
+        // A limit: with p10k's marks turned off by you, its transient prompt is drawn again on
+        // Return, after every hook fuxx has, without A and B; the redraw drops the prompt's tag
+        // before the command starts, so no command is a block. The shell works as ever.
+        let (_t, core) = sim_p10k(
+            "p10k-off-transient",
+            "SIM_TRANSIENT=1",
+            "POWERLEVEL9K_TERM_SHELL_INTEGRATION=false",
+        );
+        for line in ["echo hi", "false", "true"] {
+            assert!(until(|| core.prompt_ready() && core.cursor_at_input_start()));
+            let row = prompt_row(&core);
+            core.input(format!("{line}\r").as_bytes());
+            assert!(until(|| core.prompt_ready() && prompt_row(&core) != row));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(core.blocks(), Vec::<Block>::new());
+        assert!(screen_text(&core).contains("hi"), "{}", screen_text(&core));
+    }
+
+    /// Against a real powerlevel10k (its folder in `FUXX_TEST_P10K`), with its lean two-line
+    /// config, gitstatus off, the folder shortened to its last part (the config's default
+    /// looks through every parent of the long temp path, seconds per prompt), and its cache in
+    /// the temp folder:
+    /// `FUXX_TEST_P10K=/path/to/powerlevel10k cargo test real_p10k -- --ignored`.
+    #[test]
+    #[ignore = "needs a powerlevel10k install in FUXX_TEST_P10K"]
+    fn real_p10k_gets_command_blocks() {
+        let p10k = std::env::var("FUXX_TEST_P10K").expect("FUXX_TEST_P10K");
+        let t = TempDir::new("real-p10k");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        let home = t.0.join("home");
+        let cache = shell_quote(&t.0.join("cache").display().to_string());
+        t.write("home/.zshenv", &format!("export XDG_CACHE_HOME={cache}\n"));
+        let p = shell_quote(&p10k);
+        t.write(
+            "home/.zshrc",
+            &format!(
+                "if [[ -r \"$XDG_CACHE_HOME/p10k-instant-prompt-${{(%):-%n}}.zsh\" ]]; then\n\
+                   source \"$XDG_CACHE_HOME/p10k-instant-prompt-${{(%):-%n}}.zsh\"\n\
+                 fi\n\
+                 source {p}/powerlevel10k.zsh-theme\n\
+                 source {p}/config/p10k-lean.zsh\n\
+                 POWERLEVEL9K_DISABLE_GITSTATUS=true\n\
+                 POWERLEVEL9K_SHORTEN_STRATEGY=truncate_to_last\n\
+                 POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true\n"
+            ),
+        );
+        // Twice: the first start writes the instant prompt, the second starts with it.
+        for _ in 0..2 {
+            let (core, _rx) = spawn_zsh(&home, None, &dir);
+            run(&core, "echo hi");
+            run(&core, "false");
+            no_block_for(&core, b"\r");
+            no_block_for(&core, b"abc\x03");
+            let blocks = run(&core, "true");
+            assert_eq!(cmds(&blocks), ["echo hi", "false", "true"]);
+            assert_eq!(
+                outcomes(&blocks),
+                [Outcome::Ok, Outcome::Failed(1), Outcome::Ok]
+            );
+            assert_eq!(core.block_output(&blocks[0].id).as_deref(), Some("hi"));
+            for b in &blocks {
+                // The lean config's prompt is two lines.
+                assert_eq!(b.cmd_row.0 - b.prompt_top.0, 1, "{b:?}");
+            }
         }
     }
 
