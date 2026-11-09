@@ -8,6 +8,9 @@
 //!   snapshot. Input and resizes go to the daemon through a per-terminal pump thread, so the UI
 //!   never waits on the socket. The daemon answers terminal queries and works out status, title
 //!   and exit; the replica's own query, title and bell events are dropped.
+//!
+//! Either way the bytes go through `blocks::advance`, which writes the command-block tags of a
+//! shell's OSC 133 marks into the grid (M11l), as the background service does for its own Term.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
@@ -16,7 +19,7 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Boundary, Point, Side};
+use alacritty_terminal::index::{Boundary, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term, TermMode};
@@ -24,6 +27,7 @@ use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor, Rgb, St
 use futures::channel::mpsc::UnboundedSender;
 use portable_pty::CommandBuilder;
 
+use crate::blocks::{self, Block, Tagger};
 use crate::colors;
 use crate::daemon_client::{DaemonClient, SessionStream};
 use crate::detector::{CwdReport, CwdReports, OscDetector};
@@ -31,6 +35,7 @@ use crate::grid::{self, GridSnapshot};
 use crate::links::{Link, LinkFinder};
 use crate::mux_proto::{Frame, SetMeta};
 use crate::pty::{self, Pty};
+use crate::shell_marks::MarkScanner;
 use crate::status::Status;
 use crate::theme::Theme;
 
@@ -162,6 +167,10 @@ struct Shared {
     first_output: Option<Instant>,
     /// The screen clears so far: the cursor doesn't glide over a cleared screen (M11f).
     clears: ClearCounter,
+    /// Writes the command-block tags (M11l); fresh with each snapshot a replica takes.
+    tagger: Tagger,
+    /// Finds the OSC 133 marks in the output, also when one is split over two reads.
+    marks: MarkScanner,
 }
 
 /// Counts the screen clears in a terminal's output (`ESC [ 2 J`, `ESC [ 3 J`, `ESC c`), also
@@ -348,6 +357,8 @@ impl TerminalCore {
             processor: Processor::new(),
             first_output: None,
             clears: ClearCounter::default(),
+            tagger: Tagger::new(),
+            marks: MarkScanner::new(),
         }));
 
         let reader_shared = shared.clone();
@@ -373,9 +384,11 @@ impl TerminalCore {
                         processor,
                         first_output,
                         clears,
+                        tagger,
+                        marks,
                     } = &mut *guard;
                     first_output.get_or_insert_with(Instant::now);
-                    processor.advance(term, bytes);
+                    blocks::advance(processor, term, tagger, marks, bytes);
                     clears.feed(bytes);
                 } // lock released before waking the UI
                 let _ = events.unbounded_send(TermEvent::Output { notifications });
@@ -468,6 +481,8 @@ impl TerminalCore {
             processor: Processor::new(),
             first_output: None,
             clears: ClearCounter::default(),
+            tagger: Tagger::new(),
+            marks: MarkScanner::new(),
         }));
         let (token, stream) = client.route(id);
         let (tx, pending) = std::sync::mpsc::channel();
@@ -637,9 +652,12 @@ impl TerminalCore {
             term,
             processor,
             clears,
+            tagger,
+            marks,
             ..
         } = &mut *guard;
-        processor.advance(term, text.as_bytes());
+        // Tagged like the program's output, so screenshots can draw command blocks.
+        blocks::advance(processor, term, tagger, marks, text.as_bytes());
         clears.feed(text.as_bytes());
     }
 
@@ -769,6 +787,67 @@ impl TerminalCore {
         }
     }
 
+    /// `snapshot` with the command blocks to draw (M11l), under the same lock: the viewport
+    /// and 8 rows below it, plus the `chosen` block wherever it is in scrollback.
+    #[allow(dead_code)] // drawn in M11l task 4
+    pub fn snapshot_with_blocks(&self, chosen: Option<&str>) -> GridSnapshot {
+        let theme = self.theme();
+        let shared = self.shared.lock();
+        let (blocks, live_prompt) = blocks::visible(&shared.term, chosen);
+        GridSnapshot {
+            clears: shared.clears.count,
+            blocks,
+            live_prompt,
+            ..grid::snapshot(&shared.term, &theme)
+        }
+    }
+
+    /// Every command block in the grid, oldest first (none on the alternate screen).
+    #[allow(dead_code)] // used in M11l tasks 4 and 5
+    pub fn blocks(&self) -> Vec<Block> {
+        blocks::list(&self.shared.lock().term)
+    }
+
+    /// Block `id`'s output text; none when it is gone. Reads the whole scrollback: call it off
+    /// the UI thread.
+    #[allow(dead_code)] // used in M11l task 5
+    pub fn block_output(&self, id: &str) -> Option<String> {
+        blocks::output_text(&self.shared.lock().term, id)
+    }
+
+    /// Block `id`'s command line, if it is still in the grid and was recorded.
+    #[allow(dead_code)] // used in M11l task 5
+    pub fn block_cmd(&self, id: &str) -> Option<String> {
+        blocks::list(&self.shared.lock().term)
+            .into_iter()
+            .find(|b| b.id == id)?
+            .cmd
+    }
+
+    /// A prompt is shown and where typing starts at it is known (false after a reattach until
+    /// the next prompt).
+    #[allow(dead_code)] // used in M11l task 5
+    pub fn prompt_ready(&self) -> bool {
+        self.shared.lock().tagger.prompt_ready()
+    }
+
+    /// The cursor is where typing started at the shown prompt: nothing has been typed there.
+    #[allow(dead_code)] // used in M11l task 5
+    pub fn cursor_at_input_start(&self) -> bool {
+        let shared = self.shared.lock();
+        shared.tagger.input_start() == Some(shared.term.grid().cursor.point)
+    }
+
+    /// Scroll the view so grid line `line` is at its top, as far as the history allows.
+    #[allow(dead_code)] // used in M11l task 5
+    pub fn scroll_to_line(&self, line: Line) {
+        let term = &mut self.shared.lock().term;
+        let history = i32::try_from(term.grid().history_size()).unwrap_or(i32::MAX);
+        let target = line.0.saturating_neg().clamp(0, history);
+        let now = i32::try_from(term.grid().display_offset()).unwrap_or(i32::MAX);
+        term.scroll_display(Scroll::Delta(target - now));
+    }
+
     /// Color for an OSC 4/10/11/12 query reply.
     pub fn color(&self, index: usize) -> Rgb {
         let theme = self.theme();
@@ -859,10 +938,19 @@ impl Replica {
                     guard.term = Term::new(term_config(), &dims, self.listener.clone());
                     guard.processor = Processor::new();
                     guard.clears.bump();
+                    // The snapshot carries the service's tags; what the shell is doing between
+                    // marks is unknown until its next prompt (so no rerun until then). An
+                    // unfinished mark at the snapshot's end is finished by the next output.
+                    guard.tagger = Tagger::new();
+                    guard.marks = MarkScanner::new();
                     let Shared {
-                        term, processor, ..
+                        term,
+                        processor,
+                        tagger,
+                        marks,
+                        ..
                     } = &mut *guard;
-                    processor.advance(term, &snap.vt_bytes);
+                    blocks::advance(processor, term, tagger, marks, &snap.vt_bytes);
                 }
                 self.next = Some(snap.seq + 1);
                 self.set_title(snap.title);
@@ -885,9 +973,12 @@ impl Replica {
                         processor,
                         first_output,
                         clears,
+                        tagger,
+                        marks,
                     } = &mut *guard;
                     first_output.get_or_insert_with(Instant::now);
-                    processor.advance(term, &bytes);
+                    // The same bytes, split the same way, as the service's Term: tagged alike.
+                    blocks::advance(processor, term, tagger, marks, &bytes);
                     clears.feed(&bytes);
                 }
                 if let Some(dir) = self.reports.feed(&bytes) {
@@ -1186,6 +1277,88 @@ mod tests {
         assert!(wait_for(&mut rx, |_| screen_text(&core).contains("got[")));
         let text = screen_text(&core);
         assert!(text.contains("got[typed]"), "{text}");
+    }
+
+    /// One command run at a prompt, then the next prompt, as a shell with OSC 133 marks
+    /// prints it (`printf` format: `\n` becomes `\r\n` on the way through the PTY).
+    const ONE_COMMAND: &str = r"\033]133;A\007$ \033]133;B\007ls\n\033]133;C;cmdline_url=ls\007ok\n\033]133;D;0\007\033]133;A\007$ \033]133;B\007";
+
+    fn assert_one_ls_block(core: &TerminalCore) {
+        let blocks = core.blocks();
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].cmd.as_deref(), Some("ls"));
+        assert_eq!(blocks[0].outcome, blocks::Outcome::Ok);
+        assert_eq!(core.block_output(&blocks[0].id).as_deref(), Some("ok"));
+        assert_eq!(core.block_cmd(&blocks[0].id).as_deref(), Some("ls"));
+        assert!(core.prompt_ready());
+        assert!(core.cursor_at_input_start());
+    }
+
+    #[test]
+    fn a_local_shell_s_marks_become_blocks() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh(&format!("printf '{ONE_COMMAND}'; sleep 5")),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert!(
+            wait_for(&mut rx, |_| core.prompt_ready()),
+            "{}",
+            screen_text(&core)
+        );
+        assert_one_ls_block(&core);
+        // Typing at the prompt moves the cursor off the input start.
+        core.show_local("x");
+        assert!(core.prompt_ready() && !core.cursor_at_input_start());
+    }
+
+    #[test]
+    fn show_local_draws_blocks() {
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        let text = ONE_COMMAND
+            .replace(r"\033", "\x1b")
+            .replace(r"\007", "\x07")
+            .replace(r"\n", "\r\n");
+        core.show_local(&text);
+        assert_one_ls_block(&core);
+        let snap = core.snapshot_with_blocks(None);
+        assert_eq!(snap.blocks.len(), 1);
+        assert_eq!(snap.blocks[0].prompt, (0, 0));
+        assert_eq!(snap.blocks[0].output, Some((1, 1)));
+        assert_eq!(snap.live_prompt, Some(2));
+        // The plain snapshot has no blocks.
+        assert!(core.snapshot().blocks.is_empty());
+    }
+
+    #[test]
+    fn scroll_to_line_puts_a_line_at_the_top() {
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("sleep 5"),
+            TermDims { cols: 20, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        let lines: String = (0..20).map(|i| format!("l{i}\r\n")).collect();
+        core.show_local(&lines);
+        // 21 rows on a 5-row screen: 16 of history.
+        core.scroll_to_line(Line(-3));
+        assert_eq!(core.display_offset(), 3);
+        core.scroll_to_line(Line(-100));
+        assert_eq!(core.display_offset(), 16);
+        core.scroll_to_line(Line(2));
+        assert_eq!(core.display_offset(), 0);
     }
 
     #[test]
@@ -1967,6 +2140,15 @@ mod daemon_tests {
     /// A scripted daemon for one connection: answers Hello and List, and for the nth Attach
     /// sends `script[n]`. Returns how many Attach frames it saw.
     fn scripted_daemon(path: &Path, script: Vec<Vec<Frame>>) -> std::thread::JoinHandle<usize> {
+        scripted_daemon_with_input(path, script, Vec::new())
+    }
+
+    /// `scripted_daemon` that also sends `on_input[n]` for the nth Input frame.
+    fn scripted_daemon_with_input(
+        path: &Path,
+        script: Vec<Vec<Frame>>,
+        on_input: Vec<Vec<Frame>>,
+    ) -> std::thread::JoinHandle<usize> {
         let listener = UnixListener::bind(path).unwrap();
         std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
@@ -1974,6 +2156,7 @@ mod daemon_tests {
             let mut decoder = Decoder::new();
             let mut buf = [0u8; 4096];
             let mut attaches = 0;
+            let mut inputs = 0;
             loop {
                 let n = match s.read(&mut buf) {
                     Ok(0) | Err(_) => return attaches,
@@ -2004,6 +2187,10 @@ mod daemon_tests {
                         Frame::Attach { id: 7 } => {
                             attaches += 1;
                             script.get(attaches - 1).cloned().unwrap_or_default()
+                        }
+                        Frame::Input { id: 7, .. } => {
+                            inputs += 1;
+                            on_input.get(inputs - 1).cloned().unwrap_or_default()
                         }
                         _ => vec![],
                     };
@@ -2099,6 +2286,123 @@ mod daemon_tests {
         assert_eq!(got, wanted, "{seen:?}");
         drop(core);
         assert_eq!(fake.join().unwrap(), 3);
+    }
+
+    /// A screen as the background service would send it: `bytes` fed to a 20 x 3 Term
+    /// through `blocks::advance`, then encoded.
+    fn tagged_snap(seq: u64, bytes: &[u8]) -> Frame {
+        let mut term = Term::new(
+            term_config(),
+            &TermDims { cols: 20, rows: 3 },
+            alacritty_terminal::event::VoidListener,
+        );
+        blocks::advance(
+            &mut Processor::new(),
+            &mut term,
+            &mut Tagger::new(),
+            &mut MarkScanner::new(),
+            bytes,
+        );
+        Frame::Snapshot(mux_proto::Snapshot {
+            id: 7,
+            seq,
+            dims: Dims { cols: 20, rows: 3 },
+            title: None,
+            vt_bytes: crate::vt_snapshot::encode(&mut term),
+        })
+    }
+
+    const A: &str = "\x1b]133;A\x07";
+    const B: &str = "\x1b]133;B\x07";
+
+    #[test]
+    fn a_reattached_replica_is_not_prompt_ready() {
+        let path = temp_sock("t-ready");
+        // The session sits at a prompt after one command.
+        let at_prompt = |cmd: &str| {
+            format!(
+                "{A}$ {B}{cmd}\r\n\x1b]133;C;cmdline_url={cmd}\x07ok\r\n\x1b]133;D;0\x07{A}$ {B}"
+            )
+        };
+        let new_prompt = format!("\r\n{A}$ {B}");
+        let fake = scripted_daemon_with_input(
+            &path,
+            vec![
+                // A new prompt (the replica's tagger knows it), then a gap: re-attach.
+                vec![
+                    tagged_snap(0, at_prompt("ls").as_bytes()),
+                    out(1, &new_prompt),
+                    out(3, "gap"),
+                ],
+                vec![tagged_snap(10, at_prompt("pwd").as_bytes())],
+            ],
+            // Typing: the shell draws a new prompt.
+            vec![vec![out(11, &new_prompt)]],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, _rx) = unbounded();
+        let core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        let cmds = || -> Vec<Option<String>> { core.blocks().into_iter().map(|b| b.cmd).collect() };
+        assert!(
+            eventually(|| cmds() == [Some("pwd".to_string())]),
+            "{:?}",
+            cmds()
+        );
+        // The snapshot carries the block and the prompt's tag...
+        assert!(core.snapshot_with_blocks(None).live_prompt.is_some());
+        // ...but not where typing starts at that prompt: unknown until the next one.
+        assert!(!core.prompt_ready());
+        assert!(!core.cursor_at_input_start());
+        core.input(b"\r");
+        assert!(eventually(|| core.prompt_ready()));
+        assert!(core.cursor_at_input_start());
+        drop(core);
+        assert_eq!(fake.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn the_service_and_replica_tag_alike() {
+        let (_d, path) = daemon("t-alike");
+        let client = DaemonClient::connect(&path).unwrap();
+        // Waits so the replica's first snapshot comes before the output: it tags it itself.
+        let script = r"sleep 0.5; printf '\033]133;A\007dir\n$ \033]133;B\007ls\n\033]133;C;cmdline_url=ls\007a\nb\n\033]133;D;0\007\033]133;A\007$ \033]133;B\007false\n\033]133;C;cmdline_url=false\007\033]133;D;2\007\033]133;A\007$ \033]133;B\007'; sleep 20";
+        let create = mux_proto::Create {
+            program: Some(vec!["/bin/sh".into(), "-c".into(), script.into()]),
+            ..sh_create(40, 8)
+        };
+        let (tx, _rx) = unbounded();
+        let replica =
+            TerminalCore::create_daemon(client.clone(), create, tx, Theme::default()).unwrap();
+        assert!(eventually(
+            || replica.prompt_ready() && replica.blocks().len() == 2
+        ));
+        // The service's tags, as its snapshot brings them to a window that attaches now.
+        let id = replica.daemon_id().unwrap();
+        let (tx, _rx) = unbounded();
+        let service = TerminalCore::attach_daemon(client, id, tx, Theme::default()).unwrap();
+        assert!(eventually(
+            || service.is_drawn() && service.blocks().len() == 2
+        ));
+        let (mine, theirs) = (replica.blocks(), service.blocks());
+        // Each tagged on its own (ids differ), alike in everything else.
+        assert!(mine.iter().zip(&theirs).all(|(m, t)| m.id != t.id));
+        let unnamed = |blocks: Vec<Block>| -> Vec<Block> {
+            blocks
+                .into_iter()
+                .map(|b| Block {
+                    id: String::new(),
+                    ..b
+                })
+                .collect()
+        };
+        assert_eq!(unnamed(mine.clone()), unnamed(theirs));
+        assert_eq!(mine[0].outcome, blocks::Outcome::Ok);
+        assert_eq!(mine[0].cmd.as_deref(), Some("ls"));
+        assert_eq!(mine[0].prompt_top + 1, mine[0].cmd_row, "a two-line prompt");
+        assert_eq!(mine[1].outcome, blocks::Outcome::Failed(2));
+        assert_eq!(replica.block_output(&mine[0].id).as_deref(), Some("a\nb"));
+        // The window's fresh tagger: the next prompt is not known yet.
+        assert!(!service.prompt_ready());
     }
 
     #[test]

@@ -784,4 +784,77 @@ mod tests {
         let (a, _) = round_trip(b"0123456789x\x1b[1D\x1b[K\x1b[3;1Hz", 10, 4);
         assert!(a.grid()[Line(0)][Column(9)].flags.contains(Flags::WRAPLINE));
     }
+
+    /// `bytes` fed through `blocks::advance`, as a shell with OSC 133 marks would be shown.
+    fn tagged(term: &mut Term<VoidListener>, bytes: &[u8]) {
+        crate::blocks::advance(
+            &mut Processor::new(),
+            term,
+            &mut crate::blocks::Tagger::new(),
+            &mut crate::shell_marks::MarkScanner::new(),
+            bytes,
+        );
+    }
+
+    #[test]
+    fn snapshot_round_trip_keeps_blocks() {
+        use crate::blocks::{Outcome, Tagger, list, live_prompt, output_text};
+        use crate::shell_marks::MarkScanner;
+        const A: &str = "\x1b]133;A\x07";
+        const B: &str = "\x1b]133;B\x07";
+        // Two blocks (one with output in scrollback) and the live prompt.
+        let out: String = (1..=12).map(|i| format!("l{i}\r\n")).collect();
+        let script = format!(
+            "{A}$ {B}ls\r\n\x1b]133;C;cmdline_url=ls\x07{out}\x1b]133;D;0\x07\
+             {A}$ {B}false\r\n\x1b]133;C;cmdline_url=false\x07\x1b]133;D;1\x07{A}$ {B}"
+        );
+        let mut a = term(30, 8);
+        tagged(&mut a, script.as_bytes());
+        let snapshot = encode(&mut a);
+        let mut b = term(30, 8);
+        feed(&mut b, &snapshot);
+        assert_same(&state(&a), &state(&b));
+        let blocks = list(&a);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(blocks[0].outcome, Outcome::Ok);
+        assert_eq!(blocks[1].outcome, Outcome::Failed(1));
+        assert!(blocks[0].cmd_row.0 < 0, "the first block is in scrollback");
+        assert_eq!(list(&b), blocks);
+        assert!(live_prompt(&a).is_some());
+        assert_eq!(live_prompt(&b), live_prompt(&a));
+        let text = output_text(&a, &blocks[0].id);
+        assert_eq!(
+            text.as_deref(),
+            Some(out.trim_end().replace("\r\n", "\n").as_str())
+        );
+        assert_eq!(output_text(&b, &blocks[0].id), text);
+        assert_eq!(output_text(&b, &blocks[1].id).as_deref(), Some(""));
+
+        // Encoded mid-command: the rebuilt Term's own (fresh) tagger finishes the block.
+        let mut a = term(30, 8);
+        tagged(
+            &mut a,
+            format!("{A}$ {B}make\r\n\x1b]133;C;cmdline_url=make\x07half\r\n").as_bytes(),
+        );
+        let snapshot = encode(&mut a);
+        let mut b = term(30, 8);
+        let mut processor: Processor<StdSyncHandler> = Processor::new();
+        processor.advance(&mut b, &snapshot);
+        assert_eq!(list(&b)[0].outcome, Outcome::Running);
+        crate::blocks::advance(
+            &mut processor,
+            &mut b,
+            &mut Tagger::new(),
+            &mut MarkScanner::new(),
+            b"rest\r\n\x1b]133;D;0\x07",
+        );
+        let blocks = list(&b);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].outcome, Outcome::Ok);
+        assert_eq!(blocks[0].cmd.as_deref(), Some("make"));
+        assert_eq!(
+            output_text(&b, &blocks[0].id).as_deref(),
+            Some("half\nrest")
+        );
+    }
 }

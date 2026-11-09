@@ -49,7 +49,6 @@ pub struct MarkScanner {
 }
 
 impl MarkScanner {
-    #[allow(dead_code)] // wired in M11l task 2
     pub fn new() -> Self {
         MarkScanner {
             matched: 0,
