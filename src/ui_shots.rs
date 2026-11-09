@@ -9303,8 +9303,9 @@ fn palette_actions_scene() {
 /// `… more` rows among them), round at both ends; Tab and ⇧Tab change scope, round; ⌘K on All
 /// closes it, ⌘K then ⌘P puts it on Workspaces with the text kept; Esc closes it, the keyboard
 /// back to the terminal; Enter on `… 3 more workspaces` goes to Workspaces and stays open; a
-/// replaced palette's late Cancel is ignored; a click on a chip changes scope. Panics on the
-/// first that doesn't hold.
+/// replaced palette's late Cancel is ignored; a click on a chip changes scope; ⌘K with ">"
+/// typed on All still closes it (the toggle follows the chosen chip). Panics on the first that
+/// doesn't hold.
 fn palette_keys_scene() {
     use crate::palette_items::{Key, Kind, Line, NO_FOLDER, Scope};
     use gpui::Modifiers;
@@ -9398,6 +9399,13 @@ fn palette_keys_scene() {
             let (lines, scope_now, _) = palette_state(cx, &ws);
             assert_eq!(scope_now, Scope::Files, "{n}: a chip click");
             assert_eq!(lines, [Line::Note(NO_FOLDER.into())], "{n}: the note");
+            // ⌘K with ">" typed on All (Actions shown): the chosen chip is All, so ⌘K closes.
+            press_keys(cx, window, "escape cmd-k");
+            cx.simulate_input(window, ">");
+            settle(cx, window);
+            assert_eq!(scope(cx), Scope::Actions, "{n}: > shows Actions");
+            press_keys(cx, window, "cmd-k");
+            assert!(palette_of(cx, &ws).is_none(), "{n}: ⌘K on All (>) closes");
             slot.borrow_mut().take();
         };
         render_with(&theme, dims, build, act);

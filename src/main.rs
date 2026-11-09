@@ -286,6 +286,7 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("down", palette::SelectNext, Some("Palette")),
         KeyBinding::new("tab", palette::NextScope, Some("Palette")),
         KeyBinding::new("shift-tab", palette::PrevScope, Some("Palette")),
+        KeyBinding::new("cmd-v", name_input::Paste, Some("Palette > NameInput")),
         // The Help panel: its box is a NameInput too; these keys scroll its list a row.
         KeyBinding::new("up", help_panel::ScrollUp, Some("HelpPanel")),
         KeyBinding::new("down", help_panel::ScrollDown, Some("HelpPanel")),
@@ -1252,6 +1253,20 @@ mod tests {
         let file_tab: &[&str] = &["Workspace", "FileTab"];
         assert!(runs(&keymap, "cmd-k", file_tab).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-p", file_tab).partial_eq(&OpenSwitcher));
+    }
+
+    #[test]
+    fn command_v_pastes_into_the_palette_box() {
+        let keymap = keymap();
+        let palette_box: &[&str] = &["Workspace", "Palette", "NameInput"];
+        let got = runs(&keymap, "cmd-v", palette_box);
+        assert!(
+            got.partial_eq(&crate::name_input::Paste),
+            "cmd-v in the palette's box: {}",
+            got.name()
+        );
+        // A terminal's ⌘V is still the terminal's.
+        assert!(runs(&keymap, "cmd-v", TERMINAL).partial_eq(&Paste));
     }
 
     #[test]

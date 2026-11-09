@@ -216,15 +216,15 @@ impl Palette {
         cx.notify();
     }
 
-    /// The sources as they are now (each time the Workspace draws). The chosen row stays on its
-    /// item while it is still listed; else the first is chosen.
-    pub fn refresh(&mut self, data: PaletteData) {
-        let changed = data.workspaces != self.data.workspaces
-            || data.actions != self.data.actions
-            || data.settings != self.data.settings
-            || data.files != self.data.files;
-        self.data = data;
-        if changed {
+    /// What can change while it's open, as it is now (each time the Workspace draws): the
+    /// workspaces, the files and the marks' clock. The actions and the settings stay as they
+    /// were at open. The chosen row stays on its item while it is still listed; else the first
+    /// is chosen.
+    pub fn refresh(&mut self, workspaces: Vec<Entry>, files: FilesData, phase: f32) {
+        self.data.phase = phase;
+        if workspaces != self.data.workspaces || files != self.data.files {
+            self.data.workspaces = workspaces;
+            self.data.files = files;
             self.relist(true);
         }
     }
@@ -659,17 +659,22 @@ impl Workspace {
         }
     }
 
-    /// The palette's sources now; `actions` as they were worked out when it opened (they follow
-    /// the focus then, and the palette has it since).
+    /// The palette's sources as it opens: the actions that apply where the focus is now (the
+    /// palette takes it next), and the rest as `refresh_palette` keeps giving them.
     fn palette_data(&self, actions: Vec<ActionRow>, cx: &App) -> PaletteData {
         PaletteData {
             workspaces: self.switcher_entries(cx),
             actions,
-            // The settings and the files are listed from M11j task 5.
+            // The settings are listed from M11j task 5.
             settings: Vec::new(),
-            files: FilesData::Note(crate::palette_items::NO_FOLDER),
+            files: self.palette_files_data(),
             phase: self.phase,
         }
+    }
+
+    /// What the palette has of the files: no folder until M11j task 5 lists them.
+    fn palette_files_data(&self) -> FilesData {
+        FilesData::Note(crate::palette_items::NO_FOLDER)
     }
 
     /// ⌘K (`All`), ⌘P (`Workspaces`) or the row menu's Show All Workspaces: open the palette on
@@ -784,12 +789,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Give the open palette the sources as they are now (each time the Workspace draws).
+    /// Give the open palette what changes while it's open (each time the Workspace draws).
     pub(crate) fn refresh_palette(&self, cx: &mut Context<Self>) {
         if let Some(palette) = &self.palette {
-            let actions = palette.read(cx).data.actions.clone();
-            let data = self.palette_data(actions, cx);
-            palette.update(cx, |p, _| p.refresh(data));
+            let (workspaces, files) = (self.switcher_entries(cx), self.palette_files_data());
+            let phase = self.phase;
+            palette.update(cx, |p, _| p.refresh(workspaces, files, phase));
         }
     }
 
