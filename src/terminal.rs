@@ -1,7 +1,7 @@
 //! One live terminal: an `alacritty_terminal::Term` holding its screen, fed by one of two
 //! backends. No GPUI here: the view talks to it through `TerminalCore` (cheap to clone, every
 //! field is an `Arc`) and an event channel.
-//! - Local: a PTY child of this process, its output parsed by a reader thread.
+//! - Local: a PTY child of this process, its output parsed by a parser thread.
 //! - Daemon (M10a, study §2.3.2): a replica of a session the background daemon owns. It starts
 //!   from the daemon's `Snapshot` and is fed its numbered `Output` and `Resized` frames, so it
 //!   ends up in the daemon's state. A gap in the numbers, or a `Resync`, re-attaches for a fresh
@@ -159,7 +159,7 @@ impl EventListener for Listener {
 }
 
 /// The parser lives next to the Term under one lock so a stuck synchronized update can be
-/// flushed from outside the reader thread (see `flush_stale_sync`).
+/// flushed from outside the parser thread (see `flush_stale_sync`).
 struct Shared {
     term: Term<Listener>,
     processor: Processor<StdSyncHandler>,
