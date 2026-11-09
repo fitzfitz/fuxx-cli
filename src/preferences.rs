@@ -206,7 +206,6 @@ pub(crate) struct PaletteSetting {
 
 /// Every control the palette can open Preferences at, section by section, top to bottom (the
 /// Cursor heading isn't one), so a control added later is listed by itself.
-#[allow(dead_code)] // task 5: listed by the palette
 pub(crate) fn palette_settings() -> Vec<PaletteSetting> {
     Section::ALL
         .into_iter()
@@ -465,6 +464,39 @@ pub fn open_or_activate(cx: &mut App) {
     });
 }
 
+/// Open Preferences on `section` (the ⌘K palette's settings): it is the section shown from now
+/// on in this run; an open Preferences window switches to it and comes to the front, else one
+/// opens on it.
+pub(crate) fn open_at(section: Section, cx: &mut App) {
+    cx.set_global(LastSection(section));
+    // Deferred, as `open_or_activate`: the window can't be updated while it is checked out.
+    cx.defer(move |cx| {
+        if let Some(handle) = cx.try_global::<PreferencesWindow>().and_then(|p| p.0)
+            && handle
+                .update(cx, |view, window, cx| {
+                    view.select(section, cx);
+                    window.activate_window();
+                })
+                .is_ok()
+        {
+            return;
+        }
+        open_or_activate(cx);
+    });
+}
+
+/// The screenshots: count `handle` as the open Preferences window.
+#[cfg(feature = "ui-shots")]
+pub(crate) fn set_window_for_shots(handle: WindowHandle<PreferencesView>, cx: &mut App) {
+    cx.set_global(PreferencesWindow(Some(handle)));
+}
+
+/// The screenshots: the section Preferences opens on next, if one was chosen in this run.
+#[cfg(feature = "ui-shots")]
+pub(crate) fn last_section_for_shots(cx: &App) -> Option<Section> {
+    cx.try_global::<LastSection>().map(|l| l.0)
+}
+
 /// The window's content size (the title bar is extra).
 pub fn window_size() -> gpui::Size<gpui::Pixels> {
     size(px(WIDTH), px(window_height()))
@@ -597,6 +629,12 @@ impl PreferencesView {
             _appearance: appearance_sub,
             _workspace: workspace_sub,
         }
+    }
+
+    /// For the screenshots: the section shown.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) fn section_for_shots(&self) -> Section {
+        self.section
     }
 
     /// For the screenshots: show `section`, with the tips card dismissed or not.

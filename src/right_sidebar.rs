@@ -971,7 +971,11 @@ impl Workspace {
 
     /// Terminal `id`'s OSC 7 report (counted for a local terminal only when it is about this
     /// Mac) and its shell's pid; none for an unknown terminal.
-    fn reported_folder(&self, id: u64, cx: &App) -> Option<(Option<PathBuf>, Option<u32>)> {
+    pub(crate) fn reported_folder(
+        &self,
+        id: u64,
+        cx: &App,
+    ) -> Option<(Option<PathBuf>, Option<u32>)> {
         let session = self.sessions.items().iter().find(|s| s.id == id)?;
         let ssh = session.ssh.is_some();
         let (reported, pid) = session.view.read(cx).working_folder();

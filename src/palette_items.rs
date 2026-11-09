@@ -636,13 +636,11 @@ fn action_row(
 
 pub const NOTHING: &str = "Nothing matches";
 pub const LISTING: &str = "Listing files\u{2026}";
-#[allow(dead_code)] // task 5: the files' notes
 pub const SSH_NOTE: &str = "Files aren't searched for SSH terminals.";
 pub const NO_FOLDER: &str = "No terminal folder to search.";
 pub const FAILED: &str = "Files couldn't be listed.";
 pub const CAPPED: &str = "Only the first 50,000 files are searched.";
 /// The same, for a folder that isn't a repo (its walk is bounded sooner).
-#[allow(dead_code)] // task 5: the files' notes
 pub const CAPPED_WALK: &str = "Only part of this folder is searched.";
 pub const HINT: &str =
     "Enter open \u{b7} \u{2191}\u{2193} choose \u{b7} Tab scope \u{b7} Esc close";
@@ -671,6 +669,8 @@ pub enum Files<'a> {
         hits: &'a [FileHit],
         total: usize,
         capped: bool,
+        /// The listing came from the walk (not git): a cut-short one says so differently.
+        walked: bool,
     },
 }
 
@@ -943,7 +943,7 @@ fn compose_all_typed(s: &Sources) -> Vec<Line> {
     for (kind, found, total) in sections {
         push_capped(&mut lines, kind_title(kind, root_name), kind, found, total);
         if kind == Kind::File && capped {
-            lines.push(Line::Note(CAPPED.into()));
+            lines.push(cap_note(walked(&s.files)));
         }
     }
     lines
@@ -996,7 +996,7 @@ fn compose_kind_empty(s: &Sources, kind: Kind) -> Vec<Line> {
             } => {
                 lines.push(Line::Note(format!("Type to search files in {root_name}")));
                 if capped {
-                    lines.push(Line::Note(CAPPED.into()));
+                    lines.push(cap_note(walked(&s.files)));
                 }
             }
             _ => lines.extend(files_note(&s.files)),
@@ -1043,6 +1043,7 @@ fn compose_kind_typed(s: &Sources, kind: Kind) -> Vec<Line> {
                 hits,
                 total,
                 capped,
+                ..
             },
         ) => (find_files(root, hits), *root_name, *total, *capped),
         (Kind::File, files) => return files_note(files).into_iter().collect(),
@@ -1050,7 +1051,7 @@ fn compose_kind_typed(s: &Sources, kind: Kind) -> Vec<Line> {
     if found.is_empty() {
         // A capped listing explains a miss: the file may be past the cap.
         return if capped {
-            vec![Line::Note(CAPPED.into())]
+            vec![cap_note(walked(&s.files))]
         } else {
             Vec::new()
         };
@@ -1066,9 +1067,19 @@ fn compose_kind_typed(s: &Sources, kind: Kind) -> Vec<Line> {
         lines.push(Line::Note(more_label(Kind::File, total - shown)));
     }
     if capped {
-        lines.push(Line::Note(CAPPED.into()));
+        lines.push(cap_note(walked(&s.files)));
     }
     lines
+}
+
+/// Whether the files listed came from the walk (not git).
+fn walked(files: &Files) -> bool {
+    matches!(files, Files::Ready { walked: true, .. })
+}
+
+/// The note under a listing that was cut short: the walk's (outside a repo) or git's cap.
+fn cap_note(walked: bool) -> Line {
+    Line::Note(if walked { CAPPED_WALK } else { CAPPED }.into())
 }
 
 /// The places in `lines` of the rows that can be chosen (items and `… more`).
@@ -1511,6 +1522,7 @@ mod tests {
             hits: &hits,
             total: 7,
             capped: false,
+            walked: false,
         };
         let main = compose(&f.sources(Scope::All, "main", files));
         let at = main
@@ -1544,6 +1556,7 @@ mod tests {
             hits: &hits[..2],
             total: 2,
             capped: true,
+            walked: false,
         };
         let lines = compose(&f.sources(Scope::All, "main", capped));
         assert_eq!(lines[3], Line::Note(CAPPED.into()));
@@ -1597,6 +1610,7 @@ mod tests {
             hits,
             total,
             capped,
+            walked: false,
         };
         assert_eq!(
             compose(&f.sources(Scope::Files, "", ready(&[], 0, false))),
@@ -1657,6 +1671,39 @@ mod tests {
                 Line::Note("Type to search files in fuxx-cli".into())
             ]
         );
+    }
+
+    #[test]
+    fn a_cut_short_walk_says_only_part_is_searched() {
+        let f = Fixture::new();
+        let root = Path::new("/w/notes");
+        let hits = [FileHit {
+            rel: "main.md".into(),
+            positions: vec![0, 1, 2, 3],
+            score: 100,
+        }];
+        let walked = |hits, walked| Files::Ready {
+            root,
+            root_name: "notes",
+            hits,
+            total: hits.len(),
+            capped: true,
+            walked,
+        };
+        let walk_note = Line::Note(CAPPED_WALK.into());
+        // Every place the cap note shows: Files empty, a miss, after the hits, and on All.
+        let empty = compose(&f.sources(Scope::Files, "", walked(&[], true)));
+        assert_eq!(empty.last(), Some(&walk_note));
+        let miss = compose(&f.sources(Scope::Files, "zzz", walked(&[], true)));
+        assert_eq!(miss, std::slice::from_ref(&walk_note));
+        let found = compose(&f.sources(Scope::Files, "main", walked(&hits, true)));
+        assert_eq!(found.last(), Some(&walk_note));
+        let all = compose(&f.sources(Scope::All, "main", walked(&hits, true)));
+        assert!(all.contains(&walk_note), "{all:?}");
+        assert!(!all.contains(&Line::Note(CAPPED.into())));
+        // git's cap keeps its own words.
+        let git = compose(&f.sources(Scope::Files, "zzz", walked(&[], false)));
+        assert_eq!(git, [Line::Note(CAPPED.into())]);
     }
 
     #[test]
