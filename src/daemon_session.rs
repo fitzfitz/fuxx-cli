@@ -47,8 +47,9 @@ use crate::vt_snapshot;
 pub const QUEUE_CAPACITY: usize = 1024;
 /// Output bytes a subscriber may have queued before it is cut off with `Resync`, whichever
 /// cap comes first. Frames carry up to `pty::BATCH_MAX` (64 KiB), so the frame cap alone would
-/// allow 64 MiB; this keeps the bound the frame cap gave with 8 KiB reads (1024 × 8 KiB).
-pub const QUEUE_BYTES: usize = 8 << 20;
+/// allow 64 MiB; this keeps the bound the frame cap gave before, when macOS returned about
+/// 1 KiB per PTY read (1024 frames × about 1 KiB ≈ 1 MiB).
+pub const QUEUE_BYTES: usize = 1 << 20;
 /// Room left in a `Snapshot` frame for its binary header and JSON metadata (title excluded).
 const SNAPSHOT_HEADROOM: usize = 64 * 1024;
 /// Largest terminal a session takes, so even a snapshot with no history fits in a frame.
@@ -1056,9 +1057,10 @@ mod tests {
     }
 
     /// Frames are now up to `BATCH_MAX` (64 KiB), so 1024 frames alone would let a stalled
-    /// client hold 64 MiB. The byte cap restores the old bound (1024 frames of 8 KiB reads).
+    /// client hold 64 MiB. The byte cap restores the old bound: macOS returned about 1 KiB per
+    /// PTY read, so 1024 frames held about 1 MiB.
     #[test]
-    fn a_stalled_subscriber_resyncs_by_8_mib_of_big_frames() {
+    fn a_stalled_subscriber_resyncs_by_1_mib_of_big_frames() {
         let big = |seq| Frame::Output {
             id: ID,
             seq,
@@ -1066,17 +1068,17 @@ mod tests {
             bytes: vec![b'x'; crate::pty::BATCH_MAX],
         };
         let fits = (QUEUE_BYTES / crate::pty::BATCH_MAX) as u64;
-        assert_eq!(QUEUE_BYTES, 8 << 20);
+        assert_eq!(QUEUE_BYTES, 1 << 20);
         let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
         for seq in 1..=fits {
-            assert!(sub.push(big(seq), ID), "frame {seq} is within 8 MiB");
+            assert!(sub.push(big(seq), ID), "frame {seq} is within 1 MiB");
         }
         // Taking one frame makes room for one more: the count follows what is taken.
         assert!(matches!(rx.try_recv(), Ok(Frame::Output { seq: 1, .. })));
         assert!(sub.push(big(fits + 1), ID), "room was made");
         assert!(
             !sub.push(big(fits + 2), ID),
-            "past 8 MiB queued, a stalled subscriber is cut off"
+            "past 1 MiB queued, a stalled subscriber is cut off"
         );
         drop(sub);
         assert_eq!(rx.try_recv(), Ok(Frame::Resync { id: ID }));
