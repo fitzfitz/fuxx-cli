@@ -5,7 +5,7 @@ status: built
 
 # 65 - Milestone 11n - Performance (design)
 
-**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-10 (1289 tests; the full ui-shots set passes, 147 shots). Every target met (numbers in "M11n as built"). Released as v0.5.0 (pending: the release is the next step). Your on-screen check is pending (11 items, below). Every design detail is AI's call (the program is autonomous). Ends with the one combined release v0.5.0 (M11i–M11n).**  ·  **Phase 4: an M11 extension.**  ·
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-10 (1289 tests; the full ui-shots set passes, 147 shots). Every target met (numbers in "M11n as built"). Released in v0.5.0 (2026-11-10). Your on-screen check is pending (11 items, below). Every design detail is AI's call (the program is autonomous). Ends with the one combined release v0.5.0 (M11i–M11n).**  ·  **Phase 4: an M11 extension.**  ·
 **Plan:** [[M11n Plan - Performance]]
 **Added to the plan 2026-11-09 by you** (see [[12 - Scope]], "Performance"), after M11l; renumbered M11n when the
 title bar took M11m.
@@ -294,7 +294,7 @@ Read these with their caveats:
 - `cpu_rest` has one run per app; the `cpu_base` base set has one unexplained low run (above).
 - Still not verified on 60 Hz displays or on Intel Macs.
 
-## On-screen checklist (pending, after the v0.5.0 release)
+## On-screen checklist (pending; v0.5.0 is released)
 
 Nothing here has been seen on a real screen yet; the benchmark and the tests cannot show how the glow looks. A copy of this list, as plain steps, is in your test list.
 

@@ -5,7 +5,7 @@ status: built
 
 # 64 - Milestone 11m - Title Bar (design)
 
-**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1259 tests; the full ui-shots set passes). The on-screen check is pending (20 items, below). Not released on its own: it ships in the one combined release (M11i–M11n) after M11n (your rule, 2026-11-09). Ships in v0.5.0 (the release after M11n; pending).**  ·  **Phase 4: an M11 extension.**  ·
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1259 tests; the full ui-shots set passes). The on-screen check is pending (20 items, below). Released in v0.5.0 (2026-11-10).**  ·  **Phase 4: an M11 extension.**  ·
 **Plan:** [[M11m Plan - Title Bar]]
 **Added to the plan 2026-11-09 by you** (see [[12 - Scope]], "Title bar"), as its own milestone after M11l
 ("own milestone after M11l"). After it comes M11n (performance), then the one combined release.

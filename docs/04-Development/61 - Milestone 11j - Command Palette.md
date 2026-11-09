@@ -5,7 +5,7 @@ status: built
 
 # 61 - Milestone 11j - Command Palette (design)
 
-**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1141 tests; every detail AI's call; you skipped the design questions). Not released on its own: one release after M11n. On-screen check pending. Ships in v0.5.0 (the release after M11n; pending).**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11j Plan - Command Palette]]
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1141 tests; every detail AI's call; you skipped the design questions). Released in v0.5.0 (2026-11-10). On-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11j Plan - Command Palette]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout, a command palette…"). Comes after
 M11i and M11h (both merged), before M11k.
 
