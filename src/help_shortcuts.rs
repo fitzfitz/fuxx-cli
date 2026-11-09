@@ -102,6 +102,9 @@ pub fn describe(action: &str) -> Describe {
         "terminal::Paste" => Listed(Terminal, "Paste"),
         "terminal::ScrollPageUp" => Listed(Terminal, "Scroll up a page"),
         "terminal::ScrollPageDown" => Listed(Terminal, "Scroll down a page"),
+        "terminal::PrevCommand" => Listed(Terminal, "Previous command"),
+        "terminal::NextCommand" => Listed(Terminal, "Next command"),
+        "terminal::CopyCommandOutput" => Listed(Terminal, "Copy command output"),
 
         "browser_tab::FocusAddress" => Listed(BrowserPages, "Address field"),
         "browser_tab::Reload" => Listed(BrowserPages, "Reload"),
@@ -400,6 +403,26 @@ mod tests {
         assert!(!row_matches(reload, "terminal"));
         assert!(row_matches(reload, "browser pages"));
         assert_eq!(ShortcutGroup::WindowAndApp.label(), "Window & app");
+    }
+
+    #[test]
+    fn block_keys_are_in_the_terminal_group() {
+        let rows = shortcut_rows(&binding_pairs(&crate::key_bindings()));
+        let terminal: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|r| r.group == ShortcutGroup::Terminal)
+            .map(|r| (r.name, r.keys.as_str()))
+            .collect();
+        for row in [
+            ("Previous command", "\u{21e7}\u{2318}\u{2191}"),
+            ("Next command", "\u{21e7}\u{2318}\u{2193}"),
+            ("Copy command output", "\u{21e7}\u{2318}C"),
+        ] {
+            assert!(terminal.contains(&row), "{row:?} in {terminal:?}");
+        }
+        // ⌘↑ / ⌘↓ still scroll a page.
+        assert!(terminal.contains(&("Scroll up a page", "\u{21e7}\u{21de} / \u{2318}\u{2191}")));
+        assert!(terminal.contains(&("Scroll down a page", "\u{21e7}\u{21df} / \u{2318}\u{2193}")));
     }
 
     #[test]

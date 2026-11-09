@@ -123,7 +123,9 @@ use help_panel::HelpPage;
 use prefs::FontStep;
 use ui_tokens::size::TRAFFIC_LIGHTS;
 
-use terminal_view::{Copy, Paste, ScrollPageDown, ScrollPageUp};
+use terminal_view::{
+    Copy, CopyCommandOutput, NextCommand, Paste, PrevCommand, ScrollPageDown, ScrollPageUp,
+};
 use workspace::{
     CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
@@ -254,6 +256,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-up", ScrollPageUp, Some("Terminal")),
         KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
         KeyBinding::new("cmd-down", ScrollPageDown, Some("Terminal")),
+        // Command blocks (M11l): jump between commands, copy the output.
+        KeyBinding::new("cmd-shift-up", PrevCommand, Some("Terminal")),
+        KeyBinding::new("cmd-shift-down", NextCommand, Some("Terminal")),
+        KeyBinding::new("cmd-shift-c", CopyCommandOutput, Some("Terminal")),
         // ⌃Tab / ⌃⇧Tab: the focused pane's next / previous tab. Taken from the terminal
         // program (it got nothing for them before: `keys` sends no bytes for ⌃Tab), as
         // terminals with tabs do.
@@ -1272,6 +1278,43 @@ mod tests {
         let file_tab: &[&str] = &["Workspace", "FileTab"];
         assert!(runs(&keymap, "cmd-k", file_tab).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-p", file_tab).partial_eq(&OpenSwitcher));
+    }
+
+    #[test]
+    fn shift_command_arrows_jump_between_commands_in_a_terminal() {
+        use crate::terminal_view::{
+            CopyCommandOutput, NextCommand, PrevCommand, ScrollPageDown, ScrollPageUp,
+        };
+        let keymap = keymap();
+        let keys: [(&str, Box<dyn Action>); 5] = [
+            ("cmd-shift-up", Box::new(PrevCommand)),
+            ("cmd-shift-down", Box::new(NextCommand)),
+            ("cmd-shift-c", Box::new(CopyCommandOutput)),
+            // ⌘↑ / ⌘↓ stay page scroll.
+            ("cmd-up", Box::new(ScrollPageUp)),
+            ("cmd-down", Box::new(ScrollPageDown)),
+        ];
+        for (key, action) in keys {
+            let got = runs(&keymap, key, TERMINAL);
+            assert!(got.partial_eq(&*action), "{key}: {}", got.name());
+        }
+        // Only in a terminal: elsewhere ⇧⌘C is nothing of the terminal's.
+        let file_tab: &[&str] = &["Workspace", "FileTab"];
+        for stack in [file_tab, PAGE, WORKSPACE] {
+            for key in ["cmd-shift-up", "cmd-shift-down", "cmd-shift-c"] {
+                let contexts: Vec<KeyContext> = stack
+                    .iter()
+                    .map(|c| KeyContext::parse(c).unwrap())
+                    .collect();
+                let got = keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+                assert!(
+                    got.0
+                        .iter()
+                        .all(|b| !b.action().name().starts_with("terminal::")),
+                    "{key} in {stack:?}"
+                );
+            }
+        }
     }
 
     #[test]

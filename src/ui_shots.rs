@@ -269,6 +269,9 @@ const SCENES: &[(&str, fn())] = &[
     ("command-blocks-alt-screen", command_blocks_alt_screen_scene),
     ("command-blocks-narrow", command_blocks_narrow_scene),
     ("command-blocks-off", command_blocks_off_scene),
+    ("command-blocks-jump", command_blocks_jump_scene),
+    ("command-blocks-copy", command_blocks_copy_scene),
+    ("command-blocks-rerun", command_blocks_rerun_scene),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -14606,12 +14609,24 @@ fn cursor_scenes() {
 /// 2 an older empty prompt, 3-4 a two-line prompt and `false` (exit 1, no output),
 /// 5 `sleep 9` (running, never ended), 6-7 its output, 8 the live prompt.
 fn blocks_text() -> String {
+    blocks_text_with(0)
+}
+
+/// `blocks_text` with `filler` more lines of output after block 1's `hi`.
+fn blocks_text_with(filler: usize) -> String {
     const A: &str = "\x1b]133;A\x07";
     const B: &str = "\x1b]133;B\x07";
     let c = |cmd: &str| format!("\x1b]133;C;cmdline_url={cmd}\x07");
     let d = |x: i32| format!("\x1b]133;D;{x}\x07");
     [
-        format!("{A}$ {B}echo hi\r\n{}hi\r\n{}", c("echo%20hi"), d(0)),
+        format!(
+            "{A}$ {B}echo hi\r\n{}hi\r\n{}{}",
+            c("echo%20hi"),
+            (1..=filler)
+                .map(|n| format!("line {n}\r\n"))
+                .collect::<String>(),
+            d(0)
+        ),
         format!("{A}$ {B}\r\n{}", d(0)),
         format!("{A}~/code\r\n$ {B}false\r\n{}{}", c("false"), d(1)),
         format!("{A}$ {B}sleep 9\r\n{}one\r\ntwo\r\n", c("sleep%209")),
@@ -15115,5 +15130,365 @@ fn command_blocks_off_scene() {
         point_at(&mut rig, point(px(g.bar_x), px(g.mid(4))));
         assert!(rig.read(|v| v.hovered_block().is_none()), "{n}: no hover");
         assert!(chip_of(&rig).is_none(), "{n}: no chip");
+    }
+}
+
+/// Give a `command-blocks*` rig fuxx's key bindings and the focus, so keys reach its terminal.
+fn keyed(rig: &mut CursorRig) {
+    use gpui::Focusable;
+    let view = rig.view.clone();
+    rig.cx.update(|cx| cx.bind_keys(crate::key_bindings()));
+    rig.cx
+        .update_window(rig.window, |_, window, cx| {
+            view.focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+    rig.cx.run_until_parked();
+}
+
+fn press(rig: &mut CursorRig, keys: &str) {
+    let window = rig.window;
+    rig.cx.simulate_keystrokes(window, keys);
+    let _ = rig.frame();
+}
+
+fn chosen(rig: &CursorRig) -> Option<String> {
+    rig.read(|v| v.chosen_block().map(str::to_string))
+}
+
+fn clipboard(rig: &mut CursorRig) -> Option<String> {
+    rig.cx
+        .update(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+}
+
+fn set_clipboard(rig: &mut CursorRig, text: &str) {
+    rig.cx
+        .update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.into())));
+}
+
+/// Draw frames until the clipboard isn't `was` (a copy's text is read on the background
+/// executor), at most 3 s; then the clipboard.
+fn copied(rig: &mut CursorRig, was: &str) -> Option<String> {
+    let start = std::time::Instant::now();
+    while clipboard(rig).as_deref() == Some(was)
+        && start.elapsed() < std::time::Duration::from_secs(3)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let _ = rig.frame();
+    }
+    clipboard(rig)
+}
+
+/// Press chip button `i` (0 Copy command, 1 Copy output, 2 Rerun) of the open chip.
+fn press_chip_button(rig: &mut CursorRig, i: usize) {
+    let (buttons, _) = rig
+        .read(|v| v.chip_buttons_shot())
+        .expect("the chip is open");
+    let at = buttons[i].expect("the button was laid out").center();
+    let window = rig.window;
+    rig.cx.simulate_click(window, at, gpui::Modifiers::none());
+    let _ = rig.frame();
+}
+
+/// `command-blocks-jump` (M11l Task 5), in both themes: the blocks text with 40 lines of
+/// output under `echo hi`, five rows tall (so `false`'s first prompt row is just above the
+/// view). ⇧⌘↑ picks `sleep 9` (all in view: no scroll), again `false`, scrolled so its first
+/// prompt row is the top row with its bar in the accent down both rows; ⇧⌘↓ twice comes back
+/// to the bottom with nothing picked; ⌘↑ still scrolls a page; a typed key drops the pick.
+fn command_blocks_jump_scene() {
+    let dims = size(px(480.0), px(120.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("command-blocks-jump-{slug}");
+        let mut rig = CursorRig::sized(
+            theme,
+            &blocks_text_with(40),
+            dims,
+            false,
+            (false, false, false),
+            |_| (),
+        );
+        keyed(&mut rig);
+        let _ = rig.frame();
+        let g = BlockGeometry::of(&rig, false);
+        let line_height = f32::from(rig.cell(0, 1).top() - rig.cell(0, 0).top());
+        let grid = rig.read(|v| v.grid_bounds()).expect("painted");
+        let rows = (f32::from(grid.size.height) / line_height).round() as usize;
+        let blocks = rig.read(|v| v.shot_blocks());
+        let ids: Vec<String> = blocks.iter().map(|b| b.id.clone()).collect();
+        assert_eq!(ids.len(), 3, "{n}: three blocks");
+        assert!(
+            blocks[1].prompt_top.0 < 0,
+            "{n}: false's prompt starts above the view ({rows} rows): {blocks:?}"
+        );
+        let offset = |rig: &CursorRig| rig.read(|v| v.display_offset());
+        assert_eq!(offset(&rig), 0);
+
+        press(&mut rig, "cmd-shift-up");
+        assert_eq!(chosen(&rig), Some(ids[2].clone()), "{n}: sleep 9 picked");
+        assert_eq!(offset(&rig), 0, "{n}: all in view, no scroll");
+
+        press(&mut rig, "cmd-shift-up");
+        assert_eq!(chosen(&rig), Some(ids[1].clone()), "{n}: false picked");
+        let top = blocks[1].prompt_top.0;
+        assert_eq!(
+            offset(&rig) as i32,
+            -top,
+            "{n}: its first prompt row is the top row"
+        );
+        let shot = rig.frame();
+        save_shot("command-blocks-jump", slug, &shot);
+        for row in [0, 1] {
+            assert!(
+                is_colour(&shot, dims, g.bar_x, g.mid(row), ui.accent),
+                "{n}: the picked bar at row {row}: {:?}",
+                pixel_at(&shot, dims, g.bar_x, g.mid(row))
+            );
+        }
+        let w = ink_width(
+            &shot,
+            dims,
+            theme.background,
+            g.mid(1),
+            g.bar_x - 4.0,
+            g.bar_x + 4.0,
+        );
+        assert!((2.5..=3.5).contains(&w), "{n}: a 3 pt bar, saw {w}");
+
+        press(&mut rig, "cmd-shift-down");
+        assert_eq!(chosen(&rig), Some(ids[2].clone()), "{n}: back to sleep 9");
+        press(&mut rig, "cmd-shift-down");
+        assert_eq!(chosen(&rig), None, "{n}: past the newest, nothing picked");
+        assert_eq!(offset(&rig), 0, "{n}: at the bottom");
+        // Past the oldest, ⇧⌘↑ stays.
+        for _ in 0..3 {
+            press(&mut rig, "cmd-shift-up");
+        }
+        assert_eq!(chosen(&rig), Some(ids[0].clone()), "{n}: echo hi picked");
+        let at_oldest = offset(&rig);
+        press(&mut rig, "cmd-shift-up");
+        assert_eq!(
+            chosen(&rig),
+            Some(ids[0].clone()),
+            "{n}: stays on the oldest"
+        );
+        assert_eq!(offset(&rig), at_oldest, "{n}: and doesn't scroll");
+        press(&mut rig, "cmd-shift-down");
+        press(&mut rig, "cmd-shift-down");
+        press(&mut rig, "cmd-shift-down");
+        assert_eq!((chosen(&rig), offset(&rig)), (None, 0), "{n}: bottom again");
+
+        // ⌘↑ still scrolls a page.
+        press(&mut rig, "cmd-up");
+        assert_eq!(offset(&rig), rows, "{n}: ⌘↑ scrolled {rows} rows");
+        press(&mut rig, "cmd-down");
+        assert_eq!(offset(&rig), 0, "{n}: ⌘↓ back down");
+
+        // A typed key drops the pick.
+        press(&mut rig, "cmd-shift-up");
+        assert!(chosen(&rig).is_some());
+        press(&mut rig, "q");
+        assert_eq!(chosen(&rig), None, "{n}: typing drops the pick");
+
+        // On the alternate screen the keys do nothing.
+        rig.write("\x1b[?1049h");
+        press(&mut rig, "cmd-shift-up");
+        assert_eq!(chosen(&rig), None, "{n}: no pick on the alternate screen");
+        rig.write("\x1b[?1049l");
+        // With command blocks off, nothing either.
+        rig.appearance(|a| a.command_blocks = false);
+        press(&mut rig, "cmd-shift-up");
+        assert_eq!(chosen(&rig), None, "{n}: no pick with command blocks off");
+    }
+}
+
+/// `command-blocks-copy` (M11l Task 5), in both themes, the blocks text: with nothing picked
+/// ⇧⌘C copies the newest finished block's output (`false`: none, so empty); a click on
+/// `echo hi`'s bar picks it (no scroll) and ⇧⌘C copies `hi`; its chip's Copy command copies
+/// `echo hi` and Copy output `hi`; the palette's Copy Command and Output copies
+/// `$ echo hi\nhi`; a click on `sleep 9`'s bar picks it, still no scroll, and ⇧⌘C copies its
+/// output so far. With command blocks off, ⇧⌘C copies nothing.
+fn command_blocks_copy_scene() {
+    use crate::terminal_view::{CopyCommand, CopyCommandAndOutput};
+    let dims = size(px(480.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let n = format!("command-blocks-copy-{slug}");
+        let mut rig = blocks_rig(theme, dims, false, false, |_| ());
+        keyed(&mut rig);
+        let _ = rig.frame();
+        let g = BlockGeometry::of(&rig, false);
+        let ids = rig.read(|v| v.block_ids());
+        let window = rig.window;
+        let none = gpui::Modifiers::none();
+
+        set_clipboard(&mut rig, "before");
+        press(&mut rig, "cmd-shift-c");
+        // (macOS reads an empty string back as no text.)
+        assert_eq!(
+            copied(&mut rig, "before").unwrap_or_default(),
+            "",
+            "{n}: false's (empty) output"
+        );
+        assert_eq!(chosen(&rig), None, "{n}: ⇧⌘C picks nothing");
+
+        // A click on echo hi's bar picks it.
+        rig.cx
+            .simulate_click(window, point(px(g.bar_x), px(g.mid(0))), none);
+        let _ = rig.frame();
+        assert_eq!(chosen(&rig), Some(ids[0].clone()), "{n}: echo hi picked");
+        set_clipboard(&mut rig, "before");
+        press(&mut rig, "cmd-shift-c");
+        assert_eq!(copied(&mut rig, "before").as_deref(), Some("hi"), "{n}");
+
+        // Its chip: Copy command, then Copy output.
+        point_at(&mut rig, point(px(g.bar_x), px(g.mid(0))));
+        let _ = rig.frame();
+        assert_eq!(
+            rig.read(|v| v.hovered_block().map(str::to_string)),
+            Some(ids[0].clone())
+        );
+        set_clipboard(&mut rig, "before");
+        press_chip_button(&mut rig, 0);
+        assert_eq!(clipboard(&mut rig).as_deref(), Some("echo hi"), "{n}");
+        set_clipboard(&mut rig, "before");
+        press_chip_button(&mut rig, 1);
+        assert_eq!(copied(&mut rig, "before").as_deref(), Some("hi"), "{n}");
+        assert!(chip_of(&rig).is_some(), "{n}: the chip stays");
+        assert_eq!(chosen(&rig), Some(ids[0].clone()), "{n}: the pick is kept");
+
+        // The palette's Copy Command and Output (dispatched as the palette does).
+        set_clipboard(&mut rig, "before");
+        rig.cx
+            .update_window(window, |_, window, cx| {
+                window.dispatch_action(Box::new(CopyCommandAndOutput), cx)
+            })
+            .expect("dispatch");
+        assert_eq!(
+            copied(&mut rig, "before").as_deref(),
+            Some("$ echo hi\nhi"),
+            "{n}"
+        );
+        set_clipboard(&mut rig, "before");
+        rig.cx
+            .update_window(window, |_, window, cx| {
+                window.dispatch_action(Box::new(CopyCommand), cx)
+            })
+            .expect("dispatch");
+        let _ = rig.frame();
+        assert_eq!(clipboard(&mut rig).as_deref(), Some("echo hi"), "{n}");
+
+        // A click on sleep 9's bar picks it, and nothing scrolls.
+        rig.cx
+            .simulate_click(window, point(px(g.bar_x), px(g.mid(5))), none);
+        let shot = rig.frame();
+        save_shot("command-blocks-copy", slug, &shot);
+        assert_eq!(chosen(&rig), Some(ids[2].clone()), "{n}: sleep 9 picked");
+        assert_eq!(rig.read(|v| v.display_offset()), 0, "{n}: no scroll");
+        set_clipboard(&mut rig, "before");
+        press(&mut rig, "cmd-shift-c");
+        assert_eq!(
+            copied(&mut rig, "before").as_deref(),
+            Some("one\ntwo"),
+            "{n}: a running block's output so far"
+        );
+
+        // Off: nothing is copied.
+        rig.appearance(|a| a.command_blocks = false);
+        set_clipboard(&mut rig, "before");
+        press(&mut rig, "cmd-shift-c");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let _ = rig.frame();
+        assert_eq!(clipboard(&mut rig).as_deref(), Some("before"), "{n}: off");
+    }
+}
+
+/// `command-blocks-rerun` (M11l Task 5), in both themes, the blocks text in `cat` at its live
+/// prompt (the tagger knows where typing starts): `echo hi`'s chip offers Rerun; pressed, the
+/// terminal shows `echo hi` after the live prompt (the tty's echo of what was sent) and the
+/// cursor stays on that row (no Return). Then the cursor has left the input start: Rerun is
+/// dimmed, its tooltip says why, and pressing it changes nothing.
+fn command_blocks_rerun_scene() {
+    use crate::block_view::Refusal;
+    use crate::grid::TextScope;
+    let dims = size(px(480.0), px(240.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("command-blocks-rerun-{slug}");
+        let mut rig = blocks_rig(theme, dims, false, false, |_| ());
+        keyed(&mut rig);
+        let _ = rig.frame();
+        let g = BlockGeometry::of(&rig, false);
+        let ids = rig.read(|v| v.block_ids());
+        let screen = |rig: &CursorRig| rig.read(|v| v.text(TextScope::Screen));
+        let before = screen(&rig);
+
+        point_at(&mut rig, point(px(g.bar_x), px(g.mid(0))));
+        let _ = rig.frame();
+        let (_, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+        assert_eq!(rerun, Ok(()), "{n}: Rerun offered at the empty prompt");
+        let shown = rig.frame();
+        save_shot("command-blocks-rerun", slug, &shown);
+        press_chip_button(&mut rig, 2);
+        wait_for(&mut rig, |v| {
+            v.text(TextScope::Screen).lines().nth(8) == Some("$ echo hi")
+        });
+        let after = screen(&rig);
+        assert_eq!(
+            after.lines().nth(8),
+            Some("$ echo hi"),
+            "{n}: typed after the live prompt: {after:?}"
+        );
+        // No Return: `cat` never gets a line to copy back.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = rig.frame();
+        let settled = screen(&rig);
+        assert_eq!(settled, after, "{n}: nothing more came");
+        assert_eq!(
+            settled.lines().count(),
+            before.lines().count(),
+            "{n}: the cursor stayed on the prompt's row"
+        );
+        assert!(chip_of(&rig).is_some(), "{n}: the chip stays");
+
+        // Typed now (the cursor left the input start): Rerun is disabled.
+        let (buttons, rerun) = rig.read(|v| v.chip_buttons_shot()).expect("the chip");
+        assert_eq!(rerun, Err(Refusal::Typed), "{n}");
+        let dim = rig.frame();
+        save_shot("command-blocks-rerun-disabled", slug, &dim);
+        // Its label in the disabled ink: no pixel of it is as strong as `text_dim`.
+        let b = buttons[2].expect("Rerun laid out");
+        let strongest = (0..(f32::from(b.size.width) as usize))
+            .map(|dx| {
+                pixel_at(
+                    &dim,
+                    dims,
+                    f32::from(b.left()) + dx as f32,
+                    f32::from(b.center().y),
+                )
+            })
+            .map(|p| {
+                crate::ui_tokens::contrast(
+                    alacritty_terminal::vte::ansi::Rgb {
+                        r: p[0],
+                        g: p[1],
+                        b: p[2],
+                    },
+                    ui.panel,
+                )
+            })
+            .fold(0.0f32, f32::max);
+        let enabled = crate::ui_tokens::contrast(ui.text_dim, ui.panel);
+        assert!(
+            strongest > 1.05 && strongest < enabled - 0.3,
+            "{n}: Rerun's label {strongest:.2} vs enabled {enabled:.2}"
+        );
+        press_chip_button(&mut rig, 2);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = rig.frame();
+        assert_eq!(screen(&rig), settled, "{n}: a disabled Rerun types nothing");
+        let _ = ids;
     }
 }
