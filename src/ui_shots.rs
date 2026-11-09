@@ -15869,7 +15869,6 @@ fn first_change(
     })
 }
 
-/// The view's chip, read for the checks: its label, buttons and painted bounds.
 /// A flood reaches the screen (M11n): a real pane runs `seq 1 300000; echo END`, with
 /// Animations off so nothing but its output asks for a repaint, and the window is drawn only
 /// when the view asks (`cx.notify`), as the app's frame loop draws it. Once the output stops,
@@ -15882,18 +15881,28 @@ fn cursor_flood_scene() {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
+    /// A file removed when the scene ends, a failed check included.
+    struct RemovedOnDrop(std::path::PathBuf);
+    impl Drop for RemovedOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     let (slug, name) = SHOT_THEMES[0];
     let n = format!("cursor-flood-{slug}");
     // The flood waits for `go` to exist, so it starts only once the scene is watching. The
     // child stays alive after `END`, so no exit repaints the screen either.
-    let go = std::env::temp_dir().join(format!("fuxx-ui-shots-{}-flood-go", std::process::id()));
-    let _ = std::fs::remove_file(&go);
+    let go = RemovedOnDrop(
+        std::env::temp_dir().join(format!("fuxx-ui-shots-{}-flood-go", std::process::id())),
+    );
+    let _ = std::fs::remove_file(&go.0);
     let program = vec![
         "/bin/sh".into(),
         "-c".into(),
         format!(
             "while [ ! -e '{}' ]; do sleep 0.01; done; seq 1 300000; echo END; exec sleep 60",
-            go.display()
+            go.0.display()
         ),
     ];
     let mut rig = CursorRig::spawned(
@@ -15912,7 +15921,7 @@ fn cursor_flood_scene() {
         rig.cx
             .update(|cx| cx.observe(&view, move |_, _| asked.set(asked.get() + 1)))
     };
-    std::fs::write(&go, b"").expect("start the flood");
+    std::fs::write(&go.0, b"").expect("start the flood");
     let (mut drawn, mut frames) = (0, 0);
     let mut screen = String::new();
     let start = Instant::now();
@@ -15937,13 +15946,13 @@ fn cursor_flood_scene() {
             ended = Some(Instant::now());
         }
     }
-    let _ = std::fs::remove_file(&go);
     assert!(
         screen.lines().any(|l| l.trim_end() == "END"),
         "{n}: once the output stops, the last frame drawn (of {frames}) holds END, saw {screen:?}"
     );
 }
 
+/// The view's chip, read for the checks: its label, buttons and painted bounds.
 fn chip_of(rig: &CursorRig) -> Option<(String, [&'static str; 3], gpui::Bounds<Pixels>)> {
     rig.read(|v| v.chip_shot())
 }
