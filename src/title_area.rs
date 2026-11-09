@@ -174,7 +174,7 @@ pub(crate) fn band_list_room(viewport_height: f32) -> f32 {
 /// Entry `i`'s top in the window (the list not scrolled), the popover dropped from the band:
 /// counted down from its top, under its edge, padding, header and the gap under it.
 #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
-pub(crate) fn band_entry_top(i: usize, _viewport_height: f32) -> f32 {
+pub(crate) fn band_entry_top(i: usize) -> f32 {
     TOP_BAND + POPOVER_DROP + 1.0 + PADDING + HEADER + PADDING + i as f32 * (ENTRY + ENTRY_GAP)
 }
 
@@ -822,13 +822,10 @@ mod tests {
     #[test]
     fn a_band_entrys_place_is_counted_down_from_the_band() {
         assert_eq!(
-            band_entry_top(0, 600.0),
+            band_entry_top(0),
             TOP_BAND + POPOVER_DROP + 1.0 + PADDING + HEADER + PADDING
         );
-        assert_eq!(
-            band_entry_top(1, 600.0),
-            band_entry_top(0, 600.0) + ENTRY + ENTRY_GAP
-        );
+        assert_eq!(band_entry_top(1), band_entry_top(0) + ENTRY + ENTRY_GAP);
     }
 
     #[test]
