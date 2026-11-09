@@ -58,10 +58,24 @@ arm64, seeded "welcomed" `sessions.json`, every `cpu_*` run frontmost 15/15 or 1
 | Launch (median of 5) | 167 ms | 136 ms |
 | Memory 10 s / 60 s after ready (RSS / footprint) | 119.1 / 54 MB; 118.9 / 51 MB; 10 tabs 124.4 / 59 MB | 112.7 / 98 MB; 113.1 / 54 MB |
 
-Against the first run: glow-on is higher (7.3 vs 6.3-6.7 %, a different Mac load and the seeded Welcome fix), glow-off
-0.73 vs 0.93 %, `cat` 0.969 vs 0.826 s, colours 0.227 vs 0.282 s, launch 167 vs 143 ms: one session's comparisons only.
-`cpu_rest` (6.99 %) shows today's glow never rests. The footprint column differs from the first run (54 vs 100 MB; the
-tool's accounting varies), so memory targets compare RSS.
+Against the first run: glow-on is higher (7.3 vs 6.3-6.7 %; unexplained: the Mac's load differed, and the seeded
+Welcome fix was expected to raise it, but nothing here isolates a cause), glow-off 0.73 vs 0.93 %, `cat` 0.969 vs
+0.826 s, colours 0.227 vs 0.282 s, launch 167 vs 143 ms: one session's comparisons only. `cpu_rest` (6.99 %) shows
+today's glow never rests. The footprint column differs from the first run (fuxx 54 vs 100 MB, and Ghostty's 98 MB at
+10 s against 54 MB at 60 s); that is **unexplained**, so memory targets compare RSS.
+
+**Method of the re-measure (`scripts/bench/run.py`):**
+- Every `cpu_*` run is tried up to 5 times until the app is frontmost at every 2 s check (15/15; the 335 s `cpu_rest`
+  checks all 168); the last try counts and the earlier tries stay in the result's `tries`. The `mem` phase's own CPU
+  figure is **not** frontmost-checked, so it is not comparable with `cpu_*`.
+- The bench Ghostty is a `ditto` copy with Ghostty's own bundle id, and cfprefsd ignores `CFFIXED_USER_HOME`, so it writes
+  the user's real `com.mitchellh.ghostty` prefs. Ghostty's `grid` and `launch` runs happened **before** the backup rule
+  existed; that first run rewrote the real plist (only `NSWindowLastPosition` changed; the old value is lost). Since
+  then every Ghostty phase runs `defaults export` first, and after every bench Ghostty process has exited it runs
+  `defaults import` and verifies the content is equal (`plutil -convert xml1`, `cmp`); the plist's mtime changes, the
+  content is equal. A race remains: a prefs edit the user makes in their own Ghostty during a phase would be overwritten
+  by the restore.
+- Every process the harness starts is killed on any exit path (error, SIGTERM, Ctrl-C) before the restore.
 
 The harness's apps, homes and data were deleted after that run (only `run.py`, the results and the logs remain), so
 the plan brings the harness into the repo and re-measures the baseline first (Task 0). Two harness faults found
