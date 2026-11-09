@@ -49,7 +49,7 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   injected through `ZDOTDIR` without touching your dotfiles; copy and rerun are in; **collapse is out** (alacritty
   can't fold rows), and bash and fish aren't injected. See [[63 - Milestone 11l - Command Blocks]].)*
 - **Title bar** (M11m, added 2026-11-09 by you, after M11l; designed and planned 2026-11-09 in [[64 - Milestone 11m - Title Bar]]): with the sidebar open, the sidebar icon sits at the right edge of the sidebar's top band beside the centred title "the Fuxx?" (🔔 and ⚙ stay in the footer); collapsed, the title hides, the workspace name is centred in the top band and 🔔, ⚙ and the sidebar button sit at the far right.
-- **Performance** (M11n, added 2026-11-09 by you, after M11m): fuxx idles at about 6 % CPU (the cursor's breathing
+- **Performance** (M11n, added 2026-11-09 by you, after M11m; designed and planned 2026-11-09 in [[65 - Milestone 11n - Performance]]): fuxx idles at about 6 % CPU (the cursor's breathing
   glow redraws 20×/s; about 0.9 % with it off) against Ghostty's 0.2 %, and drains plain output about 2.7× slower
   (local benchmark, 2026-11-09). The one combined release (M11i–M11n) ships after M11n; a chores round is planned with you after it.
 

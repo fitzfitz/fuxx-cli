@@ -14,13 +14,30 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11m — title bar 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); next M11n (performance); M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, designed and planned 2026-11-09, not built), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11m — title bar 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); next M11n (performance, designed and planned 2026-11-09, not built; it ends with the v0.5.0 release); M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, designed and planned 2026-11-09, not built), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-09 — M11n performance designed and planned
+- **Did:** Profiled fuxx (release build, isolated scratch `HOME`, `sample` and `ps`, test variants built from scratch
+  copies) and wrote the design ([[65 - Milestone 11n - Performance]]) and the plan ([[M11n Plan - Performance]]: the
+  harness and baseline, 4 build tasks, the benchmark, merge, the **v0.5.0** release, docs). Every call is AI's.
+- **Found:** **Idle:** each breath tick (20/s) redraws the whole window, because GPUI marks the terminal and its
+  ancestor, the workspace, dirty: render, Taffy layout and paint of all the chrome. CPU tracks breath frames (~0.3 %
+  per frame per second: 5/10/20 a second read 3.1/~5.0/7.3–8.0 %); `Theme::ui()` recomputes contrast on every render
+  (8 % of a frame). **Throughput:** macOS gives ~1 KiB per PTY read (105,515 reads for 100 MB); the single reader
+  thread spends 48 % parsing, 29 % in four byte-by-byte scanners, 19 % in `read`; skipping the scanners on plain text
+  alone measured −25 %. Also: since M11k the old harness's deleted `sessions.json` shows the Welcome card, so the glow
+  never ran in it; fixed in the plan's harness.
+- **Plan:** memchr scanners; a parser thread with 64 KiB batches and one UI wake per batch; `Theme::ui()` once per
+  theme; the breath drawn at level crossings (same curve, never a bigger step than today, 22 frames per breath
+  instead of 32), asleep through the hold, at rest after five minutes untouched. Targets: breathing idle ≤ 0.8 × the
+  baseline, ≈ glow-off after 5 min, `cat` ≤ 1.8 × Ghostty (from 2.68), coloured output ≤ 1.4 × (from 1.58).
+- **Next:** build M11n (Task 0), then release v0.5.0.
 
 ### 2026-11-09 — M11m title bar built, reviewed, merged and pushed
 - **Did:** Built the title bar task by task with a fresh builder and reviewer each. Open: the sidebar button at the
