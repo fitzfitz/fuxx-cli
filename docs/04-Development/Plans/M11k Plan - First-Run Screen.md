@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11k
-status: planned
+status: built
 updated: 2026-11-09
 ---
 
@@ -12,9 +12,9 @@ updated: 2026-11-09
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[62 - Milestone 11k - First-Run Screen]] (incl. "Settled before planning") |
-| **Status** | ⬜ Planned 2026-11-09 |
-| **Tasks done** | 0 / 7 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built, reviewed, merged and pushed 2026-11-09 (1159 tests); release with M11l; on-screen check pending |
+| **Tasks done** | 6 / 7 (Task 6, the release, is folded into the one release after M11l) |
+| **▶ Pick up here** | Nothing to build. Your 18-item on-screen check in note 62 after the combined release |
 | **Decisions used** | Yours (2026-11-08): a first-run screen — pick a folder, start an agent, learn three shortcuts. Everything else: AI's calls in note 62 (you skipped the design questions). |
 | **Needs your eyes** | 👀 Task 6 (folded into the one release after M11l), then the 15-item on-screen check in note 62 |
 
@@ -138,7 +138,7 @@ preset's program on the login shell's `PATH` (pure, plus one blocking call run o
   `pub fn start_label(choice: &Choice) -> String`; `pub fn status_word(found: Found) -> Option<&'static str>`;
   `pub const SHORTCUTS: [(&str, &str); 3]` (action name, line) and the copy constants of Global Constraints.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - (`restore`) `an_older_sessions_file_counts_as_welcomed`: `decode(r#"{"version":2}"#).unwrap().welcomed == true`;
     `a_fresh_state_is_not_welcomed`: `!SavedState::default().welcomed`; `welcomed_survives_a_round_trip`:
     `decode(&encode(&SavedState { welcomed: false, ..Default::default() })).unwrap().welcomed == false`;
@@ -166,11 +166,11 @@ preset's program on the login shell's `PATH` (pure, plus one blocking call run o
   - `labels_follow_the_choice`: `start_label(Preset(claude)) == "Start claude"`, `start_label(Plain) == "Open
     Terminal"`; `status_word(Checking) == Some("Checking…")`, `No` → `Some("Not found on your PATH")`, `Yes` and
     `Unknown` → `None`.
-- [ ] **Step 2: run** `cargo test welcome_ agent_detect restore` → FAIL (undefined).
-- [ ] **Step 3: implement** per Interfaces and Global Constraints (`is_executable_file`: `metadata().is_file() &&
+- [x] **Step 2: run** `cargo test welcome_ agent_detect restore` → FAIL (undefined).
+- [x] **Step 3: implement** per Interfaces and Global Constraints (`is_executable_file`: `metadata().is_file() &&
   mode & 0o111 != 0`).
-- [ ] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
-- [ ] **Step 5: commit** `feat(m11k): first-run state, agent detection and the welcome's rules`.
+- [x] **Step 4: run** `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check` → green.
+- [x] **Step 5: commit** `feat(m11k): first-run state, agent detection and the welcome's rules`.
 
 ### Task 2: The Welcome card
 
@@ -196,7 +196,7 @@ render's scrim layer, `open_welcome`, `on_welcome_event`), `src/pane_browser.rs`
   `focus_active`; Start → Task 3's `run_welcome_pick`, a stub that closes in this task) `}`.
 - Choose… is wired in Task 3; here the folder row and button render and Return on `Folder` emits nothing.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - `welcome_inks_meet_the_floors` (welcome.rs): the Global Constraints contrast list on every built-in theme.
   - `the_three_shortcuts_are_bound` (welcome.rs): with `binding_table(false)`, the `SHORTCUTS` actions' keys are
     `["⌘K", "⌘N", "⇧⌘U"]`, and `workspace::LaunchPreset1` → `"⌃⌘1"`.
@@ -219,13 +219,13 @@ render's scrim layer, `open_welcome`, `on_welcome_event`), `src/pane_browser.rs`
       text's right end visible (start cut).
     - update `overlays`: `Overlay::Welcome => ws.open_welcome(Origin::Help, window, cx)`; pages hidden as for the
       others.
-- [ ] **Step 2: run** `cargo test` → FAIL; `__ui-shots welcome` → FAIL.
-- [ ] **Step 3: implement** (`key_context("Welcome")`, `on_key_down` for `up`/`down`/`enter`/`escape` with no
+- [x] **Step 2: run** `cargo test` → FAIL; `__ui-shots welcome` → FAIL.
+- [x] **Step 3: implement** (`key_context("Welcome")`, `on_key_down` for `up`/`down`/`enter`/`escape` with no
   modifiers, `cx.stop_propagation()` on those; the agent list `overflow_y_scroll` + `track_scroll`; events from a card
   that isn't `self.welcome` ignored).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots welcome`, `__ui-shots overlays`, the full
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots welcome`, `__ui-shots overlays`, the full
   `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11k): the Welcome card — folder, agents with detection, three shortcuts`.
+- [x] **Step 5: commit** `feat(m11k): the Welcome card — folder, agents with detection, three shortcuts`.
 
 ### Task 3: The pick, the folder panel and the first run
 
@@ -239,7 +239,7 @@ PathBuf, choice: Choice, window, cx); fn over_alone(&self, over: u64) -> bool }`
 window, cx)` (`cx.prompt_for_paths` with ⌘O's options; on `Some(path)` → `set_folder`; refocuses itself and restores
 the agent row chosen before, if still open).
 
-- [ ] **Step 1: failing tests** — ui-shots (Mocha, Latte):
+- [x] **Step 1: failing tests** — ui-shots (Mocha, Latte):
   - `welcome-start` (a) first terminal `s1` in its own workspace, `open_welcome(FirstRun{over: s1})`,
     `set_folder("/w/app")`, choose `Preset(2)` (codex), Enter → `welcome` `None`; one session, not `s1`, its
     `project == Some("/w/app")`, `preset.name == "codex"`; one workspace. (b) as (a) but `s1`'s pane got a second tab
@@ -250,12 +250,12 @@ the agent row chosen before, if still open).
   - `welcome-first-run`: a workspace built with `welcomed = false` runs `open_first` → after its callback,
     `welcome.is_some()`, `origin() == FirstRun{over: first id}`, `welcomed == true`; with `welcomed = true` →
     `welcome` `None`.
-- [ ] **Step 2: run** `__ui-shots welcome` → FAIL.
-- [ ] **Step 3: implement** (Global Constraints run order and pick effect; `close_after` via `index_of` + `close_at`
+- [x] **Step 2: run** `__ui-shots welcome` → FAIL.
+- [x] **Step 3: implement** (Global Constraints run order and pick effect; `close_after` via `index_of` + `close_at`
   in `open_session_then`'s callback, only for `Some(new)`; the panel through a test hook in ui-shots, the real
   `prompt_for_paths` otherwise).
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots welcome`, the full `__ui-shots`.
-- [ ] **Step 5: commit** `feat(m11k): start an agent from the Welcome card; it shows on a first run`.
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, `__ui-shots welcome`, the full `__ui-shots`.
+- [x] **Step 5: commit** `feat(m11k): start an agent from the Welcome card; it shows on a first run`.
 
 ### Task 4: Help → Welcome to fuxx, Show Tips Card, the palette
 
@@ -266,7 +266,7 @@ expectations that name the old label, if any).
 
 **Interfaces — Consumes:** Task 2 (`open_welcome`, `Origin::Help`).
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
   - the Help menu test: items exactly `Welcome to fuxx` (ShowWelcome), `—`, `Keyboard Shortcuts`, `fuxx Command
     Reference`, `—`, `Notifications Status…`, `Show Tips Card` (ShowWelcomeTips), `—`, `Report an Issue…`, `Show Logs`.
   - `every_bound_or_menu_action_is_in_the_palette_or_left_out` passes with `help::ShowWelcome` (fails until the
@@ -275,15 +275,15 @@ expectations that name the old label, if any).
     `Show Tips Card` matches `welcome tips`; group `WindowAndApp`, place Anywhere.
   - ui-shots `welcome-reopen` (Mocha, Latte): dispatch `ShowWelcome` → the card is open with `origin() == Help` and
     the folder = the active terminal's project.
-- [ ] **Step 2: run** `cargo test`, `__ui-shots welcome-reopen` → FAIL.
-- [ ] **Step 3: implement.**
-- [ ] **Step 4: run** `cargo test`, clippy (both), fmt, the full `__ui-shots`, `scripts/bundle-mac.sh --app-only` (a
+- [x] **Step 2: run** `cargo test`, `__ui-shots welcome-reopen` → FAIL.
+- [x] **Step 3: implement.**
+- [x] **Step 4: run** `cargo test`, clippy (both), fmt, the full `__ui-shots`, `scripts/bundle-mac.sh --app-only` (a
   release build).
-- [ ] **Step 5: commit** `feat(m11k): Help → Welcome to fuxx; Show Tips Card`.
+- [x] **Step 5: commit** `feat(m11k): Help → Welcome to fuxx; Show Tips Card`.
 
 ### Task 5: Merge and push (pre-authorized, autonomous program)
 
-- [ ] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
+- [x] Full gate on the branch: `cargo test`, `cargo clippy --all-targets` (both feature sets), `cargo fmt --check`,
   full `__ui-shots` green; a whole-branch review; then merge `m11k-first-run` into `master` and push.
 
 ### Task 6: Release — folded into the one release after M11l
@@ -294,9 +294,9 @@ expectations that name the old label, if any).
 
 ### Task 7: Docs
 
-- [ ] Note 62: status, an "M11k as built" section (what the build settled or changed), the checklist's state. This
+- [x] Note 62: status, an "M11k as built" section (what the build settled or changed), the checklist's state. This
   plan (ticks, header). The roadmap (`40 - Roadmap.md`). The Plan Tracker. The Progress Log. Note 56 (Help menu: a
   line that "Show Welcome Tips" is now "Show Tips Card" and Welcome to fuxx leads the menu). `STRUCTURE.md`
   (`welcome.rs`, `welcome_items.rs`, `agent_detect.rs`). `README.md` (the Welcome card; Help → Welcome to fuxx; Show
   Tips Card).
-- [ ] Commit `docs(m11k): …`.
+- [x] Commit `docs(m11k): …`.

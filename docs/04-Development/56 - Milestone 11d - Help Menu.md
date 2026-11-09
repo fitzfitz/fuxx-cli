@@ -93,6 +93,8 @@ acceptable.
 
 ## Show Welcome Tips
 
+> [!note] Renamed **Show Tips Card** in M11k (2026-11-09), when Help gained **Welcome to fuxx** (note 62). The action is unchanged.
+
 Brings back the sidebar's first-run tips card and remembers that it is shown. This is the same action as Preferences'
 "Show the tips card again". If the sidebar is hidden, it is shown too, because the card lives in it.
 

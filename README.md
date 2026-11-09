@@ -142,6 +142,12 @@ file to open it as a **read-only tab** in the pane, with syntax colours, line nu
 last commit; it updates live while an agent edits it. ⌘F finds; "Open in Editor" opens it in your text editor (it
 never runs a file). fuxx never changes your files.
 
+## The first launch (M11k)
+
+The very first time fuxx opens, a Welcome card asks for a folder and an agent (your presets, each checked on your
+PATH) and shows three shortcuts: **⌘K** the command palette, **⌘N** a new workspace, **⇧⌘U** the agent that needs you.
+Esc skips it. Help → **Welcome to fuxx** brings it back any time.
+
 ## Changes and Activity (M11h)
 
 The right sidebar has three tabs: **Files**, **Changes** and **Activity**. Changes lists the files that differ from
