@@ -2004,6 +2004,7 @@ impl CursorSettings {
             motion.glide = None;
         }
         let glowing = self.glow && style.is_some_and(|s| s.blinking) && at.is_some();
+        motion.note_glowing(glowing && self.motion, now);
         // At rest (five minutes with no change, M11n) the glow stays, solid, with no frames.
         let since = now.saturating_duration_since(motion.changed);
         let resting = cursor_look::breath_rests(since.saturating_sub(cursor_look::HOLD));
@@ -2214,6 +2215,8 @@ struct CursorMotion {
     frames: Frames,
     /// Whether the last paint was focused in the key window.
     was_live: bool,
+    /// Whether the last paint's glow could breathe (glow on, a blinking cursor, motion on).
+    was_glowing: bool,
 }
 
 impl CursorMotion {
@@ -2228,6 +2231,7 @@ impl CursorMotion {
             drawn: None,
             frames: Frames::None,
             was_live: false,
+            was_glowing: false,
         }
     }
 
@@ -2237,6 +2241,15 @@ impl CursorMotion {
             self.changed = now;
         }
         self.was_live = live;
+    }
+
+    /// The breath may run again (the glow, Animations or Reduce motion turned back on): it
+    /// starts afresh, solid at first, rather than staying at rest until the next change.
+    fn note_glowing(&mut self, glowing: bool, now: Instant) {
+        if glowing && !self.was_glowing {
+            self.changed = now;
+        }
+        self.was_glowing = glowing;
     }
 
     /// The cursor is on `cell` (`None`: hidden) of `screen` at `now`: start a glide from where
@@ -2482,6 +2495,24 @@ mod tests {
         m.note_live(false, t2);
         let t3 = t2 + Duration::from_secs(1);
         m.note_live(true, t3);
+        assert_eq!(m.changed, t3);
+    }
+
+    #[test]
+    fn the_breath_restarts_when_it_may_run_again() {
+        let t0 = Instant::now();
+        let mut m = CursorMotion::new(t0);
+        let t1 = t0 + Duration::from_secs(400);
+        m.note_glowing(true, t1);
+        assert_eq!(m.changed, t1);
+        // Still glowing leaves the breath alone (it may rest); off then on restarts it.
+        let t2 = t1 + Duration::from_secs(400);
+        m.note_glowing(true, t2);
+        assert_eq!(m.changed, t1);
+        m.note_glowing(false, t2);
+        assert_eq!(m.changed, t1);
+        let t3 = t2 + Duration::from_secs(1);
+        m.note_glowing(true, t3);
         assert_eq!(m.changed, t3);
     }
 
