@@ -1,6 +1,5 @@
 //! The ⌘K palette's Files source: the followed terminal's files, listed with git (or, outside a
 //! repo, a bounded walk) and ranked for the query, all off the UI thread (M11j).
-#![allow(dead_code)] // used by the palette (M11j task 5)
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -166,6 +165,26 @@ pub(crate) fn walk_with_home(
     }
 }
 
+/// The folder to list for a terminal: what it last reported itself (OSC 7, the freshest), else
+/// where the places last found it, else the folder it started in (never for an SSH terminal:
+/// that one is this Mac's); and whether it is an SSH terminal (its files aren't listed, but it
+/// is still one).
+pub fn choose_folder(
+    reported: Option<PathBuf>,
+    found: Option<&Path>,
+    project: Option<&Path>,
+    ssh: bool,
+) -> Option<(PathBuf, bool)> {
+    let reported = reported.or_else(|| found.map(Path::to_path_buf));
+    if ssh {
+        // The folder it started in is this Mac's, not the remote one's.
+        return Some((reported.unwrap_or_default(), true));
+    }
+    reported
+        .or_else(|| project.map(Path::to_path_buf))
+        .map(|f| (f, false))
+}
+
 /// A folder's files as asked for, with the root they are relative to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilesAnswer {
@@ -277,13 +296,18 @@ impl PaletteFiles {
         self.listings.get(folder)
     }
 
+    /// Whether a listing is running (the palette shows `Listing` for any folder not listed yet,
+    /// so only the tests ask).
+    #[cfg(test)]
     pub fn running(&self) -> bool {
         self.running
     }
 
     /// The screenshots' listing: `paths` under `root`, as if just listed.
     #[cfg(feature = "ui-shots")]
-    pub fn set_for_shots(&mut self, folder: PathBuf, root: PathBuf, paths: Vec<String>) {
+    pub fn set_for_shots(&mut self, folder: PathBuf, root: PathBuf, mut paths: Vec<String>) {
+        // Sorted, as every listing is.
+        paths.sort_unstable();
         self.listings.insert(
             folder,
             CachedFiles {
@@ -594,6 +618,38 @@ mod tests {
             ["main.rs", "main.rsx", "a/main.rs", "b/main.rs", "c/main.rs"]
         );
         assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn the_folder_is_the_freshest_known() {
+        let (osc, found, project) = (
+            PathBuf::from("/now"),
+            Path::new("/looked-up"),
+            Path::new("/started"),
+        );
+        let pick = |r: Option<&PathBuf>, f, p| choose_folder(r.cloned(), f, p, false);
+        assert_eq!(
+            pick(Some(&osc), Some(found), Some(project)),
+            Some((osc.clone(), false))
+        );
+        assert_eq!(
+            pick(None, Some(found), Some(project)),
+            Some((found.to_path_buf(), false))
+        );
+        assert_eq!(
+            pick(None, None, Some(project)),
+            Some((project.to_path_buf(), false))
+        );
+        assert_eq!(pick(None, None, None), None);
+        // SSH: still an answer (its note), with no folder known.
+        assert_eq!(
+            choose_folder(None, None, Some(project), true),
+            Some((PathBuf::new(), true))
+        );
+        assert_eq!(
+            choose_folder(Some(osc.clone()), None, None, true),
+            Some((osc, true))
+        );
     }
 
     #[test]

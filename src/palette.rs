@@ -11,16 +11,17 @@
 //! action is dispatched from there, so it lands where its key would).
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, FontWeight, HighlightStyle, MouseDownEvent, Pixels, ScrollHandle, StyledText,
-    Subscription, Window, actions, canvas, div, prelude::*, px,
+    Subscription, Task, Window, actions, canvas, div, prelude::*, px,
 };
 
 use crate::appearance::Appearance;
@@ -30,16 +31,19 @@ use crate::host_picker::move_selection;
 use crate::layout_model::{FileMode, TabKind, WorkspaceId};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
+use crate::palette_files::{CachedFiles, rank_files};
 use crate::palette_items::{
-    ActionRow, COMMANDS, Files, Focused, HINT, Key, Line, Recent, Run, Scope, Sources, Step,
-    action_rows, compose, more_label, palette_step, parse_query, selectable,
+    ActionRow, COMMANDS, FILE_RESULTS, FileHit, Files, Focused, HINT, Key, Line, NO_FOLDER, Recent,
+    Run, SSH_NOTE, Scope, Sources, Step, action_rows, compose, more_label, palette_step,
+    parse_query, selectable,
 };
 use crate::palette_match::byte_ranges;
 use crate::preferences::PaletteSetting;
-use crate::right_sidebar::{FileKind, kind_ink};
+use crate::right_sidebar::{FileKind, file_kind, kind_ink};
 use crate::sidebar::{MARK_SLOT, tabular};
 use crate::status::Status;
 use crate::switcher::{Entry, ROW, ROW_GAP, workspace_row};
+use crate::tab_bar::{Glyph, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::{MARK_MIN, text};
@@ -67,7 +71,6 @@ fn list_max_height(window_h: f32) -> f32 {
 
 /// A file row's icon tint: the Files panel's (`right_sidebar::kind_ink`), pushed (hue kept) to
 /// `MARK_MIN` on the palette's surfaces too.
-#[allow(dead_code)] // drawn by the file rows (M11j task 5)
 pub(crate) fn palette_file_ink(kind: FileKind, theme: &Theme) -> Rgb {
     let ui = theme.ui();
     readable(
@@ -83,31 +86,138 @@ pub(crate) fn palette_file_ink(kind: FileKind, theme: &Theme) -> Rgb {
 #[derive(Clone, Debug, PartialEq)]
 pub enum FilesData {
     Note(&'static str),
-    #[allow(dead_code)] // listed from M11j task 5
     Listing,
-    #[allow(dead_code)] // listed from M11j task 5
     Failed,
-    #[allow(dead_code)] // listed from M11j task 5
     Ready {
         root: PathBuf,
         paths: Arc<Vec<String>>,
         more: usize,
+        /// The listing came from the walk (not git).
+        walked: bool,
     },
 }
 
+/// What the palette has of the followed terminal's files, from its folder (and whether it is an
+/// SSH terminal's) and that folder's last listing: no folder, a note; an SSH terminal, its note;
+/// nothing listed yet (the first listing running or about to), `Listing`; the last listing
+/// failed, `Failed`; else its paths.
+pub(crate) fn files_data(
+    folder: Option<(PathBuf, bool)>,
+    cached: Option<&CachedFiles>,
+) -> FilesData {
+    match folder {
+        None => FilesData::Note(NO_FOLDER),
+        Some((_, true)) => FilesData::Note(SSH_NOTE),
+        Some((_, false)) => match cached {
+            None => FilesData::Listing,
+            Some(c) if c.failed => FilesData::Failed,
+            Some(c) => FilesData::Ready {
+                root: c.root.clone(),
+                paths: c.paths.clone(),
+                more: c.more,
+                walked: c.walked,
+            },
+        },
+    }
+}
+
+/// A ranking's answer, kept only while it is for the newest query (`current`).
+fn fresh_answer(
+    current: &AtomicU64,
+    asked: u64,
+    answer: Option<(Vec<FileHit>, usize)>,
+) -> Option<(u64, Vec<FileHit>, usize)> {
+    let (hits, total) = answer?;
+    (current.load(Ordering::Relaxed) == asked).then_some((asked, hits, total))
+}
+
+/// A file row's two parts from its path from the root: the name and the folder it is in, each
+/// with its own matched chars.
+fn file_parts(rel: &str, positions: &[usize]) -> (String, Vec<usize>, String, Vec<usize>) {
+    let (folder, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    // The name starts this many chars in (past the folder and its `/`).
+    let start = rel.chars().count() - name.chars().count();
+    let in_name = positions
+        .iter()
+        .filter(|&&p| p >= start)
+        .map(|&p| p - start)
+        .collect();
+    let folder_len = folder.chars().count();
+    let in_folder = positions
+        .iter()
+        .copied()
+        .filter(|&p| p < folder_len)
+        .collect();
+    (name.to_string(), in_name, folder.to_string(), in_folder)
+}
+
 impl FilesData {
-    /// As `compose` takes it. The hits are the ranking's (M11j task 5): none yet.
-    fn as_files(&self) -> Files<'_> {
+    /// Whether `other` is the same, the listed paths compared by pointer (each listing is a new
+    /// `Arc`): the Workspace compares on every draw.
+    fn same(&self, other: &FilesData) -> bool {
+        match (self, other) {
+            (
+                FilesData::Ready {
+                    root,
+                    paths,
+                    more,
+                    walked,
+                },
+                FilesData::Ready {
+                    root: root_b,
+                    paths: paths_b,
+                    more: more_b,
+                    walked: walked_b,
+                },
+            ) => {
+                Arc::ptr_eq(paths, paths_b)
+                    && root == root_b
+                    && more == more_b
+                    && walked == walked_b
+            }
+            (FilesData::Note(a), FilesData::Note(b)) => a == b,
+            (FilesData::Listing, FilesData::Listing) | (FilesData::Failed, FilesData::Failed) => {
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The root of a listing; none for the rest.
+    fn root(&self) -> Option<&Path> {
+        match self {
+            FilesData::Ready { root, .. } => Some(root),
+            _ => None,
+        }
+    }
+
+    /// Whether `path` is in the listing (a Recent file still there). The listings are sorted.
+    fn lists(&self, path: &Path) -> bool {
+        let FilesData::Ready { root, paths, .. } = self else {
+            return false;
+        };
+        let Some(rel) = path.strip_prefix(root).ok().and_then(|r| r.to_str()) else {
+            return false;
+        };
+        paths.binary_search_by(|p| p.as_str().cmp(rel)).is_ok()
+    }
+
+    /// As `compose` takes it, with the ranking's last `hits` (its generation, the best ones and
+    /// how many matched).
+    fn as_files<'a>(&'a self, hits: Option<&'a (u64, Vec<FileHit>, usize)>) -> Files<'a> {
         match self {
             FilesData::Note(note) => Files::Note(note),
             FilesData::Listing => Files::Listing,
             FilesData::Failed => Files::Failed,
-            FilesData::Ready { root, more, .. } => Files::Ready {
+            FilesData::Ready {
+                root, more, walked, ..
+            } => Files::Ready {
                 root,
                 root_name: root.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-                hits: &[],
-                total: 0,
+                hits: hits.map_or(&[], |(_, hits, _)| hits.as_slice()),
+                total: hits.map_or(0, |(_, _, total)| *total),
                 capped: *more > 0,
+                walked: *walked,
             },
         }
     }
@@ -126,6 +236,8 @@ pub struct PaletteData {
 pub enum PaletteEvent {
     /// Do this row (never a `… more` row: the palette handles those itself).
     Pick(Key),
+    /// It shows files now (the scope or the query changed): list them if they are due.
+    WantFiles,
     /// Escape, a click outside, or the box lost focus.
     Cancel,
 }
@@ -145,7 +257,18 @@ pub struct Palette {
     rows: Vec<usize>,
     /// The chosen one, a place in `rows`.
     selected: usize,
+    /// It was moved (↑↓) since the list last went back to its first row: a ranking's answer
+    /// then keeps it on its item; else the answer's best row is chosen.
+    moved: bool,
     scroll: ScrollHandle,
+    /// The files' ranking: bumped for each new one (a running one stops when it sees it moved).
+    generation: Arc<AtomicU64>,
+    /// The last ranking's answer: its generation, the best `FILE_RESULTS` and how many matched.
+    /// Kept while a newer one runs (so the rows don't blink), dropped when files can't show.
+    hits: Option<(u64, Vec<FileHit>, usize)>,
+    /// What the running or last ranking was asked: the query and the listing.
+    ranked: Option<(String, Arc<Vec<String>>)>,
+    ranking: Option<Task<()>>,
     /// Where the panel and its chips were last drawn (the UI screenshots read them).
     panel_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     chip_bounds: Rc<RefCell<[Option<Bounds<Pixels>>; 5]>>,
@@ -193,7 +316,12 @@ impl Palette {
             lines: Vec::new(),
             rows: Vec::new(),
             selected: 0,
+            moved: false,
             scroll: ScrollHandle::new(),
+            generation: Arc::default(),
+            hits: None,
+            ranked: None,
+            ranking: None,
             panel_bounds: Rc::default(),
             chip_bounds: Rc::default(),
             _input_events: input_events,
@@ -213,19 +341,96 @@ impl Palette {
     pub fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
         self.base = scope;
         self.relist(false);
+        self.rank_files_for(cx);
+        self.want_files(cx);
         cx.notify();
+    }
+
+    /// Whether the scope shown can list files (All, without `>`, or Files).
+    fn shows_files(&self) -> bool {
+        matches!(self.scope(), Scope::All | Scope::Files)
+    }
+
+    /// Ask the Workspace to list the files (if due) while they can show.
+    fn want_files(&self, cx: &mut Context<Self>) {
+        if self.shows_files() {
+            cx.emit(PaletteEvent::WantFiles);
+        }
+    }
+
+    /// Rank the listed files for the query on the background executor, when the query or the
+    /// listing changed and the scope shows files; a newer ranking stops an older one, and an
+    /// older one's answer is dropped. With no query, no listing or a scope without files, the
+    /// hits go.
+    fn rank_files_for(&mut self, cx: &mut Context<Self>) {
+        let query = parse_query(self.base, &self.query).1.trim().to_string();
+        let paths = match &self.data.files {
+            FilesData::Ready { paths, .. } if self.shows_files() && !query.is_empty() => {
+                paths.clone()
+            }
+            _ => {
+                if self.ranked.take().is_some() || self.hits.is_some() {
+                    self.generation.fetch_add(1, Ordering::Relaxed);
+                    self.hits = None;
+                    self.ranking = None;
+                }
+                return;
+            }
+        };
+        if self
+            .ranked
+            .as_ref()
+            .is_some_and(|(q, p)| *q == query && Arc::ptr_eq(p, &paths))
+        {
+            return;
+        }
+        let asked = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        self.ranked = Some((query.clone(), paths.clone()));
+        let current = self.generation.clone();
+        let ranking = cx.background_executor().spawn(async move {
+            let answer = rank_files(&paths, &query, FILE_RESULTS, asked, &current);
+            (answer, current)
+        });
+        self.ranking = Some(cx.spawn(async move |this, cx| {
+            let (answer, current) = ranking.await;
+            let Some(hits) = fresh_answer(&current, asked, answer) else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.hits = Some(hits);
+                // Rows chosen from an older answer aren't kept: the best of this one is.
+                this.relist(this.moved);
+                cx.notify();
+            });
+        }));
     }
 
     /// What can change while it's open, as it is now (each time the Workspace draws): the
     /// workspaces, the files and the marks' clock. The actions and the settings stay as they
     /// were at open. The chosen row stays on its item while it is still listed; else the first
     /// is chosen.
-    pub fn refresh(&mut self, workspaces: Vec<Entry>, files: FilesData, phase: f32) {
+    /// The files are compared by their listing's pointer (`FilesData::same`), so this stays
+    /// cheap with 50,000 paths; a new listing is ranked again.
+    pub fn refresh(
+        &mut self,
+        workspaces: Vec<Entry>,
+        files: FilesData,
+        phase: f32,
+        cx: &mut Context<Self>,
+    ) {
         self.data.phase = phase;
-        if workspaces != self.data.workspaces || files != self.data.files {
+        let files_changed = !files.same(&self.data.files);
+        if workspaces != self.data.workspaces || files_changed {
+            if files_changed && files.root() != self.data.files.root() {
+                // Hits from another folder's listing name files that aren't there.
+                self.hits = None;
+            }
             self.data.workspaces = workspaces;
             self.data.files = files;
             self.relist(true);
+            if files_changed {
+                self.rank_files_for(cx);
+            }
         }
     }
 
@@ -257,7 +462,9 @@ impl Palette {
         let query = self.input.read(cx).text().to_string();
         if query != self.query {
             self.query = query;
+            self.rank_files_for(cx);
             self.relist(false);
+            self.want_files(cx);
             cx.notify();
         }
     }
@@ -267,16 +474,19 @@ impl Palette {
     fn relist(&mut self, keep: bool) {
         let before = self.selected_key().cloned().filter(|_| keep);
         let (scope, query) = parse_query(self.base, &self.query);
-        // Every Recent key compose is given still stands for something it lists (M11j task 5
-        // checks a file's against its listing).
-        let valid = |_: &Key| true;
+        // A Recent file is shown while its listing still has it; compose checks the rest.
+        let files = &self.data.files;
+        let valid = |key: &Key| match key {
+            Key::File(path) => files.lists(path),
+            _ => true,
+        };
         self.lines = compose(&Sources {
             scope,
             query,
             workspaces: &self.data.workspaces,
             actions: &self.data.actions,
             settings: &self.data.settings,
-            files: self.data.files.as_files(),
+            files: self.data.files.as_files(self.hits.as_ref()),
             recent: &self.recent,
             valid: &valid,
         });
@@ -295,6 +505,7 @@ impl Palette {
             }
             None => {
                 self.selected = 0;
+                self.moved = false;
                 self.scroll.scroll_to_item(0);
             }
         }
@@ -302,6 +513,7 @@ impl Palette {
 
     fn select_by(&mut self, delta: i32, cx: &mut Context<Self>) {
         self.selected = move_selection(self.selected, self.rows.len(), delta);
+        self.moved = true;
         if let Some(&at) = self.rows.get(self.selected) {
             self.scroll.scroll_to_item(at);
         }
@@ -359,6 +571,7 @@ impl Palette {
         ui: &UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = cx.global::<Appearance>().theme;
         let row = match line {
             Line::Header(title) => return render_group(title.clone(), at == 0, ui),
             Line::Note(note) => {
@@ -371,7 +584,7 @@ impl Palette {
                     .child(note.clone())
                     .into_any_element();
             }
-            Line::More { kind, count } => item_row(chosen, ui).child(
+            Line::More { kind, count } => item_row(chosen, ui, None).child(
                 div()
                     .flex_1()
                     .min_w(px(0.0))
@@ -395,6 +608,39 @@ impl Palette {
                 let highlights = byte_ranges(&entry.label, positions);
                 workspace_row(entry, place + 1, chosen, &highlights, self.data.phase, ui)
             }
+            // The file's icon in its kind's ink, its name, then (6 pt on) its folder, faint and
+            // cut at its start.
+            Line::Item {
+                key: Key::File(path),
+                positions,
+            } => {
+                let rel = self
+                    .data
+                    .files
+                    .root()
+                    .and_then(|root| path.strip_prefix(root).ok())
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned();
+                let (name, name_at, folder, folder_at) = file_parts(&rel, positions);
+                let ink = palette_file_ink(file_kind(&name), &theme);
+                item_row(chosen, ui, Some(glyph(Glyph::File, ink)))
+                    .child(name_cell(&name, &name_at, chosen).flex_initial())
+                    .when(!folder.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .ml(px(6.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_start()
+                                .text_size(px(text::META))
+                                .text_color(hsla(ui.text_faint))
+                                .child(highlighted(&folder, &folder_at)),
+                        )
+                    })
+            }
             Line::Item { key, positions } => {
                 let name = self.item_name(key);
                 let right = match key {
@@ -413,7 +659,8 @@ impl Palette {
                         .map(|s| (s.section.title().to_string(), ui.text_faint)),
                     _ => None,
                 };
-                item_row(chosen, ui)
+                let icon = matches!(key, Key::Setting(_)).then(|| glyph(Glyph::Gear, ui.text_dim));
+                item_row(chosen, ui, icon)
                     .child(name_cell(&name, positions, chosen))
                     .when_some(right, |row, (right, color)| {
                         row.child(
@@ -488,9 +735,10 @@ static MORE_KEYS: [Key; 4] = [
     Key::More(crate::palette_items::Kind::Setting),
 ];
 
-/// An item's row (not a workspace's): `ROW` tall, an empty icon slot so the names line up,
-/// filled `row_active` while chosen, `panel_hover` under the pointer.
-fn item_row(chosen: bool, ui: &UiColors) -> Div {
+/// An item's row (not a workspace's): `ROW` tall, its icon slot (empty but for a file's or a
+/// setting's icon, so the names line up), filled `row_active` while chosen, `panel_hover` under
+/// the pointer.
+fn item_row(chosen: bool, ui: &UiColors, icon: Option<Div>) -> Div {
     let hover = ui.panel_hover;
     div()
         .flex_none()
@@ -502,26 +750,37 @@ fn item_row(chosen: bool, ui: &UiColors) -> Div {
         .text_size(px(text::NAME))
         .when(chosen, |row| row.bg(hsla(ui.row_active)))
         .when(!chosen, |row| row.hover(move |s| s.bg(hsla(hover))))
-        .child(div().flex_none().w(px(MARK_SLOT)).mr(px(SLOT_GAP)))
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(MARK_SLOT))
+                .mr(px(SLOT_GAP))
+                .children(icon),
+        )
+}
+
+/// `text` with the chars at `positions` semibold.
+fn highlighted(text: &str, positions: &[usize]) -> StyledText {
+    let matched = HighlightStyle {
+        font_weight: Some(FontWeight::SEMIBOLD),
+        ..Default::default()
+    };
+    let ranges = byte_ranges(text, positions);
+    StyledText::new(text.to_string()).with_highlights(ranges.into_iter().map(|r| (r, matched)))
 }
 
 /// A row's name, cut at its end, the matched letters (char `positions`) semibold; medium while
 /// chosen.
 fn name_cell(name: &str, positions: &[usize], chosen: bool) -> Div {
-    let matched = HighlightStyle {
-        font_weight: Some(FontWeight::SEMIBOLD),
-        ..Default::default()
-    };
-    let ranges = byte_ranges(name, positions);
     div()
         .flex_1()
         .min_w(px(0.0))
         .truncate()
         .when(chosen, |cell| cell.font_weight(FontWeight::MEDIUM))
-        .child(
-            StyledText::new(name.to_string())
-                .with_highlights(ranges.into_iter().map(|r| (r, matched))),
-        )
+        .child(highlighted(name, positions))
 }
 
 /// The UI screenshots' look inside.
@@ -665,16 +924,19 @@ impl Workspace {
         PaletteData {
             workspaces: self.switcher_entries(cx),
             actions,
-            // The settings are listed from M11j task 5.
-            settings: Vec::new(),
-            files: self.palette_files_data(),
+            settings: crate::preferences::palette_settings(),
+            files: self.palette_files_data(cx),
             phase: self.phase,
         }
     }
 
-    /// What the palette has of the files: no folder until M11j task 5 lists them.
-    fn palette_files_data(&self) -> FilesData {
-        FilesData::Note(crate::palette_items::NO_FOLDER)
+    /// What the palette has of the followed terminal's files (`files_data`).
+    fn palette_files_data(&self, cx: &App) -> FilesData {
+        let folder = self.palette_folder(cx);
+        let cached = folder
+            .as_ref()
+            .and_then(|(folder, _)| self.palette_files.get(folder));
+        files_data(folder.clone(), cached)
     }
 
     /// ⌘K (`All`), ⌘P (`Workspaces`) or the row menu's Show All Workspaces: open the palette on
@@ -700,6 +962,10 @@ impl Workspace {
             }
             Step::Open => {
                 self.close_overlays(Overlay::Palette);
+                // On All or Files, the listing starts now, so it's there once something is typed.
+                if matches!(scope, Scope::All | Scope::Files) {
+                    self.list_palette_files(cx);
+                }
                 let presets: Vec<String> = cx
                     .global::<Appearance>()
                     .presets
@@ -738,6 +1004,7 @@ impl Workspace {
         }
         match event {
             PaletteEvent::Pick(key) => self.run_pick(key.clone(), window, cx),
+            PaletteEvent::WantFiles => self.list_palette_files(cx),
             PaletteEvent::Cancel => {
                 self.palette = None;
                 self.focus_active(window, cx);
@@ -782,8 +1049,13 @@ impl Workspace {
                 self.focus_active(window, cx);
             }
             Key::File(path) => self.open_file_tab(path, FileMode::Plain, window, cx),
-            // Preferences on that setting's section: M11j task 5.
-            Key::Setting(_) => {}
+            // Preferences, on that setting's section.
+            Key::Setting(name) => {
+                let settings = crate::preferences::palette_settings();
+                if let Some(setting) = settings.iter().find(|s| s.name == name) {
+                    crate::preferences::open_at(setting.section, cx);
+                }
+            }
             Key::More(_) => {}
         }
         cx.notify();
@@ -792,9 +1064,9 @@ impl Workspace {
     /// Give the open palette what changes while it's open (each time the Workspace draws).
     pub(crate) fn refresh_palette(&self, cx: &mut Context<Self>) {
         if let Some(palette) = &self.palette {
-            let (workspaces, files) = (self.switcher_entries(cx), self.palette_files_data());
+            let (workspaces, files) = (self.switcher_entries(cx), self.palette_files_data(cx));
             let phase = self.phase;
-            palette.update(cx, |p, _| p.refresh(workspaces, files, phase));
+            palette.update(cx, |p, cx| p.refresh(workspaces, files, phase, cx));
         }
     }
 
@@ -849,6 +1121,124 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    fn cached(paths: &[&str], more: usize, walked: bool, failed: bool) -> CachedFiles {
+        CachedFiles {
+            root: PathBuf::from("/w/fuxx-cli"),
+            paths: Arc::new(paths.iter().map(|p| p.to_string()).collect()),
+            more,
+            walked,
+            failed,
+            listed_at: Instant::now(),
+            wait: crate::palette_files::FRESH,
+        }
+    }
+
+    #[test]
+    fn files_data_says_what_there_is() {
+        use crate::palette_items::{NO_FOLDER, SSH_NOTE};
+        let folder = || Some((PathBuf::from("/w/fuxx-cli/src"), false));
+        let ok = cached(&["a.rs"], 0, false, false);
+        assert_eq!(files_data(None, None), FilesData::Note(NO_FOLDER));
+        assert_eq!(files_data(None, Some(&ok)), FilesData::Note(NO_FOLDER));
+        // An SSH terminal: the note, whatever is cached.
+        let ssh = Some((PathBuf::from("/srv"), true));
+        assert_eq!(files_data(ssh, Some(&ok)), FilesData::Note(SSH_NOTE));
+        // Nothing listed yet (a first listing running, or about to): Listing.
+        assert_eq!(files_data(folder(), None), FilesData::Listing);
+        let failed = cached(&[], 0, false, true);
+        assert_eq!(files_data(folder(), Some(&failed)), FilesData::Failed);
+        let walk = cached(&["a.rs", "b.rs"], 3, true, false);
+        match files_data(folder(), Some(&walk)) {
+            FilesData::Ready {
+                root,
+                paths,
+                more,
+                walked,
+            } => {
+                assert_eq!(root, PathBuf::from("/w/fuxx-cli"));
+                assert!(Arc::ptr_eq(&paths, &walk.paths), "the listing's own paths");
+                assert_eq!((more, walked), (3, true));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_capped_walk_tells_compose_so() {
+        let data = FilesData::Ready {
+            root: PathBuf::from("/w/notes"),
+            paths: Arc::new(vec!["a".into()]),
+            more: 5,
+            walked: true,
+        };
+        match data.as_files(None) {
+            Files::Ready { capped, walked, .. } => assert!(capped && walked),
+            _ => panic!("ready"),
+        }
+        let hits = (
+            1,
+            vec![FileHit {
+                rel: "a".into(),
+                positions: vec![0],
+                score: 40,
+            }],
+            9,
+        );
+        match data.as_files(Some(&hits)) {
+            Files::Ready { hits, total, .. } => assert_eq!((hits.len(), total), (1, 9)),
+            _ => panic!("ready"),
+        }
+    }
+
+    #[test]
+    fn files_data_compares_listings_by_pointer() {
+        let ready = |paths: &Arc<Vec<String>>| FilesData::Ready {
+            root: PathBuf::from("/w"),
+            paths: paths.clone(),
+            more: 0,
+            walked: false,
+        };
+        let one = Arc::new(vec!["a".to_string()]);
+        let twin = Arc::new(vec!["a".to_string()]);
+        assert!(ready(&one).same(&ready(&one)));
+        // A new listing (even with the same paths) is a change: no deep comparison.
+        assert!(!ready(&one).same(&ready(&twin)));
+        assert!(FilesData::Listing.same(&FilesData::Listing));
+        assert!(!FilesData::Listing.same(&FilesData::Failed));
+        assert!(!FilesData::Failed.same(&ready(&one)));
+    }
+
+    #[test]
+    fn an_older_rankings_answer_is_dropped() {
+        let current = AtomicU64::new(4);
+        let answer = || Some((Vec::new(), 7));
+        assert_eq!(
+            fresh_answer(&current, 4, answer()),
+            Some((4, Vec::new(), 7))
+        );
+        assert_eq!(fresh_answer(&current, 3, answer()), None);
+        assert_eq!(fresh_answer(&current, 4, None), None);
+    }
+
+    #[test]
+    fn a_file_row_splits_into_name_and_folder() {
+        // "view" in src/view.rs: 4 5 6 7.
+        let (name, at, folder, folder_at) = file_parts("src/view.rs", &[0, 4, 5, 6, 7]);
+        assert_eq!((name.as_str(), folder.as_str()), ("view.rs", "src"));
+        assert_eq!(at, [0, 1, 2, 3]);
+        assert_eq!(folder_at, [0]);
+        let (name, at, folder, _) = file_parts("README", &[0, 1]);
+        assert_eq!((name.as_str(), folder.as_str()), ("README", ""));
+        assert_eq!(at, [0, 1]);
+        // Chars, not bytes.
+        let (name, at, folder, _) = file_parts("d\u{fc}r/\u{e9}t\u{e9}.md", &[4, 5]);
+        assert_eq!(
+            (name.as_str(), folder.as_str()),
+            ("\u{e9}t\u{e9}.md", "d\u{fc}r")
+        );
+        assert_eq!(at, [0, 1]);
     }
 
     #[test]

@@ -330,26 +330,31 @@ impl Workspace {
     }
 }
 
-#[allow(dead_code)] // used by the palette (M11j task 5)
 impl Workspace {
-    /// The followed terminal's folder (as last looked up, else the one it started in) and
-    /// whether it is an SSH one; none with no terminal followed or no folder known.
-    pub(crate) fn palette_folder(&self) -> Option<(PathBuf, bool)> {
+    /// The followed terminal's folder, the freshest known (`palette_files::choose_folder`: what
+    /// it last reported, as the right sidebar reads it, else where the places last found it,
+    /// else the one it started in), and whether it is an SSH one; none with no terminal
+    /// followed or no folder known.
+    pub(crate) fn palette_folder(&self, cx: &App) -> Option<(PathBuf, bool)> {
         let id = self.right_sidebar.followed?;
         let s = self.sessions.items().iter().find(|s| s.id == id)?;
-        let found = self.places.folder(id);
-        if s.ssh.is_some() {
-            return Some((found.map(Path::to_path_buf).unwrap_or_default(), true));
-        }
-        found
-            .or(s.project.as_deref())
-            .map(|f| (f.to_path_buf(), false))
+        let (reported, _) = self.reported_folder(id, cx)?;
+        crate::palette_files::choose_folder(
+            reported,
+            self.places.folder(id),
+            s.project.as_deref(),
+            s.ssh.is_some(),
+        )
     }
 
     /// List the followed terminal's files when they are due: one listing at a time, on the
-    /// background executor, then the cache is filled and the window redrawn.
+    /// background executor, then the cache is filled and the window redrawn. Nothing is listed
+    /// while the places are frozen (the screenshots give the listing themselves).
     pub(crate) fn list_palette_files(&mut self, cx: &mut Context<Self>) {
-        let Some((folder, false)) = self.palette_folder() else {
+        if self.places.frozen {
+            return;
+        }
+        let Some((folder, false)) = self.palette_folder(cx) else {
             return;
         };
         if !self.palette_files.due(&folder, Instant::now()) {
@@ -732,7 +737,6 @@ pub struct Workspace {
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
     pub(crate) places_ticking: bool,
     /// The palette's file listings (`palette_files`).
-    #[allow(dead_code)] // used by the palette (M11j task 5)
     pub(crate) palette_files: crate::palette_files::PaletteFiles,
     /// What runs in each terminal, for its name (`Programs`).
     pub(crate) programs: Programs,

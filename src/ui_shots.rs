@@ -243,6 +243,10 @@ const SCENES: &[(&str, fn())] = &[
     ("palette-run", palette_run_scene),
     ("palette-refresh", palette_refresh_scene),
     ("palette-recent", palette_recent_scene),
+    ("palette-files", palette_files_scene),
+    ("palette-settings", palette_settings_scene),
+    ("palette-narrow", palette_narrow_scene),
+    ("palette-motion", palette_motion_scene),
     ("overlays", overlays),
     ("help", help_scenes),
     ("panels", panel_scenes),
@@ -9307,7 +9311,7 @@ fn palette_actions_scene() {
 /// typed on All still closes it (the toggle follows the chosen chip). Panics on the first that
 /// doesn't hold.
 fn palette_keys_scene() {
-    use crate::palette_items::{Key, Kind, Line, NO_FOLDER, Scope};
+    use crate::palette_items::{Key, Kind, LISTING, Line, Scope};
     use gpui::Modifiers;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -9390,7 +9394,8 @@ fn palette_keys_scene() {
             );
             drop(old);
             press_keys(cx, window, "cmd-p");
-            // A click on the Files chip: Files, which (no folder until M11j task 5) says so.
+            // A click on the Files chip: Files, its first listing not in yet (the screenshots list
+            // nothing themselves).
             let palette = palette_of(cx, &ws).expect("open");
             let chip = cx.read(|cx| palette.read(cx).chip_bounds(Scope::Files));
             let chip = chip.expect("the Files chip is drawn");
@@ -9398,7 +9403,7 @@ fn palette_keys_scene() {
             settle(cx, window);
             let (lines, scope_now, _) = palette_state(cx, &ws);
             assert_eq!(scope_now, Scope::Files, "{n}: a chip click");
-            assert_eq!(lines, [Line::Note(NO_FOLDER.into())], "{n}: the note");
+            assert_eq!(lines, [Line::Note(LISTING.into())], "{n}: the note");
             // ⌘K with ">" typed on All (Actions shown): the chosen chip is All, so ⌘K closes.
             press_keys(cx, window, "escape cmd-k");
             cx.simulate_input(window, ">");
@@ -9623,7 +9628,8 @@ fn palette_refresh_scene() {
 }
 
 /// Recent (not shot): Split Right picked, the palette reopened shows it under Recent; workspace
-/// #2 picked too, both, newest first. Panics unless so.
+/// #2 picked too, both, newest first; then src/view.rs and Cursor breathing glow picked: those
+/// two first, newest first, before the others. Panics unless so.
 fn palette_recent_scene() {
     use crate::palette_items::{Key, Line, Scope};
     use std::cell::RefCell;
@@ -9679,10 +9685,685 @@ fn palette_recent_scene() {
                 ],
                 "{n}: newest first"
             );
+            // A file and a setting picked too: first, newest first.
+            press_keys(cx, window, "escape");
+            seed_palette_files(cx, &ws, &PALETTE_FILES);
+            let _preferences = shot_preferences_window(cx);
+            let view = Key::File(PathBuf::from(PALETTE_ROOT).join("src/view.rs"));
+            let glow = Key::Setting("Cursor breathing glow");
+            for (query, key) in [("view", &view), ("glow", &glow)] {
+                open_palette_on(cx, window, &ws, Scope::All);
+                cx.simulate_input(window, query);
+                settle(cx, window);
+                assert_eq!(palette_state(cx, &ws).2.as_ref(), Some(key), "{n}: {query}");
+                press_keys(cx, window, "enter");
+                assert!(palette_of(cx, &ws).is_none(), "{n}: {query} picked");
+            }
+            open_palette_on(cx, window, &ws, Scope::All);
+            let (lines, _, _) = palette_state(cx, &ws);
+            assert_eq!(
+                lines[..6],
+                [
+                    Line::Header("Recent".into()),
+                    item(glow.clone()),
+                    item(view.clone()),
+                    item(Key::Workspace(ids[1])),
+                    item(Key::Action("Split Right")),
+                    Line::Header("Workspaces".into()),
+                ],
+                "{n}: the setting, the file, then the rest"
+            );
             slot.borrow_mut().take();
         };
         render_with(&theme, dims, build, act);
         println!("ui-shots: palette-recent-{slug} ok");
+    }
+}
+
+/// The files the palette scenes list (M11j Task 5): fuxx-cli's, as if just listed for the
+/// followed terminal's folder.
+const PALETTE_ROOT: &str = "/w/fuxx-cli";
+const PALETTE_FILES: [&str; 7] = [
+    "Cargo.toml",
+    "README.md",
+    "docs/a.md",
+    "src/main.rs",
+    "src/palette.rs",
+    "src/view.rs",
+    "src/workspace.rs",
+];
+
+/// List `paths` under `PALETTE_ROOT` for the followed terminal's folder, as if just listed.
+fn seed_palette_files(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>, paths: &[&str]) {
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            let (folder, ssh) = ws.palette_folder(cx).expect("a terminal folder");
+            assert!(!ssh, "a local terminal is followed");
+            let paths = paths.iter().map(|p| p.to_string()).collect();
+            ws.palette_files
+                .set_for_shots(folder, PathBuf::from(PALETTE_ROOT), paths);
+            cx.notify();
+        })
+    });
+}
+
+/// An off-screen Preferences window, as if it were open (`preferences::open_at` switches it
+/// instead of opening another).
+fn shot_preferences_window(
+    cx: &mut VisualTestAppContext,
+) -> gpui::WindowHandle<crate::preferences::PreferencesView> {
+    let handle = cx
+        .open_offscreen_window(size(px(700.0), px(480.0)), |window, cx| {
+            cx.new(|cx| crate::preferences::PreferencesView::new(window, cx))
+        })
+        .expect("open Preferences off screen");
+    cx.update(|cx| crate::preferences::set_window_for_shots(handle, cx));
+    cx.run_until_parked();
+    handle
+}
+
+/// The rightmost x (points) along the row's middle band where a pixel is colour `c`, between
+/// `x0` and `x1`; none if there is none.
+fn rightmost(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    row: gpui::Bounds<Pixels>,
+    x0: f32,
+    x1: f32,
+) -> Option<f32> {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (top, bottom) = (f32::from(row.top()) + 4.0, f32::from(row.bottom()) - 4.0);
+    let mut best: Option<f32> = None;
+    let mut y = top;
+    while y < bottom {
+        let (a, b) = ((x0 * scale) as usize, (x1 * scale) as usize);
+        for dx in a..b {
+            let x = dx as f32 / scale;
+            if near(pixel_at(shot, dims, x, y), c) && best.is_none_or(|r| x > r) {
+                best = Some(x);
+            }
+        }
+        y += 1.0 / scale;
+    }
+    best
+}
+
+/// The most inked pixel (the furthest from `bg`) in the row's middle band between `x0` and `x1`.
+fn strongest(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    bg: alacritty_terminal::vte::ansi::Rgb,
+    row: gpui::Bounds<Pixels>,
+    x0: f32,
+    x1: f32,
+) -> Option<[u8; 3]> {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (top, bottom) = (f32::from(row.top()) + 4.0, f32::from(row.bottom()) - 4.0);
+    let mut best: Option<[u8; 3]> = None;
+    for dy in (top * scale) as usize..(bottom * scale) as usize {
+        for dx in (x0 * scale) as usize..(x1 * scale) as usize {
+            let p = pixel_at(shot, dims, dx as f32 / scale, dy as f32 / scale);
+            if best.is_none_or(|b| gap(p, bg) > gap(b, bg)) {
+                best = Some(p);
+            }
+        }
+    }
+    best
+}
+
+/// How many pixels in the box are colour `c` (within `tol`).
+fn count_in(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    tol: u8,
+    (x0, x1): (f32, f32),
+    (y0, y1): (f32, f32),
+) -> usize {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let mut count = 0;
+    for dy in (y0 * scale) as usize..(y1 * scale) as usize {
+        for dx in (x0 * scale) as usize..(x1 * scale) as usize {
+            if near_by(
+                pixel_at(shot, dims, dx as f32 / scale, dy as f32 / scale),
+                c,
+                tol,
+            ) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Files in the palette (M11j Task 5), over `switcher_workspace` with fuxx-cli's files listed for
+/// shell's folder, in both themes:
+/// - `palette-files`: "view" typed on All: `Files in fuxx-cli` first, src/view.rs chosen;
+/// - `palette-files-empty`: the Files scope, nothing typed: `Type to search files in fuxx-cli`.
+///
+/// Panics unless so, src/view.rs's icon has a pixel in `palette_file_ink(Red)` in its slot and
+/// its folder (`src`) is drawn in `text_faint` right of its name; and (not shot) Enter opens
+/// src/view.rs in a Plain file tab in the focused pane, the palette closed; with logs (an SSH
+/// terminal) followed, Files says `SSH_NOTE`; with a first listing running, `LISTING` (and on All
+/// no Files section, no note).
+fn palette_files_scene() {
+    use crate::layout_model::{FileMode, TabKind};
+    use crate::palette::palette_file_ink;
+    use crate::palette_items::{Key, LISTING, Line, SSH_NOTE, Scope};
+    use crate::right_sidebar::FileKind;
+    use crate::sidebar::MARK_SLOT;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    let view = PathBuf::from(PALETTE_ROOT).join("src/view.rs");
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for stage in ["shot", "enter", "empty", "ssh", "listing", "typing"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let seen: Rc<Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
+            let found = seen.clone();
+            let n = format!("palette-files-{stage}-{slug}");
+            let view = view.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let lines = |cx: &mut VisualTestAppContext| palette_state(cx, &ws).0;
+                match stage {
+                    "ssh" => {
+                        // logs (#8) is an SSH terminal to build-box: shown, so followed.
+                        cx.update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| ws.select(7, window, cx))
+                        })
+                        .expect("select logs");
+                        settle(cx, window);
+                        let ssh = cx.read(|cx| ws.read(cx).palette_folder(cx).map(|f| f.1));
+                        assert_eq!(ssh, Some(true), "{n}: an SSH terminal followed");
+                        open_palette_on(cx, window, &ws, Scope::Files);
+                        assert_eq!(lines(cx), [Line::Note(SSH_NOTE.into())], "{n}");
+                        cx.simulate_input(window, "main");
+                        settle(cx, window);
+                        assert_eq!(lines(cx), [Line::Note(SSH_NOTE.into())], "{n}: typed");
+                    }
+                    "typing" => {
+                        // Typed a letter at a time, each ranking in before the next letter:
+                        // "vie" puts vie/w.md first; "view" puts src/view.rs first, and that is
+                        // what's chosen (not the row the last answer had first).
+                        seed_palette_files(cx, &ws, &["vie/w.md", "src/view.rs"]);
+                        open_palette_on(cx, window, &ws, Scope::Files);
+                        let vie_w = Key::File(PathBuf::from(PALETTE_ROOT).join("vie/w.md"));
+                        for letter in ["v", "i", "e"] {
+                            cx.simulate_input(window, letter);
+                            settle(cx, window);
+                        }
+                        assert_eq!(palette_state(cx, &ws).2, Some(vie_w.clone()), "{n}: vie");
+                        cx.simulate_input(window, "w");
+                        settle(cx, window);
+                        let (lines, _, selected) = palette_state(cx, &ws);
+                        assert!(
+                            lines
+                                .iter()
+                                .any(|l| matches!(l, Line::Item { key, .. } if *key == vie_w)),
+                            "{n}: vie/w.md still listed"
+                        );
+                        assert_eq!(
+                            selected,
+                            Some(Key::File(view.clone())),
+                            "{n}: the best chosen"
+                        );
+                        // Moved by hand, the choice stays put when an answer comes in.
+                        press_keys(cx, window, "down");
+                        assert_eq!(palette_state(cx, &ws).2, Some(vie_w.clone()), "{n}: ↓");
+                        // A new listing (the 10 s re-list): ranked again, the choice kept.
+                        seed_palette_files(cx, &ws, &["vie/w.md", "src/view.rs"]);
+                        settle(cx, window);
+                        assert_eq!(palette_state(cx, &ws).2, Some(vie_w), "{n}: kept");
+                    }
+                    "listing" => {
+                        cx.update(|cx| {
+                            ws.update(cx, |ws, cx| {
+                                let (folder, _) = ws.palette_folder(cx).expect("a folder");
+                                ws.palette_files.started(&folder);
+                            })
+                        });
+                        open_palette_on(cx, window, &ws, Scope::Files);
+                        assert_eq!(lines(cx), [Line::Note(LISTING.into())], "{n}");
+                        cx.simulate_input(window, "main");
+                        settle(cx, window);
+                        assert_eq!(lines(cx), [Line::Note(LISTING.into())], "{n}: typed");
+                        // On All: no Files section and no note while listing.
+                        press_keys(cx, window, "tab tab");
+                        assert_eq!(palette_state(cx, &ws).1, Scope::All, "{n}");
+                        let all = lines(cx);
+                        assert!(
+                            !all.iter().any(|l| matches!(l, Line::Note(_))),
+                            "{n}: {all:?}"
+                        );
+                        assert!(
+                            !all.iter()
+                                .any(|l| matches!(l, Line::Header(h) if h.starts_with("Files"))),
+                            "{n}: {all:?}"
+                        );
+                    }
+                    _ => {
+                        seed_palette_files(cx, &ws, &PALETTE_FILES);
+                        if stage == "empty" {
+                            open_palette_on(cx, window, &ws, Scope::Files);
+                            assert_eq!(
+                                lines(cx),
+                                [Line::Note("Type to search files in fuxx-cli".into())],
+                                "{n}"
+                            );
+                            slot.borrow_mut().take();
+                            return;
+                        }
+                        open_palette_on(cx, window, &ws, Scope::All);
+                        cx.simulate_input(window, "view");
+                        settle(cx, window);
+                        let (lines, _, selected) = palette_state(cx, &ws);
+                        assert_eq!(lines[0], Line::Header("Files in fuxx-cli".into()), "{n}");
+                        assert!(
+                            matches!(&lines[1], Line::Item { key: Key::File(p), .. } if *p == view),
+                            "{n}: {:?}",
+                            lines[1]
+                        );
+                        assert_eq!(selected, Some(Key::File(view.clone())), "{n}: chosen");
+                        let palette = palette_of(cx, &ws).expect("open");
+                        found.set(cx.read(|cx| palette.read(cx).row_bounds(1)));
+                        if stage == "enter" {
+                            press_keys(cx, window, "enter");
+                            assert!(palette_of(cx, &ws).is_none(), "{n}: Enter closes it");
+                            let kind = cx.read(|cx| {
+                                let ws = ws.read(cx);
+                                let tab = ws.model.focused_tab()?;
+                                ws.model.tab(tab).map(|t| t.kind.clone())
+                            });
+                            assert_eq!(
+                                kind,
+                                Some(TabKind::File {
+                                    path: view.clone(),
+                                    mode: FileMode::Plain
+                                }),
+                                "{n}: a Plain file tab, focused"
+                            );
+                        }
+                    }
+                }
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            match stage {
+                "shot" => {
+                    save_shot("palette-files", slug, &shot);
+                    let row = seen.get().expect("the row is drawn");
+                    let n = format!("palette-files-{slug}");
+                    let left = f32::from(row.left()) + 8.0;
+                    let (top, bottom) = (f32::from(row.top()), f32::from(row.bottom()));
+                    let ink = palette_file_ink(FileKind::Red, &theme);
+                    let icon =
+                        count_in(&shot, dims, ink, 6, (left, left + MARK_SLOT), (top, bottom));
+                    assert!(icon > 0, "{n}: the icon in its kind's ink ({icon})");
+                    // The name (`text`) then, right of it, its folder in `text_faint`.
+                    let names = left + MARK_SLOT;
+                    let right = f32::from(row.right()) - 8.0;
+                    let name_end = rightmost(&shot, dims, ui.text, row, names, right)
+                        .expect("the name is drawn");
+                    // Small text at 1×: its darkest stem, closer to `text_faint` than to `text`.
+                    let ink = strongest(&shot, dims, ui.row_active, row, name_end + 4.0, right)
+                        .expect("right of the name");
+                    assert!(
+                        gap(ink, ui.row_active) >= 24
+                            && gap(ink, ui.text_faint) < gap(ink, ui.text),
+                        "{n}: the folder, in text_faint, right of the name ({name_end}, {ink:?})"
+                    );
+                }
+                "empty" => {
+                    save_shot("palette-files-empty", slug, &shot);
+                }
+                _ => {}
+            }
+            println!("ui-shots: palette-files-{stage}-{slug} ok");
+        }
+    }
+}
+
+/// Settings in the palette (M11j Task 5), in both themes: `palette-settings`: "glow" typed on
+/// All: Cursor breathing glow chosen, `Appearance` on its right in `text_faint`, the gear in its
+/// slot in `text_dim`.
+///
+/// Panics unless so, and (not shot) Enter closes the palette, makes Appearance the section
+/// Preferences opens on (`LastSection`) and switches the open Preferences window to it.
+fn palette_settings_scene() {
+    use crate::palette_items::{Key, Scope, selectable};
+    use crate::preferences::Section;
+    use crate::sidebar::MARK_SLOT;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for enter in [false, true] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let seen: Rc<Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
+            let found = seen.clone();
+            let n = format!("palette-settings-{slug}-{enter}");
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let preferences = enter.then(|| shot_preferences_window(cx));
+                open_palette_on(cx, window, &ws, Scope::All);
+                cx.simulate_input(window, "glow");
+                settle(cx, window);
+                let (lines, _, selected) = palette_state(cx, &ws);
+                let first = selectable(&lines)[0];
+                assert!(
+                    matches!(
+                        &lines[first],
+                        crate::palette_items::Line::Item { key: Key::Setting(name), .. }
+                            if *name == "Cursor breathing glow"
+                    ),
+                    "{n}: first: {:?}",
+                    lines[first]
+                );
+                assert_eq!(selected, Some(Key::Setting("Cursor breathing glow")), "{n}");
+                let palette = palette_of(cx, &ws).expect("open");
+                found.set(cx.read(|cx| palette.read(cx).row_bounds(first)));
+                if let Some(preferences) = preferences {
+                    let before = cx.read(crate::preferences::last_section_for_shots);
+                    assert_ne!(before, Some(Section::Appearance), "{n}: not yet");
+                    press_keys(cx, window, "enter");
+                    assert!(palette_of(cx, &ws).is_none(), "{n}: Enter closes it");
+                    let last = cx.read(crate::preferences::last_section_for_shots);
+                    assert_eq!(last, Some(Section::Appearance), "{n}: LastSection");
+                    let shown = cx
+                        .read(|cx| preferences.read(cx).map(|p| p.section_for_shots()))
+                        .expect("read Preferences");
+                    assert_eq!(shown, Section::Appearance, "{n}: the open window switched");
+                }
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            if !enter {
+                save_shot("palette-settings", slug, &shot);
+                let row = seen.get().expect("the row is drawn");
+                let n = format!("palette-settings-{slug}");
+                let (top, bottom) = (f32::from(row.top()), f32::from(row.bottom()));
+                let left = f32::from(row.left()) + 8.0;
+                let gear = count_in(
+                    &shot,
+                    dims,
+                    ui.text_dim,
+                    6,
+                    (left, left + MARK_SLOT),
+                    (top, bottom),
+                );
+                assert!(gear > 0, "{n}: the gear, text_dim ({gear})");
+                // `Appearance`, right-aligned in `text_faint`, in the row's last 90 pt.
+                let right = f32::from(row.right()) - 8.0;
+                let faint = rightmost(&shot, dims, ui.text_faint, row, right - 90.0, right + 1.0);
+                assert!(
+                    faint.is_some_and(|x| x > right - 10.0),
+                    "{n}: Appearance ({faint:?})"
+                );
+            }
+            println!("ui-shots: palette-settings-{slug}-{enter} ok");
+        }
+    }
+}
+
+/// The palette in a narrow window (M11j Task 5), both themes: `palette-narrow`: 480 pt wide, the
+/// Files scope with "abcdefghij" typed, the one file a name 60 capitals long.
+///
+/// Panics unless the panel keeps 16 pt from the window's right edge, every row ends inside it,
+/// and the long name is cut: drawn up to the row's right padding and nothing in `text` past it
+/// (in the padding, the panel's edge or the window beyond); and (not shot) a folder too long for
+/// its row is cut at its start (its end shows).
+fn palette_narrow_scene() {
+    use crate::palette_items::{Scope, selectable};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let width = 480.0_f32;
+    let dims = size(px(width), px(600.0));
+    // 60 capitals: well past what the row can hold (lower case nearly fits).
+    let long = format!("src/{}.rs", "ABCDEFGHIJ".repeat(6));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        // One terminal with nothing on its screen, so only the palette draws text there.
+        let narrow = |keep: Slot| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    ws.open_shot_session("api", std::path::Path::new(API), "", None, window, cx);
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            }
+        };
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = narrow(slot.clone());
+        type Seen = (
+            gpui::Bounds<Pixels>,
+            Vec<gpui::Bounds<Pixels>>,
+            gpui::Bounds<Pixels>,
+        );
+        let seen: Rc<RefCell<Option<Seen>>> = Rc::default();
+        let found = seen.clone();
+        let n = format!("palette-narrow-{slug}");
+        let long = long.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            seed_palette_files(cx, &ws, &[long.as_str(), "src/main.rs"]);
+            open_palette_on(cx, window, &ws, Scope::Files);
+            cx.simulate_input(window, "abcdefghij");
+            settle(cx, window);
+            let (lines, _, _) = palette_state(cx, &ws);
+            let first = selectable(&lines)[0];
+            let palette = palette_of(cx, &ws).expect("open");
+            *found.borrow_mut() = cx.read(|cx| {
+                let p = palette.read(cx);
+                let rows = (0..lines.len()).filter_map(|at| p.row_bounds(at)).collect();
+                Some((p.panel_bounds()?, rows, p.row_bounds(first)?))
+            });
+            assert_eq!(
+                lines.len(),
+                2,
+                "{n}: the heading and the one file: {lines:?}"
+            );
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        save_shot("palette-narrow", slug, &shot);
+        let n = format!("palette-narrow-{slug}");
+        let (panel, rows, row) = seen.borrow().clone().expect("drawn");
+        // The panel's outer edge is 1 pt out from what its absolute child fills.
+        let panel_right = f32::from(panel.right()) + 1.0;
+        assert!(
+            panel_right <= width - 16.0 + 0.5,
+            "{n}: the panel ends at {panel_right}"
+        );
+        for b in &rows {
+            assert!(
+                f32::from(b.right()) <= f32::from(panel.right()) + 0.5,
+                "{n}: a row past the panel: {b:?}"
+            );
+        }
+        let padding = f32::from(row.right()) - 8.0;
+        let end = rightmost(&shot, dims, ui.text, row, f32::from(row.left()), width)
+            .expect("the name is drawn");
+        // The cut leaves the ellipsis a little short of the padding.
+        assert!(
+            end > padding - 40.0,
+            "{n}: the name runs to the row's end ({end})"
+        );
+        assert!(
+            end <= padding + 0.5,
+            "{n}: nothing in text past the row's padding ({end})"
+        );
+        // On one line (a name that wrapped would spill out of its row).
+        let scale = shot.width as f32 / f32::from(dims.width);
+        let (x0, x1) = (f32::from(row.left()) + 30.0, padding);
+        let band = ((f32::from(row.top()) - 12.0) * scale) as usize
+            ..((f32::from(row.bottom()) + 12.0) * scale) as usize;
+        let inked: Vec<f32> = band
+            .map(|dy| dy as f32 / scale)
+            .filter(|&y| count_along(&shot, dims, ui.text, y, x0, x1) > 0)
+            .collect();
+        let (top, bottom) = (inked[0], inked[inked.len() - 1]);
+        assert!(
+            bottom - top <= 16.0,
+            "{n}: the name is one line ({top}..{bottom})"
+        );
+
+        // A folder too long for its row is cut at its start, so its end shows: dots then wide
+        // letters show the letters (and the other way round, the dots).
+        let (thin, wide) = (".".repeat(200), "W".repeat(60));
+        let wide_end = format!("{thin}/{wide}/a.rs");
+        let thin_end = format!("{wide}/{thin}/b.rs");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = narrow(slot.clone());
+        let rows: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+        let found = rows.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            seed_palette_files(cx, &ws, &[wide_end.as_str(), thin_end.as_str()]);
+            open_palette_on(cx, window, &ws, Scope::Files);
+            cx.simulate_input(window, ".rs");
+            settle(cx, window);
+            let (lines, _, _) = palette_state(cx, &ws);
+            let palette = palette_of(cx, &ws).expect("open");
+            // a.rs's row, then b.rs's.
+            let at = |name: &str| {
+                lines
+                    .iter()
+                    .position(|l| matches!(l, crate::palette_items::Line::Item { key: crate::palette_items::Key::File(p), .. } if p.ends_with(name)))
+                    .expect("listed")
+            };
+            let (a, b) = (at("a.rs"), at("b.rs"));
+            *found.borrow_mut() = cx.read(|cx| {
+                let p = palette.read(cx);
+                [p.row_bounds(a), p.row_bounds(b)]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            });
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        let rows = rows.borrow().clone();
+        assert_eq!(rows.len(), 2, "{n}: both rows drawn");
+        // Inked pixels in each row's folder, past its name (`a.rs`: under 40 pt with the slot).
+        let ink = |row: gpui::Bounds<Pixels>| {
+            let scale = shot.width as f32 / f32::from(dims.width);
+            let (x0, x1) = (f32::from(row.left()) + 70.0, f32::from(row.right()) - 8.0);
+            let (y0, y1) = (f32::from(row.top()) + 4.0, f32::from(row.bottom()) - 4.0);
+            let bg = pixel_at(
+                &shot,
+                dims,
+                f32::from(row.left()) + 3.0,
+                f32::from(row.center().y),
+            );
+            let bg = alacritty_terminal::vte::ansi::Rgb {
+                r: bg[0],
+                g: bg[1],
+                b: bg[2],
+            };
+            let mut count = 0;
+            for dy in (y0 * scale) as usize..(y1 * scale) as usize {
+                for dx in (x0 * scale) as usize..(x1 * scale) as usize {
+                    if gap(
+                        pixel_at(&shot, dims, dx as f32 / scale, dy as f32 / scale),
+                        bg,
+                    ) >= 40
+                    {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        let (wide_shown, thin_shown) = (ink(rows[0]), ink(rows[1]));
+        assert!(
+            wide_shown > 2 * thin_shown,
+            "{n}: the folders' ends show ({wide_shown} vs {thin_shown})"
+        );
+    }
+}
+
+/// Reduce motion and the palette (M11j Task 5): `palette-motion`: Workspaces open over
+/// `switcher_workspace` (codex and deploy Working), Reduce motion on.
+///
+/// Panics unless, with Reduce motion on, two frames 200 ms apart (the marks' clock moved on
+/// between them) are pixel-identical in the panel; and (not shot) with it off, they differ (so
+/// the check can tell).
+fn palette_motion_scene() {
+    use crate::palette_items::Scope;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dims = size(px(960.0), px(600.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        for still in [true, false] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let inner = palette_build(theme, slot.clone());
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_reduce_motion(still);
+                inner(window, cx)
+            };
+            let n = format!("palette-motion-{slug}-{still}");
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                open_palette_on(cx, window, &ws, Scope::Workspaces);
+                let palette = palette_of(cx, &ws).expect("open");
+                let panel = cx
+                    .read(|cx| palette.read(cx).panel_bounds())
+                    .expect("the panel is drawn");
+                let grab = |cx: &mut VisualTestAppContext| {
+                    let image = cx.capture_screenshot(window).expect("capture");
+                    let (w, raw) = (image.width() as usize, image.as_raw().to_vec());
+                    let scale = w as f32 / f32::from(dims.width);
+                    let (x0, x1) = (
+                        (f32::from(panel.left()) * scale) as usize,
+                        (f32::from(panel.right()) * scale) as usize,
+                    );
+                    let (y0, y1) = (
+                        (f32::from(panel.top()) * scale) as usize,
+                        (f32::from(panel.bottom()) * scale) as usize,
+                    );
+                    (y0..y1)
+                        .flat_map(|y| raw[(y * w + x0) * 4..(y * w + x1) * 4].to_vec())
+                        .collect::<Vec<u8>>()
+                };
+                let before = grab(cx);
+                std::thread::sleep(Duration::from_millis(200));
+                cx.advance_clock(Duration::from_millis(200));
+                // The marks' clock on by 200 ms whether or not its ticker runs.
+                ws.update(cx, |ws, cx| {
+                    ws.phase = status_mark::advance(status_mark::advance(ws.phase));
+                    cx.notify();
+                });
+                settle(cx, window);
+                let after = grab(cx);
+                assert_eq!(before == after, still, "{n}: the panel moved = {}", !still);
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            if still {
+                save_shot("palette-motion", slug, &shot);
+            }
+            println!("ui-shots: palette-motion-{slug}-{still} ok");
+        }
     }
 }
 
