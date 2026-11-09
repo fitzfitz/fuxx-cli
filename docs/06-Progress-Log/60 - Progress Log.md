@@ -14,13 +14,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, not designed yet), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09 (release after M11n); M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11n); next M11m (title bar, designed and planned 2026-11-09, not built), then M11n (performance), then the one combined release and a chores round. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-09 — M11m title bar designed and planned
+- **Did:** Wrote the design ([[64 - Milestone 11m - Title Bar]]) and the plan ([[M11m Plan - Title Bar]], 3 build
+  tasks, merge, the folded release, docs) for your title bar: open, the sidebar button at the right edge of the
+  sidebar's band (lined up with the footer ⚙) and **"the Fuxx?"** centred there; collapsed, the workspace name
+  centred on the window and **[🔔] [⚙] [sidebar]** at the far right, with the popover dropping down from that 🔔.
+  Every detail beyond your layout is AI's call and marked in the note: the title 13 pt semibold dim, never cut,
+  hidden on sidebars under 224 pt; the name truncated at a fixed 100 pt inset (hidden under 260 pt); the band 🔔
+  carries the unseen dot (until now there was none with the sidebar hidden); every toggle closes the popover; the
+  footer ⚙ gets a "Preferences (⌘,)" tooltip to match the band's.
+- **Found in the code:** the sidebar button was one element at a fixed place for both states; collapsed with the
+  right sidebar open the window's top is two bands and the name was centred on the pane column only; the popover's
+  geometry was footer-only (upward). The plan handles each.
+- **Next:** build M11m (Task 1), then M11n, then the one combined release.
 
 ### 2026-11-09 — M11l command blocks built, reviewed, merged and pushed
 - **Did:** Designed (note 63, every call AI's except the chip's shape) and planned M11l, then built it task by task with
