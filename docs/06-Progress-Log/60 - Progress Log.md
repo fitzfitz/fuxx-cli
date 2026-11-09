@@ -14,13 +14,25 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone:** M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11l); next M11k. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
+- **Current milestone:** M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all release after M11l); next M11l. Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
 - **Repo:** `github.com/fitzfitz/fuxx-cli` — public; v1 on `master`. Repo **repurposed** for the terminal app.
 
 ---
 
 ## Entries
+
+### 2026-11-09 — M11k first-run screen built, reviewed, merged and pushed
+- **Did:** Designed (note 62, every call AI's) and planned M11k, then built it task by task with a fresh builder and
+  reviewer each: a `welcomed` record in sessions.json (older files count as welcomed, so upgrading users never see
+  it); agent detection on your login shell's PATH (background, capped, nothing installed or run); the Welcome card
+  (folder, your presets with "Not found on your PATH", three shortcuts, Skip / Start); starting an agent replaces
+  the untouched first terminal only once the new one exists; Help → Welcome to fuxx; "Show Welcome Tips" →
+  "Show Tips Card". Reviews caught and fixed: the folder field not opening the panel, the card losing the keyboard
+  when a script closed a terminal or anything focused a tab, a dimming seam at the top band, and ⌘W quitting fuxx
+  from the card. 1159 tests pass, clippy (both) adds no warnings, the full ui-shots set passes. What the build
+  settled: note 62's "M11k as built". Not released on its own (one release after M11l).
+- **Next:** M11l (command blocks), the last of the program; then the one release and your combined test list.
 
 ### 2026-11-09 — M11j command palette (⌘K) built, reviewed, merged and pushed
 - **Did:** Designed (note 61, every call AI's) and planned M11j, then built it task by task with a fresh builder and

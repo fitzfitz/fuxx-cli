@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: designed
+status: built
 ---
 
 # 62 - Milestone 11k - First-Run Screen (design)
 
-**Status:: ⬜ Designed and planned 2026-11-09 (every detail AI's call; you skipped the design questions). Not released on its own: one release after M11l.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11k Plan - First-Run Screen]]
+**Status:: 🟨 Built, reviewed, merged and pushed 2026-11-09 (1159 tests; every detail AI's call; you skipped the design questions). Not released on its own: one release after M11l. On-screen check pending.**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11k Plan - First-Run Screen]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout, a command palette, a first-run screen…").
 Comes after M11j (merged), before M11l.
 
@@ -78,8 +78,8 @@ brings it back.
   the focused tab after it closes.
 - **Centred in the window** (both ways), **520 pt wide** (less in a narrow window: 16 pt from each edge), on the
   `overlay_panel::shell` surface with 20 pt inner padding. Behind it a **scrim**: the theme's `shadow` colour at
-  35 % alpha over the whole window **below the 38 pt top band** (`TOP_BAND`), so the window can still be dragged by
-  its top and the traffic lights work.
+  35 % alpha over the whole window; over the 38 pt top band (`TOP_BAND`) it is paint-only (no hitbox), so the window
+  can still be dragged by its top and the traffic lights work (as built; first planned to stop at the band).
 - **What closes it:** Esc, the **Skip** button, a click on the scrim, a pick (§5), or another overlay opening (⌘K,
   ⌘/…). **Not** losing the keyboard (AI's call): the folder panel takes the keyboard while it's up, and the card
   must survive that. A click on the scrim counts as Skip.
@@ -260,8 +260,36 @@ None in `ui_tokens` or `UiColors` (AI's call). Constants in `welcome.rs`: `CARD_
 12. A browser tab focused, Help → Welcome to fuxx: the page hides while the card is open and comes back after.
 13. Light and dark themes (Catppuccin Latte and Mocha, plus one other of each): rows, keycaps, the chosen row and
     the Start button read clearly.
-14. A small window (~500 × 420 pt): the card fits with a margin; the agent list scrolls; nothing is cut off.
+14. A small window (~500 × 420 pt): the card fits below the top band; the agent list scrolls (it may show one row);
+    Skip and Start stay visible.
 15. Nothing moves in the card with Animations on or off.
+16. With the card open, press ⌘T and ⌘N: new terminals open behind it, the card stays and still takes ↑/↓/Return/Esc;
+    Esc then leaves you in the newest terminal. ⌘W while the card is open just closes the card (fuxx doesn't quit).
+17. The whole window is dimmed behind the card, the top band too (no seam at the tab bar); the window still drags by
+    its top band and the traffic lights work.
+18. **A first run with Keep running after quit on:** as item 1, then start an agent: the first terminal goes once the
+    agent appears, and fuxx never quits in between.
+
+## M11k as built (2026-11-09)
+
+Where the build settled something the plan left open, or changed it (AI's rulings after each task's review and the
+final whole-branch review):
+
+- **The card keeps the keyboard while it's open:** anything that would focus a tab (⌘N, ⌘T, ⌘1–9, ⇧⌘U, a click on
+  a tab, a script's new terminal) leaves the keyboard on the card; the new terminals open behind it. Also when a
+  script closes a terminal under the card.
+- **⌘W while the card is open closes the card** (it used to close the only terminal behind it, which quits fuxx).
+- **The whole window is dimmed,** the top band too, by a paint-only strip, so the window still drags and the
+  traffic lights and the band's buttons still work.
+- **A click on the folder field opens the folder panel** as Choose… does; only one panel at a time.
+- **Replacing the first terminal** re-checks that it's still alone after the new one has opened (with Keep running
+  after quit on, the open is asynchronous); a refused open leaves it and fuxx doesn't quit.
+- **Short windows:** the card never grows past the window; at about 420 pt tall with many presets the agent list
+  shows one row and scrolls (a two-row floor was tried and dropped: it pushed Start off the window). The card's top
+  sits right under the top band in a short window.
+- **The palette finds Welcome to fuxx** by "welcome", "first run", "start agent", "folder", "intro".
+- Known: the first-run read in `Workspace::new` is checked through its pure parts only; a login shell that times out
+  (3 s) marks every agent as unknown for the run (the shared SSH look-up is cached).
 
 ## Settled before planning (AI's calls after a builder's read, 2026-11-09)
 
@@ -300,7 +328,7 @@ Re-reading the design as the builder who must plan it, these were the places the
    `workspace::LaunchPreset{n+1}`, `workspace::OpenPalette`, `workspace::NewWorkspace`, `workspace::NextNeedingYou`.
 10. **The scrim and centring** are drawn by the Workspace's render: a full-window absolute layer from `TOP_BAND` down,
     `occlude`, `on_mouse_down` → skip; the card in a flex box centred both ways inside that layer, with 16 pt padding.
-    The top band above stays live.
+    The top band above stays live; a paint-only strip of the same dim covers it (as built), with no listeners.
 11. **Focus:** the card has its own `FocusHandle` (`Focusable`), focused on open; `on_key_down` handles `up`, `down`,
     `enter`, `escape` with no modifiers and stops them; other keys propagate. After the folder panel answers (or is
     cancelled) the card focuses itself again if it is still open.

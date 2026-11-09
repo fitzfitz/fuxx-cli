@@ -123,6 +123,9 @@ src/
 ├── palette_items.rs      M11j · scopes, keys, Recent, every action and setting, `compose` into the list's lines (pure)
 ├── palette_match.rs      M11j · the fuzzy matcher: word starts, runs, gaps, a file-name bonus (pure)
 ├── palette_files.rs      M11j · the palette's files: git ls-files or a bounded walk, ranked off the UI thread
+├── welcome.rs            M11k · the Welcome card: folder, agents, three shortcuts; opening it on a first run or from Help; the pick
+├── welcome_items.rs      M11k · the card's rules: rows, the default row, what a pick opens and closes, the copy (pure)
+├── agent_detect.rs       M11k · is a preset's program on your login shell's PATH? (pure core; one capped background read)
 ├── overlay_panel.rs      M11 · the shared panel and filter box (switcher, host picker, address box)
 ├── sidebar_toggle.rs     Follow-up · the sidebar button beside the window buttons: position rule, slide curve
 ├── tab_menu.rs           Follow-up · the right-click row menu: actions (close others / to the right), bulk-close text, overlay
