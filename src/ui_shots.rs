@@ -266,6 +266,7 @@ const SCENES: &[(&str, fn())] = &[
     ("status-bar-narrow", status_bar_narrow_scenes),
     ("update-button", update_button_scenes),
     ("cursor", cursor_scenes),
+    ("cursor-flood", cursor_flood_scene),
     ("command-blocks", command_blocks_scene),
     ("command-blocks-alt-screen", command_blocks_alt_screen_scene),
     ("command-blocks-narrow", command_blocks_narrow_scene),
@@ -15071,6 +15072,27 @@ impl CursorRig {
         text: &str,
         dims: Size<Pixels>,
         split: bool,
+        flags: (bool, bool, bool),
+        tweak: impl FnOnce(&mut Appearance),
+    ) -> Self {
+        Self::spawned(
+            theme,
+            vec!["/bin/cat".into()],
+            text,
+            dims,
+            split,
+            flags,
+            tweak,
+        )
+    }
+
+    /// `sized`, running `program` instead of `cat`.
+    fn spawned(
+        theme: Theme,
+        program: Vec<String>,
+        text: &str,
+        dims: Size<Pixels>,
+        split: bool,
         (focus, key, still): (bool, bool, bool),
         tweak: impl FnOnce(&mut Appearance),
     ) -> Self {
@@ -15095,9 +15117,8 @@ impl CursorRig {
                     set: Vec::new(),
                     remove: Vec::new(),
                 };
-                let view =
-                    TerminalView::spawn(cx, Some(vec!["/bin/cat".into()]), None, None, &quiet)
-                        .expect("start cat");
+                let view = TerminalView::spawn(cx, Some(program), None, None, &quiet)
+                    .expect("start the program");
                 view.read(cx).show_text(&text);
                 view.read(cx).set_split(split);
                 if key {
@@ -15815,6 +15836,80 @@ fn first_change(
 }
 
 /// The view's chip, read for the checks: its label, buttons and painted bounds.
+/// A flood reaches the screen (M11n): a real pane runs `seq 1 300000; echo END`, with
+/// Animations off so nothing but its output asks for a repaint, and the window is drawn only
+/// when the view asks (`cx.notify`), as the app's frame loop draws it. Once the output stops,
+/// with no input at all, the last frame drawn holds `END`. This fails if the view stops
+/// acknowledging `Output` (`output_seen`): the parser's gate then sends no further `Output`
+/// and the screen stays on an early frame until a keystroke.
+fn cursor_flood_scene() {
+    use crate::grid::TextScope;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    let (slug, name) = SHOT_THEMES[0];
+    let n = format!("cursor-flood-{slug}");
+    // The flood waits for `go` to exist, so it starts only once the scene is watching. The
+    // child stays alive after `END`, so no exit repaints the screen either.
+    let go = std::env::temp_dir().join(format!("fuxx-ui-shots-{}-flood-go", std::process::id()));
+    let _ = std::fs::remove_file(&go);
+    let program = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!(
+            "while [ ! -e '{}' ]; do sleep 0.01; done; seq 1 300000; echo END; exec sleep 60",
+            go.display()
+        ),
+    ];
+    let mut rig = CursorRig::spawned(
+        shot_theme(name),
+        program,
+        "",
+        size(px(320.0), px(120.0)),
+        false,
+        (true, true, false),
+        |a| a.animations = false,
+    );
+    let asked = Rc::new(Cell::new(0usize));
+    let _watch = {
+        let asked = asked.clone();
+        let view = rig.view.clone();
+        rig.cx
+            .update(|cx| cx.observe(&view, move |_, _| asked.set(asked.get() + 1)))
+    };
+    std::fs::write(&go, b"").expect("start the flood");
+    let (mut drawn, mut frames) = (0, 0);
+    let mut screen = String::new();
+    let start = Instant::now();
+    let mut ended: Option<Instant> = None;
+    // Until the `Term` holds `END` and a further half second has passed with no input.
+    while ended.is_none_or(|at| at.elapsed() < Duration::from_millis(500)) {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "{n}: the flood never finished"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        rig.cx.run_until_parked();
+        if asked.get() != drawn {
+            drawn = asked.get();
+            frames += 1;
+            rig.cx
+                .update_window(rig.window, |_, window, cx| window.draw(cx).clear())
+                .expect("draw");
+            screen = rig.read(|v| v.text(TextScope::Screen));
+        }
+        if ended.is_none() && rig.read(|v| v.text(TextScope::Screen).contains("END")) {
+            ended = Some(Instant::now());
+        }
+    }
+    let _ = std::fs::remove_file(&go);
+    assert!(
+        screen.lines().any(|l| l.trim_end() == "END"),
+        "{n}: once the output stops, the last frame drawn (of {frames}) holds END, saw {screen:?}"
+    );
+}
+
 fn chip_of(rig: &CursorRig) -> Option<(String, [&'static str; 3], gpui::Bounds<Pixels>)> {
     rig.read(|v| v.chip_shot())
 }
