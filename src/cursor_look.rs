@@ -4,6 +4,7 @@
 //! reads the clock, so each rule is unit-tested. Drawing lives in the terminal view.
 
 use std::f32::consts::TAU;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
@@ -256,7 +257,13 @@ fn breath_phase(clock: Duration) -> f64 {
 /// down each level `1.0 - k·BREATH_STEP` (k = 1..=10), the trough at 0.8 s, on the way up the
 /// same levels the other way round, and the next peak at 1.6 s. Closed form of `breath_alpha`
 /// solved for its clock: `P/(2π)·acos((α - mid)/amp)` falling, `P` minus that rising.
-fn breath_marks() -> Vec<f64> {
+/// Worked out once: the breathing timer asks on every wake.
+fn breath_marks() -> &'static [f64] {
+    static MARKS: OnceLock<Vec<f64>> = OnceLock::new();
+    MARKS.get_or_init(work_out_breath_marks)
+}
+
+fn work_out_breath_marks() -> Vec<f64> {
     let p = PERIOD.as_secs_f64();
     let low = f64::from(BREATH_LOW);
     let (mid, amp) = ((1.0 + low) / 2.0, (1.0 - low) / 2.0);
@@ -485,9 +492,9 @@ mod tests {
         );
         // Resting asks for no frames.
         assert_eq!(needs_frames(true, true, true, false, false), Frames::None);
-        // A change (the time since it back to 0) ends the rest: the breath clock is 0 again.
-        assert!(!breath_rests(Duration::ZERO.saturating_sub(HOLD)));
-        assert!(!breath_rests(ms(700).saturating_sub(HOLD)));
+        // That a change ends the rest is the view's part (it sets the time of the change, so
+        // the breath clock starts again from 0): `CursorMotion`'s tests in `terminal_view` and
+        // the ui-shots scene `cursor-breath-resumes` cover it.
     }
 
     fn glide(now: Instant) -> Glide {
