@@ -14,7 +14,9 @@ HOME and only ever signals PIDs it started (and their descendants, found by walk
 Ghostty runs from DIR/apps/Ghostty-bench.app (see ghostty-bundle). Its prefs domain is the real Ghostty's, so every
 Ghostty phase backs up the user's prefs first and restores + verifies them after (see ghostty_restore).
 Every process the harness starts is killed on any exit path (error, SIGTERM, Ctrl-C).
-Make the data first: make_data.py DIR.  Self-test of the cleanup paths: run.py --bench DIR selftest raise|sigterm|wait|badcomm"""
+Make the data first: make_data.py DIR.  Self-test of the cleanup paths:
+  run.py --bench DIR selftest raise|sigterm|wait|badcomm|badrestore
+  (badcomm: a kill is refused; badrestore: that, and the mocked prefs restore exits BLOCKED too)"""
 import glob, json, os, re, shutil, signal, statistics, subprocess, sys, time
 
 args = sys.argv[1:]
@@ -122,9 +124,13 @@ def do_summary():
 
 # ---------------------------------------------------------------- runtime
 if args[0] == "bundle":
+    if len(args) != 3:
+        sys.exit(__doc__)
     do_bundle(args[1], os.path.abspath(args[2]))
     sys.exit(0)
 if args[0] == "ghostty-bundle":
+    if len(args) != 1:
+        sys.exit(__doc__)
     do_ghostty_bundle()
     sys.exit(0)
 if args[0] == "summary":
@@ -139,13 +145,16 @@ elif len(args) < 2:
     sys.exit(__doc__)
 else:
     app, phase = args[0], args[1]
+if "--tag" in args and args.index("--tag") + 1 >= len(args):
+    sys.exit(__doc__)
 tag = args[args.index("--tag") + 1] if "--tag" in args else ""
 if app not in ("fuxx-base", "fuxx-m11n", "ghostty", "selftest"):
     sys.exit("APP must be fuxx-base | fuxx-m11n | ghostty")
 if app == "ghostty" and phase in ("cpu_noglow", "cpu_rest"):
     sys.exit(f"{phase} is a fuxx phase (the glow); not for ghostty")
 BIN = bin_of(app) if not SELFTEST else "/bin/sleep"
-ALLOWED = (B,) + (("/bin/sleep",) if SELFTEST and selftest_mode != "badcomm" else ())
+REFUSED_KILL = SELFTEST and selftest_mode in ("badcomm", "badrestore")
+ALLOWED = (B,) + (("/bin/sleep",) if SELFTEST and not REFUSED_KILL else ())
 OUT = f"{B}/results/{app}-{phase}{tag}.json"
 HOME_REAL = f"{B}/homes/{app}"
 HOME = f"{TMP_ROOT}/fxb-{app}"  # short symlink -> DIR/homes/APP (fuxx's socket path limit)
@@ -493,6 +502,8 @@ def ghostty_restore(path):
         log(f"SELFTEST ghostty_restore called; started children still alive at that moment: {alive}")
         with open(f"{B}/logs/prefs-restore.log", "a") as f:
             f.write(f"selftest restore called, children alive: {alive}\n")
+        if selftest_mode == "badrestore":
+            sys.exit("BLOCKED: selftest: the prefs restore failed")
         return
     end = time.time() + 15
     while time.time() < end:  # every bench Ghostty process must have exited first
@@ -527,7 +538,7 @@ try:
         if selftest_mode == "sigterm":
             os.kill(os.getpid(), signal.SIGTERM)
             time.sleep(5)
-        if selftest_mode == "badcomm":
+        if REFUSED_KILL:
             kill(p)  # refused: raises
         time.sleep(30)  # wait: for an external SIGTERM / SIGINT
         res = {}
@@ -560,7 +571,14 @@ try:
 finally:
     failed = cleanup_all()  # first the apps, then the prefs restore (a live Ghostty would rewrite them)
     if backup:
-        ghostty_restore(backup)
+        try:
+            ghostty_restore(backup)
+        except BaseException as e:
+            if not failed:
+                raise
+            # The restore's own exit must not hide the processes left running.
+            why = e.code if isinstance(e, SystemExit) else f"{type(e).__name__}: {e}"
+            sys.exit(f"{why}\nBLOCKED: could not kill {failed}")
     if failed:
         sys.exit(f"BLOCKED: could not kill {failed}")
 json.dump(res, open(OUT, "w"), indent=1)
