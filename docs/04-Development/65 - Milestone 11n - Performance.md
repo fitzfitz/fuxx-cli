@@ -45,6 +45,24 @@ and quits. The shell is zsh with a scratch `ZDOTDIR` whose rc writes `$EPOCHREAL
 | Launch (`launch`) | process start → shell ready; median of 5 after a warm-up | 143 ms | 140 ms | 108 ms |
 | Memory (`mem`) | RSS / footprint 10 s and 60 s after ready; 10 tabs (`fuxx new --tab` ×9) | 117.5 / 100 MB; 10 tabs 123 MB | 112.5 / 95 MB; 119 MB | 112 / 91 MB |
 
+**Re-measured (Task 0, 2026-11-09 evening, `scripts/bench/`, this branch at `41db015` = master `f661d5e` code, release,
+arm64, seeded "welcomed" `sessions.json`, every `cpu_*` run frontmost 15/15 or 168/168):**
+
+| Metric | fuxx (`f661d5e`) | Ghostty 1.4 |
+|---|---|---|
+| Idle CPU, glow on (`cpu_base`, median of 3) | **7.32 %** (7.32, 7.46, 6.83) | **0.33 %** (3 x 0.33) |
+| Idle CPU, glow off (`cpu_noglow`, 2 runs) | **0.73 %** (0.73, 0.73) | n/a |
+| Idle CPU after the breath's rest (`cpu_rest`, 305 s in, 1 run) | **6.99 %** | n/a |
+| `cat` 100 MB (median of 3) | **0.969 s** (0.969-1.002) | **0.331 s** (0.322-0.428) |
+| 200k coloured lines (median of 3) | **0.227 s** (0.215-0.228) | **0.154 s** (0.145-0.156) |
+| Launch (median of 5) | 167 ms | 136 ms |
+| Memory 10 s / 60 s after ready (RSS / footprint) | 119.1 / 54 MB; 118.9 / 51 MB; 10 tabs 124.4 / 59 MB | 112.7 / 98 MB; 113.1 / 54 MB |
+
+Against the first run: glow-on is higher (7.3 vs 6.3-6.7 %, a different Mac load and the seeded Welcome fix), glow-off
+0.73 vs 0.93 %, `cat` 0.969 vs 0.826 s, colours 0.227 vs 0.282 s, launch 167 vs 143 ms: one session's comparisons only.
+`cpu_rest` (6.99 %) shows today's glow never rests. The footprint column differs from the first run (54 vs 100 MB; the
+tool's accounting varies), so memory targets compare RSS.
+
 The harness's apps, homes and data were deleted after that run (only `run.py`, the results and the logs remain), so
 the plan brings the harness into the repo and re-measures the baseline first (Task 0). Two harness faults found
 while profiling, fixed there: since M11k a deleted `sessions.json` shows the **Welcome card**, which takes the
