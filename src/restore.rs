@@ -140,6 +140,9 @@ pub struct SavedState {
     /// missing or unknown: Files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right_sidebar_panel: Option<String>,
+    /// The Welcome card has been shown (M11k); a file from before it: welcomed.
+    #[serde(default = "already_welcomed")]
+    pub welcomed: bool,
 }
 
 /// The right sidebar's state in a file without it: closed.
@@ -167,8 +170,20 @@ impl Default for SavedState {
             right_sidebar_hidden: true,
             right_sidebar_width: None,
             right_sidebar_panel: None,
+            welcomed: false,
         }
     }
+}
+
+/// `welcomed` in a file without it: an existing user has no first run.
+fn already_welcomed() -> bool {
+    true
+}
+
+/// Whether the Welcome card is due: no readable record, or one that says it was never shown.
+#[allow(dead_code)] // used by the Welcome card (M11k task 3)
+pub fn welcome_due(saved: Option<&SavedState>) -> bool {
+    saved.is_none_or(|s| !s.welcomed)
 }
 
 /// Whether the file has anything to put back: a session, or a workspace (one of pages only
@@ -657,5 +672,39 @@ mod tests {
             state_path(Path::new("/Users/me")),
             PathBuf::from("/Users/me/Library/Application Support/fuxx/sessions.json")
         );
+    }
+
+    #[test]
+    fn an_older_sessions_file_counts_as_welcomed() {
+        assert!(decode(r#"{"version":2}"#).unwrap().welcomed);
+    }
+
+    #[test]
+    fn a_fresh_state_is_not_welcomed() {
+        assert!(!SavedState::default().welcomed);
+    }
+
+    #[test]
+    fn welcomed_survives_a_round_trip() {
+        let state = SavedState {
+            welcomed: false,
+            ..Default::default()
+        };
+        assert!(!decode(&encode(&state)).unwrap().welcomed);
+        let state = SavedState {
+            welcomed: true,
+            ..Default::default()
+        };
+        assert!(decode(&encode(&state)).unwrap().welcomed);
+    }
+
+    #[test]
+    fn welcome_due_only_without_a_record() {
+        assert!(welcome_due(None));
+        assert!(welcome_due(Some(&SavedState::default())));
+        assert!(!welcome_due(Some(&SavedState {
+            welcomed: true,
+            ..Default::default()
+        })));
     }
 }
