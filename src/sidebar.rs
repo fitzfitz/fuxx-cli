@@ -36,7 +36,7 @@ use crate::presets::MAX_PRESETS;
 use crate::procs::ProgramState;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
-use crate::sidebar_toggle::{Tip, open_button_x};
+use crate::sidebar_toggle::{Tip, open_button_at};
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::tab_bar::{DraggedTab, Glyph, hold_closed_hand};
@@ -1032,12 +1032,17 @@ impl Workspace {
             })
             .collect();
         // The band holds the app's title in its middle and the sidebar button at its right edge
-        // (M11m): both ride the sidebar when it slides.
+        // (M11m): both ride the sidebar when it slides. In a window narrower than the sidebar
+        // the button comes in to the window's edge (`open_button_at`), so it stays clickable.
         let label = div()
             .relative()
             .size_full()
             .children(self.render_app_title(ui, window))
-            .child(self.render_sidebar_button(ui, open_button_x(self.sidebar.width), cx))
+            .child(self.render_sidebar_button(
+                ui,
+                open_button_at(self.sidebar.width, window.viewport_size().width.as_f32()),
+                cx,
+            ))
             .into_any_element();
         let band = self.render_top_band("sidebar-band", Some(label), window, cx);
         let list = div()
