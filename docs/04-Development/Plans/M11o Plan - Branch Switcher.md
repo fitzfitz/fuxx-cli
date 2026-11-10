@@ -41,6 +41,10 @@ already used in `palette.rs`, `host_picker.rs`, `status_bar.rs` and `sidebar.rs`
 - Caps: reads `GIT_CAP` (2 s, existing); `git switch` **10 s** (`SWITCH_CAP`); `git fetch` **30 s** (`FETCH_CAP`).
 - Never stash, reset, force (`-f`), discard, or create a branch from scratch. Only `git switch <name>` and `git
   switch --track origin/<name>` change the work tree.
+- *Note (after the build, 2026-11-10): the build changed the two lines above: `SWITCH_CAP` is 120 s, and an origin
+  branch is made first (`git branch --no-track <name> refs/remotes/origin/<name>` + its upstream), then switched to
+  with `git switch --no-guess <name>`, the only command that changes the work tree. See [[66 - Milestone 11o - Branch
+  Switcher]], "M11o as built" #4 and #5. The tasks below are kept as planned.*
 - Only the remote named `origin`.
 - Nothing runs while the modal is closed (no new idle work).
 - Copy, exactly: title `Switch branch · <repo folder name>`; box placeholder `type a branch name…`; marks `↑n ↓m`
