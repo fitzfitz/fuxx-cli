@@ -23,14 +23,15 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, Bounds, BoxShadow, ClickEvent, Context,
     DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, TextStyle,
-    TruncateFrom, Window, canvas, div, point, prelude::*, px, relative,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
 use crate::drag_gap::{self, Slid};
 use crate::groups::{self, GroupKey, Row};
 use crate::layout_model::{Model, TabDrop, TabKind, WorkspaceId};
+use crate::palette_items::Scope;
 use crate::preferences;
 use crate::presets::MAX_PRESETS;
 use crate::procs::ProgramState;
@@ -43,7 +44,7 @@ use crate::tab_bar::{DraggedTab, Glyph, glyph, hold_closed_hand};
 use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
-use crate::theme::UiColors;
+use crate::theme::{UiColors, mix};
 use crate::title_area::{
     BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, NOTIFICATIONS_TIP, PREFERENCES_GROUP, PREFERENCES_TIP,
     footer_icon, unseen_dot,
@@ -82,6 +83,11 @@ pub struct WorkspaceFacts<'a> {
     pub folder: Option<String>,
     /// A program other than the shell runs in `subject` (M11i: an idle row's filled dot).
     pub running: bool,
+    /// The program's own title in the terminal it is named after (M11r: under the name, when
+    /// it says more than the name).
+    pub title: Option<&'a str>,
+    /// Where its terminal is now, from its folder group's folder (`relative_place`).
+    pub here: Option<String>,
 }
 
 /// One row of the sidebar.
@@ -102,6 +108,14 @@ pub struct HeaderRow {
     pub collapsed: bool,
     /// The group's most urgent status, shown only while it's collapsed (open, its rows say it).
     pub mark: Option<Status>,
+    /// The branch of its selected workspace, else of its first (M11r: on the header; its rows
+    /// leave it out), and that workspace (the branch switcher opens for it).
+    pub branch: Option<String>,
+    pub branch_from: Option<WorkspaceId>,
+    /// How many of its workspaces wait for you ("N waiting" while it's collapsed).
+    pub waiting: usize,
+    /// Its first three workspaces' avatar colours and statuses (small avatars while collapsed).
+    pub faces: Vec<(TabColor, Status)>,
 }
 
 /// A workspace's row.
@@ -137,6 +151,12 @@ pub struct WorkspaceRow {
     /// A program other than the shell runs in its subject: idle, its mark is a filled dot, not
     /// a ring (M11i).
     pub running: bool,
+    /// The program's title when it says more than the name (M11r, `groups::extra_title`).
+    pub title: Option<String>,
+    /// In a folder's group: its header says the folder and the branch, so the row doesn't.
+    pub folder_group: bool,
+    /// In a folder's group: where its terminal is now, from the group's folder ("./src").
+    pub here: Option<String>,
 }
 
 /// The line under a workspace's name.
@@ -177,8 +197,24 @@ pub fn rows(
                 len,
                 collapsed,
             } => {
-                let statuses = sessions[first..first + len].iter().map(|s| s.status);
+                let inside = &sessions[first..first + len];
+                let statuses = inside.iter().map(|s| s.status);
+                let shown = inside
+                    .iter()
+                    .find(|s| active == Some(s.workspace))
+                    .or(inside.first());
                 SidebarRow::Header(HeaderRow {
+                    branch: shown.and_then(|s| s.branch).map(String::from),
+                    branch_from: shown.map(|s| s.workspace),
+                    waiting: inside
+                        .iter()
+                        .filter(|s| s.status == Status::Waiting)
+                        .count(),
+                    faces: inside
+                        .iter()
+                        .take(FACES)
+                        .map(|s| (avatar_color(s.color, s.label), s.status))
+                        .collect(),
                     label: groups::group_label(&key, &all),
                     key,
                     first,
@@ -208,6 +244,9 @@ pub fn rows(
                     branch: s.branch.map(String::from),
                     folder: s.folder.clone(),
                     running: s.running,
+                    title: groups::extra_title(s.label, s.title).map(String::from),
+                    folder_group: grouped && matches!(s.group, Some(GroupKey::Folder(_))),
+                    here: s.here.clone(),
                 })
             }
         })
@@ -245,6 +284,16 @@ pub fn home_relative(path: &Path, home: Option<&Path>) -> String {
         Some(rest) if rest.as_os_str().is_empty() => "~".into(),
         Some(rest) => format!("~/{}", rest.display()),
         None => path.display().to_string(),
+    }
+}
+
+/// Where `current` is, as a row in the group of folder `group` says it (2026-11-10): "./" at
+/// the group's folder, "./rest" under it, else the whole place (`home_relative`).
+pub fn relative_place(current: &Path, group: &Path, home: Option<&Path>) -> String {
+    match current.strip_prefix(group) {
+        Ok(rest) if rest.as_os_str().is_empty() => "./".into(),
+        Ok(rest) => format!("./{}", rest.display()),
+        Err(_) => home_relative(current, home),
     }
 }
 
@@ -351,6 +400,12 @@ pub enum LineTwo {
     Waiting(Option<String>),
     /// A script's note or progress label.
     Note(String),
+    /// The program's own title (M11r).
+    Title(String),
+    /// In a folder's group, idle or done: where its terminal is, from the group's folder.
+    Here(String),
+    /// Nothing else to say: its status in words (M11r: every row has its line, as the mockup).
+    State(&'static str),
     /// Where it is: the branch and the folder, each on its own line (`lines_under`).
     Place,
 }
@@ -364,35 +419,85 @@ pub fn line_two(row: &WorkspaceRow) -> Option<LineTwo> {
         Some(Sub::Question(q)) => Some(LineTwo::Waiting(Some(q.clone()))),
         Some(Sub::NeedsInput) => Some(LineTwo::Waiting(None)),
         Some(Sub::Note(note)) => Some(LineTwo::Note(note.clone())),
-        None => (row.branch.is_some() || row.folder.is_some()).then_some(LineTwo::Place),
+        None => Some(match &row.title {
+            Some(title) => LineTwo::Title(title.clone()),
+            // In a folder's group the header says where it is (M11r).
+            None if !row.folder_group && (row.branch.is_some() || row.folder.is_some()) => {
+                LineTwo::Place
+            }
+            // In a group: where it is now, but a working one says it works.
+            None => match &row.here {
+                Some(here) if row.folder_group && row.status != Status::Working => {
+                    LineTwo::Here(here.clone())
+                }
+                _ => LineTwo::State(state_words(row.status, row.running)),
+            },
+        }),
     }
 }
 
-/// How many lines a row has under its name: none, the one `line_two` says, or two when that is
-/// where it is and it knows both its branch and its folder (the branch, then the folder). No
-/// branch line outside a git repo.
-pub fn lines_under(row: &WorkspaceRow) -> usize {
-    match line_two(row) {
-        None => 0,
-        Some(LineTwo::Place) if row.branch.is_some() && row.folder.is_some() => 2,
-        Some(_) => 1,
+/// A row's status in words, when nothing else goes under its name (M11r).
+pub fn state_words(status: Status, running: bool) -> &'static str {
+    match status {
+        Status::Working => "Working\u{2026}",
+        Status::Waiting => NEEDS_INPUT,
+        Status::Done => "\u{2713} Done",
+        Status::Idle if running => "Running",
+        Status::Idle => "Idle",
     }
 }
 
-/// What a dragged row shows under its name, as tall as the row itself: its branch and its
-/// folder on their own lines when the row has both (`lines_under` is 2), else what it knows of
-/// its place on one line (`branch • folder` under a waiting row's single line, as before).
-pub fn place_lines(row: &WorkspaceRow) -> Vec<String> {
-    let (branch, folder) = (row.branch.as_deref(), row.folder.as_deref());
-    match lines_under(row) {
-        2 => [branch, folder]
+/// A workspace's avatar letters (M11r): the first letter (or digit) of its first two words,
+/// split at spaces, `-`, `_`, `.` and `/`, capitalised; one for a one-word name. A name with no
+/// letter or digit shows its first character; a blank one, nothing.
+pub fn initials(label: &str) -> String {
+    let words = label
+        .split(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | '.' | '/'))
+        .filter(|w| !w.is_empty());
+    let firsts: String = words
+        .filter_map(|w| w.chars().find(|c| c.is_alphanumeric()))
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect();
+    if firsts.is_empty() {
+        label.trim().chars().take(1).collect()
+    } else {
+        firsts
+    }
+}
+
+/// A workspace's avatar colour (M11r): its tab colour when you set one, else one of the tab
+/// colours but grey, picked from its name (FNV-1a), so a name keeps its colour across restarts.
+pub fn avatar_color(color: Option<TabColor>, label: &str) -> TabColor {
+    color.unwrap_or_else(|| {
+        let hash = label.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let picks: Vec<TabColor> = TabColor::ALL
             .into_iter()
-            .flatten()
-            .map(String::from)
-            .collect(),
-        _ if branch.is_some() || folder.is_some() => vec![fit_place(branch, folder, |_| true)],
-        _ => Vec::new(),
-    }
+            .filter(|&c| c != TabColor::Grey)
+            .collect();
+        picks[(hash % picks.len() as u64) as usize]
+    })
+}
+
+/// How many lines a row has under its name: the one `line_two` says (since M11r every row
+/// has one; where it is, out of a group, is one line: the branch, then the folder).
+pub fn lines_under(row: &WorkspaceRow) -> usize {
+    usize::from(line_two(row).is_some())
+}
+
+/// What a dragged row shows under its name: the words of its line two (`line_two`), one line.
+pub fn place_lines(row: &WorkspaceRow) -> Vec<String> {
+    let line = match line_two(row) {
+        None => return Vec::new(),
+        Some(LineTwo::NotLive) => NOT_LIVE.to_string(),
+        Some(LineTwo::Waiting(q)) => q.unwrap_or_else(|| NEEDS_INPUT.into()),
+        Some(LineTwo::Note(t) | LineTwo::Title(t) | LineTwo::Here(t)) => t,
+        Some(LineTwo::State(words)) => words.to_string(),
+        Some(LineTwo::Place) => fit_place(row.branch.as_deref(), row.folder.as_deref(), |_| true),
+    };
+    vec![line]
 }
 
 /// A row's height: its name line alone, or with the lines under it (`lines_under`).
@@ -601,12 +706,10 @@ fn card_band(part: CardPart, offset: f32, ui: &UiColors) -> Option<Div> {
             .right_0()
             .top(px(offset + top))
             .bottom(px(bottom - offset))
+            // Soft (M11r): the card's colour alone, no edge.
             .bg(hsla(ui.card))
-            .border_color(hsla(ui.card_border))
-            .border_l_1()
-            .border_r_1()
-            .when(opens, |d| d.border_t_1().rounded_t(px(CARD_RADIUS)))
-            .when(closes, |d| d.border_b_1().rounded_b(px(CARD_RADIUS))),
+            .when(opens, |d| d.rounded_t(px(CARD_RADIUS)))
+            .when(closes, |d| d.rounded_b(px(CARD_RADIUS))),
     )
 }
 
@@ -693,18 +796,37 @@ pub(crate) const ROW_INSET: f32 = 6.0;
 const ROW_PAD: f32 = 8.0;
 /// Between rows; above every group header but the first row, more.
 const ROW_GAP: f32 = 4.0;
-const GROUP_GAP: f32 = 16.0;
+const GROUP_GAP: f32 = 10.0;
 /// Above the list, under the top band (the title isn't crowded by the first group).
 const LIST_TOP: f32 = 10.0;
 /// Above and below a row's text: `ui_tokens`' row heights are its lines plus twice this.
 #[cfg(test)]
 const ROW_PAD_Y: f32 = 7.0;
+/// A workspace's avatar (M11r): its side; a collapsed group shows up to `FACES` small ones.
+pub(crate) const AVATAR: f32 = 28.0;
+const AVATAR_RADIUS: f32 = 8.0;
+const AVATAR_TEXT: f32 = 11.0;
+/// Between the avatar and the name.
+const AVATAR_GAP: f32 = 10.0;
+/// The status badge: a circle of the row's colour round the mark, reaching this far past the
+/// avatar's corner; the mark in it.
+const BADGE: f32 = 14.0;
+const BADGE_OUT: f32 = 3.0;
+const BADGE_DOT: f32 = 6.0;
+const FACES: usize = 3;
+/// A collapsed group's small avatars, and how much each overlaps the one before.
+const FACE: f32 = 14.0;
+const FACE_OVERLAP: f32 = 4.0;
+/// A group header's letter tile, and the most its branch takes.
+const TILE: f32 = 18.0;
+const BRANCH_MAX: f32 = 110.0;
+const BRANCH_SHRINK: f32 = 20.0;
 /// A row's (and a header's) corners, as the panes' cards.
 const ROW_RADIUS: f32 = 8.0;
 /// A group's card (2026-11-10, your call: "make it cool so I can tell the workspaces are
 /// grouped"): the room inside it around its header and rows, and its corners.
 const CARD_PAD: f32 = 4.0;
-const CARD_RADIUS: f32 = 10.0;
+const CARD_RADIUS: f32 = 12.0;
 /// The slot a status mark (or a header's chevron) sits in; a waiting mark fills it.
 pub(crate) const MARK_SLOT: f32 = 14.0;
 /// The space between the mark and the name, and before the age.
@@ -712,7 +834,6 @@ const SLOT_GAP: f32 = 8.0;
 /// A row's name line, and the small line under it (M11i).
 /// The branch and folder lines' glyphs (the 12 px box `tab_bar::glyph` draws in) and the space
 /// after them (2026-11-10, your call: "add icon git and icon folder as well").
-const PLACE_ICON: f32 = 12.0;
 const PLACE_ICON_GAP: f32 = 4.0;
 /// The branch button's pill: its side padding (it reaches that far left of the text column,
 /// so the branch glyph stays in line with the folder's).
@@ -744,8 +865,16 @@ const PIN: &str = "📌";
 /// the other (M11i).
 const NEEDS_INPUT: &str = "Needs input";
 const NOT_LIVE: &str = "not live";
-/// A row's × (a little bigger than the mark slot it sits on), and the rows' hover group.
-const CLOSE_BUTTON: f32 = 16.0;
+/// A waiting row's button to its terminal (M11r).
+const OPEN: &str = "Open";
+/// The search button above the list (M11r): its height, words and keys.
+const SEARCH: f32 = 30.0;
+const SEARCH_TEXT: &str = "Jump to a workspace\u{2026}";
+const SEARCH_KEYS: &str = "\u{2318}P";
+/// The footer's New button (M11r).
+const NEW_TEXT: &str = "New Fuxxpace";
+const NEW_KEYS: &str = "\u{2318}N";
+/// The rows' hover group.
 const ROW_GROUP: &str = "sidebar-row";
 /// The + menu's width.
 const MENU_WIDTH: f32 = 230.0;
@@ -757,7 +886,7 @@ const CHEVRON_TURN: Duration = Duration::from_millis(120);
 const HINT_TITLE: &str = "Three things to know";
 const HINT_LINES: [&str; 3] = [
     "⌘N workspace · ⌘T tab · ⇧⌘S SSH · ⇧⌘B browser",
-    "Rings: spinning = working, pulsing = needs you, ✓ = done",
+    "Badges: yellow = working, red = needs you, green = done",
     "⇧⌘U jumps to what needs you",
 ];
 
@@ -870,47 +999,43 @@ struct DragPreview {
     width: f32,
     /// As tall as the row (`row_height`), so it fills the gap the row leaves and opens.
     height: f32,
+    /// Its avatar's colour (M11r).
+    color: Option<TabColor>,
 }
 
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let mark = match self.status {
-            Status::Idle => status_mark::idle_mark(self.running, &ui).into_any_element(),
-            status => {
-                let size = px(mark_size(status));
-                status_mark::mark_on(status, &ui, 0.0, None, size, ui.row_active).into_any_element()
-            }
-        };
-        let name_line = div()
+        let badge = badge(self.status, self.running, ui, ui.row_active);
+        let face = avatar(&self.label, self.color, ui, AVATAR)
             .flex()
             .items_center()
-            .h(px(NAME_LINE))
-            .child(mark_slot(mark))
-            .child(
-                div()
-                    .flex_1()
-                    .ml(px(SLOT_GAP))
-                    .min_w(px(0.0))
-                    .truncate()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(self.label.clone()),
-            );
+            .justify_center()
+            .child(initials(&self.label))
+            .child(badge);
+        let name_line = div().flex().items_center().h(px(NAME_LINE)).child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(self.label.clone()),
+        );
         let place = self.place.iter().cloned().map(|place| {
             div()
                 .h(px(SUB_LINE))
-                .pl(px(MARK_SLOT + SLOT_GAP))
                 .text_size(px(text::META))
                 .line_height(px(SUB_LINE))
                 .text_color(hsla(ui.text_faint))
                 .truncate()
                 .child(place)
         });
+        let lines = div().flex_1().min_w(px(0.0)).flex().flex_col();
         div()
             .flex()
-            .flex_col()
-            .justify_center()
-            .w(px(self.width - 2.0 * ROW_INSET))
+            .items_center()
+            .gap(px(AVATAR_GAP))
+            .w(px(self.width - 2.0 * (ROW_INSET + CARD_PAD)))
             .h(px(self.height))
             .px(px(ROW_PAD))
             .rounded(px(ROW_RADIUS))
@@ -921,11 +1046,13 @@ impl Render for DragPreview {
             .border_color(hsla(ui.panel_border))
             .text_size(px(text::NAME))
             .text_color(hsla(ui.text))
-            .child(name_line)
-            .children(
-                place
-                    .enumerate()
-                    .map(|(i, line)| line.when(i == 0, |l| l.mt(px(NAME_GAP)))),
+            .child(face)
+            .child(
+                lines.child(name_line).children(
+                    place
+                        .enumerate()
+                        .map(|(i, line)| line.when(i == 0, |l| l.mt(px(NAME_GAP)))),
+                ),
             )
     }
 }
@@ -957,6 +1084,70 @@ pub(crate) fn mark_slot(mark: impl IntoElement) -> Div {
         .items_center()
         .justify_center()
         .child(mark)
+}
+
+/// An avatar's square (M11r): `side` across, on its colour (`avatar_color`), its letters'
+/// colour and weight set for the children (the letters, or nothing for a small one).
+pub(crate) fn avatar(label: &str, color: Option<TabColor>, ui: UiColors, side: f32) -> Div {
+    let (top, bottom, ink) = ui.avatars[avatar_color(color, label) as usize];
+    let radius = if side >= AVATAR { AVATAR_RADIUS } else { 4.0 };
+    div()
+        .flex_none()
+        .relative()
+        .size(px(side))
+        .rounded(px(radius))
+        // Lit at its top left (M11r, as the mockup).
+        .bg(linear_gradient(
+            135.0,
+            linear_color_stop(hsla(top), 0.0),
+            linear_color_stop(hsla(bottom), 1.0),
+        ))
+        .text_color(hsla(ink))
+        .text_size(px(AVATAR_TEXT))
+        .font_weight(FontWeight::BOLD)
+}
+
+/// A row's status badge (M11r, as the mockup): a dot in a ring of the row's `surface` over the
+/// avatar's bottom-right corner, in the status colour (working: with a soft halo; idle: dim
+/// while a program runs, fainter at the prompt). Drawn still: no animation, so no redraws.
+fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb) -> Div {
+    let color = match status {
+        Status::Working => ui.ring_working,
+        Status::Waiting => ui.ring_waiting,
+        Status::Done => ui.ring_done,
+        Status::Idle if running => ui.text_dim,
+        Status::Idle => ui.text_faint,
+    };
+    let halo = (status == Status::Working).then(|| mix(surface, color, 0.35));
+    div()
+        .absolute()
+        .right(px(-BADGE_OUT))
+        .bottom(px(-BADGE_OUT))
+        .size(px(BADGE))
+        .rounded_full()
+        .bg(hsla(halo.unwrap_or(surface)))
+        .border_2()
+        .border_color(hsla(surface))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().size(px(BADGE_DOT)).rounded_full().bg(hsla(color)))
+}
+
+/// A shortcut's keys in a small cap (the search and New buttons, M11r).
+fn keycap(keys: &'static str, ui: UiColors) -> Div {
+    div()
+        .flex_none()
+        .px(px(5.0))
+        .h(px(16.0))
+        .flex()
+        .items_center()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(hsla(ui.sidebar_border))
+        .text_size(px(text::META - 1.0))
+        .text_color(hsla(ui.text_faint))
+        .child(keys)
 }
 
 /// A tab colour's dot.
@@ -992,10 +1183,11 @@ fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
 }
 
 impl Workspace {
-    /// The terminal a row's branch is read from: the workspace's first terminal (as
-    /// `sidebar_rows` reads it), so the branch switcher opens for the one that was clicked.
+    /// The terminal a row's (and a header's) branch is read from: the workspace's focused
+    /// terminal, else its first (as `sidebar_rows` reads it), so the branch switcher opens for
+    /// the one whose branch was clicked.
     pub(crate) fn branch_terminal(&self, ws: WorkspaceId) -> Option<u64> {
-        self.model.terminals(ws).first().copied()
+        self.named_terminal(ws)
     }
 
     /// The sidebar's rows as they are now: one per workspace, in display order.
@@ -1014,21 +1206,32 @@ impl Workspace {
             .collect();
         // Where each is: its first terminal's folder (as last looked up, else the one it started
         // in) and the branch there; an SSH one's host.
+        let mut heres: Vec<Option<String>> = Vec::with_capacity(subjects.len());
         let places: Vec<(Option<&str>, Option<String>)> = subjects
             .iter()
             .map(|&(ws, _)| {
-                let first = self.model.terminals(ws).first().copied();
+                // Its focused terminal's (2026-11-10, your report: the branch didn't follow the
+                // terminal you were in), as `branch_terminal`.
+                let first = self.branch_terminal(ws);
                 let Some(s) = first.and_then(|id| items.iter().find(|s| s.id == id)) else {
+                    heres.push(None);
                     return (None, None);
                 };
                 let found = self.places.folder(s.id);
                 if let Some(ssh) = &s.ssh {
+                    heres.push(None);
                     return (None, Some(remote_place(&ssh.host, found)));
                 }
                 let Some(folder) = found.or(s.project.as_deref()) else {
+                    heres.push(None);
                     return (None, None);
                 };
-                let shown = home_relative(folder, self.places.home.as_deref());
+                let home = self.places.home.as_deref();
+                heres.push(match self.workspace_group(ws) {
+                    Some(GroupKey::Folder(group)) => Some(relative_place(folder, &group, home)),
+                    _ => None,
+                });
+                let shown = home_relative(folder, home);
                 (self.places.branch(folder), Some(shown))
             })
             .collect();
@@ -1036,7 +1239,8 @@ impl Workspace {
             .iter()
             .zip(&labels)
             .zip(places)
-            .map(|((&(ws, subject), label), (branch, folder))| {
+            .enumerate()
+            .map(|(i, ((&(ws, subject), label), (branch, folder)))| {
                 let s = subject.map(|i| &items[i]);
                 WorkspaceFacts {
                     workspace: ws,
@@ -1059,6 +1263,11 @@ impl Workspace {
                         self.named_terminal(ws),
                         |id| matches!(self.programs.state(id), ProgramState::Running(_)),
                     ),
+                    title: self
+                        .named_terminal(ws)
+                        .and_then(|id| items.iter().find(|s| s.id == id))
+                        .and_then(|s| s.title.as_deref()),
+                    here: heres.get(i).cloned().flatten(),
                 }
             })
             .collect();
@@ -1283,6 +1492,32 @@ impl Workspace {
             ))
             .into_any_element();
         let band = self.render_top_band("sidebar-band", Some(label), window, cx);
+        // Jump to a workspace (M11r): the ⌘P list, from the top of the sidebar.
+        let search = div()
+            .id("sidebar-search")
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .mx(px(ROW_INSET + CARD_PAD))
+            .mt(px(4.0))
+            .h(px(SEARCH))
+            .px(px(10.0))
+            .rounded(px(ROW_RADIUS))
+            .bg(hsla(ui.row_hover))
+            .text_size(px(text::META + 1.0))
+            .text_color(hsla(ui.text_faint))
+            .cursor_pointer()
+            .hover(|s| s.bg(hsla(ui.row_active)).text_color(hsla(ui.text_dim)))
+            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                cx.stop_propagation()
+            })
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_palette(Scope::Workspaces, window, cx)
+            }))
+            .child(glyph(Glyph::Search, ui.text_faint))
+            .child(div().flex_1().min_w(px(0.0)).truncate().child(SEARCH_TEXT))
+            .child(keycap(SEARCH_KEYS, ui));
         let list = div()
             .id("sidebar-rows")
             .flex()
@@ -1337,6 +1572,7 @@ impl Workspace {
                 this.drop_workspace(dragged.workspace, cx)
             }))
             .children(band)
+            .child(search)
             .child(list)
             .children(notice)
             .children(hint)
@@ -1376,15 +1612,117 @@ impl Workspace {
             }
             _ => chevron(angle, color).into_any_element(),
         };
-        let mark = header.mark.map(|status| {
-            div().flex_none().ml(px(6.0)).child(status_mark::mark(
-                status,
-                &ui,
-                self.phase,
-                None,
-                px(STATUS_MARK),
-            ))
+        // Closed: who's inside (small avatars) and how many wait, else its most urgent mark.
+        let closed_marks = header.collapsed.then(|| {
+            // Overlapping, each drawn over the one before (placed: a negative margin breaks the
+            // row's layout).
+            let n = header.faces.len() as f32;
+            let faces = div()
+                .flex_none()
+                .relative()
+                .w(px((n * (FACE - FACE_OVERLAP) + FACE_OVERLAP).max(0.0)))
+                .h(px(FACE))
+                .children(header.faces.iter().enumerate().map(|(i, &(color, _))| {
+                    let (fill, _, _) = ui.avatars[color as usize];
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(px(i as f32 * (FACE - FACE_OVERLAP)))
+                        .size(px(FACE))
+                        .rounded(px(5.0))
+                        .bg(hsla(fill))
+                        .border_2()
+                        .border_color(hsla(ui.card))
+                }));
+            let status = (header.waiting == 0)
+                .then_some(header.mark)
+                .flatten()
+                .filter(|s| *s != Status::Idle)
+                .map(|status| {
+                    div().flex_none().ml(px(6.0)).child(status_mark::mark(
+                        status,
+                        &ui,
+                        self.phase,
+                        None,
+                        px(STATUS_MARK),
+                    ))
+                });
+            let waiting = (header.waiting > 0).then(|| {
+                div()
+                    .flex_none()
+                    .ml(px(6.0))
+                    .px(px(6.0))
+                    .h(px(16.0))
+                    .flex()
+                    .items_center()
+                    .rounded_full()
+                    .whitespace_nowrap()
+                    .bg(hsla(ui.waiting_tint))
+                    .text_size(px(text::META))
+                    .text_color(hsla(ui.ring_waiting))
+                    .child(format!("{} waiting", header.waiting))
+            });
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .ml(px(6.0))
+                .child(faces)
+                .children(waiting)
+                .children(status)
         });
+        // What the group is: a folder (open while the group is), or a host's globe (2026-11-10,
+        // your call: "ganti avatar group title jadi ikon folder").
+        let tile = div()
+            .flex_none()
+            .size(px(TILE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(glyph(
+                match (&header.key, header.collapsed) {
+                    (GroupKey::Host(_), _) => Glyph::Globe,
+                    (GroupKey::Folder(_), true) => Glyph::Folder,
+                    (GroupKey::Folder(_), false) => Glyph::FolderOpen,
+                },
+                ui.text_dim,
+            ));
+        // The branch (M11r: up from the rows), a button to the branch switcher as it was there.
+        let branch = header
+            .branch
+            .clone()
+            .zip(header.branch_from)
+            .map(|(b, ws)| {
+                div()
+                    .id(("header-branch", group_id(&header.key) as usize))
+                    // Short of room it gives way first, the group's name after it.
+                    .flex_shrink(BRANCH_SHRINK)
+                    .min_w(px(0.0))
+                    .max_w(px(BRANCH_MAX))
+                    .ml(px(6.0))
+                    .px(px(BRANCH_CHIP_PAD))
+                    .h(px(SUB_LINE))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .rounded(px(4.0))
+                    .overflow_hidden()
+                    .text_size(px(text::META))
+                    .text_color(hsla(ui.text_faint))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(ui.card_hover)).text_color(hsla(ui.text)))
+                    .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation()
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if let Some(terminal) = this.branch_terminal(ws) {
+                            this.open_branch_switcher(terminal, window, cx);
+                        }
+                    }))
+                    .child(glyph(Glyph::Branch, ui.text_faint))
+                    .child(div().min_w(px(0.0)).truncate().child(b))
+            });
         let header_row = div()
             .id(("group", group_id(&header.key)))
             .group("sidebar-header")
@@ -1392,36 +1730,28 @@ impl Workspace {
             .items_center()
             .h(px(GROUP_HEADER))
             .mx(px(CARD_PAD))
-            .px(px(ROW_PAD - CARD_PAD))
+            .px(px(ROW_PAD - CARD_PAD + 2.0))
             .rounded(px(ROW_RADIUS))
             .cursor_pointer()
             .hover(|style| style.bg(hsla(ui.card_hover)))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&key, cx)))
-            .child(chevron)
-            // What the card holds: a folder (open while the group is), or a host's globe.
-            .child(div().flex_none().ml(px(PLACE_ICON_GAP)).child(glyph(
-                match (&header.key, header.collapsed) {
-                    (GroupKey::Host(_), _) => Glyph::Globe,
-                    (GroupKey::Folder(_), true) => Glyph::Folder,
-                    (GroupKey::Folder(_), false) => Glyph::FolderOpen,
-                },
-                ui.text_dim,
-            )))
+            .child(tile)
             .child(
                 div()
-                    .flex_1()
+                    .flex_shrink(1.0)
                     .min_w(px(0.0))
-                    .ml(px(PLACE_ICON_GAP + 2.0))
+                    .ml(px(8.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis_start()
                     .text_size(px(text::GROUP_HEADER))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .font_features(small_caps())
                     .text_color(hsla(ui.text_dim))
                     .child(header.label.clone()),
             )
-            .children(mark)
+            .children(branch)
+            .child(div().flex_1())
+            .children(closed_marks)
             // The count, flush right like the rows' ages; on hover the + takes its place.
             .child(
                 div()
@@ -1439,7 +1769,10 @@ impl Workspace {
                             .font_features(tabular())
                             .text_color(hsla(ui.text_faint))
                             .group_hover("sidebar-header", |style| style.invisible())
-                            .child(header.count.to_string()),
+                            // Closed, its small avatars say it (M11r).
+                            .when(!header.collapsed, |count| {
+                                count.child(header.count.to_string())
+                            }),
                     )
                     .child(
                         div()
@@ -1463,7 +1796,8 @@ impl Workspace {
                                 this.add_to_group(&add, window, cx)
                             })),
                     ),
-            );
+            )
+            .child(div().flex_none().ml(px(2.0)).child(chevron));
         div()
             .flex_none()
             .when(!first, |gap| gap.pt(px(GROUP_GAP - ROW_GAP)))
@@ -1507,13 +1841,11 @@ impl Workspace {
         // In a group's card (2026-11-10): inset in it, on its colour, with the card's own hover
         // and selection.
         let in_card = part != CardPart::Out;
-        let inset = if in_card { CARD_PAD } else { 0.0 };
+        // Out of a card too (M11r), so every avatar is in line.
+        let inset = CARD_PAD;
+        // Selected: a neutral lift of what it sits on (M11r, as the mockup), not the accent.
         let fill = if row.active {
-            Some(if in_card {
-                ui.card_selected
-            } else {
-                ui.row_selected
-            })
+            Some(if in_card { ui.card_lift } else { ui.row_active })
         } else if waiting {
             Some(ui.waiting_tint)
         } else {
@@ -1569,15 +1901,7 @@ impl Workspace {
             .flex()
             .items_center()
             .h(px(NAME_LINE))
-            .child(self.close_slot(ws, session, row.running, ui, surface, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .ml(px(SLOT_GAP))
-                    .flex()
-                    .child(name),
-            )
+            .child(div().flex_1().min_w(px(0.0)).flex().child(name))
             .when_some(age, |line, age| {
                 line.child(meta(age.into_any_element()).ml(px(SLOT_GAP)))
             })
@@ -1592,9 +1916,6 @@ impl Workspace {
                         .bg(hsla(ui.text_dim)),
                 )
             })
-            .when_some(row.color, |line, color| {
-                line.child(color_dot(color, ui).ml(px(META_GAP)))
-            })
             // The shortcut only while the row is hovered, to keep the rows quiet (its room is
             // kept, so the name doesn't shift); ⌘1–⌘9 work either way.
             .when_some(shortcut_label(row.index), |line, keys| {
@@ -1604,13 +1925,15 @@ impl Workspace {
                         .group_hover(ROW_GROUP, |s| s.visible()),
                 )
             });
-        // Under the name, level with it: one line, the first that applies (`line_two`).
+        // Under the name, level with it: one line, the first that applies (`line_two`), in the
+        // terminal's font (M11r, as the mockup).
+        let mono = cx.global::<Appearance>().font.family.clone();
         let under = || {
             div()
                 .flex()
                 .items_center()
                 .h(px(SUB_LINE))
-                .pl(px(MARK_SLOT + SLOT_GAP))
+                .font_family(mono.clone())
                 .text_size(px(text::META))
                 .line_height(px(SUB_LINE))
         };
@@ -1625,81 +1948,102 @@ impl Workspace {
         let row_width = self.sidebar.width - 2.0 * (ROW_INSET + inset);
         let second = line_two(row).map(|line| match line {
             LineTwo::NotLive => under().child(text(NOT_LIVE.into(), ui.text_faint)),
-            // "Needs input" in the waiting colour, then the question cut at its end (left out
-            // where the row is too narrow: it's in ⌘P and the notification).
+            // The question in the waiting colour (cut at its end; "Needs input" when none was
+            // found, or the row is too narrow: it's in ⌘P and the notification), then Open.
             LineTwo::Waiting(question) => under()
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(hsla(ui.ring_waiting))
-                        .child(NEEDS_INPUT),
-                )
-                .when_some(question.filter(|_| shows_question(row_width)), |line, q| {
-                    line.child(text(
-                        format!("{}{q}", crate::status_bar::SEPARATOR),
-                        ui.text_dim,
-                    ))
-                }),
-            LineTwo::Note(note) => under().child(text(note, ui.text_faint)),
-            // The branch on its own line, cut at its end when long; the folder under it, short
-            // of room losing its start (its own name stays): `fit_place`, measured as drawn.
-            LineTwo::Place => {
-                // The folder line's text starts after its glyph.
-                let room =
-                    row_width - 2.0 * ROW_PAD - MARK_SLOT - SLOT_GAP - PLACE_ICON - PLACE_ICON_GAP;
-                let wrapper = std::cell::RefCell::new(
-                    cx.text_system()
-                        .line_wrapper(TextStyle::default().font(), px(text::META)),
-                );
-                // As the drawn line decides whether to cut itself (`truncate`).
-                let fits = |s: &str| {
-                    wrapper
-                        .borrow_mut()
-                        .should_truncate_line(s, px(room), "…", TruncateFrom::End)
-                        .is_none()
-                };
-                // The branch reads as a button: the branch glyph (as in the status bar) and the
-                // name in `text_dim` (the folder is `text_faint`); on hover a pill and `text`.
-                // Only the glyph and the name take the click, not the rest of the line; a name
-                // too long for the row is cut and then the button spans the line (2026-11-10).
-                // Clicking it opens the branch switcher (not a row click or a drag).
-                let branch = row.branch.clone().map(|b| {
-                    under().child(
+                .child(text(
+                    question
+                        .filter(|_| shows_question(row_width))
+                        .unwrap_or_else(|| NEEDS_INPUT.into()),
+                    ui.ring_waiting,
+                ))
+                // Open (M11r): to the terminal that waits, as ⇧⌘U would.
+                .when_some(row.subject, |line, index| {
+                    line.child(
                         div()
-                            .id(("row-branch", ws.0 as usize))
+                            .id(("row-open", ws.0 as usize))
+                            .flex_none()
+                            .ml(px(META_GAP))
+                            .px(px(7.0))
+                            .h(px(SUB_LINE + 2.0))
                             .flex()
                             .items_center()
-                            .gap(px(PLACE_ICON_GAP))
-                            .min_w(px(0.0))
-                            .h(px(SUB_LINE))
-                            .px(px(BRANCH_CHIP_PAD))
-                            .ml(px(-BRANCH_CHIP_PAD))
-                            .rounded(px(4.0))
-                            .overflow_hidden()
-                            .text_color(hsla(ui.text_dim))
+                            .rounded(px(6.0))
+                            .bg(hsla(ui.ring_waiting))
+                            .text_color(hsla(ui.sidebar_background))
+                            .font_family(SharedString::from(".SystemUIFont"))
+                            .font_weight(FontWeight::SEMIBOLD)
                             .cursor_pointer()
-                            .hover(move |s| s.bg(hsla(ui.row_active)).text_color(hsla(ui.text)))
+                            .hover(|s| s.opacity(0.85))
                             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                                 cx.stop_propagation()
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
-                                if let Some(terminal) = this.branch_terminal(ws) {
-                                    this.open_branch_switcher(terminal, window, cx);
-                                }
+                                this.select(index, window, cx);
+                                this.close_menus();
+                                this.focus_active(window, cx);
                             }))
-                            .child(glyph(Glyph::Branch, ui.text_dim))
-                            .child(div().min_w(px(0.0)).truncate().child(b)),
+                            .child(OPEN),
                     )
-                });
-                // The folder: a folder glyph, then the path (not a button).
-                let folder = row.folder.as_deref().map(|f| {
-                    under()
+                }),
+            LineTwo::Note(note) => under().child(text(note, ui.text_faint)),
+            LineTwo::Title(title) => under().child(text(title, ui.text_faint)),
+            LineTwo::State(words) => under().child(text(words.into(), ui.text_faint)),
+            // Where it is in its group's folder, losing its start when long.
+            LineTwo::Here(here) => under().child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis_start()
+                    .text_color(hsla(ui.text_faint))
+                    .child(here),
+            ),
+            // Out of a group: where it is on one line, the branch (a button to the branch
+            // switcher; it gives way first) then the folder (losing its start).
+            LineTwo::Place => {
+                let branch = row.branch.clone().map(|b| {
+                    div()
+                        .id(("row-branch", ws.0 as usize))
+                        .flex_shrink(BRANCH_SHRINK)
+                        .min_w(px(0.0))
+                        .max_w(relative(0.5))
+                        .flex()
+                        .items_center()
                         .gap(px(PLACE_ICON_GAP))
-                        .child(glyph(Glyph::Folder, ui.text_faint))
-                        .child(text(fit_place(None, Some(f), fits), ui.text_faint))
+                        .mr(px(META_GAP))
+                        .px(px(BRANCH_CHIP_PAD))
+                        .h(px(SUB_LINE))
+                        .rounded(px(4.0))
+                        .overflow_hidden()
+                        .text_color(hsla(ui.text_dim))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hsla(ui.row_active)).text_color(hsla(ui.text)))
+                        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation()
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(terminal) = this.branch_terminal(ws) {
+                                this.open_branch_switcher(terminal, window, cx);
+                            }
+                        }))
+                        .child(glyph(Glyph::Branch, ui.text_dim))
+                        .child(div().min_w(px(0.0)).truncate().child(b))
                 });
-                div().flex().flex_col().children(branch).children(folder)
+                let folder = row.folder.clone().map(|f| {
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis_start()
+                        .text_color(hsla(ui.text_faint))
+                        .child(f)
+                });
+                under().children(branch).children(folder)
             }
         });
         let (source, tab_source) = (self.sidebar.drag_source.clone(), self.tab_drag.clone());
@@ -1710,6 +2054,7 @@ impl Workspace {
             running: row.running,
             width: self.sidebar.width,
             height: row_height(row),
+            color: row.color,
         };
         // The program's own title, under the name, when it says more (M11i).
         let tip = self.workspace_tip(ws);
@@ -1722,13 +2067,18 @@ impl Workspace {
             .right(px(inset))
             .h_full()
             .flex()
-            .flex_col()
-            .justify_center()
+            .items_center()
+            .gap(px(AVATAR_GAP))
             .px(px(ROW_PAD))
             .rounded(px(ROW_RADIUS))
             .text_size(px(text::NAME))
             .text_color(hsla(ui.text))
             .when_some(fill, |row, fill| row.bg(hsla(fill)))
+            // Waiting: edged in the waiting colour too (M11r).
+            .when(waiting, |row| {
+                row.border_1()
+                    .border_color(hsla(mix(ui.waiting_tint, ui.ring_waiting, 0.45)))
+            })
             .when_some(hover, |row, hover| {
                 row.hover(move |style| style.bg(hsla(hover)))
             })
@@ -1786,8 +2136,16 @@ impl Workspace {
                 let here = |at| at == TabDrop::Workspace(ws);
                 this.drop_tab(dragged.tab, here, window, cx);
             }))
-            .child(name_line)
-            .children(second.map(|lines| lines.mt(px(NAME_GAP))))
+            .child(self.avatar_slot(ws, row, session, ui, surface, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(name_line)
+                    .children(second.map(|lines| lines.mt(px(NAME_GAP)))),
+            )
             // The progress bar: along the bottom edge (a compact row has 1 pt under its line 2),
             // as wide as the percent.
             .when_some(row.progress, |row_el, percent| {
@@ -1927,45 +2285,34 @@ impl Workspace {
         }
     }
 
-    /// A row's mark slot: its session's status mark (idle, or a workspace with no terminal:
-    /// a dot while a program runs there, `running`, else a ring), or while the row is hovered
-    /// a × in its place that closes the workspace (asking first when it has 2+ terminals).
-    fn close_slot(
+    /// A row's avatar (M11r): its letters on its colour, its session's status mark as a badge on
+    /// the bottom-right corner (idle: a dot while a program runs, else none), and while the row
+    /// is hovered a × over the letters that closes the workspace (asking first when it has 2+
+    /// terminals).
+    #[allow(clippy::too_many_arguments)]
+    fn avatar_slot(
         &self,
         ws: WorkspaceId,
+        row: &WorkspaceRow,
         session: Option<&Session>,
-        running: bool,
         ui: UiColors,
         surface: Rgb,
         cx: &mut Context<Self>,
     ) -> Div {
-        let mark = match session {
-            Some(session) if session.status != Status::Idle => {
-                self.session_mark("row", session, ui, surface)
-            }
-            _ => status_mark::idle_mark(running, &ui).into_any_element(),
-        };
-        let mark = div()
+        let status = session.map_or(Status::Idle, |s| s.status);
+        let badge = badge(status, row.running, ui, surface);
+        let (fill, _, ink) = ui.avatars[avatar_color(row.color, &row.label) as usize];
+        let close = div()
+            .id(("row-close", ws.0 as usize))
             .absolute()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
-            .child(mark)
-            .group_hover(ROW_GROUP, |s| s.invisible());
-        let close = div()
-            .id(("row-close", ws.0 as usize))
-            .absolute()
-            .top(px(-(CLOSE_BUTTON - MARK_SLOT) / 2.0))
-            .left(px(-(CLOSE_BUTTON - MARK_SLOT) / 2.0))
-            .size(px(CLOSE_BUTTON))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(4.0))
-            .text_size(px(14.0))
-            .text_color(hsla(ui.text_dim))
-            .hover(move |s| s.bg(hsla(ui.panel_hover)).text_color(hsla(ui.text)))
+            .rounded(px(AVATAR_RADIUS))
+            .text_size(px(16.0))
+            .text_color(hsla(ink))
+            .hover(move |s| s.bg(hsla(mix(fill, ink, 0.18))))
             .child("×")
             .invisible()
             .group_hover(ROW_GROUP, |s| s.visible())
@@ -1973,12 +2320,19 @@ impl Workspace {
                 cx.stop_propagation(); // not also a click on the row
                 this.close_workspace(ws, window, cx)
             }));
-        div()
-            .flex_none()
-            .relative()
-            .size(px(MARK_SLOT))
-            .child(mark)
+        avatar(&row.label, row.color, ui, AVATAR)
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(initials(&row.label))
+                    .group_hover(ROW_GROUP, |s| s.invisible()),
+            )
             .child(close)
+            .child(badge)
     }
 
     /// The pointer moved during a row drag: while it's over the list and the row's copy is over
@@ -2181,18 +2535,28 @@ impl Workspace {
             .px(px(ROW_INSET))
             .border_t_1()
             .border_color(hsla(ui.sidebar_border))
+            // "+ New Fuxxpace ⌘N" (M11r): the + menu, as the + was.
             .child(
                 button("sidebar-new")
                     .group("sidebar-new")
-                    .when(open, |b| b.bg(hsla(ui.row_hover)))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .justify_start()
+                    .gap(px(7.0))
+                    // The + where it was, in the middle of a footer button's room.
+                    .px(px(6.0))
+                    .bg(hsla(if open { ui.row_active } else { ui.row_hover }))
+                    .text_size(px(text::META + 1.0))
+                    .text_color(hsla(ui.text_dim))
                     .child(footer_icon(Glyph::Plus, ui, "sidebar-new", open))
+                    .child(div().flex_1().min_w(px(0.0)).truncate().child(NEW_TEXT))
+                    .child(keycap(NEW_KEYS, ui))
                     .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("New\u{2026}".into())).into() })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.sidebar.new_menu = !this.sidebar.new_menu;
                         cx.notify();
                     })),
             )
-            .child(div().flex_1())
             .child(
                 button("sidebar-notifications")
                     .group(BELL_GROUP)
@@ -2516,6 +2880,8 @@ mod tests {
             branch: None,
             folder: None,
             running: false,
+            title: None,
+            here: None,
         }
     }
 
@@ -3098,73 +3464,45 @@ mod tests {
         assert_eq!(home_relative(Path::new("/Users/me/x"), None), "/Users/me/x");
     }
 
+    /// Every row has one line under its name (M11r, as the mockup): what it waits on, a note,
+    /// the program's title, where it is (out of a group: the branch then the folder, on one
+    /// line), else its status in words. So every row is two lines, 52 pt.
     #[test]
-    fn a_row_grows_to_two_lines_for_where_it_is_or_what_it_waits_on() {
-        let now = Instant::now();
-        let mut placed = facts("api", Status::Idle, now, None);
-        placed.folder = Some("~/api".into());
-        let mut waiting = facts("claude", Status::Waiting, now, None);
-        waiting.folder = Some("~/api".into());
-        waiting.branch = Some("main");
-        let plain_waiting = facts("agent", Status::Waiting, now, None);
-        let plain = facts("Browser", Status::Idle, now, None);
-        let rows = rows(
-            &numbered(vec![plain, placed, plain_waiting, waiting]),
-            &[],
-            None,
-            &[],
-            now,
-        );
-        let heights: Vec<f32> = rows.iter().map(|r| row_height(session(r))).collect();
-        // Whatever is under the name, it's one line (the waiting one was 56 pt with both).
-        assert_eq!(
-            heights,
-            [
-                SIDEBAR_ROW,
-                SIDEBAR_ROW_TWO,
-                SIDEBAR_ROW_TWO,
-                SIDEBAR_ROW_TWO
-            ]
-        );
-    }
-
-    #[test]
-    fn a_row_in_a_repo_shows_its_branch_and_its_folder_on_their_own_lines() {
-        assert_eq!(
-            SIDEBAR_ROW_THREE, 68.0,
-            "18, 4 under the name, 16 + 16, and 7 above and below"
-        );
+    fn every_row_has_one_line_under_its_name() {
         let now = Instant::now();
         let under = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
             let row = session(&rows[0]);
-            (lines_under(row), row_height(row))
+            (line_two(row), lines_under(row), row_height(row))
         };
-        // In a repo: the branch, then the folder under it.
+        let two = SIDEBAR_ROW_TWO;
         let mut both = facts("api", Status::Idle, now, None);
         both.folder = Some("~/api".into());
         both.branch = Some("main");
-        assert_eq!(under(both), (2, SIDEBAR_ROW_THREE));
-        // Not in a repo: no branch line, the folder alone.
-        let mut folder_only = facts("api", Status::Idle, now, None);
-        folder_only.folder = Some("/tmp/scratch".into());
-        assert_eq!(under(folder_only), (1, SIDEBAR_ROW_TWO));
-        let mut branch_only = facts("api", Status::Idle, now, None);
-        branch_only.branch = Some("main");
-        assert_eq!(under(branch_only), (1, SIDEBAR_ROW_TWO));
-        // Waiting, a note or lost: that one line, as before (the place is not shown).
+        assert_eq!(under(both), (Some(LineTwo::Place), 1, two));
         let mut waiting = facts("claude", Status::Waiting, now, None);
         waiting.folder = Some("~/api".into());
-        waiting.branch = Some("main");
-        assert_eq!(under(waiting), (1, SIDEBAR_ROW_TWO));
+        assert_eq!(under(waiting), (Some(LineTwo::Waiting(None)), 1, two));
+        let words = |status, running| {
+            let mut f = facts("shell", status, now, None);
+            f.running = running;
+            under(f).0
+        };
+        assert_eq!(words(Status::Idle, false), Some(LineTwo::State("Idle")));
+        assert_eq!(words(Status::Idle, true), Some(LineTwo::State("Running")));
         assert_eq!(
-            under(facts("shell", Status::Idle, now, None)),
-            (0, SIDEBAR_ROW)
+            words(Status::Working, false),
+            Some(LineTwo::State("Working\u{2026}"))
         );
+        assert_eq!(
+            words(Status::Done, false),
+            Some(LineTwo::State("\u{2713} Done"))
+        );
+        assert_eq!(under(facts("shell", Status::Idle, now, None)).2, two);
     }
 
     #[test]
-    fn a_dragged_row_shows_the_lines_the_row_has() {
+    fn a_dragged_row_shows_its_line_two() {
         let now = Instant::now();
         let lines = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
@@ -3173,25 +3511,24 @@ mod tests {
         let mut both = facts("api", Status::Idle, now, None);
         both.folder = Some("~/api".into());
         both.branch = Some("main");
-        assert_eq!(lines(both), ["main", "~/api"]);
+        assert_eq!(lines(both), ["main • ~/api"]);
         let mut folder_only = facts("api", Status::Idle, now, None);
         folder_only.folder = Some("/tmp/scratch".into());
         assert_eq!(lines(folder_only), ["/tmp/scratch"]);
-        // A waiting row is two lines tall: its place on one, as before.
         let mut waiting = facts("claude", Status::Waiting, now, None);
-        waiting.folder = Some("~/api".into());
-        waiting.branch = Some("main");
-        assert_eq!(lines(waiting), ["main • ~/api"]);
-        assert!(lines(facts("shell", Status::Idle, now, None)).is_empty());
+        waiting.question = Some("Proceed?");
+        assert_eq!(lines(waiting), ["Proceed?"]);
+        assert_eq!(lines(facts("shell", Status::Idle, now, None)), ["Idle"]);
     }
 
     #[test]
-    fn a_row_is_32_with_one_line_and_48_with_two_with_room_around_its_text() {
-        assert_eq!((SIDEBAR_ROW, SIDEBAR_ROW_TWO), (32.0, 52.0));
+    fn a_row_is_52_with_room_around_its_avatar_and_its_text() {
+        assert_eq!((SIDEBAR_ROW, SIDEBAR_ROW_TWO), (42.0, 52.0));
         assert_eq!(NAME_GAP, 4.0);
         assert_eq!((NAME_LINE, SUB_LINE), (18.0, 16.0));
-        // 7 above and 7 below the text, whatever the row holds.
-        assert_eq!(SIDEBAR_ROW - NAME_LINE, 2.0 * ROW_PAD_Y);
+        // 7 above and 7 below the avatar (M11r), or the text when it is taller.
+        assert_eq!(AVATAR, 28.0);
+        assert_eq!(SIDEBAR_ROW - AVATAR, 2.0 * ROW_PAD_Y);
         assert_eq!(
             SIDEBAR_ROW_TWO - NAME_LINE - NAME_GAP - SUB_LINE,
             2.0 * ROW_PAD_Y
@@ -3205,8 +3542,8 @@ mod tests {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
             row_height(session(&rows[0]))
         };
-        // No place, nothing under the name: one line.
-        assert_eq!(height(facts("shell", Status::Idle, now, None)), 32.0);
+        // Nothing else to say: its status in words, two lines (M11r).
+        assert_eq!(height(facts("shell", Status::Idle, now, None)), 52.0);
         // Its place only.
         let mut placed = facts("api", Status::Idle, now, None);
         placed.folder = Some("~/api".into());
@@ -3227,7 +3564,7 @@ mod tests {
     fn the_list_has_room_under_the_title_between_rows_and_above_groups() {
         assert_eq!(LIST_TOP, 10.0);
         assert_eq!(ROW_GAP, 4.0);
-        assert_eq!(GROUP_GAP, 16.0);
+        assert_eq!(GROUP_GAP, 10.0);
         assert_eq!(GROUP_HEADER, 28.0);
         assert_eq!(ROW_RADIUS, 8.0);
     }
@@ -3271,7 +3608,10 @@ mod tests {
         let mut branch_only = facts("api", Status::Idle, now, None);
         branch_only.branch = Some("main");
         assert_eq!(line(branch_only), Some(LineTwo::Place));
-        assert_eq!(line(facts("shell", Status::Idle, now, None)), None);
+        assert_eq!(
+            line(facts("shell", Status::Idle, now, None)),
+            Some(LineTwo::State("Idle"))
+        );
     }
 
     #[test]
@@ -3398,5 +3738,212 @@ mod tests {
             !row_running(Status::Idle, None, None, running),
             "no terminal"
         );
+    }
+
+    #[test]
+    fn initials_are_the_first_letters_of_the_first_two_words() {
+        assert_eq!(initials("New Fuxxpace"), "NF");
+        assert_eq!(initials("John Cena"), "JC");
+        assert_eq!(initials("api-server"), "AS");
+        assert_eq!(initials("web_blog.v2 extra"), "WB");
+        assert_eq!(initials("fuxx"), "F");
+        assert_eq!(initials("  my   app  "), "MA");
+        assert_eq!(initials("éclair"), "É");
+        // No letters or digits: its first character; nothing: nothing.
+        assert_eq!(initials("╭∩╮"), "╭");
+        assert_eq!(initials("   "), "");
+    }
+
+    #[test]
+    fn an_avatar_takes_the_tab_colour_else_a_stable_one_from_the_name() {
+        assert_eq!(avatar_color(Some(TabColor::Red), "api"), TabColor::Red);
+        assert_eq!(avatar_color(Some(TabColor::Grey), "api"), TabColor::Grey);
+        assert_eq!(avatar_color(None, "api"), avatar_color(None, "api"));
+        let names = [
+            "a",
+            "b",
+            "c",
+            "api",
+            "web",
+            "John Cena",
+            "New Fuxxpace",
+            "x1",
+            "x2",
+            "x3",
+        ];
+        let picks: Vec<TabColor> = names.iter().map(|n| avatar_color(None, n)).collect();
+        assert!(picks.iter().all(|&c| c != TabColor::Grey), "never grey");
+        let mut distinct = picks.clone();
+        distinct.sort_by_key(|&c| c as usize);
+        distinct.dedup();
+        assert!(
+            distinct.len() >= 4,
+            "names spread over the colours: {picks:?}"
+        );
+    }
+
+    #[test]
+    fn the_title_says_what_it_does_under_the_name_after_the_note_and_before_the_place() {
+        let now = Instant::now();
+        let line = |f: WorkspaceFacts| {
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            line_two(session(&rows[0]))
+        };
+        let mut f = facts("claude", Status::Working, now, None);
+        f.title = Some("✳ Fix the sidebar drag");
+        f.folder = Some("~/api".into());
+        assert_eq!(
+            line(f),
+            Some(LineTwo::Title("✳ Fix the sidebar drag".into()))
+        );
+        // The same as the name: nothing more to say, so the place.
+        let mut same = facts("claude", Status::Idle, now, None);
+        same.title = Some("claude");
+        same.folder = Some("~/api".into());
+        assert_eq!(line(same), Some(LineTwo::Place));
+        // A note and a question still come first.
+        let mut noted = facts("build", Status::Working, now, None);
+        noted.title = Some("cargo");
+        noted.note = Some("3 of 7");
+        assert_eq!(line(noted), Some(LineTwo::Note("3 of 7".into())));
+        let mut asking = facts("claude", Status::Waiting, now, None);
+        asking.title = Some("✳ Fix");
+        asking.question = Some("Proceed?");
+        assert_eq!(
+            line(asking),
+            Some(LineTwo::Waiting(Some("Proceed?".into())))
+        );
+    }
+
+    #[test]
+    fn rows_in_a_folder_group_leave_the_place_to_the_header() {
+        let now = Instant::now();
+        let row = |f: WorkspaceFacts| {
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            rows.into_iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(s) => Some(s),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let placed = |group| {
+            let mut f = facts("api", Status::Idle, now, group);
+            f.folder = Some("~/api".into());
+            f.branch = Some("main");
+            f
+        };
+        let in_folder = row(placed(Some(folder("/api"))));
+        assert_eq!(line_two(&in_folder), Some(LineTwo::State("Idle")));
+        assert_eq!(row_height(&in_folder), SIDEBAR_ROW_TWO);
+        // A host's group still says the folder there; a row out of any group, both lines.
+        let in_host = row(placed(Some(GroupKey::Host("box".into()))));
+        assert_eq!(line_two(&in_host), Some(LineTwo::Place));
+        let out = row(placed(None));
+        assert_eq!(line_two(&out), Some(LineTwo::Place));
+        // A pinned one is out of its group: its place comes back.
+        let mut pinned = placed(Some(folder("/api")));
+        pinned.pinned = true;
+        assert_eq!(line_two(&row(pinned)), Some(LineTwo::Place));
+        // Its title still shows in the group.
+        let mut titled = placed(Some(folder("/api")));
+        titled.title = Some("vim");
+        assert_eq!(line_two(&row(titled)), Some(LineTwo::Title("vim".into())));
+    }
+
+    #[test]
+    fn a_header_knows_its_branch_and_who_waits_inside() {
+        let now = Instant::now();
+        let mut a = facts("a", Status::Waiting, now, Some(folder("/api")));
+        a.branch = Some("dev");
+        a.color = Some(TabColor::Teal);
+        let b = facts("b", Status::Waiting, now, Some(folder("/api")));
+        let c = facts("c", Status::Idle, now, Some(folder("/api")));
+        let d = facts("d", Status::Idle, now, Some(folder("/api")));
+        let rows = rows(
+            &numbered(vec![a, b, c, d]),
+            &[folder("/api")],
+            None,
+            &[],
+            now,
+        );
+        let h = header(&rows[0]);
+        assert_eq!(h.branch.as_deref(), Some("dev"));
+        assert_eq!(h.waiting, 2);
+        // At most three small avatars, in order.
+        assert_eq!(h.faces.len(), 3);
+        assert_eq!(h.faces[0], (TabColor::Teal, Status::Waiting));
+        assert_eq!(h.faces[2].1, Status::Idle);
+        assert_eq!(h.branch_from, Some(w(0)));
+    }
+
+    /// Two repos in one group: the header says the branch of the selected workspace when it is
+    /// in the group, else the first one's (your report, 2026-11-10: "the sidebar branch is not
+    /// updated based on active cli").
+    #[test]
+    fn a_header_s_branch_follows_the_selected_workspace_in_its_group() {
+        let now = Instant::now();
+        let mut a = facts("a", Status::Idle, now, Some(folder("/api")));
+        a.branch = Some("dev");
+        let mut b = facts("b", Status::Idle, now, Some(folder("/api")));
+        b.branch = Some("main");
+        let c = facts("c", Status::Idle, now, None);
+        let sessions = numbered(vec![a, b, c]);
+        let branch = |active| {
+            let rows = rows(&sessions, &[], active, &[], now);
+            let h = header(&rows[0]);
+            (h.branch.clone(), h.branch_from)
+        };
+        assert_eq!(branch(Some(w(1))), (Some("main".into()), Some(w(1))));
+        assert_eq!(branch(Some(w(0))), (Some("dev".into()), Some(w(0))));
+        // Selected out of the group, or none: the first one's.
+        assert_eq!(branch(Some(w(2))), (Some("dev".into()), Some(w(0))));
+        assert_eq!(branch(None), (Some("dev".into()), Some(w(0))));
+        // The selected one is in no repo: no branch, not the first one's.
+        let mut sessions = sessions;
+        sessions[1].branch = None;
+        let rows = rows(&sessions, &[], Some(w(1)), &[], now);
+        assert_eq!(header(&rows[0]).branch, None);
+    }
+
+    /// In a folder's group a row says where its terminal is now, from the group's folder
+    /// (2026-11-10, your call: "ya, kerjakan"): "./" there, "./src/ui" under it, else the whole
+    /// place (`~/…` under home).
+    #[test]
+    fn a_row_in_a_group_says_its_folder_from_the_group_s() {
+        let home = Some(Path::new("/Users/me"));
+        let group = Path::new("/Users/me/code/api");
+        let here = |p: &str| relative_place(Path::new(p), group, home);
+        assert_eq!(here("/Users/me/code/api"), "./");
+        assert_eq!(here("/Users/me/code/api/src/ui"), "./src/ui");
+        assert_eq!(here("/Users/me/code/web"), "~/code/web");
+        assert_eq!(here("/tmp/scratch"), "/tmp/scratch");
+        // Not fooled by a folder that only starts with the group's name.
+        assert_eq!(here("/Users/me/code/api-old"), "~/code/api-old");
+    }
+
+    #[test]
+    fn a_grouped_row_with_nothing_else_to_say_shows_where_it_is() {
+        let now = Instant::now();
+        let line = |status, here: Option<&str>| {
+            let mut f = facts("shell", status, now, Some(folder("/api")));
+            f.here = here.map(String::from);
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            line_two(session(&rows[1]))
+        };
+        assert_eq!(
+            line(Status::Idle, Some("./src")),
+            Some(LineTwo::Here("./src".into()))
+        );
+        assert_eq!(
+            line(Status::Done, Some("./")),
+            Some(LineTwo::Here("./".into()))
+        );
+        // Working says so; nothing known: its status.
+        assert_eq!(
+            line(Status::Working, Some("./src")),
+            Some(LineTwo::State("Working\u{2026}"))
+        );
+        assert_eq!(line(Status::Idle, None), Some(LineTwo::State("Idle")));
     }
 }

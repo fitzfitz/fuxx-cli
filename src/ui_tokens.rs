@@ -35,7 +35,7 @@ pub mod size {
     /// is, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
     /// Each has 7 px above and below its text, and 4 px between the name and the lines under
     /// it (the roomier sidebar, 2026-11-10, your call: "It's too compact").
-    pub const SIDEBAR_ROW: f32 = 32.0;
+    pub const SIDEBAR_ROW: f32 = 42.0;
     pub const SIDEBAR_ROW_TWO: f32 = 52.0;
     /// A row in a git repo: its branch and its folder, each on its own line under the name
     /// (2026-11-10, your call).

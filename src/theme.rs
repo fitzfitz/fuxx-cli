@@ -146,6 +146,12 @@ pub struct UiColors {
     pub block_ok: Rgb,
     pub block_failed: Rgb,
     pub block_running: Rgb,
+    /// The sidebar's avatars (M11r), one per tab colour (`TabColor::ALL` order): a gradient of
+    /// the colour (its top-left and bottom-right) and its letters' ink, held to `TEXT_MIN` on
+    /// both ends.
+    pub avatars: [(Rgb, Rgb, Rgb); 11],
+    /// The selected sidebar row in a group's card (M11r): a neutral lift of the card.
+    pub card_lift: Rgb,
 }
 
 impl UiColors {
@@ -317,9 +323,17 @@ impl Theme {
         let row_selected = tint(sidebar);
         let card_selected = tint(card);
         // Text reads on every surface, the new ones too.
+        let card_lift = mix(card, fg, if dark { 0.10 } else { 0.07 });
         let text_surfaces = [
             &surfaces[..],
-            &[card_hover, tab_bar, tab_hover, row_selected, card_selected],
+            &[
+                card_hover,
+                tab_bar,
+                tab_hover,
+                row_selected,
+                card_selected,
+                card_lift,
+            ],
         ]
         .concat();
         let text = |c: Rgb| readable(c, &text_surfaces, TEXT_MIN);
@@ -332,6 +346,30 @@ impl Theme {
             .map(|step| mix(sidebar, accent, 0.30 - 0.05 * step as f32))
             .find(|&s| contrast(ink, s) >= TEXT_MIN)
             .unwrap_or(sidebar);
+        let tab_colors = TabColor::ALL.map(|c| mark(c.base()));
+        // A gradient of the colour over the card it mostly sits on, lit at its top left; its
+        // letters a pale (dark: light) tint of the colour.
+        // A bright colour (a yellow) is washed back in steps until its letters read on it.
+        let avatars = tab_colors.map(|c| {
+            let ink = if dark {
+                mix(c, white, 0.78)
+            } else {
+                mix(c, black, 0.55)
+            };
+            let (lit, deep) = if dark { (0.62, 0.36) } else { (0.34, 0.20) };
+            let ends = |n: f32| {
+                let step = 0.04 * n;
+                (
+                    mix(card, c, (lit - step).max(0.0)),
+                    mix(card, c, (deep - step).max(0.0)),
+                )
+            };
+            let (top, bottom) = (0..=15)
+                .map(|n| ends(n as f32))
+                .find(|&(t, b)| contrast(ink, t) >= TEXT_MIN && contrast(ink, b) >= TEXT_MIN)
+                .unwrap_or_else(|| ends(15.0));
+            (top, bottom, readable(ink, &[top, bottom], TEXT_MIN))
+        });
         UiColors {
             sidebar_background: sidebar,
             sidebar_border: quiet(mix(sidebar, fg, 0.12), &[sidebar, bg]),
@@ -363,7 +401,7 @@ impl Theme {
             // Overlays' shadow, drawn with transparency: black on dark, the ink darkened on light.
             shadow: if dark { black } else { mix(fg, black, 0.5) },
             selection,
-            tab_colors: TabColor::ALL.map(|c| mark(c.base())),
+            tab_colors,
             card,
             card_border: quiet(
                 mix(bg, fg, if dark { 0.10 } else { 0.12 }),
@@ -379,6 +417,8 @@ impl Theme {
             block_ok: ensure_contrast(self.palette[8], bg, MARK_MIN),
             block_failed: ensure_contrast(self.palette[1], bg, MARK_MIN),
             block_running: ensure_contrast(ring_working, bg, MARK_MIN),
+            avatars,
+            card_lift,
         }
     }
 }
@@ -448,6 +488,7 @@ impl Theme {
         let text_only = [
             ("card_selected", ui.card_selected),
             ("card_hover", ui.card_hover),
+            ("card_lift", ui.card_lift),
         ];
         // The pane tab bars: their titles, glyphs and buttons, and a busy tab's status mark
         // (inactive on the bar, hovered on `tab_hover`); no tab colours.
@@ -510,6 +551,17 @@ impl Theme {
         for (line, bg) in lines {
             pairs.push(pair(line, bg, QUIET_LINE_MIN));
         }
+        // The sidebar's avatars' letters on both ends of their gradients (M11r).
+        for (c, (top, bottom, ink)) in TabColor::ALL.into_iter().zip(ui.avatars) {
+            pairs.push(pair(("avatar_ink", ink), (c.name(), top), TEXT_MIN));
+            pairs.push(pair(("avatar_ink", ink), (c.name(), bottom), TEXT_MIN));
+        }
+        // A waiting row's Open button: the sidebar's colour on the waiting colour (M11r).
+        pairs.push(pair(
+            ("sidebar_background", ui.sidebar_background),
+            ("ring_waiting", ui.ring_waiting),
+            TEXT_MIN,
+        ));
         pairs
     }
 }
