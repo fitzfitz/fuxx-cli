@@ -1,13 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: design
+status: built
 ---
 
 # 66 - Milestone 11o - Branch Switcher (design)
 
-**Status:: ⬜ Design approved 2026-11-10 by you ("oke setuju, lanjut tulis plan-nya"). Plan: [[M11o Plan - Branch
-Switcher]]. Not built.**  ·  **Phase 4: an M11
-extension (the chores round after v0.5.0).**
+**Status:: 🟨 Built 2026-11-10 on branch `feat/m11o-branch-switcher` (not merged yet); 1319 tests pass. Waiting for your on-screen check (12 items, below); nothing here has been seen on a real screen. Design approved 2026-11-10 by you ("oke setuju, lanjut tulis plan-nya"). Plan: [[M11o Plan - Branch Switcher]].**  ·  **Phase 4: an M11 extension (the chores round after v0.5.0).**
 **Asked for 2026-11-10 by you** in the chores conversation, after the sidebar row got its own branch line. It is
 in [[12 - Scope]] since its approval (2026-11-10). It is fuxx's **first action that changes a repo**;
 everything git-related before it (the row's branch, Files, Changes) only reads.
@@ -222,6 +220,105 @@ Also for the builder: today's `run_capped_*` drops git's stderr; the fetch failu
 - How many conflict counts run at once.
 - The exact `for-each-ref` format and parsing.
 - How the ⌘K action is named in the palette's lists beyond "Switch branch…".
+
+## M11o as built (2026-11-10)
+
+### The three files
+
+- **`src/branch_list.rs`** (pure, no git, no window): parses git's ref listing, builds the rows and their order, the
+  marks (`current`, `✓`, `local only`, `upstream gone`, `↑n ↓n`), the filter, the typed-name row, the conflict count
+  and every line of copy. Tested with plain data.
+- **`src/branch_git.rs`** (runs git, always on the background executor): reads the refs and the dirty files, lists the
+  files a target branch would change, fetches (automatic or by button), fetches one named branch, and switches. Git's
+  stderr is kept, so a failed fetch or a refused switch can show git's own words. Tested against real temporary repos
+  with a bare "origin".
+- **`src/branch_switcher.rs`** (the GPUI modal plus its `impl Workspace` block): the panel, the box, the list, the
+  confirm step, the busy states, and the refresh after a switch. It sits next to the ⌘K palette and copies its look.
+
+### How it behaves
+
+- **Three ways in:** click the branch line of a sidebar row, click the branch in the status bar, or ⌘K → "Switch
+  branch…". Outside a repo, or on an SSH terminal, none of the three does anything (and ⌘K does not list the command).
+- **The list:** the current branch first (marked, not clickable), then local branches, then an ORIGIN section for
+  origin's branches that are not local. Each row has its mark: `local only`, `upstream gone`, or how far ahead and
+  behind it is. The box filters as you type.
+- **Fetch:** a background fetch starts when the modal opens (`Fetching…`), and the Fetch button runs it again. The
+  automatic fetch never opens a credential window (no Keychain, browser or askpass); the button may. A failure shows
+  `Fetch failed: <git's first line>` and the list stays usable.
+- **Conflicts:** a branch that would collide with your uncommitted changes is disabled and says `conflict n file(s)`.
+  The counts are worked out only for rows in view, at most 4 at a time, and again as you scroll or filter.
+- **Confirm step:** choosing a branch shows what will happen: the branch, the files carried over, and a warning line
+  if a program runs in that folder (named by its tab title, else its program, else "a program"), and a detached HEAD
+  with commits on no branch. Switch or Cancel; Escape goes back to the list.
+- **A typed name:** a row `Check out <name> from origin` appears when the name matches nothing exactly. Choosing it
+  fetches that one branch; found → its conflict count → confirm; not found → `Branch <name> not found`, nothing created.
+- **Switch:** git does the switch. On success the modal closes and the sidebar rows and the status bar for that folder
+  show the new branch at once. If git refuses, the modal stays open on the list with git's message under the box, and
+  the counts are read again.
+
+### What the build settled (all AI's calls, marked as such; none needed you)
+
+1. **The current row says only `current`** (AI's call). The design's sketch showed `current ↑0 ↓2`, but a row has room
+   for one mark, and the sketch's own `↑0` broke the "no zero" rule. If you want the current branch's ahead/behind, it
+   can be added later.
+2. **Dirty files are counted wider than a plain status** (AI's call): untracked files inside a new folder are listed
+   one by one (not as `dir/`), and a rename counts both its old and new path. Otherwise a collision through those
+   files was never counted. Cost: a slower status in a repo with a huge untracked tree.
+3. **git's messages are forced to English** (AI's call, `LC_ALL=C`): fuxx reads git's text to tell "not found" from
+   other failures, and a translated message would break that. Cost: a user with a localized git sees English in the
+   error line.
+4. **`git switch` has a 120 s time cap** (AI's call, changed during the build). First it was 10 s, but two reviewers
+   pointed out that killing a switch half-way can leave a half-switched tree and a `.git/index.lock`, which breaks
+   "nothing changes unless git agreed". fuxx must never hang, so there is still a cap; it is long enough that only a
+   truly stuck switch (a hook, say) meets it.
+5. **Narrow clones** (AI's call): fuxx reads the `remote.origin.fetch` lines. When they cover the branch it runs
+   `git switch --track origin/<name>` as the design says. When they don't (a `--single-branch` clone), `--track`
+   refuses and leaves a file staged, so fuxx runs `git switch --no-track -c <name> origin/<name>` and then sets the
+   branch's upstream by hand: the same result, and nothing left staged if git refuses.
+6. **The typed name's fetch may open a credential window** (AI's call), like the Fetch button: you chose the name and
+   asked for it. A typed name also waits for a fetch that is already running (up to 30 s; it can't be cancelled).
+7. **The typed row appears only when the repo has an origin** (AI's call): with no origin there is nothing to fetch.
+8. **Choosing a row whose count has not landed yet counts it first** (AI's call), then goes to the confirm step, or
+   marks the row `conflict n file(s)` and stays on the list. A pending count must never lead to a confirm.
+9. **Colours:** `Fetch failed` is drawn in faint text (the design's §5); a refused switch and `not found` use the error
+   colour (the design's §6).
+10. **Busy texts that were not in the design's copy list** (AI's call): `Counting conflicts…`, `Looking for <name> on
+    origin…` and `Switching…`.
+11. **The switcher follows the row's FIRST terminal**, the one the row's branch is read from, so the modal and the
+    branch line you clicked always agree.
+12. **One "switchable folder" rule** (AI's call): ⌘K and the three openers use the same check, so a listed command
+    never silently does nothing.
+13. **The running-programs list is taken when the modal opens** (and matched to the repo's root after git's first read,
+    off the UI thread).
+
+### Limits
+
+- A switch killed at the 120 s cap can leave a half-switched tree or a `.git/index.lock`; you would have to clean it up
+  by hand.
+- The running-programs list is a snapshot from the moment the modal opens.
+- A switch that finishes after the modal was closed or replaced cannot report back; the rows catch up at the next 5 s
+  refresh.
+- The conflict count is still fuxx's estimate; git has the last word.
+- Found in review, to fix before merge: if origin's fetch rule has no `:` or stores into another remote's refs, fuxx
+  could still choose `--track` on a narrow clone (the final fix wave).
+
+## On-screen checklist (pending)
+
+Nothing here has been seen on a real screen yet. The ui-shots draw the panel but cannot show the network, a sign-in
+window, a real conflict, or the pointer.
+
+1. **Open from the sidebar:** in a repo, click the branch line of a row: the modal opens, titled `Switch branch · <folder>` with the folder under it. The pointer is a hand over the branch line.
+2. **Open from the status bar and ⌘K:** click the branch at the bottom (a hand over it): the modal opens for the terminal the bar follows. Press ⌘K, type `switch`, Enter: it opens for the focused terminal.
+3. **The marks:** against a repo you know, `current` on your branch, `local only` on one never pushed, `↑n ↓n` where you are ahead or behind, `upstream gone` where origin deleted it, and origin's other branches under ORIGIN.
+4. **Fetch:** on open you see `Fetching…`, then the list refreshes (new origin branches appear). Press Fetch: same again. Try a repo whose login needs a sign-in: the automatic fetch opens no window; the Fetch button may open one.
+5. **Offline:** turn Wi-Fi off and open it: `Fetch failed: …` in faint text, and the list still works.
+6. **A conflicting branch:** make an uncommitted edit to a file that another branch also changes: that branch is greyed with `conflict 1 file(s)` and cannot be chosen. A branch that does not touch your files can.
+7. **Confirm with an agent running:** start an agent in that folder, open the modal, choose another branch: the confirm step names the running program. Escape goes back to the list; Cancel does too.
+8. **A real switch:** confirm Switch: the modal closes, the sidebar row's branch line and the status bar show the new branch at once, and the files under the terminal changed.
+9. **A typed origin branch:** type the name of a branch only on origin (right after opening, before the fetch lands, or one that your clone does not fetch): `Check out <name> from origin` appears; choose it, confirm, and you land on a local branch tracking origin.
+10. **A name that does not exist:** type a nonsense name and choose its row: `Branch <name> not found` in the error colour, nothing created (`git branch` shows nothing new).
+11. **Outside a repo and over SSH:** in a plain folder there is no branch line, no branch in the status bar, no "Switch branch…" in ⌘K; an SSH terminal shows none of them either.
+12. **Looks:** open the modal in both themes, and on a 1x and a 2x display: text is sharp, the marks are faint, the panel matches ⌘K, and Reduce motion shows it without animation.
 
 ## Links
 

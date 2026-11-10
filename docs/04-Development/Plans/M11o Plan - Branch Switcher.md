@@ -1,22 +1,22 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11o
-status: planned
+status: built
 updated: 2026-11-10
 ---
 
 # M11o Plan — Branch switcher
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[66 - Milestone 11o - Branch Switcher]] |
-| **Status** | ⬜ Planned 2026-11-10; not started |
-| **Tasks done** | 0 / 6 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built 2026-11-10 on `feat/m11o-branch-switcher` (not merged yet); waiting for your on-screen check |
+| **Tasks done** | 6 / 6 |
+| **▶ Pick up here** | Your on-screen check (the checklist in note 66). |
 | **Decisions used** | Yours (2026-11-10): a modal; a colliding branch disabled with "conflict x file(s)"; a confirmation every time; ahead/behind if cheap; a background fetch on open plus a Fetch button; a typed name from origin, "not found" otherwise. AI's calls are marked in note 66. |
-| **Needs your eyes** | 👀 the on-screen checklist written into note 66 by Task 6 |
+| **Needs your eyes** | 👀 the on-screen checklist written into note 66 by Task 6 (12 items, pending) |
 
 **Goal:** A modal that switches the git branch of a terminal's folder, as note 66 describes.
 
@@ -97,7 +97,7 @@ already used in `palette.rs`, `host_picker.rs`, `status_bar.rs` and `sidebar.rs`
     `pub fn running_line(programs: &[String]) -> Option<String>`, `pub fn confirm_lines(name: &str, programs:
     &[String], carried: usize, orphans: usize) -> Vec<String>` (title first, then each warning that applies).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -174,12 +174,12 @@ fn marks_and_confirmation_copy() {
 
 Fill the commented tests with the inputs and assertions their comments state.
 
-- [ ] **Step 2: Run them; they fail** — `cargo test -q branch_list` → does not compile (no module).
-- [ ] **Step 3: Implement the interfaces above in `src/branch_list.rs`.** Order (note 66 §2): the current row first;
+- [x] **Step 2: Run them; they fail** — `cargo test -q branch_list` → does not compile (no module).
+- [x] **Step 3: Implement the interfaces above in `src/branch_list.rs`.** Order (note 66 §2): the current row first;
   local branches by `date` descending; ORIGIN rows (`origin_section: true`) by `date` descending.
-- [ ] **Step 4: Run them; they pass** — `cargo test -q branch_list` → all pass; `cargo clippy --all-targets -q` adds
+- [x] **Step 4: Run them; they pass** — `cargo test -q branch_list` → all pass; `cargo clippy --all-targets -q` adds
   no warning.
-- [ ] **Step 5: Commit** — `feat(m11o): branch_list — rows, marks, conflicts and copy for the branch switcher`
+- [x] **Step 5: Commit** — `feat(m11o): branch_list — rows, marks, conflicts and copy for the branch switcher`
 
 ---
 
@@ -221,7 +221,7 @@ Fill the commented tests with the inputs and assertions their comments state.
     - `pub fn switch(git: &Path, root: &Path, target: &Target) -> Result<(), String>` — `switch <name>` or `switch
       --track origin/<name>`, `SWITCH_CAP`; never another flag.
 
-- [ ] **Step 1: Write the failing tests** (each builds a repo with commits on `trunk`, `feature`, and a bare clone
+- [x] **Step 1: Write the failing tests** (each builds a repo with commits on `trunk`, `feature`, and a bare clone
   pushed as `origin`):
   - `read_lists_branches_tracking_and_dirt` — after `push -u origin feature`, one commit ahead locally: `feature`'s
     track is `Diverged { ahead: 1, behind: 0 }`; an untracked file and a modified file are both in `dirty`.
@@ -238,10 +238,10 @@ Fill the commented tests with the inputs and assertions their comments state.
     `switch(Origin("only-on-origin"))` → `Ok`, a local branch tracking `origin/only-on-origin`; with a dirty file that
     differs on the target, `switch` → `Err(msg)` where `msg` contains `would be overwritten`, and HEAD unchanged.
   - `no_origin_fetch_fails_cleanly` — `fetch` in a repo without origin → `Err(_)`, no panic.
-- [ ] **Step 2: Run them; they fail** — `cargo test -q branch_git` → does not compile.
-- [ ] **Step 3: Implement `run_git_checked` and the `branch_git` interfaces above.**
-- [ ] **Step 4: Run them; they pass** — `cargo test -q branch_git` and `cargo test -q git_branch` → all pass.
-- [ ] **Step 5: Commit** — `feat(m11o): branch_git — read refs and dirt, fetch, switch; git's stderr kept for errors`
+- [x] **Step 2: Run them; they fail** — `cargo test -q branch_git` → does not compile.
+- [x] **Step 3: Implement `run_git_checked` and the `branch_git` interfaces above.**
+- [x] **Step 4: Run them; they pass** — `cargo test -q branch_git` and `cargo test -q git_branch` → all pass.
+- [x] **Step 5: Commit** — `feat(m11o): branch_git — read refs and dirt, fetch, switch; git's stderr kept for errors`
 
 ---
 
@@ -280,7 +280,7 @@ box; the rows with `mark_text` / `conflict_text`; an `ORIGIN` header before the 
 result sets that row's `conflict`. Every spawned task holds a `WeakEntity` and drops its result when the entity is
 gone. Enter on a row: Task 4 (here it does nothing).
 
-- [ ] **Step 1: Write the failing ui-shot `branch-switcher`** (copy `palette_scene`'s rig: `palette_build`,
+- [x] **Step 1: Write the failing ui-shot `branch-switcher`** (copy `palette_scene`'s rig: `palette_build`,
   `switcher_workspace`, `render_with`, `save_shot`), both themes, opened `seeded` with: head `main`; local `main`,
   `feature/rows` (↑2 ↓1), `spike` (local only), `feature/old` (conflict 3); origin `fix-login`. Checks: the panel is
   drawn where `top_panel` puts the palette; the `feature/old` row's text is in `text_faint` and pressing ↓ from
@@ -288,11 +288,11 @@ gone. Enter on a row: Task 4 (here it does nothing).
   from origin`); Escape closes it and focus is back on the active terminal (`active_terminal_focused`).
   And a unit-level test `a_late_result_after_close_is_dropped` (an entity dropped before its read completes: no
   panic, the workspace's `branch_switcher` stays `None`).
-- [ ] **Step 2: Run it; it fails** — `cargo run -q --features ui-shots -- __ui-shots branch-switcher` → panics (no scene).
-- [ ] **Step 3: Implement the modal and the overlay wiring.**
-- [ ] **Step 4: Run it; it passes** — the scene prints `ui-shots: branch-switcher ok`; `cargo test -q` passes; look
+- [x] **Step 2: Run it; it fails** — `cargo run -q --features ui-shots -- __ui-shots branch-switcher` → panics (no scene).
+- [x] **Step 3: Implement the modal and the overlay wiring.**
+- [x] **Step 4: Run it; it passes** — the scene prints `ui-shots: branch-switcher ok`; `cargo test -q` passes; look
   at both PNGs in `target/ui-shots/` and confirm they match note 66 §2's sketch.
-- [ ] **Step 5: Commit** — `feat(m11o): the branch switcher modal — list, marks, filter, background fetch and conflict counts`
+- [x] **Step 5: Commit** — `feat(m11o): the branch switcher modal — list, marks, filter, background fetch and conflict counts`
 
 ---
 
@@ -318,17 +318,17 @@ file(s)` in the confirm step with `Switch` disabled; else the confirm step. Swit
 input ignored); `Err(msg)` returns to the list with `msg` under the box in `ring_waiting` and reads again; `Ok` emits
 `Switched`. The `programs` list is given by the opener (Task 5).
 
-- [ ] **Step 1: Write the failing ui-shot `branch-switcher-confirm`**, both themes: seeded with `programs = ["Claude
+- [x] **Step 1: Write the failing ui-shot `branch-switcher-confirm`**, both themes: seeded with `programs = ["Claude
   Code"]`, two dirty files, orphans 0; select `feature/rows`, press Enter → the confirm step shows exactly
   `Switch to feature/rows?`, `Claude Code is running in this folder`, `2 uncommitted file(s) come along` and the two
   buttons; Escape → back to the list (still open); Enter, Enter on a seeded switcher whose git is a stub that fails
   (`seeded` takes `fail_switch: Option<String>` under `ui-shots`) → the list shows that message under the box.
-- [ ] **Step 2: Run it; it fails.**
-- [ ] **Step 3: Implement the confirm step, the switch, the typed-name path, and the refresh on `Switched`.**
-- [ ] **Step 4: Run it; it passes** — scene `ok`; `cargo test -q` passes. Then the real thing once, in a scratch
+- [x] **Step 2: Run it; it fails.**
+- [x] **Step 3: Implement the confirm step, the switch, the typed-name path, and the refresh on `Switched`.**
+- [x] **Step 4: Run it; it passes** — scene `ok`; `cargo test -q` passes. Then the real thing once, in a scratch
   repo under the scratchpad (never a real project): open the modal from a test hook on a real `RepoAt`, switch, and
   check `git -C <scratch> branch --show-current`.
-- [ ] **Step 5: Commit** — `feat(m11o): confirm and switch — warnings, git's refusal shown, rows and status bar refreshed`
+- [x] **Step 5: Commit** — `feat(m11o): confirm and switch — warnings, git's refusal shown, rows and status bar refreshed`
 
 ---
 
@@ -360,15 +360,15 @@ propagation (no drag) and an `on_click` that stops propagation (no row select) a
 `branch_terminal(ws)`. The status bar branch element: same, for `right_sidebar.followed`. ⌘K: `Switch branch…` runs
 `SwitchBranch`, which opens it for the focused terminal.
 
-- [ ] **Step 1: Write the failing tests:** a unit test `the_switch_branch_command_needs_a_repo` (`action_rows` with
+- [x] **Step 1: Write the failing tests:** a unit test `the_switch_branch_command_needs_a_repo` (`action_rows` with
   `in_repo: false` has no `Switch branch…`; with `true` it does); a ui-shot `branch-switcher-open`: clicking the
   seeded row's branch line opens the switcher and leaves the selected workspace unchanged; clicking the status bar's
   branch opens it; an SSH workspace's row (`switcher_workspace` sessions 6–7) has no clickable branch.
-- [ ] **Step 2: Run them; they fail.**
-- [ ] **Step 3: Implement the three openers.**
-- [ ] **Step 4: Run them; they pass** — and the whole suite: `cargo test -q`; every ui-shot scene, one at a time
+- [x] **Step 2: Run them; they fail.**
+- [x] **Step 3: Implement the three openers.**
+- [x] **Step 4: Run them; they pass** — and the whole suite: `cargo test -q`; every ui-shot scene, one at a time
   (the run stops at the first panic; `title-bar` already fails on master at 1x — note it, don't fix it here).
-- [ ] **Step 5: Commit** — `feat(m11o): open the branch switcher from the row's branch, the status bar and ⌘K`
+- [x] **Step 5: Commit** — `feat(m11o): open the branch switcher from the row's branch, the status bar and ⌘K`
 
 ---
 
@@ -378,9 +378,9 @@ propagation (no drag) and an `on_click` that stops propagation (no row select) a
 Tracker (Start Here)]], this plan's table, [[60 - Progress Log]], `STRUCTURE.md` (the three new files), README if it
 lists features.
 
-- [ ] **Step 1:** Write the on-screen checklist into note 66 (about 12 items: open from each of the three places; the
+- [x] **Step 1:** Write the on-screen checklist into note 66 (about 12 items: open from each of the three places; the
   marks against a real repo; a conflicting branch disabled with its count; the confirmation with an agent running;
   Escape back to the list; a switch updating the row and the status bar; the Fetch button; offline fetch failure; a
   typed origin branch; a typed name that doesn't exist; no branch line or ⌘K action outside a repo or over SSH).
-- [ ] **Step 2:** Flip the statuses, add the Progress Log entry, commit — `docs(m11o): built — note 66 as built,
+- [x] **Step 2:** Flip the statuses, add the Progress Log entry, commit — `docs(m11o): built — note 66 as built,
   checklist, roadmap, tracker, Progress Log`.

@@ -169,6 +169,9 @@ src/
 ├── update_release.rs     M11e · versions, GitHub's latest-release JSON, the offer/sheet copy, the swap script's text, the checks (pure)
 ├── highlight.rs          M11g · syntect + two-face: a syntax theme built from the fuxx theme (3:1 floor), file classification (pure)
 ├── git_status.rs         M11g · repo root, status marks, ignore checks, per-file line changes (git, capped, last good kept)
+├── branch_list.rs        M11o · the branch switcher's model: rows, marks (current, local only, ↑↓), filter, typed-name row, conflict count, copy (pure)
+├── branch_git.rs         M11o · the switcher's git: refs, dirty files, files a branch would change, fetch (auto and button), switch (background, capped)
+├── branch_switcher.rs    M11o · the branch switcher modal: list, box, Fetch, confirm step, switch, refresh after; opened from the row's branch, the status bar, ⌘K
 ├── file_tree.rs          M11g · the Files panel's lazy tree model: rows (cached), marks, filter, keyboard selection (pure)
 ├── right_sidebar.rs      M11g · the right sidebar: toggle, pane icon, resize, follows the focused terminal, the Files panel   M11i · type icons, guides, root header, collapse all
 ├── procs.rs              M11i · the `ps` table and `lsof` listening ports (absolute paths, capped, background), parsing, what runs in a terminal and the stable rule (pure)
