@@ -38,7 +38,7 @@ use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR, TAB_TOP_GAP};
+use crate::ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR, TAB_TOP_GAP, TABS_LEFT};
 use crate::ui_tokens::text;
 use crate::workspace::{At, Renaming, Workspace};
 use crate::workspace_ssh::Place;
@@ -377,8 +377,10 @@ impl Workspace {
             .flex_1()
             .min_w(px(0.0))
             .h_full()
-            // The tabs float 4 pt under the bar's top, flush with its bottom (M11i).
+            // The tabs float 4 pt under the bar's top, flush with its bottom (M11i); the first
+            // starts `TABS_LEFT` in from the card's edge, as the right sidebar's panel tabs.
             .pt(px(TAB_TOP_GAP))
+            .pl(px(TABS_LEFT))
             .overflow_x_scroll()
             .track_scroll(&scroll)
             .children(

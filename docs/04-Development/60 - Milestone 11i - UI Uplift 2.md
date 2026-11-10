@@ -6,7 +6,8 @@ status: built
 # 60 - Milestone 11i - UI Uplift 2 (design)
 
 **Status:: 🟨 Built, reviewed and merged to master 2026-11-08 (every detail AI's call; you skipped the design questions). Released in v0.5.0 (2026-11-10). On-screen check pending (22 items below). Changed 2026-11-10: in a repo the branch and
-the folder are two lines (see "After release").**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
+the folder are two lines; the rows got roomier, the accent bar went and the list has a gap under the title (see
+"After release").**  ·  **Phase 4: an M11 extension.**  ·  **Plan:** [[M11i Plan - UI Uplift 2]]
 **Added to the plan 2026-11-08 by you** (see [[12 - Scope]], "A modern layout…"). Comes **before M11h**, so
 Changes and Activity are built into the new look.
 
@@ -138,7 +139,8 @@ The first that applies wins:
 ## 3. A subtle selection
 
 - The selected row gets a **soft tint**, `row_selected`, and a **2 pt accent bar** at its left edge: 2 pt wide,
-  inset **5 pt** from the row's top and bottom, corners of 1 pt radius, in `accent`.
+  inset **5 pt** from the row's top and bottom, corners of 1 pt radius, in `accent`. *(The bar was removed
+  2026-11-10, your call: the tint alone marks the selection; see "After release".)*
 - Its text and marks keep their **own colours** (`text`, the status colours), not `on_accent`. The name stays
   semibold.
 - `row_selected` = the sidebar colour mixed toward `accent` by **18 %** on dark themes and **12 %** on light ones,
@@ -342,7 +344,100 @@ reads at 4.5:1 on every built-in theme, light or dark.
   line: the folder alone, 32 pt as before. Waiting, a script's note and "not live" keep their single line (32 pt).
   A dragged row shows the same lines (`place_lines`). AI's calls: no icon on the branch line (the status bar keeps
   its); both lines in `text_faint`. Code: `sidebar::lines_under`, `row_height`, `place_lines`; the `sidebar-rows`
-  ui-shot checks the heights. Not yet released.
+  ui-shot checks the heights. Released in v0.6.0 (2026-11-10). *(Heights changed again the same day, below.)*
+- **2026-11-10, a roomier sidebar** (your words, with a screenshot: "redesign this sidebar section. It's too
+  compact, the line on the left is not good and not gap between title and the list of workspaces"; then "you go
+  ahead, propose a design and I'd rather do it right now. I check if good then we release"). Every detail is the
+  AI's call:
+  - **Room in the rows:** the name line 18 pt (was 17), each line under it 16 pt (was 13), **4 pt between the name
+    and the lines under it** (your follow-up: "add more gaps between title and git/folder. It's still too
+    compact"), and **7 pt above and below** the text. Rows are **32 / 52 / 68 pt** for one / two / three lines
+    (were 22 / 32 / 45). **4 pt** between rows (was 2).
+  - **No accent bar:** the selected row is the `row_selected` tint alone, to its left edge.
+  - **A gap under the title:** the list starts **10 pt** under the top band (`LIST_TOP`).
+  - **Groups:** headers **28 pt** (were 24); **16 pt** above a group (was 10).
+  - Rows, headers and the dragged row's copy have **8 pt corners** (were 6), as the panes' cards.
+  - **The branch reads as a button** (your words: "the branch is clickable, but its the same as other text… do not
+    make it full width (except the text is too long or the text ellipsis)"; "add icon git and icon folder as
+    well"): the branch glyph (the status bar's) and the name in `text_dim`; on hover a `row_active` pill and
+    `text`; only the glyph and the name take the click (the whole line only when the name is cut). The folder line
+    has a folder glyph (`text_faint`), not a button.
+  - Code: `ui_tokens::size` (`SIDEBAR_ROW*`, `GROUP_HEADER`; `SELECTION_BAR` removed), `sidebar.rs` (`ROW_GAP`,
+    `GROUP_GAP`, `LIST_TOP`, `ROW_RADIUS`, `NAME_LINE`, `NAME_GAP`, `SUB_LINE`, `PLACE_ICON`, `BRANCH_CHIP_PAD`).
+    The `sidebar`, `sidebar-rows` and `sidebar-selection` ui-shots check the heights, the gaps and the tint at the
+    selected row's left edge.
+- **2026-11-10, the pane's first tab off the card's edge** (your words: "on right bar there's gap on the left edge,
+  middle has none. make the middle content has gap on the very left tab"): a pane's tab bar starts its first tab
+  **6 pt** in, as the right sidebar's panel tabs (both from `ui_tokens::size::TABS_LEFT`).
+- **2026-11-10, a workspace anywhere in the sidebar** (your words: "why I cannot drag drop and put a workspace out
+  of the folder workspace? fix it within this session on master directly"; after the first try, with a
+  screenshot: "the drag and move is still too messy. I also cannot drop to outside folder. I also cannot drop/move
+  from folder workspace to another folder workspace"). Why: a workspace's group was only ever its first
+  terminal's folder (or host) and a drag moved a row within its own group; the first fix only allowed "out" above
+  the first header's middle (almost no room when a group is at the top), didn't slide the headers (rows slid over
+  them), and only accepted a drop over the list. Now:
+  - An unpinned row can be dropped **anywhere among the unpinned rows**: the nearest header above the drop point
+    is its group; above the first header it is **out of every group**. Pointing above the list (the title band)
+    is the very top. A drop anywhere on the sidebar counts.
+  - Where it was put is saved (`layout_model::Placed`: ungrouped, or another folder's or host's group;
+    `shown_group`, `placed_for`); dropped back in its own group, nothing is recorded. Its row still shows its own
+    branch and folder.
+  - While dragging, everything between its place and the gap slides, **headers too** (`Slid::Header`), so nothing
+    overlaps. Pinned rows still move only among the pinned ones.
+  - Code: `sidebar::drop_place` (with `ListItem`, `Listed`), `cross_offsets`; `Workspace::drop_workspace`,
+    `move_in_run`, `folder_group`. Checked by the `sidebar-drag`, `sidebar-drag-out` and `sidebar-drop` ui-shots
+    (out of every group, into web's group, back into api's).
+- **2026-11-10, each group is a card** (your words: "I have other issue in tell apart from group workspace to another
+  workspace and the basic workspace. can you make the ui uplift on group workspace? make it cool so I can tell the
+  workspaces are grouped"; then "go ahead, propose a design"). Every detail is the AI's call:
+  - A group's header and its rows sit on **one rounded card** (`card`, the panes' colour, with a 1 pt
+    `card_border` edge, 10 pt corners, 4 pt of room inside), so grouped rows read as held together; pinned and
+    ungrouped rows stay plain on the sidebar above the cards. A closed group is a card of its header alone.
+  - The header shows **a folder** (open while the group is, closed when it is) or, for an SSH host, a globe,
+    between its chevron and its name.
+  - Rows in a card are inset 4 pt and use the card's own hover (`card_hover`) and selection (`card_selected`).
+  - The card is drawn behind each item (`sidebar::card_parts`, `card_band`), joined across the gaps; it slides
+    with its header and rows while one is dragged. Item heights didn't change, so drags and scrolling are as before.
+  - **Dragging with cards** (your words: "the drag n drop messes up the card and group workspace layout. and it
+    becomes messy"). Why: the dragged row's card stayed where the row was, drawn over the rows that slid into its
+    place (claude vanished under it), and the cards kept their pre-drag shape, so the gap showed the sidebar inside
+    a card and rounded corners sat mid-card. Now, while a row is dragged, the cards are drawn as they will be
+    after the drop (`sidebar::drag_parts`) and the dragged row's card is drawn at its gap (`gap_offset`): a gap in
+    a group is part of that group's card, one out of every group is plain. The `sidebar-drag-out` ui-shot checks
+    that a row sliding into the dragged one's place is seen.
+- **2026-11-10, a caret you can move in every name box** (your words: "when I want to rename the title (workspace
+  and cli) I cannot move the cursor to edit specific part"). Why it couldn't: `NameInput` kept its caret at the
+  end by design. Now: ← → by character, ⌥ by word, ⌘ ← → and Home / End to an end, ⇧ with any of them selects,
+  ⌦ erases forward, ⌘⌫ erases to the start, ⌘A selects all, a click places the caret (⇧-click selects to it), a
+  drag selects, a double-click selects all; a long text scrolls to keep the caret in view. Every box built on it
+  gets it: renames, ⌘K, the branch switcher, the SSH picker, Help, the Files filter (whose ← → used to do nothing
+  there), the browser's address box.
+- **2026-11-10, a folder's double-click in Files `cd`s the terminal there** (your words: "when I double click the
+  folder from files tab, make the cli to 'cd' to that directory"): the followed terminal gets `cd -- '<folder>'`
+  and Return (`block_view::cd_bytes`), only when it is a local one at an empty prompt (as Rerun: zsh with fuxx's
+  integration; a running program, typed text or an SSH terminal: nothing is typed). The folder still opens on the
+  first click; the second no longer closes it.
+- **2026-11-10, "New Fuxxpace"** (your words: "for new workspace, default title is "New Fuxxpace""): a workspace
+  named after a terminal that has only the default `╭∩╮` is called **New Fuxxpace** (`groups::workspace_name`); the
+  terminal's own tab keeps `╭∩╮`.
+- All of the above: built 2026-11-10 on master, not committed or released yet; 1335 tests pass. **Waiting for your
+  on-screen check (11 items):**
+  1. Rows have room above and below their text and between the name and the branch/folder lines.
+  2. The selected row has no bar on its left; its tint alone shows it, in Mocha and Latte.
+  3. There is a clear gap between "the Fuxx?" and the first group or row.
+  4. The branch line has a branch icon and brighter text; hover shows a pill only around the icon and name; a click
+     there opens the branch switcher; a click right of it selects the row. The folder line has a folder icon.
+  5. A pane's first tab sits 6 pt in from the card's left edge, like Files in the right sidebar.
+  6. Drag a workspace up to the top (into the title band is fine): it leaves its group and stays out after a
+     relaunch. Drag it under another folder's header: it joins that group. Drag it back under its own: it
+     returns. While dragging, rows and headers slide together with no overlap.
+  7. Rename a workspace and a tab: ← → ⌥← ⌘← ⇧← move and select, a click places the caret, typing goes there.
+  8. In Files, double-click a folder at an empty zsh prompt: the terminal `cd`s there. With Claude Code or vim
+     running, or text typed at the prompt: nothing is typed.
+  9. A new workspace (⌘N) is called "New Fuxxpace" in the sidebar and window title; its tab says `╭∩╮`.
+  10. Hover, drag a row, drop a tab on a row, the × on hover: all as before.
+  11. Each group is a card (header with a folder icon, its rows inside); pinned and ungrouped rows are plain
+      above the cards; a closed group is a small card with a closed folder; in Mocha and Latte.
 
 ## On-screen checklist (pending; released in v0.5.0)
 

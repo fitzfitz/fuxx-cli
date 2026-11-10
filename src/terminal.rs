@@ -941,6 +941,12 @@ impl TerminalCore {
 
     /// What Rerun of block `id` depends on, under one lock: whether this terminal's tagger
     /// wrote the block in this run, the prompt, the cursor and the modes. Cheap (no scan).
+    /// Whether the shell is at an empty prompt (and its paste mode), for typing a command
+    /// into it (a folder's `cd` from Files): `rerun_facts` without a block.
+    pub fn prompt_facts(&self) -> blocks::RerunFacts {
+        Self::facts(&self.shared.lock(), "")
+    }
+
     pub fn rerun_facts(&self, id: &str) -> blocks::RerunFacts {
         Self::facts(&self.shared.lock(), id)
     }

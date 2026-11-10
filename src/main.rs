@@ -290,6 +290,40 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
         KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
         KeyBinding::new("enter", name_input::Confirm, Some("NameInput")),
+        // The caret (2026-11-10): ← → by character, ⌥ by word, ⌘ (or Home / End) to an end,
+        // ⇧ selecting; ⌦ erases forward, ⌘A selects all.
+        KeyBinding::new("left", name_input::MoveLeft, Some("NameInput")),
+        KeyBinding::new("right", name_input::MoveRight, Some("NameInput")),
+        KeyBinding::new("alt-left", name_input::WordLeft, Some("NameInput")),
+        KeyBinding::new("alt-right", name_input::WordRight, Some("NameInput")),
+        KeyBinding::new("cmd-left", name_input::LineStart, Some("NameInput")),
+        KeyBinding::new("cmd-right", name_input::LineEnd, Some("NameInput")),
+        KeyBinding::new("home", name_input::LineStart, Some("NameInput")),
+        KeyBinding::new("end", name_input::LineEnd, Some("NameInput")),
+        KeyBinding::new("shift-left", name_input::SelectLeft, Some("NameInput")),
+        KeyBinding::new("shift-right", name_input::SelectRight, Some("NameInput")),
+        KeyBinding::new(
+            "alt-shift-left",
+            name_input::SelectWordLeft,
+            Some("NameInput"),
+        ),
+        KeyBinding::new(
+            "alt-shift-right",
+            name_input::SelectWordRight,
+            Some("NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-shift-left",
+            name_input::SelectToStart,
+            Some("NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-shift-right",
+            name_input::SelectToEnd,
+            Some("NameInput"),
+        ),
+        KeyBinding::new("delete", name_input::Delete, Some("NameInput")),
+        KeyBinding::new("cmd-a", name_input::SelectAll, Some("NameInput")),
         KeyBinding::new("escape", name_input::Cancel, Some("NameInput")),
         // The SSH host picker: its box is a NameInput (Enter, Escape above); these keys
         // move through the hosts and choose.
@@ -1412,9 +1446,10 @@ mod tests {
             !found.is_empty()
         };
         // ← → don't open or close folders from the box (a filter's rows show every match's
-        // folder open, so it would change the tree out of sight).
-        assert!(!bound("left", filter_box), "← in the box");
-        assert!(!bound("right", filter_box), "→ in the box");
+        // folder open, so it would change the tree out of sight): they move its caret.
+        assert!(runs(&keymap, "left", filter_box).partial_eq(&name_input::MoveLeft));
+        assert!(runs(&keymap, "right", filter_box).partial_eq(&name_input::MoveRight));
+        let _ = bound;
         // Not in a terminal.
         assert!(!bound("up", TERMINAL), "↑ stays the terminal's");
     }

@@ -1370,6 +1370,21 @@ impl TerminalView {
     /// Rerun block `id`: type its command at the prompt, never pressing Return, when every
     /// guard allows it (`block_view::rerun_bytes`); otherwise nothing. Pasted like a script's
     /// paste (bracketed when the shell asked), so the chip and the picked block stay.
+    /// Type `cd -- '<folder>'` and Return, if the shell is at an empty prompt (`cd_bytes`);
+    /// false when it isn't (nothing is typed).
+    pub fn cd_to(&mut self, folder: &std::path::Path, cx: &mut Context<Self>) -> bool {
+        let Some(folder) = folder.to_str() else {
+            return false;
+        };
+        match block_view::cd_bytes(folder, self.core.prompt_facts()) {
+            Ok(bytes) => {
+                self.send_paste(&bytes, cx);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     fn rerun_block(&mut self, id: &str, cx: &mut Context<Self>) {
         let (facts, cmd) = self.core.rerun_facts_and_cmd(id);
         // Bracketed exactly as the facts that allowed it said: a `?2004l` arriving since can't
