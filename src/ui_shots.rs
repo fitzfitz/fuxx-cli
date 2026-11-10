@@ -11068,6 +11068,9 @@ fn branch_switcher_scene() {
             }
             save_shot("branch-switcher", slug, &shot);
             let (old, spike) = seen.get().expect("drawn");
+            // Glyph pixels exactly in a colour: about as many per point as the scale (the shot's
+            // pixels per point), so the least is 5 at 1x and 10 at 2x.
+            let least = (5.0 * shot.width as f32 / f32::from(dims.width)).round() as usize;
             let faint = count_along(
                 &shot,
                 dims,
@@ -11085,8 +11088,8 @@ fn branch_switcher_scene() {
                 f32::from(old.right()) - 4.0,
             );
             assert!(
-                faint >= 10 && bright == 0,
-                "{slug}: feature/old is faint ({faint} faint, {bright} in text)"
+                faint >= least && bright == 0,
+                "{slug}: feature/old is faint ({faint} faint, {bright} in text, {least} needed)"
             );
             let spike_text = count_along(
                 &shot,
@@ -11097,8 +11100,8 @@ fn branch_switcher_scene() {
                 f32::from(spike.right()) - 4.0,
             );
             assert!(
-                spike_text >= 10,
-                "{slug}: spike's name is in text ({spike_text})"
+                spike_text >= least,
+                "{slug}: spike's name is in text ({spike_text}, {least} needed)"
             );
         }
     }
