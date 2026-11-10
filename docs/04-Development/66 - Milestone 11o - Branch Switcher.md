@@ -150,7 +150,8 @@ window)*:
   credential helpers told not to be interactive, e.g. `GCM_INTERACTIVE=never`; ssh in batch mode), so opening the
   modal never pops a login or Keychain window; without stored credentials it just says `Fetch failed`. The **Fetch
   button** lets the helper open its own window (a browser sign-in, a Keychain prompt, an ssh askpass), because you
-  asked for it. Neither ever waits on a terminal.
+  asked for it. Neither ever waits on a terminal. *(As built: git never asks for the automatic fetch, but an ssh
+  agent that confirms each use, or a macOS Keychain prompt, may still ask on its own.)*
 - **On failure** the modal stays usable with local data and says `Fetch failed: <git's first line>` in
   `text_faint`. No origin remote: no fetch, no button, no ORIGIN section.
 - Closing the modal mid-fetch lets the fetch finish in the background; nothing is shown.
@@ -159,6 +160,7 @@ window)*:
 
 - **A local branch:** `git switch <name>`.
 - **An ORIGIN row:** `git switch --track origin/<name>` (a local branch tracking it), after the same confirmation.
+  *(As built: the branch is made first, then switched to; see "M11o as built" #5.)*
 - **The box filters** the list as you type (by substring, case-insensitive) *(AI's call: the ⌘K matcher)*. When the
   typed name matches no local or ORIGIN branch exactly, one extra row appears: **Check out `<name>` from origin**.
   After the automatic fetch a normal clone already lists every origin branch, so this row matters while that fetch
@@ -242,19 +244,24 @@ Also for the builder: today's `run_capped_*` drops git's stderr; the fetch failu
 - **The list:** the current branch first (marked, not clickable), then local branches, then an ORIGIN section for
   origin's branches that are not local. Each row has its mark: `local only`, `upstream gone`, or how far ahead and
   behind it is. The box filters as you type.
-- **Fetch:** a background fetch starts when the modal opens (`Fetching…`), and the Fetch button runs it again. The
-  automatic fetch never opens a credential window (no Keychain, browser or askpass); the button may. A failure shows
-  `Fetch failed: <git's first line>` and the list stays usable.
+- **Fetch:** a background fetch starts when the modal opens (`Fetching…`), and the Fetch button runs it again. For the
+  automatic fetch git never asks for a login; an ssh agent that confirms each use, or a macOS Keychain prompt, may
+  still ask on its own. The button lets a credential helper open its window. A failure shows
+  `Fetch failed: <git's first line>` and the list stays usable. Fetch is disabled on the confirm step.
 - **Conflicts:** a branch that would collide with your uncommitted changes is disabled and says `conflict n file(s)`.
   The counts are worked out only for rows in view, at most 4 at a time, and again as you scroll or filter.
 - **Confirm step:** choosing a branch shows what will happen: the branch, the files carried over, and a warning line
   if a program runs in that folder (named by its tab title, else its program, else "a program"), and a detached HEAD
-  with commits on no branch. Switch or Cancel; Escape goes back to the list.
+  with commits on no branch. Switch or Cancel; Escape goes back to the list. A read landing while it shows (the
+  automatic fetch's, say) rebuilds it for the same branch.
 - **A typed name:** a row `Check out <name> from origin` appears when the name matches nothing exactly. Choosing it
   fetches that one branch; found → its conflict count → confirm; not found → `Branch <name> not found`, nothing created.
 - **Switch:** git does the switch. On success the modal closes and the sidebar rows and the status bar for that folder
-  show the new branch at once. If git refuses, the modal stays open on the list with git's message under the box, and
-  the counts are read again.
+  show the new branch at once. If git refuses, nothing in the repo changed: the modal stays open on the list with git's
+  message under the box, and the counts are read again.
+- **While git works on a choice** (counting, looking for a typed name, switching): keys and clicks in the modal are
+  ignored, Escape too, and nothing replaces it: the three openers and ⌘K do nothing. If you click elsewhere in fuxx
+  meanwhile, the box gets the keyboard back when git is done.
 
 ### What the build settled (all AI's calls, marked as such; none needed you)
 
@@ -271,10 +278,18 @@ Also for the builder: today's `run_capped_*` drops git's stderr; the fetch failu
    pointed out that killing a switch half-way can leave a half-switched tree and a `.git/index.lock`, which breaks
    "nothing changes unless git agreed". fuxx must never hang, so there is still a cap; it is long enough that only a
    truly stuck switch (a hook, say) meets it.
-5. **Narrow clones** (AI's call): fuxx reads the `remote.origin.fetch` lines. When they cover the branch it runs
-   `git switch --track origin/<name>` as the design says. When they don't (a `--single-branch` clone), `--track`
-   refuses and leaves a file staged, so fuxx runs `git switch --no-track -c <name> origin/<name>` and then sets the
-   branch's upstream by hand: the same result, and nothing left staged if git refuses.
+5. **An origin branch is made first, then switched to** (AI's call, from the final review). `git switch --track
+   origin/<name>` (and `switch -c`) can write the target's files into the tree and index and only then fail to make
+   the branch (a narrow clone; a name clashing with a local branch as a folder, `feature` against `feature/x`),
+   leaving the target's files staged among yours. So fuxx first runs `git branch --no-track <name>
+   refs/remotes/origin/<name>` and writes its upstream (`branch.<name>.remote` = origin, `branch.<name>.merge` =
+   `refs/heads/<name>`): none of that touches the tree, and `git branch` refuses a clash cleanly. Then `git switch
+   --no-guess <name>`. If the upstream can't be written or git refuses the switch, fuxx takes back exactly what it
+   made: the upstream keys go back to what they were, and the branch is deleted only while it still points where it
+   was made (`git update-ref -d refs/heads/<name> <commit>`, git checks) and HEAD is not on it. git's refusal is what
+   you see. So the only command that changes the work tree is a switch to a local branch that exists, which git
+   either refuses whole or does. It works whatever origin's fetch rule is. Cost: `--track`'s extras (e.g.
+   `branch.autoSetupRebase`) are not applied.
 6. **The typed name's fetch may open a credential window** (AI's call), like the Fetch button: you chose the name and
    asked for it. A typed name also waits for a fetch that is already running (up to 30 s; it can't be cancelled).
 7. **The typed row appears only when the repo has an origin** (AI's call): with no origin there is nothing to fetch.
@@ -290,6 +305,15 @@ Also for the builder: today's `run_capped_*` drops git's stderr; the fetch failu
     never silently does nothing.
 13. **The running-programs list is taken when the modal opens** (and matched to the repo's root after git's first read,
     off the UI thread).
+14. **No guessing, full names** (AI's call, from the final review): a local switch is `git switch --no-guess <name>`,
+    so a branch deleted between the list and your Switch is refused, not re-made from origin's; origin's branches
+    are always named in full (`refs/remotes/origin/<name>`), so a local branch literally called `origin/<name>` can't
+    be taken for it.
+15. **`@` is not a branch name** (AI's call): git's name check lets it through, but it means HEAD; a typed `@` says
+    `Branch @ not found`.
+16. **Nothing replaces a busy switcher** (AI's call, from the final review): while git works on a choice the openers
+    and ⌘K do nothing (a switch can't be called back), and if the box lost the keyboard meanwhile it gets it back
+    when git is done.
 
 ### Limits
 
@@ -299,8 +323,12 @@ Also for the builder: today's `run_capped_*` drops git's stderr; the fetch failu
 - A switch that finishes after the modal was closed or replaced cannot report back; the rows catch up at the next 5 s
   refresh.
 - The conflict count is still fuxx's estimate; git has the last word.
-- Found in review, to fix before merge: if origin's fetch rule has no `:` or stores into another remote's refs, fuxx
-  could still choose `--track` on a narrow clone (the final fix wave).
+- Two quick re-opens can overlap fetches (a spurious `cannot lock ref` in `Fetch failed`), and a fetch killed at the
+  30 s cap can leave `.lock` files under `.git`.
+- If fuxx stops between making an origin branch and switching to it (a crash), the new local branch stays, tracking
+  origin's: harmless, and it shows in the list.
+- Other boxes (help, the notifications popover, a menu) still close a busy switcher; the switch runs on and the rows
+  catch up at the next 5 s refresh.
 
 ## On-screen checklist (pending)
 
@@ -310,7 +338,7 @@ window, a real conflict, or the pointer.
 1. **Open from the sidebar:** in a repo, click the branch line of a row: the modal opens, titled `Switch branch · <folder>` with the folder under it. The pointer is a hand over the branch line.
 2. **Open from the status bar and ⌘K:** click the branch at the bottom (a hand over it): the modal opens for the terminal the bar follows. Press ⌘K, type `switch`, Enter: it opens for the focused terminal.
 3. **The marks:** against a repo you know, `current` on your branch, `local only` on one never pushed, `↑n ↓n` where you are ahead or behind, `upstream gone` where origin deleted it, and origin's other branches under ORIGIN.
-4. **Fetch:** on open you see `Fetching…`, then the list refreshes (new origin branches appear). Press Fetch: same again. Try a repo whose login needs a sign-in: the automatic fetch opens no window; the Fetch button may open one.
+4. **Fetch:** on open you see `Fetching…`, then the list refreshes (new origin branches appear). Press Fetch: same again. Try a repo whose login needs a sign-in: for the automatic fetch git never asks (an ssh agent that confirms each use, or a macOS Keychain prompt, may still ask on its own); the Fetch button may open a sign-in window.
 5. **Offline:** turn Wi-Fi off and open it: `Fetch failed: …` in faint text, and the list still works.
 6. **A conflicting branch:** make an uncommitted edit to a file that another branch also changes: that branch is greyed with `conflict 1 file(s)` and cannot be chosen. A branch that does not touch your files can.
 7. **Confirm with an agent running:** start an agent in that folder, open the modal, choose another branch: the confirm step names the running program. Escape goes back to the list; Cancel does too.
