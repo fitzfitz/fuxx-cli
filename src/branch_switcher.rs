@@ -15,7 +15,9 @@
 //! starts. The box is the palette's (`NameInput`): on the list its Escape, losing focus or a
 //! click outside closes the switcher; on the confirmation Escape goes back to the list. While
 //! git works on a choice (`busy`) every key and click is ignored, Escape too: a switch can't be
-//! called back half way.
+//! called back half way. Nor is the switcher replaced meanwhile: its openers and the palette
+//! do nothing (`Workspace::branch_switcher_busy`); and if its box lost the keyboard, it gets
+//! it back when git is done (`Refocus`).
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -76,6 +78,9 @@ pub enum BranchSwitcherEvent {
     Switched { root: PathBuf },
     /// Escape, a click outside, the box lost focus, or the folder is no repo any more.
     Cancel,
+    /// git finished a choice with the panel still open, and its box lost the keyboard
+    /// meanwhile: give it back.
+    Refocus,
 }
 
 /// A line of the list: a branch's row (a place in `rows`), the ORIGIN heading, or the typed
@@ -246,6 +251,8 @@ pub struct BranchSwitcher {
     /// What git is doing for a choice (counting, fetching a typed name, switching): every key
     /// and click is ignored meanwhile.
     busy: Option<String>,
+    /// The box lost the keyboard while busy: it gets it back when git is done (`idle`).
+    refocus: bool,
     /// git's refusal, or a typed name not found, under the box (until the next choice or
     /// typing).
     note: Option<String>,
@@ -366,6 +373,9 @@ impl BranchSwitcher {
                 // the confirmation).
                 NameInputEvent::Cancel => {
                     let blurred = !input.focus_handle(cx).is_focused(window);
+                    if blurred && this.busy.is_some() {
+                        this.refocus = true;
+                    }
                     this.escape(blurred, cx)
                 }
             }
@@ -380,6 +390,7 @@ impl BranchSwitcher {
             fail_switch: None,
             step: Step::List,
             busy: None,
+            refocus: false,
             note: None,
             input,
             query: String::new(),
@@ -815,7 +826,7 @@ impl BranchSwitcher {
         count: Option<usize>,
         cx: &mut Context<Self>,
     ) {
-        self.busy = None;
+        self.idle(cx);
         if generation != self.generation {
             if self.listed(&target) {
                 self.confirm_fresh(target, typed, cx);
@@ -857,7 +868,7 @@ impl BranchSwitcher {
     fn run_typed_fetch(&mut self, name: String, cx: &mut Context<Self>) {
         let root = self.snapshot.as_ref().map(|s| s.root.clone());
         let Some(root) = root.filter(|_| self.live) else {
-            self.busy = None;
+            self.idle(cx);
             return;
         };
         self.busy = Some(looking_for(&name));
@@ -892,7 +903,7 @@ impl BranchSwitcher {
     }
 
     fn fetched_typed(&mut self, typed: Typed, cx: &mut Context<Self>) {
-        self.busy = None;
+        self.idle(cx);
         match typed {
             Typed::Found {
                 name,
@@ -955,19 +966,31 @@ impl BranchSwitcher {
 
     /// git answered the switch: yes closes the panel (`Switched`); no goes back to the list
     /// with git's message under the box, and the list is read again (the tree may have changed
-    /// since the counts, and a refusing git can have touched it: see the M11o Task 4 report on
-    /// `switch --track` in a single-branch clone).
+    /// since the counts, by the user or another program).
     fn switched(&mut self, root: PathBuf, result: Result<(), String>, cx: &mut Context<Self>) {
-        self.busy = None;
         match result {
-            Ok(()) => cx.emit(BranchSwitcherEvent::Switched { root }),
+            Ok(()) => {
+                self.busy = None;
+                self.refocus = false;
+                cx.emit(BranchSwitcherEvent::Switched { root })
+            }
             Err(message) => {
+                self.idle(cx);
                 self.step = Step::List;
                 self.note = Some(message);
                 self.read_again(cx);
             }
         }
         cx.notify();
+    }
+
+    /// git is done with a choice: keys and clicks work again, and the box gets the keyboard
+    /// back if it lost it meanwhile (`Refocus`: the workspace focuses it).
+    fn idle(&mut self, cx: &mut Context<Self>) {
+        self.busy = None;
+        if std::mem::take(&mut self.refocus) {
+            cx.emit(BranchSwitcherEvent::Refocus);
+        }
     }
 
     /// Read the repo again (a seeded switcher shows its snapshot again, as a new read).
@@ -1448,6 +1471,13 @@ impl BranchSwitcher {
         self.got_snapshot(Some(snapshot), false, cx);
     }
 
+    /// The box reports losing the keyboard, as GPUI's blur does in an active window (the
+    /// screenshots' window is never active, so GPUI reports none there).
+    pub fn report_blur(&mut self, cx: &mut Context<Self>) {
+        self.input
+            .update(cx, |_, cx| cx.emit(NameInputEvent::Cancel));
+    }
+
     /// The box's text.
     pub fn query_text(&self, cx: &App) -> String {
         self.input.read(cx).text().to_string()
@@ -1563,15 +1593,28 @@ impl Render for BranchSwitcher {
 }
 
 impl Workspace {
+    /// Whether the open branch switcher is busy (git works on a choice in it). A switch can't
+    /// be called back half way, so meanwhile nothing replaces the switcher: no opener (the
+    /// row's branch, the status bar's, ⌘K's command) and no palette over it.
+    pub(crate) fn branch_switcher_busy(&self, cx: &App) -> bool {
+        self.branch_switcher
+            .as_ref()
+            .is_some_and(|switcher| switcher.read(cx).busy.is_some())
+    }
+
     /// Open the branch switcher on terminal `terminal`'s repo: its folder as the sidebar finds
     /// it (as last looked up, else the one it started in). Nothing opens for an SSH terminal,
-    /// one with no folder, no git on this Mac, or a folder with no branch (not a repo).
+    /// one with no folder, no git on this Mac, or a folder with no branch (not a repo), nor
+    /// while the open one is busy (`branch_switcher_busy`).
     pub(crate) fn open_branch_switcher(
         &mut self,
         terminal: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.branch_switcher_busy(cx) {
+            return;
+        }
         let Some(folder) = self.switchable_folder(terminal) else {
             return;
         };
@@ -1660,6 +1703,10 @@ impl Workspace {
     ) {
         // A switcher already closed or replaced can still report losing focus: ignore it.
         if self.branch_switcher.as_ref() != Some(switcher) {
+            return;
+        }
+        if let BranchSwitcherEvent::Refocus = event {
+            switcher.focus_handle(cx).focus(window, cx);
             return;
         }
         self.branch_switcher = None;

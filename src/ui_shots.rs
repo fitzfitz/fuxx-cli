@@ -11488,12 +11488,38 @@ fn branch_switcher_confirm_scene() {
                             assert_eq!(chosen(cx).as_deref(), Some("feature/rows"), "{n}: kept");
                             press_keys(cx, window, "enter");
                             assert!(confirm(cx).is_some(), "{n}: Enter opens it again");
-                            press_keys(cx, window, "enter");
+                            // Switch (without running the executor: the stub's answer waits),
+                            // then the terminal takes the keyboard while git works.
+                            cx.dispatch_keystroke(
+                                window,
+                                gpui::Keystroke::parse("enter").expect("a keystroke"),
+                            );
                             let s = sw(cx);
+                            cx.update_window(window, |_, window, cx| {
+                                ws.update(cx, |ws, cx| ws.focus_active(window, cx));
+                                s.update(cx, |s, cx| s.report_blur(cx));
+                            })
+                            .expect("the terminal takes the keyboard");
+                            assert!(
+                                active_terminal_focused(cx, window, &ws),
+                                "{n}: the terminal has the keyboard while git works"
+                            );
+                            assert!(
+                                branch_switcher_of(cx, &ws).is_some()
+                                    && cx.read(|cx| s.read(cx).busy()),
+                                "{n}: losing the keyboard while busy leaves it open, busy"
+                            );
                             assert!(
                                 settle_until(cx, window, 3, |cx| !cx.read(|cx| s.read(cx).busy())),
                                 "{n}: the switch ends"
                             );
+                            let boxed = cx
+                                .update_window(window, |_, window, cx| {
+                                    use gpui::Focusable;
+                                    s.focus_handle(cx).is_focused(window)
+                                })
+                                .expect("read the focus");
+                            assert!(boxed, "{n}: its box has the keyboard back");
                             assert_eq!(confirm(cx), None, "{n}: a refusal goes back to the list");
                             assert_eq!(
                                 note(cx).as_deref(),
@@ -11590,6 +11616,36 @@ fn branch_switcher_confirm_scene() {
                                 Some("Fetching\u{2026}"),
                                 "{n}: the fetch still runs"
                             );
+                            // Busy: no opener replaces it (the row's or the bar's branch, the
+                            // command), and ⌘K opens nothing over it.
+                            let folder = PathBuf::from("/Users/me/scratch/repo");
+                            cx.update_window(window, |_, window, cx| {
+                                ws.update(cx, |ws, cx| {
+                                    let id = ws.sessions.active().expect("an active terminal").id;
+                                    ws.places.set_folder(
+                                        id,
+                                        Some(folder.clone()),
+                                        std::time::Instant::now(),
+                                    );
+                                    ws.places.set_branch(&folder, Some("main".into()));
+                                    assert!(ws.switchable_folder(id).is_some());
+                                    ws.open_branch_switcher(id, window, cx);
+                                })
+                            })
+                            .expect("ask for another switcher");
+                            settle(cx, window);
+                            assert_eq!(
+                                branch_switcher_of(cx, &ws).as_ref(),
+                                Some(&s),
+                                "{n}: a busy switcher isn't replaced"
+                            );
+                            press_keys(cx, window, "cmd-k");
+                            assert!(palette_of(cx, &ws).is_none(), "{n}: no palette over it");
+                            assert_eq!(
+                                branch_switcher_of(cx, &ws).as_ref(),
+                                Some(&s),
+                                "{n}: still the busy one"
+                            );
                         }
                     }
                     slot.borrow_mut().take();
@@ -11681,9 +11737,9 @@ fn scratch_git(git: &std::path::Path, dir: &std::path::Path, args: &[&str]) -> S
 /// - typing `nope`, Enter: `Branch nope not found` under the box, still `other`, no `nope`
 ///   branch or origin ref made;
 /// - typing `feature/typed`, Enter: fetched, `Switch to feature/typed?`; Enter: on this
-///   single-branch clone (`switch --track` refuses a ref outside origin's fetch refspec, after
-///   writing the tree) it switches as `switch --no-track -c` with the upstream set by hand: git
-///   on `feature/typed`, only `notes.txt` uncommitted, `branch.feature/typed.merge` set;
+///   single-branch clone it is made a local branch first (`branch --no-track`, the upstream
+///   written), then switched to: git on `feature/typed`, only `notes.txt` uncommitted,
+///   `branch.feature/typed.merge` set;
 /// - with the clone's refspec widened (`remote set-branches origin '*'`) and `feature/late` made
 ///   on origin after the switcher's automatic fetch: typing it, Enter: fetched, `Switch to
 ///   feature/late?`; Enter switches (git says `feature/late`, tracking `origin/feature/late`).
@@ -11966,8 +12022,8 @@ fn branch_switcher_real_scene() {
         press_keys(cx, window, "escape");
 
         // A typed name origin has, not fetched by this single-branch clone (its refspec brings
-        // trunk only): fetched alone, then switched to as a new local branch whose upstream is
-        // set by hand (git won't `--track` a ref outside the refspec).
+        // trunk only): fetched alone, made a local branch with origin's as its upstream (as
+        // every origin branch is, whatever the refspec), then switched to.
         let sw = open(cx, &ws);
         cx.simulate_input(window, "feature/typed");
         settle(cx, window);
