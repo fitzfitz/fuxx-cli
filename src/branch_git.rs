@@ -181,12 +181,14 @@ pub fn fetch(git: &Path, root: &Path, mode: FetchMode) -> Result<(), String> {
     .map(|_| ())
 }
 
-/// A name that may go to git as a branch: not empty, not an option (`-f`), and one git itself
-/// accepts (`check-ref-format --branch`, which also expands `@{-1}`: so it must print back
-/// exactly the name).
+/// A name that may go to git as a branch: not empty, not an option (`-f`), not `@` (git's
+/// HEAD, which `check-ref-format --branch` lets through), and one git itself accepts
+/// (`check-ref-format --branch`, which also expands `@{-1}`: so it must print back exactly the
+/// name).
 fn valid_branch(git: &Path, root: &Path, name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
+        && name != "@"
         && run_git(git, root, &["check-ref-format", "--branch", name])
             .is_some_and(|out| out.trim_end_matches('\n') == name)
 }
@@ -211,85 +213,90 @@ pub fn fetch_branch(git: &Path, root: &Path, name: &str, mode: FetchMode) -> Res
     }
 }
 
-/// Whether origin's fetch refspecs (`remote.origin.fetch`, one per line) bring
-/// `refs/heads/<name>`: a source side equal to it, or matching it with its one `*` (which, as in
-/// git, spans slashes), and no negative refspec (`^…`) taking it back out. A leading `+` is
-/// ignored.
-fn fetch_covers(specs: &str, name: &str) -> bool {
-    let branch = format!("refs/heads/{name}");
-    let matches = |source: &str| match source.split_once('*') {
-        Some((before, after)) if !after.contains('*') => {
-            branch.len() >= before.len() + after.len()
-                && branch.starts_with(before)
-                && branch.ends_with(after)
-        }
-        Some(_) => false,
-        None => source == branch,
-    };
-    let mut covered = false;
-    for spec in specs.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if let Some(negative) = spec.strip_prefix('^') {
-            if matches(negative) {
-                return false;
-            }
-            continue;
-        }
-        let spec = spec.strip_prefix('+').unwrap_or(spec);
-        let source = spec.split_once(':').map_or(spec, |(source, _)| source);
-        covered |= matches(source);
-    }
-    covered
-}
-
-/// `switch <name>`, or for an origin branch a local branch tracking it, never another flag (no
-/// `-C`, no force). A local name that could be read as an option is refused here (branch names
-/// from refs can't start with `-`).
+/// Switch to `target`. The only command that changes the work tree is
+/// `switch --no-guess <name>` to a local branch that exists (no `-c`, no `-C`, no force, no
+/// guessing a branch from origin's): git refuses it whole, before touching the tree, or does
+/// it. A name that could be read as an option is refused here (branch names from refs can't
+/// start with `-`).
 ///
-/// An origin branch origin's fetch refspecs bring: `switch --track origin/<name>`. One they
-/// don't (a single-branch clone, its ref fetched alone by `fetch_branch`): git won't track it,
-/// and refuses only after writing the target's files into the tree, so instead
-/// `switch --no-track -c <name> origin/<name>`, then its upstream set by hand
-/// (`branch.<name>.remote` = origin, `branch.<name>.merge` = `refs/heads/<name>`). If those
-/// writes fail the switch still stands (the branch then shows as local only).
+/// An origin branch is first made into a local one, as `--track` would make it, by commands
+/// that never touch the tree: `branch --no-track <name> refs/remotes/origin/<name>` (which
+/// refuses cleanly if a local branch has the name, or clashes with it as a folder:
+/// `feature` against `feature/x`), then its upstream (`branch.<name>.remote` = origin,
+/// `branch.<name>.merge` = `refs/heads/<name>`), which works whatever origin's fetch refspecs
+/// are. Then the switch. If the upstream can't be written, or git refuses the switch, what was
+/// just made is taken back (`unmake`): the repo is as it was, and git's first refusal is the
+/// answer.
 pub fn switch(git: &Path, root: &Path, target: &Target) -> Result<(), String> {
-    if target.name().starts_with('-') {
+    let name = target.name();
+    if name.starts_with('-') {
         return Err("not a branch name".to_string());
     }
-    let name = target.name();
-    let remote = format!("origin/{name}");
-    match target {
-        Target::Local(name) => {
-            run_git_checked(git, root, &["switch", name], SWITCH_CAP, &[]).map(|_| ())
-        }
-        Target::Origin(_) => {
-            let specs = run_git(git, root, &["config", "--get-all", "remote.origin.fetch"])
-                .unwrap_or_default();
-            if fetch_covers(&specs, name) {
-                return run_git_checked(
-                    git,
-                    root,
-                    &["switch", "--track", &remote],
-                    SWITCH_CAP,
-                    &[],
-                )
-                .map(|_| ());
+    let switch_to =
+        || run_git_checked(git, root, &["switch", "--no-guess", name], SWITCH_CAP, &[]).map(|_| ());
+    if matches!(target, Target::Local(_)) {
+        return switch_to();
+    }
+    let local = format!("refs/heads/{name}");
+    let remote = format!("refs/remotes/origin/{name}");
+    run_git_checked(
+        git,
+        root,
+        &["branch", "--no-track", name, &remote],
+        SWITCH_CAP,
+        &[],
+    )?;
+    // The commit it was made at: only a branch still there is taken back.
+    let Some(made_at) = run_git(git, root, &["rev-parse", "--verify", "-q", &local])
+        .map(|oid| oid.trim().to_string())
+    else {
+        return Err("git could not read the branch it made".to_string());
+    };
+    let mut written = Vec::new();
+    for (key, value) in [("remote", "origin"), ("merge", local.as_str())] {
+        let key = format!("branch.{name}.{key}");
+        let before = run_git(git, root, &["config", "--get", &key]).map(|v| v.trim().to_string());
+        match run_git_checked(git, root, &["config", &key, value], SWITCH_CAP, &[]) {
+            Ok(_) => written.push((key, before)),
+            Err(e) => {
+                unmake(git, root, name, &made_at, &written);
+                return Err(e);
             }
-            run_git_checked(
-                git,
-                root,
-                &["switch", "--no-track", "-c", name, &remote],
-                SWITCH_CAP,
-                &[],
-            )?;
-            let merge = format!("refs/heads/{name}");
-            for (key, value) in [("remote", "origin"), ("merge", merge.as_str())] {
-                let key = format!("branch.{name}.{key}");
-                // Switched already: a failed write leaves the branch without its upstream.
-                let _ = run_git_checked(git, root, &["config", &key, value], SWITCH_CAP, &[]);
-            }
-            Ok(())
         }
     }
+    switch_to().inspect_err(|_| unmake(git, root, name, &made_at, &written))
+}
+
+/// Take back the branch `switch` just made (and the upstream keys it wrote, to their values
+/// before): the branch is deleted only while it still points at `made_at` (git checks, in the
+/// same step) and HEAD isn't on it; nothing else is ever deleted.
+fn unmake(
+    git: &Path,
+    root: &Path,
+    name: &str,
+    made_at: &str,
+    written: &[(String, Option<String>)],
+) {
+    let local = format!("refs/heads/{name}");
+    let on_it = run_git(git, root, &["symbolic-ref", "-q", "HEAD"])
+        .is_some_and(|head| head.trim() == local);
+    if on_it {
+        return;
+    }
+    for (key, before) in written.iter().rev() {
+        let args: Vec<&str> = match before {
+            Some(value) => vec!["config", key, value],
+            None => vec!["config", "--unset", key],
+        };
+        let _ = run_git_checked(git, root, &args, SWITCH_CAP, &[]);
+    }
+    let _ = run_git_checked(
+        git,
+        root,
+        &["update-ref", "-d", &local, made_at],
+        SWITCH_CAP,
+        &[],
+    );
 }
 
 #[cfg(test)]
@@ -537,25 +544,211 @@ mod tests {
         assert!(switch(&git, &work, &Target::Local("-f".into())).is_err());
     }
 
+    /// git's stdout in `dir`, trimmed (empty if it failed).
+    fn out(git: &Path, dir: &Path, args: &[&str]) -> String {
+        let out = Command::new(git)
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// What a refused switch must leave as it was: HEAD, the index and work tree (status),
+    /// the local branches, and the `branch.*` config.
+    fn repo_state(git: &Path, dir: &Path) -> [String; 4] {
+        [
+            out(git, dir, &["rev-parse", "--symbolic-full-name", "HEAD"]),
+            out(git, dir, &["status", "--porcelain=v1", "-uall"]),
+            out(
+                git,
+                dir,
+                &["for-each-ref", "--format=%(refname)", "refs/heads"],
+            ),
+            out(git, dir, &["config", "--get-regexp", "^branch\\."]),
+        ]
+    }
+
     #[test]
-    fn a_refspec_covers_a_branch_exactly_or_by_its_one_glob() {
-        let wide = "+refs/heads/*:refs/remotes/origin/*\n";
-        assert!(fetch_covers(wide, "feature"));
-        assert!(fetch_covers(wide, "feature/rows"), "a glob spans slashes");
-        let narrow = "+refs/heads/trunk:refs/remotes/origin/trunk\n";
-        assert!(fetch_covers(narrow, "trunk"));
-        assert!(!fetch_covers(narrow, "feature"));
-        assert!(!fetch_covers(narrow, "trunk2"));
-        let some = "refs/heads/trunk:refs/remotes/origin/trunk\nrefs/heads/feat/*:refs/remotes/origin/feat/*\n";
-        assert!(fetch_covers(some, "feat/a"));
-        assert!(fetch_covers(some, "trunk"));
-        assert!(!fetch_covers(some, "feature"));
-        // A negative refspec takes a branch back out.
-        assert!(!fetch_covers(
-            "+refs/heads/*:refs/remotes/origin/*\n^refs/heads/secret\n",
-            "secret"
-        ));
-        assert!(!fetch_covers("", "trunk"));
+    fn an_origin_switch_that_clashes_with_a_local_branch_name_changes_nothing() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, _) = fixture("clash", &git);
+        // Origin has `feature`; locally there is `feature/x` (and no `feature`).
+        git_in(&git, &work, &["branch", "-q", "-D", "feature"]);
+        git_in(&git, &work, &["branch", "feature/x"]);
+        // Origin has `release/2.0`; locally there is `release`.
+        git_in(
+            &git,
+            &work,
+            &["branch", "release/2.0", "refs/heads/feature/x"],
+        );
+        git_in(&git, &work, &["push", "-q", "origin", "release/2.0"]);
+        git_in(&git, &work, &["branch", "-q", "-D", "release/2.0"]);
+        git_in(&git, &work, &["branch", "release"]);
+        // The user's own changes (none the targets touch), which must stay exactly as they are.
+        fs::write(work.join("notes.txt"), "mine\n").unwrap();
+        git_in(&git, &work, &["add", "notes.txt"]);
+        fs::write(work.join("todo.txt"), "mine\n").unwrap();
+        let before = repo_state(&git, &work);
+        for name in ["feature", "release/2.0"] {
+            let err = switch(&git, &work, &Target::Origin(name.into())).unwrap_err();
+            assert!(err.contains("cannot lock ref"), "{name}: {err}");
+            assert_eq!(repo_state(&git, &work), before, "{name}: nothing changed");
+            assert_eq!(fs::read_to_string(work.join("src/a.rs")).unwrap(), "one\n");
+        }
+    }
+
+    #[test]
+    fn an_origin_switch_refused_for_overlap_leaves_no_branch_behind() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, _) = fixture("overlap", &git);
+        git_in(&git, &work, &["branch", "-q", "-D", "feature"]);
+        fs::write(work.join("src/a.rs"), "mine\n").unwrap();
+        let before = repo_state(&git, &work);
+        let err = switch(&git, &work, &Target::Origin("feature".into())).unwrap_err();
+        assert!(err.contains("would be overwritten"), "{err}");
+        assert_eq!(
+            repo_state(&git, &work),
+            before,
+            "no feature, no config left"
+        );
+        assert_eq!(fs::read_to_string(work.join("src/a.rs")).unwrap(), "mine\n");
+    }
+
+    #[test]
+    fn an_origin_switch_whose_upstream_cant_be_written_takes_its_branch_back() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, _) = fixture("config-fails", &git);
+        git_in(&git, &work, &["branch", "-q", "-D", "feature"]);
+        // Two values: git won't overwrite them with one (after `remote` was written).
+        for value in ["refs/heads/a", "refs/heads/b"] {
+            git_in(
+                &git,
+                &work,
+                &["config", "--add", "branch.feature.merge", value],
+            );
+        }
+        let before = repo_state(&git, &work);
+        let err = switch(&git, &work, &Target::Origin("feature".into())).unwrap_err();
+        assert!(err.contains("multiple values"), "{err}");
+        assert_eq!(
+            repo_state(&git, &work),
+            before,
+            "no feature; remote unset again, merge's values kept"
+        );
+    }
+
+    #[test]
+    fn an_origin_switch_works_whatever_origins_fetch_refspec() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, origin) = fixture("refspecs", &git);
+        let base = work.parent().unwrap().to_path_buf();
+        // No `:` (fetches without storing; git takes no glob without one), and one storing
+        // under another remote's folder.
+        for (clone, spec) in [
+            ("no-colon", "+refs/heads/feature"),
+            ("elsewhere", "+refs/heads/*:refs/remotes/upstream/*"),
+        ] {
+            git_in(
+                &git,
+                &base,
+                &[
+                    "clone",
+                    "-q",
+                    "-b",
+                    "trunk",
+                    origin.to_str().unwrap(),
+                    clone,
+                ],
+            );
+            let dir = base.join(clone);
+            git_in(&git, &dir, &["config", "remote.origin.fetch", spec]);
+            git_in(
+                &git,
+                &dir,
+                &["update-ref", "-d", "refs/remotes/origin/feature"],
+            );
+            fs::write(dir.join("notes.txt"), "mine\n").unwrap();
+            assert_eq!(
+                fetch_branch(&git, &dir, "feature", FetchMode::Auto),
+                Ok(true),
+                "{clone}"
+            );
+            let before = repo_state(&git, &dir);
+            match switch(&git, &dir, &Target::Origin("feature".into())) {
+                Ok(()) => {
+                    assert_eq!(head_name(&git, &dir), "feature", "{clone}");
+                    assert_eq!(
+                        out(&git, &dir, &["status", "--porcelain"]),
+                        "?? notes.txt",
+                        "{clone}: a clean switch"
+                    );
+                    assert_eq!(
+                        out(&git, &dir, &["config", "branch.feature.merge"]),
+                        "refs/heads/feature",
+                        "{clone}"
+                    );
+                }
+                Err(e) => assert_eq!(repo_state(&git, &dir), before, "{clone}: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_origin_switch_names_origins_ref_not_a_local_branch_called_origin_slash() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, _) = fixture("ambiguous", &git);
+        git_in(&git, &work, &["branch", "-q", "-D", "feature"]);
+        // A local branch literally named `origin/feature`, on trunk.
+        git_in(&git, &work, &["branch", "origin/feature", "trunk"]);
+        assert_eq!(
+            switch(&git, &work, &Target::Origin("feature".into())),
+            Ok(())
+        );
+        assert_eq!(head_name(&git, &work), "feature");
+        assert_eq!(
+            out(&git, &work, &["rev-parse", "refs/heads/feature"]),
+            out(&git, &work, &["rev-parse", "refs/remotes/origin/feature"]),
+            "made from origin's feature"
+        );
+    }
+
+    #[test]
+    fn a_local_switch_never_guesses_a_vanished_branch_from_origin() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, _) = fixture("no-guess", &git);
+        // Listed as local, gone by the time the user confirms; origin still has it.
+        git_in(&git, &work, &["branch", "-q", "-D", "feature"]);
+        let before = repo_state(&git, &work);
+        assert!(switch(&git, &work, &Target::Local("feature".into())).is_err());
+        assert_eq!(
+            repo_state(&git, &work),
+            before,
+            "no branch made by guessing"
+        );
+    }
+
+    #[test]
+    fn at_is_no_branch_name() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, _) = fixture("at", &git);
+        assert!(!valid_branch(&git, &work, "@"));
+        assert_eq!(fetch_branch(&git, &work, "@", FetchMode::Auto), Ok(false));
     }
 
     #[test]

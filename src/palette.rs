@@ -1050,13 +1050,18 @@ impl Workspace {
 
     /// ⌘K (`All`), ⌘P (`Workspaces`) or the row menu's Show All Workspaces: open the palette on
     /// `scope`; open on it already, close it; open on another, show `scope`, the text kept
-    /// (`palette_step`). Any other box over the window closes first.
+    /// (`palette_step`). Any other box over the window closes first; nothing opens over a busy
+    /// branch switcher.
     pub(crate) fn open_palette(
         &mut self,
         scope: Scope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Not over a busy branch switcher, which it would close (a switch runs on).
+        if self.branch_switcher_busy(cx) {
+            return;
+        }
         let open = self.palette.as_ref().map(|p| p.read(cx).base);
         match palette_step(open, scope) {
             Step::Close => {
