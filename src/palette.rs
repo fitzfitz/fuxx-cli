@@ -1081,10 +1081,10 @@ impl Workspace {
                     .iter()
                     .map(|p| p.name.clone())
                     .collect();
-                // A local terminal whose folder is in a repo (as last looked up).
+                // The focused terminal is one the branch switcher opens for (the openers' rule).
                 let in_repo = self
-                    .palette_folder(cx)
-                    .is_some_and(|(folder, ssh)| !ssh && self.places.branch(&folder).is_some());
+                    .focused_terminal()
+                    .is_some_and(|t| self.switchable_folder(t).is_some());
                 let actions = action_rows(
                     self.focused_kind(),
                     self.persistent,
