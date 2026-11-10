@@ -1081,9 +1081,14 @@ impl Workspace {
                     .iter()
                     .map(|p| p.name.clone())
                     .collect();
+                // A local terminal whose folder is in a repo (as last looked up).
+                let in_repo = self
+                    .palette_folder(cx)
+                    .is_some_and(|(folder, ssh)| !ssh && self.places.branch(&folder).is_some());
                 let actions = action_rows(
                     self.focused_kind(),
                     self.persistent,
+                    in_repo,
                     &presets,
                     &binding_table(self.persistent),
                 );

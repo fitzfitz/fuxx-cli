@@ -110,6 +110,7 @@ actions!(
         LaunchPreset8,
         LaunchPreset9,
         RenameSession,
+        SwitchBranch,
         MoveSessionUp,
         MoveSessionDown,
         SplitRight,
@@ -3154,6 +3155,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &RenameSession, window, cx| {
                 if let Some(ws) = this.model.focused_workspace() {
                     this.start_rename(ws, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SwitchBranch, window, cx| {
+                if let Some(terminal) = this.focused_terminal() {
+                    this.open_branch_switcher(terminal, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &MoveSessionUp, _, cx| this.move_active(true, cx)))

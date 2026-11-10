@@ -652,15 +652,32 @@ impl Workspace {
                         }),
                 )
                 .when_some(branch, |line, branch| {
+                    let ssh = f.ssh;
                     line.child(
                         div()
+                            .id("status-branch")
                             .flex_none()
                             .flex()
                             .items_center()
                             .gap(px(BRANCH_GAP))
                             .text_color(hsla(ui.text_dim))
-                            .when(!f.ssh, |b| b.child(glyph(Glyph::Branch, ui.text_dim)))
-                            .child(div().flex_none().whitespace_nowrap().child(branch)),
+                            .when(!ssh, |b| b.child(glyph(Glyph::Branch, ui.text_dim)))
+                            .child(div().flex_none().whitespace_nowrap().child(branch))
+                            // A local branch opens the branch switcher (an SSH host does nothing).
+                            .when(!ssh, |b| {
+                                b.cursor_pointer()
+                                    .hover(move |s| s.text_color(hsla(ui.text)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        |_: &MouseDownEvent, _, cx| cx.stop_propagation(),
+                                    )
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        if let Some(terminal) = this.right_sidebar.followed {
+                                            this.open_branch_switcher(terminal, window, cx);
+                                        }
+                                    }))
+                            }),
                     )
                 })
                 .when_some(folder, |line, folder| {

@@ -39,6 +39,7 @@ use crate::host_picker::move_selection;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::palette::{PANEL_WIDTH, item_frame, item_row, list_max_height, name_cell};
+use crate::procs::ProgramState;
 use crate::sidebar::{home_relative, tabular};
 use crate::switcher::{ROW, ROW_GAP};
 use crate::terminal_view::hsla;
@@ -233,6 +234,11 @@ pub struct BranchSwitcher {
     repo: RepoAt,
     /// The programs running in this repo's terminals (the confirmation's warning).
     programs: Vec<String>,
+    /// The programs running in any terminal (folder, label): those in this repo (known once it
+    /// is read) are named too.
+    running: Vec<(PathBuf, String)>,
+    /// Those of `running` inside the repo as last read (looked up once per read, not per frame).
+    here: Vec<String>,
     /// git may run (a seeded switcher, for the screenshots, runs none).
     live: bool,
     /// A seeded switcher's switch: git's message to fail with, or none to succeed.
@@ -295,6 +301,16 @@ impl Focusable for BranchSwitcher {
     }
 }
 
+/// The labels of the programs running in `running` (folder, label) whose folder is in the repo
+/// at `root`.
+fn programs_under(running: &[(PathBuf, String)], root: &Path) -> Vec<String> {
+    running
+        .iter()
+        .filter(|(folder, _)| in_repo(folder, root))
+        .map(|(_, label)| label.clone())
+        .collect()
+}
+
 impl BranchSwitcher {
     /// Open on `repo`: read it on the background executor, then fetch origin (if it has one)
     /// and read again after the fetch.
@@ -350,6 +366,8 @@ impl BranchSwitcher {
         Self {
             repo,
             programs,
+            running: Vec::new(),
+            here: Vec::new(),
             live,
             fail_switch: None,
             step: Step::List,
@@ -381,6 +399,20 @@ impl BranchSwitcher {
             _input_events: input_events,
             _input_changes: input_changes,
         }
+    }
+
+    /// Name too the programs of `running` (folder, label) that run inside the repo (checked
+    /// once its top folder is read, so it counts from the first read on).
+    pub fn with_running(mut self, running: Vec<(PathBuf, String)>) -> Self {
+        self.running = running;
+        self
+    }
+
+    /// The programs running in this repo's terminals, for the confirmation's warning.
+    fn programs_here(&self) -> Vec<String> {
+        let mut programs = self.programs.clone();
+        programs.extend(self.here.iter().cloned());
+        programs
     }
 
     /// `Switch branch · <repo folder>` (the repo's name once it has been read).
@@ -443,6 +475,7 @@ impl BranchSwitcher {
     /// has none.
     fn set_snapshot(&mut self, snapshot: Snapshot) {
         self.generation += 1;
+        self.here = programs_under(&self.running, &snapshot.root);
         self.dirty = Arc::new(snapshot.dirty.clone());
         if snapshot.dirty.is_empty() {
             self.conflicts.clear();
@@ -708,7 +741,13 @@ impl BranchSwitcher {
     /// Show the confirmation of `target` (`confirmation`).
     fn confirm(&mut self, target: Target, conflict: Option<usize>, typed: bool) {
         let orphans = self.snapshot.as_ref().map_or(0, |s| s.orphans);
-        let confirm = confirmation(target, conflict, &self.programs, self.dirty.len(), orphans);
+        let confirm = confirmation(
+            target,
+            conflict,
+            &self.programs_here(),
+            self.dirty.len(),
+            orphans,
+        );
         self.step = Step::Confirm(Confirm { typed, ..confirm });
     }
 
@@ -1143,7 +1182,7 @@ impl BranchSwitcher {
         ui: &UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let running = branch_list::running_line(&self.programs);
+        let running = branch_list::running_line(&self.programs_here());
         let idle = self.busy.is_none();
         let mut lines = confirm.lines.iter();
         let title = lines.next().cloned().unwrap_or_default();
@@ -1498,7 +1537,6 @@ impl Workspace {
     /// Open the branch switcher on terminal `terminal`'s repo: its folder as the sidebar finds
     /// it (as last looked up, else the one it started in). Nothing opens for an SSH terminal,
     /// one with no folder, no git on this Mac, or a folder with no branch (not a repo).
-    #[allow(dead_code)] // called from the row, the status bar and ⌘K (M11o Task 5)
     pub(crate) fn open_branch_switcher(
         &mut self,
         terminal: u64,
@@ -1531,8 +1569,38 @@ impl Workspace {
             dir: folder,
             label,
         };
-        let switcher = cx.new(|cx| BranchSwitcher::new(repo, Vec::new(), window, cx));
+        let running = self.running_programs();
+        let switcher =
+            cx.new(|cx| BranchSwitcher::new(repo, Vec::new(), window, cx).with_running(running));
         self.show_branch_switcher(switcher, window, cx);
+    }
+
+    /// Each local terminal that runs a program: its folder (as last looked up, else the one it
+    /// started in) and what to call the program: the terminal's title, else the program's name,
+    /// else `a program`. Which are inside the repo is told once its top folder is read (the
+    /// switcher's `programs_here`): no git, and no file system, on this thread.
+    fn running_programs(&self) -> Vec<(PathBuf, String)> {
+        self.sessions
+            .items()
+            .iter()
+            .filter(|s| s.ssh.is_none())
+            .filter_map(|s| {
+                let ProgramState::Running(name) = self.programs.state(s.id) else {
+                    return None;
+                };
+                let folder = self
+                    .places
+                    .folder(s.id)
+                    .or(s.project.as_deref())?
+                    .to_path_buf();
+                let label = match &s.title {
+                    Some(title) if !title.is_empty() => title.to_string(),
+                    _ if !name.is_empty() => name,
+                    _ => "a program".to_string(),
+                };
+                Some((folder, label))
+            })
+            .collect()
     }
 
     /// Show `switcher` over the window, any other box closed first, with the keyboard.
@@ -1753,6 +1821,20 @@ mod tests {
         );
         assert!(!in_repo(Path::new("/nonexistent/x"), &real));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn only_programs_in_folders_of_the_repo_are_named() {
+        let running = vec![
+            (PathBuf::from("/nonexistent/repo/src"), "claude".to_string()),
+            (PathBuf::from("/nonexistent/repo-2"), "vim".to_string()),
+            (PathBuf::from("/nonexistent/repo"), "a program".to_string()),
+        ];
+        assert_eq!(
+            programs_under(&running, Path::new("/nonexistent/repo")),
+            ["claude", "a program"]
+        );
+        assert!(programs_under(&[], Path::new("/nonexistent/repo")).is_empty());
     }
 
     #[test]

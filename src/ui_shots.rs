@@ -252,6 +252,7 @@ const SCENES: &[(&str, fn())] = &[
     ("branch-switcher", branch_switcher_scene),
     ("branch-switcher-confirm", branch_switcher_confirm_scene),
     ("branch-switcher-real", branch_switcher_real_scene),
+    ("branch-switcher-open", branch_switcher_open_scene),
     ("welcome", welcome_scene),
     ("welcome-checking", welcome_checking_scene),
     ("welcome-keys", welcome_keys_scene),
@@ -9158,6 +9159,7 @@ fn palette_scene() {
             let actions = action_rows(
                 Focused::Terminal,
                 false,
+                false, // no repo: `switcher_workspace` has no branch
                 &presets,
                 &binding_pairs(&bindings),
             );
@@ -11105,6 +11107,225 @@ fn branch_switcher_scene() {
             );
         }
     }
+}
+
+/// The ways to open the branch switcher (M11o Task 5), over `switcher_workspace` with claude (its
+/// first, with a program running in it), tests and shell (the focused one) pointed at a real scratch
+/// repo (`main` and `feature`, reached through `/var`, which git sees as `/private/var`), in the
+/// first theme: `branch-switcher-open`, the status bar's branch clicked, `feature` chosen, the
+/// confirmation up.
+///
+/// Panics unless:
+/// - outside a repo, ⌘K for `switch branch` lists no `Switch branch…`;
+/// - the rows of claude, tests and shell show `main`; the SSH rows (deploy, logs) show no branch, and
+///   opening the switcher for an SSH terminal opens nothing;
+/// - a click on tests' row's branch opens the switcher (`Switch branch · repo`, read from the
+///   repo) and leaves the selected workspace as it was (not a row click, no drag); Escape closes it;
+/// - ⌘K with `switch branch` typed lists `Switch branch…`; Enter opens the switcher for the
+///   focused terminal;
+/// - a click on the status bar's branch opens it; choosing `feature` shows `Switch to feature?`
+///   and `claude is running in this folder` (the program in claude's terminal, found in the
+///   repo by its real path).
+fn branch_switcher_open_scene() {
+    use crate::palette_items::{Key, Line, Scope};
+    use crate::sidebar::SidebarRow;
+    use crate::status_bar::{BRANCH_GAP, BRANCH_GLYPH, ITEM_GAP, MARK, MARK_GAP, PAD};
+    use crate::ui_tokens::size::STATUS_BAR;
+    use gpui::{FontWeight, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    let Some(git) = crate::git_branch::find_git() else {
+        println!("ui-shots: branch-switcher-open skipped (no git on this Mac)");
+        return;
+    };
+    let base =
+        std::env::temp_dir().join(format!("fuxx-ui-shots-branch-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).expect("make the repo");
+    scratch_git(&git, &repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    scratch_git(&git, &repo, &["add", "."]);
+    scratch_git(&git, &repo, &["commit", "-q", "-m", "one"]);
+    scratch_git(&git, &repo, &["branch", "feature"]);
+
+    let n = "branch-switcher-open";
+    let (slug, name) = SHOT_THEMES[0];
+    let theme = shot_theme(name);
+    let dims = size(px(960.0), px(600.0));
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = palette_build(theme, slot.clone());
+    let folder = repo.clone();
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        let is_listed = |cx: &mut VisualTestAppContext| {
+            let palette = palette_of(cx, &ws).expect("the palette is open");
+            cx.read(|cx| {
+                palette.read(cx).lines().iter().any(|l| {
+                    matches!(l, Line::Item { key: Key::Action(a), .. } if *a == "Switch branch\u{2026}")
+                })
+            })
+        };
+        let ask_palette = |cx: &mut VisualTestAppContext| {
+            open_palette_on(cx, window, &ws, Scope::Actions);
+            cx.simulate_input(window, "switch branch");
+            settle(cx, window);
+        };
+
+        // Outside a repo, ⌘K has no such command.
+        ask_palette(cx);
+        assert!(!is_listed(cx), "{n}: no command outside a repo");
+        press_keys(cx, window, "escape");
+
+        // claude (a program runs in it) and shell (focused) are in the repo, by its path
+        // through `/var`.
+        let (claude, tests, shell, ssh) = cx.read(|cx| {
+            let ids: Vec<u64> = ws.read(cx).sessions.items().iter().map(|s| s.id).collect();
+            (ids[0], ids[2], ids[3], vec![ids[6], ids[7]])
+        });
+        cx.update_window(window, |_, _, cx| {
+            ws.update(cx, |ws, _| {
+                for id in [claude, tests, shell] {
+                    ws.places
+                        .set_folder(id, Some(folder.clone()), Instant::now());
+                }
+                ws.places.set_branch(&folder, Some("main".into()));
+                ws.programs
+                    .set_for_shots(claude, ProgramState::Running("claude".into()));
+                ws.sync();
+            })
+        })
+        .expect("point the terminals at the repo");
+        settle(cx, window);
+
+        // The rows: a branch on claude's and shell's, none on an SSH row.
+        let rows = cx.read(|cx| ws.read(cx).rows_in_view(Instant::now()));
+        let at = rows
+            .iter()
+            .position(|r| matches!(r, SidebarRow::Workspace(w) if w.label == "tests"))
+            .expect("tests' row");
+        for (i, r) in rows.iter().enumerate() {
+            let SidebarRow::Workspace(w) = r else {
+                continue;
+            };
+            let want = match w.label.as_str() {
+                "claude" | "tests" | "shell" => Some("main"),
+                _ => None,
+            };
+            assert_eq!(w.branch.as_deref(), want, "{n}: {}'s branch", w.label);
+            if matches!(w.label.as_str(), "deploy" | "logs") {
+                assert!(w.folder.is_some() && i > 0, "{n}: an SSH row has its host");
+            }
+        }
+        for id in ssh {
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.open_branch_switcher(id, window, cx))
+            })
+            .expect("ask for an SSH terminal's");
+            settle(cx, window);
+            assert!(
+                branch_switcher_of(cx, &ws).is_none(),
+                "{n}: nothing opens for an SSH terminal"
+            );
+        }
+
+        // A click on tests' branch (its row draws one: nothing waits on it): the switcher
+        // opens, the selection (shell) stays.
+        let selected = cx.read(|cx| ws.read(cx).model.focused_workspace());
+        if let SidebarRow::Workspace(w) = &rows[at] {
+            assert_eq!(
+                crate::sidebar::lines_under(w),
+                2,
+                "{n}: tests' row has a branch line"
+            );
+        }
+        let b = cx
+            .read(|cx| ws.read(cx).sidebar.scroll.bounds_for_item(at))
+            .expect("tests' row is laid out");
+        // Its three lines (name, branch, folder) are centred in the row: the branch is the
+        // middle one.
+        let branch_at = gpui::point(b.left() + px(60.0), b.center().y + px(2.0));
+        cx.simulate_click(window, branch_at, Modifiers::none());
+        settle(cx, window);
+        let sw = branch_switcher_of(cx, &ws).expect("a click on the branch opens it");
+        assert!(
+            settle_until(cx, window, 10, |cx| cx
+                .read(|cx| sw.read(cx).title() == "Switch branch \u{b7} repo")),
+            "{n}: the repo is read: {}",
+            cx.read(|cx| sw.read(cx).title())
+        );
+        assert_eq!(
+            cx.read(|cx| ws.read(cx).model.focused_workspace()),
+            selected,
+            "{n}: the click on the branch did not select the row"
+        );
+        press_keys(cx, window, "escape");
+        assert!(branch_switcher_of(cx, &ws).is_none(), "{n}: Escape closes");
+
+        // ⌘K.
+        ask_palette(cx);
+        assert!(is_listed(cx), "{n}: the command is listed in a repo");
+        press_keys(cx, window, "enter");
+        let sw = branch_switcher_of(cx, &ws).expect("the command opens it");
+        assert!(
+            settle_until(cx, window, 10, |cx| cx
+                .read(|cx| sw.read(cx).title() == "Switch branch \u{b7} repo")),
+            "{n}: ⌘K's switcher reads the repo"
+        );
+        press_keys(cx, window, "escape");
+        assert!(branch_switcher_of(cx, &ws).is_none(), "{n}: Escape closes");
+
+        // The status bar's branch (shell's, the focused one): after the mark, the word and the
+        // glyph.
+        let facts = cx
+            .read(|cx| ws.read(cx).status_bar_facts())
+            .expect("the bar's facts");
+        assert_eq!(
+            facts.branch.as_deref(),
+            Some("main"),
+            "{n}: the bar's branch"
+        );
+        let word = cx
+            .update_window(window, |_, window, _| {
+                crate::status_bar::text_width(&facts.text, FontWeight::NORMAL, false, window)
+            })
+            .expect("measure the word");
+        let x = PAD + MARK + MARK_GAP + word + ITEM_GAP + BRANCH_GLYPH + BRANCH_GAP + 6.0;
+        let y = f32::from(dims.height) - STATUS_BAR / 2.0;
+        cx.simulate_click(window, gpui::point(px(x), px(y)), Modifiers::none());
+        settle(cx, window);
+        let sw = branch_switcher_of(cx, &ws).expect("a click on the bar's branch opens it");
+        assert!(
+            settle_until(cx, window, 10, |cx| cx.read(|cx| sw
+                .read(cx)
+                .line_texts()
+                .contains(&"feature \u{b7} local only".to_string()))),
+            "{n}: the repo is read: {:?}",
+            cx.read(|cx| sw.read(cx).line_texts())
+        );
+        for _ in 0..4 {
+            if cx.read(|cx| sw.read(cx).selected_label()).as_deref() == Some("feature") {
+                break;
+            }
+            press_keys(cx, window, "down");
+        }
+        press_keys(cx, window, "enter");
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            Some(vec![
+                "Switch to feature?".to_string(),
+                "claude is running in this folder".to_string()
+            ]),
+            "{n}: the program in claude's terminal is named"
+        );
+        slot.borrow_mut().take();
+    };
+    let shot = render_with(&theme, dims, build, act);
+    save_shot(n, slug, &shot);
+    let _ = std::fs::remove_dir_all(&base);
+    println!("ui-shots: {n} ok");
 }
 
 /// What git says when a switch would overwrite uncommitted work (the confirm scene's stub).
