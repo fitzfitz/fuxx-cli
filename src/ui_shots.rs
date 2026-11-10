@@ -10835,14 +10835,15 @@ fn open_switcher_with(
 
 /// The branch switcher (M11o Task 3) over `switcher_workspace` (shell's terminal focused), in
 /// both themes: `branch-switcher`, opened seeded on `switcher_snapshot` with feature/old
-/// conflicting (3 files), then ↓ ↓ ↑ (on spike).
+/// conflicting (3 files), then ↓ ↓ ↑ (on spike) and a click on Fetch (`Fetching…` beside it).
 ///
 /// Panics unless: the panel is where the ⌘K palette is (same left, top and width); the title
 /// names the repo; the lines are main (current), feature/rows (↑2 ↓1), spike (local only),
 /// feature/old (conflict 3 file(s)), ORIGIN, fix-login; feature/rows is chosen first; ↓ goes to
 /// spike, ↓ again skips feature/old (and the ORIGIN heading) to fix-login, ↑ skips it back to
 /// spike; feature/old's text is drawn in `text_faint` (none in `text`) while spike's name is in
-/// `text`. And (not shot): typing `zzz` leaves exactly one row, `Check out zzz from origin`;
+/// `text`; a click on Fetch leaves it open with the box's keyboard and shows `Fetching…` (a
+/// seeded switcher runs no git). And (not shot): typing `zzz` leaves exactly one row, `Check out zzz from origin`;
 /// Escape closes it, the active terminal with the keyboard; a switcher closed, or replaced,
 /// before its read lands drops that read (no panic, nothing reopens, the replacement keeps its
 /// own list) and is gone.
@@ -10929,6 +10930,28 @@ fn branch_switcher_scene() {
                     );
                     press_keys(cx, window, "up");
                     assert_eq!(chosen(cx).as_deref(), Some("spike"), "{n}: ↑ skips it back");
+                    // A click on Fetch: the box mustn't lose the keyboard (that closes it).
+                    let fetch = cx
+                        .read(|cx| sw.read(cx).fetch_bounds())
+                        .expect("the Fetch button is drawn");
+                    cx.simulate_click(window, fetch.center(), gpui::Modifiers::none());
+                    settle(cx, window);
+                    assert!(
+                        branch_switcher_of(cx, &ws).as_ref() == Some(&sw),
+                        "{n}: a click on Fetch leaves it open"
+                    );
+                    let focused = cx
+                        .update_window(window, |_, window, cx| {
+                            use gpui::Focusable;
+                            sw.focus_handle(cx).is_focused(window)
+                        })
+                        .expect("read the focus");
+                    assert!(focused, "{n}: the box keeps the keyboard");
+                    assert_eq!(
+                        cx.read(|cx| sw.read(cx).fetch_status()).as_deref(),
+                        Some("Fetching\u{2026}"),
+                        "{n}: Fetching… beside the button"
+                    );
                     found.set(cx.read(|cx| {
                         let s = sw.read(cx);
                         Some((s.line_bounds(3)?, s.line_bounds(2)?))

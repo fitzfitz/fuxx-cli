@@ -6,13 +6,14 @@
 //!
 //! Everything git does runs on the background executor: one read as it opens, the automatic
 //! fetch (and the Fetch button's) with a read after it, and the conflict counts (only with a
-//! dirty work tree, at most `COUNTS_AT_ONCE` at a time, rows in view first). Each task holds
+//! dirty work tree, only for the rows in view, at most `COUNTS_AT_ONCE` at a time). Each task holds
 //! only a weak handle: once the switcher is closed or replaced, its answers are dropped and
 //! nothing new starts. The box is the palette's (`NameInput`): its Escape, losing focus or a
 //! click outside closes the switcher.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::palette::{PANEL_WIDTH, item_frame, item_row, list_max_height, name_cell};
 use crate::sidebar::{home_relative, tabular};
-use crate::switcher::ROW_GAP;
+use crate::switcher::{ROW, ROW_GAP};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::text;
@@ -99,6 +100,43 @@ fn folder_name(path: &Path) -> String {
         .unwrap_or_else(|| "/".into())
 }
 
+/// A row's text at its right: its conflict count while it has one, else its mark.
+fn right_text(row: &Row) -> Option<String> {
+    match row.conflict.filter(|&n| n > 0) {
+        Some(n) => Some(branch_list::conflict_text(n)),
+        None => branch_list::mark_text(&row.mark),
+    }
+}
+
+/// The lines in view before the list has been drawn: as many as fit in its tallest.
+fn unlaid_view() -> RangeInclusive<usize> {
+    let fit = (list_max_height(f32::MAX) / (ROW + ROW_GAP)).ceil() as usize;
+    0..=fit.saturating_sub(1)
+}
+
+/// The branches to count next: the rows on lines `view` (not the current branch, not the
+/// heading or the typed name) not `asked` yet, top first, at most `room`.
+fn to_count(
+    lines: &[Line],
+    rows: &[Row],
+    view: RangeInclusive<usize>,
+    asked: &HashSet<String>,
+    room: usize,
+) -> Vec<Target> {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| view.contains(at))
+        .filter_map(|(_, line)| match line {
+            Line::Row(i) => Some(&rows[*i]),
+            Line::OriginHeading | Line::Typed(_) => None,
+        })
+        .filter(|r| r.mark != Mark::Current && !asked.contains(r.target.name()))
+        .map(|r| r.target.clone())
+        .take(room)
+        .collect()
+}
+
 /// The ⌘K-like panel that switches a repo's branch.
 pub struct BranchSwitcher {
     repo: RepoAt,
@@ -118,6 +156,10 @@ pub struct BranchSwitcher {
     conflicts: HashMap<String, usize>,
     rows: Vec<Row>,
     lines: Vec<Line>,
+    /// Each line's matched letters (a row's name, for the box's text).
+    matches: Vec<Vec<usize>>,
+    /// Each line's place in `selectable` (none: it can't be chosen).
+    places: Vec<Option<usize>>,
     /// The places in `lines` of the rows that can be chosen.
     selectable: Vec<usize>,
     /// The chosen one, a place in `selectable`.
@@ -125,13 +167,14 @@ pub struct BranchSwitcher {
     fetch: FetchState,
     /// Bumped with each read: a count asked of an older one is dropped.
     generation: u64,
-    /// This read's branches still to count.
-    to_count: Vec<Target>,
+    /// The branches whose count this read has asked for (running or answered).
+    asked: HashSet<String>,
     /// Counts running (of any read).
     counting: usize,
     scroll: ScrollHandle,
-    /// Where the panel was last drawn (the UI screenshots read it).
+    /// Where the panel and the Fetch button were last drawn (the UI screenshots read them).
     panel_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    fetch_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     _input_events: Subscription,
     _input_changes: Subscription,
 }
@@ -201,14 +244,17 @@ impl BranchSwitcher {
             conflicts: HashMap::new(),
             rows: Vec::new(),
             lines: Vec::new(),
+            matches: Vec::new(),
+            places: Vec::new(),
             selectable: Vec::new(),
             selected: 0,
             fetch: FetchState::Idle,
             generation: 0,
-            to_count: Vec::new(),
+            asked: HashSet::new(),
             counting: 0,
             scroll: ScrollHandle::new(),
             panel_bounds: Rc::default(),
+            fetch_bounds: Rc::default(),
             _input_events: input_events,
             _input_changes: input_changes,
         }
@@ -252,12 +298,13 @@ impl BranchSwitcher {
         if fetch {
             self.start_fetch(FetchMode::Auto, cx);
         }
-        self.count_conflicts(cx);
+        // The counts start once the list is drawn (`render`): only rows in view are counted.
         cx.notify();
     }
 
-    /// Show `snapshot`. Its branches are counted again (with a dirty tree): the counts of the
-    /// branches still there stay shown until theirs land; a clean tree has none.
+    /// Show `snapshot`. Its branches are counted again (with a dirty tree) as they come into
+    /// view: the counts of the branches still there stay shown until theirs land; a clean tree
+    /// has none.
     fn set_snapshot(&mut self, snapshot: Snapshot) {
         self.generation += 1;
         self.dirty = Arc::new(snapshot.dirty.clone());
@@ -274,16 +321,8 @@ impl BranchSwitcher {
                 .retain(|name, _| names.contains(name.as_str()));
         }
         self.snapshot = Some(snapshot);
+        self.asked.clear();
         self.rebuild_rows();
-        self.to_count = if self.live && !self.dirty.is_empty() {
-            self.rows
-                .iter()
-                .filter(|r| r.mark != Mark::Current)
-                .map(|r| r.target.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
         self.relist(true);
     }
 
@@ -294,16 +333,39 @@ impl BranchSwitcher {
         self.rows = branch_list::rows(&s.head, &s.local, &s.origin, &s.pushed, &self.conflicts);
     }
 
-    /// Start counting branches' conflicts until `COUNTS_AT_ONCE` run; each answer starts the
-    /// next.
+    /// Whether counts may be wanted: live, a dirty tree, room for one, and a branch not yet
+    /// asked for (whether it is in view is `count_conflicts`'s to find).
+    fn may_count(&self) -> bool {
+        self.live
+            && !self.dirty.is_empty()
+            && self.counting < COUNTS_AT_ONCE
+            && self
+                .rows
+                .iter()
+                .any(|r| r.mark != Mark::Current && !self.asked.contains(r.target.name()))
+    }
+
+    /// The lines in view at the last draw (`unlaid_view` before the first).
+    fn view(&self) -> RangeInclusive<usize> {
+        match self.scroll.bounds_for_item(0) {
+            Some(_) => self.scroll.top_item()..=self.scroll.bottom_item(),
+            None => unlaid_view(),
+        }
+    }
+
+    /// Count the conflicts of the branches in view not asked for yet, until `COUNTS_AT_ONCE`
+    /// run. Each answer, a scroll, a move or a new filter (each draws the list, see `render`)
+    /// counts the rows come into view.
     fn count_conflicts(&mut self, cx: &mut Context<Self>) {
+        if !self.may_count() {
+            return;
+        }
         let Some(root) = self.snapshot.as_ref().map(|s| s.root.clone()) else {
             return;
         };
-        while self.counting < COUNTS_AT_ONCE {
-            let Some(target) = self.next_to_count() else {
-                break;
-            };
+        let room = COUNTS_AT_ONCE - self.counting;
+        for target in to_count(&self.lines, &self.rows, self.view(), &self.asked, room) {
+            self.asked.insert(target.name().to_string());
             self.counting += 1;
             let (git, root, dirty) = (self.repo.git.clone(), root.clone(), self.dirty.clone());
             let generation = self.generation;
@@ -320,30 +382,7 @@ impl BranchSwitcher {
         }
     }
 
-    /// The next branch to count: the first one whose line was in view at the last draw, else
-    /// the first in list order.
-    fn next_to_count(&mut self) -> Option<Target> {
-        if self.to_count.is_empty() {
-            return None;
-        }
-        let in_view = self.scroll.bounds_for_item(0).map(|_| {
-            let (top, bottom) = (self.scroll.top_item(), self.scroll.bottom_item());
-            top..=bottom
-        });
-        let at = in_view
-            .and_then(|view| {
-                self.to_count.iter().position(|t| {
-                    self.lines.iter().enumerate().any(|(at, line)| {
-                        view.contains(&at)
-                            && matches!(line, Line::Row(i) if self.rows[*i].target == *t)
-                    })
-                })
-            })
-            .unwrap_or(0);
-        Some(self.to_count.remove(at))
-    }
-
-    /// A count landed: shown if it is of the current read (none: unknown, left unmarked).
+    /// A count landed: shown if it is of the current read; unknown (none) clears an older count.
     fn counted(
         &mut self,
         generation: u64,
@@ -352,20 +391,31 @@ impl BranchSwitcher {
         cx: &mut Context<Self>,
     ) {
         self.counting -= 1;
-        if generation == self.generation
-            && let Some(count) = count
-        {
-            self.conflicts.insert(target.name().to_string(), count);
-            self.rebuild_rows();
-            self.relist(true);
-            cx.notify();
+        if generation == self.generation {
+            let name = target.name().to_string();
+            let before = self.conflicts.get(&name).copied();
+            match count {
+                Some(count) => self.conflicts.insert(name, count),
+                None => self.conflicts.remove(&name),
+            };
+            if before != count {
+                self.rebuild_rows();
+                self.relist(true);
+            }
         }
-        self.count_conflicts(cx);
+        // Drawn again, the list counts the next rows in view (`render`).
+        cx.notify();
     }
 
     /// Fetch origin in the background (one at a time), then read again.
     fn start_fetch(&mut self, mode: FetchMode, cx: &mut Context<Self>) {
-        if !self.live || self.fetch == FetchState::Running {
+        if self.fetch == FetchState::Running {
+            return;
+        }
+        // A seeded switcher (the screenshots) runs no git: it only shows the fetch running.
+        if !self.live {
+            self.fetch = FetchState::Running;
+            cx.notify();
             return;
         }
         let Some(root) = self
@@ -450,6 +500,19 @@ impl BranchSwitcher {
             })
             .map(|(at, _)| at)
             .collect();
+        self.places = vec![None; lines.len()];
+        for (place, &at) in self.selectable.iter().enumerate() {
+            self.places[at] = Some(place);
+        }
+        self.matches = lines
+            .iter()
+            .map(|line| match line {
+                Line::Row(i) => crate::palette_match::fuzzy(query, &self.rows[*i].label)
+                    .map(|m| m.positions)
+                    .unwrap_or_default(),
+                Line::OriginHeading | Line::Typed(_) => Vec::new(),
+            })
+            .collect();
         self.lines = lines;
         let kept = before.and_then(|target| {
             self.selectable
@@ -484,9 +547,8 @@ impl BranchSwitcher {
         ui: &UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let place = self.selectable.iter().position(|&l| l == at);
-        let chosen = place.is_some() && place == Some(self.selected);
-        let query = self.query.trim();
+        let place = self.places.get(at).copied().flatten();
+        let chosen = place == Some(self.selected);
         let row = match line {
             Line::OriginHeading => return render_group(ORIGIN_HEADING, at == 0, ui),
             Line::Typed(name) => {
@@ -496,15 +558,9 @@ impl BranchSwitcher {
             Line::Row(i) => {
                 let row = &self.rows[*i];
                 let conflict = row.conflict.filter(|&n| n > 0);
-                let positions = crate::palette_match::fuzzy(query, &row.label)
-                    .map(|m| m.positions)
-                    .unwrap_or_default();
+                let positions = self.matches.get(at).map(Vec::as_slice).unwrap_or(&[]);
                 let icon = (row.mark == Mark::Current)
-                    .then(|| div().text_color(hsla(ui.text_dim)).child("\u{2713}"));
-                let right = match conflict {
-                    Some(n) => Some(branch_list::conflict_text(n)),
-                    None => branch_list::mark_text(&row.mark),
-                };
+                    .then(|| div().text_color(hsla(ui.text_faint)).child("\u{2713}"));
                 // Not clickable (the current branch, a conflict): no hover fill.
                 let frame = if place.is_some() {
                     item_row(chosen, ui, icon)
@@ -513,19 +569,15 @@ impl BranchSwitcher {
                 };
                 frame
                     .when(conflict.is_some(), |el| el.text_color(hsla(ui.text_faint)))
-                    .child(name_cell(&row.label, &positions, chosen))
-                    .when_some(right, |el, right| {
+                    .child(name_cell(&row.label, positions, chosen))
+                    .when_some(right_text(row), |el, right| {
                         el.child(
                             div()
                                 .flex_none()
                                 .ml(px(8.0))
                                 .text_size(px(text::META))
                                 .font_features(tabular())
-                                .text_color(hsla(if conflict.is_some() {
-                                    ui.text_faint
-                                } else {
-                                    ui.text_dim
-                                }))
+                                .text_color(hsla(ui.text_faint))
                                 .child(right),
                         )
                     })
@@ -544,12 +596,23 @@ impl BranchSwitcher {
             .into_any_element()
     }
 
+    /// `Fetching…` while a fetch runs, `Fetch failed: …` after one failed.
+    fn status(&self) -> Option<String> {
+        match &self.fetch {
+            FetchState::Idle => None,
+            FetchState::Running => Some(FETCHING.to_string()),
+            FetchState::Failed(why) => Some(fetch_failed(why)),
+        }
+    }
+
     /// The Fetch button: dimmed and inert while a fetch runs.
     fn fetch_button(&self, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
         let running = self.fetch == FetchState::Running;
         let hover = ui.panel_hover;
+        let bounds = self.fetch_bounds.clone();
         div()
             .id("branch-fetch")
+            .relative()
             .flex()
             .flex_none()
             .items_center()
@@ -569,6 +632,13 @@ impl BranchSwitcher {
                     }))
             })
             .child(FETCH)
+            .child(
+                canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
             .into_any_element()
     }
 }
@@ -613,11 +683,7 @@ impl BranchSwitcher {
             .map(|line| match line {
                 Line::Row(i) => {
                     let row = &self.rows[*i];
-                    let mark = match row.conflict.filter(|&n| n > 0) {
-                        Some(n) => Some(branch_list::conflict_text(n)),
-                        None => branch_list::mark_text(&row.mark),
-                    };
-                    match mark {
+                    match right_text(row) {
                         Some(mark) => format!("{} \u{b7} {mark}", row.label),
                         None => row.label.clone(),
                     }
@@ -645,6 +711,15 @@ impl BranchSwitcher {
     pub fn panel_bounds(&self) -> Option<Bounds<Pixels>> {
         self.panel_bounds.get()
     }
+
+    pub fn fetch_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.fetch_bounds.get()
+    }
+
+    /// The text beside the Fetch button, if any.
+    pub fn fetch_status(&self) -> Option<String> {
+        self.status()
+    }
 }
 
 impl Render for BranchSwitcher {
@@ -656,12 +731,12 @@ impl Render for BranchSwitcher {
             .enumerate()
             .map(|(at, line)| self.render_line(at, line, &ui, cx))
             .collect();
+        // After this frame is laid out (deferred past the draw), count the rows it shows.
+        if self.may_count() {
+            cx.defer_in(window, |this, _, cx| this.count_conflicts(cx));
+        }
         let has_origin = self.snapshot.as_ref().is_some_and(|s| s.has_origin);
-        let status = match &self.fetch {
-            FetchState::Idle => None,
-            FetchState::Running => Some(FETCHING.to_string()),
-            FetchState::Failed(why) => Some(fetch_failed(why)),
-        };
+        let status = self.status();
         let title = div()
             .flex()
             .items_center()
@@ -818,5 +893,87 @@ impl Workspace {
                 cx.notify();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::branch_list::Mark;
+
+    fn row(name: &str, mark: Mark, origin: bool) -> Row {
+        Row {
+            target: if origin {
+                Target::Origin(name.into())
+            } else {
+                Target::Local(name.into())
+            },
+            label: name.into(),
+            mark,
+            conflict: None,
+            origin_section: origin,
+        }
+    }
+
+    fn names(targets: &[Target]) -> Vec<&str> {
+        targets.iter().map(Target::name).collect()
+    }
+
+    #[test]
+    fn only_rows_in_view_are_counted_and_each_once() {
+        let rows = vec![
+            row("main", Mark::Current, false),
+            row("a", Mark::LocalOnly, false),
+            row("b", Mark::Even, false),
+            row("c", Mark::Even, false),
+            row("x", Mark::None, true),
+        ];
+        let lines = vec![
+            Line::Row(0),
+            Line::Row(1),
+            Line::Row(2),
+            Line::Row(3),
+            Line::OriginHeading,
+            Line::Row(4),
+            Line::Typed("zzz".into()),
+        ];
+        let none = HashSet::new();
+        // Lines 0-2 in view: the current branch is never counted.
+        assert_eq!(names(&to_count(&lines, &rows, 0..=2, &none, 4)), ["a", "b"]);
+        // Scrolled down: the heading and the typed name aren't branches to count.
+        assert_eq!(names(&to_count(&lines, &rows, 3..=6, &none, 4)), ["c", "x"]);
+        // Asked already (running or answered): not again.
+        let asked: HashSet<String> = ["a".to_string()].into_iter().collect();
+        assert_eq!(
+            names(&to_count(&lines, &rows, 0..=6, &asked, 4)),
+            ["b", "c", "x"]
+        );
+        // Room for one more count: one.
+        assert_eq!(names(&to_count(&lines, &rows, 0..=6, &none, 1)), ["a"]);
+        assert!(to_count(&lines, &rows, 0..=6, &none, 0).is_empty());
+    }
+
+    #[test]
+    fn before_the_list_is_drawn_the_rows_that_fit_are_in_view() {
+        // 420 pt at most, 30 pt a row (28 + 2): 14 lines.
+        assert_eq!(unlaid_view(), 0..=13);
+    }
+
+    #[test]
+    fn a_rows_right_text_is_its_conflict_else_its_mark() {
+        let mut r = row(
+            "a",
+            Mark::Diverged {
+                ahead: 2,
+                behind: 0,
+            },
+            false,
+        );
+        assert_eq!(right_text(&r).as_deref(), Some("\u{2191}2"));
+        r.conflict = Some(0);
+        assert_eq!(right_text(&r).as_deref(), Some("\u{2191}2"));
+        r.conflict = Some(3);
+        assert_eq!(right_text(&r).as_deref(), Some("conflict 3 file(s)"));
+        assert_eq!(right_text(&row("x", Mark::None, true)), None);
     }
 }
