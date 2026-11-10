@@ -518,10 +518,15 @@ impl Places {
         if self.frozen || !due(last, now, true) {
             return None;
         }
-        let git = self.git.get_or_insert_with(find_git).clone()?;
+        let git = self.git()?;
         let branch = self.branches.remove(folder).and_then(|(b, _)| b);
         self.branches.insert(folder.to_path_buf(), (branch, now));
         Some(git)
+    }
+
+    /// This Mac's git (looked for once), or none.
+    pub fn git(&mut self) -> Option<PathBuf> {
+        self.git.get_or_insert_with(find_git).clone()
     }
 
     /// git's answer for `folder`; true when the branch changed.

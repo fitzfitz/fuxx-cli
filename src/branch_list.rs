@@ -1,5 +1,3 @@
-#![allow(dead_code)] // consumed by the later M11o tasks (the switcher modal)
-
 //! The branch switcher's pure model (note 66 §2-§3): parse `git for-each-ref`, build and filter
 //! the rows, and the copy shown in the modal. No git, no GPUI.
 
@@ -272,6 +270,7 @@ pub fn conflict_text(n: usize) -> String {
     format!("conflict {n} file(s)")
 }
 
+#[allow(dead_code)] // the confirmation (M11o Task 4)
 pub fn running_line(programs: &[String]) -> Option<String> {
     match programs {
         [] => None,
@@ -284,6 +283,7 @@ pub fn running_line(programs: &[String]) -> Option<String> {
 }
 
 /// The confirmation: the title, then each warning that applies.
+#[allow(dead_code)] // the confirmation (M11o Task 4)
 pub fn confirm_lines(
     name: &str,
     programs: &[String],

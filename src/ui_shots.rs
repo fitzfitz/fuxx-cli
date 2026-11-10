@@ -249,6 +249,7 @@ const SCENES: &[(&str, fn())] = &[
     ("palette-settings", palette_settings_scene),
     ("palette-narrow", palette_narrow_scene),
     ("palette-motion", palette_motion_scene),
+    ("branch-switcher", branch_switcher_scene),
     ("welcome", welcome_scene),
     ("welcome-checking", welcome_checking_scene),
     ("welcome-keys", welcome_keys_scene),
@@ -10750,6 +10751,326 @@ fn palette_motion_scene() {
     }
 }
 
+/// The branch switcher's made-up repo (`/Users/me/code/api`) and git (none: a seeded or a
+/// faked switcher runs no git).
+fn switcher_repo() -> crate::branch_switcher::RepoAt {
+    crate::branch_switcher::RepoAt {
+        git: PathBuf::from("/nonexistent/git"),
+        dir: PathBuf::from(API),
+        label: "~/code/api".into(),
+    }
+}
+
+/// The branch switcher scenes' repo: on main; local main, feature/rows (↑2 ↓1), spike (local
+/// only) and feature/old, newest first; origin has main, feature/rows and fix-login; one file is
+/// dirty.
+fn switcher_snapshot() -> crate::branch_git::Snapshot {
+    use crate::branch_list::{Head, LocalRef, RemoteRef, Track};
+    let local = |name: &str, upstream: Option<&str>, track: Track, date: i64| LocalRef {
+        name: name.into(),
+        upstream: upstream.map(String::from),
+        track,
+        date,
+    };
+    let remote = |name: &str, date: i64| RemoteRef {
+        name: name.into(),
+        date,
+    };
+    crate::branch_git::Snapshot {
+        root: PathBuf::from(API),
+        head: Head::Branch("main".into()),
+        local: vec![
+            local("main", Some("origin/main"), Track::Even, 50),
+            local(
+                "feature/rows",
+                Some("origin/feature/rows"),
+                Track::Diverged {
+                    ahead: 2,
+                    behind: 1,
+                },
+                40,
+            ),
+            local("spike", None, Track::None, 30),
+            local("feature/old", None, Track::None, 20),
+        ],
+        origin: vec![
+            remote("main", 50),
+            remote("feature/rows", 40),
+            remote("fix-login", 10),
+        ],
+        pushed: std::collections::HashMap::new(),
+        has_origin: true,
+        dirty: [PathBuf::from("src/main.rs")].into_iter().collect(),
+        orphans: 0,
+    }
+}
+
+/// The open branch switcher; none while it's closed.
+fn branch_switcher_of(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> Option<gpui::Entity<crate::branch_switcher::BranchSwitcher>> {
+    cx.read(|cx| ws.read(cx).branch_switcher.clone())
+}
+
+/// Open the switcher `make` builds as the Workspace opens one, then let it take the keyboard.
+fn open_switcher_with(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+    make: impl FnOnce(
+        &mut Window,
+        &mut Context<crate::branch_switcher::BranchSwitcher>,
+    ) -> crate::branch_switcher::BranchSwitcher,
+) {
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let sw = cx.new(|cx| make(window, cx));
+            ws.show_branch_switcher(sw, window, cx);
+        })
+    })
+    .expect("open the branch switcher");
+    settle(cx, window);
+}
+
+/// The branch switcher (M11o Task 3) over `switcher_workspace` (shell's terminal focused), in
+/// both themes: `branch-switcher`, opened seeded on `switcher_snapshot` with feature/old
+/// conflicting (3 files), then ↓ ↓ ↑ (on spike).
+///
+/// Panics unless: the panel is where the ⌘K palette is (same left, top and width); the title
+/// names the repo; the lines are main (current), feature/rows (↑2 ↓1), spike (local only),
+/// feature/old (conflict 3 file(s)), ORIGIN, fix-login; feature/rows is chosen first; ↓ goes to
+/// spike, ↓ again skips feature/old (and the ORIGIN heading) to fix-login, ↑ skips it back to
+/// spike; feature/old's text is drawn in `text_faint` (none in `text`) while spike's name is in
+/// `text`. And (not shot): typing `zzz` leaves exactly one row, `Check out zzz from origin`;
+/// Escape closes it, the active terminal with the keyboard; a switcher closed, or replaced,
+/// before its read lands drops that read (no panic, nothing reopens, the replacement keeps its
+/// own list) and is gone.
+fn branch_switcher_scene() {
+    use crate::branch_switcher::BranchSwitcher;
+    use crate::palette_items::Scope;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    type Seen = (gpui::Bounds<Pixels>, gpui::Bounds<Pixels>);
+    let dims = size(px(960.0), px(600.0));
+    let want_lines = [
+        "main · current",
+        "feature/rows · ↑2 ↓1",
+        "spike · local only",
+        "feature/old · conflict 3 file(s)",
+        "ORIGIN",
+        "fix-login",
+    ];
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for shot_pass in [true, false] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let seen: Rc<Cell<Option<Seen>>> = Rc::default();
+            let found = seen.clone();
+            let n = format!("branch-switcher-{slug}");
+            let seeded = |window: &mut Window, cx: &mut Context<BranchSwitcher>| {
+                let conflicts = [("feature/old".to_string(), 3)].into_iter().collect();
+                BranchSwitcher::seeded(switcher_repo(), switcher_snapshot(), conflicts, window, cx)
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let lines = |cx: &mut VisualTestAppContext| {
+                    let sw = branch_switcher_of(cx, &ws).expect("the switcher is open");
+                    cx.read(|cx| sw.read(cx).line_texts())
+                };
+                let chosen = |cx: &mut VisualTestAppContext| {
+                    let sw = branch_switcher_of(cx, &ws).expect("the switcher is open");
+                    cx.read(|cx| sw.read(cx).selected_label())
+                };
+                if shot_pass {
+                    // Where the palette's panel is drawn.
+                    open_palette_on(cx, window, &ws, Scope::All);
+                    let palette = palette_of(cx, &ws).expect("the palette is open");
+                    let at = cx
+                        .read(|cx| palette.read(cx).panel_bounds())
+                        .expect("the palette is drawn");
+                    press_keys(cx, window, "escape");
+                    assert!(palette_of(cx, &ws).is_none(), "{n}: the palette closed");
+
+                    open_switcher_with(cx, window, &ws, seeded);
+                    let sw = branch_switcher_of(cx, &ws).expect("the switcher is open");
+                    let (title, label, panel) = cx.read(|cx| {
+                        let s = sw.read(cx);
+                        (s.title(), s.label().to_string(), s.panel_bounds())
+                    });
+                    assert_eq!(title, "Switch branch · api", "{n}: the title");
+                    assert_eq!(label, "~/code/api", "{n}: the folder");
+                    let panel = panel.expect("the switcher is drawn");
+                    for (what, a, b) in [
+                        ("left", panel.left(), at.left()),
+                        ("top", panel.top(), at.top()),
+                        ("width", panel.size.width, at.size.width),
+                    ] {
+                        let (a, b) = (f32::from(a), f32::from(b));
+                        assert!(
+                            (a - b).abs() < 0.5,
+                            "{n}: its {what} is {a}, the palette's {b}"
+                        );
+                    }
+                    assert_eq!(lines(cx), want_lines, "{n}: the lines");
+                    assert_eq!(chosen(cx).as_deref(), Some("feature/rows"), "{n}: first");
+                    press_keys(cx, window, "down");
+                    assert_eq!(chosen(cx).as_deref(), Some("spike"), "{n}: ↓");
+                    press_keys(cx, window, "down");
+                    assert_eq!(
+                        chosen(cx).as_deref(),
+                        Some("fix-login"),
+                        "{n}: ↓ skips feature/old"
+                    );
+                    press_keys(cx, window, "up");
+                    assert_eq!(chosen(cx).as_deref(), Some("spike"), "{n}: ↑ skips it back");
+                    found.set(cx.read(|cx| {
+                        let s = sw.read(cx);
+                        Some((s.line_bounds(3)?, s.line_bounds(2)?))
+                    }));
+                } else {
+                    open_switcher_with(cx, window, &ws, seeded);
+                    cx.simulate_input(window, "zzz");
+                    settle(cx, window);
+                    assert_eq!(
+                        lines(cx),
+                        ["Check out zzz from origin"],
+                        "{n}: zzz offers only the typed name"
+                    );
+                    assert_eq!(
+                        chosen(cx).as_deref(),
+                        Some("Check out zzz from origin"),
+                        "{n}: the typed row can be chosen"
+                    );
+                    press_keys(cx, window, "escape");
+                    assert!(branch_switcher_of(cx, &ws).is_none(), "{n}: Escape closes");
+                    assert!(
+                        active_terminal_focused(cx, window, &ws),
+                        "{n}: the terminal has the keyboard back"
+                    );
+
+                    // A read that lands after its switcher closed: dropped.
+                    let ran = Arc::new(AtomicBool::new(false));
+                    let read_ran = ran.clone();
+                    let gone = cx
+                        .update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| {
+                                let sw = cx.new(|cx| {
+                                    BranchSwitcher::with_read(
+                                        switcher_repo(),
+                                        vec![],
+                                        move || {
+                                            read_ran.store(true, Ordering::SeqCst);
+                                            Some(switcher_snapshot())
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                ws.show_branch_switcher(sw.clone(), window, cx);
+                                // Closed before any task has run.
+                                ws.branch_switcher = None;
+                                ws.focus_active(window, cx);
+                                sw.downgrade()
+                            })
+                        })
+                        .expect("open and close");
+                    settle(cx, window);
+                    assert!(ran.load(Ordering::SeqCst), "{n}: the read ran");
+                    assert!(
+                        branch_switcher_of(cx, &ws).is_none(),
+                        "{n}: a late read reopens nothing"
+                    );
+                    assert!(gone.upgrade().is_none(), "{n}: the closed switcher is gone");
+                    assert!(
+                        active_terminal_focused(cx, window, &ws),
+                        "{n}: the terminal keeps the keyboard"
+                    );
+
+                    // A read that lands after its switcher was replaced: dropped too.
+                    let ran = Arc::new(AtomicBool::new(false));
+                    let read_ran = ran.clone();
+                    let old = cx
+                        .update_window(window, |_, window, cx| {
+                            ws.update(cx, |ws, cx| {
+                                let old = cx.new(|cx| {
+                                    BranchSwitcher::with_read(
+                                        switcher_repo(),
+                                        vec![],
+                                        move || {
+                                            read_ran.store(true, Ordering::SeqCst);
+                                            let mut other = switcher_snapshot();
+                                            other.local.clear();
+                                            other.origin.clear();
+                                            Some(other)
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                ws.show_branch_switcher(old.clone(), window, cx);
+                                old.downgrade()
+                            })
+                        })
+                        .expect("open the first");
+                    open_switcher_with(cx, window, &ws, seeded);
+                    assert!(ran.load(Ordering::SeqCst), "{n}: the first's read ran");
+                    assert!(
+                        old.upgrade().is_none(),
+                        "{n}: the replaced switcher is gone"
+                    );
+                    assert_eq!(lines(cx), want_lines, "{n}: the new one keeps its list");
+                    press_keys(cx, window, "escape");
+                }
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            if !shot_pass {
+                continue;
+            }
+            save_shot("branch-switcher", slug, &shot);
+            let (old, spike) = seen.get().expect("drawn");
+            let faint = count_along(
+                &shot,
+                dims,
+                ui.text_faint,
+                f32::from(old.center().y),
+                f32::from(old.left()) + 20.0,
+                f32::from(old.right()) - 4.0,
+            );
+            let bright = count_along(
+                &shot,
+                dims,
+                ui.text,
+                f32::from(old.center().y),
+                f32::from(old.left()) + 20.0,
+                f32::from(old.right()) - 4.0,
+            );
+            assert!(
+                faint >= 10 && bright == 0,
+                "{slug}: feature/old is faint ({faint} faint, {bright} in text)"
+            );
+            let spike_text = count_along(
+                &shot,
+                dims,
+                ui.text,
+                f32::from(spike.center().y),
+                f32::from(spike.left()) + 20.0,
+                f32::from(spike.right()) - 4.0,
+            );
+            assert!(
+                spike_text >= 10,
+                "{slug}: spike's name is in text ({spike_text})"
+            );
+        }
+    }
+}
+
 /// The Welcome scenes' workspace: `presets`, the app's key bindings, and one terminal in
 /// `/Users/me` (the made-up home) with nothing on its screen; its id goes to `over`.
 fn welcome_build(
@@ -12092,6 +12413,18 @@ fn overlays() {
                         Overlay::AddressBox => ws.open_address_box(window, cx),
                         Overlay::Palette => {
                             ws.open_palette(crate::palette_items::Scope::All, window, cx)
+                        }
+                        Overlay::BranchSwitcher => {
+                            let sw = cx.new(|cx| {
+                                crate::branch_switcher::BranchSwitcher::seeded(
+                                    switcher_repo(),
+                                    switcher_snapshot(),
+                                    Default::default(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                            ws.show_branch_switcher(sw, window, cx)
                         }
                         Overlay::TabMenu => ws.open_tab_menu(first, at, window, cx),
                         Overlay::PaneTabMenu => {
