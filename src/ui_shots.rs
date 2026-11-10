@@ -11284,6 +11284,17 @@ fn branch_switcher_confirm_scene() {
                                 "",
                                 "{n}: typing is ignored on it"
                             );
+                            // Fetch can't be pressed on the confirmation.
+                            let fetch = cx
+                                .read(|cx| s.read(cx).fetch_bounds())
+                                .expect("Fetch is drawn");
+                            cx.simulate_click(window, fetch.center(), gpui::Modifiers::none());
+                            settle(cx, window);
+                            assert_eq!(
+                                cx.read(|cx| s.read(cx).fetch_status()),
+                                None,
+                                "{n}: Fetch is inert on the confirmation"
+                            );
                             // A click on Cancel: back to the list.
                             let cancel = cx
                                 .read(|cx| s.read(cx).cancel_bounds())
@@ -11321,6 +11332,27 @@ fn branch_switcher_confirm_scene() {
                             assert!(
                                 active_terminal_focused(cx, window, &ws),
                                 "{n}: the terminal has the keyboard back"
+                            );
+                            // A typed name chosen while a fetch runs waits for it (Busy, looking).
+                            open_switcher_with(cx, window, &ws, seeded(None));
+                            let s = sw(cx);
+                            let fetch = cx
+                                .read(|cx| s.read(cx).fetch_bounds())
+                                .expect("Fetch is drawn");
+                            cx.simulate_click(window, fetch.center(), gpui::Modifiers::none());
+                            settle(cx, window);
+                            cx.simulate_input(window, "zzz");
+                            settle(cx, window);
+                            press_keys(cx, window, "enter");
+                            assert_eq!(
+                                cx.read(|cx| s.read(cx).busy_text()).as_deref(),
+                                Some("Looking for zzz on origin\u{2026}"),
+                                "{n}: the typed name waits for the running fetch"
+                            );
+                            assert_eq!(
+                                cx.read(|cx| s.read(cx).fetch_status()).as_deref(),
+                                Some("Fetching\u{2026}"),
+                                "{n}: the fetch still runs"
                             );
                         }
                     }
@@ -11400,20 +11432,22 @@ fn scratch_git(git: &std::path::Path, dir: &std::path::Path, args: &[&str]) -> S
 ///
 /// Panics unless:
 /// - with `a.txt` changed and twenty branches `b00`…`b19` listed above `other` (so it is out of
-///   view, never counted), choosing `other` counts it first (busy meanwhile), then ends on the
-///   list with `other · conflict 1 file(s)` (disabled), no confirmation, nothing switched;
+///   view, never counted): choosing `other` while a read of a clean tree lands drops that
+///   count (never shown) and counts again on the new read (`Switch to other?`, nothing
+///   carried); with the dirty read back, choosing `other` counts it first (busy meanwhile),
+///   then ends on the list with `other · conflict 1 file(s)` (disabled), no confirmation,
+///   nothing switched;
 /// - with `a.txt` back and an untracked `notes.txt`, choosing `other` shows `Switch to other?`
-///   and `1 uncommitted file(s) come along`; Enter switches (git says `other`), `notes.txt` is
+///   and `1 uncommitted file(s) come along`; a read landing with a second untracked file
+///   rebuilds it (`2 uncommitted…`), and again without it (`1…`); Enter switches (git says `other`), `notes.txt` is
 ///   still there, the switcher closes, and the active terminal's row has `other` at once (no
 ///   5 s wait);
 /// - typing `nope`, Enter: `Branch nope not found` under the box, still `other`, no `nope`
 ///   branch or origin ref made;
 /// - typing `feature/typed`, Enter: fetched, `Switch to feature/typed?`; Enter: on this
-///   single-branch clone git refuses (`switch --track` wants a ref origin's fetch refspec
-///   covers): back on the list with git's message under the box, still `other`, no local
-///   `feature/typed` made. Known, reported in M11o Task 4: git (2.54) has already written the
-///   target's files into the index and work tree when it refuses (`a.txt` and `b.txt` left
-///   staged); the scene pins that, then puts the scratch clone back;
+///   single-branch clone (`switch --track` refuses a ref outside origin's fetch refspec, after
+///   writing the tree) it switches as `switch --no-track -c` with the upstream set by hand: git
+///   on `feature/typed`, only `notes.txt` uncommitted, `branch.feature/typed.merge` set;
 /// - with the clone's refspec widened (`remote set-branches origin '*'`) and `feature/late` made
 ///   on origin after the switcher's automatic fetch: typing it, Enter: fetched, `Switch to
 ///   feature/late?`; Enter switches (git says `feature/late`, tracking `origin/feature/late`).
@@ -11524,6 +11558,46 @@ fn branch_switcher_real_scene() {
             Some("other · local only"),
             "{n}: other is last, out of view and not counted"
         );
+        // A read lands (here: the tree seen clean) while other's count runs: that count is of
+        // the old tree, so it's dropped (not shown) and other is counted again on the new one
+        // (clean: nothing to count, its confirmation at once, nothing carried).
+        let mut clean = crate::branch_git::read(&git, &clone).expect("read the clone");
+        clean.dirty.clear();
+        let (chose, busy) = cx
+            .update_window(window, |_, _, cx| {
+                sw.update(cx, |s, cx| {
+                    let chose = s.choose_label("other", cx);
+                    let busy = s.busy();
+                    s.land_read(clean, cx);
+                    (chose, busy)
+                })
+            })
+            .expect("choose other, then a read lands");
+        assert!(chose && busy, "{n}: other is being counted");
+        assert!(
+            settle_until(cx, window, 10, |cx| !cx.read(|cx| sw.read(cx).busy())),
+            "{n}: the stale count lands"
+        );
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            Some(vec!["Switch to other?".to_string()]),
+            "{n}: counted again on the newer (clean) read: its confirmation, nothing carried"
+        );
+        press_keys(cx, window, "escape");
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).line_texts())
+                .last()
+                .map(String::as_str),
+            Some("other · local only"),
+            "{n}: the stale count was never shown"
+        );
+        // The real (dirty) tree again.
+        let dirty = crate::branch_git::read(&git, &clone).expect("read the clone");
+        cx.update_window(window, |_, _, cx| {
+            sw.update(cx, |s, cx| s.land_read(dirty, cx))
+        })
+        .expect("land the dirty read");
+        settle(cx, window);
         let (chose, busy) = cx
             .update_window(window, |_, _, cx| {
                 sw.update(cx, |s, cx| {
@@ -11578,6 +11652,37 @@ fn branch_switcher_real_scene() {
             ]),
             "{n}: other's confirmation"
         );
+        // A read lands while it shows: rebuilt from it (counted again: the tree is dirty).
+        let land = |cx: &mut VisualTestAppContext| {
+            let read = crate::branch_git::read(&git, &clone).expect("read the clone");
+            cx.update_window(window, |_, _, cx| {
+                sw.update(cx, |s, cx| s.land_read(read, cx))
+            })
+            .expect("land a read");
+            assert!(
+                settle_until(cx, window, 10, |cx| !cx.read(|cx| sw.read(cx).busy())),
+                "{n}: the recount ends"
+            );
+            cx.read(|cx| sw.read(cx).confirm_texts())
+        };
+        std::fs::write(clone.join("notes2.txt"), "more\n").unwrap();
+        assert_eq!(
+            land(cx),
+            Some(vec![
+                "Switch to other?".to_string(),
+                "2 uncommitted file(s) come along".to_string()
+            ]),
+            "{n}: a newer read: two files come along now"
+        );
+        std::fs::remove_file(clone.join("notes2.txt")).unwrap();
+        assert_eq!(
+            land(cx),
+            Some(vec![
+                "Switch to other?".to_string(),
+                "1 uncommitted file(s) come along".to_string()
+            ]),
+            "{n}: and one again"
+        );
         cx.update_window(window, |_, _, cx| {
             ws.update(cx, |ws, _| ws.places.frozen = false)
         })
@@ -11624,8 +11729,9 @@ fn branch_switcher_real_scene() {
         assert!(!refs.contains("nope"), "{n}: no nope ref: {refs}");
         press_keys(cx, window, "escape");
 
-        // A typed name origin has, not fetched by this single-branch clone: fetched, but git
-        // won't track a ref outside origin's fetch refspec. Its refusal shows; nothing changes.
+        // A typed name origin has, not fetched by this single-branch clone (its refspec brings
+        // trunk only): fetched alone, then switched to as a new local branch whose upstream is
+        // set by hand (git won't `--track` a ref outside the refspec).
         let sw = open(cx, &ws);
         cx.simulate_input(window, "feature/typed");
         settle(cx, window);
@@ -11640,41 +11746,26 @@ fn branch_switcher_real_scene() {
         );
         press_keys(cx, window, "enter");
         assert!(
-            settle_until(cx, window, 10, |cx| !cx.read(|cx| sw.read(cx).busy())),
-            "{n}: the switch ends"
-        );
-        let note = cx.read(|cx| sw.read(cx).note());
-        println!("ui-shots: {n}: narrow clone, git says {note:?}");
-        assert!(
-            branch_switcher_of(cx, &ws).as_ref() == Some(&sw),
-            "{n}: a refusal leaves it open"
+            settle_until(cx, window, 10, |cx| branch_switcher_of(cx, &ws).is_none()),
+            "{n}: the switch closes it ({:?})",
+            cx.read(|cx| sw.read(cx).note())
         );
         assert_eq!(
-            cx.read(|cx| sw.read(cx).confirm_texts()),
-            None,
-            "{n}: back on the list"
+            current(&git),
+            "feature/typed",
+            "{n}: git is on feature/typed"
         );
-        assert!(
-            note.as_deref()
-                .is_some_and(|m| m.contains("cannot set up tracking")),
-            "{n}: git's message under the box: {note:?}"
-        );
-        assert_eq!(current(&git), "other", "{n}: still on other");
-        let refs = scratch_git(&git, &clone, &["for-each-ref", "--format=%(refname)"]);
-        assert!(
-            !refs.contains("refs/heads/feature/typed"),
-            "{n}: no local feature/typed: {refs}"
-        );
-        // Known (M11o Task 4's report): git refused only after writing the target's tree.
-        let status = scratch_git(&git, &clone, &["status", "--porcelain=v1"]);
-        println!("ui-shots: {n}: after git's refusal the clone's status is {status:?}");
         assert_eq!(
-            status, "M  a.txt\nA  b.txt\n?? notes.txt",
-            "{n}: git's partial switch (pinned; see the doc comment)"
+            scratch_git(&git, &clone, &["status", "--porcelain=v1"]),
+            "?? notes.txt",
+            "{n}: a clean switch, notes.txt came along"
         );
-        // The scratch clone back as it was (test setup, not the switcher).
-        scratch_git(&git, &clone, &["reset", "-q", "--hard", "HEAD"]);
-        press_keys(cx, window, "escape");
+        assert_eq!(
+            scratch_git(&git, &clone, &["config", "branch.feature/typed.merge"]),
+            "refs/heads/feature/typed",
+            "{n}: its upstream set"
+        );
+        println!("ui-shots: {n}: narrow clone switched to {}", current(&git));
 
         // A normal refspec, and a branch made on origin after the automatic fetch (so it has
         // no row): fetched, confirmed, switched, tracking origin's.

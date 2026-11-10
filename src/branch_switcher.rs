@@ -108,6 +108,8 @@ struct Confirm {
     lines: Vec<String>,
     /// Not for a typed branch that would conflict (only Cancel then).
     can_switch: bool,
+    /// Reached from the typed name's row (a conflict then shows here, not on a row).
+    typed: bool,
 }
 
 /// A typed name's fetch, and what came of it.
@@ -166,6 +168,7 @@ fn confirmation(
         target,
         lines,
         can_switch,
+        typed: false,
     }
 }
 
@@ -248,8 +251,13 @@ pub struct BranchSwitcher {
     snapshot: Option<Snapshot>,
     /// The snapshot's dirty files, shared with the counts.
     dirty: Arc<HashSet<PathBuf>>,
-    /// Counted conflicts by branch name (a name missing: not counted, or unknown).
+    /// Counted conflicts by branch name (a name missing: not counted, or unknown). A count
+    /// of an older read stays shown until this read's lands.
     conflicts: HashMap<String, usize>,
+    /// The names whose count in `conflicts` is of the current read.
+    fresh: HashSet<String>,
+    /// A typed name waiting for the running fetch to land before its own fetch starts.
+    pending_typed: Option<String>,
     rows: Vec<Row>,
     lines: Vec<Line>,
     /// Each line's matched letters (a row's name, for the box's text).
@@ -352,6 +360,8 @@ impl BranchSwitcher {
             snapshot: None,
             dirty: Arc::default(),
             conflicts: HashMap::new(),
+            fresh: HashSet::new(),
+            pending_typed: None,
             rows: Vec::new(),
             lines: Vec::new(),
             matches: Vec::new(),
@@ -408,6 +418,19 @@ impl BranchSwitcher {
         };
         let fetch = first && snapshot.has_origin;
         self.set_snapshot(snapshot);
+        // A confirmation showing is rebuilt from the new read (what comes along, commits on no
+        // branch, a conflict now); not while git works on it (a switch, a count: a count of the
+        // old read is counted again when it lands).
+        if self.busy.is_none()
+            && let Step::Confirm(c) = &self.step
+        {
+            let (target, typed) = (c.target.clone(), c.typed);
+            if self.listed(&target) {
+                self.confirm_fresh(target, typed, cx);
+            } else {
+                self.step = Step::List;
+            }
+        }
         if fetch {
             self.start_fetch(FetchMode::Auto, cx);
         }
@@ -435,6 +458,7 @@ impl BranchSwitcher {
         }
         self.snapshot = Some(snapshot);
         self.asked.clear();
+        self.fresh.clear();
         self.rebuild_rows();
         self.relist(true);
     }
@@ -508,8 +532,14 @@ impl BranchSwitcher {
             let name = target.name().to_string();
             let before = self.conflicts.get(&name).copied();
             match count {
-                Some(count) => self.conflicts.insert(name, count),
-                None => self.conflicts.remove(&name),
+                Some(count) => {
+                    self.fresh.insert(name.clone());
+                    self.conflicts.insert(name, count)
+                }
+                None => {
+                    self.fresh.remove(&name);
+                    self.conflicts.remove(&name)
+                }
             };
             if before != count {
                 self.rebuild_rows();
@@ -554,6 +584,10 @@ impl BranchSwitcher {
                 };
                 let git = this.repo.git.clone();
                 this.read_with(move || branch_git::read(&git, &root), false, cx);
+                // A typed name waited for this fetch: its own starts now.
+                if let Some(name) = this.pending_typed.take() {
+                    this.run_typed_fetch(name, cx);
+                }
                 cx.notify();
             });
         })
@@ -628,16 +662,7 @@ impl BranchSwitcher {
         match line {
             Line::Row(i) => {
                 let target = self.rows[i].target.clone();
-                let known = self.conflicts.get(target.name()).copied();
-                if self.dirty.is_empty() {
-                    self.confirm(target, Some(0));
-                } else if known.is_none() && self.live {
-                    self.count_then_confirm(target, cx);
-                } else {
-                    // Known (0: a row with a conflict can't be chosen), or a seeded switcher's
-                    // unknown one.
-                    self.confirm(target, known);
-                }
+                self.confirm_fresh(target, false, cx);
             }
             Line::Typed(name) => self.fetch_typed(name, cx),
             Line::OriginHeading => {}
@@ -645,25 +670,57 @@ impl BranchSwitcher {
         cx.notify();
     }
 
-    /// Show the confirmation of `target` (`confirmation`).
-    fn confirm(&mut self, target: Target, conflict: Option<usize>) {
-        let orphans = self.snapshot.as_ref().map_or(0, |s| s.orphans);
-        self.step = Step::Confirm(confirmation(
-            target,
-            conflict,
-            &self.programs,
-            self.dirty.len(),
-            orphans,
-        ));
+    /// Whether `target` is a row of the current read that could be switched to (not gone, not
+    /// checked out meanwhile).
+    fn listed(&self, target: &Target) -> bool {
+        self.rows
+            .iter()
+            .any(|r| &r.target == target && r.mark != Mark::Current)
     }
 
-    /// Count `target`'s conflict (busy meanwhile), then `counted_chosen`.
-    fn count_then_confirm(&mut self, target: Target, cx: &mut Context<Self>) {
+    /// `target`'s confirmation from the current read: at once with a clean tree, or with its
+    /// count of this read; else (a dirty tree, its count not of this read) after counting it
+    /// (`count_then_confirm`). A seeded switcher counts nothing: its seeded count, or unknown.
+    fn confirm_fresh(&mut self, target: Target, typed: bool, cx: &mut Context<Self>) {
+        if self.dirty.is_empty() {
+            self.confirm(target, Some(0), typed);
+        } else if self.fresh.contains(target.name()) || !self.live {
+            let count = self.conflicts.get(target.name()).copied();
+            self.apply_count(target, count, typed);
+        } else {
+            self.count_then_confirm(target, typed, cx);
+        }
+    }
+
+    /// A known count for `target`: a row's conflict disables it and leaves the confirmation
+    /// for the list; else (none, unknown, or a typed branch's) its confirmation.
+    fn apply_count(&mut self, target: Target, count: Option<usize>, typed: bool) {
+        match count {
+            Some(n) if n > 0 && !typed => {
+                self.step = Step::List;
+                self.rebuild_rows();
+                self.relist(true);
+            }
+            _ => self.confirm(target, count, typed),
+        }
+    }
+
+    /// Show the confirmation of `target` (`confirmation`).
+    fn confirm(&mut self, target: Target, conflict: Option<usize>, typed: bool) {
+        let orphans = self.snapshot.as_ref().map_or(0, |s| s.orphans);
+        let confirm = confirmation(target, conflict, &self.programs, self.dirty.len(), orphans);
+        self.step = Step::Confirm(Confirm { typed, ..confirm });
+    }
+
+    /// Count `target`'s conflict against this read's tree (busy meanwhile), then
+    /// `counted_chosen`.
+    fn count_then_confirm(&mut self, target: Target, typed: bool, cx: &mut Context<Self>) {
         let Some(root) = self.snapshot.as_ref().map(|s| s.root.clone()) else {
             return;
         };
         self.busy = Some(COUNTING.to_string());
         let (git, dirty) = (self.repo.git.clone(), self.dirty.clone());
+        let generation = self.generation;
         let task = cx.background_executor().spawn(async move {
             let count = branch_git::changed(&git, &root, &target)
                 .map(|changed| branch_list::conflict_count(&dirty, &changed));
@@ -671,37 +728,68 @@ impl BranchSwitcher {
         });
         cx.spawn(async move |this, cx| {
             let (target, count) = task.await;
-            let _ = this.update(cx, |this, cx| this.counted_chosen(target, count, cx));
+            let _ = this.update(cx, |this, cx| {
+                this.counted_chosen(generation, target, typed, count, cx)
+            });
         })
         .detach();
     }
 
-    /// A chosen row's count landed: a conflict marks and disables the row (the list stays);
-    /// none, or unknown, opens its confirmation (git decides).
-    fn counted_chosen(&mut self, target: Target, count: Option<usize>, cx: &mut Context<Self>) {
+    /// A chosen branch's count landed. Of an older read (one landed meanwhile): dropped, and
+    /// the branch is looked at again on the new read (gone: back to the list). Of this read:
+    /// kept, then a row's conflict disables it (the list stays); none, or unknown, opens its
+    /// confirmation (git decides).
+    fn counted_chosen(
+        &mut self,
+        generation: u64,
+        target: Target,
+        typed: bool,
+        count: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
         self.busy = None;
+        if generation != self.generation {
+            if self.listed(&target) {
+                self.confirm_fresh(target, typed, cx);
+            } else {
+                self.step = Step::List;
+            }
+            cx.notify();
+            return;
+        }
         if let Some(n) = count {
             self.conflicts.insert(target.name().to_string(), n);
+            self.fresh.insert(target.name().to_string());
+            self.rebuild_rows();
+            self.relist(true);
         }
-        match count {
-            Some(n) if n > 0 => {
-                self.rebuild_rows();
-                self.relist(true);
-            }
-            _ => self.confirm(target, count),
-        }
+        self.apply_count(target, count, typed);
         cx.notify();
     }
 
     /// The typed name: fetch it from origin (busy meanwhile; the user asked, so a credential
     /// helper may open its window). Found: the repo read again and the branch's conflict
     /// counted, then its confirmation. Not on origin: `Branch <name> not found`, nothing made.
-    /// A seeded switcher fetches nothing (nothing happens).
+    /// While a fetch runs it waits for it to land first (the two would contend for origin's
+    /// refs), busy and looking. A seeded switcher fetches nothing (nothing happens, unless it
+    /// waits on its never-ending fetch).
     fn fetch_typed(&mut self, name: String, cx: &mut Context<Self>) {
-        if !self.live {
+        if self.busy.is_some() {
             return;
         }
-        let Some(root) = self.snapshot.as_ref().map(|s| s.root.clone()) else {
+        self.busy = Some(looking_for(&name));
+        if self.fetch == FetchState::Running {
+            self.pending_typed = Some(name);
+            return;
+        }
+        self.run_typed_fetch(name, cx);
+    }
+
+    /// The typed name's fetch itself (`fetch_typed`), then `fetched_typed`.
+    fn run_typed_fetch(&mut self, name: String, cx: &mut Context<Self>) {
+        let root = self.snapshot.as_ref().map(|s| s.root.clone());
+        let Some(root) = root.filter(|_| self.live) else {
+            self.busy = None;
             return;
         };
         self.busy = Some(looking_for(&name));
@@ -743,15 +831,20 @@ impl BranchSwitcher {
                 snapshot,
                 count,
             } => {
+                let read = snapshot.is_some();
                 if let Some(snapshot) = snapshot {
                     self.set_snapshot(*snapshot);
                 }
                 if let Some(n) = count {
                     self.conflicts.insert(name.clone(), n);
+                    // Counted on the read that came with it, which is the current one now.
+                    if read {
+                        self.fresh.insert(name.clone());
+                    }
                     self.rebuild_rows();
                     self.relist(true);
                 }
-                self.confirm(Target::Origin(name), count);
+                self.confirm(Target::Origin(name), count, true);
             }
             Typed::NotFound(name) => self.note = Some(not_found(&name)),
             Typed::Failed(why) => self.note = Some(fetch_failed(&why)),
@@ -972,9 +1065,11 @@ impl BranchSwitcher {
         }
     }
 
-    /// The Fetch button: dimmed and inert while a fetch runs, or git works on a choice.
+    /// The Fetch button: dimmed and inert while a fetch runs, on the confirmation, or while git
+    /// works on a choice.
     fn fetch_button(&self, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let running = self.fetch == FetchState::Running || self.busy.is_some();
+        let running =
+            self.fetch == FetchState::Running || self.busy.is_some() || self.step != Step::List;
         let hover = ui.panel_hover;
         let bounds = self.fetch_bounds.clone();
         div()
@@ -1273,6 +1368,16 @@ impl BranchSwitcher {
         self.selected = place;
         self.choose(cx);
         true
+    }
+
+    /// What git is doing for a choice, as the line under the box says it.
+    pub fn busy_text(&self) -> Option<String> {
+        self.busy.clone()
+    }
+
+    /// Land `snapshot` as a later read does (one from the background, e.g. after a fetch).
+    pub fn land_read(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
+        self.got_snapshot(Some(snapshot), false, cx);
     }
 
     /// The box's text.
@@ -1612,6 +1717,20 @@ mod tests {
         assert_eq!(c.lines, ["Switch to fix?", "conflict 2 file(s)"]);
         assert!(!c.can_switch);
         assert_eq!(c.target, Target::Origin("fix".into()));
+    }
+
+    #[test]
+    fn the_confirmation_warns_of_commits_on_no_branch() {
+        let c = confirmation(Target::Local("main".into()), Some(0), &[], 1, 2);
+        assert_eq!(
+            c.lines,
+            [
+                "Switch to main?",
+                "1 uncommitted file(s) come along",
+                "2 commit(s) on no branch: after switching they are only in the reflog"
+            ]
+        );
+        assert!(c.can_switch);
     }
 
     #[test]
