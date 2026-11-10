@@ -164,7 +164,8 @@ impl Recent {
 }
 
 /// Where an action works: anywhere, or only with that kind of tab focused when the palette
-/// opened (`Persistent`: anywhere, while persistent sessions are on).
+/// opened (`Persistent`: anywhere, while persistent sessions are on; `TerminalInRepo`: a terminal
+/// in a repo).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
     Anywhere,
@@ -173,6 +174,8 @@ pub enum Place {
     Browser,
     TerminalOrFile,
     Persistent,
+    /// A terminal in front whose folder is in a git repo here (not over SSH).
+    TerminalInRepo,
 }
 
 /// The kind of tab that had the focus when the palette opened.
@@ -184,7 +187,7 @@ pub enum Focused {
     Nothing,
 }
 
-pub fn applies(place: Place, focused: Focused, persistent: bool) -> bool {
+pub fn applies(place: Place, focused: Focused, persistent: bool, in_repo: bool) -> bool {
     match place {
         Place::Anywhere => true,
         Place::Terminal => focused == Focused::Terminal,
@@ -192,6 +195,7 @@ pub fn applies(place: Place, focused: Focused, persistent: bool) -> bool {
         Place::Browser => focused == Focused::Browser,
         Place::TerminalOrFile => matches!(focused, Focused::Terminal | Focused::File),
         Place::Persistent => persistent,
+        Place::TerminalInRepo => focused == Focused::Terminal && in_repo,
     }
 }
 
@@ -293,6 +297,13 @@ pub static COMMANDS: &[Command] = {
             "",
             A,
             Run::Action(act::<MoveSessionDown>),
+        ),
+        cmd(
+            "Switch branch\u{2026}",
+            Workspaces,
+            "git checkout",
+            Place::TerminalInRepo,
+            Run::Action(act::<SwitchBranch>),
         ),
         cmd(
             "Next Workspace",
@@ -647,12 +658,13 @@ pub struct ActionRow {
 pub fn action_rows(
     focused: Focused,
     persistent: bool,
+    in_repo: bool,
     presets: &[String],
     pairs: &[(String, String)],
 ) -> Vec<ActionRow> {
     let mut rows = Vec::new();
     for c in COMMANDS {
-        if !applies(c.place, focused, persistent) {
+        if !applies(c.place, focused, persistent, in_repo) {
             continue;
         }
         let keys = match c.run {
@@ -1354,38 +1366,50 @@ mod tests {
     }
 
     #[test]
+    fn the_switch_branch_command_needs_a_repo() {
+        let pairs = real_pairs();
+        let out = action_rows(Focused::Terminal, false, false, &[], &pairs);
+        assert!(!names(&out).contains(&"Switch branch\u{2026}"));
+        let inside = action_rows(Focused::Terminal, false, true, &[], &pairs);
+        assert!(names(&inside).contains(&"Switch branch\u{2026}"));
+        // Not with a browser or a file in front, even in a repo.
+        let file = action_rows(Focused::File, false, true, &[], &pairs);
+        assert!(!names(&file).contains(&"Switch branch\u{2026}"));
+    }
+
+    #[test]
     fn actions_apply_only_where_they_work() {
         let pairs = real_pairs();
-        let terminal = action_rows(Focused::Terminal, false, &[], &pairs);
+        let terminal = action_rows(Focused::Terminal, false, true, &[], &pairs);
         let t = names(&terminal);
         assert!(t.contains(&"Copy") && t.contains(&"Paste"));
         assert!(!t.contains(&"Find in File\u{2026}"));
         assert!(!t.contains(&"Reload Page"));
         assert!(!t.contains(&"Quit fuxx and End All Sessions"));
         assert!(t.contains(&"Quit fuxx") && t.contains(&"New Browser Tab"));
-        let file = action_rows(Focused::File, false, &[], &pairs);
+        let file = action_rows(Focused::File, false, true, &[], &pairs);
         let f = names(&file);
         assert!(f.contains(&"Find in File\u{2026}") && f.contains(&"Copy"));
         assert!(!f.contains(&"Paste"));
-        let browser = action_rows(Focused::Browser, true, &[], &pairs);
+        let browser = action_rows(Focused::Browser, true, true, &[], &pairs);
         let b = names(&browser);
         assert!(b.contains(&"Reload Page"));
         assert!(b.contains(&"Quit fuxx and End All Sessions"));
         assert!(!b.contains(&"Copy"));
-        let nothing = action_rows(Focused::Nothing, false, &[], &pairs);
+        let nothing = action_rows(Focused::Nothing, false, true, &[], &pairs);
         let n = names(&nothing);
         assert!(!n.contains(&"Copy") && !n.contains(&"Find in File\u{2026}"));
         assert!(n.contains(&"Split Right"));
-        assert!(applies(Place::Anywhere, Focused::Nothing, false));
-        assert!(applies(Place::TerminalOrFile, Focused::File, false));
-        assert!(!applies(Place::Persistent, Focused::Terminal, false));
+        assert!(applies(Place::Anywhere, Focused::Nothing, false, true));
+        assert!(applies(Place::TerminalOrFile, Focused::File, false, true));
+        assert!(!applies(Place::Persistent, Focused::Terminal, false, true));
     }
 
     #[test]
     fn action_rows_carry_keys_and_presets() {
         let pairs = real_pairs();
         let presets = ["Claude".to_string(), "Codex".to_string()];
-        let rows = action_rows(Focused::Terminal, false, &presets, &pairs);
+        let rows = action_rows(Focused::Terminal, false, true, &presets, &pairs);
         let find = |name: &str| rows.iter().find(|r| r.name == name).expect(name);
         assert_eq!(
             find("Split Down").keys.as_deref(),
@@ -1418,7 +1442,7 @@ mod tests {
         assert_eq!(rows[at + 3].name, "New Tab");
         // Only the first nine presets have a key, so only they have a row.
         let many: Vec<String> = (0..12).map(|n| format!("p{n}")).collect();
-        let rows = action_rows(Focused::Nothing, false, &many, &pairs);
+        let rows = action_rows(Focused::Nothing, false, true, &many, &pairs);
         assert_eq!(
             rows.iter()
                 .filter(|r| matches!(r.key, Key::Preset(_)))
@@ -1466,10 +1490,10 @@ mod tests {
     /// Every action (each in its own place's rows), in table order.
     fn every_action() -> Vec<ActionRow> {
         let pairs = real_pairs();
-        let mut all = action_rows(Focused::Terminal, true, &[], &pairs);
-        for row in action_rows(Focused::Browser, true, &[], &pairs)
+        let mut all = action_rows(Focused::Terminal, true, true, &[], &pairs);
+        for row in action_rows(Focused::Browser, true, true, &[], &pairs)
             .into_iter()
-            .chain(action_rows(Focused::File, true, &[], &pairs))
+            .chain(action_rows(Focused::File, true, true, &[], &pairs))
         {
             if !all.iter().any(|r| r.key == row.key) {
                 all.push(row);
@@ -1491,7 +1515,7 @@ mod tests {
         fn new() -> Self {
             Fixture {
                 workspaces: eight(),
-                actions: action_rows(Focused::Terminal, false, &[], &real_pairs()),
+                actions: action_rows(Focused::Terminal, false, true, &[], &real_pairs()),
                 settings: palette_settings(),
                 recent: Recent::default(),
             }
@@ -1939,7 +1963,7 @@ mod tests {
             assert_eq!(row(name), None, "{name} has no key");
         }
         // Not where there is no terminal.
-        let file = action_rows(Focused::File, false, &[], &real_pairs());
+        let file = action_rows(Focused::File, false, true, &[], &real_pairs());
         assert!(!names(&file).contains(&"Rerun Command"));
     }
 

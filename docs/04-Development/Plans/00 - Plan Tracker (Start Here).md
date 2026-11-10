@@ -19,9 +19,9 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **None in progress.** v0.5.0 (M11i–M11n) is released (2026-11-10). M11n — performance is done ([[65 - Milestone 11n - Performance]]; [[M11n Plan - Performance]] 9/9). |
+| **Current milestone** | **M11o — Branch Switcher**, built 2026-11-10 on `feat/m11o-branch-switcher` (6/6 tasks, final review fixes applied, not merged yet), waiting for your on-screen check, then merge: [[66 - Milestone 11o - Branch Switcher]], [[M11o Plan - Branch Switcher]]. v0.5.0 (M11i–M11n) is released (2026-11-10). |
 | **Status** | v0.5.0 released 2026-11-10 (run 42662570303; tag `v0.5.0` on `7f85fad`; `fuxx-0.5.0.zip`): M11i, M11h, M11j, M11k, M11l, M11m and M11n are 🟨 built, reviewed, merged, pushed and released; on-screen checks pending. 🟨 M11e/M11f/M11g released (v0.3.0–v0.4.0); on-screen checks pending. |
-| **▶ Next action** | Your on-screen check of 0.5.0: 129 checks in one list, kept as an interactive checklist page; the per-note lists are in notes 59–65. Then plan the chores round with you; that planning round may also pick up fuxx-completes (`github.com/fitzfitz/fuxx-completes`, design stage). Found for later, from M11n: cache the window chrome so a breath frame doesn't re-render it all. |
+| **▶ Next action** | M11o: built, final review fixes applied; your on-screen check (12 items in note 66), then merge. Also your on-screen check of 0.5.0: 129 checks in one list, kept as an interactive checklist page; the per-note lists are in notes 59–65. Then plan the chores round with you; that planning round may also pick up fuxx-completes (`github.com/fitzfitz/fuxx-completes`, design stage). Found for later, from M11n: cache the window chrome so a breath frame doesn't re-render it all. |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-11-10 |
 
@@ -70,6 +70,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | M11l | Command blocks | [[M11l Plan - Command Blocks]] (design: [[63 - Milestone 11l - Command Blocks]]) | 🟨 built, reviewed, merged, pushed 2026-11-09; released in v0.5.0 (2026-11-10); on-screen check pending | 7/8 | OSC 133 marks from a zsh integration; a bar per command, hairlines, a one-row chip, jump and copy keys; a darker tab bar. |
 | M11m | Title bar | [[M11m Plan - Title Bar]] (design: [[64 - Milestone 11m - Title Bar]]) | 🟨 built, reviewed, merged, pushed 2026-11-09; released in v0.5.0 (2026-11-10); on-screen check pending | 6/6 | Sidebar icon and the title "the Fuxx?" in the sidebar's top band; collapsed: workspace name centred, 🔔 ⚙ and the sidebar button at the right. |
 | M11n | Performance | [[M11n Plan - Performance]] (design: [[65 - Milestone 11n - Performance]]) | 🟨 built, reviewed, merged, pushed and released in v0.5.0 (2026-11-10); on-screen check pending | 9/9 | Idle 6.99 → 5.35 % breathing (0.765×), 0.93 % after 5 min untouched; `cat` 100 MiB 1.42× Ghostty (was 2.7×); the same breath and every byte on screen. |
+| M11o | Branch switcher | [[M11o Plan - Branch Switcher]] (design: [[66 - Milestone 11o - Branch Switcher]]) | 🟨 built 2026-11-10 on `feat/m11o-branch-switcher` (final review fixes applied; not merged yet); on-screen check pending, then merge | 6/6 | A modal to switch a folder's git branch: marks, ORIGIN, a background fetch and a Fetch button, conflicting branches disabled with their count, a confirmation every time, a typed origin name. Opens from the row's branch, the status bar and ⌘K. |
 
 Phase 2+ (M5–M13; renumbered 2026-10-27: M11 is now UI/UX uplift) stays a one-line roadmap entry on purpose: it gets detailed plans when we reach
 it ([[40 - Roadmap]], and "over-planning stalls solo projects" in [[52 - Known Risks and Gotchas]]).
