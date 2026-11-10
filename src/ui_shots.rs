@@ -1432,8 +1432,8 @@ fn sidebar_scenes() {
                     };
                     // Every row has its folder line, two lines in all (M11i); the waiting one
                     // says "Needs input" there instead.
-                    assert_eq!(height(1), 32.0, "{scene}-{slug}: waiting row");
-                    assert_eq!(height(3), 32.0, "{scene}-{slug}: the split workspace's row");
+                    assert_eq!(height(1), 52.0, "{scene}-{slug}: waiting row");
+                    assert_eq!(height(3), 52.0, "{scene}-{slug}: the split workspace's row");
                     assert_eq!(ws.sidebar.scroll.children_count(), 6, "{scene}-{slug}");
                     // The split workspace is on screen: two panes, each with its tab.
                     assert_eq!(ws.tab_sessions().len(), 2, "{scene}-{slug}: tabs");
@@ -1444,7 +1444,13 @@ fn sidebar_scenes() {
         }
 
         // The pointer over web's (closed) header; the + menu open; a row mid-drag.
-        for scene in ["sidebar-hover", "sidebar-menu", "sidebar-drag"] {
+        for scene in [
+            "sidebar-hover",
+            "sidebar-menu",
+            "sidebar-drag",
+            "sidebar-drag-out",
+            "sidebar-drop",
+        ] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -1479,7 +1485,7 @@ fn sidebar_scenes() {
                         cx.simulate_click(window, at, none);
                         assert!(cx.read(|cx| ws.read(cx).sidebar.new_menu), "menu opens");
                     }
-                    _ => {
+                    "sidebar-drag" => {
                         // codex (row 2, three lines tall) down past tests and shell: its copy right
                         // over the gap between shell and the long one, as it opens with codex
                         // taken out (the rows after it moved up by its room: its height and the
@@ -1504,17 +1510,143 @@ fn sidebar_scenes() {
                         let left = MouseButton::Left;
                         cx.simulate_mouse_move(window, from + point(px(0.0), px(8.0)), left, none);
                         cx.simulate_mouse_move(window, to, left, none);
-                        let slot = cx.read(|cx| ws.read(cx).sidebar.drop_slot);
-                        assert_eq!(slot, Some(3), "the gap is between shell and the long one");
+                        // Before the long one (item 5), after claude, tests and shell: slot 3 of
+                        // api's group.
+                        let at = cx.read(|cx| ws.read(cx).sidebar.drop_at.clone());
+                        let at = at.map(|(at, group, slot)| (at, group.is_some(), slot));
+                        assert_eq!(
+                            at,
+                            Some((5, true, 3)),
+                            "the gap is between shell and the long one"
+                        );
                         settle_slides(cx, window);
                         *seen.borrow_mut() = bounds;
                     }
+                    "sidebar-drag-out" => {
+                        // codex taken up into the title band: out of every group, at the top;
+                        // api's header and claude slide down under the gap (2026-11-10).
+                        let (claude, codex) = cx.read(|cx| {
+                            let scroll = &ws.read(cx).sidebar.scroll;
+                            let at = |i| scroll.bounds_for_item(i).expect("laid out");
+                            (at(1), at(2))
+                        });
+                        let from = codex.center();
+                        let left = MouseButton::Left;
+                        cx.simulate_mouse_down(window, from, left, none);
+                        cx.simulate_mouse_move(window, from + point(px(0.0), px(8.0)), left, none);
+                        cx.simulate_mouse_move(window, point(from.x, px(12.0)), left, none);
+                        let at = cx.read(|cx| ws.read(cx).sidebar.drop_at.clone());
+                        assert_eq!(at, Some((0, None, 0)), "out of every group, first");
+                        settle_slides(cx, window);
+                        *seen.borrow_mut() = vec![claude, codex];
+                    }
+                    "sidebar-drop" => {
+                        // codex dropped out of every group, then into web's (closed) group, then
+                        // back into api's: where it shows and what is recorded (2026-11-10).
+                        use crate::groups::GroupKey;
+                        use crate::layout_model::Placed;
+                        let left = MouseButton::Left;
+                        let codex = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            let i = ws
+                                .sessions
+                                .position(|s| s.label() == "codex")
+                                .expect("codex");
+                            ws.workspace_of(i).expect("its workspace")
+                        });
+                        let item = |cx: &mut VisualTestAppContext| {
+                            cx.read(|cx| {
+                                let ws = ws.read(cx);
+                                let rows = ws.rows_in_view(std::time::Instant::now());
+                                let i = rows
+                                    .iter()
+                                    .position(|r| matches!(r, crate::sidebar::SidebarRow::Workspace(w) if w.workspace == codex))
+                                    .expect("codex's row");
+                                ws.sidebar.scroll.bounds_for_item(i).expect("laid out")
+                            })
+                        };
+                        let mut drop_at = |cx: &mut VisualTestAppContext, y: Pixels| {
+                            let from = item(cx).center();
+                            cx.simulate_mouse_down(window, from, left, none);
+                            cx.simulate_mouse_move(
+                                window,
+                                from + point(px(0.0), px(8.0)),
+                                left,
+                                none,
+                            );
+                            cx.simulate_mouse_move(window, point(from.x, y), left, none);
+                            cx.simulate_mouse_up(window, point(from.x, y), left, none);
+                            settle_slides(cx, window);
+                        };
+                        let state = |cx: &mut VisualTestAppContext| {
+                            cx.read(|cx| {
+                                let ws = ws.read(cx);
+                                let placed =
+                                    ws.model.workspace(codex).and_then(|w| w.placed.clone());
+                                (placed, ws.workspace_group(codex))
+                            })
+                        };
+                        // Into the title band: out of every group.
+                        drop_at(cx, px(12.0));
+                        assert_eq!(state(cx), (Some(Placed::Ungrouped), None), "out");
+                        // Down past web's header (the list's last item): into web's group.
+                        let bottom = cx.read(|cx| ws.read(cx).sidebar.scroll.bounds().bottom());
+                        drop_at(cx, bottom - px(6.0));
+                        let web = GroupKey::Folder(WEB.into());
+                        assert_eq!(
+                            state(cx),
+                            (Some(Placed::Folder(WEB.into())), Some(web)),
+                            "into web's group"
+                        );
+                        // (Web is closed in this scene: open it, so codex's row shows.)
+                        let web = GroupKey::Folder(WEB.into());
+                        cx.update(|cx| ws.update(cx, |ws, cx| ws.toggle_group(&web, cx)));
+                        settle_slides(cx, window);
+                        // Back between claude and tests (under api's header): its own group,
+                        // nothing recorded.
+                        let tests = cx.read(|cx| {
+                            let ws = ws.read(cx);
+                            let i = ws.sessions.position(|s| s.label() == "tests").expect("tests");
+                            let tests = ws.workspace_of(i).expect("its workspace");
+                            let rows = ws.rows_in_view(std::time::Instant::now());
+                            let i = rows
+                                .iter()
+                                .position(|r| matches!(r, crate::sidebar::SidebarRow::Workspace(w) if w.workspace == tests))
+                                .expect("tests' row");
+                            ws.sidebar.scroll.bounds_for_item(i).expect("laid out")
+                        });
+                        drop_at(cx, tests.top() + px(6.0));
+                        let api = GroupKey::Folder(API.into());
+                        assert_eq!(state(cx), (None, Some(api)), "back in api's group");
+                    }
+                    _ => unreachable!("{scene}"),
                 }
                 // Not kept past its window (the act runs twice for the drag).
                 acting.borrow_mut().take();
             };
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
+            if scene == "sidebar-drag-out" {
+                // claude slid down into codex's place, drawn over it (codex's own card goes to
+                // its gap, not left where it was: 2026-11-10).
+                let shot = render_with(&theme, dims, build, act);
+                let n = format!("{scene}-{slug}");
+                let ui = theme.ui();
+                let rows = rows.borrow().clone();
+                let (claude, codex) = (rows[0], rows[1]);
+                let slid = claude.center().y + (codex.top() - claude.top());
+                let p = pixel_at(
+                    &shot,
+                    dims,
+                    f32::from(claude.left()) + 12.0,
+                    f32::from(slid),
+                );
+                assert!(
+                    near(p, ui.waiting_tint),
+                    "{n}: claude slid down, seen: {p:?}"
+                );
+                continue;
+            }
             if scene != "sidebar-drag" {
                 continue;
             }
@@ -1531,11 +1663,12 @@ fn sidebar_scenes() {
             let room = f32::from(tests.top() - codex.top());
             let x = f32::from(shell.left()) + 10.0;
             let px_at = |y: Pixels| pixel_at(&shot, dims, x, f32::from(y));
-            // shell (selected: the selection's tint) slid up by codex's room; the gap below it,
+            // shell (selected: the card's selection, in api's card) slid up by codex's room; the
+            // gap below it,
             // down to where shell ended, is filled by codex's copy (as tall as codex's row), top
             // to bottom: no empty band, no line.
             let up = px_at(shell.top() - px(room) + px(3.0));
-            assert!(is(up, ui.row_selected), "{n}: shell slid up: {up:?}");
+            assert!(is(up, ui.card_selected), "{n}: shell slid up: {up:?}");
             let gap_top = shell.bottom() - codex.size.height;
             for y in [
                 gap_top + px(3.0),
@@ -1544,7 +1677,7 @@ fn sidebar_scenes() {
             ] {
                 let p = px_at(y);
                 assert!(
-                    !is(p, ui.sidebar_background) && !is(p, ui.row_selected),
+                    !is(p, ui.card) && !is(p, ui.card_selected),
                     "{n}: the copy in the gap at {y:?}: {p:?}"
                 );
             }
@@ -1638,8 +1771,8 @@ const ROWS: [ShotSession; 6] = [
 /// in a repo: no branch line).
 ///
 /// Panics unless the pinned rows lead, the rows carry their branch and folder, the rows in a
-/// repo are 45 pt (three lines) and claude (waiting) and notes 32 pt (two), and the selected row
-/// is tinted with the accent bar at its left and its name in `text`.
+/// repo are 68 pt (three lines) and claude (waiting) and notes 52 pt (two), and the selected row
+/// is tinted to its left edge (no accent bar since 2026-11-10) with its name in `text`.
 fn sidebar_row_scenes() {
     use std::cell::{Cell, RefCell};
     use std::path::Path;
@@ -1652,7 +1785,7 @@ fn sidebar_row_scenes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for (scene, width) in [("sidebar-rows", 240.0), ("sidebar-rows-narrow", 180.0)] {
-            let dims = size(px(width + 300.0), px(560.0));
+            let dims = size(px(width + 300.0), px(720.0));
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -1740,16 +1873,20 @@ fn sidebar_row_scenes() {
                     // A group's gap between the pinned rows and notes.
                     let bounds = |i: usize| ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                     let gap = f32::from(bounds(2).top() - bounds(1).bottom());
-                    assert_eq!(gap, 10.0, "{n}: the gap under the pinned rows");
-                    // In a repo, the branch and the folder each on a line: 45 pt. Waiting (its
-                    // one line) and outside a repo (the folder alone): 32 pt.
+                    assert_eq!(gap, 16.0, "{n}: the gap under the pinned rows");
+                    // Room under the title band: the first row starts 10 pt into the list.
+                    let list_top = f32::from(ws.sidebar.scroll.bounds().top());
+                    let first_top = f32::from(bounds(0).top());
+                    assert_eq!(first_top - list_top, 10.0, "{n}: the gap under the title");
+                    // In a repo, the branch and the folder each on a line: 68 pt. Waiting (its
+                    // one line) and outside a repo (the folder alone): 52 pt.
                     for (i, h) in [
-                        (0, 45.0),
-                        (1, 32.0),
-                        (2, 32.0),
-                        (4, 45.0),
-                        (6, 45.0),
-                        (8, 45.0),
+                        (0, 68.0),
+                        (1, 52.0),
+                        (2, 52.0),
+                        (4, 68.0),
+                        (6, 68.0),
+                        (8, 68.0),
                     ] {
                         let seen = f32::from(bounds(i).size.height);
                         assert_eq!(seen, h, "{n}: row {i}'s height");
@@ -1778,10 +1915,11 @@ fn sidebar_row_scenes() {
 /// A sidebar row as laid out: (left, right, top, height), in points.
 type RowBox = (f32, f32, f32, f32);
 
-/// A sidebar row's line 1 (17 pt) and the lines under it (13 pt each), centred in the row
-/// (M11i; a third line in a repo since 2026-11-10).
-const ROW_LINE_ONE: f32 = 17.0;
-const ROW_LINE_TWO: f32 = 13.0;
+/// A sidebar row's line 1 (18 pt) and the lines under it (16 pt each), centred in the row
+/// (M11i; a third line in a repo, and roomier, since 2026-11-10).
+const ROW_LINE_ONE: f32 = 18.0;
+const ROW_LINE_TWO: f32 = 16.0;
+const ROW_NAME_GAP: f32 = 4.0;
 
 /// The middle of line 1 and of line 2 of a sidebar row `height` tall whose top is at `top`.
 fn row_lines(top: f32, height: f32) -> (f32, f32) {
@@ -1791,11 +1929,13 @@ fn row_lines(top: f32, height: f32) -> (f32, f32) {
         h if h > SIDEBAR_ROW => 1.0,
         _ => 0.0,
     };
-    let content = ROW_LINE_ONE + under * ROW_LINE_TWO;
+    // The name, 4 pt, then the lines under it (2026-11-10).
+    let gap = if under > 0.0 { ROW_NAME_GAP } else { 0.0 };
+    let content = ROW_LINE_ONE + gap + under * ROW_LINE_TWO;
     let first = top + (height - content) / 2.0;
     (
         first + ROW_LINE_ONE / 2.0,
-        first + ROW_LINE_ONE + ROW_LINE_TWO / 2.0,
+        first + ROW_LINE_ONE + gap + ROW_LINE_TWO / 2.0,
     )
 }
 
@@ -1813,8 +1953,9 @@ fn near(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb) -> bool {
     gap(p, c) <= 3
 }
 
-/// The selected row (M11i) at `(left, right, top, height)`: the 2 pt accent bar at its left
-/// edge, the selection's tint inside, and its name in `text`, never `on_accent`.
+/// The selected row (M11i) at `(left, right, top, height)`: the selection's tint right to its
+/// left edge (the accent bar there was removed 2026-11-10, your call), and its name in `text`,
+/// never `on_accent`.
 fn check_selected(
     shot: &Shot,
     dims: Size<Pixels>,
@@ -1823,14 +1964,24 @@ fn check_selected(
     (left, right, top, height): RowBox,
 ) {
     let middle = top + height / 2.0;
-    let bar = pixel_at(shot, dims, left + 1.0, middle);
-    assert!(near(bar, ui.accent), "{n}: the accent bar: {bar:?}");
-    // Just right of the bar, in the padding left of the mark, and in the right padding (a row
-    // in a repo has text across its middle: the branch line).
-    for (what, x) in [("padding", left + 5.0), ("right padding", right - 4.0)] {
+    // In its group's card (2026-11-10): the card's colour in the card's 4 pt room at the row's
+    // left, then the card's selection from the row's own left edge (where the bar was), in the
+    // padding left of the mark, and in the right padding (a row in a repo has text across its
+    // middle: the branch line).
+    let edge = pixel_at(shot, dims, left + 2.0, middle);
+    assert!(
+        near(edge, ui.card),
+        "{n}: the card beside the row: {edge:?}"
+    );
+    let (left, right) = (left + 4.0, right - 4.0);
+    for (what, x) in [
+        ("left edge", left + 1.0),
+        ("padding", left + 5.0),
+        ("right padding", right - 4.0),
+    ] {
         let tint = pixel_at(shot, dims, x, middle);
         assert!(
-            near(tint, ui.row_selected),
+            near(tint, ui.card_selected),
             "{n}: tint at its {what}: {tint:?}"
         );
     }
@@ -1846,12 +1997,11 @@ fn check_selected(
 /// The compact rows' selection and marks (M11i), from real workspaces in both themes, all in
 /// api: `api` selected, `server` idle running a program, `shell` idle at its prompt, `claude`
 /// waiting, `docs` idle and hovered.
-/// - `sidebar-selection`: api selected (the tint and the accent bar), the pointer over docs.
+/// - `sidebar-selection`: api selected (the tint), the pointer over docs.
 /// - `sidebar-selection-waiting`: claude selected instead: it takes the selection's tint and
 ///   keeps its waiting mark and "Needs input".
 ///
-/// Panics unless the selected row has the accent bar at its left edge, the selection's tint
-/// inside and its name in `text` (not `on_accent`); a waiting selected row keeps its waiting
+/// Panics unless the selected row has the selection's tint from its left edge and its name in `text` (not `on_accent`); a waiting selected row keeps its waiting
 /// colour; the hovered row shows `row_hover` and its ⌘ shortcut while the others hide theirs;
 /// and the idle marks are a filled `text_dim` dot (server) and a hollow `text_faint` ring
 /// (shell).
@@ -1867,7 +2017,7 @@ fn sidebar_selection_scenes() {
         shot("claude", API, Status::Waiting, 4 * 60, CLAUDE_PROMPT),
         shot("docs", API, Status::Idle, 0, SHELL_TEXT),
     ];
-    let dims = size(px(540.0), px(360.0));
+    let dims = size(px(540.0), px(440.0));
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -1923,7 +2073,7 @@ fn sidebar_selection_scenes() {
             check_selected(&shot, dims, &ui, &n, rows[active]);
             // The mark slot: 8 pt in from the row's left, 14 pt wide.
             let mark_at = |(left, _, top, height): RowBox| {
-                (left + 8.0, left + 22.0, row_lines(top, height).0)
+                (left + 12.0, left + 26.0, row_lines(top, height).0)
             };
             if active == 3 {
                 // Selected and waiting: its mark and "Needs input" keep the waiting colour.
@@ -1945,23 +2095,21 @@ fn sidebar_selection_scenes() {
                     .count()
             };
             let (left, _, top, height) = rows[4];
-            let hover = pixel_at(&shot, dims, left + 4.0, top + height / 2.0);
-            assert!(near(hover, ui.row_hover), "{n}: docs hovered: {hover:?}");
-            let shows = right_end(rows[4], ui.row_hover);
+            // In api's card: the card's hover, 4 pt in (2026-11-10).
+            let hover = pixel_at(&shot, dims, left + 8.0, top + height / 2.0);
+            assert!(near(hover, ui.card_hover), "{n}: docs hovered: {hover:?}");
+            let shows = right_end(rows[4], ui.card_hover);
             assert!(shows > 0, "{n}: docs shows its shortcut");
-            let hides = right_end(rows[2], ui.sidebar_background);
+            let hides = right_end(rows[2], ui.card);
             assert_eq!(hides, 0, "{n}: shell hides its shortcut");
             // Idle marks: server's program runs (a filled text_dim dot); shell is at its prompt
-            // (a hollow text_faint ring: its middle is the sidebar, its sides the ring).
+            // (a hollow text_faint ring: its middle is api's card, its sides the ring).
             let (x0, x1, y) = mark_at(rows[1]);
             let dot = pixel_at(&shot, dims, (x0 + x1) / 2.0, y);
             assert!(near(dot, ui.text_dim), "{n}: server's dot: {dot:?}");
             let (x0, x1, y) = mark_at(rows[2]);
             let hole = pixel_at(&shot, dims, (x0 + x1) / 2.0, y);
-            assert!(
-                near(hole, ui.sidebar_background),
-                "{n}: shell's ring is hollow: {hole:?}"
-            );
+            assert!(near(hole, ui.card), "{n}: shell's ring is hollow: {hole:?}");
             // Its line is 1.5 pt, so at 1x no pixel is wholly covered: the strongest one along
             // its middle is text_faint give or take its edge's smoothing, and not text_dim.
             let along: Vec<[u8; 3]> = (0..(x1 - x0) as usize)
@@ -2807,8 +2955,8 @@ fn workspace_scenes() {
                 };
                 // Each with one line under its name (M11i): its folder, or the waiting one's
                 // "Needs input".
-                assert_eq!(height(2), 32.0, "{n}: agent's waiting row");
-                assert_eq!(height(4), 32.0, "{n}: api's row");
+                assert_eq!(height(2), 52.0, "{n}: agent's waiting row");
+                assert_eq!(height(4), 52.0, "{n}: api's row");
                 let api = ws.model.focused_workspace().expect("focused");
                 let ring = ws
                     .rollup_session(api)
@@ -3012,13 +3160,15 @@ fn tab_bar_scenes() {
                     "tab-bars-button" => {
                         // The left pane's buttons sit at its right edge: + is the first of
                         // three.
-                        let right = tabs[0].left() + px(LEFT_BAR_WIDTH);
+                        let right = tabs[0].left() - px(crate::ui_tokens::size::TABS_LEFT)
+                            + px(LEFT_BAR_WIDTH);
                         let at = point(right - px(PLUS_FROM_EDGE), tabs[0].center().y);
                         cx.simulate_mouse_move(window, at, None, none);
                     }
                     "tab-bars-more" => {
                         // The left bar's ⋯: its menu hangs from the button's bottom right.
-                        let right = tabs[0].left() + px(LEFT_BAR_WIDTH);
+                        let right = tabs[0].left() - px(crate::ui_tokens::size::TABS_LEFT)
+                            + px(LEFT_BAR_WIDTH);
                         let at = point(right - px(MORE_FROM_EDGE), tabs[0].center().y);
                         cx.simulate_click(window, at, none);
                         let menu = cx.read(|cx| {
@@ -3086,7 +3236,10 @@ fn tab_bar_scenes() {
             let tabs = geometry.borrow().clone();
             let (api, claude, codex) = (tabs[0], tabs[1], tabs[2]);
             let (top, bottom) = (f32::from(api.top()), f32::from(api.bottom()));
-            let (bar_top, bar_right) = (top - 4.0, f32::from(api.left()) + LEFT_BAR_WIDTH);
+            let (bar_top, bar_right) = (
+                top - 4.0,
+                f32::from(api.left()) - crate::ui_tokens::size::TABS_LEFT + LEFT_BAR_WIDTH,
+            );
             // Away from the text, the icon and the ×: near each tab's right end, low in the bar.
             let fill_at = |b: gpui::Bounds<Pixels>| (f32::from(b.right()) - 26.0, bottom - 6.0);
             // Whether something is drawn in tab `b`'s × box (on a tab filled `fill`).
@@ -3319,7 +3472,7 @@ fn tab_bar_scenes() {
             let codex_gone = cx.read(|cx| ws.read(cx).sessions.position(|s| s.label() == "codex"));
             assert_eq!(codex_gone, None, "{n}: codex ended");
             // The left bar's ⋯ (the right pane, tests, has the focus): Escape closes its menu.
-            let right = api.left() + px(LEFT_BAR_WIDTH);
+            let right = api.left() - px(crate::ui_tokens::size::TABS_LEFT) + px(LEFT_BAR_WIDTH);
             let more = point(right - px(MORE_FROM_EDGE), api.center().y);
             cx.update(|cx| {
                 cx.bind_keys([KeyBinding::new(
@@ -3601,8 +3754,9 @@ fn tab_drag_scenes() {
                     no_line();
                 }
                 _ => {
-                    // The ring along docs's row's left edge, mid-height.
-                    let (x, y) = (f32::from(g.row.left()) + 1.0, f32::from(g.row.center().y));
+                    // The ring along docs's row's left edge, mid-height (4 pt into its group's
+                    // card, since 2026-11-10).
+                    let (x, y) = (f32::from(g.row.left()) + 5.0, f32::from(g.row.center().y));
                     assert!(is(px_at(x, y), ui.accent), "{n}: docs's row ringed");
                     // Its own bar closed up: the browser tab's place is empty.
                     empty(tabs[3], "the left bar's last place");
@@ -5524,7 +5678,10 @@ fn right_sidebar_scenes() {
                 } else {
                     window_right - GAP - 1.0
                 };
-                *seen.borrow_mut() = vec![f32::from(second.left()) - 2.0 - GAP, pane_right];
+                *seen.borrow_mut() = vec![
+                    f32::from(second.left()) - crate::ui_tokens::size::TABS_LEFT - 2.0 - GAP,
+                    pane_right,
+                ];
                 cx.read(|cx| {
                     let ws = ws.read(cx);
                     assert_eq!(ws.right_sidebar.hidden, !open, "{n}");
@@ -5553,7 +5710,8 @@ fn right_sidebar_scenes() {
                         .expect("refresh");
                     cx.run_until_parked();
                     let second = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
-                    seen.borrow_mut()[0] = f32::from(second.left()) - 2.0 - GAP;
+                    seen.borrow_mut()[0] =
+                        f32::from(second.left()) - crate::ui_tokens::size::TABS_LEFT - 2.0 - GAP;
                 }
                 acting.borrow_mut().take();
             };
@@ -7965,14 +8123,9 @@ fn names() {
                     .collect();
                 let mut labels: Vec<&str> = rows.iter().map(|(l, _)| l.as_str()).collect();
                 labels.sort();
-                let mut want = [
-                    AGENT_TITLE,
-                    DEFAULT_NAME,
-                    SHELL_TITLE,
-                    DEFAULT_NAME,
-                    "api",
-                    DEFAULT_NAME,
-                ];
+                // A row whose terminal has only the default name is "New Fuxxpace" (2026-11-10).
+                let new = crate::groups::NEW_WORKSPACE_NAME;
+                let mut want = [AGENT_TITLE, new, SHELL_TITLE, new, "api", new];
                 want.sort();
                 assert_eq!(labels, want, "{n}: the rows");
                 let tips: Vec<&str> = rows.iter().filter_map(|(_, t)| t.as_deref()).collect();

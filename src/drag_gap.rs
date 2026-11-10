@@ -71,6 +71,9 @@ pub fn slide_at(from: f32, to: f32, elapsed: Duration) -> f32 {
 pub enum Slid {
     Tab(TabId),
     Row(WorkspaceId),
+    /// A sidebar group's header (by its key's hash), which slides when a row is dragged past it
+    /// into another group (2026-11-10).
+    Header(u64),
 }
 
 /// One item's slide: from where, to where, since when.

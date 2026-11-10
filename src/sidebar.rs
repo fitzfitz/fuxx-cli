@@ -39,7 +39,7 @@ use crate::restore::SavedState;
 use crate::sidebar_toggle::{Tip, open_button_at};
 use crate::status::{self, Status};
 use crate::status_mark;
-use crate::tab_bar::{DraggedTab, Glyph, hold_closed_hand};
+use crate::tab_bar::{DraggedTab, Glyph, glyph, hold_closed_hand};
 use crate::tab_color::TabColor;
 use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
@@ -49,8 +49,8 @@ use crate::title_area::{
     footer_icon, unseen_dot,
 };
 use crate::ui_tokens::size::{
-    DIVIDER_ACTIVE, GROUP_HEADER, SELECTION_BAR, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
-    SIDEBAR_MIN_WIDTH, SIDEBAR_ROW, SIDEBAR_ROW_THREE, SIDEBAR_ROW_TWO, STATUS_BAR, STATUS_MARK,
+    DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+    SIDEBAR_ROW, SIDEBAR_ROW_THREE, SIDEBAR_ROW_TWO, STATUS_BAR, STATUS_MARK,
 };
 use crate::ui_tokens::text;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
@@ -505,6 +505,162 @@ pub fn row_slot(centre: f32, spans: &[(f32, f32)], own: usize, size: f32) -> Opt
         .then(|| drag_gap::landing_slot(centre, spans, Some(own), size))
 }
 
+/// How far each of the list's `count` items is drawn from its place while the row at `own` is
+/// dragged into another run, to land before item `at` (`insert_point`): the items between
+/// slide by `size` (its height and the gap after it) towards its own place, which closes up.
+pub fn cross_offsets(count: usize, own: usize, at: usize, size: f32) -> Vec<f32> {
+    (0..count)
+        .map(|i| {
+            if at <= own && (at..own).contains(&i) {
+                size
+            } else if at > own && (own + 1..at).contains(&i) {
+                -size
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+/// Which part of its group's card a list item is (2026-11-10): none (pinned and ungrouped
+/// rows, above every header), a header with rows under it, a header alone (a closed or empty
+/// group), a row with more under it, or a group's last row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardPart {
+    Out,
+    Top,
+    Alone,
+    Middle,
+    Bottom,
+}
+
+/// Each list item's part of a card, from whether each is a header: a header opens a card that
+/// its rows fill until the next header or the end.
+pub fn card_parts(headers: &[bool]) -> Vec<CardPart> {
+    let mut in_card = false;
+    (0..headers.len())
+        .map(|i| {
+            let last = headers.get(i + 1).is_none_or(|&next| next);
+            if headers[i] {
+                in_card = true;
+                if last { CardPart::Alone } else { CardPart::Top }
+            } else if !in_card {
+                CardPart::Out
+            } else if last {
+                CardPart::Bottom
+            } else {
+                CardPart::Middle
+            }
+        })
+        .collect()
+}
+
+/// `card_parts` while the row at `own` is dragged to land before item `at`: the parts of the
+/// list as it will be (that row taken out, a row put in before `at`); the dragged row's own
+/// part is the gap's, where its card is drawn (2026-11-10: the gap is part of the card it opens
+/// in, and nothing is drawn where the row was).
+pub fn drag_parts(headers: &[bool], own: usize, at: usize) -> Vec<CardPart> {
+    // The order as it will be: every item but `own`, the gap (`own`) before `at`.
+    let mut order: Vec<usize> = (0..headers.len()).filter(|&i| i != own).collect();
+    let place = order.iter().position(|&i| i >= at).unwrap_or(order.len());
+    order.insert(place, own);
+    let flags: Vec<bool> = order.iter().map(|&i| i != own && headers[i]).collect();
+    let mut parts = vec![CardPart::Out; headers.len()];
+    for (part, &i) in card_parts(&flags).into_iter().zip(&order) {
+        parts[i] = part;
+    }
+    parts
+}
+
+/// How far from its place the dragged row (item `own`, laid out at `spans`) is drawn: at the
+/// gap that opens before item `at`, `size` tall with the gap after it (`cross_offsets`).
+pub fn gap_offset(spans: &[(f32, f32)], own: usize, at: usize, size: f32) -> f32 {
+    let top = |i: usize| match spans.get(i) {
+        Some(span) => span.0,
+        None => spans.last().map_or(0.0, |last| last.1 + ROW_GAP),
+    };
+    let gap = if at <= own { top(at) } else { top(at) - size };
+    gap - top(own)
+}
+
+/// The card behind list item `part`, `offset` from its place (the item's drag slide): joined
+/// across the gap under it to the next item of its group, past the header's top and the last
+/// row's bottom by `CARD_PAD`; none outside a card.
+fn card_band(part: CardPart, offset: f32, ui: &UiColors) -> Option<Div> {
+    let (top, bottom, opens, closes) = match part {
+        CardPart::Out => return None,
+        CardPart::Top => (-CARD_PAD, -ROW_GAP, true, false),
+        CardPart::Alone => (-CARD_PAD, -CARD_PAD, true, true),
+        CardPart::Middle => (0.0, -ROW_GAP, false, false),
+        CardPart::Bottom => (0.0, -CARD_PAD, false, true),
+    };
+    Some(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(offset + top))
+            .bottom(px(bottom - offset))
+            .bg(hsla(ui.card))
+            .border_color(hsla(ui.card_border))
+            .border_l_1()
+            .border_r_1()
+            .when(opens, |d| d.border_t_1().rounded_t(px(CARD_RADIUS)))
+            .when(closes, |d| d.border_b_1().rounded_b(px(CARD_RADIUS))),
+    )
+}
+
+/// An item of the sidebar list as last drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Listed {
+    Row(WorkspaceId),
+    Header(GroupKey),
+}
+
+/// An item of the sidebar list, as a drag sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ListItem {
+    /// A pinned row (unpinned rows never land among them).
+    Pinned,
+    Row,
+    Header(GroupKey),
+}
+
+/// Where an unpinned row (item `own` of `items`, laid out at `spans`: top and bottom) dragged
+/// with its copy's centre at `centre` lands (2026-11-10, your call): before item `at`, in the
+/// group of the nearest header above that (none: out of every group, above the first header),
+/// at slot `slot` among that group's other rows. None where it would stay as it is.
+pub fn drop_place(
+    items: &[ListItem],
+    spans: &[(f32, f32)],
+    own: usize,
+    centre: f32,
+) -> Option<(usize, Option<GroupKey>, usize)> {
+    let first = items
+        .iter()
+        .position(|i| *i != ListItem::Pinned)
+        .unwrap_or(items.len());
+    let mid = |i: usize| (spans[i].0 + spans[i].1) / 2.0;
+    let at = (first..items.len())
+        .filter(|&i| i != own)
+        .find(|&i| mid(i) > centre)
+        .unwrap_or(items.len());
+    // The group a place `p` is in, and its slot there among the rows other than `own`.
+    let place = |p: usize| {
+        let header = (first..p).rev().find_map(|i| match &items[i] {
+            ListItem::Header(key) => Some((i, key.clone())),
+            _ => None,
+        });
+        let (start, group) = header.map_or((first, None), |(i, key)| (i + 1, Some(key)));
+        let slot = (start..p)
+            .filter(|&i| i != own && items[i] == ListItem::Row)
+            .count();
+        (group, slot)
+    };
+    let (group, slot) = place(at);
+    (place(own) != (group.clone(), slot)).then_some((at, group, slot))
+}
+
 /// Where a row dropped at `slot` of its run goes, as `Model::move_workspace_display` takes it:
 /// `in_run` says whether each workspace in display order is of the run (one stretch of it).
 pub fn run_drop_index(in_run: &[bool], slot: usize) -> Option<usize> {
@@ -536,17 +692,36 @@ pub fn in_view(top: f32, bottom: f32, view_top: f32, view_bottom: f32, offset: f
 pub(crate) const ROW_INSET: f32 = 6.0;
 const ROW_PAD: f32 = 8.0;
 /// Between rows; above every group header but the first row, more.
-const ROW_GAP: f32 = 2.0;
-const GROUP_GAP: f32 = 10.0;
+const ROW_GAP: f32 = 4.0;
+const GROUP_GAP: f32 = 16.0;
+/// Above the list, under the top band (the title isn't crowded by the first group).
+const LIST_TOP: f32 = 10.0;
+/// Above and below a row's text: `ui_tokens`' row heights are its lines plus twice this.
+#[cfg(test)]
+const ROW_PAD_Y: f32 = 7.0;
+/// A row's (and a header's) corners, as the panes' cards.
+const ROW_RADIUS: f32 = 8.0;
+/// A group's card (2026-11-10, your call: "make it cool so I can tell the workspaces are
+/// grouped"): the room inside it around its header and rows, and its corners.
+const CARD_PAD: f32 = 4.0;
+const CARD_RADIUS: f32 = 10.0;
 /// The slot a status mark (or a header's chevron) sits in; a waiting mark fills it.
 pub(crate) const MARK_SLOT: f32 = 14.0;
 /// The space between the mark and the name, and before the age.
 const SLOT_GAP: f32 = 8.0;
 /// A row's name line, and the small line under it (M11i).
-const NAME_LINE: f32 = 17.0;
-const SUB_LINE: f32 = 13.0;
-/// The selected row's accent bar: how far in from the row's top and bottom it stops.
-const SELECTION_BAR_INSET: f32 = 5.0;
+/// The branch and folder lines' glyphs (the 12 px box `tab_bar::glyph` draws in) and the space
+/// after them (2026-11-10, your call: "add icon git and icon folder as well").
+const PLACE_ICON: f32 = 12.0;
+const PLACE_ICON_GAP: f32 = 4.0;
+/// The branch button's pill: its side padding (it reaches that far left of the text column,
+/// so the branch glyph stays in line with the folder's).
+const BRANCH_CHIP_PAD: f32 = 4.0;
+/// Between a row's name and the lines under it (2026-11-10, your call: "add more gaps between
+/// title and git/folder").
+const NAME_GAP: f32 = 4.0;
+const NAME_LINE: f32 = 18.0;
+const SUB_LINE: f32 = 16.0;
 /// A header's + (a new workspace in the group), shown on hover.
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
@@ -604,10 +779,13 @@ pub(crate) struct SidebarState {
     /// While a row is dragged: the slot of its run it would land in (`row_slot`). Only where
     /// the drop would move it; none: its gap is at its own place.
     pub drop_slot: Option<usize>,
+    /// While an unpinned row is dragged where a drop would move it (`drop_place`): before
+    /// which list item, into which group (none: out of every group), at which slot there.
+    pub drop_at: Option<(usize, Option<GroupKey>, usize)>,
     /// The row being dragged and where it was taken, noted as its drag starts.
     pub drag_source: Rc<Cell<Option<RowGrab>>>,
-    /// The workspace each item of the list shows, as last drawn (none: a group's header).
-    listed: Vec<Option<WorkspaceId>>,
+    /// What each item of the list is, as last drawn: a workspace's row or a group's header.
+    listed: Vec<Listed>,
     /// The group last opened or closed, and that toggle's number: its chevron turns.
     pub turned: Option<(GroupKey, u64)>,
     turns: u64,
@@ -627,6 +805,7 @@ impl SidebarState {
             new_menu: false,
             tab_menu: None,
             drop_slot: None,
+            drop_at: None,
             drag_source: Rc::new(Cell::new(None)),
             listed: Vec::new(),
             turned: None,
@@ -734,7 +913,7 @@ impl Render for DragPreview {
             .w(px(self.width - 2.0 * ROW_INSET))
             .h(px(self.height))
             .px(px(ROW_PAD))
-            .rounded(px(6.0))
+            .rounded(px(ROW_RADIUS))
             .opacity(0.95)
             .shadow_md()
             .bg(hsla(ui.row_active))
@@ -743,7 +922,11 @@ impl Render for DragPreview {
             .text_size(px(text::NAME))
             .text_color(hsla(ui.text))
             .child(name_line)
-            .children(place)
+            .children(
+                place
+                    .enumerate()
+                    .map(|(i, line)| line.when(i == 0, |l| l.mt(px(NAME_GAP)))),
+            )
     }
 }
 
@@ -1041,18 +1224,39 @@ impl Workspace {
         self.sidebar.listed = rows
             .iter()
             .map(|row| match row {
-                SidebarRow::Workspace(s) => Some(s.workspace),
-                SidebarRow::Header(_) => None,
+                SidebarRow::Workspace(s) => Listed::Row(s.workspace),
+                SidebarRow::Header(h) => Listed::Header(h.key.clone()),
             })
             .collect();
         let targets = self.row_drag_offsets(&rows, cx);
+        let headers: Vec<bool> = rows
+            .iter()
+            .map(|r| matches!(r, SidebarRow::Header(_)))
+            .collect();
+        // While a row is dragged to a gap: the cards as they will be after the drop.
+        let dragging = self.dragged_row(cx).and_then(|ws| {
+            rows.iter()
+                .position(|r| matches!(r, SidebarRow::Workspace(s) if s.workspace == ws))
+        });
+        let parts = match (dragging, &self.sidebar.drop_at) {
+            (Some(own), Some((at, _, _))) => drag_parts(&headers, own, *at),
+            _ => card_parts(&headers),
+        };
         let (now, animate) = (Instant::now(), !cx.reduce_motion());
         let elements: Vec<AnyElement> = rows
             .iter()
             .zip(targets)
             .enumerate()
             .map(|(i, (row, target))| match row {
-                SidebarRow::Header(h) => self.render_header(h, i == 0, ui, cx),
+                SidebarRow::Header(h) => {
+                    let offset = self.drag_slides.borrow_mut().offset(
+                        Slid::Header(group_id(&h.key)),
+                        target,
+                        now,
+                        animate,
+                    );
+                    self.render_header(h, i == 0, offset, parts[i], ui, cx)
+                }
                 SidebarRow::Workspace(s) => {
                     let gap = gap_before(i.checked_sub(1).map(|p| &rows[p]), row);
                     let offset = self.drag_slides.borrow_mut().offset(
@@ -1061,7 +1265,7 @@ impl Workspace {
                         now,
                         animate,
                     );
-                    self.render_workspace_row(s, gap, offset, ui, cx)
+                    self.render_workspace_row(s, gap, offset, parts[i], ui, cx)
                 }
             })
             .collect();
@@ -1086,21 +1290,12 @@ impl Workspace {
             .flex_1()
             .min_h(px(0.0))
             .gap(px(ROW_GAP))
+            .pt(px(LIST_TOP))
             .pb(px(8.0))
             .overflow_y_scroll()
             .track_scroll(&self.sidebar.scroll)
             // Scrolling changes which marks are on screen, so the ticker re-checks (`render`).
             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
-            // A dragged row moves within its run: its gap follows it over the list, and a drop
-            // anywhere on the list puts it there.
-            .on_drag_move(
-                cx.listener(|this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
-                    this.drag_row_over_list(event, cx)
-                }),
-            )
-            .on_drop(cx.listener(|this, dragged: &DraggedWorkspace, _, cx| {
-                this.drop_workspace(dragged.workspace, cx)
-            }))
             .children(elements);
         let notice = self.notice.clone().map(|notice| {
             div()
@@ -1131,6 +1326,16 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_active(window, cx)),
             )
+            // A dragged row's gap follows it over the list, and a drop anywhere on the sidebar
+            // (its title band too: the top of the list) puts it where the gap is (2026-11-10).
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
+                    this.drag_row_over_list(event, cx)
+                }),
+            )
+            .on_drop(cx.listener(|this, dragged: &DraggedWorkspace, _, cx| {
+                this.drop_workspace(dragged.workspace, cx)
+            }))
             .children(band)
             .child(list)
             .children(notice)
@@ -1146,6 +1351,8 @@ impl Workspace {
         &self,
         header: &HeaderRow,
         first: bool,
+        offset: f32,
+        part: CardPart,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1184,18 +1391,27 @@ impl Workspace {
             .flex()
             .items_center()
             .h(px(GROUP_HEADER))
-            .mx(px(ROW_INSET))
-            .px(px(ROW_PAD))
-            .rounded(px(6.0))
+            .mx(px(CARD_PAD))
+            .px(px(ROW_PAD - CARD_PAD))
+            .rounded(px(ROW_RADIUS))
             .cursor_pointer()
-            .hover(|style| style.bg(hsla(ui.row_hover)))
+            .hover(|style| style.bg(hsla(ui.card_hover)))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&key, cx)))
             .child(chevron)
+            // What the card holds: a folder (open while the group is), or a host's globe.
+            .child(div().flex_none().ml(px(PLACE_ICON_GAP)).child(glyph(
+                match (&header.key, header.collapsed) {
+                    (GroupKey::Host(_), _) => Glyph::Globe,
+                    (GroupKey::Folder(_), true) => Glyph::Folder,
+                    (GroupKey::Folder(_), false) => Glyph::FolderOpen,
+                },
+                ui.text_dim,
+            )))
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .ml(px(SLOT_GAP))
+                    .ml(px(PLACE_ICON_GAP + 2.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis_start()
@@ -1251,7 +1467,16 @@ impl Workspace {
         div()
             .flex_none()
             .when(!first, |gap| gap.pt(px(GROUP_GAP - ROW_GAP)))
-            .child(header_row)
+            // Its card's top (and, closed, all of it); while a row is dragged past it into another
+            // group, it slides with the rows.
+            .child(
+                div()
+                    .relative()
+                    .mx(px(ROW_INSET))
+                    .top(px(offset))
+                    .children(card_band(part, 0.0, &ui))
+                    .child(header_row),
+            )
             .into_any_element()
     }
 
@@ -1269,6 +1494,7 @@ impl Workspace {
         row: &WorkspaceRow,
         gap: bool,
         offset: f32,
+        part: CardPart,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1278,8 +1504,16 @@ impl Workspace {
         // The selected row is a soft tint of the accent (waiting or not); an unselected waiting
         // one keeps its waiting tint. Hover deepens an unselected one a little; the selected
         // one stays as it is.
+        // In a group's card (2026-11-10): inset in it, on its colour, with the card's own hover
+        // and selection.
+        let in_card = part != CardPart::Out;
+        let inset = if in_card { CARD_PAD } else { 0.0 };
         let fill = if row.active {
-            Some(ui.row_selected)
+            Some(if in_card {
+                ui.card_selected
+            } else {
+                ui.row_selected
+            })
         } else if waiting {
             Some(ui.waiting_tint)
         } else {
@@ -1288,9 +1522,13 @@ impl Workspace {
         let hover = match fill {
             _ if row.active => None,
             Some(_) => Some(ui.waiting_hover),
-            None => Some(ui.row_hover),
+            None => Some(if in_card { ui.card_hover } else { ui.row_hover }),
         };
-        let surface = fill.unwrap_or(ui.sidebar_background);
+        let surface = fill.unwrap_or(if in_card {
+            ui.card
+        } else {
+            ui.sidebar_background
+        });
         let rename_box = self
             .renaming
             .as_ref()
@@ -1384,7 +1622,7 @@ impl Workspace {
                 .text_color(hsla(color))
                 .child(line)
         };
-        let row_width = self.sidebar.width - 2.0 * ROW_INSET;
+        let row_width = self.sidebar.width - 2.0 * (ROW_INSET + inset);
         let second = line_two(row).map(|line| match line {
             LineTwo::NotLive => under().child(text(NOT_LIVE.into(), ui.text_faint)),
             // "Needs input" in the waiting colour, then the question cut at its end (left out
@@ -1406,7 +1644,9 @@ impl Workspace {
             // The branch on its own line, cut at its end when long; the folder under it, short
             // of room losing its start (its own name stays): `fit_place`, measured as drawn.
             LineTwo::Place => {
-                let room = row_width - 2.0 * ROW_PAD - MARK_SLOT - SLOT_GAP;
+                // The folder line's text starts after its glyph.
+                let room =
+                    row_width - 2.0 * ROW_PAD - MARK_SLOT - SLOT_GAP - PLACE_ICON - PLACE_ICON_GAP;
                 let wrapper = std::cell::RefCell::new(
                     cx.text_system()
                         .line_wrapper(TextStyle::default().font(), px(text::META)),
@@ -1418,26 +1658,47 @@ impl Workspace {
                         .should_truncate_line(s, px(room), "…", TruncateFrom::End)
                         .is_none()
                 };
-                // Clicking the branch opens the branch switcher (not a row click or a drag).
+                // The branch reads as a button: the branch glyph (as in the status bar) and the
+                // name in `text_dim` (the folder is `text_faint`); on hover a pill and `text`.
+                // Only the glyph and the name take the click, not the rest of the line; a name
+                // too long for the row is cut and then the button spans the line (2026-11-10).
+                // Clicking it opens the branch switcher (not a row click or a drag).
                 let branch = row.branch.clone().map(|b| {
-                    under()
-                        .id(("row-branch", ws.0 as usize))
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation()
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            if let Some(terminal) = this.branch_terminal(ws) {
-                                this.open_branch_switcher(terminal, window, cx);
-                            }
-                        }))
-                        .child(text(b, ui.text_faint))
+                    under().child(
+                        div()
+                            .id(("row-branch", ws.0 as usize))
+                            .flex()
+                            .items_center()
+                            .gap(px(PLACE_ICON_GAP))
+                            .min_w(px(0.0))
+                            .h(px(SUB_LINE))
+                            .px(px(BRANCH_CHIP_PAD))
+                            .ml(px(-BRANCH_CHIP_PAD))
+                            .rounded(px(4.0))
+                            .overflow_hidden()
+                            .text_color(hsla(ui.text_dim))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hsla(ui.row_active)).text_color(hsla(ui.text)))
+                            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(terminal) = this.branch_terminal(ws) {
+                                    this.open_branch_switcher(terminal, window, cx);
+                                }
+                            }))
+                            .child(glyph(Glyph::Branch, ui.text_dim))
+                            .child(div().min_w(px(0.0)).truncate().child(b)),
+                    )
                 });
-                let folder = row
-                    .folder
-                    .as_deref()
-                    .map(|f| under().child(text(fit_place(None, Some(f), fits), ui.text_faint)));
+                // The folder: a folder glyph, then the path (not a button).
+                let folder = row.folder.as_deref().map(|f| {
+                    under()
+                        .gap(px(PLACE_ICON_GAP))
+                        .child(glyph(Glyph::Folder, ui.text_faint))
+                        .child(text(fit_place(None, Some(f), fits), ui.text_faint))
+                });
                 div().flex().flex_col().children(branch).children(folder)
             }
         });
@@ -1457,13 +1718,14 @@ impl Workspace {
             .group(ROW_GROUP)
             .absolute()
             .top(px(offset))
-            .left_0()
-            .size_full()
+            .left(px(inset))
+            .right(px(inset))
+            .h_full()
             .flex()
             .flex_col()
             .justify_center()
             .px(px(ROW_PAD))
-            .rounded(px(6.0))
+            .rounded(px(ROW_RADIUS))
             .text_size(px(text::NAME))
             .text_color(hsla(ui.text))
             .when_some(fill, |row, fill| row.bg(hsla(fill)))
@@ -1524,21 +1786,8 @@ impl Workspace {
                 let here = |at| at == TabDrop::Workspace(ws);
                 this.drop_tab(dragged.tab, here, window, cx);
             }))
-            // The selected row's accent bar, at its left edge.
-            .when(row.active, |row_el| {
-                row_el.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top(px(SELECTION_BAR_INSET))
-                        .bottom(px(SELECTION_BAR_INSET))
-                        .w(px(SELECTION_BAR))
-                        .rounded(px(1.0))
-                        .bg(hsla(ui.accent)),
-                )
-            })
             .child(name_line)
-            .children(second)
+            .children(second.map(|lines| lines.mt(px(NAME_GAP))))
             // The progress bar: along the bottom edge (a compact row has 1 pt under its line 2),
             // as wide as the percent.
             .when_some(row.progress, |row_el, percent| {
@@ -1568,7 +1817,7 @@ impl Workspace {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .rounded(px(6.0))
+                        .rounded(px(ROW_RADIUS))
                         .border(px(DIVIDER_ACTIVE))
                         .border_color(hsla(ring)),
                 )
@@ -1581,6 +1830,8 @@ impl Workspace {
             // Under the pinned rows, a group's gap sets the rest apart.
             .when(gap, |place| place.mt(px(GROUP_GAP - ROW_GAP)))
             .mx(px(ROW_INSET))
+            // Its group's card behind it, sliding with it.
+            .children(card_band(part, offset, &ui))
             .child(row_el)
             .into_any_element()
     }
@@ -1597,6 +1848,22 @@ impl Workspace {
         let Some((own, dragged)) = dragged else {
             return vec![0.0; rows.len()];
         };
+        // An unpinned row: everything between its place and where it lands slides, headers too.
+        // The dragged row itself (unseen) and its card go to the gap (`gap_offset`).
+        if let Some((at, _, _)) = &self.sidebar.drop_at {
+            let size = row_height(dragged) + ROW_GAP;
+            let mut offsets = cross_offsets(rows.len(), own, *at, size);
+            let spans: Option<Vec<(f32, f32)>> = (0..rows.len())
+                .map(|i| {
+                    let b = self.sidebar.scroll.bounds_for_item(i)?;
+                    Some((f32::from(b.top()), f32::from(b.bottom())))
+                })
+                .collect();
+            if let Some(spans) = spans {
+                offsets[own] = gap_offset(&spans, own, *at, size);
+            }
+            return offsets;
+        }
         let run = self.sidebar_run(dragged.workspace);
         let in_run: Vec<bool> = rows
             .iter()
@@ -1726,29 +1993,73 @@ impl Workspace {
         let (ws, run) = (dragged.workspace, dragged.run.clone());
         let grab = self.sidebar.drag_source.get().filter(|g| g.workspace == ws);
         let pointer = event.event.position;
-        let next = grab
-            .filter(|_| self.sidebar.scroll.bounds().contains(&pointer))
-            .and_then(|grab| {
-                let scroll = &self.sidebar.scroll;
-                let dy = f32::from(scroll.offset().y);
-                let (mut own, mut spans) = (None, Vec::new());
+        let bounds = self.sidebar.scroll.bounds();
+        let over = bounds.contains(&pointer);
+        // Above the list (the title band, over the sidebar): the very top of it.
+        let above =
+            pointer.y < bounds.top() && pointer.x >= bounds.left() && pointer.x <= bounds.right();
+        let scroll = &self.sidebar.scroll;
+        let dy = f32::from(scroll.offset().y);
+        let span = |i: usize| {
+            scroll
+                .bounds_for_item(i)
+                .map(|b| (f32::from(b.top()) + dy, f32::from(b.bottom()) + dy))
+        };
+        if !run.0 {
+            // Unpinned: anywhere among the unpinned rows, into any group or out of every one
+            // (2026-11-10, your call).
+            let next = grab.filter(|_| over || above).and_then(|grab| {
+                let (mut items, mut spans, mut own) = (Vec::new(), Vec::new(), None);
                 for (i, item) in self.sidebar.listed.iter().enumerate() {
-                    let Some(w) = *item else { continue };
-                    if self.sidebar_run(w) != run {
-                        continue;
-                    }
-                    let b = scroll.bounds_for_item(i)?;
-                    if w == ws {
-                        own = Some(spans.len());
-                    }
-                    spans.push((f32::from(b.top()) + dy, f32::from(b.bottom()) + dy));
+                    spans.push(span(i)?);
+                    items.push(match item {
+                        Listed::Header(key) => ListItem::Header(key.clone()),
+                        Listed::Row(w) => {
+                            if *w == ws {
+                                own = Some(i);
+                            }
+                            if self.model.workspace(*w).is_some_and(|w| w.pinned) {
+                                ListItem::Pinned
+                            } else {
+                                ListItem::Row
+                            }
+                        }
+                    });
                 }
                 let own = own?;
                 let height = spans[own].1 - spans[own].0;
-                let centre = f32::from(pointer.y) - grab.at + height / 2.0;
-                let slot = row_slot(centre, &spans, own, height + ROW_GAP)?;
-                (slot != own).then_some(slot)
+                let centre = if above {
+                    f32::MIN
+                } else {
+                    f32::from(pointer.y) - grab.at + height / 2.0
+                };
+                drop_place(&items, &spans, own, centre)
             });
+            if self.sidebar.drop_at != next {
+                self.sidebar.drop_at = next;
+                cx.notify();
+            }
+            return;
+        }
+        // Pinned: within the pinned rows.
+        let next = grab.filter(|_| over).and_then(|grab| {
+            let (mut own, mut spans) = (None, Vec::new());
+            for (i, item) in self.sidebar.listed.iter().enumerate() {
+                let Listed::Row(w) = *item else { continue };
+                if self.sidebar_run(w) != run {
+                    continue;
+                }
+                if w == ws {
+                    own = Some(spans.len());
+                }
+                spans.push(span(i)?);
+            }
+            let own = own?;
+            let height = spans[own].1 - spans[own].0;
+            let centre = f32::from(pointer.y) - grab.at + height / 2.0;
+            let slot = row_slot(centre, &spans, own, height + ROW_GAP)?;
+            (slot != own).then_some(slot)
+        });
         if self.sidebar.drop_slot != next {
             self.sidebar.drop_slot = next;
             cx.notify();
@@ -2141,7 +2452,7 @@ impl Workspace {
     }
 
     /// Open or close a group from its header; its chevron turns.
-    fn toggle_group(&mut self, key: &GroupKey, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_group(&mut self, key: &GroupKey, cx: &mut Context<Self>) {
         match self.collapsed.iter().position(|c| c == key) {
             Some(i) => {
                 self.collapsed.remove(i);
@@ -2369,6 +2680,115 @@ mod tests {
         // A hand-edited file can hold anything.
         assert_eq!(clamp_width(Some(f32::NAN)), SIDEBAR_DEFAULT_WIDTH);
         assert_eq!(clamp_width(Some(f32::INFINITY)), SIDEBAR_DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn while_dragging_the_cards_are_drawn_as_they_will_be_after_the_drop() {
+        use CardPart::{Alone, Bottom, Middle, Out, Top};
+        // 0 an ungrouped row, 1 header a, 2 a row, 3 the dragged row, 4 header b, 5 a row.
+        let headers = [false, true, false, false, true, false];
+        // Out to the top: a is left with one row; the gap (3) is out of every card.
+        assert_eq!(
+            drag_parts(&headers, 3, 0),
+            [Out, Top, Bottom, Out, Top, Bottom]
+        );
+        // Into b, before its row: the gap is b's first row; a ends at its row.
+        assert_eq!(
+            drag_parts(&headers, 3, 5),
+            [Out, Top, Bottom, Middle, Top, Bottom]
+        );
+        // To b's end: the gap is b's last row.
+        assert_eq!(
+            drag_parts(&headers, 3, 6),
+            [Out, Top, Bottom, Bottom, Top, Middle]
+        );
+        // A group's only row dragged to the end: its header is alone; the gap ends the next.
+        assert_eq!(
+            drag_parts(&[true, false, true, false], 1, 4),
+            [Alone, Bottom, Top, Middle]
+        );
+        // The only row of the only group, out to the top: the header alone, the gap out.
+        assert_eq!(drag_parts(&[true, false], 1, 0), [Alone, Out]);
+    }
+
+    #[test]
+    fn the_dragged_row_is_drawn_at_its_gap() {
+        // Rows 40 tall with 4 between: tops at 0, 44, 88, 132.
+        let spans = [(0.0, 40.0), (44.0, 84.0), (88.0, 128.0), (132.0, 172.0)];
+        // Up, before item 0: where item 0 was.
+        assert_eq!(gap_offset(&spans, 2, 0, 44.0), -88.0);
+        // Down, before item 3: the items between closed up by its size.
+        assert_eq!(gap_offset(&spans, 0, 3, 44.0), 88.0);
+        // To the end: after the last one.
+        assert_eq!(gap_offset(&spans, 0, 4, 44.0), 132.0);
+        // Where it is: no move.
+        assert_eq!(gap_offset(&spans, 1, 1, 44.0), 0.0);
+    }
+
+    #[test]
+    fn a_group_s_card_runs_from_its_header_to_its_last_row() {
+        use CardPart::{Alone, Bottom, Middle, Out, Top};
+        // Two ungrouped rows, a group of three, a closed group, a group of one.
+        let headers = [false, false, true, false, false, false, true, true, false];
+        assert_eq!(
+            card_parts(&headers),
+            [Out, Out, Top, Middle, Middle, Bottom, Alone, Top, Bottom]
+        );
+        assert_eq!(card_parts(&[]), []);
+        assert_eq!(card_parts(&[true]), [Alone]);
+        assert_eq!(card_parts(&[false]), [Out]);
+    }
+
+    #[test]
+    fn a_row_dragged_into_another_run_slides_everything_between() {
+        // Items: 0 an ungrouped row, 1 a header, 2 a row, 3 the dragged row, 4 a row.
+        // Up, before item 0: items 0–2 slide down by its size; it and item 4 stay.
+        assert_eq!(cross_offsets(5, 3, 0, 40.0), [40.0, 40.0, 40.0, 0.0, 0.0]);
+        // Up, before item 1 (after the ungrouped row): only the header and row 2.
+        assert_eq!(cross_offsets(5, 3, 1, 40.0), [0.0, 40.0, 40.0, 0.0, 0.0]);
+        // Down from item 0, before item 4: items 1–3 slide up; at the end, item 4 too.
+        assert_eq!(
+            cross_offsets(5, 0, 4, 40.0),
+            [0.0, -40.0, -40.0, -40.0, 0.0]
+        );
+        assert_eq!(
+            cross_offsets(5, 0, 5, 40.0),
+            [0.0, -40.0, -40.0, -40.0, -40.0]
+        );
+    }
+
+    #[test]
+    fn a_row_lands_in_the_group_of_the_header_above_where_it_is_dropped() {
+        use ListItem::{Header, Pinned, Row};
+        let (a, b) = (folder("/w/a"), folder("/w/b"));
+        // 0 pinned, 1 an ungrouped row, 2 header a, 3 a row, 4 the dragged row, 5 header b,
+        // 6 a row; each 40 tall from the top (middles at 20, 60, 100…).
+        let items = [
+            Pinned,
+            Row,
+            Header(a.clone()),
+            Row,
+            Row,
+            Header(b.clone()),
+            Row,
+        ];
+        let spans: Vec<(f32, f32)> = (0..7)
+            .map(|i| (i as f32 * 40.0, i as f32 * 40.0 + 40.0))
+            .collect();
+        let at = |centre| drop_place(&items, &spans, 4, centre);
+        // Above everything (or the title band): out of every group, first; never among the
+        // pinned rows.
+        assert_eq!(at(f32::MIN), Some((1, None, 0)));
+        assert_eq!(at(10.0), Some((1, None, 0)));
+        // Above header a: out of every group, after the ungrouped row.
+        assert_eq!(at(70.0), Some((2, None, 1)));
+        // Under header a, before its row: first in a.
+        assert_eq!(at(110.0), Some((3, Some(a.clone()), 0)));
+        // Where it is (second in a): stays.
+        assert_eq!(at(150.0), None);
+        // Under header b: into another folder's group.
+        assert_eq!(at(250.0), Some((6, Some(b.clone()), 0)));
+        assert_eq!(at(1000.0), Some((7, Some(b), 1)));
     }
 
     #[test]
@@ -2711,8 +3131,8 @@ mod tests {
     #[test]
     fn a_row_in_a_repo_shows_its_branch_and_its_folder_on_their_own_lines() {
         assert_eq!(
-            SIDEBAR_ROW_THREE, 45.0,
-            "17 + 13 + 13, and 2 to spare as at 32"
+            SIDEBAR_ROW_THREE, 68.0,
+            "18, 4 under the name, 16 + 16, and 7 above and below"
         );
         let now = Instant::now();
         let under = |f: WorkspaceFacts| {
@@ -2766,30 +3186,50 @@ mod tests {
     }
 
     #[test]
-    fn a_row_is_22_with_one_line_and_32_with_two() {
-        assert_eq!((SIDEBAR_ROW, SIDEBAR_ROW_TWO), (22.0, 32.0));
-        assert_eq!((NAME_LINE, SUB_LINE), (17.0, 13.0));
+    fn a_row_is_32_with_one_line_and_48_with_two_with_room_around_its_text() {
+        assert_eq!((SIDEBAR_ROW, SIDEBAR_ROW_TWO), (32.0, 52.0));
+        assert_eq!(NAME_GAP, 4.0);
+        assert_eq!((NAME_LINE, SUB_LINE), (18.0, 16.0));
+        // 7 above and 7 below the text, whatever the row holds.
+        assert_eq!(SIDEBAR_ROW - NAME_LINE, 2.0 * ROW_PAD_Y);
+        assert_eq!(
+            SIDEBAR_ROW_TWO - NAME_LINE - NAME_GAP - SUB_LINE,
+            2.0 * ROW_PAD_Y
+        );
+        assert_eq!(
+            SIDEBAR_ROW_THREE - NAME_LINE - NAME_GAP - 2.0 * SUB_LINE,
+            2.0 * ROW_PAD_Y
+        );
         let now = Instant::now();
         let height = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
             row_height(session(&rows[0]))
         };
         // No place, nothing under the name: one line.
-        assert_eq!(height(facts("shell", Status::Idle, now, None)), 22.0);
+        assert_eq!(height(facts("shell", Status::Idle, now, None)), 32.0);
         // Its place only.
         let mut placed = facts("api", Status::Idle, now, None);
         placed.folder = Some("~/api".into());
-        assert_eq!(height(placed), 32.0);
+        assert_eq!(height(placed), 52.0);
         // Waiting, with a place and a question: still two lines.
         let mut waiting = facts("claude", Status::Waiting, now, None);
         waiting.folder = Some("~/api".into());
         waiting.branch = Some("main");
         waiting.question = Some("Proceed? (y/n)");
-        assert_eq!(height(waiting), 32.0);
+        assert_eq!(height(waiting), 52.0);
         // Lost.
         let mut lost = facts("api", Status::Idle, now, None);
         lost.lost = true;
-        assert_eq!(height(lost), 32.0);
+        assert_eq!(height(lost), 52.0);
+    }
+
+    #[test]
+    fn the_list_has_room_under_the_title_between_rows_and_above_groups() {
+        assert_eq!(LIST_TOP, 10.0);
+        assert_eq!(ROW_GAP, 4.0);
+        assert_eq!(GROUP_GAP, 16.0);
+        assert_eq!(GROUP_HEADER, 28.0);
+        assert_eq!(ROW_RADIUS, 8.0);
     }
 
     #[test]

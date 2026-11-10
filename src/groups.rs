@@ -5,6 +5,18 @@ use std::path::{Path, PathBuf};
 
 /// The name a session shows when nothing better is known.
 pub const DEFAULT_NAME: &str = "╭∩╮";
+/// A workspace's name while its terminal has only the default one (2026-11-10, your call).
+pub const NEW_WORKSPACE_NAME: &str = "New Fuxxpace";
+
+/// A workspace named after its terminal: that terminal's name, unless it is only the default
+/// `╭∩╮` (the terminal's tab keeps that).
+pub fn workspace_name(terminal: &str) -> &str {
+    if terminal == DEFAULT_NAME {
+        NEW_WORKSPACE_NAME
+    } else {
+        terminal
+    }
+}
 
 /// First of user name, terminal title, preset name that is not blank (trimmed), else the default.
 pub fn auto_name(user: Option<&str>, title: Option<&str>, preset: Option<&str>) -> String {
@@ -168,6 +180,13 @@ mod tests {
         assert_eq!(extra_title("fuxx-cli", Some("fuxx-cli")), None);
         assert_eq!(extra_title("fuxx-cli", Some("  ")), None);
         assert_eq!(extra_title("fuxx-cli", None), None);
+    }
+
+    #[test]
+    fn a_new_workspace_is_new_fuxxpace_until_its_terminal_is_named() {
+        assert_eq!(workspace_name("╭∩╮"), "New Fuxxpace");
+        assert_eq!(workspace_name("claude"), "claude");
+        assert_eq!(workspace_name("Chores list"), "Chores list");
     }
 
     #[test]

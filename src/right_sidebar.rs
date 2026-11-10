@@ -96,7 +96,7 @@ actions!(
 pub const REFRESH: Duration = Duration::from_secs(2);
 /// The panel tabs in the card's strip (M11h): the first's room from the strip's left, the
 /// room between them, each one's side padding; their top corners are the pane tabs'.
-const PANEL_TABS_LEFT: f32 = 6.0;
+const PANEL_TABS_LEFT: f32 = crate::ui_tokens::size::TABS_LEFT;
 const PANEL_TAB_GAP: f32 = 2.0;
 const PANEL_TAB_PAD: f32 = 10.0;
 /// A tree row's height.
@@ -437,8 +437,13 @@ fn file_row(
                 .text_color(hsla(ink))
                 .child(mark_letter(m))
         }))
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.files_click(&rel, is_dir, window, cx)
+        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+            // A folder's double-click: the terminal goes there (its first click opened it).
+            if is_dir && event.click_count() == 2 {
+                this.files_cd(&rel, cx);
+            } else {
+                this.files_click(&rel, is_dir, window, cx)
+            }
         }))
         .into_any_element()
 }
@@ -1572,6 +1577,31 @@ impl Workspace {
             }
         };
         self.files_act(key, window, cx);
+    }
+
+    /// A double-click on folder `rel`: the followed terminal `cd`s there, if it is a local
+    /// one at an empty prompt (2026-11-10, your call). Nothing otherwise.
+    fn files_cd(&mut self, rel: &Path, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .right_sidebar
+            .files
+            .tree
+            .as_ref()
+            .map(|t| t.root().to_path_buf())
+        else {
+            return;
+        };
+        let Some(id) = self.right_sidebar.followed else {
+            return;
+        };
+        let Some(session) = self.sessions.items().iter().find(|s| s.id == id) else {
+            return;
+        };
+        if session.ssh.is_some() {
+            return; // the tree is this Mac's; the terminal is elsewhere
+        }
+        let folder = root.join(rel);
+        session.view.update(cx, |view, cx| view.cd_to(&folder, cx));
     }
 
     /// A click on the root header's name line: the root folds away (only the header shows) or

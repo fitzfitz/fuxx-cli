@@ -70,6 +70,11 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   re-rendering them on every frame. Same look and behaviour; **the sidebar and every chrome part must always show
   current information**. Starts with a prototype that measures the saving, then a design with you. Not in it: a new
   renderer, repainting only the cursor on its own layer, or changing the cursor's look. See [[40 - Roadmap]].
+- **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
+  design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
+  ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.
+  Only a short form (program and one subcommand) is ever shown outside the terminal. Not in it: a new Failed status,
+  changing the silence guess, bash or fish integration. See [[68 - Milestone 11q - Which Command Finished]].
 
 ## Out of scope (for now — resist scope creep)
 

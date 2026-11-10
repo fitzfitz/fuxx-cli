@@ -980,6 +980,7 @@ mod tests {
                     name: Some("api".into()),
                     color: None,
                     pinned: true,
+                    placed: None,
                     layout: Node::Split {
                         axis: Axis::Row,
                         ratio: 0.6,
@@ -1004,6 +1005,7 @@ mod tests {
                     name: Some("notes".into()),
                     color: None,
                     pinned: false,
+                    placed: None,
                     layout: Node::Leaf(SavedPane {
                         tabs: vec![terminal(3)],
                         active: 0,
@@ -1113,6 +1115,7 @@ mod tests {
                 name: Some("docs".into()),
                 color: None,
                 pinned: false,
+                placed: None,
                 layout: Node::Leaf(SavedPane {
                     tabs: vec![SavedTab::Browser {
                         url: Some("https://docs.rs/gpui".into()),

@@ -268,6 +268,7 @@ mod tests {
             name: Some(name.into()),
             color: None,
             pinned: false,
+            placed: None,
             layout: Node::Leaf(SavedPane {
                 tabs: vec![tab],
                 active: 0,
@@ -463,6 +464,7 @@ mod tests {
                 name: Some("api".into()),
                 color: Some(TabColor::Teal),
                 pinned: true,
+                placed: None,
                 layout: Node::Leaf(SavedPane {
                     tabs: vec![SavedTab::Terminal { session: 1 }],
                     active: 0,

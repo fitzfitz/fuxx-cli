@@ -285,6 +285,24 @@ pub fn rerun_text(
     Ok(cmd.to_string())
 }
 
+/// What a double-click on a folder in Files types into the terminal (2026-11-10, your call):
+/// `cd -- '<folder>'` and Return, the folder single-quoted (a `'` in it closed, escaped and
+/// reopened), only at an empty prompt, as Rerun (`rerun_text`'s rules).
+pub fn cd_bytes(folder: &str, facts: crate::blocks::RerunFacts) -> Result<Vec<u8>, Refusal> {
+    let quoted = format!("'{}'", folder.replace('\'', r"'\''"));
+    let cmd = rerun_text(
+        Some(&format!("cd -- {quoted}")),
+        facts.prompt_ready,
+        facts.at_input_start,
+        facts.bracketed,
+        facts.alt_screen,
+    )?;
+    if cmd.contains('\n') {
+        return Err(Refusal::Control); // one line only: a newline would run part of it
+    }
+    Ok(format!("{cmd}\r").into_bytes())
+}
+
 /// `rerun_text` for a block this terminal's tagger may not have written.
 pub fn rerun(facts: crate::blocks::RerunFacts, cmd: Option<&str>) -> Result<String, Refusal> {
     if !facts.ours {
@@ -342,6 +360,47 @@ pub fn with_command(cmd: &str, output: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_folder_double_clicked_in_files_is_a_cd_at_an_empty_prompt_only() {
+        use crate::blocks::RerunFacts;
+        let ready = RerunFacts {
+            ours: false,
+            prompt_ready: true,
+            at_input_start: true,
+            bracketed: true,
+            alt_screen: false,
+        };
+        assert_eq!(
+            super::cd_bytes("/Users/me/code/api", ready).unwrap(),
+            b"cd -- '/Users/me/code/api'\r"
+        );
+        // Spaces and quotes stay one argument; nothing in the name runs.
+        assert_eq!(
+            super::cd_bytes("/tmp/it's a $dir", ready).unwrap(),
+            b"cd -- '/tmp/it'\\''s a $dir'\r"
+        );
+        // Not at an empty prompt: nothing is typed.
+        let busy = RerunFacts {
+            prompt_ready: false,
+            ..ready
+        };
+        assert_eq!(super::cd_bytes("/tmp", busy), Err(Refusal::NotAtPrompt));
+        let typed = RerunFacts {
+            at_input_start: false,
+            ..ready
+        };
+        assert_eq!(super::cd_bytes("/tmp", typed), Err(Refusal::Typed));
+        let vim = RerunFacts {
+            alt_screen: true,
+            ..ready
+        };
+        assert_eq!(super::cd_bytes("/tmp", vim), Err(Refusal::NotAtPrompt));
+        // A newline or a control character in the name: refused.
+        assert!(super::cd_bytes("/tmp/a\nb", ready).is_err());
+        assert!(super::cd_bytes("/tmp/a\x1bb", ready).is_err());
+    }
+
     use super::*;
     use crate::theme::every_theme;
     use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast};

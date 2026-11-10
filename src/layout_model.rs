@@ -56,6 +56,49 @@ pub struct Pane {
     pub active: TabId,
 }
 
+/// Where a sidebar drag put a workspace, when not in its own folder's (or host's) group
+/// (2026-11-10, your call: "I also cannot drop to outside folder… from folder workspace to
+/// another folder workspace").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Placed {
+    /// With the ungrouped rows, above every group.
+    Ungrouped,
+    /// In this folder's group.
+    Folder(PathBuf),
+    /// In this SSH host's group.
+    Host(String),
+}
+
+/// The group a workspace shows in: where it was put (`placed`), else its own (`own`).
+pub fn shown_group(
+    placed: Option<&Placed>,
+    own: Option<groups::GroupKey>,
+) -> Option<groups::GroupKey> {
+    match placed {
+        None => own,
+        Some(Placed::Ungrouped) => None,
+        Some(Placed::Folder(path)) => Some(groups::GroupKey::Folder(path.clone())),
+        Some(Placed::Host(host)) => Some(groups::GroupKey::Host(host.clone())),
+    }
+}
+
+/// What a drop into group `target` (none: out of every group) records for a workspace whose
+/// own group is `own`: nothing when that is its own group.
+pub fn placed_for(
+    target: Option<&groups::GroupKey>,
+    own: Option<&groups::GroupKey>,
+) -> Option<Placed> {
+    if target == own {
+        return None;
+    }
+    Some(match target {
+        None => Placed::Ungrouped,
+        Some(groups::GroupKey::Folder(path)) => Placed::Folder(path.clone()),
+        Some(groups::GroupKey::Host(host)) => Placed::Host(host.clone()),
+    })
+}
+
 /// One sidebar row: a split layout of panes (never empty) and the pane with the keyboard.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workspace {
@@ -64,6 +107,9 @@ pub struct Workspace {
     pub name: Option<String>,
     pub color: Option<TabColor>,
     pub pinned: bool,
+    /// Where a sidebar drag put it: none, its own folder's (or host's) group; else out of every
+    /// group, or in another one (2026-11-10, your call).
+    pub placed: Option<Placed>,
     pub layout: Node<PaneId>,
     /// In no particular order; the layout's reading order is the panes' order.
     pub panes: Vec<Pane>,
@@ -119,6 +165,8 @@ pub struct SavedWorkspace {
     pub color: Option<TabColor>,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed: Option<Placed>,
     pub layout: Node<SavedPane>,
     /// The focused pane, by its place in reading order.
     #[serde(default)]
@@ -279,6 +327,7 @@ impl Model {
                 name: None,
                 color: None,
                 pinned: false,
+                placed: None,
                 layout: Node::Leaf(pane.id),
                 panes: vec![pane],
                 focused: opened.pane,
@@ -543,6 +592,14 @@ impl Model {
             .is_some()
     }
 
+    /// Where a sidebar drag put a workspace (`Placed`); none: its own group. False when there
+    /// is no such workspace.
+    pub fn set_placed(&mut self, workspace: WorkspaceId, placed: Option<Placed>) -> bool {
+        self.workspace_mut(workspace)
+            .map(|w| w.placed = placed)
+            .is_some()
+    }
+
     pub fn set_pinned(&mut self, workspace: WorkspaceId, pinned: bool) -> bool {
         self.workspace_mut(workspace)
             .map(|w| w.pinned = pinned)
@@ -715,6 +772,7 @@ impl Model {
                 name: ws.name.clone(),
                 color: ws.color,
                 pinned: ws.pinned,
+                placed: ws.placed.clone(),
                 layout,
                 focused: kept.iter().position(|&p| p == ws.focused).unwrap_or(0),
             });
@@ -754,6 +812,7 @@ impl Model {
                 name: sw.name.clone(),
                 color: sw.color,
                 pinned: sw.pinned,
+                placed: sw.placed.clone(),
                 focused: by_place.get(sw.focused).copied().flatten().unwrap_or(first),
                 layout,
                 panes,
@@ -802,6 +861,7 @@ impl Model {
                     name: sessions.clone().find_map(|s| s.name.clone()),
                     color: sessions.clone().find_map(|s| s.color),
                     pinned: false,
+                    placed: None,
                     layout: tree.map(&|session| SavedPane {
                         tabs: vec![SavedTab::Terminal { session }],
                         active: 0,
@@ -1781,6 +1841,56 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_put_in_another_group_or_none_stays_there_when_saved_and_loaded() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap().workspace;
+        let b = m.new_workspace(1, term(2)).unwrap().workspace;
+        assert_eq!(m.workspace(a).unwrap().placed, None);
+        assert!(m.set_placed(a, Some(Placed::Ungrouped)));
+        assert!(m.set_placed(b, Some(Placed::Folder("/w/api".into()))));
+        assert!(!m.set_placed(WorkspaceId(999), None));
+        let (saved, _) = m.to_saved(|id| Some(id as usize - 1));
+        assert_eq!(
+            saved.iter().map(|w| w.placed.clone()).collect::<Vec<_>>(),
+            [
+                Some(Placed::Ungrouped),
+                Some(Placed::Folder("/w/api".into()))
+            ]
+        );
+        assert_saves_and_loads(&m);
+        ok(&m);
+    }
+
+    #[test]
+    fn a_workspace_shows_in_the_group_it_was_put_in_else_its_own() {
+        use groups::GroupKey;
+        let own = || Some(GroupKey::Folder("/w/web".into()));
+        assert_eq!(shown_group(None, own()), own());
+        assert_eq!(shown_group(Some(&Placed::Ungrouped), own()), None);
+        assert_eq!(
+            shown_group(Some(&Placed::Folder("/w/api".into())), own()),
+            Some(GroupKey::Folder("/w/api".into()))
+        );
+        assert_eq!(
+            shown_group(Some(&Placed::Host("box".into())), None),
+            Some(GroupKey::Host("box".into()))
+        );
+        // A drop records only a group that isn't its own.
+        let api = GroupKey::Folder("/w/api".into());
+        assert_eq!(placed_for(own().as_ref(), own().as_ref()), None);
+        assert_eq!(placed_for(None, own().as_ref()), Some(Placed::Ungrouped));
+        assert_eq!(
+            placed_for(None, None),
+            None,
+            "no group of its own: nothing to record"
+        );
+        assert_eq!(
+            placed_for(Some(&api), own().as_ref()),
+            Some(Placed::Folder("/w/api".into()))
+        );
+    }
+
+    #[test]
     fn pinned_workspaces_come_first_and_unpinning_puts_one_back() {
         let mut m = Model::new();
         let ids: Vec<WorkspaceId> = (0..4)
@@ -2154,6 +2264,7 @@ mod tests {
                 name: Some("w".into()),
                 color: None,
                 pinned: false,
+                placed: None,
                 layout: Node::Split {
                     axis: Axis::Row,
                     ratio: 7.0, // clamped
@@ -2167,6 +2278,7 @@ mod tests {
                 name: None,
                 color: None,
                 pinned: true,
+                placed: None,
                 layout: Node::Leaf(pane(vec![t(0), t(1)], 0)),
                 focused: 0,
             },
@@ -2174,6 +2286,7 @@ mod tests {
                 name: None,
                 color: None,
                 pinned: false,
+                placed: None,
                 layout: Node::Leaf(pane(vec![SavedTab::Browser { url: None }], 5)),
                 focused: 4,
             },
@@ -2198,6 +2311,7 @@ mod tests {
                 name: None,
                 color: None,
                 pinned: false,
+                placed: None,
                 layout: Node::Split {
                     axis: Axis::Row,
                     ratio: f32::NAN,
@@ -2236,6 +2350,7 @@ mod tests {
             name: None,
             color: None,
             pinned: false,
+            placed: None,
             layout: Node::Split {
                 axis: Axis::Row,
                 ratio: 0.5,
@@ -2264,6 +2379,7 @@ mod tests {
                 name: None,
                 color: None,
                 pinned: false,
+                placed: None,
                 layout: Node::Leaf(SavedPane {
                     tabs: vec![
                         SavedTab::Browser {

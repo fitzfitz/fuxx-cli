@@ -33,12 +33,14 @@ pub mod size {
 
     /// A sidebar row with its name line only, and one with a second line under it (where it
     /// is, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
-    pub const SIDEBAR_ROW: f32 = 22.0;
-    pub const SIDEBAR_ROW_TWO: f32 = 32.0;
+    /// Each has 7 px above and below its text, and 4 px between the name and the lines under
+    /// it (the roomier sidebar, 2026-11-10, your call: "It's too compact").
+    pub const SIDEBAR_ROW: f32 = 32.0;
+    pub const SIDEBAR_ROW_TWO: f32 = 52.0;
     /// A row in a git repo: its branch and its folder, each on its own line under the name
     /// (2026-11-10, your call).
-    pub const SIDEBAR_ROW_THREE: f32 = 45.0;
-    pub const GROUP_HEADER: f32 = 24.0;
+    pub const SIDEBAR_ROW_THREE: f32 = 68.0;
+    pub const GROUP_HEADER: f32 = 28.0;
     /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i).
     pub const TAB_BAR: f32 = 30.0;
     /// The band at the top of the window that the traffic lights sit in (the drag area).
@@ -58,8 +60,9 @@ pub mod size {
     pub const STATUS_BAR: f32 = 22.0;
     /// How far below the tab bar's top its tabs start (M11i).
     pub const TAB_TOP_GAP: f32 = 4.0;
-    /// The accent bar at the selected sidebar row's left edge (M11i).
-    pub const SELECTION_BAR: f32 = 2.0;
+    /// How far in from its card's left edge the first tab starts, in a pane's tab bar and in
+    /// the right sidebar's panel tabs alike (2026-11-10, your call: the pane's had none).
+    pub const TABS_LEFT: f32 = 6.0;
     pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
     pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
     pub const SIDEBAR_DEFAULT_WIDTH: f32 = 240.0;

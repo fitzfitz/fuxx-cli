@@ -1540,7 +1540,10 @@ impl Workspace {
         let groups: Vec<(WorkspaceId, Option<GroupKey>)> = model
             .workspaces()
             .iter()
-            .map(|w| (w.id, first(w).and_then(group_of)))
+            .map(|w| {
+                let own = first(w).and_then(group_of);
+                (w.id, layout_model::shown_group(w.placed.as_ref(), own))
+            })
             .collect();
         let group = |w: &layout_model::Workspace| {
             groups
@@ -1645,6 +1648,12 @@ impl Workspace {
 
     /// A workspace's sidebar group: its first terminal's (its host, else its folder).
     pub(crate) fn workspace_group(&self, ws: WorkspaceId) -> Option<GroupKey> {
+        let placed = self.model.workspace(ws).and_then(|w| w.placed.as_ref());
+        layout_model::shown_group(placed, self.folder_group(ws))
+    }
+
+    /// The group a workspace's folder (or host) puts it in, wherever a drag put it (`placed`).
+    pub(crate) fn folder_group(&self, ws: WorkspaceId) -> Option<GroupKey> {
         let first = *self.model.terminals(ws).first()?;
         self.sessions
             .items()
@@ -1725,7 +1734,7 @@ impl Workspace {
         }
         self.named_terminal(ws)
             .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
-            .map(Session::label)
+            .map(|s| SharedString::from(groups::workspace_name(&s.label()).to_string()))
             .or_else(|| {
                 let tab = self.model.pane(w.focused)?.active;
                 Some(self.browser_titles.get(&tab)?.clone().into())
@@ -2532,23 +2541,42 @@ impl Workspace {
     /// `sidebar_run`). With its gap at its own place, it stays.
     pub(crate) fn drop_workspace(&mut self, dragged: WorkspaceId, cx: &mut Context<Self>) {
         let slot = self.sidebar.drop_slot.take();
+        let at = self.sidebar.drop_at.take();
         cx.notify(); // the gap closes
-        let Some(slot) = slot else {
+        // An unpinned row: into the group it was dropped in (or out of every one), recorded
+        // unless it's its own (2026-11-10), then to its slot there.
+        if let Some((_, group, slot)) = at {
+            let own = self.folder_group(dragged);
+            let placed = layout_model::placed_for(group.as_ref(), own.as_ref());
+            self.model.set_placed(dragged, placed);
+            self.sync();
+            self.move_in_run(dragged, slot);
+            self.save();
             return;
-        };
-        let run = self.sidebar_run(dragged);
+        }
+        if let Some(slot) = slot
+            && self.move_in_run(dragged, slot)
+        {
+            self.save();
+        }
+    }
+
+    /// Move workspace `ws` to slot `slot` of its run (its group's rows, or the pinned ones).
+    /// True when it moved.
+    fn move_in_run(&mut self, ws: WorkspaceId, slot: usize) -> bool {
+        let run = self.sidebar_run(ws);
         let in_run: Vec<bool> = self
             .model
             .display_order()
             .iter()
             .map(|w| self.sidebar_run(*w) == run)
             .collect();
-        if let Some(to) = sidebar::run_drop_index(&in_run, slot)
-            && self.model.move_workspace_display(dragged, to)
-        {
+        let moved = sidebar::run_drop_index(&in_run, slot)
+            .is_some_and(|to| self.model.move_workspace_display(ws, to));
+        if moved {
             self.sync();
-            self.save();
         }
+        moved
     }
 
     /// The tab being dragged, while one is (a row's drag clears it as it starts, and GPUI ends
@@ -3005,6 +3033,7 @@ impl Render for Workspace {
             self.sidebar.drag_source.set(None);
             self.tab_drop = None;
             self.sidebar.drop_slot = None;
+            self.sidebar.drop_at = None;
             self.drag_slides.borrow_mut().clear();
         }
         self.ensure_browser_tabs(window, cx);
