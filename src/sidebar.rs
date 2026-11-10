@@ -809,6 +809,12 @@ fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
 }
 
 impl Workspace {
+    /// The terminal a row's branch is read from: the workspace's first terminal (as
+    /// `sidebar_rows` reads it), so the branch switcher opens for the one that was clicked.
+    pub(crate) fn branch_terminal(&self, ws: WorkspaceId) -> Option<u64> {
+        self.model.terminals(ws).first().copied()
+    }
+
     /// The sidebar's rows as they are now: one per workspace, in display order.
     fn sidebar_rows(&self, now: Instant) -> Vec<SidebarRow> {
         let items = self.sessions.items();
@@ -1412,10 +1418,22 @@ impl Workspace {
                         .should_truncate_line(s, px(room), "…", TruncateFrom::End)
                         .is_none()
                 };
-                let branch = row
-                    .branch
-                    .clone()
-                    .map(|b| under().child(text(b, ui.text_faint)));
+                // Clicking the branch opens the branch switcher (not a row click or a drag).
+                let branch = row.branch.clone().map(|b| {
+                    under()
+                        .id(("row-branch", ws.0 as usize))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation()
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(terminal) = this.branch_terminal(ws) {
+                                this.open_branch_switcher(terminal, window, cx);
+                            }
+                        }))
+                        .child(text(b, ui.text_faint))
+                });
                 let folder = row
                     .folder
                     .as_deref()
