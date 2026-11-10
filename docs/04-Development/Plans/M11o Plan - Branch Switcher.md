@@ -12,7 +12,7 @@ updated: 2026-11-10
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[66 - Milestone 11o - Branch Switcher]] |
-| **Status** | 🟨 Built 2026-11-10 on `feat/m11o-branch-switcher` (not merged yet); waiting for your on-screen check |
+| **Status** | 🟨 Built 2026-11-10; merged and pushed 2026-11-10 (merge `0dece54`), released in **v0.6.0** (2026-11-10, run 42753078149); waiting for your on-screen check |
 | **Tasks done** | 6 / 6 |
 | **▶ Pick up here** | Your on-screen check (the checklist in note 66). |
 | **Decisions used** | Yours (2026-11-10): a modal; a colliding branch disabled with "conflict x file(s)"; a confirmation every time; ahead/behind if cheap; a background fetch on open plus a Fetch button; a typed name from origin, "not found" otherwise. AI's calls are marked in note 66. |

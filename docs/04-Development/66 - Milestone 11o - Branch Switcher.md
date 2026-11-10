@@ -5,7 +5,7 @@ status: built
 
 # 66 - Milestone 11o - Branch Switcher (design)
 
-**Status:: 🟨 Built 2026-11-10 on branch `feat/m11o-branch-switcher` (not merged yet); 1319 tests pass. Waiting for your on-screen check (12 items, below); nothing here has been seen on a real screen. Design approved 2026-11-10 by you ("oke setuju, lanjut tulis plan-nya"). Plan: [[M11o Plan - Branch Switcher]].**  ·  **Phase 4: an M11 extension (the chores round after v0.5.0).**
+**Status:: 🟨 Built 2026-11-10; merged and pushed 2026-11-10 (merge `0dece54`), released in **v0.6.0** (2026-11-10, run 42753078149); 1325 tests pass. Waiting for your on-screen check (12 items, below); nothing here has been seen on a real screen. Design approved 2026-11-10 by you ("oke setuju, lanjut tulis plan-nya"). Plan: [[M11o Plan - Branch Switcher]].**  ·  **Phase 4: an M11 extension (the chores round after v0.5.0).**
 **Asked for 2026-11-10 by you** in the chores conversation, after the sidebar row got its own branch line. It is
 in [[12 - Scope]] since its approval (2026-11-10). It is fuxx's **first action that changes a repo**;
 everything git-related before it (the row's branch, Files, Changes) only reads.
