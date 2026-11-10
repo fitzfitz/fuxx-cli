@@ -51,7 +51,7 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 - **Title bar** (M11m, added 2026-11-09 by you, after M11l; designed and planned 2026-11-09 in [[64 - Milestone 11m - Title Bar]]): with the sidebar open, the sidebar icon sits at the right edge of the sidebar's top band beside the centred title "the Fuxx?" (🔔 and ⚙ stay in the footer); collapsed, the title hides, the workspace name is centred in the top band and 🔔, ⚙ and the sidebar button sit at the far right.
 - **Performance** (M11n, added 2026-11-09 by you, after M11m; built 2026-11-10, see [[65 - Milestone 11n - Performance]]): fuxx idles at about 6 % CPU (the cursor's breathing
   glow redraws 20×/s; about 0.9 % with it off) against Ghostty's 0.2 %, and drains plain output about 2.7× slower
-  (local benchmark, 2026-11-09). Built 2026-11-10 and measured: idle with the glow breathing about 0.77× before, about 0.9 % after five minutes untouched, `cat` of 100 MiB 1.42× Ghostty's time. The one combined release (M11i–M11n, v0.5.0) was released 2026-11-10; a chores round is planned with you next. Caching the window chrome for a cheaper breath is a candidate for that round, not in M11n.
+  (local benchmark, 2026-11-09). Built 2026-11-10 and measured: idle with the glow breathing about 0.77× before, about 0.9 % after five minutes untouched, `cat` of 100 MiB 1.42× Ghostty's time. The one combined release (M11i–M11n, v0.5.0) was released 2026-11-10; a chores round is planned with you next. Caching the window chrome for a cheaper breath was not in M11n; it is M11p (below, added 2026-11-10).
 
 - **Small changes after v0.5.0** (2026-11-10, by you): no grey line above prompts (note 63, "After release"); in
   a git repo the sidebar row shows its branch and its folder on two lines, no branch line outside one (note 60,
@@ -62,6 +62,12 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   collide, a confirmation every time, a background fetch on open and a Fetch button. fuxx's first action that
   changes a repo; it never stashes, resets, forces or creates a branch from scratch. See
   [[66 - Milestone 11o - Branch Switcher]].
+- **Chrome caching** (M11p, added 2026-11-10 by you, after M11o: "oke, masukkan ke rencana setelah M11o. selama
+  sidebar masih mendapatkan update terkini, saya lanjut"): the window chrome (sidebar, tab bars, status bar, title
+  area) is split into cached GPUI views that redraw only when their own data changes, so the breathing cursor stops
+  re-rendering them on every frame. Same look and behaviour; **the sidebar and every chrome part must always show
+  current information**. Starts with a prototype that measures the saving, then a design with you. Not in it: a new
+  renderer, repainting only the cursor on its own layer, or changing the cursor's look. See [[40 - Roadmap]].
 
 ## Out of scope (for now — resist scope creep)
 

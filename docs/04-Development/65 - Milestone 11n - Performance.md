@@ -285,6 +285,7 @@ Read these with their caveats:
 - **The breath still costs about 5.3 %** (5.35 % against the glow-off 0.74 %), because every breath frame re-renders the
   whole window chrome (sidebar, tab bars, status bar, title area): only the panes are `.cached()`. Caching the chrome
   could save more than repainting only the cursor, and does not have that idea's layering problems (see "Not in M11n").
+  **→ M11p (added to the plan 2026-11-10 by you, after M11o; see [[40 - Roadmap]]).**
 - A per-sample CPU log in the harness (above).
 
 ### Limits
