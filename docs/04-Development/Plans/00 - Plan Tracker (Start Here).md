@@ -19,7 +19,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 
 | | |
 |---|---|
-| **Current milestone** | **None in progress.** v0.5.0 (M11i–M11n) is released (2026-11-10). M11n — performance is done ([[65 - Milestone 11n - Performance]]; [[M11n Plan - Performance]] 9/9). |
+| **Current milestone** | **M11o — Branch Switcher**, designed and approved 2026-11-10, planned (6 tasks, not started): [[66 - Milestone 11o - Branch Switcher]], [[M11o Plan - Branch Switcher]]. v0.5.0 (M11i–M11n) is released (2026-11-10). |
 | **Status** | v0.5.0 released 2026-11-10 (run 42662570303; tag `v0.5.0` on `7f85fad`; `fuxx-0.5.0.zip`): M11i, M11h, M11j, M11k, M11l, M11m and M11n are 🟨 built, reviewed, merged, pushed and released; on-screen checks pending. 🟨 M11e/M11f/M11g released (v0.3.0–v0.4.0); on-screen checks pending. |
 | **▶ Next action** | Your on-screen check of 0.5.0: 129 checks in one list, kept as an interactive checklist page; the per-note lists are in notes 59–65. Then plan the chores round with you; that planning round may also pick up fuxx-completes (`github.com/fitzfitz/fuxx-completes`, design stage). Found for later, from M11n: cache the window chrome so a breath frame doesn't re-render it all. |
 | **Blocked on** | Nothing. |

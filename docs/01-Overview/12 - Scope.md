@@ -55,8 +55,13 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 
 - **Small changes after v0.5.0** (2026-11-10, by you): no grey line above prompts (note 63, "After release"); in
   a git repo the sidebar row shows its branch and its folder on two lines, no branch line outside one (note 60,
-  "After release"). A branch switcher (pick a local branch, see which are pushed, check out one from origin) is
-  **not** in scope yet: a chores candidate to design with you first (roadmap).
+  "After release").
+- **A branch switcher** (M11o, asked for and approved 2026-11-10 by you: "oke setuju, lanjut tulis plan-nya"): a
+  modal to switch the git branch of a terminal's folder: local branches with ahead/behind or "local only", origin's
+  branches not yet local, a box to type one from origin, a disabled "conflict x file(s)" row where a switch would
+  collide, a confirmation every time, a background fetch on open and a Fetch button. fuxx's first action that
+  changes a repo; it never stashes, resets, forces or creates a branch from scratch. See
+  [[66 - Milestone 11o - Branch Switcher]].
 
 ## Out of scope (for now — resist scope creep)
 
