@@ -78,8 +78,9 @@ pub fn read(git: &Path, dir: &Path) -> Option<Snapshot> {
     let has_origin = run_git(git, &root, &["remote"])?
         .lines()
         .any(|r| r == "origin");
-    // At the root, so every path is root-relative whatever folder `dir` is in.
-    let dirty = run_git_bytes(git, &root, &["status", "--porcelain=v1", "-z"])
+    // At the root, so every path is root-relative whatever folder `dir` is in; `-uall` so a
+    // file in a new folder is listed itself, not as `folder/`.
+    let dirty = run_git_bytes(git, &root, &["status", "--porcelain=v1", "-z", "-uall"])
         .success()
         .map(|z| parse_porcelain(&z).into_iter().map(|(p, _)| p).collect())?;
     let orphans = if matches!(head, Head::Detached(_)) {
@@ -462,6 +463,22 @@ mod tests {
         assert!(err.contains("would be overwritten"), "{err}");
         assert_eq!(head_name(&git, &work), "trunk");
         assert!(switch(&git, &work, &Target::Local("-f".into())).is_err());
+    }
+
+    #[test]
+    fn an_untracked_file_in_a_new_folder_is_dirty_and_collides() {
+        let Some(git) = find_git() else { return println!("skipped: no git") };
+        let (work, _) = fixture("newdir", &git);
+        git_in(&git, &work, &["switch", "-q", "-c", "adds"]);
+        commit_file(&git, &work, "newdir/x.rs", "theirs\n");
+        git_in(&git, &work, &["switch", "-q", "trunk"]);
+        fs::create_dir_all(work.join("newdir")).unwrap();
+        fs::write(work.join("newdir/x.rs"), "mine\n").unwrap();
+        let snap = read(&git, &work).unwrap();
+        assert_eq!(snap.dirty, HashSet::from([PathBuf::from("newdir/x.rs")]));
+        let changed = changed(&git, &snap.root, &Target::Local("adds".into())).unwrap();
+        assert!(changed.contains(Path::new("newdir/x.rs")));
+        assert_eq!(snap.dirty.intersection(&changed).count(), 1);
     }
 
     #[test]
