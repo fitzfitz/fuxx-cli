@@ -250,6 +250,8 @@ const SCENES: &[(&str, fn())] = &[
     ("palette-narrow", palette_narrow_scene),
     ("palette-motion", palette_motion_scene),
     ("branch-switcher", branch_switcher_scene),
+    ("branch-switcher-confirm", branch_switcher_confirm_scene),
+    ("branch-switcher-real", branch_switcher_real_scene),
     ("welcome", welcome_scene),
     ("welcome-checking", welcome_checking_scene),
     ("welcome-keys", welcome_keys_scene),
@@ -10876,7 +10878,15 @@ fn branch_switcher_scene() {
             let n = format!("branch-switcher-{slug}");
             let seeded = |window: &mut Window, cx: &mut Context<BranchSwitcher>| {
                 let conflicts = [("feature/old".to_string(), 3)].into_iter().collect();
-                BranchSwitcher::seeded(switcher_repo(), switcher_snapshot(), conflicts, window, cx)
+                BranchSwitcher::seeded(
+                    switcher_repo(),
+                    vec![],
+                    switcher_snapshot(),
+                    conflicts,
+                    None,
+                    window,
+                    cx,
+                )
             };
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
@@ -11092,6 +11102,625 @@ fn branch_switcher_scene() {
             );
         }
     }
+}
+
+/// What git says when a switch would overwrite uncommitted work (the confirm scene's stub).
+const SWITCH_REFUSED: &str =
+    "error: Your local changes to the following files would be overwritten by checkout:";
+
+/// Draw frames until `done` holds, at most `secs` seconds (real git answers from the background
+/// executor's threads).
+fn settle_until(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    secs: u64,
+    mut done: impl FnMut(&mut VisualTestAppContext) -> bool,
+) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        settle(cx, window);
+        if done(cx) {
+            return true;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(secs) {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// The branch switcher's confirmation (M11o Task 4) over `switcher_workspace`, in both themes,
+/// seeded on `switcher_snapshot` with a second dirty file (README.md), Claude Code running in
+/// the folder, feature/old conflicting (3 files) and feature/rows counted clean (0):
+/// - `branch-switcher-confirm`: Enter on feature/rows (chosen first): the step reads exactly
+///   `Switch to feature/rows?`, `Claude Code is running in this folder`, `2 uncommitted
+///   file(s) come along`, over `Cancel` and `Switch` (both enabled; Switch filled with the
+///   accent).
+/// - `branch-switcher-confirm-refused`: from there Escape (back to the list, still open,
+///   feature/rows still chosen), then Enter, Enter with the switch stubbed to fail: the list
+///   again (same lines, feature/rows chosen), git's message under the box in `ring_waiting`.
+///
+/// And (not shot): on the confirmation ↑/↓ and typing change nothing; a click on Cancel goes
+/// back to the list; a click on spike's row opens spike's confirmation (Claude Code running, 2
+/// files carried: spike is counted clean); Enter with the switch stubbed to succeed closes the
+/// switcher (`Switched`, no git run), the active terminal has the keyboard back.
+fn branch_switcher_confirm_scene() {
+    use crate::branch_switcher::BranchSwitcher;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dims = size(px(960.0), px(600.0));
+    let want_lines = [
+        "main · current",
+        "feature/rows · ↑2 ↓1",
+        "spike · local only",
+        "feature/old · conflict 3 file(s)",
+        "ORIGIN",
+        "fix-login",
+    ];
+    let want_confirm = [
+        "Switch to feature/rows?",
+        "Claude Code is running in this folder",
+        "2 uncommitted file(s) come along",
+    ];
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for pass in ["confirm", "refused", "checks"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let seen: Rc<Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
+            let found = seen.clone();
+            let n = format!("branch-switcher-confirm-{pass}-{slug}");
+            let seeded = |fail: Option<&'static str>| {
+                move |window: &mut Window, cx: &mut Context<BranchSwitcher>| {
+                    let mut snapshot = switcher_snapshot();
+                    snapshot.dirty.insert(PathBuf::from("README.md"));
+                    let conflicts = [
+                        ("feature/old".to_string(), 3),
+                        ("feature/rows".to_string(), 0),
+                        ("spike".to_string(), 0),
+                    ]
+                    .into_iter()
+                    .collect();
+                    BranchSwitcher::seeded(
+                        switcher_repo(),
+                        vec!["Claude Code".into()],
+                        snapshot,
+                        conflicts,
+                        fail.map(String::from),
+                        window,
+                        cx,
+                    )
+                }
+            };
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    let sw = |cx: &mut VisualTestAppContext| {
+                        branch_switcher_of(cx, &ws).expect("the switcher is open")
+                    };
+                    let confirm = |cx: &mut VisualTestAppContext| {
+                        let s = sw(cx);
+                        cx.read(|cx| s.read(cx).confirm_texts())
+                    };
+                    let buttons = |cx: &mut VisualTestAppContext| {
+                        let s = sw(cx);
+                        cx.read(|cx| s.read(cx).buttons())
+                    };
+                    let lines = |cx: &mut VisualTestAppContext| {
+                        let s = sw(cx);
+                        cx.read(|cx| s.read(cx).line_texts())
+                    };
+                    let chosen = |cx: &mut VisualTestAppContext| {
+                        let s = sw(cx);
+                        cx.read(|cx| s.read(cx).selected_label())
+                    };
+                    let note = |cx: &mut VisualTestAppContext| {
+                        let s = sw(cx);
+                        cx.read(|cx| s.read(cx).note())
+                    };
+                    let fail = (pass == "refused").then_some(SWITCH_REFUSED);
+                    open_switcher_with(cx, window, &ws, seeded(fail));
+                    assert_eq!(lines(cx), want_lines, "{n}: the lines");
+                    assert_eq!(chosen(cx).as_deref(), Some("feature/rows"), "{n}: first");
+                    assert_eq!(confirm(cx), None, "{n}: on the list");
+                    press_keys(cx, window, "enter");
+                    assert_eq!(
+                        confirm(cx).as_deref(),
+                        Some(&want_confirm.map(String::from)[..]),
+                        "{n}: Enter opens the confirmation"
+                    );
+                    assert_eq!(
+                        buttons(cx),
+                        [("Cancel", true), ("Switch", true)],
+                        "{n}: its buttons"
+                    );
+                    match pass {
+                        "confirm" => {
+                            let s = sw(cx);
+                            found.set(cx.read(|cx| s.read(cx).switch_bounds()));
+                        }
+                        "refused" => {
+                            press_keys(cx, window, "escape");
+                            assert!(
+                                branch_switcher_of(cx, &ws).is_some(),
+                                "{n}: Escape on the confirmation leaves it open"
+                            );
+                            assert_eq!(confirm(cx), None, "{n}: Escape goes back to the list");
+                            assert_eq!(chosen(cx).as_deref(), Some("feature/rows"), "{n}: kept");
+                            press_keys(cx, window, "enter");
+                            assert!(confirm(cx).is_some(), "{n}: Enter opens it again");
+                            press_keys(cx, window, "enter");
+                            let s = sw(cx);
+                            assert!(
+                                settle_until(cx, window, 3, |cx| !cx.read(|cx| s.read(cx).busy())),
+                                "{n}: the switch ends"
+                            );
+                            assert_eq!(confirm(cx), None, "{n}: a refusal goes back to the list");
+                            assert_eq!(
+                                note(cx).as_deref(),
+                                Some(SWITCH_REFUSED),
+                                "{n}: git's message under the box"
+                            );
+                            assert_eq!(lines(cx), want_lines, "{n}: the lines again");
+                            assert_eq!(chosen(cx).as_deref(), Some("feature/rows"), "{n}: kept");
+                            found.set(cx.read(|cx| s.read(cx).note_bounds()));
+                        }
+                        _ => {
+                            // On the confirmation, ↑/↓ and typing change nothing.
+                            press_keys(cx, window, "down");
+                            cx.simulate_input(window, "zz");
+                            settle(cx, window);
+                            assert_eq!(
+                                confirm(cx).as_deref(),
+                                Some(&want_confirm.map(String::from)[..]),
+                                "{n}: ↓ and typing leave the confirmation"
+                            );
+                            let s = sw(cx);
+                            assert_eq!(
+                                cx.read(|cx| s.read(cx).query_text(cx)),
+                                "",
+                                "{n}: typing is ignored on it"
+                            );
+                            // A click on Cancel: back to the list.
+                            let cancel = cx
+                                .read(|cx| s.read(cx).cancel_bounds())
+                                .expect("Cancel is drawn");
+                            cx.simulate_click(window, cancel.center(), gpui::Modifiers::none());
+                            settle(cx, window);
+                            assert!(branch_switcher_of(cx, &ws).is_some(), "{n}: still open");
+                            assert_eq!(confirm(cx), None, "{n}: Cancel goes back to the list");
+                            assert_eq!(chosen(cx).as_deref(), Some("feature/rows"), "{n}: kept");
+                            // A click on spike's row: its confirmation.
+                            let spike = cx
+                                .read(|cx| s.read(cx).line_bounds(2))
+                                .expect("spike is drawn");
+                            cx.simulate_click(window, spike.center(), gpui::Modifiers::none());
+                            settle(cx, window);
+                            assert_eq!(
+                                confirm(cx).as_deref(),
+                                Some(
+                                    &[
+                                        "Switch to spike?",
+                                        "Claude Code is running in this folder",
+                                        "2 uncommitted file(s) come along",
+                                    ]
+                                    .map(String::from)[..]
+                                ),
+                                "{n}: a click on spike opens its confirmation"
+                            );
+                            // Enter: the stub switches; the switcher closes.
+                            press_keys(cx, window, "enter");
+                            assert!(
+                                settle_until(cx, window, 3, |cx| branch_switcher_of(cx, &ws)
+                                    .is_none()),
+                                "{n}: a switch closes it"
+                            );
+                            assert!(
+                                active_terminal_focused(cx, window, &ws),
+                                "{n}: the terminal has the keyboard back"
+                            );
+                        }
+                    }
+                    slot.borrow_mut().take();
+                }
+            };
+            let shot = render_with(&theme, dims, build, act);
+            if pass == "checks" {
+                println!("ui-shots: {n} ok");
+                continue;
+            }
+            let at = seen.get().expect("drawn");
+            if pass == "confirm" {
+                save_shot("branch-switcher-confirm", slug, &shot);
+                let fill = count_along(
+                    &shot,
+                    dims,
+                    ui.accent,
+                    f32::from(at.top()) + 3.0,
+                    f32::from(at.left()) + 6.0,
+                    f32::from(at.right()) - 6.0,
+                );
+                let wide = f32::from(at.size.width) - 12.0;
+                assert!(
+                    fill as f32 >= wide * 0.8,
+                    "{n}: Switch is filled with the accent ({fill} of {wide})"
+                );
+            } else {
+                save_shot("branch-switcher-confirm-refused", slug, &shot);
+                let red = count_along(
+                    &shot,
+                    dims,
+                    ui.ring_waiting,
+                    f32::from(at.center().y),
+                    f32::from(at.left()),
+                    f32::from(at.right()),
+                );
+                assert!(red >= 10, "{n}: git's message is in ring_waiting ({red})");
+            }
+            println!("ui-shots: {n} ok");
+        }
+    }
+}
+
+/// `git -C dir args…` for the scratch repos, hermetic (no user config, no signing, no hooks
+/// from a global hooks path): its stdout. Panics if git fails.
+fn scratch_git(git: &std::path::Path, dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new(git)
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The branch switcher on a real repo (M11o Task 4, not shot), in a scratch folder under the
+/// system's temp folder: `origin` (trunk, other, feature/typed) and a single-branch clone of it
+/// (trunk only from origin) with a local branch `other` that changes `a.txt`. The active
+/// terminal's folder is the clone, its branch `trunk`, the places unfrozen just for the switch.
+///
+/// Panics unless:
+/// - with `a.txt` changed and twenty branches `b00`…`b19` listed above `other` (so it is out of
+///   view, never counted), choosing `other` counts it first (busy meanwhile), then ends on the
+///   list with `other · conflict 1 file(s)` (disabled), no confirmation, nothing switched;
+/// - with `a.txt` back and an untracked `notes.txt`, choosing `other` shows `Switch to other?`
+///   and `1 uncommitted file(s) come along`; Enter switches (git says `other`), `notes.txt` is
+///   still there, the switcher closes, and the active terminal's row has `other` at once (no
+///   5 s wait);
+/// - typing `nope`, Enter: `Branch nope not found` under the box, still `other`, no `nope`
+///   branch or origin ref made;
+/// - typing `feature/typed`, Enter: fetched, `Switch to feature/typed?`; Enter: on this
+///   single-branch clone git refuses (`switch --track` wants a ref origin's fetch refspec
+///   covers): back on the list with git's message under the box, still `other`, no local
+///   `feature/typed` made. Known, reported in M11o Task 4: git (2.54) has already written the
+///   target's files into the index and work tree when it refuses (`a.txt` and `b.txt` left
+///   staged); the scene pins that, then puts the scratch clone back;
+/// - with the clone's refspec widened (`remote set-branches origin '*'`) and `feature/late` made
+///   on origin after the switcher's automatic fetch: typing it, Enter: fetched, `Switch to
+///   feature/late?`; Enter switches (git says `feature/late`, tracking `origin/feature/late`).
+fn branch_switcher_real_scene() {
+    use crate::branch_switcher::{BranchSwitcher, RepoAt};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let Some(git) = crate::git_branch::find_git() else {
+        println!("ui-shots: branch-switcher-real skipped (no git on this Mac)");
+        return;
+    };
+    let base =
+        std::env::temp_dir().join(format!("fuxx-ui-shots-branch-real-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let origin = base.join("origin");
+    let clone = base.join("clone");
+    std::fs::create_dir_all(&origin).expect("make origin");
+    scratch_git(&git, &origin, &["init", "-q", "-b", "trunk"]);
+    std::fs::write(origin.join("a.txt"), "a\n").unwrap();
+    scratch_git(&git, &origin, &["add", "."]);
+    scratch_git(&git, &origin, &["commit", "-q", "-m", "one"]);
+    scratch_git(&git, &origin, &["switch", "-q", "-c", "feature/typed"]);
+    std::fs::write(origin.join("b.txt"), "b\n").unwrap();
+    scratch_git(&git, &origin, &["add", "."]);
+    scratch_git(&git, &origin, &["commit", "-q", "-m", "typed"]);
+    scratch_git(&git, &origin, &["switch", "-q", "trunk"]);
+    scratch_git(
+        &git,
+        &base,
+        &[
+            "clone",
+            "-q",
+            "--single-branch",
+            "-b",
+            "trunk",
+            origin.to_str().unwrap(),
+            "clone",
+        ],
+    );
+    scratch_git(&git, &clone, &["switch", "-q", "-c", "other"]);
+    std::fs::write(clone.join("a.txt"), "other\n").unwrap();
+    scratch_git(&git, &clone, &["commit", "-q", "-am", "other"]);
+    scratch_git(&git, &clone, &["switch", "-q", "trunk"]);
+    let current = |git: &std::path::Path| scratch_git(git, &clone, &["branch", "--show-current"]);
+
+    let theme = shot_theme(SHOT_THEMES[0].1);
+    let dims = size(px(960.0), px(600.0));
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = palette_build(theme, slot.clone());
+    let (git2, clone2) = (git.clone(), clone.clone());
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let (git, clone) = (git2, clone2);
+        let n = "branch-switcher-real";
+        let ws = slotted(&slot);
+        let open = |cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>| {
+            let repo = RepoAt {
+                git: git.clone(),
+                dir: clone.clone(),
+                label: "~/scratch/clone".into(),
+            };
+            open_switcher_with(cx, window, ws, |window, cx| {
+                BranchSwitcher::new(repo, vec![], window, cx)
+            });
+            // Its read and the automatic fetch (from the folder next door) land.
+            let sw = branch_switcher_of(cx, ws).expect("the switcher is open");
+            assert!(
+                settle_until(cx, window, 10, |cx| cx.read(|cx| {
+                    let s = sw.read(cx);
+                    s.line_texts().iter().any(|l| l.starts_with("other"))
+                        && s.fetch_status().is_none()
+                })),
+                "{n}: the list is read"
+            );
+            sw
+        };
+        let choose =
+            |cx: &mut VisualTestAppContext, sw: &gpui::Entity<BranchSwitcher>, label: &str| {
+                for _ in 0..8 {
+                    if cx.read(|cx| sw.read(cx).selected_label()).as_deref() == Some(label) {
+                        break;
+                    }
+                    press_keys(cx, window, "down");
+                }
+                assert_eq!(
+                    cx.read(|cx| sw.read(cx).selected_label()).as_deref(),
+                    Some(label),
+                    "{n}: {label} chosen"
+                );
+                press_keys(cx, window, "enter");
+                assert!(
+                    settle_until(cx, window, 10, |cx| !cx.read(|cx| sw.read(cx).busy())),
+                    "{n}: choosing {label} ends"
+                );
+            };
+
+        // A conflicting change, and other out of view (b00…b19 on its commit list first: same
+        // date, by name): chosen before any count, it is counted first, then disabled.
+        for i in 0..20 {
+            scratch_git(&git, &clone, &["branch", &format!("b{i:02}"), "other"]);
+        }
+        std::fs::write(clone.join("a.txt"), "mine\n").unwrap();
+        let sw = open(cx, &ws);
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).line_texts())
+                .last()
+                .map(String::as_str),
+            Some("other · local only"),
+            "{n}: other is last, out of view and not counted"
+        );
+        let (chose, busy) = cx
+            .update_window(window, |_, _, cx| {
+                sw.update(cx, |s, cx| {
+                    let chose = s.choose_label("other", cx);
+                    (chose, s.busy())
+                })
+            })
+            .expect("choose other");
+        assert!(chose && busy, "{n}: choosing other counts it first (busy)");
+        assert!(
+            settle_until(cx, window, 10, |cx| !cx.read(|cx| sw.read(cx).busy())),
+            "{n}: the count ends"
+        );
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            None,
+            "{n}: no confirmation"
+        );
+        assert!(
+            settle_until(cx, window, 10, |cx| cx
+                .read(|cx| sw.read(cx).line_texts())
+                .contains(&"other · conflict 1 file(s)".to_string())),
+            "{n}: other conflicts: {:?}",
+            cx.read(|cx| sw.read(cx).line_texts())
+        );
+        assert_eq!(current(&git), "trunk", "{n}: nothing switched");
+        press_keys(cx, window, "escape");
+        assert!(branch_switcher_of(cx, &ws).is_none(), "{n}: closed");
+        for i in 0..20 {
+            scratch_git(&git, &clone, &["branch", "-q", "-D", &format!("b{i:02}")]);
+        }
+
+        // No conflict: a carried file, the confirmation, the switch, the row at once.
+        std::fs::write(clone.join("a.txt"), "a\n").unwrap();
+        std::fs::write(clone.join("notes.txt"), "notes\n").unwrap();
+        cx.update_window(window, |_, _, cx| {
+            ws.update(cx, |ws, _| {
+                let id = ws.sessions.active().expect("an active terminal").id;
+                ws.places
+                    .set_folder(id, Some(clone.clone()), std::time::Instant::now());
+                ws.places.set_branch(&clone, Some("trunk".into()));
+            })
+        })
+        .expect("point the terminal at the clone");
+        let sw = open(cx, &ws);
+        choose(cx, &sw, "other");
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            Some(vec![
+                "Switch to other?".to_string(),
+                "1 uncommitted file(s) come along".to_string()
+            ]),
+            "{n}: other's confirmation"
+        );
+        cx.update_window(window, |_, _, cx| {
+            ws.update(cx, |ws, _| ws.places.frozen = false)
+        })
+        .expect("set the places");
+        press_keys(cx, window, "enter");
+        assert!(
+            settle_until(cx, window, 10, |cx| branch_switcher_of(cx, &ws).is_none()),
+            "{n}: the switch closes it"
+        );
+        assert_eq!(current(&git), "other", "{n}: git is on other");
+        assert!(
+            clone.join("notes.txt").exists(),
+            "{n}: notes.txt came along"
+        );
+        assert!(
+            settle_until(cx, window, 3, |cx| cx
+                .read(|cx| ws.read(cx).places.branch(&clone).map(String::from))
+                .as_deref()
+                == Some("other")),
+            "{n}: the row has the new branch at once"
+        );
+        cx.update_window(window, |_, _, cx| {
+            ws.update(cx, |ws, _| ws.places.frozen = true)
+        })
+        .expect("set the places");
+
+        // A typed name origin doesn't have: not found, nothing made.
+        let sw = open(cx, &ws);
+        cx.simulate_input(window, "nope");
+        settle(cx, window);
+        choose(cx, &sw, "Check out nope from origin");
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).note()).as_deref(),
+            Some("Branch nope not found"),
+            "{n}: not found"
+        );
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            None,
+            "{n}: on the list"
+        );
+        assert_eq!(current(&git), "other", "{n}: still on other");
+        let refs = scratch_git(&git, &clone, &["for-each-ref", "--format=%(refname)"]);
+        assert!(!refs.contains("nope"), "{n}: no nope ref: {refs}");
+        press_keys(cx, window, "escape");
+
+        // A typed name origin has, not fetched by this single-branch clone: fetched, but git
+        // won't track a ref outside origin's fetch refspec. Its refusal shows; nothing changes.
+        let sw = open(cx, &ws);
+        cx.simulate_input(window, "feature/typed");
+        settle(cx, window);
+        choose(cx, &sw, "Check out feature/typed from origin");
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            Some(vec![
+                "Switch to feature/typed?".to_string(),
+                "1 uncommitted file(s) come along".to_string()
+            ]),
+            "{n}: feature/typed's confirmation"
+        );
+        press_keys(cx, window, "enter");
+        assert!(
+            settle_until(cx, window, 10, |cx| !cx.read(|cx| sw.read(cx).busy())),
+            "{n}: the switch ends"
+        );
+        let note = cx.read(|cx| sw.read(cx).note());
+        println!("ui-shots: {n}: narrow clone, git says {note:?}");
+        assert!(
+            branch_switcher_of(cx, &ws).as_ref() == Some(&sw),
+            "{n}: a refusal leaves it open"
+        );
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            None,
+            "{n}: back on the list"
+        );
+        assert!(
+            note.as_deref()
+                .is_some_and(|m| m.contains("cannot set up tracking")),
+            "{n}: git's message under the box: {note:?}"
+        );
+        assert_eq!(current(&git), "other", "{n}: still on other");
+        let refs = scratch_git(&git, &clone, &["for-each-ref", "--format=%(refname)"]);
+        assert!(
+            !refs.contains("refs/heads/feature/typed"),
+            "{n}: no local feature/typed: {refs}"
+        );
+        // Known (M11o Task 4's report): git refused only after writing the target's tree.
+        let status = scratch_git(&git, &clone, &["status", "--porcelain=v1"]);
+        println!("ui-shots: {n}: after git's refusal the clone's status is {status:?}");
+        assert_eq!(
+            status, "M  a.txt\nA  b.txt\n?? notes.txt",
+            "{n}: git's partial switch (pinned; see the doc comment)"
+        );
+        // The scratch clone back as it was (test setup, not the switcher).
+        scratch_git(&git, &clone, &["reset", "-q", "--hard", "HEAD"]);
+        press_keys(cx, window, "escape");
+
+        // A normal refspec, and a branch made on origin after the automatic fetch (so it has
+        // no row): fetched, confirmed, switched, tracking origin's.
+        scratch_git(&git, &clone, &["remote", "set-branches", "origin", "*"]);
+        let sw = open(cx, &ws);
+        scratch_git(&git, &origin, &["branch", "feature/late"]);
+        cx.simulate_input(window, "feature/late");
+        settle(cx, window);
+        choose(cx, &sw, "Check out feature/late from origin");
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).confirm_texts()),
+            Some(vec![
+                "Switch to feature/late?".to_string(),
+                "1 uncommitted file(s) come along".to_string()
+            ]),
+            "{n}: feature/late's confirmation"
+        );
+        press_keys(cx, window, "enter");
+        assert!(
+            settle_until(cx, window, 10, |cx| branch_switcher_of(cx, &ws).is_none()),
+            "{n}: the switch closes it ({:?})",
+            cx.read(|cx| sw.read(cx).note())
+        );
+        assert_eq!(current(&git), "feature/late", "{n}: git is on feature/late");
+        assert_eq!(
+            scratch_git(
+                &git,
+                &clone,
+                &["rev-parse", "--abbrev-ref", "feature/late@{upstream}"]
+            ),
+            "origin/feature/late",
+            "{n}: tracking origin's"
+        );
+        assert!(
+            clone.join("notes.txt").exists(),
+            "{n}: notes.txt still there"
+        );
+        println!(
+            "ui-shots: {n}: git -C {} branch --show-current = {}",
+            clone.display(),
+            current(&git)
+        );
+        slot.borrow_mut().take();
+    };
+    let _ = render_with(&theme, dims, build, act);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The Welcome scenes' workspace: `presets`, the app's key bindings, and one terminal in
@@ -12441,8 +13070,10 @@ fn overlays() {
                             let sw = cx.new(|cx| {
                                 crate::branch_switcher::BranchSwitcher::seeded(
                                     switcher_repo(),
+                                    vec![],
                                     switcher_snapshot(),
                                     Default::default(),
+                                    None,
                                     window,
                                     cx,
                                 )

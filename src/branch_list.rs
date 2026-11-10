@@ -270,7 +270,6 @@ pub fn conflict_text(n: usize) -> String {
     format!("conflict {n} file(s)")
 }
 
-#[allow(dead_code)] // the confirmation (M11o Task 4)
 pub fn running_line(programs: &[String]) -> Option<String> {
     match programs {
         [] => None,
@@ -283,7 +282,6 @@ pub fn running_line(programs: &[String]) -> Option<String> {
 }
 
 /// The confirmation: the title, then each warning that applies.
-#[allow(dead_code)] // the confirmation (M11o Task 4)
 pub fn confirm_lines(
     name: &str,
     programs: &[String],
