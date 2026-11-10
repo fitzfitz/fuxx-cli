@@ -35,6 +35,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Known, to fix before merge:** a narrow-clone refspec with no `:` (or one that stores under another remote) can still choose `--track` and leave a file staged (fixed in the final fix wave above: an origin branch is made first, then switched to). Also noted: a switch killed at the 120 s cap can leave a half-switched tree or an `index.lock`.
 - **Next:** your on-screen check (note 66, 12 items); the final fix wave (done, above), then merge.
 
+### 2026-11-10 — Chrome caching added to the plan (M11p, after M11o)
+- **Did:** You asked how fuxx differs from Ghostty in the benchmark. From note 65: the big gap is idle CPU with the
+  breathing cursor (5.35 % against Ghostty's 0.23–0.33 %; 0.93 % once the breath rests, 0.74 % with the glow off),
+  because each breath frame makes GPUI re-render the whole window chrome; throughput (1.42× on `cat` 100 MiB) is
+  parse-bound and unrelated to the glow. Checked with Context7: Ghostty's macOS chrome is native AppKit (the OS keeps
+  its layers), its terminal is a separate Metal surface; GPUI's `AnyView::cached` reuses a view's layout and paint
+  until it is notified. cmux was never measured (web research only). You chose to keep Rust and cache the chrome per
+  part: **M11p — Chrome caching**, after M11o, on your condition that the sidebar always shows current information.
+  Roadmap, Scope and note 65 updated. No code changed.
+- **Next:** M11o (branch switcher) as planned; then M11p: a measuring prototype, a design with you, a plan.
+
 ### 2026-11-10 — Sidebar rows: branch and folder on two lines
 - **Did:** On your word, a sidebar row in a git repo now shows the branch on one line and the folder under it (45 pt, `SIDEBAR_ROW_THREE`); outside a repo the folder alone (no branch line, 32 pt); waiting, notes and "not live" unchanged. A dragged row shows the same lines. TDD: the unit test `a_row_in_a_repo_shows_its_branch_and_its_folder_on_their_own_lines` failed first (no `lines_under`, no `SIDEBAR_ROW_THREE`), then passed; `a_dragged_row_shows_the_lines_the_row_has` added; the `sidebar-rows` ui-shot checks the new heights, and `check_selected` samples the tint in the row's right padding (a three-line row has text across its middle). Scope gained "Small changes after v0.5.0". Noted the branch switcher as a chores candidate (a modal, your preference; to design with you).
 - **Next:** the branch switcher's design with you; your look on screen.
