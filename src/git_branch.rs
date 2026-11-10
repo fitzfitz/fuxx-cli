@@ -326,8 +326,10 @@ fn run_capped_streams(
     }
 }
 
-/// How long `switch` may take (it writes the working tree).
-pub const SWITCH_CAP: Duration = Duration::from_secs(10);
+/// How long `switch` may take. It writes the working tree and the index, and a `git switch`
+/// killed half way can leave a half-switched tree and a stale `index.lock`: so the cap is only
+/// for a git that has truly hung, never for a big checkout on a slow disk (2 minutes).
+pub const SWITCH_CAP: Duration = Duration::from_secs(120);
 /// How long a `fetch` may take (the network).
 pub const FETCH_CAP: Duration = Duration::from_secs(30);
 

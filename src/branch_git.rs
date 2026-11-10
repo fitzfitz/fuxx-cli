@@ -211,21 +211,85 @@ pub fn fetch_branch(git: &Path, root: &Path, name: &str, mode: FetchMode) -> Res
     }
 }
 
-/// `switch <name>` or `switch --track origin/<name>`, never another flag. A local name that
-/// could be read as an option is refused here (branch names from refs can't start with `-`).
+/// Whether origin's fetch refspecs (`remote.origin.fetch`, one per line) bring
+/// `refs/heads/<name>`: a source side equal to it, or matching it with its one `*` (which, as in
+/// git, spans slashes), and no negative refspec (`^…`) taking it back out. A leading `+` is
+/// ignored.
+fn fetch_covers(specs: &str, name: &str) -> bool {
+    let branch = format!("refs/heads/{name}");
+    let matches = |source: &str| match source.split_once('*') {
+        Some((before, after)) if !after.contains('*') => {
+            branch.len() >= before.len() + after.len()
+                && branch.starts_with(before)
+                && branch.ends_with(after)
+        }
+        Some(_) => false,
+        None => source == branch,
+    };
+    let mut covered = false;
+    for spec in specs.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(negative) = spec.strip_prefix('^') {
+            if matches(negative) {
+                return false;
+            }
+            continue;
+        }
+        let spec = spec.strip_prefix('+').unwrap_or(spec);
+        let source = spec.split_once(':').map_or(spec, |(source, _)| source);
+        covered |= matches(source);
+    }
+    covered
+}
+
+/// `switch <name>`, or for an origin branch a local branch tracking it, never another flag (no
+/// `-C`, no force). A local name that could be read as an option is refused here (branch names
+/// from refs can't start with `-`).
+///
+/// An origin branch origin's fetch refspecs bring: `switch --track origin/<name>`. One they
+/// don't (a single-branch clone, its ref fetched alone by `fetch_branch`): git won't track it,
+/// and refuses only after writing the target's files into the tree, so instead
+/// `switch --no-track -c <name> origin/<name>`, then its upstream set by hand
+/// (`branch.<name>.remote` = origin, `branch.<name>.merge` = `refs/heads/<name>`). If those
+/// writes fail the switch still stands (the branch then shows as local only).
 pub fn switch(git: &Path, root: &Path, target: &Target) -> Result<(), String> {
     if target.name().starts_with('-') {
         return Err("not a branch name".to_string());
     }
-    let remote;
-    let args: Vec<&str> = match target {
-        Target::Local(name) => vec!["switch", name],
-        Target::Origin(name) => {
-            remote = format!("origin/{name}");
-            vec!["switch", "--track", &remote]
+    let name = target.name();
+    let remote = format!("origin/{name}");
+    match target {
+        Target::Local(name) => {
+            run_git_checked(git, root, &["switch", name], SWITCH_CAP, &[]).map(|_| ())
         }
-    };
-    run_git_checked(git, root, &args, SWITCH_CAP, &[]).map(|_| ())
+        Target::Origin(_) => {
+            let specs = run_git(git, root, &["config", "--get-all", "remote.origin.fetch"])
+                .unwrap_or_default();
+            if fetch_covers(&specs, name) {
+                return run_git_checked(
+                    git,
+                    root,
+                    &["switch", "--track", &remote],
+                    SWITCH_CAP,
+                    &[],
+                )
+                .map(|_| ());
+            }
+            run_git_checked(
+                git,
+                root,
+                &["switch", "--no-track", "-c", name, &remote],
+                SWITCH_CAP,
+                &[],
+            )?;
+            let merge = format!("refs/heads/{name}");
+            for (key, value) in [("remote", "origin"), ("merge", merge.as_str())] {
+                let key = format!("branch.{name}.{key}");
+                // Switched already: a failed write leaves the branch without its upstream.
+                let _ = run_git_checked(git, root, &["config", &key, value], SWITCH_CAP, &[]);
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -471,6 +535,79 @@ mod tests {
         assert_eq!(head_name(&git, &work), "trunk");
         assert_eq!(fs::read_to_string(work.join("src/a.rs")).unwrap(), "mine\n");
         assert!(switch(&git, &work, &Target::Local("-f".into())).is_err());
+    }
+
+    #[test]
+    fn a_refspec_covers_a_branch_exactly_or_by_its_one_glob() {
+        let wide = "+refs/heads/*:refs/remotes/origin/*\n";
+        assert!(fetch_covers(wide, "feature"));
+        assert!(fetch_covers(wide, "feature/rows"), "a glob spans slashes");
+        let narrow = "+refs/heads/trunk:refs/remotes/origin/trunk\n";
+        assert!(fetch_covers(narrow, "trunk"));
+        assert!(!fetch_covers(narrow, "feature"));
+        assert!(!fetch_covers(narrow, "trunk2"));
+        let some = "refs/heads/trunk:refs/remotes/origin/trunk\nrefs/heads/feat/*:refs/remotes/origin/feat/*\n";
+        assert!(fetch_covers(some, "feat/a"));
+        assert!(fetch_covers(some, "trunk"));
+        assert!(!fetch_covers(some, "feature"));
+        // A negative refspec takes a branch back out.
+        assert!(!fetch_covers(
+            "+refs/heads/*:refs/remotes/origin/*\n^refs/heads/secret\n",
+            "secret"
+        ));
+        assert!(!fetch_covers("", "trunk"));
+    }
+
+    #[test]
+    fn switch_tracks_an_origin_branch_a_narrow_clone_fetched_alone() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, origin) = fixture("narrow", &git);
+        let base = work.parent().unwrap().to_path_buf();
+        git_in(
+            &git,
+            &base,
+            &[
+                "clone",
+                "-q",
+                "--single-branch",
+                "-b",
+                "trunk",
+                origin.to_str().unwrap(),
+                "narrow",
+            ],
+        );
+        let narrow = base.join("narrow");
+        assert_eq!(
+            fetch_branch(&git, &narrow, "feature", FetchMode::Auto),
+            Ok(true)
+        );
+        assert_eq!(
+            switch(&git, &narrow, &Target::Origin("feature".into())),
+            Ok(())
+        );
+        assert_eq!(head_name(&git, &narrow), "feature");
+        let run = |args: &[&str]| {
+            let out = Command::new(&git)
+                .arg("-C")
+                .arg(&narrow)
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(run(&["status", "--porcelain"]), "", "a clean switch");
+        assert_eq!(
+            run(&["config", "branch.feature.merge"]),
+            "refs/heads/feature"
+        );
+        assert_eq!(run(&["config", "branch.feature.remote"]), "origin");
+        // git maps an upstream through the fetch refspec, which a narrow clone's doesn't
+        // cover: the branch counts as on origin by name instead (even with it).
+        let snap = read(&git, &narrow).unwrap();
+        assert!(snap.local.iter().any(|b| b.name == "feature"));
+        assert_eq!(snap.pushed.get("feature"), Some(&(0, 0)));
     }
 
     #[test]
