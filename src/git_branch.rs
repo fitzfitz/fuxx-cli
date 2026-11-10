@@ -223,10 +223,25 @@ pub(crate) fn run_capped_outcome(command: Command, input: Option<&[u8]>, cap: Du
 /// `run_capped_outcome`, with what the command printed as bytes (`ps`, whose output may not be
 /// UTF-8 when a process's arguments aren't).
 pub(crate) fn run_capped_bytes(
-    mut command: Command,
+    command: Command,
     input: Option<&[u8]>,
     cap: Duration,
 ) -> Ran<Vec<u8>> {
+    match run_capped_streams(command, input, cap, false) {
+        Ran::Exited(code, (out, _)) => Ran::Exited(code, out),
+        Ran::TimedOut => Ran::TimedOut,
+        Ran::Failed => Ran::Failed,
+    }
+}
+
+/// `run_capped_bytes`, optionally keeping stderr too (`capture_stderr`; else it is dropped and
+/// the second stream is empty). The one kill loop every capped command goes through.
+fn run_capped_streams(
+    mut command: Command,
+    input: Option<&[u8]>,
+    cap: Duration,
+    capture_stderr: bool,
+) -> Ran<(Vec<u8>, Vec<u8>)> {
     use std::io::Write;
     use std::os::unix::process::CommandExt;
     command
@@ -236,7 +251,11 @@ pub(crate) fn run_capped_bytes(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(if capture_stderr {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
     // SAFETY: setsid is async-signal-safe; it only detaches the child from fuxx's session (and
     // so from any controlling terminal fuxx has), making it its own process group's leader.
     unsafe {
@@ -266,6 +285,13 @@ pub(crate) fn run_capped_bytes(
         let mut out = Vec::new();
         stdout.read_to_end(&mut out).ok().map(|_| out)
     });
+    // Served by its own thread like stdout, so neither pipe can fill and hold git.
+    let err_reader = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            stderr.read_to_end(&mut out).ok().map(|_| out)
+        })
+    });
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -290,9 +316,51 @@ pub(crate) fn run_capped_bytes(
     if let Some(writer) = writer {
         let _ = writer.join();
     }
-    match reader.join().ok().flatten() {
-        Some(out) => Ran::Exited(status.code(), out),
-        None => Ran::Failed,
+    let err = match err_reader {
+        Some(reader) => reader.join().ok().flatten(),
+        None => Some(Vec::new()),
+    };
+    match (reader.join().ok().flatten(), err) {
+        (Some(out), Some(err)) => Ran::Exited(status.code(), (out, err)),
+        _ => Ran::Failed,
+    }
+}
+
+/// How long `switch` may take (it writes the working tree).
+pub const SWITCH_CAP: Duration = Duration::from_secs(10);
+/// How long a `fetch` may take (the network).
+pub const FETCH_CAP: Duration = Duration::from_secs(30);
+
+/// `git -C dir args…` for a command that changes things (`switch`, `fetch`): like `run_git`
+/// (own session, no terminal, never prompts) but without `GIT_OPTIONAL_LOCKS=0` (it writes),
+/// with `env` added, and with git's words kept: `Ok(stdout)` on exit 0, else `Err` of the first
+/// non-empty line of its stderr; `Err("git timed out")` at `cap` (git and its children are
+/// killed); `Err("git could not run")` if it didn't start or its output couldn't be read.
+pub(crate) fn run_git_checked(
+    git: &Path,
+    dir: &Path,
+    args: &[&str],
+    cap: Duration,
+    env: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut command = Command::new(git);
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().copied());
+    match run_capped_streams(command, None, cap, true) {
+        Ran::Exited(Some(0), (out, _)) => {
+            String::from_utf8(out).map_err(|_| "git could not run".to_string())
+        }
+        Ran::Exited(_, (_, err)) => {
+            let err = String::from_utf8_lossy(&err);
+            let line = err.lines().map(str::trim).find(|l| !l.is_empty());
+            Err(line.unwrap_or("git failed").to_string())
+        }
+        Ran::TimedOut => Err("git timed out".to_string()),
+        Ran::Failed => Err("git could not run".to_string()),
     }
 }
 

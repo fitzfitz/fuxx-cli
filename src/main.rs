@@ -14,6 +14,7 @@ mod app_log;
 mod appearance;
 mod block_view;
 mod blocks;
+mod branch_git;
 mod branch_list;
 mod browser;
 mod browser_history;
