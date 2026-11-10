@@ -219,14 +219,16 @@ keyboard ─► terminal_view ─► keys ─► pty ─► shell / agent
 
 ```
 scripts/
-├── bundle-mac.sh         M4b · universal release build → fuxx.app (with its icon, M11c) → target/dist/fuxx-<version>.dmg
+├── bundle-mac.sh         M4b · universal release build → fuxx.app (with its icon, M11c) → target/dist/fuxx-<version>.dmg;
+│                         --app-only, --build <target> (one slice), --prebuilt (bundle built slices)
 ├── make_app_icon.py      M11c · the 3D Cyber logo → packaging/macos/fuxx.icns + the browser bar's mark (run by hand)
 ├── check-dmg.sh          M4b · the test: asserts a DMG is installable (both CPUs, macOS 11.0, version, seal)
 ├── check-release-tag.sh  M11e · refuses a release tag that isn't v + Cargo.toml's version
 └── bench/                M11n · the benchmark harness: run.py (isolated fuxx and Ghostty copies; CPU, throughput,
                           launch, memory), make_data.py, wininfo.swift; it backs up and restores Ghostty's prefs
 .github/workflows/
-└── release.yml           M11e · on a pushed v* tag: test, build the universal app, zip it, publish the GitHub Release
+└── release.yml           M11e · test + two slices in parallel (cached) → lipo → fuxx.app → zip; publishes on a v* tag,
+                          tests and builds on code pushes to master (keeps the cache warm)
 packaging/
 ├── macos/Info.plist      M4b · bundle metadata (id io.github.fitzfitz.fuxx, icon fuxx); @VERSION@ from Cargo.toml
 └── macos/fuxx.icns       M11c · the app icon (made by scripts/make_app_icon.py)
@@ -235,8 +237,8 @@ packaging/
 To make a new tester build: bump `version` in `Cargo.toml`, run `scripts/bundle-mac.sh`, then
 `scripts/check-dmg.sh target/dist/fuxx-<version>.dmg`.
 
-To release (M11e): bump `version` in `Cargo.toml`, commit, then push a tag `v<version>`. GitHub Actions builds and
-publishes the release, and every installed fuxx offers it through its Update Available button.
+To release: see `docs/05-Agentic-Workflow/55 - Releasing.md` (bump `version` in `Cargo.toml`, commit, push a tag
+`v<version>`; GitHub Actions builds and publishes it, and every installed fuxx offers it through Update Available).
 
 ## Later (Phase 2–4)
 

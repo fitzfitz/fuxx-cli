@@ -20,6 +20,7 @@ running AI coding agents**, built in Rust.
 - [[40 - Roadmap]] — the ordered milestones (M0 → M4)
 - [[70 - Terminal App Pivot — Vision and Stack]] — why we pivoted and how we chose the stack
 - [[50 - Agentic Workflow]] · [[60 - Progress Log]] — how we work + running memory (carried over from v1)
+- [[55 - Releasing]] — how a fuxx release is made (version, tag, the Release workflow)
 
 ## Guiding principle
 

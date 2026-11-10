@@ -42,6 +42,10 @@ own notifications **without asking again**. Confirmed by you. (Side effect: M11d
 
 ## Releases (GitHub Actions)
 
+> [!note] Current process
+> How releases are made today (parallel jobs and a cache since 2026-11-10) is in [[55 - Releasing]]. Below is
+> the workflow as M11e first built it.
+
 - Workflow `.github/workflows/release.yml`. It runs when a tag `v*` is pushed, on a GitHub-hosted macOS runner
   (free for this public repo).
 - Steps:
