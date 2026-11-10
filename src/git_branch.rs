@@ -349,6 +349,8 @@ pub(crate) fn run_git_checked(
         .arg(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // English messages: callers match on git's words ("couldn't find remote ref").
+        .env("LC_ALL", "C")
         .envs(env.iter().copied());
     match run_capped_streams(command, None, cap, true) {
         Ran::Exited(Some(0), (out, _)) => {

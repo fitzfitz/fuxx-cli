@@ -70,7 +70,8 @@ pub fn parse_refs(out: &str) -> (Vec<LocalRef>, Vec<RemoteRef>) {
     let (mut locals, mut remotes) = (Vec::new(), Vec::new());
     for line in out.lines() {
         let mut f = line.split('\0');
-        let (Some(refname), Some(upstream), Some(track), Some(date)) = (f.next(), f.next(), f.next(), f.next())
+        let (Some(refname), Some(upstream), Some(track), Some(date)) =
+            (f.next(), f.next(), f.next(), f.next())
         else {
             continue;
         };
@@ -82,11 +83,19 @@ pub fn parse_refs(out: &str) -> (Vec<LocalRef>, Vec<RemoteRef>) {
                 let short = upstream.strip_prefix("refs/remotes/").unwrap_or(upstream);
                 (Some(short.to_string()), parse_track(track))
             };
-            locals.push(LocalRef { name: name.into(), upstream, track, date });
+            locals.push(LocalRef {
+                name: name.into(),
+                upstream,
+                track,
+                date,
+            });
         } else if let Some(name) = refname.strip_prefix("refs/remotes/origin/")
             && name != "HEAD"
         {
-            remotes.push(RemoteRef { name: name.into(), date });
+            remotes.push(RemoteRef {
+                name: name.into(),
+                date,
+            });
         }
     }
     (locals, remotes)
@@ -167,12 +176,18 @@ pub fn rows(
             None
         }
     };
-    let mut locals: Vec<&LocalRef> = local.iter().filter(|l| Some(l.name.as_str()) != current_name).collect();
+    let mut locals: Vec<&LocalRef> = local
+        .iter()
+        .filter(|l| Some(l.name.as_str()) != current_name)
+        .collect();
     locals.sort_by_key(|l| std::cmp::Reverse(l.date));
     for l in locals {
         let mark = match &l.track {
             Track::Even => Mark::Even,
-            Track::Diverged { ahead, behind } => Mark::Diverged { ahead: *ahead, behind: *behind },
+            Track::Diverged { ahead, behind } => Mark::Diverged {
+                ahead: *ahead,
+                behind: *behind,
+            },
             Track::Gone => Mark::UpstreamGone,
             Track::None => match pushed.get(&l.name) {
                 Some(&(a, b)) => diverged_or_even(a, b),
@@ -187,8 +202,15 @@ pub fn rows(
             origin_section: false,
         });
     }
-    let have: HashSet<&str> = local.iter().map(|l| l.name.as_str()).chain(current_name).collect();
-    let mut remotes: Vec<&RemoteRef> = origin.iter().filter(|r| !have.contains(r.name.as_str())).collect();
+    let have: HashSet<&str> = local
+        .iter()
+        .map(|l| l.name.as_str())
+        .chain(current_name)
+        .collect();
+    let mut remotes: Vec<&RemoteRef> = origin
+        .iter()
+        .filter(|r| !have.contains(r.name.as_str()))
+        .collect();
     remotes.sort_by_key(|r| std::cmp::Reverse(r.date));
     for r in remotes {
         out.push(Row {
@@ -254,19 +276,29 @@ pub fn running_line(programs: &[String]) -> Option<String> {
     match programs {
         [] => None,
         [one] => Some(format!("{one} is running in this folder")),
-        many => Some(format!("{} programs are running in this folder", many.len())),
+        many => Some(format!(
+            "{} programs are running in this folder",
+            many.len()
+        )),
     }
 }
 
 /// The confirmation: the title, then each warning that applies.
-pub fn confirm_lines(name: &str, programs: &[String], carried: usize, orphans: usize) -> Vec<String> {
+pub fn confirm_lines(
+    name: &str,
+    programs: &[String],
+    carried: usize,
+    orphans: usize,
+) -> Vec<String> {
     let mut lines = vec![format!("Switch to {name}?")];
     lines.extend(running_line(programs));
     if carried > 0 {
         lines.push(format!("{carried} uncommitted file(s) come along"));
     }
     if orphans > 0 {
-        lines.push(format!("{orphans} commit(s) on no branch: after switching they are only in the reflog"));
+        lines.push(format!(
+            "{orphans} commit(s) on no branch: after switching they are only in the reflog"
+        ));
     }
     lines
 }
@@ -278,10 +310,18 @@ mod tests {
     use std::path::PathBuf;
 
     fn local(name: &str, up: Option<&str>, track: Track, date: i64) -> LocalRef {
-        LocalRef { name: name.into(), upstream: up.map(String::from), track, date }
+        LocalRef {
+            name: name.into(),
+            upstream: up.map(String::from),
+            track,
+            date,
+        }
     }
     fn remote(name: &str, date: i64) -> RemoteRef {
-        RemoteRef { name: name.into(), date }
+        RemoteRef {
+            name: name.into(),
+            date,
+        }
     }
     fn labels(rows: &[Row]) -> Vec<&str> {
         rows.iter().map(|r| r.label.as_str()).collect()
@@ -291,9 +331,22 @@ mod tests {
             vec![
                 local("main", Some("origin/main"), Track::Even, 100),
                 local("spike", None, Track::None, 150),
-                local("feature/rows", Some("origin/feature/rows"), Track::Diverged { ahead: 2, behind: 1 }, 300),
+                local(
+                    "feature/rows",
+                    Some("origin/feature/rows"),
+                    Track::Diverged {
+                        ahead: 2,
+                        behind: 1,
+                    },
+                    300,
+                ),
             ],
-            vec![remote("main", 100), remote("feature/rows", 300), remote("fix-login", 400), remote("old-one", 50)],
+            vec![
+                remote("main", 100),
+                remote("feature/rows", 300),
+                remote("fix-login", 400),
+                remote("old-one", 50),
+            ],
         )
     }
 
@@ -309,21 +362,51 @@ mod tests {
                    refs/remotes/origin/fix/cache\0\0\x001700000050\n\
                    refs/remotes/origin/fix-login\0\0\x001700000400\n";
         let (local, origin) = parse_refs(out);
-        assert_eq!(local.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["main", "feature/rows", "spike", "fix/cache"]);
+        assert_eq!(
+            local.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            ["main", "feature/rows", "spike", "fix/cache"]
+        );
         assert_eq!(local[0].track, Track::Even);
-        assert_eq!(local[1].track, Track::Diverged { ahead: 2, behind: 1 });
-        assert_eq!((local[2].upstream.as_deref(), &local[2].track), (None, &Track::None));
+        assert_eq!(
+            local[1].track,
+            Track::Diverged {
+                ahead: 2,
+                behind: 1
+            }
+        );
+        assert_eq!(
+            (local[2].upstream.as_deref(), &local[2].track),
+            (None, &Track::None)
+        );
         assert_eq!(local[3].track, Track::Gone);
-        assert_eq!(origin.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["main", "feature/rows", "fix/cache", "fix-login"]);
+        assert_eq!(
+            origin.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["main", "feature/rows", "fix/cache", "fix-login"]
+        );
     }
 
     #[test]
     fn rows_put_the_current_first_then_local_then_origin_by_date() {
         let (l, o) = sample();
-        let rows = rows(&Head::Branch("main".into()), &l, &o, &HashMap::new(), &HashMap::new());
-        assert_eq!(labels(&rows), ["main", "feature/rows", "spike", "fix-login", "old-one"]);
+        let rows = rows(
+            &Head::Branch("main".into()),
+            &l,
+            &o,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            labels(&rows),
+            ["main", "feature/rows", "spike", "fix-login", "old-one"]
+        );
         assert_eq!(rows[0].mark, Mark::Current);
-        assert_eq!(rows[1].mark, Mark::Diverged { ahead: 2, behind: 1 });
+        assert_eq!(
+            rows[1].mark,
+            Mark::Diverged {
+                ahead: 2,
+                behind: 1
+            }
+        );
         assert_eq!(rows[2].mark, Mark::LocalOnly);
         assert!(!rows[2].origin_section);
         assert!(rows[3].origin_section && rows[4].origin_section);
@@ -333,26 +416,59 @@ mod tests {
 
     #[test]
     fn a_branch_pushed_without_an_upstream_is_on_origin() {
-        let l = vec![local("main", None, Track::None, 1), local("spike", None, Track::None, 2)];
+        let l = vec![
+            local("main", None, Track::None, 1),
+            local("spike", None, Track::None, 2),
+        ];
         let o = vec![remote("spike", 2)];
         let pushed = HashMap::from([("spike".to_string(), (1u32, 0u32))]);
-        let rows = rows(&Head::Branch("main".into()), &l, &o, &pushed, &HashMap::new());
+        let rows = rows(
+            &Head::Branch("main".into()),
+            &l,
+            &o,
+            &pushed,
+            &HashMap::new(),
+        );
         let spike = rows.iter().find(|r| r.label == "spike").unwrap();
-        assert_eq!(spike.mark, Mark::Diverged { ahead: 1, behind: 0 });
+        assert_eq!(
+            spike.mark,
+            Mark::Diverged {
+                ahead: 1,
+                behind: 0
+            }
+        );
         assert!(!rows.iter().any(|r| r.origin_section));
     }
 
     #[test]
     fn detached_and_unborn_heads() {
         let (l, o) = sample();
-        let rows_d = rows(&Head::Detached("abc1234".into()), &l, &o, &HashMap::new(), &HashMap::new());
+        let rows_d = rows(
+            &Head::Detached("abc1234".into()),
+            &l,
+            &o,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(rows_d[0].label, "detached at abc1234");
         assert_eq!(rows_d[0].mark, Mark::Current);
         assert!(!selectable(&rows_d[0]));
-        assert!(rows_d.iter().filter(|r| !r.origin_section).skip(1).all(selectable));
+        assert!(
+            rows_d
+                .iter()
+                .filter(|r| !r.origin_section)
+                .skip(1)
+                .all(selectable)
+        );
         assert_eq!(rows_d.iter().filter(|r| !r.origin_section).count(), 4);
 
-        let rows_u = rows(&Head::Unborn("trunk".into()), &[], &[], &HashMap::new(), &HashMap::new());
+        let rows_u = rows(
+            &Head::Unborn("trunk".into()),
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(labels(&rows_u), ["trunk"]);
         assert_eq!(rows_u[0].mark, Mark::Current);
         assert!(!rows_u.iter().any(|r| r.origin_section));
@@ -360,12 +476,24 @@ mod tests {
 
     #[test]
     fn conflicts_disable_a_row_and_count_the_overlap() {
-        let dirty: HashSet<PathBuf> = ["src/a.rs", "notes.txt", "new.rs"].map(PathBuf::from).into();
-        let changed: HashSet<PathBuf> = ["src/a.rs", "new.rs", "src/b.rs"].map(PathBuf::from).into();
+        let dirty: HashSet<PathBuf> = ["src/a.rs", "notes.txt", "new.rs"]
+            .map(PathBuf::from)
+            .into();
+        let changed: HashSet<PathBuf> =
+            ["src/a.rs", "new.rs", "src/b.rs"].map(PathBuf::from).into();
         assert_eq!(conflict_count(&dirty, &changed), 2);
-        let l = vec![local("main", None, Track::None, 2), local("feature/old", None, Track::None, 1)];
+        let l = vec![
+            local("main", None, Track::None, 2),
+            local("feature/old", None, Track::None, 1),
+        ];
         let conflicts = HashMap::from([("feature/old".to_string(), 3usize)]);
-        let rows = rows(&Head::Branch("main".into()), &l, &[], &HashMap::new(), &conflicts);
+        let rows = rows(
+            &Head::Branch("main".into()),
+            &l,
+            &[],
+            &HashMap::new(),
+            &conflicts,
+        );
         let old = rows.iter().find(|r| r.label == "feature/old").unwrap();
         assert_eq!(old.conflict, Some(3));
         assert!(!selectable(old));
@@ -374,9 +502,18 @@ mod tests {
 
     #[test]
     fn the_box_filters_and_offers_a_typed_name() {
-        let l = vec![local("main", None, Track::None, 2), local("feature/rows", None, Track::None, 1)];
+        let l = vec![
+            local("main", None, Track::None, 2),
+            local("feature/rows", None, Track::None, 1),
+        ];
         let o = vec![remote("fix-login", 5)];
-        let rows = rows(&Head::Branch("main".into()), &l, &o, &HashMap::new(), &HashMap::new());
+        let rows = rows(
+            &Head::Branch("main".into()),
+            &l,
+            &o,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         let idx = rows.iter().position(|r| r.label == "feature/rows").unwrap();
         assert_eq!(visible(&rows, "rows"), [idx]);
         assert_eq!(visible(&rows, "").len(), 3);
@@ -387,20 +524,47 @@ mod tests {
 
     #[test]
     fn marks_and_confirmation_copy() {
-        assert_eq!(mark_text(&Mark::Diverged { ahead: 2, behind: 1 }).as_deref(), Some("↑2 ↓1"));
-        assert_eq!(mark_text(&Mark::Diverged { ahead: 2, behind: 0 }).as_deref(), Some("↑2"));
+        assert_eq!(
+            mark_text(&Mark::Diverged {
+                ahead: 2,
+                behind: 1
+            })
+            .as_deref(),
+            Some("↑2 ↓1")
+        );
+        assert_eq!(
+            mark_text(&Mark::Diverged {
+                ahead: 2,
+                behind: 0
+            })
+            .as_deref(),
+            Some("↑2")
+        );
         assert_eq!(mark_text(&Mark::Even).as_deref(), Some("✓"));
         assert_eq!(mark_text(&Mark::LocalOnly).as_deref(), Some("local only"));
-        assert_eq!(mark_text(&Mark::UpstreamGone).as_deref(), Some("upstream gone"));
+        assert_eq!(
+            mark_text(&Mark::UpstreamGone).as_deref(),
+            Some("upstream gone")
+        );
         assert_eq!(mark_text(&Mark::Current).as_deref(), Some("current"));
         assert_eq!(mark_text(&Mark::None), None);
-        assert_eq!(running_line(&["Claude Code".into()]).as_deref(), Some("Claude Code is running in this folder"));
-        assert_eq!(running_line(&["a".into(), "b".into()]).as_deref(), Some("2 programs are running in this folder"));
+        assert_eq!(
+            running_line(&["Claude Code".into()]).as_deref(),
+            Some("Claude Code is running in this folder")
+        );
+        assert_eq!(
+            running_line(&["a".into(), "b".into()]).as_deref(),
+            Some("2 programs are running in this folder")
+        );
         assert_eq!(running_line(&[]), None);
         assert_eq!(
             confirm_lines("feature/rows", &["Claude Code".into()], 3, 2),
-            ["Switch to feature/rows?", "Claude Code is running in this folder", "3 uncommitted file(s) come along",
-             "2 commit(s) on no branch: after switching they are only in the reflog"]
+            [
+                "Switch to feature/rows?",
+                "Claude Code is running in this folder",
+                "3 uncommitted file(s) come along",
+                "2 commit(s) on no branch: after switching they are only in the reflog"
+            ]
         );
         assert_eq!(confirm_lines("main", &[], 0, 0), ["Switch to main?"]);
     }

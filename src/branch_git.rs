@@ -79,10 +79,15 @@ pub fn read(git: &Path, dir: &Path) -> Option<Snapshot> {
         .lines()
         .any(|r| r == "origin");
     // At the root, so every path is root-relative whatever folder `dir` is in; `-uall` so a
-    // file in a new folder is listed itself, not as `folder/`.
-    let dirty = run_git_bytes(git, &root, &["status", "--porcelain=v1", "-z", "-uall"])
-        .success()
-        .map(|z| parse_porcelain(&z).into_iter().map(|(p, _)| p).collect())?;
+    // file in a new folder is listed itself, not as `folder/`; `--no-renames` so a staged rename
+    // lists its old path too (git refuses a switch that would touch it).
+    let dirty = run_git_bytes(
+        git,
+        &root,
+        &["status", "--porcelain=v1", "-z", "-uall", "--no-renames"],
+    )
+    .success()
+    .map(|z| parse_porcelain(&z).into_iter().map(|(p, _)| p).collect())?;
     let orphans = if matches!(head, Head::Detached(_)) {
         run_git(
             git,
@@ -428,6 +433,10 @@ mod tests {
             Ok(false)
         );
         assert_eq!(fetch_branch(&git, &work, "", FetchMode::Button), Ok(false));
+        for bad in ["@{-1}", "foo bar"] {
+            assert!(!valid_branch(&git, &work, bad), "{bad}");
+            assert_eq!(fetch_branch(&git, &work, bad, FetchMode::Auto), Ok(false));
+        }
     }
 
     #[test]
@@ -462,12 +471,15 @@ mod tests {
         let err = switch(&git, &work, &Target::Local("feature".into())).unwrap_err();
         assert!(err.contains("would be overwritten"), "{err}");
         assert_eq!(head_name(&git, &work), "trunk");
+        assert_eq!(fs::read_to_string(work.join("src/a.rs")).unwrap(), "mine\n");
         assert!(switch(&git, &work, &Target::Local("-f".into())).is_err());
     }
 
     #[test]
     fn an_untracked_file_in_a_new_folder_is_dirty_and_collides() {
-        let Some(git) = find_git() else { return println!("skipped: no git") };
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
         let (work, _) = fixture("newdir", &git);
         git_in(&git, &work, &["switch", "-q", "-c", "adds"]);
         commit_file(&git, &work, "newdir/x.rs", "theirs\n");
@@ -479,6 +491,21 @@ mod tests {
         let changed = changed(&git, &snap.root, &Target::Local("adds".into())).unwrap();
         assert!(changed.contains(Path::new("newdir/x.rs")));
         assert_eq!(snap.dirty.intersection(&changed).count(), 1);
+    }
+
+    #[test]
+    fn a_staged_rename_counts_both_paths_as_dirty() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let (work, _) = fixture("rename", &git);
+        git_in(&git, &work, &["mv", "src/a.rs", "src/b.rs"]);
+        let snap = read(&git, &work).unwrap();
+        assert!(snap.dirty.contains(Path::new("src/a.rs")));
+        assert!(snap.dirty.contains(Path::new("src/b.rs")));
+        let changed = changed(&git, &snap.root, &Target::Local("feature".into())).unwrap();
+        assert!(changed.contains(Path::new("src/a.rs")));
+        assert!(snap.dirty.intersection(&changed).count() >= 1);
     }
 
     #[test]
