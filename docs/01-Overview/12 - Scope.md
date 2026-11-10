@@ -55,7 +55,9 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
 
 - **Small changes after v0.5.0** (2026-11-10, by you): no grey line above prompts (note 63, "After release"); in
   a git repo the sidebar row shows its branch and its folder on two lines, no branch line outside one (note 60,
-  "After release").
+  "After release"); the release build sped up (2026-11-10, by you: "yes we can do both of these"): the Release
+  workflow caches cargo's work and builds the Apple Silicon and Intel halves in parallel; it also runs (test and
+  build, no publish) on master pushes that touch code, which keeps the cache warm and checks every push.
 - **A branch switcher** (M11o, asked for and approved 2026-11-10 by you: "oke setuju, lanjut tulis plan-nya"): a
   modal to switch the git branch of a terminal's folder: local branches with ahead/behind or "local only", origin's
   branches not yet local, a box to type one from origin, a disabled "conflict x file(s)" row where a switch would

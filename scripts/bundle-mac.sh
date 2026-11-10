@@ -7,20 +7,47 @@ cd "$(dirname "$0")/.."
 
 version=$(cargo pkgid | sed 's/.*[#@]//')
 dmg="target/dist/fuxx-$version.dmg"
+# Options (any order):
+#   --app-only        just target/dist/fuxx.app, no DMG.
+#   --build <target>  only compile that one slice (target/<target>/release/fuxx) and stop; the Release
+#                     workflow builds the two slices in parallel jobs this way.
+#   --prebuilt        don't compile: bundle the two slices already in target/<target>/release/fuxx.
+app_only=0
+prebuilt=0
+only=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --app-only) app_only=1 ;;
+        --prebuilt) prebuilt=1 ;;
+        --build) only="${2:?--build needs a target}"; shift ;;
+        *) echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+    shift
+done
 # One DMG per version, so a tester's copy always says which build it is. This only sees DMGs still in
 # target/dist: after `cargo clean` (or in another checkout) the same version can be built again.
-app_only=0
-[[ "${1:-}" == "--app-only" ]] && app_only=1
-[[ $app_only == 0 && -e "$dmg" ]] && { echo "$dmg already exists: bump version in Cargo.toml" >&2; exit 1; }
+[[ -z "$only" && $app_only == 0 && -e "$dmg" ]] && { echo "$dmg already exists: bump version in Cargo.toml" >&2; exit 1; }
 
 # Both slices target the same macOS floor as Info.plist's LSMinimumSystemVersion.
 export MACOSX_DEPLOYMENT_TARGET=11.0
 targets=(aarch64-apple-darwin x86_64-apple-darwin)
-installed=$(rustup target list --installed)
+build_slice() {
+    rustup target list --installed | grep -qx "$1" \
+        || { echo "missing Rust target: rustup target add $1" >&2; exit 1; }
+    cargo build --release --target "$1"
+}
+if [[ -n "$only" ]]; then
+    [[ " ${targets[*]} " == *" $only "* ]] || { echo "not a fuxx target: $only" >&2; exit 1; }
+    build_slice "$only"
+    echo "target/$only/release/fuxx"
+    exit 0
+fi
 for target in "${targets[@]}"; do
-    grep -qx "$target" <<<"$installed" \
-        || { echo "missing Rust target: rustup target add $target" >&2; exit 1; }
-    cargo build --release --target "$target"
+    if [[ $prebuilt == 1 ]]; then
+        [[ -f "target/$target/release/fuxx" ]] || { echo "missing slice: target/$target/release/fuxx" >&2; exit 1; }
+    else
+        build_slice "$target"
+    fi
 done
 
 stage=$(mktemp -d)
