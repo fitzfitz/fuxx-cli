@@ -1,15 +1,21 @@
-//! M11o: the branch switcher (note 66 §1-§3, §5), a panel where the ⌘K palette opens: the
-//! repo's local branches (marked current, ahead/behind, local only, upstream gone), then
-//! origin's that aren't local, under a box that filters them and offers a typed name to check
-//! out from origin. A branch the switch would collide with (uncommitted files it also changes)
-//! is disabled with "conflict x file(s)".
+//! M11o: the branch switcher (note 66), a panel where the ⌘K palette opens: the repo's local
+//! branches (marked current, ahead/behind, local only, upstream gone), then origin's that
+//! aren't local, under a box that filters them and offers a typed name to check out from
+//! origin. A branch the switch would collide with (uncommitted files it also changes) is
+//! disabled with "conflict x file(s)". Choosing a branch asks first, every time (§4): the
+//! confirmation step says what runs in the folder and what comes along; only its Switch runs
+//! `branch_git::switch`, and only git's yes closes the panel (`Switched`). git's no is shown
+//! under the box, on the list, and the list is read again (§6).
 //!
 //! Everything git does runs on the background executor: one read as it opens, the automatic
-//! fetch (and the Fetch button's) with a read after it, and the conflict counts (only with a
-//! dirty work tree, only for the rows in view, at most `COUNTS_AT_ONCE` at a time). Each task holds
-//! only a weak handle: once the switcher is closed or replaced, its answers are dropped and
-//! nothing new starts. The box is the palette's (`NameInput`): its Escape, losing focus or a
-//! click outside closes the switcher.
+//! fetch (and the Fetch button's) with a read after it, the conflict counts (only with a dirty
+//! work tree, only for the rows in view, at most `COUNTS_AT_ONCE` at a time), a chosen row's
+//! count when it hadn't landed, a typed name's fetch, and the switch. Each task holds only a
+//! weak handle: once the switcher is closed or replaced, its answers are dropped and nothing new
+//! starts. The box is the palette's (`NameInput`): on the list its Escape, losing focus or a
+//! click outside closes the switcher; on the confirmation Escape goes back to the list. While
+//! git works on a choice (`busy`) every key and click is ignored, Escape too: a switch can't be
+//! called back half way.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -27,6 +33,7 @@ use gpui::{
 use crate::appearance::Appearance;
 use crate::branch_git::{self, FetchMode, Snapshot};
 use crate::branch_list::{self, Mark, Row, Target};
+use crate::git_branch::branch_at;
 use crate::help_panel::render_group;
 use crate::host_picker::move_selection;
 use crate::name_input::{NameInput, NameInputEvent};
@@ -48,8 +55,12 @@ const FETCH: &str = "Fetch";
 const FETCHING: &str = "Fetching\u{2026}";
 /// How many conflict counts run at once.
 const COUNTS_AT_ONCE: usize = 4;
-/// The Fetch button's height (the palette's chips').
+/// The Fetch button's height (the palette's chips'), and the confirmation's buttons'.
 const BUTTON: f32 = 22.0;
+const CANCEL: &str = "Cancel";
+const SWITCH: &str = "Switch";
+const COUNTING: &str = "Counting conflicts\u{2026}";
+const SWITCHING: &str = "Switching\u{2026}";
 
 /// The repo a switcher opens on: git, the terminal's folder in it, and that folder as the
 /// sidebar shows it (home-relative).
@@ -61,7 +72,6 @@ pub struct RepoAt {
 
 pub enum BranchSwitcherEvent {
     /// The repo at `root` is on another branch now.
-    #[allow(dead_code)] // emitted by the switch (M11o Task 4)
     Switched { root: PathBuf },
     /// Escape, a click outside, the box lost focus, or the folder is no repo any more.
     Cancel,
@@ -84,9 +94,87 @@ enum FetchState {
     Failed(String),
 }
 
+/// What the panel shows under its box: the list, or the confirmation of one branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Step {
+    List,
+    Confirm(Confirm),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Confirm {
+    target: Target,
+    /// `Switch to <name>?`, then its warnings (`confirm_lines`), or its conflict.
+    lines: Vec<String>,
+    /// Not for a typed branch that would conflict (only Cancel then).
+    can_switch: bool,
+}
+
+/// A typed name's fetch, and what came of it.
+enum Typed {
+    /// On origin now: the repo read again (none if that failed) and the branch's conflict
+    /// count (none: unknown).
+    Found {
+        name: String,
+        snapshot: Option<Box<Snapshot>>,
+        count: Option<usize>,
+    },
+    NotFound(String),
+    /// git's first line.
+    Failed(String),
+}
+
 /// The typed name's row.
 fn typed_text(name: &str) -> String {
     format!("Check out {name} from origin")
+}
+
+fn not_found(name: &str) -> String {
+    format!("Branch {name} not found")
+}
+
+fn looking_for(name: &str) -> String {
+    format!("Looking for {name} on origin\u{2026}")
+}
+
+/// The confirmation of `target`: with a conflict (a typed branch's), its title and the count,
+/// and no Switch; else its title and warnings, `carried` = the dirty files the target doesn't
+/// change (all of them while its count is unknown: git has the last word).
+fn confirmation(
+    target: Target,
+    conflict: Option<usize>,
+    programs: &[String],
+    dirty: usize,
+    orphans: usize,
+) -> Confirm {
+    let name = target.name();
+    let (lines, can_switch) = match conflict {
+        Some(n) if n > 0 => {
+            let mut lines = branch_list::confirm_lines(name, &[], 0, 0);
+            lines.push(branch_list::conflict_text(n));
+            (lines, false)
+        }
+        _ => {
+            let carried = dirty.saturating_sub(conflict.unwrap_or(0));
+            (
+                branch_list::confirm_lines(name, programs, carried, orphans),
+                true,
+            )
+        }
+    };
+    Confirm {
+        target,
+        lines,
+        can_switch,
+    }
+}
+
+/// Whether `folder` is inside the repo whose top folder is `root` (as git gives it, the real
+/// path): by its path, or by its real one (a folder reached through a symlink, like macOS's
+/// `/var` for `/private/var`).
+fn in_repo(folder: &Path, root: &Path) -> bool {
+    folder.starts_with(root)
+        || std::fs::canonicalize(folder).is_ok_and(|real| real.starts_with(root))
 }
 
 fn fetch_failed(why: &str) -> String {
@@ -141,10 +229,18 @@ fn to_count(
 pub struct BranchSwitcher {
     repo: RepoAt,
     /// The programs running in this repo's terminals (the confirmation's warning).
-    #[allow(dead_code)] // read by the confirmation (M11o Task 4)
     programs: Vec<String>,
     /// git may run (a seeded switcher, for the screenshots, runs none).
     live: bool,
+    /// A seeded switcher's switch: git's message to fail with, or none to succeed.
+    fail_switch: Option<String>,
+    step: Step,
+    /// What git is doing for a choice (counting, fetching a typed name, switching): every key
+    /// and click is ignored meanwhile.
+    busy: Option<String>,
+    /// git's refusal, or a typed name not found, under the box (until the next choice or
+    /// typing).
+    note: Option<String>,
     input: Entity<NameInput>,
     /// The box's text as last listed.
     query: String,
@@ -175,6 +271,10 @@ pub struct BranchSwitcher {
     /// Where the panel and the Fetch button were last drawn (the UI screenshots read them).
     panel_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     fetch_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The confirmation's buttons and the line under the box, where last drawn.
+    cancel_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    switch_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    note_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     _input_events: Subscription,
     _input_changes: Subscription,
 }
@@ -227,16 +327,26 @@ impl BranchSwitcher {
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| NameInput::new(String::new(), window, cx));
-        let input_events = cx.subscribe_in(&input, window, |_, _, event, _, cx| match event {
-            // Choosing a row is the switch's (M11o Task 4).
-            NameInputEvent::Confirm(_) => {}
-            NameInputEvent::Cancel => cx.emit(BranchSwitcherEvent::Cancel),
+        let input_events = cx.subscribe_in(&input, window, |this, input, event, window, cx| {
+            match event {
+                NameInputEvent::Confirm(_) => this.enter(cx),
+                // Escape, or the box lost the keyboard (then the switcher closes, even from
+                // the confirmation).
+                NameInputEvent::Cancel => {
+                    let blurred = !input.focus_handle(cx).is_focused(window);
+                    this.escape(blurred, cx)
+                }
+            }
         });
         let input_changes = cx.observe(&input, |this, _, cx| this.query_changed(cx));
         Self {
             repo,
             programs,
             live,
+            fail_switch: None,
+            step: Step::List,
+            busy: None,
+            note: None,
             input,
             query: String::new(),
             snapshot: None,
@@ -255,6 +365,9 @@ impl BranchSwitcher {
             scroll: ScrollHandle::new(),
             panel_bounds: Rc::default(),
             fetch_bounds: Rc::default(),
+            cancel_bounds: Rc::default(),
+            switch_bounds: Rc::default(),
+            note_bounds: Rc::default(),
             _input_events: input_events,
             _input_changes: input_changes,
         }
@@ -448,13 +561,261 @@ impl BranchSwitcher {
         cx.notify();
     }
 
-    /// The box changed: list again if its text did, from the first row.
+    /// The box changed: list again if its text did, from the first row (a note under the box
+    /// goes). On the confirmation, or while git works on a choice, typing is undone.
     fn query_changed(&mut self, cx: &mut Context<Self>) {
         let query = self.input.read(cx).text().to_string();
-        if query != self.query {
-            self.query = query;
-            self.relist(false);
-            cx.notify();
+        if query == self.query {
+            return;
+        }
+        if self.step != Step::List || self.busy.is_some() {
+            let back = self.query.clone();
+            self.input.update(cx, |input, cx| {
+                input.set_text(back);
+                cx.notify();
+            });
+            return;
+        }
+        self.query = query;
+        self.note = None;
+        self.relist(false);
+        cx.notify();
+    }
+
+    /// Enter: on the list, choose the chosen row; on the confirmation, Switch.
+    fn enter(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        match self.step {
+            Step::List => self.choose(cx),
+            Step::Confirm(_) => self.start_switch(cx),
+        }
+    }
+
+    /// Escape (or Cancel): from the confirmation back to the list (the chosen row kept); on
+    /// the list, close. `blurred`: the box lost the keyboard, which closes it from either.
+    /// Nothing while git works on a choice.
+    fn escape(&mut self, blurred: bool, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        match self.step {
+            Step::Confirm(_) if !blurred => {
+                self.step = Step::List;
+                cx.notify();
+            }
+            _ => cx.emit(BranchSwitcherEvent::Cancel),
+        }
+    }
+
+    /// The chosen row (Enter, a click): its confirmation, after what it needs first. A branch
+    /// row's conflict count, if it hasn't landed with a dirty tree, is counted first (a
+    /// conflict then disables the row, and the list stays); a typed name is fetched first.
+    fn choose(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() || self.step != Step::List {
+            return;
+        }
+        let Some(line) = self
+            .selectable
+            .get(self.selected)
+            .and_then(|&at| self.lines.get(at))
+            .cloned()
+        else {
+            return;
+        };
+        self.note = None;
+        match line {
+            Line::Row(i) => {
+                let target = self.rows[i].target.clone();
+                let known = self.conflicts.get(target.name()).copied();
+                if self.dirty.is_empty() {
+                    self.confirm(target, Some(0));
+                } else if known.is_none() && self.live {
+                    self.count_then_confirm(target, cx);
+                } else {
+                    // Known (0: a row with a conflict can't be chosen), or a seeded switcher's
+                    // unknown one.
+                    self.confirm(target, known);
+                }
+            }
+            Line::Typed(name) => self.fetch_typed(name, cx),
+            Line::OriginHeading => {}
+        }
+        cx.notify();
+    }
+
+    /// Show the confirmation of `target` (`confirmation`).
+    fn confirm(&mut self, target: Target, conflict: Option<usize>) {
+        let orphans = self.snapshot.as_ref().map_or(0, |s| s.orphans);
+        self.step = Step::Confirm(confirmation(
+            target,
+            conflict,
+            &self.programs,
+            self.dirty.len(),
+            orphans,
+        ));
+    }
+
+    /// Count `target`'s conflict (busy meanwhile), then `counted_chosen`.
+    fn count_then_confirm(&mut self, target: Target, cx: &mut Context<Self>) {
+        let Some(root) = self.snapshot.as_ref().map(|s| s.root.clone()) else {
+            return;
+        };
+        self.busy = Some(COUNTING.to_string());
+        let (git, dirty) = (self.repo.git.clone(), self.dirty.clone());
+        let task = cx.background_executor().spawn(async move {
+            let count = branch_git::changed(&git, &root, &target)
+                .map(|changed| branch_list::conflict_count(&dirty, &changed));
+            (target, count)
+        });
+        cx.spawn(async move |this, cx| {
+            let (target, count) = task.await;
+            let _ = this.update(cx, |this, cx| this.counted_chosen(target, count, cx));
+        })
+        .detach();
+    }
+
+    /// A chosen row's count landed: a conflict marks and disables the row (the list stays);
+    /// none, or unknown, opens its confirmation (git decides).
+    fn counted_chosen(&mut self, target: Target, count: Option<usize>, cx: &mut Context<Self>) {
+        self.busy = None;
+        if let Some(n) = count {
+            self.conflicts.insert(target.name().to_string(), n);
+        }
+        match count {
+            Some(n) if n > 0 => {
+                self.rebuild_rows();
+                self.relist(true);
+            }
+            _ => self.confirm(target, count),
+        }
+        cx.notify();
+    }
+
+    /// The typed name: fetch it from origin (busy meanwhile; the user asked, so a credential
+    /// helper may open its window). Found: the repo read again and the branch's conflict
+    /// counted, then its confirmation. Not on origin: `Branch <name> not found`, nothing made.
+    /// A seeded switcher fetches nothing (nothing happens).
+    fn fetch_typed(&mut self, name: String, cx: &mut Context<Self>) {
+        if !self.live {
+            return;
+        }
+        let Some(root) = self.snapshot.as_ref().map(|s| s.root.clone()) else {
+            return;
+        };
+        self.busy = Some(looking_for(&name));
+        let (git, dir) = (self.repo.git.clone(), self.repo.dir.clone());
+        let task = cx.background_executor().spawn(async move {
+            match branch_git::fetch_branch(&git, &root, &name, FetchMode::Button) {
+                Ok(true) => {
+                    let snapshot = branch_git::read(&git, &dir);
+                    let target = Target::Origin(name.clone());
+                    let count = snapshot.as_ref().and_then(|s| {
+                        if s.dirty.is_empty() {
+                            return Some(0);
+                        }
+                        branch_git::changed(&git, &s.root, &target)
+                            .map(|changed| branch_list::conflict_count(&s.dirty, &changed))
+                    });
+                    Typed::Found {
+                        name,
+                        snapshot: snapshot.map(Box::new),
+                        count,
+                    }
+                }
+                Ok(false) => Typed::NotFound(name),
+                Err(why) => Typed::Failed(why),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let typed = task.await;
+            let _ = this.update(cx, |this, cx| this.fetched_typed(typed, cx));
+        })
+        .detach();
+    }
+
+    fn fetched_typed(&mut self, typed: Typed, cx: &mut Context<Self>) {
+        self.busy = None;
+        match typed {
+            Typed::Found {
+                name,
+                snapshot,
+                count,
+            } => {
+                if let Some(snapshot) = snapshot {
+                    self.set_snapshot(*snapshot);
+                }
+                if let Some(n) = count {
+                    self.conflicts.insert(name.clone(), n);
+                    self.rebuild_rows();
+                    self.relist(true);
+                }
+                self.confirm(Target::Origin(name), count);
+            }
+            Typed::NotFound(name) => self.note = Some(not_found(&name)),
+            Typed::Failed(why) => self.note = Some(fetch_failed(&why)),
+        }
+        cx.notify();
+    }
+
+    /// The confirmation's Switch: `branch_git::switch` on the background executor (busy
+    /// meanwhile); a seeded switcher's stub instead (`fail_switch`).
+    fn start_switch(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        let Step::Confirm(confirm) = &self.step else {
+            return;
+        };
+        if !confirm.can_switch {
+            return;
+        }
+        let Some(root) = self.snapshot.as_ref().map(|s| s.root.clone()) else {
+            return;
+        };
+        let target = confirm.target.clone();
+        let job: Box<dyn FnOnce() -> Result<(), String> + Send> = if self.live {
+            let (git, root) = (self.repo.git.clone(), root.clone());
+            Box::new(move || branch_git::switch(&git, &root, &target))
+        } else {
+            let fail = self.fail_switch.clone();
+            Box::new(move || fail.map_or(Ok(()), Err))
+        };
+        self.busy = Some(SWITCHING.to_string());
+        let task = cx.background_executor().spawn(async move { job() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| this.switched(root, result, cx));
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// git answered the switch: yes closes the panel (`Switched`); no goes back to the list
+    /// with git's message under the box, and the list is read again (the tree may have changed
+    /// since the counts, and a refusing git can have touched it: see the M11o Task 4 report on
+    /// `switch --track` in a single-branch clone).
+    fn switched(&mut self, root: PathBuf, result: Result<(), String>, cx: &mut Context<Self>) {
+        self.busy = None;
+        match result {
+            Ok(()) => cx.emit(BranchSwitcherEvent::Switched { root }),
+            Err(message) => {
+                self.step = Step::List;
+                self.note = Some(message);
+                self.read_again(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Read the repo again (a seeded switcher shows its snapshot again, as a new read).
+    fn read_again(&mut self, cx: &mut Context<Self>) {
+        if self.live {
+            let (git, dir) = (self.repo.git.clone(), self.repo.dir.clone());
+            self.read_with(move || branch_git::read(&git, &dir), false, cx);
+        } else if let Some(snapshot) = self.snapshot.clone() {
+            self.set_snapshot(snapshot);
         }
     }
 
@@ -531,8 +892,11 @@ impl BranchSwitcher {
         }
     }
 
-    /// ↑ / ↓: the previous or next row that can be chosen (round the ends).
+    /// ↑ / ↓: the previous or next row that can be chosen (round the ends); only on the list.
     fn select_by(&mut self, delta: i32, cx: &mut Context<Self>) {
+        if self.step != Step::List || self.busy.is_some() {
+            return;
+        }
         self.selected = move_selection(self.selected, self.selectable.len(), delta);
         if let Some(&at) = self.selectable.get(self.selected) {
             self.scroll.scroll_to_item(at);
@@ -586,12 +950,15 @@ impl BranchSwitcher {
         let Some(place) = place else {
             return row.into_any_element();
         };
-        // Choosing (Enter, a click) is the switch's (M11o Task 4): a click only selects.
+        // A click chooses it, as Enter does.
         row.id(("branch-row", at))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                if this.busy.is_some() || this.step != Step::List {
+                    return;
+                }
                 this.selected = place;
-                cx.notify();
+                this.choose(cx);
             }))
             .into_any_element()
     }
@@ -605,9 +972,9 @@ impl BranchSwitcher {
         }
     }
 
-    /// The Fetch button: dimmed and inert while a fetch runs.
+    /// The Fetch button: dimmed and inert while a fetch runs, or git works on a choice.
     fn fetch_button(&self, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let running = self.fetch == FetchState::Running;
+        let running = self.fetch == FetchState::Running || self.busy.is_some();
         let hover = ui.panel_hover;
         let bounds = self.fetch_bounds.clone();
         div()
@@ -641,20 +1008,153 @@ impl BranchSwitcher {
             )
             .into_any_element()
     }
+
+    /// The line under the box: what git is doing for a choice (faint), else its refusal or a
+    /// typed name not found (in the failure colour).
+    fn note_line(&self, ui: &UiColors) -> Option<AnyElement> {
+        let (text, colour) = match (&self.busy, &self.note) {
+            (Some(busy), _) => (busy.clone(), ui.text_faint),
+            (None, Some(note)) => (note.clone(), ui.ring_waiting),
+            (None, None) => return None,
+        };
+        let bounds = self.note_bounds.clone();
+        Some(
+            div()
+                .relative()
+                .px(px(8.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(text::META))
+                .text_color(hsla(colour))
+                .child(text)
+                .child(
+                    canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The confirmation step: its title, its warnings (a running program's with ⚠), then
+    /// Cancel and Switch (the default, filled with the accent; dimmed and inert for a typed
+    /// branch that would conflict, and both while the switch runs).
+    fn render_confirm(
+        &self,
+        confirm: &Confirm,
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let running = branch_list::running_line(&self.programs);
+        let idle = self.busy.is_none();
+        let mut lines = confirm.lines.iter();
+        let title = lines.next().cloned().unwrap_or_default();
+        let warnings = lines.map(|line| {
+            let warn = running.as_deref() == Some(line.as_str());
+            div()
+                .flex()
+                .gap(px(6.0))
+                .text_color(hsla(ui.text_dim))
+                .when(warn, |l| {
+                    l.child(div().text_color(hsla(ui.ring_waiting)).child("\u{26a0}"))
+                })
+                .child(line.clone())
+        });
+        let cancel = self
+            .confirm_button(CANCEL, false, idle, self.cancel_bounds.clone(), ui)
+            .when(idle, |b| {
+                b.on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.escape(false, cx)))
+            });
+        let can_switch = idle && confirm.can_switch;
+        let switch = self
+            .confirm_button(SWITCH, true, can_switch, self.switch_bounds.clone(), ui)
+            .when(can_switch, |b| {
+                b.on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_switch(cx)))
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .px(px(8.0))
+            .py(px(4.0))
+            .child(div().font_weight(FontWeight::MEDIUM).child(title))
+            .children(warnings)
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .pt(px(6.0))
+                    .child(cancel)
+                    .child(switch),
+            )
+            .into_any_element()
+    }
+
+    /// A confirmation button: `primary` filled with the accent; inert ones dimmed.
+    fn confirm_button(
+        &self,
+        label: &'static str,
+        primary: bool,
+        enabled: bool,
+        bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+        ui: &UiColors,
+    ) -> gpui::Stateful<gpui::Div> {
+        let hover = ui.panel_hover;
+        div()
+            .id(label)
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(BUTTON))
+            .px(px(12.0))
+            .rounded(px(5.0))
+            .text_size(px(text::META))
+            .map(|b| match (primary, enabled) {
+                (true, true) => b.bg(hsla(ui.accent)).text_color(hsla(ui.on_accent)),
+                (false, true) => b
+                    .border_1()
+                    .border_color(hsla(ui.panel_border))
+                    .text_color(hsla(ui.text))
+                    .hover(move |s| s.bg(hsla(hover))),
+                (_, false) => b
+                    .border_1()
+                    .border_color(hsla(ui.panel_border))
+                    .text_color(hsla(ui.text_faint)),
+            })
+            .when(enabled, |b| b.cursor_pointer())
+            .child(label)
+            .child(
+                canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+    }
 }
 
 /// The UI screenshots' look inside.
 #[cfg(feature = "ui-shots")]
 impl BranchSwitcher {
-    /// Open on `snapshot` as read, `conflicts` counted; no git runs (no fetch, no counts).
+    /// Open on `snapshot` as read, `conflicts` counted, `programs` running; no git runs (no
+    /// fetch, no counts, no typed name's fetch). Its Switch fails with `fail_switch`'s message,
+    /// or (none) succeeds at once: `Switched`, nothing switched.
     pub fn seeded(
         repo: RepoAt,
+        programs: Vec<String>,
         snapshot: Snapshot,
         conflicts: HashMap<String, usize>,
+        fail_switch: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut this = Self::make(repo, Vec::new(), false, window, cx);
+        let mut this = Self::make(repo, programs, false, window, cx);
+        this.fail_switch = fail_switch;
         this.conflicts = conflicts;
         this.set_snapshot(snapshot);
         this
@@ -720,19 +1220,85 @@ impl BranchSwitcher {
     pub fn fetch_status(&self) -> Option<String> {
         self.status()
     }
+
+    /// The confirmation's lines while it shows; none on the list.
+    pub fn confirm_texts(&self) -> Option<Vec<String>> {
+        match &self.step {
+            Step::Confirm(c) => Some(c.lines.clone()),
+            Step::List => None,
+        }
+    }
+
+    /// The confirmation's buttons and whether each can be pressed; none on the list.
+    pub fn buttons(&self) -> Vec<(&'static str, bool)> {
+        match &self.step {
+            Step::Confirm(c) => {
+                let idle = self.busy.is_none();
+                vec![(CANCEL, idle), (SWITCH, idle && c.can_switch)]
+            }
+            Step::List => Vec::new(),
+        }
+    }
+
+    /// git's refusal or a typed name not found, under the box.
+    pub fn note(&self) -> Option<String> {
+        self.note.clone()
+    }
+
+    /// Whether git is working on a choice (input ignored).
+    pub fn busy(&self) -> bool {
+        self.busy.is_some()
+    }
+
+    pub fn switch_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.switch_bounds.get()
+    }
+
+    pub fn cancel_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.cancel_bounds.get()
+    }
+
+    pub fn note_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.note_bounds.get()
+    }
+
+    /// Choose the row named `label` as Enter would, without drawing first (so a row out of
+    /// view, not counted, is chosen before its count). False if no such row can be chosen.
+    pub fn choose_label(&mut self, label: &str, cx: &mut Context<Self>) -> bool {
+        let Some(place) = self.selectable.iter().position(
+            |&at| matches!(self.lines.get(at), Some(Line::Row(i)) if self.rows[*i].label == label),
+        ) else {
+            return false;
+        };
+        self.selected = place;
+        self.choose(cx);
+        true
+    }
+
+    /// The box's text.
+    pub fn query_text(&self, cx: &App) -> String {
+        self.input.read(cx).text().to_string()
+    }
 }
 
 impl Render for BranchSwitcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let rows: Vec<AnyElement> = self
-            .lines
-            .iter()
-            .enumerate()
-            .map(|(at, line)| self.render_line(at, line, &ui, cx))
-            .collect();
+        let confirm = match &self.step {
+            Step::Confirm(c) => Some(self.render_confirm(c, &ui, cx)),
+            Step::List => None,
+        };
+        let rows: Vec<AnyElement> = match confirm {
+            Some(_) => Vec::new(),
+            None => self
+                .lines
+                .iter()
+                .enumerate()
+                .map(|(at, line)| self.render_line(at, line, &ui, cx))
+                .collect(),
+        };
         // After this frame is laid out (deferred past the draw), count the rows it shows.
-        if self.may_count() {
+        if confirm.is_none() && self.may_count() {
             cx.defer_in(window, |this, _, cx| this.count_conflicts(cx));
         }
         let has_origin = self.snapshot.as_ref().is_some_and(|s| s.has_origin);
@@ -790,11 +1356,16 @@ impl Render for BranchSwitcher {
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.select_by(1, cx)))
             // The terminal under the panel gets neither its clicks nor its hover.
             .occlude()
-            .on_mouse_down_out(
-                cx.listener(|_, _: &MouseDownEvent, _, cx| cx.emit(BranchSwitcherEvent::Cancel)),
-            )
+            // A click outside closes it, except while git works on a choice.
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                if this.busy.is_none() {
+                    cx.emit(BranchSwitcherEvent::Cancel)
+                }
+            }))
             .child(header)
             .child(field)
+            .when_some(self.note_line(&ui), |panel, note| panel.child(note))
+            .when_some(confirm, |panel, confirm| panel.child(confirm))
             .when(!rows.is_empty(), |panel| {
                 panel.child(
                     div()
@@ -886,13 +1457,63 @@ impl Workspace {
         if self.branch_switcher.as_ref() != Some(switcher) {
             return;
         }
-        match event {
-            BranchSwitcherEvent::Switched { .. } | BranchSwitcherEvent::Cancel => {
-                self.branch_switcher = None;
-                self.focus_active(window, cx);
-                cx.notify();
+        self.branch_switcher = None;
+        self.focus_active(window, cx);
+        if let BranchSwitcherEvent::Switched { root } = event {
+            self.refresh_branches_in(root.clone(), cx);
+        }
+        cx.notify();
+    }
+
+    /// After a switch in the repo at `root`: look the branch up again now in every terminal's
+    /// folder inside it (as the 5 s refresh does: `branch_at` on the background executor, then
+    /// `set_branch`), so the sidebar rows and the status bar show the new branch without
+    /// waiting. Not over SSH (the folder is on another machine), not while the places are
+    /// frozen (the screenshots).
+    fn refresh_branches_in(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        if self.places.frozen {
+            return;
+        }
+        let Some(git) = self.places.git() else {
+            return;
+        };
+        let mut folders: Vec<PathBuf> = Vec::new();
+        for session in self.sessions.items().iter().filter(|s| s.ssh.is_none()) {
+            if let Some(folder) = self.places.folder(session.id)
+                && !folders.iter().any(|f| f == folder)
+            {
+                folders.push(folder.to_path_buf());
             }
         }
+        if folders.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let found: Vec<(PathBuf, Option<String>)> = cx
+                .background_executor()
+                .spawn(async move {
+                    folders
+                        .into_iter()
+                        .filter(|folder| in_repo(folder, &root))
+                        .map(|folder| {
+                            let branch = branch_at(&git, &folder);
+                            (folder, branch)
+                        })
+                        .collect()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let mut changed = false;
+                for (folder, branch) in found {
+                    changed |= this.places.set_branch(&folder, branch);
+                }
+                if changed {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 
@@ -957,6 +1578,62 @@ mod tests {
     fn before_the_list_is_drawn_the_rows_that_fit_are_in_view() {
         // 420 pt at most, 30 pt a row (28 + 2): 14 lines.
         assert_eq!(unlaid_view(), 0..=13);
+    }
+
+    #[test]
+    fn the_confirmation_warns_or_shows_a_typed_branchs_conflict() {
+        let claude = vec!["Claude Code".to_string()];
+        let local = || Target::Local("feature/rows".into());
+        // Counted clean, 2 dirty files: both come along; Switch can be pressed.
+        let c = confirmation(local(), Some(0), &claude, 2, 0);
+        assert_eq!(
+            c.lines,
+            [
+                "Switch to feature/rows?",
+                "Claude Code is running in this folder",
+                "2 uncommitted file(s) come along"
+            ]
+        );
+        assert!(c.can_switch);
+        // Unknown count: every dirty file is said to come along (git decides).
+        assert_eq!(
+            confirmation(local(), None, &[], 3, 0).lines,
+            [
+                "Switch to feature/rows?",
+                "3 uncommitted file(s) come along"
+            ]
+        );
+        // A clean tree and nothing running: the title alone, still asked.
+        let c = confirmation(local(), Some(0), &[], 0, 0);
+        assert_eq!(c.lines, ["Switch to feature/rows?"]);
+        assert!(c.can_switch);
+        // A typed branch that would conflict: its count in place of the warnings, no Switch.
+        let c = confirmation(Target::Origin("fix".into()), Some(2), &claude, 5, 1);
+        assert_eq!(c.lines, ["Switch to fix?", "conflict 2 file(s)"]);
+        assert!(!c.can_switch);
+        assert_eq!(c.target, Target::Origin("fix".into()));
+    }
+
+    #[test]
+    fn a_folder_is_in_the_repo_by_its_path_or_its_real_path() {
+        let base = std::env::temp_dir().join(format!("fuxx-in-repo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let real = std::fs::canonicalize(&root).unwrap();
+        // git gives the real path; the folder may be the same one by another way in.
+        assert!(in_repo(&real.join("src"), &real));
+        assert!(in_repo(&real, &real));
+        assert!(in_repo(&link.join("src"), &real), "through a symlink");
+        assert!(!in_repo(&base, &real), "above it");
+        assert!(
+            !in_repo(&base.join("repo-2"), &real),
+            "a sibling with a longer name"
+        );
+        assert!(!in_repo(Path::new("/nonexistent/x"), &real));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

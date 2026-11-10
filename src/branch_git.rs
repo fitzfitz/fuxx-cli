@@ -193,7 +193,6 @@ fn valid_branch(git: &Path, root: &Path, name: &str) -> bool {
 
 /// Fetch one branch from origin (a typed name that isn't in the list): `Ok(true)` if fetched,
 /// `Ok(false)` if the name is invalid or origin doesn't have it.
-#[allow(dead_code)] // the typed name's row (M11o Task 4)
 pub fn fetch_branch(git: &Path, root: &Path, name: &str, mode: FetchMode) -> Result<bool, String> {
     if !valid_branch(git, root, name) {
         return Ok(false);
@@ -214,7 +213,6 @@ pub fn fetch_branch(git: &Path, root: &Path, name: &str, mode: FetchMode) -> Res
 
 /// `switch <name>` or `switch --track origin/<name>`, never another flag. A local name that
 /// could be read as an option is refused here (branch names from refs can't start with `-`).
-#[allow(dead_code)] // the confirmation's Switch (M11o Task 4)
 pub fn switch(git: &Path, root: &Path, target: &Target) -> Result<(), String> {
     if target.name().starts_with('-') {
         return Err("not a branch name".to_string());
