@@ -1,34 +1,100 @@
 # Release (M11e): pushing a v* tag builds the universal ad-hoc-signed fuxx.app and publishes it as a
 # GitHub Release. The in-app updater reads the latest release's zip.
+#
+# Faster since 2026-11-10 (your call): the test and the two slices (Apple Silicon, Intel) run as three
+# parallel jobs, each with a cargo cache, and a last job joins the slices, bundles and publishes.
+# GitHub lets a tag's run restore only caches saved on the default branch, so the workflow also runs on
+# master pushes that touch code: test and build, no publish. That keeps the cache warm (unused caches
+# expire after 7 days) and checks every such push.
 name: Release
 
 on:
   push:
     tags: ['v*']
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'assets/**'
+      - 'packaging/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/bundle-mac.sh'
+      - 'scripts/check-release-tag.sh'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+# A newer master push replaces a master run still going; a tag's run is never cancelled.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
 jobs:
-  release:
+  test:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Add Rust targets
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Check the tag matches Cargo.toml
+        if: github.ref_type == 'tag'
         run: scripts/check-release-tag.sh "$GITHUB_REF_NAME"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Test
         run: cargo test
+
+  slice:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add the Rust target
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Build the slice
+        run: scripts/bundle-mac.sh --build ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fuxx-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/fuxx
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    needs: [test, slice]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fuxx-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: fuxx-x86_64-apple-darwin
+          path: target/x86_64-apple-darwin/release
       - name: Build fuxx.app
-        run: scripts/bundle-mac.sh --app-only
+        run: |
+          set -euo pipefail
+          # Artifacts don't keep the executable bit.
+          chmod +x target/aarch64-apple-darwin/release/fuxx target/x86_64-apple-darwin/release/fuxx
+          scripts/bundle-mac.sh --app-only --prebuilt
+          lipo -archs target/dist/fuxx.app/Contents/MacOS/fuxx
       - name: Zip
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"
+          V=$(cargo pkgid | sed 's/.*[#@]//')
           ditto -c -k --keepParent target/dist/fuxx.app "target/dist/fuxx-$V.zip"
       - name: Publish the release
+        if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
