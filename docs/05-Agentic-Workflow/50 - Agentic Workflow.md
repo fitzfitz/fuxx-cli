@@ -35,4 +35,4 @@ by reading the last entry. Skipping the log is how projects get lost.
 ## Related
 
 - [[51 - Delegation Principles]] · [[52 - Known Risks and Gotchas]]
-- [[53 - Task Handoff Template]] · [[54 - Session Startup Checklist]]
+- [[53 - Task Handoff Template]] · [[54 - Session Startup Checklist]] · [[55 - Releasing]]
