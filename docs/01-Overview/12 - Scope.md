@@ -70,6 +70,11 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   re-rendering them on every frame. Same look and behaviour; **the sidebar and every chrome part must always show
   current information**. Starts with a prototype that measures the saving, then a design with you. Not in it: a new
   renderer, repainting only the cursor on its own layer, or changing the cursor's look. See [[40 - Roadmap]].
+- **A premium sidebar** (M11r, asked for 2026-11-10 by you: "make it looks premium" → "love the D and E combined" →
+  "cool do it directly here on master"; built **before M11p** on your word): an avatar per workspace with its status as a
+  badge, the program's title under the name, an Open button on a waiting row, lettered group headers with the branch,
+  borderless cards, a "Jump to a workspace…" button (⌘P) and a "New Fuxxpace" button. Not in it: a filter strip, a
+  progress shimmer, reading the screen's last line. See [[69 - Milestone 11r - Premium Sidebar]].
 - **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
   design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.

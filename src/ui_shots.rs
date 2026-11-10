@@ -1430,8 +1430,7 @@ fn sidebar_scenes() {
                         let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                         f32::from(b.size.height)
                     };
-                    // Every row has its folder line, two lines in all (M11i); the waiting one
-                    // says "Needs input" there instead.
+                    // Every row has one line under its name (M11r): two lines, 52 pt.
                     assert_eq!(height(1), 52.0, "{scene}-{slug}: waiting row");
                     assert_eq!(height(3), 52.0, "{scene}-{slug}: the split workspace's row");
                     assert_eq!(ws.sidebar.scroll.children_count(), 6, "{scene}-{slug}");
@@ -1501,7 +1500,9 @@ fn sidebar_scenes() {
                             })
                             .collect();
                         let (codex, shell) = (bounds[1], bounds[3]);
-                        let centre = shell.bottom() - codex.size.height / 2.0;
+                        // Past the long one's middle (as laid out): the gap after it (M11r: codex,
+                        // two lines, is taller than the long one, one line in api's group).
+                        let centre = shell.center().y + px(DRAG_PAST);
                         // Taken at its middle, 8 px down (GPUI's drag starts past its threshold):
                         // the pointer is 8 px below the copy's centre.
                         let from = codex.center();
@@ -1565,7 +1566,7 @@ fn sidebar_scenes() {
                                 ws.sidebar.scroll.bounds_for_item(i).expect("laid out")
                             })
                         };
-                        let mut drop_at = |cx: &mut VisualTestAppContext, y: Pixels| {
+                        let drop_at = |cx: &mut VisualTestAppContext, y: Pixels| {
                             let from = item(cx).center();
                             cx.simulate_mouse_down(window, from, left, none);
                             cx.simulate_mouse_move(
@@ -1638,7 +1639,8 @@ fn sidebar_scenes() {
                 let p = pixel_at(
                     &shot,
                     dims,
-                    f32::from(claude.left()) + 12.0,
+                    // Between its avatar and its name (M11r).
+                    f32::from(claude.left()) + 42.0,
                     f32::from(slid),
                 );
                 assert!(
@@ -1668,11 +1670,15 @@ fn sidebar_scenes() {
             // down to where shell ended, is filled by codex's copy (as tall as codex's row), top
             // to bottom: no empty band, no line.
             let up = px_at(shell.top() - px(room) + px(3.0));
-            assert!(is(up, ui.card_selected), "{n}: shell slid up: {up:?}");
+            // (Selected: the card's neutral lift, M11r.)
+            assert!(is(up, ui.card_lift), "{n}: shell slid up: {up:?}");
+            // The copy where the pointer holds it, over the gap (as far as it reaches into it).
+            let centre = shell.center().y + px(DRAG_PAST);
             let gap_top = shell.bottom() - codex.size.height;
+            let copy_top = centre - codex.size.height / 2.0;
             for y in [
-                gap_top + px(3.0),
-                shell.center().y,
+                gap_top.max(copy_top) + px(3.0),
+                centre,
                 shell.bottom() - px(3.0),
             ] {
                 let p = px_at(y);
@@ -1738,6 +1744,9 @@ fn sidebar_scenes() {
         println!("ui-shots: {}", path.display());
     }
 }
+
+/// How far past the long one's middle `sidebar-drag` holds codex's copy.
+const DRAG_PAST: f32 = 4.0;
 
 const INFRA: &str = "/Users/me/code/infra";
 const PAYMENTS: &str = "/Users/me/code/a-very-long-project-folder/services/payments";
@@ -1873,20 +1882,20 @@ fn sidebar_row_scenes() {
                     // A group's gap between the pinned rows and notes.
                     let bounds = |i: usize| ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                     let gap = f32::from(bounds(2).top() - bounds(1).bottom());
-                    assert_eq!(gap, 16.0, "{n}: the gap under the pinned rows");
+                    assert_eq!(gap, 10.0, "{n}: the gap under the pinned rows");
                     // Room under the title band: the first row starts 10 pt into the list.
                     let list_top = f32::from(ws.sidebar.scroll.bounds().top());
                     let first_top = f32::from(bounds(0).top());
                     assert_eq!(first_top - list_top, 10.0, "{n}: the gap under the title");
-                    // In a repo, the branch and the folder each on a line: 68 pt. Waiting (its
-                    // one line) and outside a repo (the folder alone): 52 pt.
+                    // Every row has one line under its name (M11r): out of a group the branch and
+                    // the folder share it; 52 pt each.
                     for (i, h) in [
-                        (0, 68.0),
+                        (0, 52.0),
                         (1, 52.0),
                         (2, 52.0),
-                        (4, 68.0),
-                        (6, 68.0),
-                        (8, 68.0),
+                        (4, 52.0),
+                        (6, 52.0),
+                        (8, 52.0),
                     ] {
                         let seen = f32::from(bounds(i).size.height);
                         assert_eq!(seen, h, "{n}: row {i}'s height");
@@ -1980,8 +1989,9 @@ fn check_selected(
         ("right padding", right - 4.0),
     ] {
         let tint = pixel_at(shot, dims, x, middle);
+        // The card's neutral lift (M11r, as the mockup), not the accent's tint.
         assert!(
-            near(tint, ui.card_selected),
+            near(tint, ui.card_lift),
             "{n}: tint at its {what}: {tint:?}"
         );
     }
@@ -2071,13 +2081,18 @@ fn sidebar_selection_scenes() {
             let n = format!("{scene}-{slug}");
             let rows = rows.get();
             check_selected(&shot, dims, &ui, &n, rows[active]);
-            // The mark slot: 8 pt in from the row's left, 14 pt wide.
-            let mark_at = |(left, _, top, height): RowBox| {
-                (left + 12.0, left + 26.0, row_lines(top, height).0)
+            // The status badge (M11r): over the avatar's bottom-right corner (the avatar 28 pt,
+            // 12 pt in from the row's left, centred in it; the badge 14 pt, 3 pt past it).
+            let badge_at = |(left, _, top, height): RowBox| {
+                let (x, y) = (
+                    left + 40.0 + 3.0 - 7.0,
+                    top + (height + 28.0) / 2.0 + 3.0 - 7.0,
+                );
+                (x - 7.0, x + 7.0, x, y)
             };
             if active == 3 {
                 // Selected and waiting: its mark and "Needs input" keep the waiting colour.
-                let (x0, x1, y) = mark_at(rows[3]);
+                let (x0, x1, _, y) = badge_at(rows[3]);
                 let mark = count_along(&shot, dims, ui.ring_waiting, y, x0, x1);
                 assert!(mark > 0, "{n}: the waiting mark on the selection");
                 let (left, right, top, height) = rows[3];
@@ -2102,30 +2117,14 @@ fn sidebar_selection_scenes() {
             assert!(shows > 0, "{n}: docs shows its shortcut");
             let hides = right_end(rows[2], ui.card);
             assert_eq!(hides, 0, "{n}: shell hides its shortcut");
-            // Idle marks: server's program runs (a filled text_dim dot); shell is at its prompt
-            // (a hollow text_faint ring: its middle is api's card, its sides the ring).
-            let (x0, x1, y) = mark_at(rows[1]);
-            let dot = pixel_at(&shot, dims, (x0 + x1) / 2.0, y);
+            // Idle badges (M11r): server's program runs (a text_dim dot); shell is at its prompt
+            // (a fainter, text_faint one).
+            let (_, _, x, y) = badge_at(rows[1]);
+            let dot = pixel_at(&shot, dims, x, y);
             assert!(near(dot, ui.text_dim), "{n}: server's dot: {dot:?}");
-            let (x0, x1, y) = mark_at(rows[2]);
-            let hole = pixel_at(&shot, dims, (x0 + x1) / 2.0, y);
-            assert!(near(hole, ui.card), "{n}: shell's ring is hollow: {hole:?}");
-            // Its line is 1.5 pt, so at 1x no pixel is wholly covered: the strongest one along
-            // its middle is text_faint give or take its edge's smoothing, and not text_dim.
-            let along: Vec<[u8; 3]> = (0..(x1 - x0) as usize)
-                .map(|dx| pixel_at(&shot, dims, x0 + dx as f32, y))
-                .collect();
-            let strongest = along
-                .iter()
-                .copied()
-                .max_by_key(|&p| gap(p, ui.sidebar_background))
-                .expect("pixels along the mark");
-            let (faint, dim) = (gap(strongest, ui.text_faint), gap(strongest, ui.text_dim));
-            assert!(
-                faint <= 12 && faint < dim,
-                "{n}: shell's ring in text_faint ({:?}), not text_dim: {strongest:?}",
-                ui.text_faint
-            );
+            let (_, _, x, y) = badge_at(rows[2]);
+            let faint = pixel_at(&shot, dims, x, y);
+            assert!(near(faint, ui.text_faint), "{n}: shell's dot: {faint:?}");
         }
     }
 }
@@ -2247,11 +2246,17 @@ fn tab_scenes() {
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
             if scene == "tabs" || scene == "tabs-narrow" {
-                // codex's blue dot, on its row's line.
+                // codex's colour is its avatar's (M11r: no separate dot), on its row's line.
                 let shot = render_with(&theme, dims, build, act);
                 let y = dot_y.get();
-                let dots = count_along(&shot, dims, ui.tab(TabColor::Blue), y, 0.0, width);
-                assert!(dots > 0, "{scene}-{slug}: codex's blue dot");
+                // Its gradient's middle, give or take the blend.
+                let (top, bottom, _) = ui.avatars[TabColor::Blue as usize];
+                let mid = crate::theme::mix(top, bottom, 0.5);
+                let scale = shot.width as f32 / f32::from(dims.width);
+                let dots = (0..(width * scale) as usize)
+                    .filter(|&x| gap(pixel_at(&shot, dims, x as f32 / scale, y), mid) <= 14)
+                    .count();
+                assert!(dots > 0, "{scene}-{slug}: codex's blue avatar");
             }
         }
 
@@ -2953,8 +2958,8 @@ fn workspace_scenes() {
                     let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                     f32::from(b.size.height)
                 };
-                // Each with one line under its name (M11i): its folder, or the waiting one's
-                // "Needs input".
+                // The waiting one with "Needs input" under its name; api, in its folder's group,
+                // one line (M11r: the header says where it is).
                 assert_eq!(height(2), 52.0, "{n}: agent's waiting row");
                 assert_eq!(height(4), 52.0, "{n}: api's row");
                 let api = ws.model.focused_workspace().expect("focused");
@@ -8214,7 +8219,7 @@ fn names() {
             "names",
             slug,
             &theme,
-            size(px(1440.0), px(560.0)),
+            size(px(1440.0), px(680.0)), // every row two lines (M11r): all six in view
             build,
             act,
         );
@@ -11391,28 +11396,42 @@ fn branch_switcher_open_scene() {
             );
         }
 
-        // A click on tests' branch (its row draws one: nothing waits on it): the switcher
-        // opens, the selection (shell) stays.
+        // A click on the branch of api's header (M11r: the rows in a folder's group leave it to
+        // the header, which says the selected workspace's, shell's): the switcher opens for
+        // shell's terminal, the selection (shell) stays.
         let selected = cx.read(|cx| ws.read(cx).model.focused_workspace());
         if let SidebarRow::Workspace(w) = &rows[at] {
-            assert_eq!(
-                crate::sidebar::lines_under(w),
-                2,
-                "{n}: tests' row has a branch line"
+            assert!(
+                !matches!(
+                    crate::sidebar::line_two(w),
+                    Some(crate::sidebar::LineTwo::Place)
+                ),
+                "{n}: tests' row leaves its branch to the header"
             );
         }
+        let header = (0..at)
+            .rev()
+            .find(|&i| matches!(rows[i], SidebarRow::Header(_)))
+            .expect("api's header");
+        if let SidebarRow::Header(h) = &rows[header] {
+            assert_eq!(
+                h.branch.as_deref(),
+                Some("main"),
+                "{n}: the header's branch"
+            );
+            assert_eq!(h.branch_from, selected, "{n}: the selected workspace's");
+        }
         let b = cx
-            .read(|cx| ws.read(cx).sidebar.scroll.bounds_for_item(at))
-            .expect("tests' row is laid out");
-        // Its three lines (name, branch, folder) are centred in the row: the branch is the
-        // middle one.
-        let branch_at = gpui::point(b.left() + px(60.0), b.center().y + px(2.0));
+            .read(|cx| ws.read(cx).sidebar.scroll.bounds_for_item(header))
+            .expect("api's header is laid out");
+        // The header is the bottom 28 pt of its item; its branch follows the tile and "api".
+        let branch_at = gpui::point(b.left() + px(85.0), b.bottom() - px(14.0));
         cx.simulate_click(window, branch_at, Modifiers::none());
         settle(cx, window);
         let sw = branch_switcher_of(cx, &ws).expect("a click on the branch opens it");
         assert!(
             settle_until(cx, window, 10, |cx| cx
-                .read(|cx| sw.read(cx).title() == "Switch branch \u{b7} other")),
+                .read(|cx| sw.read(cx).title() == "Switch branch \u{b7} repo")),
             "{n}: the repo is read: {}",
             cx.read(|cx| sw.read(cx).title())
         );
@@ -14302,7 +14321,8 @@ fn sidebar_button_scenes() {
             "{slug}: not hovered"
         );
         assert_eq!(at("hover", margin), bg(ui.panel_hover), "{slug}: hovered");
-        let (inside, beyond) = (point(30.0, 80.0), point(150.0, 80.0));
+        // Inside: on the search button (M11r; the cards below it are the terminal's colour).
+        let (inside, beyond) = (point(30.0, 58.0), point(150.0, 80.0));
         assert_eq!(
             at("sliding", beyond),
             bg(theme.background),
