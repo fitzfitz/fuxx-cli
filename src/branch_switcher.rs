@@ -232,13 +232,12 @@ fn to_count(
 /// The ⌘K-like panel that switches a repo's branch.
 pub struct BranchSwitcher {
     repo: RepoAt,
-    /// The programs running in this repo's terminals (the confirmation's warning).
+    /// The programs running in this repo's terminals (the confirmation's warning): the first
+    /// `seeded` as given, then those of `running` inside the repo as last read.
     programs: Vec<String>,
-    /// The programs running in any terminal (folder, label): those in this repo (known once it
-    /// is read) are named too.
+    seeded: usize,
+    /// The programs running in any terminal (folder as its real path, label), once resolved.
     running: Vec<(PathBuf, String)>,
-    /// Those of `running` inside the repo as last read (looked up once per read, not per frame).
-    here: Vec<String>,
     /// git may run (a seeded switcher, for the screenshots, runs none).
     live: bool,
     /// A seeded switcher's switch: git's message to fail with, or none to succeed.
@@ -301,13 +300,22 @@ impl Focusable for BranchSwitcher {
     }
 }
 
-/// The labels of the programs running in `running` (folder, label) whose folder is in the repo
-/// at `root`.
+/// The labels of the programs of `running` (folder as its real path, label) whose folder is in
+/// the repo at `root` (git's real path): by path only, no file system.
 fn programs_under(running: &[(PathBuf, String)], root: &Path) -> Vec<String> {
     running
         .iter()
-        .filter(|(folder, _)| in_repo(folder, root))
+        .filter(|(folder, _)| folder.starts_with(root))
         .map(|(_, label)| label.clone())
+        .collect()
+}
+
+/// `running` with each folder as its real path (a folder that can't be resolved stays as it
+/// is). Touches the file system: not for the UI thread.
+fn resolved(running: Vec<(PathBuf, String)>) -> Vec<(PathBuf, String)> {
+    running
+        .into_iter()
+        .map(|(folder, label)| (std::fs::canonicalize(&folder).unwrap_or(folder), label))
         .collect()
 }
 
@@ -365,9 +373,9 @@ impl BranchSwitcher {
         let input_changes = cx.observe(&input, |this, _, cx| this.query_changed(cx));
         Self {
             repo,
+            seeded: programs.len(),
             programs,
             running: Vec::new(),
-            here: Vec::new(),
             live,
             fail_switch: None,
             step: Step::List,
@@ -401,18 +409,39 @@ impl BranchSwitcher {
         }
     }
 
-    /// Name too the programs of `running` (folder, label) that run inside the repo (checked
-    /// once its top folder is read, so it counts from the first read on).
-    pub fn with_running(mut self, running: Vec<(PathBuf, String)>) -> Self {
-        self.running = running;
+    /// Name too the programs of `running` (folder, label) that run inside the repo. Their
+    /// folders are resolved to real paths on the background executor; the ones inside the repo
+    /// are known once that and the first read have both landed.
+    pub fn with_running(self, running: Vec<(PathBuf, String)>, cx: &mut Context<Self>) -> Self {
+        if running.is_empty() {
+            return self;
+        }
+        let task = cx
+            .background_executor()
+            .spawn(async move { resolved(running) });
+        cx.spawn(async move |this, cx| {
+            let running = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.running = running;
+                this.refresh_programs();
+                cx.notify();
+            });
+        })
+        .detach();
         self
     }
 
+    /// The seeded programs, then those of `running` inside the repo as read.
+    fn refresh_programs(&mut self) {
+        self.programs.truncate(self.seeded);
+        if let Some(s) = &self.snapshot {
+            self.programs.extend(programs_under(&self.running, &s.root));
+        }
+    }
+
     /// The programs running in this repo's terminals, for the confirmation's warning.
-    fn programs_here(&self) -> Vec<String> {
-        let mut programs = self.programs.clone();
-        programs.extend(self.here.iter().cloned());
-        programs
+    fn programs_here(&self) -> &[String] {
+        &self.programs
     }
 
     /// `Switch branch · <repo folder>` (the repo's name once it has been read).
@@ -475,7 +504,6 @@ impl BranchSwitcher {
     /// has none.
     fn set_snapshot(&mut self, snapshot: Snapshot) {
         self.generation += 1;
-        self.here = programs_under(&self.running, &snapshot.root);
         self.dirty = Arc::new(snapshot.dirty.clone());
         if snapshot.dirty.is_empty() {
             self.conflicts.clear();
@@ -490,6 +518,7 @@ impl BranchSwitcher {
                 .retain(|name, _| names.contains(name.as_str()));
         }
         self.snapshot = Some(snapshot);
+        self.refresh_programs();
         self.asked.clear();
         self.fresh.clear();
         self.rebuild_rows();
@@ -744,7 +773,7 @@ impl BranchSwitcher {
         let confirm = confirmation(
             target,
             conflict,
-            &self.programs_here(),
+            self.programs_here(),
             self.dirty.len(),
             orphans,
         );
@@ -1182,7 +1211,7 @@ impl BranchSwitcher {
         ui: &UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let running = branch_list::running_line(&self.programs_here());
+        let running = branch_list::running_line(self.programs_here());
         let idle = self.busy.is_none();
         let mut lines = confirm.lines.iter();
         let title = lines.next().cloned().unwrap_or_default();
@@ -1543,23 +1572,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.sessions.items().iter().find(|s| s.id == terminal) else {
+        let Some(folder) = self.switchable_folder(terminal) else {
             return;
         };
-        if session.ssh.is_some() {
-            return;
-        }
-        let Some(folder) = self
-            .places
-            .folder(terminal)
-            .map(Path::to_path_buf)
-            .or_else(|| session.project.clone())
-        else {
-            return;
-        };
-        if self.places.branch(&folder).is_none() {
-            return;
-        }
         let Some(git) = self.places.git() else {
             return;
         };
@@ -1570,15 +1585,32 @@ impl Workspace {
             label,
         };
         let running = self.running_programs();
-        let switcher =
-            cx.new(|cx| BranchSwitcher::new(repo, Vec::new(), window, cx).with_running(running));
+        let switcher = cx
+            .new(|cx| BranchSwitcher::new(repo, Vec::new(), window, cx).with_running(running, cx));
         self.show_branch_switcher(switcher, window, cx);
+    }
+
+    /// The folder the branch switcher opens on for `terminal`: its folder as the sidebar finds
+    /// it (as last looked up, else the one it started in), when the terminal is not an SSH one
+    /// and the folder has a branch (is in a repo). ⌘K lists `Switch branch…` by the same rule.
+    pub(crate) fn switchable_folder(&self, terminal: u64) -> Option<PathBuf> {
+        let session = self.sessions.items().iter().find(|s| s.id == terminal)?;
+        if session.ssh.is_some() {
+            return None;
+        }
+        let folder = self
+            .places
+            .folder(terminal)
+            .or(session.project.as_deref())?
+            .to_path_buf();
+        self.places.branch(&folder).is_some().then_some(folder)
     }
 
     /// Each local terminal that runs a program: its folder (as last looked up, else the one it
     /// started in) and what to call the program: the terminal's title, else the program's name,
     /// else `a program`. Which are inside the repo is told once its top folder is read (the
-    /// switcher's `programs_here`): no git, and no file system, on this thread.
+    /// switcher's `refresh_programs`, with the folders resolved on the background executor):
+    /// no git, and no file system, on this thread.
     fn running_programs(&self) -> Vec<(PathBuf, String)> {
         self.sessions
             .items()
@@ -1835,6 +1867,25 @@ mod tests {
             ["claude", "a program"]
         );
         assert!(programs_under(&[], Path::new("/nonexistent/repo")).is_empty());
+    }
+
+    #[test]
+    fn running_folders_resolve_to_real_paths() {
+        let base = std::env::temp_dir().join(format!("fuxx-resolved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let real = std::fs::canonicalize(&root).unwrap();
+        let got = resolved(vec![
+            (link.clone(), "claude".into()),
+            (PathBuf::from("/nonexistent/x"), "vim".into()),
+        ]);
+        assert_eq!(got[0].0, real, "through a symlink");
+        assert_eq!(got[1].0, Path::new("/nonexistent/x"), "unresolved stays");
+        assert_eq!(programs_under(&got, &real), ["claude"]);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

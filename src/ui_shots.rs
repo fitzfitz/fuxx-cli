@@ -11150,6 +11150,13 @@ fn branch_switcher_open_scene() {
     scratch_git(&git, &repo, &["add", "."]);
     scratch_git(&git, &repo, &["commit", "-q", "-m", "one"]);
     scratch_git(&git, &repo, &["branch", "feature"]);
+    // A second repo, for the terminal whose row is clicked (each opener must use its own).
+    let other = base.join("other");
+    std::fs::create_dir_all(&other).expect("make the second repo");
+    scratch_git(&git, &other, &["init", "-q", "-b", "main"]);
+    std::fs::write(other.join("b.txt"), "b\n").unwrap();
+    scratch_git(&git, &other, &["add", "."]);
+    scratch_git(&git, &other, &["commit", "-q", "-m", "one"]);
 
     let n = "branch-switcher-open";
     let (slug, name) = SHOT_THEMES[0];
@@ -11157,7 +11164,7 @@ fn branch_switcher_open_scene() {
     let dims = size(px(960.0), px(600.0));
     let slot: Slot = Rc::new(RefCell::new(None));
     let build = palette_build(theme, slot.clone());
-    let folder = repo.clone();
+    let (folder, folder2) = (repo.clone(), other.clone());
     let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
         let ws = slotted(&slot);
         let is_listed = |cx: &mut VisualTestAppContext| {
@@ -11187,11 +11194,11 @@ fn branch_switcher_open_scene() {
         });
         cx.update_window(window, |_, _, cx| {
             ws.update(cx, |ws, _| {
-                for id in [claude, tests, shell] {
-                    ws.places
-                        .set_folder(id, Some(folder.clone()), Instant::now());
+                for (id, at) in [(claude, &folder), (tests, &folder2), (shell, &folder)] {
+                    ws.places.set_folder(id, Some(at.clone()), Instant::now());
                 }
                 ws.places.set_branch(&folder, Some("main".into()));
+                ws.places.set_branch(&folder2, Some("main".into()));
                 ws.programs
                     .set_for_shots(claude, ProgramState::Running("claude".into()));
                 ws.sync();
@@ -11252,7 +11259,7 @@ fn branch_switcher_open_scene() {
         let sw = branch_switcher_of(cx, &ws).expect("a click on the branch opens it");
         assert!(
             settle_until(cx, window, 10, |cx| cx
-                .read(|cx| sw.read(cx).title() == "Switch branch \u{b7} repo")),
+                .read(|cx| sw.read(cx).title() == "Switch branch \u{b7} other")),
             "{n}: the repo is read: {}",
             cx.read(|cx| sw.read(cx).title())
         );
@@ -11304,6 +11311,11 @@ fn branch_switcher_open_scene() {
                 .contains(&"feature \u{b7} local only".to_string()))),
             "{n}: the repo is read: {:?}",
             cx.read(|cx| sw.read(cx).line_texts())
+        );
+        assert_eq!(
+            cx.read(|cx| sw.read(cx).title()),
+            "Switch branch \u{b7} repo",
+            "{n}: the bar opens the followed terminal's repo"
         );
         for _ in 0..4 {
             if cx.read(|cx| sw.read(cx).selected_label()).as_deref() == Some("feature") {
