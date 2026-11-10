@@ -1,5 +1,3 @@
-#![allow(dead_code)] // consumed by the later M11o tasks (the switcher modal)
-
 //! The branch switcher's git (note 66 §2, §5, §6): one read of the repo's branches and dirt,
 //! the files a switch would touch, the auto/button fetch, and the switch itself. The first
 //! fuxx feature that changes a user's repo, so every command is spelled out and a name typed
@@ -195,6 +193,7 @@ fn valid_branch(git: &Path, root: &Path, name: &str) -> bool {
 
 /// Fetch one branch from origin (a typed name that isn't in the list): `Ok(true)` if fetched,
 /// `Ok(false)` if the name is invalid or origin doesn't have it.
+#[allow(dead_code)] // the typed name's row (M11o Task 4)
 pub fn fetch_branch(git: &Path, root: &Path, name: &str, mode: FetchMode) -> Result<bool, String> {
     if !valid_branch(git, root, name) {
         return Ok(false);
@@ -215,6 +214,7 @@ pub fn fetch_branch(git: &Path, root: &Path, name: &str, mode: FetchMode) -> Res
 
 /// `switch <name>` or `switch --track origin/<name>`, never another flag. A local name that
 /// could be read as an option is refused here (branch names from refs can't start with `-`).
+#[allow(dead_code)] // the confirmation's Switch (M11o Task 4)
 pub fn switch(git: &Path, root: &Path, target: &Target) -> Result<(), String> {
     if target.name().starts_with('-') {
         return Err("not a branch name".to_string());

@@ -33,6 +33,7 @@ use crate::adopt::{self, Probe};
 use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
+use crate::branch_switcher::BranchSwitcher;
 use crate::browser_tab::BrowserTab;
 use crate::daemon_client::{self, DaemonClient};
 use crate::drag_gap::Slides;
@@ -548,6 +549,7 @@ overlays!(
     HostPicker,
     AddressBox,
     Palette,
+    BranchSwitcher,
     TabMenu,
     PaneTabMenu,
     PaneActions,
@@ -639,6 +641,8 @@ pub struct Workspace {
     pub(crate) palette: Option<Entity<Palette>>,
     /// What the palette picked last, newest first (kept while it's closed; never saved).
     pub(crate) palette_recent: Recent,
+    /// The branch switcher, while it is open (M11o).
+    pub(crate) branch_switcher: Option<Entity<BranchSwitcher>>,
     /// The Help panel (Keyboard Shortcuts or the Command Reference), while it is open (M11d).
     pub(crate) help: Option<Entity<HelpPanel>>,
     /// The Welcome card, while it is open (M11k).
@@ -845,6 +849,7 @@ impl Workspace {
             host_picker: None,
             palette: None,
             palette_recent: Recent::default(),
+            branch_switcher: None,
             help: None,
             welcome: None,
             agents_frozen: false,
@@ -2399,6 +2404,9 @@ impl Workspace {
         if keep != Overlay::Palette {
             self.palette = None;
         }
+        if keep != Overlay::BranchSwitcher {
+            self.branch_switcher = None;
+        }
         if keep != Overlay::TabMenu {
             self.sidebar.tab_menu = None;
         }
@@ -3287,6 +3295,9 @@ impl Render for Workspace {
             })
             .when_some(self.palette.clone(), |root, palette| {
                 root.child(top_panel(palette))
+            })
+            .when_some(self.branch_switcher.clone(), |root, switcher| {
+                root.child(top_panel(switcher))
             })
             .when_some(self.help.clone(), |root, help| root.child(top_panel(help)))
             .when_some(self.address_box.clone(), |root, address| {

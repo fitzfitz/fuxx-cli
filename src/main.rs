@@ -16,6 +16,7 @@ mod block_view;
 mod blocks;
 mod branch_git;
 mod branch_list;
+mod branch_switcher;
 mod browser;
 mod browser_history;
 mod browser_js;
@@ -303,6 +304,14 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", palette::NextScope, Some("Palette")),
         KeyBinding::new("shift-tab", palette::PrevScope, Some("Palette")),
         KeyBinding::new("cmd-v", name_input::Paste, Some("Palette > NameInput")),
+        // The branch switcher: its box is a NameInput too; these keys move through its list.
+        KeyBinding::new("up", branch_switcher::SelectPrev, Some("BranchSwitcher")),
+        KeyBinding::new("down", branch_switcher::SelectNext, Some("BranchSwitcher")),
+        KeyBinding::new(
+            "cmd-v",
+            name_input::Paste,
+            Some("BranchSwitcher > NameInput"),
+        ),
         // The Help panel: its box is a NameInput too; these keys scroll its list a row.
         KeyBinding::new("up", help_panel::ScrollUp, Some("HelpPanel")),
         KeyBinding::new("down", help_panel::ScrollDown, Some("HelpPanel")),
@@ -1331,6 +1340,19 @@ mod tests {
         );
         // A terminal's ⌘V is still the terminal's.
         assert!(runs(&keymap, "cmd-v", TERMINAL).partial_eq(&Paste));
+    }
+
+    #[test]
+    fn the_branch_switchers_keys_work_in_its_box() {
+        let keymap = keymap();
+        let switcher_box: &[&str] = &["Workspace", "BranchSwitcher", "NameInput"];
+        assert!(runs(&keymap, "up", switcher_box).partial_eq(&crate::branch_switcher::SelectPrev));
+        assert!(
+            runs(&keymap, "down", switcher_box).partial_eq(&crate::branch_switcher::SelectNext)
+        );
+        assert!(runs(&keymap, "cmd-v", switcher_box).partial_eq(&crate::name_input::Paste));
+        assert!(runs(&keymap, "enter", switcher_box).partial_eq(&crate::name_input::Confirm));
+        assert!(runs(&keymap, "escape", switcher_box).partial_eq(&crate::name_input::Cancel));
     }
 
     #[test]

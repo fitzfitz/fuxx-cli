@@ -53,7 +53,7 @@ use crate::workspace::{Overlay, Workspace};
 actions!(palette, [SelectPrev, SelectNext, NextScope, PrevScope]);
 
 /// Wider than the Help panel: a row holds a name, a folder or keys.
-const PANEL_WIDTH: f32 = 600.0;
+pub(crate) const PANEL_WIDTH: f32 = 600.0;
 /// A scope chip's height.
 const CHIP: f32 = 22.0;
 /// The list's tallest; it also keeps `LIST_BOTTOM` from the window's bottom, but is never
@@ -65,7 +65,7 @@ const LIST_BOTTOM: f32 = 200.0;
 const SLOT_GAP: f32 = 8.0;
 
 /// How tall the list may grow in a window `window_h` tall.
-fn list_max_height(window_h: f32) -> f32 {
+pub(crate) fn list_max_height(window_h: f32) -> f32 {
     (window_h - LIST_BOTTOM).clamp(LIST_MIN, LIST_MAX)
 }
 
@@ -823,8 +823,13 @@ static MORE_KEYS: [Key; 4] = [
 /// An item's row (not a workspace's): `ROW` tall, its icon slot (empty but for a file's or a
 /// setting's icon, so the names line up), filled `row_active` while chosen, `panel_hover` under
 /// the pointer.
-fn item_row(chosen: bool, ui: &UiColors, icon: Option<Div>) -> Div {
+pub(crate) fn item_row(chosen: bool, ui: &UiColors, icon: Option<Div>) -> Div {
     let hover = ui.panel_hover;
+    item_frame(chosen, ui, icon).when(!chosen, |row| row.hover(move |s| s.bg(hsla(hover))))
+}
+
+/// `item_row` without the hover fill: a row that can't be chosen (the branch switcher's).
+pub(crate) fn item_frame(chosen: bool, ui: &UiColors, icon: Option<Div>) -> Div {
     div()
         .flex_none()
         .flex()
@@ -834,7 +839,6 @@ fn item_row(chosen: bool, ui: &UiColors, icon: Option<Div>) -> Div {
         .rounded(px(6.0))
         .text_size(px(text::NAME))
         .when(chosen, |row| row.bg(hsla(ui.row_active)))
-        .when(!chosen, |row| row.hover(move |s| s.bg(hsla(hover))))
         .child(
             div()
                 .flex_none()
@@ -859,7 +863,7 @@ fn highlighted(text: &str, positions: &[usize]) -> StyledText {
 
 /// A row's name, cut at its end, the matched letters (char `positions`) semibold; medium while
 /// chosen.
-fn name_cell(name: &str, positions: &[usize], chosen: bool) -> Div {
+pub(crate) fn name_cell(name: &str, positions: &[usize], chosen: bool) -> Div {
     div()
         .flex_1()
         .min_w(px(0.0))

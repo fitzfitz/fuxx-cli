@@ -81,6 +81,8 @@ pub struct Overlays {
     pub address_box: bool,
     /// The command palette (⌘K, ⌘P).
     pub palette: bool,
+    /// The branch switcher (M11o).
+    pub branch_switcher: bool,
     /// A sidebar row's right-click menu.
     pub row_menu: bool,
     /// A pane tab's right-click menu.
@@ -106,6 +108,7 @@ impl Overlays {
             host_picker,
             address_box,
             palette,
+            branch_switcher,
             row_menu,
             tab_menu,
             pane_actions,
@@ -119,6 +122,7 @@ impl Overlays {
             || host_picker
             || address_box
             || palette
+            || branch_switcher
             || row_menu
             || tab_menu
             || pane_actions
@@ -566,6 +570,10 @@ mod tests {
             },
             Overlays {
                 palette: true,
+                ..none
+            },
+            Overlays {
+                branch_switcher: true,
                 ..none
             },
             Overlays {
