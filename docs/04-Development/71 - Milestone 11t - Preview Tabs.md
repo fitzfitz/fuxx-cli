@@ -1,6 +1,6 @@
 # Milestone 11t — Preview Tabs
 
-**Status:** 🟨 asked for and approved 2026-11-11; being built on master, after v0.7.0.
+**Status:** 🟨 built on master 2026-11-11 (after v0.7.0); waiting for your check.
 **Asked for:** 2026-11-11, by you: "ketika single klik file apakah bisa buka sementara? jika saya single klik file
 lain, akan ganti file yang terbuka sementara jadi file tersebut. Jika double klik, akan buka permanen seperti
 sekarang?" → "commit, push dan deploy release dulu, lalu kerjakan".
@@ -18,12 +18,24 @@ sekarang?" → "commit, push dan deploy release dulu, lalu kerjakan".
 ## AI's calls
 
 1. The preview isn't saved: after a restart it is an ordinary tab.
-2. A preview tab dragged into another pane stays a preview there only if that pane has none (else permanent).
-   (Kept simple: a moved tab becomes permanent.)
+2. A preview tab dragged into another pane becomes permanent there (reordering it within its own bar keeps it a
+   preview).
 
 ## Not in it
 
 Pinning on scroll or selection, a preview for terminals or browser tabs, a setting to turn it off.
+
+## As built (2026-11-11)
+
+- `layout_model.rs`: `Model::previews` (not saved); `preview_file` (select the tab showing it, else the preview shows
+  it, else a new tab becomes the preview); `open_file` keeps the tab it finds; `pin`; `is_preview`; a closed tab or one
+  moved to another pane is no longer a preview. Test: `a_preview_tab_is_reused_until_a_file_is_opened_for_good`.
+- `file_tab.rs`: `Workspace::preview_file_tab` (a reused tab gets a new view for its new file), `pin_tab`; the
+  File ↔ Diff toggle keeps the tab.
+- `right_sidebar.rs` (Files) and `changes_panel.rs` (Changes): a single click previews, a double click opens for good;
+  Enter in the tree opens for good.
+- `tab_bar.rs`: `BarTab::preview`, an italic title; a double click on a file tab's title keeps it.
+- Tests: 1354 pass. ui-shots: `files-keys` checks a click previews and the next click reuses the tab.
 
 ## On-screen checklist (for you)
 

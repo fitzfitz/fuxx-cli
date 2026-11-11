@@ -6520,6 +6520,37 @@ fn files_scenes() {
                 "{n}: the click opens main.rs"
             );
             assert!(tab_keys, "{n}: the file tab has the keyboard");
+            // M11t: that single click previews it; a single click on new.rs shows it in the same
+            // tab (no new one), still a preview.
+            let shown = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let pane = ws.model.focused_pane().expect("a pane");
+                    let p = ws.model.pane(pane).expect("known");
+                    let active = p.tabs.iter().find(|t| t.id == p.active).expect("its tab");
+                    (
+                        active.id,
+                        active.kind.clone(),
+                        ws.model.is_preview(active.id),
+                        p.tabs.len(),
+                    )
+                })
+            };
+            let (first, _, preview, count) = shown(cx);
+            assert!(preview, "{n}: a single click previews");
+            cx.simulate_click(window, row_at(4), none);
+            frame(cx, window);
+            let (again, kind, preview, after) = shown(cx);
+            assert_eq!(again, first, "{n}: the same preview tab");
+            assert_eq!(
+                kind,
+                TabKind::File {
+                    path: root_for.join("src/new.rs"),
+                    mode: FileMode::Plain
+                },
+                "{n}: now showing new.rs"
+            );
+            assert!(preview && after == count, "{n}: no new tab");
             // Back in the tree, Esc: the pane's tab takes the keyboard back.
             cx.simulate_click(window, row_at(12), none);
             assert_eq!(panel_keys(cx), (true, true), "{n}: the tree again");

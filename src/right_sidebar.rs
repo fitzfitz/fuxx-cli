@@ -438,11 +438,13 @@ fn file_row(
                 .child(mark_letter(m))
         }))
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-            // A folder's double-click: the terminal goes there (its first click opened it).
-            if is_dir && event.click_count() == 2 {
+            // A folder's double-click: the terminal goes there (its first click opened it). A
+            // file's single click previews it, its double click opens it for good (M11t).
+            let double = event.click_count() == 2;
+            if is_dir && double {
                 this.files_cd(&rel, cx);
             } else {
-                this.files_click(&rel, is_dir, window, cx)
+                this.files_click(&rel, is_dir, !double, window, cx)
             }
         }))
         .into_any_element()
@@ -1525,6 +1527,7 @@ impl Workspace {
     fn files_act(
         &mut self,
         key: impl FnOnce(&mut FileTree, &str) -> Option<Want>,
+        preview: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1538,7 +1541,13 @@ impl Workspace {
                 return;
             };
             let path = root.join(rel);
-            self.open_file_tab(path, crate::layout_model::FileMode::Plain, window, cx);
+            let mode = crate::layout_model::FileMode::Plain;
+            // A single click previews it (M11t); Enter and a double click open it for good.
+            if preview {
+                self.preview_file_tab(path, mode, window, cx);
+            } else {
+                self.open_file_tab(path, mode, window, cx);
+            }
         }
         self.right_sidebar.files.reveal = Some(ScrollStrategy::Nearest);
         cx.notify();
@@ -1551,7 +1560,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.files_act(key, window, cx);
+        self.files_act(key, false, window, cx);
     }
 
     /// Return (in the tree or the filter box): open the selected file, or open or close the
@@ -1565,6 +1574,7 @@ impl Workspace {
         &mut self,
         rel: &Path,
         is_dir: bool,
+        preview: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1576,7 +1586,7 @@ impl Workspace {
                 Some(Want::Open(rel.to_path_buf()))
             }
         };
-        self.files_act(key, window, cx);
+        self.files_act(key, preview, window, cx);
     }
 
     /// A double-click on folder `rel`: the followed terminal `cd`s there, if it is a local
