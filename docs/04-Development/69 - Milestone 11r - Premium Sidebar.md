@@ -1,6 +1,6 @@
 # Milestone 11r — Premium Sidebar
 
-**Status:** 🟨 built on master 2026-11-10; waiting for your on-screen check (below).
+**Status:** 🟨 built 2026-11-10, released in **v0.7.0** (2026-11-11); waiting for your on-screen check (below).
 **Asked for:** 2026-11-10, by you: "make it looks premium" → three rounds of browser mockups → "love the D and E
 combined" → "no need filter below search and no need for lading prpgress" → "cool do it directly here on master".
 **Order:** done **now, before M11p** (your call: "do it directly"). M11p (chrome caching) and M11q follow as planned.
