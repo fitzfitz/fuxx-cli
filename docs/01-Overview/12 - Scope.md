@@ -83,6 +83,10 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   "commit, push dan deploy release dulu, lalu kerjakan"): a single click in Files or Changes opens a file in the
   pane's one italic preview tab, replaced by the next single click; a double click opens it for good. Not in it:
   previews of terminals or pages, a setting. See [[71 - Milestone 11t - Preview Tabs]].
+- **Restore where you were** (M11u, asked for 2026-11-11 by you: "can you check did our save session working?…";
+  "ya, kerjakan dua-duanya"): each terminal's current folder and its running agent (one of your presets) are saved
+  and come back on reopen; a test build keeps its own sessions file. Not in it: re-running other commands,
+  scrollback. See [[72 - Milestone 11u - Restore Where You Were]].
 - **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
   design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.

@@ -172,6 +172,8 @@ fn adopted(s: &SavedSession, info: &LiveInfo) -> Adopted {
             // The service doesn't know hosts or colours: the file does.
             ssh: s.ssh.clone(),
             color: s.color,
+            cwd: s.cwd.clone(),
+            agent: s.agent.clone(),
         },
         title: info.title.clone(),
         status: info.status,
@@ -202,6 +204,8 @@ fn newcomer(info: &LiveInfo, presets: &[Preset]) -> Adopted {
             daemon_id: Some(info.id),
             ssh: None,
             color: None,
+            cwd: None,
+            agent: None,
         },
         title: info.title.clone(),
         status: info.status,
