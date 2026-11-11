@@ -80,6 +80,7 @@ mod shell_integration;
 mod shell_marks;
 mod sidebar;
 mod sidebar_toggle;
+mod sounds;
 mod split_tree;
 mod ssh_control;
 mod ssh_hosts;
@@ -370,6 +371,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("escape", tab_menu::Dismiss, Some("TabMenu")),
         // The browser's address box: its box is a NameInput too; an address is pasted.
         KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
+        // Settings' boxes (the Sound links, M11s).
+        KeyBinding::new("cmd-v", name_input::Paste, Some("Preferences > NameInput")),
         // Only so the Edit menu shows ⌘X and ⌘A: no element in fuxx has this context, so
         // these keys never reach the actions (see `edit_menu`).
         KeyBinding::new("cmd-x", Cut, Some("EditMenuOnly")),
@@ -839,6 +842,10 @@ fn main() {
             // agent submenu is built from its presets, and `persistent-sessions` decides who
             // runs the sessions.
             cx.set_global(appearance::load(cx));
+            // The key sounds (M11s): loaded now, and again whenever the settings change.
+            sounds::sync(cx);
+            cx.observe_global::<appearance::Appearance>(sounds::sync)
+                .detach();
             // A `cargo run` build has no app package to take its Dock icon from.
             app_icon::show_in_dock();
             // Motion follows the `animations` setting and macOS Reduce motion from here on.
@@ -1374,6 +1381,15 @@ mod tests {
         );
         // A terminal's ⌘V is still the terminal's.
         assert!(runs(&keymap, "cmd-v", TERMINAL).partial_eq(&Paste));
+    }
+
+    /// Settings' boxes (the Sound links, M11s) take ⌘V (your report, 2026-11-11: "textfield di
+    /// settings > sound, tidak bisa paste").
+    #[test]
+    fn command_v_pastes_into_a_settings_box() {
+        let keymap = keymap();
+        let settings_box: &[&str] = &["Preferences", "NameInput"];
+        assert!(runs(&keymap, "cmd-v", settings_box).partial_eq(&crate::name_input::Paste));
     }
 
     #[test]

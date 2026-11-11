@@ -91,6 +91,8 @@ pub enum TerminalEvent {
     /// Daemon backend: the connection to the daemon is gone. Not an exit: the session may
     /// still run there, so it stays.
     DaemonLost,
+    /// The program reported another working folder (OSC 7: a `cd`).
+    FolderMoved,
 }
 
 /// Where the grid was last painted, for turning mouse positions into grid points.
@@ -224,6 +226,8 @@ fn dims_for(area: Bounds<Pixels>, cell_width: Pixels, line_height: Pixels) -> Te
 
 pub struct TerminalView {
     core: TerminalCore,
+    /// `TerminalCore::cwd_changes` as last heard: output that moves it is a `cd`.
+    cwd_seen: u64,
     focus_handle: FocusHandle,
     tracker: StatusTracker,
     /// When the canvas last sent the pty a new size; the tracker hears of it before the next
@@ -818,6 +822,7 @@ impl TerminalView {
 
         let focus_handle = cx.focus_handle();
         Self {
+            cwd_seen: core.cwd_changes(),
             core,
             focus_handle,
             tracker: StatusTracker::new(),
@@ -858,6 +863,12 @@ impl TerminalView {
                 // below (the render takes the Term lock after it); one it finishes after sends
                 // a new `Output` (M11n's gate), so the screen is never left an older frame.
                 self.core.output_seen();
+                // A `cd` (the folder report changed): the sidebar looks it up now.
+                let moved = self.core.cwd_changes();
+                if moved != self.cwd_seen {
+                    self.cwd_seen = moved;
+                    cx.emit(TerminalEvent::FolderMoved);
+                }
                 // The program wrote: the breath holds.
                 self.motion.borrow_mut().changed = Instant::now();
                 self.hear_of_resize();
@@ -932,9 +943,14 @@ impl TerminalView {
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let m = &keystroke.modifiers;
+        // A press (not a held key's repeats) of a key with a sound plays it (M11s).
+        let pressed = !event.is_held;
         if let Some(bytes) =
             keys::mac_shortcut(&keystroke.key, m.platform, m.alt, m.control, m.shift)
         {
+            if pressed {
+                crate::sounds::press(bytes, cx);
+            }
             self.send_key_bytes(bytes, cx);
             return;
         }
@@ -957,6 +973,9 @@ impl TerminalView {
             m.shift,
             app_cursor,
         ) {
+            if pressed {
+                crate::sounds::press(&bytes, cx);
+            }
             self.spark(&bytes, cx);
             self.send_key_bytes(&bytes, cx);
         }

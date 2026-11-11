@@ -841,6 +841,8 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         cursor_follows_status: true,
         cursor_fun: Default::default(),
         command_blocks: true,
+        sound_links: Default::default(),
+        sound_on: [true, true],
     }
 }
 

@@ -509,6 +509,12 @@ impl Places {
         !self.frozen && due(self.folders.get(&id).map(|(_, at)| *at), now, true)
     }
 
+    /// Terminal `id` reported a new folder: look it up at the next refresh, not 5 s on
+    /// (2026-11-11). Its branch is asked for then too, once per folder (`ask_branch`).
+    pub fn folder_moved(&mut self, id: u64) {
+        self.folders.remove(&id);
+    }
+
     pub fn set_folder(&mut self, id: u64, folder: Option<PathBuf>, now: Instant) {
         self.folders.insert(id, (folder, now));
     }

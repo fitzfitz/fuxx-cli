@@ -86,7 +86,7 @@ pub struct WorkspaceFacts<'a> {
     /// The program's own title in the terminal it is named after (M11r: under the name, when
     /// it says more than the name).
     pub title: Option<&'a str>,
-    /// Where its terminal is now, from its folder group's folder (`relative_place`).
+    /// In a folder's group: where its terminal is now (`home_relative`).
     pub here: Option<String>,
 }
 
@@ -155,7 +155,7 @@ pub struct WorkspaceRow {
     pub title: Option<String>,
     /// In a folder's group: its header says the folder and the branch, so the row doesn't.
     pub folder_group: bool,
-    /// In a folder's group: where its terminal is now, from the group's folder ("./src").
+    /// In a folder's group: where its terminal is now ("~/code/api/src").
     pub here: Option<String>,
 }
 
@@ -287,16 +287,6 @@ pub fn home_relative(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
-/// Where `current` is, as a row in the group of folder `group` says it (2026-11-10): "./" at
-/// the group's folder, "./rest" under it, else the whole place (`home_relative`).
-pub fn relative_place(current: &Path, group: &Path, home: Option<&Path>) -> String {
-    match current.strip_prefix(group) {
-        Ok(rest) if rest.as_os_str().is_empty() => "./".into(),
-        Ok(rest) => format!("./{}", rest.display()),
-        Err(_) => home_relative(current, home),
-    }
-}
-
 /// The place line, `branch • folder`, fitted to its room (`fits` says whether a line does).
 /// As it is when it fits; else the branch loses its end first (down to `BRANCH_KEEP`
 /// characters), then the folder its start, down to its own name; past that the line is cut at
@@ -402,7 +392,7 @@ pub enum LineTwo {
     Note(String),
     /// The program's own title (M11r).
     Title(String),
-    /// In a folder's group, idle or done: where its terminal is, from the group's folder.
+    /// In a folder's group, idle or done: the folder its terminal is in now.
     Here(String),
     /// Nothing else to say: its status in words (M11r: every row has its line, as the mockup).
     State(&'static str),
@@ -876,6 +866,8 @@ const NEW_TEXT: &str = "New Fuxxpace";
 const NEW_KEYS: &str = "\u{2318}N";
 /// The rows' hover group.
 const ROW_GROUP: &str = "sidebar-row";
+/// A row's avatar's hover group: its × shows only while the pointer is on the avatar.
+const AVATAR_GROUP: &str = "sidebar-avatar";
 /// The + menu's width.
 const MENU_WIDTH: f32 = 230.0;
 /// The + menu's first items (the presets follow): label and shortcut.
@@ -1228,7 +1220,9 @@ impl Workspace {
                 };
                 let home = self.places.home.as_deref();
                 heres.push(match self.workspace_group(ws) {
-                    Some(GroupKey::Folder(group)) => Some(relative_place(folder, &group, home)),
+                    // The real folder, as the prompt says it (2026-11-11, your call: "./" said
+                    // nothing).
+                    Some(GroupKey::Folder(_)) => Some(home_relative(folder, home)),
                     _ => None,
                 });
                 let shown = home_relative(folder, home);
@@ -2315,12 +2309,14 @@ impl Workspace {
             .hover(move |s| s.bg(hsla(mix(fill, ink, 0.18))))
             .child("×")
             .invisible()
-            .group_hover(ROW_GROUP, |s| s.visible())
+            // Only over the avatar itself (2026-11-11, your call), not the whole row.
+            .group_hover(AVATAR_GROUP, |s| s.visible())
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation(); // not also a click on the row
                 this.close_workspace(ws, window, cx)
             }));
         avatar(&row.label, row.color, ui, AVATAR)
+            .group(AVATAR_GROUP)
             .child(
                 div()
                     .absolute()
@@ -2329,7 +2325,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .child(initials(&row.label))
-                    .group_hover(ROW_GROUP, |s| s.invisible()),
+                    .group_hover(AVATAR_GROUP, |s| s.invisible()),
             )
             .child(close)
             .child(badge)
@@ -3906,22 +3902,6 @@ mod tests {
         assert_eq!(header(&rows[0]).branch, None);
     }
 
-    /// In a folder's group a row says where its terminal is now, from the group's folder
-    /// (2026-11-10, your call: "ya, kerjakan"): "./" there, "./src/ui" under it, else the whole
-    /// place (`~/…` under home).
-    #[test]
-    fn a_row_in_a_group_says_its_folder_from_the_group_s() {
-        let home = Some(Path::new("/Users/me"));
-        let group = Path::new("/Users/me/code/api");
-        let here = |p: &str| relative_place(Path::new(p), group, home);
-        assert_eq!(here("/Users/me/code/api"), "./");
-        assert_eq!(here("/Users/me/code/api/src/ui"), "./src/ui");
-        assert_eq!(here("/Users/me/code/web"), "~/code/web");
-        assert_eq!(here("/tmp/scratch"), "/tmp/scratch");
-        // Not fooled by a folder that only starts with the group's name.
-        assert_eq!(here("/Users/me/code/api-old"), "~/code/api-old");
-    }
-
     #[test]
     fn a_grouped_row_with_nothing_else_to_say_shows_where_it_is() {
         let now = Instant::now();
@@ -3932,16 +3912,16 @@ mod tests {
             line_two(session(&rows[1]))
         };
         assert_eq!(
-            line(Status::Idle, Some("./src")),
-            Some(LineTwo::Here("./src".into()))
+            line(Status::Idle, Some("~/api/src")),
+            Some(LineTwo::Here("~/api/src".into()))
         );
         assert_eq!(
-            line(Status::Done, Some("./")),
-            Some(LineTwo::Here("./".into()))
+            line(Status::Done, Some("~/api")),
+            Some(LineTwo::Here("~/api".into()))
         );
         // Working says so; nothing known: its status.
         assert_eq!(
-            line(Status::Working, Some("./src")),
+            line(Status::Working, Some("~/api/src")),
             Some(LineTwo::State("Working\u{2026}"))
         );
         assert_eq!(line(Status::Idle, None), Some(LineTwo::State("Idle")));
