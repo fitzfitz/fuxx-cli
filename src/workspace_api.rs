@@ -793,6 +793,8 @@ impl Workspace {
                 daemon_id: None,
                 ssh: None,
                 color: None,
+                cwd: None,
+                agent: None,
             },
             run_preset: true,
         };

@@ -139,6 +139,8 @@ pub(crate) const POP_SHOWN: std::time::Duration = std::time::Duration::from_mill
 /// How often what runs in the terminals (`program_subjects`) is looked up again (one `ps`), at
 /// most.
 pub(crate) const PROGRAMS_REFRESH: Duration = Duration::from_secs(3);
+/// How long `save_soon` waits, gathering changes into one write (M11u).
+const SAVE_SOON: Duration = Duration::from_secs(1);
 
 /// How long after a `ps` that failed (or ran past its cap) the next one runs.
 pub(crate) const PROGRAMS_RETRY: Duration = Duration::from_secs(30);
@@ -323,6 +325,10 @@ impl Workspace {
                     let shells = this.all_program_shells(cx);
                     if this.programs.take(table, &shells) {
                         cx.notify();
+                        // An agent started or ended: the sessions file says so (M11u).
+                        if this.note_agents(cx) {
+                            this.save_soon(cx);
+                        }
                     }
                 });
                 if took.is_err() {
@@ -752,6 +758,13 @@ pub struct Workspace {
     pub(crate) right_sidebar: RightSidebarState,
     /// Where each workspace is (its folder and git branch), for its row (`git_branch`).
     pub(crate) places: Places,
+    /// Each terminal's folder as its shell last reported it (this Mac's), for the sessions file
+    /// (M11u: a reopen starts there).
+    pub(crate) folders_now: HashMap<u64, PathBuf>,
+    /// The agent (a preset's name) each terminal runs now, for the sessions file (M11u).
+    pub(crate) agents_now: HashMap<u64, String>,
+    /// A save is already due (`save_soon`).
+    save_due: bool,
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
     pub(crate) places_ticking: bool,
     /// The palette's file listings (`palette_files`).
@@ -906,6 +919,9 @@ impl Workspace {
             slide: None,
             right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
+            folders_now: HashMap::new(),
+            agents_now: HashMap::new(),
+            save_due: false,
             places_ticking: false,
             palette_files: Default::default(),
             programs: Programs::default(),
@@ -1193,6 +1209,46 @@ impl Workspace {
         }
     }
 
+    /// Save within a second, once however many changes come (M11u: a `cd`, an agent starting
+    /// or ending): one small write, not one per change.
+    pub(crate) fn save_soon(&mut self, cx: &mut Context<Self>) {
+        if self.save_due {
+            return;
+        }
+        self.save_due = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_SOON).await;
+            this.update(cx, |this, _| {
+                this.save_due = false;
+                this.save();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Note the agents the terminals run now (`programs`, by today's presets); true when one
+    /// started or ended (M11u).
+    fn note_agents(&mut self, cx: &App) -> bool {
+        let presets = &cx.global::<Appearance>().presets;
+        let now: HashMap<u64, String> = self
+            .sessions
+            .items()
+            .iter()
+            .filter_map(|s| match self.programs.state(s.id) {
+                ProgramState::Running(program) => {
+                    crate::presets::agent_for(&program, presets).map(|p| (s.id, p.name.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if now == self.agents_now {
+            return false;
+        }
+        self.agents_now = now;
+        true
+    }
+
     /// What `save` writes to the sessions file.
     pub(crate) fn saved_state(&self) -> SavedState {
         let mut collapsed = Vec::new();
@@ -1225,6 +1281,23 @@ impl Workspace {
                     ssh: s.ssh.clone(),
                     // Colours are the workspaces' now (M11b).
                     color: None,
+                    // Where it is now and the agent it runs (M11u); not for an SSH one (its
+                    // folder is on the host, and it reconnects as it was).
+                    cwd: s
+                        .ssh
+                        .is_none()
+                        .then(|| {
+                            self.folders_now
+                                .get(&s.id)
+                                .cloned()
+                                .or_else(|| self.places.folder(s.id).map(Path::to_path_buf))
+                        })
+                        .flatten(),
+                    agent: s
+                        .ssh
+                        .is_none()
+                        .then(|| self.agents_now.get(&s.id).cloned())
+                        .flatten(),
                 })
                 .collect(),
             sidebar_width: Some(self.sidebar.width),
@@ -1929,6 +2002,15 @@ impl Workspace {
             TerminalEvent::FolderMoved => {
                 let id = self.sessions.items()[index].id;
                 self.places.folder_moved(id);
+                // Where it is now, for the sessions file (M11u): this Mac's report only.
+                let (reported, _) = view.read(cx).working_folder();
+                let hostname = self.places.hostname.as_deref();
+                if let Some(report) =
+                    reported.filter(|r| crate::git_branch::is_this_mac(&r.host, hostname))
+                {
+                    self.folders_now.insert(id, report.path);
+                    self.save_soon(cx);
+                }
                 if self.refresh_places(cx) {
                     cx.notify();
                 }
@@ -3594,6 +3676,15 @@ fn daemon_create(
 /// Where a session for `saved` starts (its project's folder, if it's still there) and what is
 /// typed into it first (its preset's command, when `run_preset`).
 fn start_in(saved: &SavedSession, run_preset: bool) -> (Option<PathBuf>, Option<String>) {
+    // Where it last was (M11u), when that folder is still there; else where it started.
+    if let Some(dir) = saved.cwd.as_deref().filter(|d| d.is_dir()) {
+        let startup = saved
+            .preset
+            .as_ref()
+            .filter(|_| run_preset)
+            .map(|p| p.command.clone());
+        return (Some(dir.to_path_buf()), startup);
+    }
     let cwd = match saved.project.as_deref() {
         Some(dir) if dir.is_dir() => Some(dir.to_path_buf()),
         Some(dir) => {
@@ -3922,6 +4013,35 @@ mod tests {
         assert_eq!(off.remove, ["FUXX_SOCKET", "FUXX_SESSION"]);
     }
 
+    /// A reopen starts where the terminal last was, while that folder exists; else where it
+    /// started (M11u). Its agent is typed in either way.
+    #[test]
+    fn a_reopened_terminal_starts_where_it_last_was() {
+        let tmp = std::env::temp_dir();
+        let saved = SavedSession {
+            project: Some(tmp.clone()),
+            cwd: Some(tmp.join("fuxx-no-such-folder-m11u")),
+            preset: Some(Preset {
+                name: "claude".into(),
+                command: "claude".into(),
+            }),
+            ..SavedSession::default()
+        };
+        assert_eq!(
+            super::start_in(&saved, true),
+            (Some(tmp.clone()), Some("claude".into())),
+            "gone: where it started"
+        );
+        let here = SavedSession {
+            cwd: Some(Path::new("/").to_path_buf()),
+            ..saved
+        };
+        assert_eq!(
+            super::start_in(&here, false),
+            (Some(Path::new("/").to_path_buf()), None)
+        );
+    }
+
     #[test]
     fn a_daemon_create_carries_the_session_as_spawn_would_start_it() {
         let saved = SavedSession {
@@ -3934,6 +4054,8 @@ mod tests {
             daemon_id: None,
             ssh: None,
             color: None,
+            cwd: None,
+            agent: None,
         };
         let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
         let c = daemon_create(

@@ -11,6 +11,18 @@ pub struct Preset {
     pub command: String,
 }
 
+/// The preset a running `program` is the agent of (M11u): the one named so, or whose command
+/// starts with it. None for anything else (a build, a server, an editor).
+pub fn agent_for<'a>(program: &str, presets: &'a [Preset]) -> Option<&'a Preset> {
+    let program = program.trim();
+    if program.is_empty() {
+        return None;
+    }
+    presets
+        .iter()
+        .find(|p| p.name == program || p.command.split_whitespace().next() == Some(program))
+}
+
 /// The menu holds at most this many presets (one per digit key).
 pub const MAX_PRESETS: usize = 9;
 
@@ -75,6 +87,24 @@ pub fn from_entries(entries: &[Entry]) -> (Vec<Preset>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A running program is a preset's agent when it is the preset's name or its command's
+    /// first word (M11u): `claude` is, `make` isn't.
+    #[test]
+    fn a_running_program_is_known_by_its_preset() {
+        let mut presets = builtins();
+        presets.push(Preset {
+            name: "aider".into(),
+            command: "aider --model sonnet".into(),
+        });
+        let name = |program: &str| agent_for(program, &presets).map(|p| p.name.clone());
+        assert_eq!(name("claude"), Some("claude".into()));
+        assert_eq!(name("codex"), Some("codex".into()));
+        assert_eq!(name("aider"), Some("aider".into()));
+        assert_eq!(name("make"), None);
+        assert_eq!(name("node"), None);
+        assert_eq!(name(""), None);
+    }
 
     fn e(value: &str) -> Entry {
         Entry {

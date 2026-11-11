@@ -87,6 +87,13 @@ pub struct SavedSession {
         deserialize_with = "tab_color::lenient"
     )]
     pub color: Option<TabColor>,
+    /// The folder it was last in (M11u): a reopen starts there, if it still exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// The agent that ran in it when saved, by its preset's name (M11u: typed at the prompt,
+    /// not started from a preset); "agents" restore starts it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// Everything saved about the workspace.
@@ -212,8 +219,20 @@ pub fn decode(text: &str) -> Option<SavedState> {
         .filter(|s| (1..=VERSION).contains(&s.version))
 }
 
+/// The sessions file: the released app's, or a test build's own (debug: `cargo run`), so a
+/// test build never overwrites the real one (2026-11-11).
 pub fn state_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/fuxx/sessions.json")
+    state_path_for(home, cfg!(debug_assertions))
+}
+
+/// The sessions file for a test build (`dev`) or the released app.
+pub fn state_path_for(home: &Path, dev: bool) -> PathBuf {
+    let name = if dev {
+        "sessions-dev.json"
+    } else {
+        "sessions.json"
+    };
+    home.join("Library/Application Support/fuxx").join(name)
 }
 
 /// A session to open: the saved description and whether to run its preset command.
@@ -239,10 +258,13 @@ pub fn launch(saved: &SavedSession, mode: RestoreMode, presets: &[Preset]) -> Op
     if mode == RestoreMode::Off {
         return None;
     }
+    // Its preset, else the agent that ran in it (M11u), looked up in today's presets.
     let preset = saved
         .preset
         .as_ref()
-        .and_then(|p| presets.iter().find(|today| today.name == p.name))
+        .map(|p| p.name.as_str())
+        .or(saved.agent.as_deref())
+        .and_then(|name| presets.iter().find(|today| today.name == name))
         .cloned();
     Some(Launch {
         run_preset: mode == RestoreMode::Agents && preset.is_some(),
@@ -397,6 +419,8 @@ mod tests {
                     daemon_id: Some(4),
                     ssh: None,
                     color: Some(TabColor::Teal),
+                    cwd: None,
+                    agent: None,
                 },
             ],
             layouts: vec![
@@ -605,6 +629,53 @@ mod tests {
         assert!(!gone[1].run_preset);
     }
 
+    /// An agent typed at the prompt (no preset) is saved by its preset's name and started again
+    /// by "agents" restore (M11u, 2026-11-11); never by Layout, and never anything that isn't
+    /// a preset.
+    #[test]
+    fn an_agent_typed_at_the_prompt_comes_back_with_agents_restore() {
+        let typed = SavedSession {
+            project: Some("/w/api".into()),
+            cwd: Some("/w/api/src".into()),
+            agent: Some("claude".into()),
+            ..SavedSession::default()
+        };
+        let agents = launch(&typed, RestoreMode::Agents, &builtins()).unwrap();
+        assert!(agents.run_preset);
+        assert_eq!(
+            agents.saved.preset.map(|p| p.command),
+            Some("claude".into())
+        );
+        let layout = launch(&typed, RestoreMode::Layout, &builtins()).unwrap();
+        assert!(!layout.run_preset);
+        // A name no preset has (a stale file, a removed preset): a plain shell.
+        let stale = SavedSession {
+            agent: Some("make".into()),
+            ..typed.clone()
+        };
+        assert!(
+            !launch(&stale, RestoreMode::Agents, &builtins())
+                .unwrap()
+                .run_preset
+        );
+        // The folder round-trips; an old file without it loads.
+        let state = SavedState {
+            sessions: vec![typed.clone()],
+            ..sample()
+        };
+        let back = decode(&encode(&state)).unwrap();
+        assert_eq!(back.sessions[0].cwd, typed.cwd);
+        assert_eq!(back.sessions[0].agent, typed.agent);
+        let old = SavedSession::default();
+        assert!(
+            !encode(&SavedState {
+                sessions: vec![old],
+                ..sample()
+            })
+            .contains("\"cwd\"")
+        );
+    }
+
     fn devbox(tmux: bool) -> SshTarget {
         SshTarget {
             host: "devbox".into(),
@@ -667,11 +738,23 @@ mod tests {
         assert_eq!(back[1].saved.color, Some(TabColor::Teal));
     }
 
+    /// The released app keeps `sessions.json`; a test build (`cargo run`, debug) its own
+    /// `sessions-dev.json`, so testing never overwrites your real sessions (2026-11-11, your
+    /// report: a reopen came back with another state).
     #[test]
-    fn state_path_is_in_application_support() {
+    fn state_path_is_in_application_support_and_a_test_build_has_its_own() {
+        let home = Path::new("/Users/me");
         assert_eq!(
-            state_path(Path::new("/Users/me")),
+            state_path_for(home, false),
             PathBuf::from("/Users/me/Library/Application Support/fuxx/sessions.json")
+        );
+        assert_eq!(
+            state_path_for(home, true),
+            PathBuf::from("/Users/me/Library/Application Support/fuxx/sessions-dev.json")
+        );
+        assert_eq!(
+            state_path(home),
+            state_path_for(home, cfg!(debug_assertions))
         );
     }
 
