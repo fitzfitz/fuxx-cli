@@ -22,6 +22,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-11 — The README, rewritten
+- **Did:** On your word ("update my readme directly on master… our logo, our name, our features and version… fun to read… 'Your not-so-friendly neighborhood CLI'"): README.md rewritten on master: the 3D Cyber app icon, the name and tagline, version 0.7.1 and badges, a step-by-step install for any Mac (download, Applications, the one-time Open Anyway, auto-updates; moving settings to a new Mac), the features by theme, scripting, settings, keys. Every key and command name in it checked against the code.
+- **Next:** the two save fixes you asked about (the test build's own sessions file; saving each terminal's folder and agent, M11u), on your word.
+
 ### 2026-11-11 — v0.7.1 released (M11t preview tabs)
 - **Did:** On your word ("commit dan push dan deploy", "ok lanjut push dan release"): M11t committed and pushed (`640f7a7`), bumped to 0.7.1 (`2fffd93`), tagged `v0.7.1`. Release run 42969981420 first failed in `test` on `terminal::daemon_tests::attaching_to_a_busy_session_matches_the_daemon` ("attached too late": the 20 000-line loop finished before the attach on a fast runner; the same commit's master run passed), nothing published; its failed job re-run (same tag, no change) went green. Release: https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.7.1, asset `fuxx-0.7.1.zip`. Local ui-shots: all scenes but the old title-bar one pass.
 - **Found:** that daemon test is timing-flaky on fast machines (its loop can finish before the attach); worth a longer loop later. Not fixed (out of the current milestone).
