@@ -1,6 +1,6 @@
 # Milestone 11u — Restore Where You Were
 
-**Status:** 🟨 built on master 2026-11-11; waiting for your check.
+**Status:** 🟨 built 2026-11-11, released in **v0.7.2** (2026-11-11); waiting for your check.
 **Asked for:** 2026-11-11, by you: "can you check did our save session working? my current session setting is on +
 agent, but when I reopen it it reset to I don't know when the last saved" → (both causes found) "ya dua-duanya. tapi
 bagaimana dengan performance?" → "ya, kerjakan dua-duanya".
