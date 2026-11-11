@@ -14,7 +14,7 @@
   <img alt="Version 0.7.1" src="https://img.shields.io/badge/version-0.7.1-0f172a">
   <img alt="macOS 11+" src="https://img.shields.io/badge/macOS-11%2B-black?logo=apple">
   <img alt="Apple Silicon and Intel" src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-555">
-  <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-b7410e?logo=rust">
+  <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-b7410e?logo=rust"><img alt="and Love" src="https://img.shields.io/badge/n-Love%20%E2%9D%A4-e11d48">
 </p>
 
 ---
