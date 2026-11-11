@@ -58,6 +58,11 @@ pub struct Appearance {
     /// `command-blocks = on|off`: new terminals' zsh gets fuxx's integration, and the window
     /// draws command blocks (default on, M11l).
     pub command_blocks: bool,
+    /// `sound-enter` / `sound-ctrl-c` (M11s): each key's sound link, as typed (`SoundKey::ALL`
+    /// order); empty: none.
+    pub sound_links: [String; 2],
+    /// `sound-enter-on` / `sound-ctrl-c-on`: each key's sound switched on (the default) or off.
+    pub sound_on: [bool; 2],
 }
 
 impl Global for Appearance {}
@@ -216,6 +221,30 @@ fn browser_address_bar_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
 /// `browser-keep-data`, off by default (see `switch_from_entries`).
 fn browser_keep_data_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "browser-keep-data", false)
+}
+
+/// `sound-enter` and `sound-ctrl-c` (M11s), in `SoundKey::ALL` order: each key's last line (a
+/// blank one clears it); empty when it has none.
+fn sound_links_from_entries(entries: &[Entry]) -> [String; 2] {
+    crate::sounds::SoundKey::ALL.map(|key| {
+        entries
+            .iter()
+            .rev()
+            .find(|e| e.key == key.key())
+            .map_or_else(String::new, |e| e.value.trim().to_string())
+    })
+}
+
+/// `sound-enter-on` and `sound-ctrl-c-on` (M11s): each key's sound is on unless switched off
+/// (see `switch_from_entries`), in `SoundKey::ALL` order.
+fn sound_on_from_entries(entries: &[Entry]) -> ([bool; 2], Vec<String>) {
+    let mut warnings = vec![];
+    let on = crate::sounds::SoundKey::ALL.map(|key| {
+        let (on, w) = switch_from_entries(entries, key.switch_key(), true);
+        warnings.extend(w);
+        on
+    });
+    (on, warnings)
 }
 
 /// `check-updates`, on by default (see `switch_from_entries`).
@@ -381,6 +410,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (cursor_follows_status, cursor_color_warnings) = cursor_color_from_entries(&entries);
     let (cursor_fun, cursor_fun_warnings) = cursor_fun_from_entries(&entries);
     let (command_blocks, command_blocks_warnings) = command_blocks_from_entries(&entries);
+    let (sound_on, sound_on_warnings) = sound_on_from_entries(&entries);
     for warning in preset_warnings
         .iter()
         .chain(&restore_warnings)
@@ -396,6 +426,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&cursor_color_warnings)
         .chain(&cursor_fun_warnings)
         .chain(&command_blocks_warnings)
+        .chain(&sound_on_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
     }
@@ -422,6 +453,8 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         cursor_follows_status,
         cursor_fun,
         command_blocks,
+        sound_links: sound_links_from_entries(&entries),
+        sound_on,
     }
 }
 
@@ -448,6 +481,46 @@ impl Global for ShotsHome {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_key_s_sound_is_on_unless_switched_off() {
+        let e = |key: &str, value: &str| Entry {
+            key: key.into(),
+            value: value.into(),
+        };
+        assert_eq!(sound_on_from_entries(&[]), ([true, true], vec![]));
+        let (on, warnings) =
+            sound_on_from_entries(&[e("sound-enter-on", "off"), e("sound-ctrl-c-on", "loud")]);
+        assert_eq!(on, [false, true]);
+        assert_eq!(warnings.len(), 1, "a junk value warns");
+    }
+
+    #[test]
+    fn each_key_s_sound_is_its_last_line_and_a_blank_one_clears_it() {
+        let e = |key: &str, value: &str| Entry {
+            key: key.into(),
+            value: value.into(),
+        };
+        assert_eq!(
+            sound_links_from_entries(&[]),
+            [String::new(), String::new()]
+        );
+        assert_eq!(
+            sound_links_from_entries(&[
+                e("sound-enter", "~/a.wav"),
+                e("sound-ctrl-c", "https://x.io/b.mp3"),
+                e("sound-enter", "/System/Library/Sounds/Tink.aiff"),
+            ]),
+            [
+                "/System/Library/Sounds/Tink.aiff".to_string(),
+                "https://x.io/b.mp3".to_string()
+            ]
+        );
+        assert_eq!(
+            sound_links_from_entries(&[e("sound-enter", "~/a.wav"), e("sound-enter", "")]),
+            [String::new(), String::new()]
+        );
+    }
 
     fn s(value: &str) -> Entry {
         Entry {

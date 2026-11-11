@@ -1925,6 +1925,14 @@ impl Workspace {
             return;
         };
         match event {
+            // A `cd`: its row's folder and branch now, not at the next 5 s refresh.
+            TerminalEvent::FolderMoved => {
+                let id = self.sessions.items()[index].id;
+                self.places.folder_moved(id);
+                if self.refresh_places(cx) {
+                    cx.notify();
+                }
+            }
             // A held pane's ring stays done.
             TerminalEvent::StatusChanged(new) => {
                 if self.sessions.items()[index].disconnected.is_none() {

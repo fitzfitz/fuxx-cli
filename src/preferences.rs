@@ -29,10 +29,12 @@ use gpui::{
 use crate::appearance::{self, Appearance, CursorFun, CursorShapeSetting};
 use crate::fonts;
 use crate::grid::{self, GridSnapshot};
+use crate::name_input::{NameInput, NameInputEvent};
 use crate::prefs::{self, DEFAULT_CHOICE};
 use crate::restore::RestoreMode;
 use crate::settings;
 use crate::sidebar::small_caps;
+use crate::sounds::{self, SoundKey};
 use crate::terminal::TermDims;
 use crate::terminal_view::{hsla, paint_fixed_screen};
 use crate::theme::{self, Theme, UiColors};
@@ -61,6 +63,8 @@ const LABEL_WIDTH: f32 = 150.0;
 const LABEL_GAP: f32 = 16.0;
 /// The controls' column (as wide as the theme list, name and swatch).
 const CONTROL_WIDTH: f32 = 260.0;
+/// A Sound row (M11s): its switch, link field and ▶, wider than the other controls.
+const SOUND_ROW_WIDTH: f32 = 470.0;
 /// A note under a switch may run the rest of the form's width: the sections with notes have no
 /// preview beside them.
 const NOTE_WIDTH: f32 = FORM_WIDTH - 2.0 * PAD - LABEL_WIDTH - LABEL_GAP;
@@ -137,15 +141,18 @@ pub(crate) enum Section {
     Appearance,
     Sessions,
     Browser,
+    /// Key sounds (M11s).
+    Sound,
 }
 
 impl Section {
     /// In the list's order, top to bottom.
-    pub(crate) const ALL: [Section; 4] = [
+    pub(crate) const ALL: [Section; 5] = [
         Section::General,
         Section::Appearance,
         Section::Sessions,
         Section::Browser,
+        Section::Sound,
     ];
 
     pub(crate) fn title(self) -> &'static str {
@@ -154,6 +161,7 @@ impl Section {
             Section::Appearance => "Appearance",
             Section::Sessions => "Sessions",
             Section::Browser => "Browser",
+            Section::Sound => "Sound",
         }
     }
 
@@ -185,6 +193,7 @@ impl Section {
                 Switch(OnOff::CommandBlocks),
             ],
             Section::Browser => &[Switch(OnOff::AddressBar), Switch(OnOff::KeepData)],
+            Section::Sound => &[Sound(SoundKey::Enter), Sound(SoundKey::CtrlC)],
         }
     }
 
@@ -243,6 +252,8 @@ enum Control {
     /// Off, Trail or Sparks (`cursor-fun`).
     CursorFun,
     Switch(OnOff),
+    /// A key's sound link (M11s): a field, ▶, and the problem under it.
+    Sound(SoundKey),
 }
 
 impl Control {
@@ -257,6 +268,7 @@ impl Control {
             Control::CursorHeading => "Cursor",
             Control::CursorStyle => "Style",
             Control::CursorFun => "Fun",
+            Control::Sound(key) => key.label(),
             Control::Switch(OnOff::Animations) => "Animations",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
@@ -280,6 +292,8 @@ impl Control {
             Control::Switch(OnOff::CursorGlide) => "Cursor glide",
             Control::Switch(OnOff::CursorGlow) => "Cursor breathing glow",
             Control::Switch(OnOff::CursorColor) => "Cursor colour follows the agent",
+            Control::Sound(SoundKey::Enter) => "Sound for Enter",
+            Control::Sound(SoundKey::CtrlC) => "Sound for Ctrl + C",
             other => other.label(),
         })
     }
@@ -306,6 +320,7 @@ impl Control {
             Control::CursorHeading => (None, &[]),
             Control::CursorStyle => (None, &["cursor-style", "bar", "block", "underline"]),
             Control::CursorFun => (None, &["cursor-fun", "trail", "sparks"]),
+            Control::Sound(key) => (Some(key.key()), &["sound", "audio", "key"]),
         };
         key.into_iter().chain(more.iter().copied()).collect()
     }
@@ -326,6 +341,8 @@ impl Control {
             Control::Font => FONT_LIST,
             Control::Size | Control::TipsCard => SIZE_ROW,
             Control::CursorHeading => GROUP_HEADER,
+            // The field, and a line under it kept for its problem.
+            Control::Sound(_) => SWITCH + NOTE,
             Control::Ligatures
             | Control::Restore
             | Control::CursorStyle
@@ -347,6 +364,7 @@ impl Control {
             | Control::Restore
             | Control::CursorStyle
             | Control::CursorFun
+            | Control::Sound(_)
             | Control::Switch(_) => SWITCH,
         }
     }
@@ -586,6 +604,10 @@ pub struct PreferencesView {
     _appearance: Subscription,
     /// Keeps `tips_dismissed` in step with the workspace.
     _workspace: Option<Subscription>,
+    /// Each key's sound link field (M11s, `SoundKey::ALL` order).
+    sound_inputs: Vec<gpui::Entity<NameInput>>,
+    /// Saves a field on Enter or as it loses focus; redraws when a sound loads or fails.
+    _sounds: Vec<Subscription>,
 }
 
 impl PreferencesView {
@@ -651,6 +673,45 @@ impl PreferencesView {
         let fonts = prefs::font_choices(&installed, &is_mono, current);
         let default_family = fonts::gpui_font(&fonts::from_entries(&[]), &installed).family;
 
+        // The sound fields: saved on Enter, and as they lose focus; Escape puts back what was
+        // saved (M11s).
+        let links = cx.global::<Appearance>().sound_links.clone();
+        let sound_inputs: Vec<gpui::Entity<NameInput>> = SoundKey::ALL
+            .iter()
+            .map(|&key| {
+                let text = links[key as usize].clone();
+                cx.new(|cx| NameInput::new(text, window, cx))
+            })
+            .collect();
+        let mut sound_subs: Vec<Subscription> = SoundKey::ALL
+            .iter()
+            .zip(&sound_inputs)
+            .map(|(&key, input)| {
+                cx.subscribe_in(input, window, move |_, input, event, window, cx| {
+                    let saved = cx.global::<Appearance>().sound_links[key as usize].clone();
+                    let text = match event {
+                        NameInputEvent::Confirm(text) => text.clone(),
+                        // Escape (the box still has focus): back to what was saved.
+                        NameInputEvent::Cancel
+                            if gpui::Focusable::focus_handle(input.read(cx), cx)
+                                .is_focused(window) =>
+                        {
+                            input.update(cx, |input, cx| {
+                                input.set_text(saved);
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        NameInputEvent::Cancel => input.read(cx).text().to_string(),
+                    };
+                    if text.trim() != saved {
+                        apply(cx, key.key(), &sounds::values(&text));
+                    }
+                })
+            })
+            .collect();
+        sound_subs.push(cx.observe_global::<sounds::Sounds>(|_, cx| cx.notify()));
+
         Self {
             focus_handle,
             section,
@@ -664,6 +725,8 @@ impl PreferencesView {
             tips_dismissed,
             _appearance: appearance_sub,
             _workspace: workspace_sub,
+            sound_inputs,
+            _sounds: sound_subs,
         }
     }
 
@@ -875,6 +938,7 @@ impl PreferencesView {
             Control::CursorStyle => cursor_style_switch(ui, cx).into_any_element(),
             Control::CursorFun => cursor_fun_switch(ui, cx).into_any_element(),
             Control::Switch(s) => on_off_switch(s, ui, cx).into_any_element(),
+            Control::Sound(key) => self.sound_row(key, ui, cx).into_any_element(),
         };
         let element = if control.note().is_empty() {
             element
@@ -888,6 +952,77 @@ impl PreferencesView {
             element,
             ui,
         )
+    }
+
+    /// A key's sound (M11s): its link's field and ▶ (plays it), and under them what's wrong
+    /// (no such file, not a sound, the download failed) or that it is downloading.
+    fn sound_row(&self, key: SoundKey, ui: UiColors, cx: &Context<Self>) -> Div {
+        let input = self.sound_inputs[key as usize].clone();
+        let problem = sounds::problem(key, cx);
+        // Empty: what goes in it.
+        let empty = cx.global::<Appearance>().sound_links[key as usize].is_empty();
+        let hint = (problem.is_none() && empty).then_some(sounds::HINT);
+        let field = div()
+            .flex_1()
+            .min_w(px(0.0))
+            .h(px(SWITCH))
+            .flex()
+            .items_center()
+            .child(input);
+        let play = div()
+            .id(("sound-play", key as usize))
+            .flex_none()
+            .size(px(SWITCH))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(hsla(ui.sidebar_border))
+            .text_color(hsla(ui.text_dim))
+            .cursor_pointer()
+            .hover(|s| s.bg(hsla(ui.row_hover)).text_color(hsla(ui.text)))
+            .child("\u{25b6}")
+            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| sounds::play(key, cx)));
+        // On / Off (2026-11-11, your call): off silences the key and keeps its link.
+        let on_now = cx.global::<Appearance>().sound_on[key as usize];
+        let choice = |label: &'static str, on: bool| {
+            option((key.switch_key(), usize::from(on)), on == on_now, ui)
+                .child(label)
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    if cx.global::<Appearance>().sound_on[key as usize] != on {
+                        apply(cx, key.switch_key(), &sounds::switch_values(on));
+                    }
+                }))
+        };
+        let toggle = switch(ui)
+            .child(choice("On", true))
+            .child(choice("Off", false));
+        div()
+            .w(px(SOUND_ROW_WIDTH))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(toggle)
+                    .child(field)
+                    .child(play),
+            )
+            .child(
+                div()
+                    .h(px(NOTE))
+                    .flex()
+                    .items_end()
+                    .text_size(px(text::META))
+                    .text_color(hsla(match problem {
+                        Some(sounds::DOWNLOADING) | None => ui.text_faint,
+                        _ => ui.ring_waiting,
+                    }))
+                    .children(problem.or(hint)),
+            )
     }
 
     /// "Show the tips card again"; greyed, with "Shown" beside it, while the card shows.
@@ -1008,6 +1143,7 @@ impl Render for PreferencesView {
         };
 
         div()
+            .key_context("Preferences")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|_, _: &CloseSession, window, _| window.remove_window()))
             .on_key_down(cx.listener(Self::on_key_down))
@@ -1609,11 +1745,11 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        assert_eq!(all.len(), 17);
+        assert_eq!(all.len(), 19);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 17, "names unique");
+        assert_eq!(names.len(), 19, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -1755,7 +1891,10 @@ mod tests {
         use Control::*;
         // The sections, in order, and what each holds (the 2026-11-06 amendment to note 53).
         let titles: Vec<&str> = Section::ALL.iter().map(|s| s.title()).collect();
-        assert_eq!(titles, ["General", "Appearance", "Sessions", "Browser"]);
+        assert_eq!(
+            titles,
+            ["General", "Appearance", "Sessions", "Browser", "Sound"]
+        );
         assert_eq!(
             Section::General.controls(),
             [
@@ -1791,6 +1930,11 @@ mod tests {
             Section::Browser.controls(),
             [Switch(OnOff::AddressBar), Switch(OnOff::KeepData)]
         );
+        // Key sounds (M11s): Enter, then Ctrl + C.
+        assert_eq!(
+            Section::Sound.controls(),
+            [Sound(SoundKey::Enter), Sound(SoundKey::CtrlC)]
+        );
         // Every control, in exactly one section, under its own label.
         let every = [
             Theme,
@@ -1811,6 +1955,8 @@ mod tests {
             Switch(OnOff::CursorGlide),
             Switch(OnOff::CursorGlow),
             Switch(OnOff::CursorColor),
+            Sound(SoundKey::Enter),
+            Sound(SoundKey::CtrlC),
         ];
         let listed: Vec<Control> = Section::ALL
             .iter()
@@ -1829,7 +1975,8 @@ mod tests {
         // The arrow keys move through the list and stop at its ends.
         assert_eq!(Section::General.step(true), Section::Appearance);
         assert_eq!(Section::Sessions.step(false), Section::Appearance);
-        assert_eq!(Section::Browser.step(true), Section::Browser);
+        assert_eq!(Section::Browser.step(true), Section::Sound);
+        assert_eq!(Section::Sound.step(true), Section::Sound);
         assert_eq!(Section::General.step(false), Section::General);
         // A fresh run opens on General.
         assert_eq!(Section::default(), Section::General);

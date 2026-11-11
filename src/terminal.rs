@@ -12,7 +12,7 @@
 //! Either way the bytes go through `blocks::advance`, which writes the command-block tags of a
 //! shell's OSC 133 marks into the grid (M11l), as the background service does for its own Term.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -264,7 +264,7 @@ struct LocalFeed {
     detector: OscDetector,
     reports: CwdReports,
     /// The working folder the program last reported, for `TerminalCore::reported_cwd`.
-    cwd: Arc<Mutex<Option<CwdReport>>>,
+    cwd: Arc<CwdCell>,
     gate: Arc<OutputGate>,
     events: UnboundedSender<TermEvent>,
 }
@@ -272,7 +272,7 @@ struct LocalFeed {
 impl LocalFeed {
     fn new(
         shared: Arc<FairMutex<Shared>>,
-        cwd: Arc<Mutex<Option<CwdReport>>>,
+        cwd: Arc<CwdCell>,
         gate: Arc<OutputGate>,
         events: UnboundedSender<TermEvent>,
     ) -> Self {
@@ -291,7 +291,7 @@ impl LocalFeed {
     fn batch(&mut self, bytes: &[u8]) {
         let notifications = self.detector.feed(bytes);
         if let Some(dir) = self.reports.feed(bytes) {
-            *self.cwd.lock().unwrap() = Some(dir);
+            self.cwd.store(dir);
         }
         {
             let mut guard = self.shared.lock();
@@ -446,7 +446,33 @@ pub struct TerminalCore {
     theme: Arc<Mutex<Theme>>,
     /// The working folder the program last reported (OSC 7) and the host it named, kept by
     /// the thread that reads its output.
-    cwd: Arc<Mutex<Option<CwdReport>>>,
+    cwd: Arc<CwdCell>,
+}
+
+/// The working folder the program last reported (OSC 7), kept by the thread that reads its
+/// output, and how many times it changed (a report of the same folder isn't a change).
+#[derive(Default)]
+pub struct CwdCell {
+    report: Mutex<Option<CwdReport>>,
+    changes: AtomicU64,
+}
+
+impl CwdCell {
+    fn store(&self, dir: CwdReport) {
+        let mut report = self.report.lock().unwrap();
+        if report.as_ref() != Some(&dir) {
+            *report = Some(dir);
+            self.changes.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    fn get(&self) -> Option<CwdReport> {
+        self.report.lock().unwrap().clone()
+    }
+
+    fn changes(&self) -> u64 {
+        self.changes.load(Ordering::Acquire)
+    }
 }
 
 impl TerminalCore {
@@ -473,7 +499,7 @@ impl TerminalCore {
 
         let eof_events = events.clone();
         let exit = pty.exit_waiter();
-        let cwd = Arc::new(Mutex::new(None));
+        let cwd = Arc::new(CwdCell::default());
         let gate = Arc::new(OutputGate::default());
         let mut feed = LocalFeed::new(shared.clone(), cwd.clone(), gate.clone(), events);
         pty::spawn_reader(
@@ -596,7 +622,7 @@ impl TerminalCore {
         std::thread::Builder::new()
             .name(format!("fuxx-pump-s{id}"))
             .spawn(move || pump(&pending, &queued, &pumping, id, token))?;
-        let cwd = Arc::new(Mutex::new(None));
+        let cwd = Arc::new(CwdCell::default());
         let replica = Replica {
             id,
             listener,
@@ -724,7 +750,13 @@ impl TerminalCore {
 
     /// The working folder the program last reported (OSC 7), if it ever did.
     pub fn reported_cwd(&self) -> Option<CwdReport> {
-        self.cwd.lock().unwrap().clone()
+        self.cwd.get()
+    }
+
+    /// How many times the reported folder has changed: a cheap way to hear of a `cd` (the
+    /// sidebar looks the row up again at once, 2026-11-11).
+    pub fn cwd_changes(&self) -> u64 {
+        self.cwd.changes()
     }
 
     /// Local: the child's process id. Daemon: none (the background service runs it).
@@ -1043,7 +1075,7 @@ struct Replica {
     exit_code: Option<u32>,
     /// The working-folder reports in the session's output (a snapshot has none), and the last.
     reports: CwdReports,
-    cwd: Arc<Mutex<Option<CwdReport>>>,
+    cwd: Arc<CwdCell>,
 }
 
 impl Replica {
@@ -1131,7 +1163,7 @@ impl Replica {
                     clears.feed(&bytes);
                 }
                 if let Some(dir) = self.reports.feed(&bytes) {
-                    *self.cwd.lock().unwrap() = Some(dir);
+                    self.cwd.store(dir);
                 }
                 let notifications = usize::try_from(notifications).unwrap_or(usize::MAX);
                 self.emit(TermEvent::Output { notifications });
@@ -1304,6 +1336,25 @@ mod clear_equivalence {
 mod tests {
     use super::*;
     use crate::pty::BATCH_MAX;
+
+    /// A report counts as a change only when it names another folder (or host): the same
+    /// folder at every prompt changes nothing (2026-11-11).
+    #[test]
+    fn a_folder_report_changes_the_count_only_when_the_folder_changes() {
+        let cell = CwdCell::default();
+        let at = |path: &str| CwdReport {
+            host: "mac".into(),
+            path: path.into(),
+        };
+        assert_eq!((cell.get(), cell.changes()), (None, 0));
+        cell.store(at("/w/api"));
+        assert_eq!(cell.changes(), 1);
+        cell.store(at("/w/api"));
+        cell.store(at("/w/api"));
+        assert_eq!(cell.changes(), 1, "the same folder again");
+        cell.store(at("/w/api/src"));
+        assert_eq!((cell.get(), cell.changes()), (Some(at("/w/api/src")), 2));
+    }
     use alacritty_terminal::index::{Column, Line, Point, Side};
     use alacritty_terminal::selection::SelectionType;
     use futures::channel::mpsc::{UnboundedReceiver, unbounded};
@@ -1556,7 +1607,7 @@ mod tests {
         let (tx, _rx) = unbounded();
         let mut feed = LocalFeed::new(
             batched.shared.clone(),
-            Arc::new(Mutex::new(None)),
+            Arc::new(CwdCell::default()),
             Arc::new(OutputGate::default()),
             tx,
         );

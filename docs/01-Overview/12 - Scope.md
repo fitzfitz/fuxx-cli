@@ -75,6 +75,10 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   badge, the program's title under the name, an Open button on a waiting row, lettered group headers with the branch,
   borderless cards, a "Jump to a workspace…" button (⌘P) and a "New Fuxxpace" button. Not in it: a filter strip, a
   progress shimmer, reading the screen's last line. See [[69 - Milestone 11r - Premium Sidebar]].
+- **Key sounds** (M11s, asked for 2026-11-10 by you: "disetting tambah 1 tab namanya sound…"; "New milestone, next";
+  "ok setuju, lanjut kerjakan sound tab"): Settings → Sound lists Enter and Ctrl + C, each with a link (a file or a
+  web link, downloaded once and kept) that plays when that key is pressed in a terminal. Not in it: other keys,
+  volume, per-agent sounds. See [[70 - Milestone 11s - Key Sounds]].
 - **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
   design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.

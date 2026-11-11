@@ -1736,9 +1736,9 @@ mod tests {
         let settings = f.compose(Scope::Settings, "");
         assert_eq!(
             headers(&settings),
-            ["General", "Appearance", "Sessions", "Browser"]
+            ["General", "Appearance", "Sessions", "Browser", "Sound"]
         );
-        assert_eq!(keys(&settings).len(), 17);
+        assert_eq!(keys(&settings).len(), 19);
 
         let root = Path::new("/w/fuxx-cli");
         let ready = |hits, total, capped| Files::Ready {

@@ -74,6 +74,16 @@ line (see the AI's calls, 2); ⌘P (the key that exists) instead of ⌘K; the �
   `cd` as the folder is looked up (`relative_place`, `LineTwo::Here`). A working row still says "Working…".
 - The group header's letter tile is a folder icon (open while the group is open), or a globe for an SSH host.
 
+## Fixes after your check (2026-11-11)
+
+- The line in a folder's group showed `./` ("folder information seems not correct"): it now shows the real folder
+  the terminal is in, as the prompt says it (`~/Kerja/learn-fe`), following `cd`.
+- The × showed on hovering anywhere on the row: it now shows only while the pointer is on the avatar.
+- A `cd` took up to 5 s to show ("why is that when I change folder on a terminal, it takes 3 seconds"): the rows'
+  folders were looked up on a 5 s timer only. Now a changed folder report (OSC 7) refreshes that row at once
+  (`CwdCell` counts changes, the view emits `FolderMoved`, `Places::folder_moved`); a report of the same folder does
+  nothing; the branch is still asked at most once per folder per 5 s; the timer stays for shells that don't report.
+
 ## Performance
 
 No new timers, no polling. Avatars, tiles and badges are a few rectangles and text per row. The badge animations
