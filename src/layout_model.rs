@@ -147,6 +147,9 @@ pub struct Model {
     workspaces: Vec<Workspace>,
     focused: Option<WorkspaceId>,
     next_id: u64,
+    /// The panes' preview tabs (M11t): at most one per pane, a file tab a single click shows
+    /// and the next single click shows another file in. Not saved.
+    previews: Vec<TabId>,
 }
 
 /// The saved-file version that holds workspaces (version 1 held sessions and their layouts).
@@ -397,9 +400,69 @@ impl Model {
             pane,
             tab: tab.id,
         };
+        // Opened for good (a double click on what a single click previewed): kept.
+        self.pin(opened.tab);
         self.set_file_mode(opened.tab, mode);
         self.select_tab(opened.tab);
         Some(opened)
+    }
+
+    /// Preview file `path` in `pane` in `mode` (M11t: a single click): the pane's tab that
+    /// already shows it is selected (a kept one stays kept); else the pane's preview tab shows
+    /// it instead; else a new tab at the end of its bar becomes the pane's preview. None when
+    /// `pane` is unknown.
+    pub fn preview_file(&mut self, pane: PaneId, path: PathBuf, mode: FileMode) -> Option<Opened> {
+        let w = self.index_of_pane(pane)?;
+        let ws = &self.workspaces[w];
+        let tabs = &ws.pane(pane)?.tabs;
+        let showing = tabs
+            .iter()
+            .find(|t| matches!(&t.kind, TabKind::File { path: p, .. } if *p == path))
+            .map(|t| t.id);
+        let preview = tabs
+            .iter()
+            .map(|t| t.id)
+            .find(|id| self.previews.contains(id));
+        let workspace = ws.id;
+        let tab = match (showing, preview) {
+            (Some(tab), _) => {
+                self.set_file_mode(tab, mode);
+                tab
+            }
+            (None, Some(tab)) => {
+                let t = self
+                    .workspaces
+                    .iter_mut()
+                    .flat_map(|w| &mut w.panes)
+                    .flat_map(|p| &mut p.tabs)
+                    .find(|t| t.id == tab)?;
+                t.kind = TabKind::File { path, mode };
+                tab
+            }
+            (None, None) => {
+                let opened = self.add_tab(pane, TabKind::File { path, mode })?;
+                self.previews.push(opened.tab);
+                return Some(opened);
+            }
+        };
+        self.select_tab(tab);
+        Some(Opened {
+            workspace,
+            pane,
+            tab,
+        })
+    }
+
+    /// Whether `tab` is its pane's preview tab (M11t: drawn in italics).
+    pub fn is_preview(&self, tab: TabId) -> bool {
+        self.previews.contains(&tab) && self.tab(tab).is_some()
+    }
+
+    /// Keep `tab`: no longer its pane's preview. False when it wasn't one.
+    pub fn pin(&mut self, tab: TabId) -> bool {
+        let before = self.previews.len();
+        self.previews.retain(|&t| t != tab);
+        self.previews.len() != before
     }
 
     /// Show file tab `tab` in `mode`. False when `tab` is unknown, not a file tab, or already
@@ -1032,6 +1095,8 @@ impl Model {
     /// empty; the focus moves per `close_tab`.
     fn take_tab(&mut self, tab: TabId) -> Option<(Tab, Closed)> {
         let (_, pane) = self.locate(tab)?;
+        // Closed or moved to another pane: no longer a preview.
+        self.pin(tab);
         let w = self.index_of_pane(pane)?;
         let mut closed = Closed::default();
         let ws = &mut self.workspaces[w];
@@ -2935,6 +3000,72 @@ mod tests {
         ok(&m);
         assert!(m.terminals(only.workspace).is_empty());
         let _ = b;
+    }
+
+    /// A single click previews a file (M11t, 2026-11-11, your call): the pane's one preview tab
+    /// shows it, replaced by the next preview; opening it (a double click) keeps it.
+    #[test]
+    fn a_preview_tab_is_reused_until_a_file_is_opened_for_good() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let p = |path: &str| PathBuf::from(path);
+        let first = m
+            .preview_file(a.pane, p("/w/a.rs"), FileMode::Plain)
+            .unwrap();
+        ok(&m);
+        assert!(m.is_preview(first.tab));
+        assert_eq!(m.focused_tab(), Some(first.tab));
+        // Another preview: the same tab, now showing b.
+        let second = m
+            .preview_file(a.pane, p("/w/b.rs"), FileMode::Plain)
+            .unwrap();
+        assert_eq!(second.tab, first.tab);
+        assert_eq!(tab_kinds(&m, a.pane), [term(1), file("/w/b.rs")]);
+        // Opened for good (the double click): the same tab, no longer a preview.
+        let kept = m.open_file(a.pane, p("/w/b.rs"), FileMode::Plain).unwrap();
+        assert_eq!(kept.tab, first.tab);
+        assert!(!m.is_preview(kept.tab));
+        // The next preview is a new tab; a file already open is only selected.
+        let third = m
+            .preview_file(a.pane, p("/w/c.rs"), FileMode::Plain)
+            .unwrap();
+        assert_ne!(third.tab, kept.tab);
+        assert!(m.is_preview(third.tab));
+        let back = m
+            .preview_file(a.pane, p("/w/b.rs"), FileMode::Plain)
+            .unwrap();
+        assert_eq!(back.tab, kept.tab);
+        assert!(!m.is_preview(kept.tab), "still kept");
+        assert_eq!(
+            tab_kinds(&m, a.pane),
+            [term(1), file("/w/b.rs"), file("/w/c.rs")]
+        );
+        // Pinned by hand; a closed preview is forgotten.
+        assert!(m.pin(third.tab));
+        assert!(!m.is_preview(third.tab));
+        let fourth = m
+            .preview_file(a.pane, p("/w/d.rs"), FileMode::Diff)
+            .unwrap();
+        m.close_tab(fourth.tab);
+        assert!(!m.is_preview(fourth.tab));
+        // Each pane has its own; a preview moved to another pane is kept for good there.
+        let b = m.split(a.pane, Axis::Row, term(2)).unwrap();
+        let here = m
+            .preview_file(a.pane, p("/w/e.rs"), FileMode::Plain)
+            .unwrap();
+        let there = m
+            .preview_file(b.pane, p("/w/f.rs"), FileMode::Plain)
+            .unwrap();
+        assert_ne!(here.tab, there.tab);
+        assert!(m.is_preview(here.tab) && m.is_preview(there.tab));
+        m.move_tab(here.tab, b.pane, 0);
+        assert!(!m.is_preview(here.tab));
+        ok(&m);
+        // An unknown pane previews nothing.
+        assert_eq!(
+            m.preview_file(PaneId(999), p("/w/x"), FileMode::Plain),
+            None
+        );
     }
 
     #[test]

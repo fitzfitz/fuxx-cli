@@ -371,8 +371,9 @@ fn change_row(
         )
         .children(counts)
         .when(opens, |r| {
-            r.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.changes_click(&rel, window, cx)
+            // A single click previews its diff, a double click opens it for good (M11t).
+            r.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.changes_click(&rel, event.click_count() < 2, window, cx)
             }))
         })
         .into_any_element()
@@ -480,11 +481,21 @@ impl Workspace {
 
     /// A click on a Changes row: the file's tab in the focused pane, in Diff mode (that pane's
     /// tab for it selected if it has one); the tab takes the keyboard.
-    fn changes_click(&mut self, rel: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    fn changes_click(
+        &mut self,
+        rel: &Path,
+        preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(root) = self.right_sidebar.changes.root.clone() else {
             return;
         };
-        self.open_file_tab(root.join(rel), FileMode::Diff, window, cx);
+        if preview {
+            self.preview_file_tab(root.join(rel), FileMode::Diff, window, cx);
+        } else {
+            self.open_file_tab(root.join(rel), FileMode::Diff, window, cx);
+        }
         cx.notify();
     }
 

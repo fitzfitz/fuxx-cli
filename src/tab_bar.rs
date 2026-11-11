@@ -84,6 +84,8 @@ pub struct BarTab {
     /// Its tooltip: the title, and for a busy terminal its status and for how long; a file
     /// tab's full path.
     pub tip: String,
+    /// Its pane's preview tab (M11t): its title in italics.
+    pub preview: bool,
 }
 
 /// The icon for a tab of `kind` whose terminal (if any) is `status`.
@@ -144,6 +146,7 @@ pub fn bar_tabs(
                 title,
                 status,
                 active: t.id == pane.active,
+                preview: false,
             }
         })
         .collect()
@@ -344,6 +347,12 @@ impl Workspace {
             },
             |tab| self.browser_titles.get(&tab).map(|t| t.clone().into()),
         )
+        .into_iter()
+        .map(|mut t| {
+            t.preview = self.model.is_preview(t.tab);
+            t
+        })
+        .collect()
     }
 
     /// `pane`'s tab bar: its tabs (scrolling sideways when they don't fit) and, pinned on the
@@ -545,6 +554,8 @@ impl Workspace {
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
+                // A preview (M11t): in italics, until kept.
+                .when(tab.preview, |t| t.italic())
                 .child(tab.title.clone())
                 .into_any_element(),
         };
@@ -614,10 +625,12 @@ impl Workspace {
             })
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.select_tab(id, window, cx);
-                if event.click_count() == 2
-                    && let Some(terminal) = terminal
-                {
-                    this.start_tab_rename(terminal, window, cx);
+                if event.click_count() == 2 {
+                    match terminal {
+                        Some(terminal) => this.start_tab_rename(terminal, window, cx),
+                        // A preview's double click keeps it (M11t).
+                        None => this.pin_tab(id, cx),
+                    }
                 }
             }))
             // A middle-click closes it, like its ×.

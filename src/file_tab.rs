@@ -3273,6 +3273,41 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Preview file `path` in the focused pane in `mode` (M11t: a single click in Files or
+    /// Changes): the pane's tab that shows it, else its preview tab now showing it (a new view
+    /// for the new file), else a new preview tab. It is shown and takes the keyboard.
+    pub(crate) fn preview_file_tab(
+        &mut self,
+        path: PathBuf,
+        mode: FileMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.model.focused_pane() else {
+            return;
+        };
+        let Some(opened) = self.model.preview_file(pane, path.clone(), mode) else {
+            return;
+        };
+        self.sync();
+        match self.file_tabs.get(&opened.tab) {
+            Some(view) if view.read(cx).path == path => {
+                view.update(cx, |view, cx| view.set_mode(mode, None, cx))
+            }
+            _ => self.make_file_tab(opened.tab, path, mode, window, cx),
+        }
+        self.save();
+        self.activate(window, cx);
+        cx.notify();
+    }
+
+    /// Keep tab `tab`: no longer its pane's preview (M11t: a double click on its title).
+    pub(crate) fn pin_tab(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        if self.model.pin(tab) {
+            cx.notify();
+        }
+    }
+
     /// Close file tab `tab` (its ×, ⌘W, its menu): its view goes (`sync`), and the focused tab
     /// takes the keyboard as after any close; with nothing left, the window.
     pub(crate) fn close_file_tab(
@@ -3347,6 +3382,8 @@ impl Workspace {
             move |this, _, event, window, cx| match event {
                 FileTabEvent::Close => this.close_file_tab(tab, window, cx),
                 FileTabEvent::Mode(mode) => {
+                    // Switched File ↔ Diff by hand: kept, no longer a preview (M11t).
+                    this.model.pin(tab);
                     if this.model.set_file_mode(tab, *mode) {
                         this.save();
                     }
