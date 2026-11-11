@@ -1,6 +1,6 @@
 # Milestone 11s — Key Sounds
 
-**Status:** 🟨 built on master 2026-11-10; waiting for your on-screen (and on-ear) check.
+**Status:** 🟨 built 2026-11-10, released in **v0.7.0** (2026-11-11); waiting for your on-screen (and on-ear) check.
 **Asked for:** 2026-11-10, by you: "disetting tambah 1 tab namanya sound. didalam ada daftar key seperti Enter dan
 ctrl + c. dan tiap key ada field text disampingnya. text field akan disimpan dan berupa link sound. fungsinya jika
 user tekan enter, akan bunyi sound sesuai link. sekarang 2 key dulu dalam daftar." Plan: "New milestone, next"

@@ -79,6 +79,10 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   "ok setuju, lanjut kerjakan sound tab"): Settings → Sound lists Enter and Ctrl + C, each with a link (a file or a
   web link, downloaded once and kept) that plays when that key is pressed in a terminal. Not in it: other keys,
   volume, per-agent sounds. See [[70 - Milestone 11s - Key Sounds]].
+- **Preview tabs** (M11t, asked for 2026-11-11 by you: "ketika single klik file apakah bisa buka sementara?…";
+  "commit, push dan deploy release dulu, lalu kerjakan"): a single click in Files or Changes opens a file in the
+  pane's one italic preview tab, replaced by the next single click; a double click opens it for good. Not in it:
+  previews of terminals or pages, a setting. See [[71 - Milestone 11t - Preview Tabs]].
 - **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
   design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.
