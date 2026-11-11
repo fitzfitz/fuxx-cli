@@ -1,6 +1,6 @@
 # Milestone 11v — Branch Bar
 
-**Status:** 🟨 built 2026-11-11 on branch `m11v-branch-bar` (not committed); 1378 tests pass; the `changes-bar` ui-shots draw every state in both themes. Waiting for your on-screen check (below). Plan [[M11v Plan - Branch Bar]].
+**Status:** 🟨 built 2026-11-11 (parts 1–3), pushed (`789fcab`) and **released in v0.8.0** (2026-11-11, run 43001030843); 1398 tests pass. Waiting for your on-screen check (below). Plan [[M11v Plan - Branch Bar]].
 **Asked for:** 2026-11-11, by you: "do you think it's best to put the branch here [the sidebar's group header] or maybe
 we remove it and we improve this [the Changes tab]? we add branch popup picker, we can fetch, pull, etc." →
 "remove it from sidebar, add it to changes tab, we update everything on a new milestone" → three rounds of browser
