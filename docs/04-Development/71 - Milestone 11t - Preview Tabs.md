@@ -1,6 +1,6 @@
 # Milestone 11t — Preview Tabs
 
-**Status:** 🟨 built on master 2026-11-11 (after v0.7.0); waiting for your check.
+**Status:** 🟨 built 2026-11-11, released in **v0.7.1** (2026-11-11); waiting for your check.
 **Asked for:** 2026-11-11, by you: "ketika single klik file apakah bisa buka sementara? jika saya single klik file
 lain, akan ganti file yang terbuka sementara jadi file tersebut. Jika double klik, akan buka permanen seperti
 sekarang?" → "commit, push dan deploy release dulu, lalu kerjakan".
