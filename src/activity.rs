@@ -124,7 +124,7 @@ pub fn entry_text(kind: &Kind) -> String {
     match kind {
         Kind::Status { status, lasted, .. } => match status {
             Status::Idle => "Idle".into(),
-            Status::Working => "Working".into(),
+            Status::Working => "Cultivating".into(),
             Status::Waiting => "Needs input".into(),
             Status::Done => format!("Done \u{2014} {}", lasted_label(*lasted)),
         },
@@ -271,7 +271,7 @@ mod tests {
             lasted: Duration::from_secs(mins * 60),
             question: None,
         };
-        assert_eq!(entry_text(&s(Status::Working, 0)), "Working");
+        assert_eq!(entry_text(&s(Status::Working, 0)), "Cultivating");
         assert_eq!(entry_text(&s(Status::Waiting, 0)), "Needs input");
         assert_eq!(entry_text(&s(Status::Done, 11)), "Done \u{2014} 11 min");
         assert_eq!(entry_text(&s(Status::Idle, 0)), "Idle");

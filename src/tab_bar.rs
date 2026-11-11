@@ -988,6 +988,14 @@ pub(crate) enum Glyph {
     /// The status bar's branch (M11i): a small fork, a trunk with a commit at each end and a
     /// branch leaving it for a third.
     Branch,
+    /// The Changes bar's actions (M11v): an arrow down onto a line (Pull), an arrow up from a
+    /// line (Push), and a cloud with an arrow up into it (Publish). Fetch is `Reload`.
+    Pull,
+    Push,
+    Publish,
+    /// The Changes rows' revert (M11v part 2): an arrow back to the left, turning down and back
+    /// under itself (a U-turn).
+    Revert,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1287,6 +1295,64 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                             chevron.line_to(p(9.5, y + 4.0));
                             paths.push(chevron);
                         }
+                    }
+                    Glyph::Pull | Glyph::Push => {
+                        // The shaft and its head point down (Pull) or up (Push); the line is
+                        // where it lands (below) or leaves from (above).
+                        let down = matches!(kind, Glyph::Pull);
+                        let (from, to, rule) = if down {
+                            (1.5, 8.0, 10.5)
+                        } else {
+                            (10.5, 4.0, 1.5)
+                        };
+                        let mut shaft = stroke();
+                        shaft.move_to(p(6.0, from));
+                        shaft.line_to(p(6.0, to));
+                        paths.push(shaft);
+                        let back = if down { to - 3.0 } else { to + 3.0 };
+                        let mut head = stroke();
+                        head.move_to(p(3.0, back));
+                        head.line_to(p(6.0, to));
+                        head.line_to(p(9.0, back));
+                        paths.push(head);
+                        let mut line = stroke();
+                        line.move_to(p(2.0, rule));
+                        line.line_to(p(10.0, rule));
+                        paths.push(line);
+                    }
+                    Glyph::Publish => {
+                        // A cloud open at the bottom, where the arrow comes up into it.
+                        let mut cloud = stroke();
+                        cloud.move_to(p(4.0, 9.5));
+                        let small = point(px(2.2 * u), px(2.2 * u));
+                        cloud.arc_to(small, px(0.0), false, true, p(3.3, 5.2));
+                        let big = point(px(3.0 * u), px(3.0 * u));
+                        cloud.arc_to(big, px(0.0), false, true, p(9.0, 4.6));
+                        cloud.arc_to(small, px(0.0), false, true, p(8.0, 9.5));
+                        paths.push(cloud);
+                        let mut shaft = stroke();
+                        shaft.move_to(p(6.0, 11.0));
+                        shaft.line_to(p(6.0, 6.0));
+                        paths.push(shaft);
+                        let mut head = stroke();
+                        head.move_to(p(4.2, 7.8));
+                        head.line_to(p(6.0, 6.0));
+                        head.line_to(p(7.8, 7.8));
+                        paths.push(head);
+                    }
+                    Glyph::Revert => {
+                        let mut head = stroke();
+                        head.move_to(p(4.8, 1.8));
+                        head.line_to(p(2.2, 4.4));
+                        head.line_to(p(4.8, 7.0));
+                        paths.push(head);
+                        let mut shaft = stroke();
+                        shaft.move_to(p(2.2, 4.4));
+                        shaft.line_to(p(7.2, 4.4));
+                        let r = point(px(3.0 * u), px(3.0 * u));
+                        shaft.arc_to(r, px(0.0), false, true, p(7.2, 10.4));
+                        shaft.line_to(p(4.5, 10.4));
+                        paths.push(shaft);
                     }
                     Glyph::More => {
                         // Filled dots, as wide as the lines are thick and a little more.

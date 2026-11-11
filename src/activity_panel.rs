@@ -413,7 +413,12 @@ mod tests {
                     "Needs input",
                     Some("Needs input\nProceed? (y/n)")
                 ),
-                row(&at(0), RowMark::Status(Status::Working), "Working", None),
+                row(
+                    &at(0),
+                    RowMark::Status(Status::Working),
+                    "Cultivating",
+                    None
+                ),
             ]
         );
         assert_eq!(at(18), "14:20");

@@ -38,7 +38,7 @@ pub struct RemoteRef {
     pub date: i64,
 }
 
-fn parse_track(s: &str) -> Track {
+pub(crate) fn parse_track(s: &str) -> Track {
     let inner = s.trim().trim_start_matches('[').trim_end_matches(']');
     if inner.is_empty() {
         return Track::Even;

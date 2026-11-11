@@ -172,6 +172,7 @@ impl Section {
         match self {
             Section::General => &[
                 Switch(OnOff::Animations),
+                Switch(OnOff::StatusBar),
                 Switch(OnOff::CheckUpdates),
                 TipsCard,
             ],
@@ -270,6 +271,7 @@ impl Control {
             Control::CursorFun => "Fun",
             Control::Sound(key) => key.label(),
             Control::Switch(OnOff::Animations) => "Animations",
+            Control::Switch(OnOff::StatusBar) => "Status Bar",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
             Control::Switch(OnOff::CommandBlocks) => "Command blocks",
@@ -374,6 +376,8 @@ impl Control {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OnOff {
     Animations,
+    /// `status-bar`: the bar at the window's bottom (M11v part 3).
+    StatusBar,
     CheckUpdates,
     KeepRunning,
     /// `command-blocks`: new terminals' zsh gets fuxx's integration (M11l).
@@ -391,6 +395,7 @@ impl OnOff {
     fn key(self) -> &'static str {
         match self {
             OnOff::Animations => "animations",
+            OnOff::StatusBar => "status-bar",
             OnOff::CheckUpdates => "check-updates",
             OnOff::KeepRunning => "persistent-sessions",
             OnOff::CommandBlocks => "command-blocks",
@@ -406,6 +411,7 @@ impl OnOff {
     fn values(self, on: bool) -> Vec<String> {
         match self {
             OnOff::Animations => prefs::animations_values(on),
+            OnOff::StatusBar => prefs::status_bar_values(on),
             OnOff::CheckUpdates => prefs::check_updates_values(on),
             OnOff::KeepRunning => prefs::persistence_values(on),
             OnOff::CommandBlocks => prefs::command_blocks_values(on),
@@ -421,6 +427,7 @@ impl OnOff {
     fn current(self, a: &Appearance) -> bool {
         match self {
             OnOff::Animations => a.animations,
+            OnOff::StatusBar => a.status_bar,
             OnOff::CheckUpdates => a.check_updates,
             OnOff::KeepRunning => a.persistent,
             OnOff::CommandBlocks => a.command_blocks,
@@ -439,7 +446,7 @@ impl OnOff {
             OnOff::CheckUpdates => &[CHECK_UPDATES_NOTE],
             OnOff::KeepRunning => &[KEEP_NOTE],
             OnOff::CommandBlocks => &[COMMAND_BLOCKS_NOTE],
-            OnOff::AddressBar => &[],
+            OnOff::AddressBar | OnOff::StatusBar => &[],
             OnOff::KeepData => &KEEP_DATA_NOTE,
             OnOff::CursorGlide | OnOff::CursorGlow | OnOff::CursorColor => &[],
         }
@@ -1745,11 +1752,11 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        assert_eq!(all.len(), 19);
+        assert_eq!(all.len(), 20);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 19, "names unique");
+        assert_eq!(names.len(), 20, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -1763,7 +1770,8 @@ mod tests {
         assert!(glow.keywords.contains(&"cursor-glow"));
         assert!(all.iter().all(|s| s.name != "Cursor"));
         assert_eq!(all[0].name, "Animations");
-        assert_eq!(all[16].name, "Keep history and data");
+        assert_eq!(all[1].name, "Status Bar");
+        assert_eq!(all[17].name, "Keep history and data");
         for section in Section::ALL {
             for control in section.controls() {
                 if let Control::Switch(switch) = control {
@@ -1899,6 +1907,7 @@ mod tests {
             Section::General.controls(),
             [
                 Switch(OnOff::Animations),
+                Switch(OnOff::StatusBar),
                 Switch(OnOff::CheckUpdates),
                 TipsCard
             ]
@@ -1947,6 +1956,7 @@ mod tests {
             CursorStyle,
             CursorFun,
             Switch(OnOff::Animations),
+            Switch(OnOff::StatusBar),
             Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),
             Switch(OnOff::CommandBlocks),
@@ -2145,6 +2155,16 @@ mod tests {
             OnOff::CheckUpdates.note(),
             ["Asks GitHub once a day whether a newer fuxx is out."]
         );
+    }
+
+    /// M11v part 3: Settings → General → Status Bar, on by default (only off is written).
+    #[test]
+    fn status_bar_values() {
+        use Control::Switch;
+        assert_eq!(Switch(OnOff::StatusBar).label(), "Status Bar");
+        assert_eq!(OnOff::StatusBar.key(), "status-bar");
+        assert!(OnOff::StatusBar.values(true).is_empty());
+        assert_eq!(OnOff::StatusBar.values(false), ["off"]);
     }
 
     #[test]

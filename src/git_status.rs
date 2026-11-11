@@ -100,6 +100,47 @@ pub fn parse_porcelain(z: &[u8]) -> Vec<(PathBuf, Mark)> {
     out
 }
 
+/// M11v: `git status --porcelain=v1 -z`'s entries split by side (path, mark, staged,
+/// untracked): X (the index) not ` `/`?`
+/// is a staged entry with X's mark; Y (the work tree) not ` ` is an unstaged one with Y's
+/// mark; `??` is unstaged Added; a conflict (`U`, `AA`, `DD`) is one unstaged Modified;
+/// `!!` is skipped. A rename or copy's old path is skipped (`--no-renames` asks for none).
+pub fn parse_sides(z: &[u8]) -> Vec<(PathBuf, Mark, bool, bool)> {
+    let side = |c: u8| match c {
+        b'A' => Mark::Added,
+        b'D' => Mark::Deleted,
+        _ => Mark::Modified,
+    };
+    let mut out = Vec::new();
+    let mut entries = z.split(|&b| b == 0);
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 || entry[2] != b' ' {
+            continue;
+        }
+        let (x, y) = (entry[0], entry[1]);
+        if matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C') {
+            entries.next();
+        }
+        let path = PathBuf::from(OsStr::from_bytes(&entry[3..]));
+        match (x, y) {
+            (b'!', b'!') => {}
+            (b'?', b'?') => out.push((path, Mark::Added, false, true)),
+            (b'U', _) | (_, b'U') | (b'A', b'A') | (b'D', b'D') => {
+                out.push((path, Mark::Modified, false, false))
+            }
+            _ => {
+                if x != b' ' {
+                    out.push((path.clone(), side(x), true, false));
+                }
+                if y != b' ' {
+                    out.push((path, side(y), false, false));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The repo's changed files (paths relative to `root`, a folder of untracked files as one
 /// entry); the caller marks their parent folders. None when git fails or takes longer than the
 /// cap: no answer, not "nothing changed" (the caller keeps the marks it has).
@@ -334,6 +375,12 @@ pub struct Change {
     pub mark: Mark,
     pub counts: Counts,
     pub folder: bool,
+    /// M11v: the staged part (in the index), else the unstaged part (the work tree's). A file
+    /// staged and then edited again is two entries.
+    pub staged: bool,
+    /// Not in the index at all (`??`): reverting it deletes it. A `git add -N` file is Added
+    /// but not untracked.
+    pub untracked: bool,
 }
 
 /// The changed files, sorted, at most `CHANGES_CAP`; `more` is how many were left out.
@@ -410,15 +457,21 @@ pub fn count_lines(path: &Path) -> Counts {
 /// new) file or before the first commit, counted from disk by `count` (`COUNT_FILES_MAX` per
 /// call, then `Unknown`); else `Unknown`. A failed `numstat` is None.
 fn assemble(
-    marks: Vec<(PathBuf, Mark)>,
-    numstat: Option<HashMap<PathBuf, Counts>>,
+    marks: Vec<(PathBuf, Mark, bool, bool)>,
+    staged_numstat: Option<HashMap<PathBuf, Counts>>,
+    unstaged_numstat: Option<HashMap<PathBuf, Counts>>,
     fresh: bool,
     mut count: impl FnMut(&Path) -> Counts,
 ) -> Vec<Change> {
     let mut counted = 0;
     marks
         .into_iter()
-        .map(|(path, mark)| {
+        .map(|(path, mark, staged, untracked)| {
+            let numstat = if staged {
+                &staged_numstat
+            } else {
+                &unstaged_numstat
+            };
             let counts = match numstat.as_ref().and_then(|n| n.get(&path)) {
                 Some(&counts) => counts,
                 None if mark == Mark::Added || fresh => {
@@ -436,6 +489,8 @@ fn assemble(
                 mark,
                 counts,
                 folder: false,
+                staged,
+                untracked,
             }
         })
         .collect()
@@ -457,8 +512,15 @@ pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
             "--no-renames",
         ],
     )?;
-    let mut marks = parse_porcelain(status.as_bytes());
-    marks.sort_by_cached_key(|(path, _)| (path.to_string_lossy().to_lowercase(), path.clone()));
+    let mut marks = parse_sides(status.as_bytes());
+    // M11v: the staged entries first, then the rest, each by path.
+    marks.sort_by_cached_key(|(path, _, staged, _)| {
+        (
+            !*staged,
+            path.to_string_lossy().to_lowercase(),
+            path.clone(),
+        )
+    });
     let more = marks.len().saturating_sub(CHANGES_CAP);
     marks.truncate(CHANGES_CAP);
     // `fresh`: no commits yet, so there is no diff and every file is new. An unknown HEAD
@@ -472,25 +534,29 @@ pub fn changes(git: &Path, root: &Path) -> Option<ChangeList> {
         Some(has_head) => !has_head,
         None => false,
     };
-    let numstat = if fresh {
+    // The staged parts against HEAD (`--cached`), the unstaged against the index. Before the
+    // first commit the staged parts are counted from disk.
+    let numstat = |cached: bool| {
+        let mut args = vec!["diff"];
+        if cached {
+            args.push("--cached");
+        }
+        args.extend([
+            "--numstat",
+            "-z",
+            "--no-renames",
+            "--no-color",
+            "--no-ext-diff",
+        ]);
+        run_git(git, root, &args).map(|out| parse_numstat(out.as_bytes()))
+    };
+    let staged = if fresh {
         Some(HashMap::new())
     } else {
-        run_git(
-            git,
-            root,
-            &[
-                "diff",
-                "HEAD",
-                "--numstat",
-                "-z",
-                "--no-renames",
-                "--no-color",
-                "--no-ext-diff",
-            ],
-        )
-        .map(|out| parse_numstat(out.as_bytes()))
+        numstat(true)
     };
-    let mut list = change_list(marks, more, numstat, fresh, |path| {
+    let unstaged = numstat(false);
+    let mut list = change_list(marks, more, staged, unstaged, fresh, |path| {
         count_lines(&root.join(path))
     });
     for change in &mut list.entries {
@@ -509,15 +575,16 @@ fn is_folder_entry(root: &Path, rel: &Path) -> bool {
 /// The list from status's `marks` (`more` left out) and numstat's answer (None: it failed or
 /// was slow, flagged `counts_failed`), counted as `assemble` does.
 fn change_list(
-    marks: Vec<(PathBuf, Mark)>,
+    marks: Vec<(PathBuf, Mark, bool, bool)>,
     more: usize,
-    numstat: Option<HashMap<PathBuf, Counts>>,
+    staged_numstat: Option<HashMap<PathBuf, Counts>>,
+    unstaged_numstat: Option<HashMap<PathBuf, Counts>>,
     fresh: bool,
     count: impl FnMut(&Path) -> Counts,
 ) -> ChangeList {
     ChangeList {
-        counts_failed: numstat.is_none(),
-        entries: assemble(marks, numstat, fresh, count),
+        counts_failed: staged_numstat.is_none() || unstaged_numstat.is_none(),
+        entries: assemble(marks, staged_numstat, unstaged_numstat, fresh, count),
         more,
     }
 }
@@ -904,26 +971,75 @@ mod tests {
         fs::write(root.join("new dir/\u{fc}.txt"), "1\n2\n").unwrap();
         fs::write(root.join("bin.dat"), b"a\0b").unwrap();
         let lines = |added, removed| Counts::Lines { added, removed };
-        let change = |path: &str, mark, counts| Change {
+        let change = |path: &str, mark, counts, staged| Change {
             path: p(path),
             mark,
             counts,
             folder: false,
+            staged,
+            untracked: mark == Mark::Added && !staged,
         };
+        // M11v: staged first (`git mv` stages the move), then the rest, each by path.
         let want = vec![
-            change("a.rs", Mark::Modified, lines(1, 1)),
-            change("b.rs", Mark::Deleted, lines(0, 2)),
-            change("bin.dat", Mark::Added, Counts::Binary),
-            change("c.rs", Mark::Deleted, lines(0, 1)),
-            change("d.rs", Mark::Added, lines(1, 0)),
-            change("new dir/\u{fc}.txt", Mark::Added, lines(2, 0)),
+            change("c.rs", Mark::Deleted, lines(0, 1), true),
+            change("d.rs", Mark::Added, lines(1, 0), true),
+            change("a.rs", Mark::Modified, lines(1, 1), false),
+            change("b.rs", Mark::Deleted, lines(0, 2), false),
+            change("bin.dat", Mark::Added, Counts::Binary, false),
+            change("new dir/\u{fc}.txt", Mark::Added, lines(2, 0), false),
         ];
         let got = changes(&git, &root).unwrap();
         assert_eq!(got.entries, want);
         assert_eq!(got.more, 0);
-        // Staged, the edit reads the same.
+        // Staged, the edit moves up with the same counts.
         git_in(&git, &root, &["add", "a.rs"]);
-        assert_eq!(changes(&git, &root).unwrap().entries, want);
+        let got = changes(&git, &root).unwrap().entries;
+        assert_eq!(got[0], change("a.rs", Mark::Modified, lines(1, 1), true));
+        assert_eq!(got.len(), want.len());
+    }
+
+    /// M11v: `git status`'s two columns, the index's (X) and the work tree's (Y), as entries:
+    /// a staged one for X, an unstaged one for Y.
+    #[test]
+    fn parse_sides_splits_index_and_worktree() {
+        // ` A k`: added with `git add -N` (intent to add): in the index, so not untracked.
+        let z = b"M  a\0 M b\0MM c\0A  d\0AM e\0D  f\0 D g\0?? h\0UU i\0!! j\0 A k\0";
+        let got = parse_sides(z);
+        let want = vec![
+            (p("a"), Mark::Modified, true, false),
+            (p("b"), Mark::Modified, false, false),
+            (p("c"), Mark::Modified, true, false),
+            (p("c"), Mark::Modified, false, false),
+            (p("d"), Mark::Added, true, false),
+            (p("e"), Mark::Added, true, false),
+            (p("e"), Mark::Modified, false, false),
+            (p("f"), Mark::Deleted, true, false),
+            (p("g"), Mark::Deleted, false, false),
+            (p("h"), Mark::Added, false, true),
+            (p("i"), Mark::Modified, false, false),
+            (p("k"), Mark::Added, false, false),
+        ];
+        assert_eq!(got, want);
+    }
+
+    /// M11v: a file staged, then edited again, is two rows, each with its own part's counts.
+    #[test]
+    fn changes_reads_both_parts_of_a_file_staged_then_edited() {
+        let Some(git) = find_git() else {
+            return println!("skipped: no git");
+        };
+        let root = repo("both-parts", &git);
+        fs::write(root.join("a.txt"), "1\n2\n3\n").unwrap();
+        git_in(&git, &root, &["add", "-A"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "first"]);
+        fs::write(root.join("a.txt"), "1\nTWO\n3\n").unwrap();
+        git_in(&git, &root, &["add", "a.txt"]);
+        fs::write(root.join("a.txt"), "1\nTWO\n3\n4\n5\n").unwrap();
+        let got = changes(&git, &root).unwrap().entries;
+        let lines = |added, removed| Counts::Lines { added, removed };
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!((got[0].staged, got[0].counts), (true, lines(1, 1)));
+        assert_eq!((got[1].staged, got[1].counts), (false, lines(2, 0)));
     }
 
     #[test]
@@ -1017,12 +1133,16 @@ mod tests {
                     mark: Mark::Added,
                     counts: lines(2),
                     folder: false,
+                    staged: true,
+                    untracked: false,
                 },
                 Change {
                     path: p("y.txt"),
                     mark: Mark::Added,
                     counts: lines(1),
                     folder: false,
+                    staged: false,
+                    untracked: true,
                 },
             ]
         );
@@ -1035,7 +1155,11 @@ mod tests {
             (p("m.txt"), Mark::Modified),
             (p("d.txt"), Mark::Deleted),
         ];
-        let got = assemble(marks, None, false, |_| Counts::Lines {
+        let marks = marks
+            .into_iter()
+            .map(|(p, m)| (p, m, false, m == Mark::Added))
+            .collect();
+        let got = assemble(marks, None, None, false, |_| Counts::Lines {
             added: 7,
             removed: 0,
         });
@@ -1055,16 +1179,17 @@ mod tests {
 
     #[test]
     fn a_failed_numstat_is_flagged_on_the_list() {
-        let marks = || vec![(p("m.txt"), Mark::Modified)];
+        let marks = || vec![(p("m.txt"), Mark::Modified, false, false)];
         let count = |_: &Path| Counts::Unknown;
-        // numstat failed or was slow: the list says so (the panel backs off).
-        let failed = change_list(marks(), 0, None, false, count);
+        let none = || Some(HashMap::new());
+        // A numstat failed or was slow: the list says so (the panel backs off).
+        let failed = change_list(marks(), 0, none(), None, false, count);
         assert!(failed.counts_failed);
         assert_eq!(failed.entries[0].counts, Counts::Unknown);
-        // Answered, or not asked (no commits yet): not failed.
-        assert!(!change_list(marks(), 0, Some(HashMap::new()), false, count).counts_failed);
-        assert!(!change_list(marks(), 3, Some(HashMap::new()), true, count).counts_failed);
-        assert_eq!(change_list(marks(), 3, None, false, count).more, 3);
+        assert!(change_list(marks(), 0, None, none(), false, count).counts_failed);
+        // Answered: not failed.
+        assert!(!change_list(marks(), 0, none(), none(), false, count).counts_failed);
+        assert_eq!(change_list(marks(), 3, None, None, false, count).more, 3);
     }
 
     #[test]

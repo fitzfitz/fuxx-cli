@@ -37,6 +37,8 @@ pub struct Appearance {
     pub animations: bool,
     /// `browser-address-bar = on|off`: the browser windows' address field (default on).
     pub browser_address_bar: bool,
+    /// `status-bar = on|off`: the bar at the window's bottom (M11v part 3; default on).
+    pub status_bar: bool,
     /// `browser-keep-data = on|off`: browser windows opened from now on keep cookies, logins and
     /// site data on disk between runs (default off: each run starts from nothing).
     pub browser_keep_data: bool,
@@ -216,6 +218,11 @@ fn switch_from_entries(entries: &[Entry], key: &str, default: bool) -> (bool, Ve
 /// `browser-address-bar`, on by default (see `switch_from_entries`).
 fn browser_address_bar_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "browser-address-bar", true)
+}
+
+/// `status-bar`, on by default (see `switch_from_entries`).
+fn status_bar_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "status-bar", true)
 }
 
 /// `browser-keep-data`, off by default (see `switch_from_entries`).
@@ -402,6 +409,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (persistent, persistent_warnings) = persistent_from_entries(&entries);
     let (animations, animations_warnings) = animations_from_entries(&entries);
     let (browser_address_bar, address_bar_warnings) = browser_address_bar_from_entries(&entries);
+    let (status_bar, status_bar_warnings) = status_bar_from_entries(&entries);
     let (browser_keep_data, keep_data_warnings) = browser_keep_data_from_entries(&entries);
     let (check_updates, check_updates_warnings) = check_updates_from_entries(&entries);
     let (cursor_style, cursor_style_warnings) = cursor_style_from_entries(&entries);
@@ -418,6 +426,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&persistent_warnings)
         .chain(&animations_warnings)
         .chain(&address_bar_warnings)
+        .chain(&status_bar_warnings)
         .chain(&keep_data_warnings)
         .chain(&check_updates_warnings)
         .chain(&cursor_style_warnings)
@@ -445,6 +454,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         persistent,
         animations,
         browser_address_bar,
+        status_bar,
         browser_keep_data,
         check_updates,
         cursor_style,
@@ -594,6 +604,20 @@ mod tests {
             key: key.into(),
             value: value.into(),
         }
+    }
+
+    /// M11v part 3.
+    #[test]
+    fn status_bar_setting_defaults_on_and_warns_on_junk() {
+        let bar = |v: &str| entry("status-bar", v);
+        assert_eq!(status_bar_from_entries(&[]), (true, vec![]));
+        assert_eq!(status_bar_from_entries(&[bar("off")]), (false, vec![]));
+        let (on, warnings) = status_bar_from_entries(&[bar("hide")]);
+        assert!(on);
+        assert_eq!(
+            warnings,
+            vec!["status-bar \"hide\": expected on or off".to_string()]
+        );
     }
 
     #[test]

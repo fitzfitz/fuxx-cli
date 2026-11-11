@@ -87,6 +87,17 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   "ya, kerjakan dua-duanya"): each terminal's current folder and its running agent (one of your presets) are saved
   and come back on reopen; a test build keeps its own sessions file. Not in it: re-running other commands,
   scrollback. See [[72 - Milestone 11u - Restore Where You Were]].
+- **A branch bar in Changes** (M11v, asked for 2026-11-11 by you: "remove it from sidebar, add it to changes tab,
+  we update everything on a new milestone"; mockups B → B3; "ok B3 is good, write the milestone and plan and
+  directly implement it"): the branch leaves the sidebar's group header; the Changes tab's header is one line and a
+  bar at its bottom shows the branch (a click opens the branch switcher), where it stands against origin, and icon
+  buttons (Fetch, and Pull, Push or Publish when there's something to do) with tooltips above them. Pull is
+  fast-forward only; nothing is ever forced, merged, rebased or stashed. Not in it: merge, rebase, stash, force,
+  commit, other remotes, a fetch timer. See [[73 - Milestone 11v - Branch Bar]].
+  *Part 2 (2026-11-11, by you: "group this by staged and changes … revert and add … include it in M11v" → "C with
+  R1, go ahead"):* the list in STAGED and CHANGES groups with check circles to stage and unstage, `N of M staged`
+  with a bar, and ↺ to revert (a new file: delete) behind a confirmation every time. Not in it: committing,
+  hunks, stash, a staged-only diff. *Part 3 (by you, "Part of M11v"):* Settings → General → **Status Bar** On/Off.
 - **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
   design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.
