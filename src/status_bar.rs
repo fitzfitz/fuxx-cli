@@ -124,11 +124,11 @@ pub fn status_word(status: Status, program: &ProgramState) -> StatusWord {
     }
 }
 
-/// The word as the bar says it: `Working`, `Needs input` and `Done` with how long (`age`, as a
+/// The word as the bar says it: `Cultivating` (working), `Needs input` and `Done` with how long (`age`, as a
 /// sidebar row's: `4m`) after ` · `; the idle words alone.
 pub fn word_text(word: StatusWord, age: Option<Duration>) -> String {
     let news = match word {
-        StatusWord::Working => "Working",
+        StatusWord::Working => "Cultivating",
         StatusWord::NeedsInput => "Needs input",
         StatusWord::Done => "Done",
         StatusWord::Running => return "Running".into(),
@@ -466,6 +466,16 @@ pub(crate) fn text_width(
 fn all_ports_tip(ports: &[u16]) -> String {
     let list: Vec<String> = ports.iter().map(|p| format!(":{p}")).collect();
     format!("Listening on {}", list.join(", "))
+}
+
+/// The room the status bar takes at the window's bottom: `STATUS_BAR`, or none while
+/// Settings → General → Status Bar is off (M11v part 3). The footer's popovers sit above it.
+pub(crate) fn status_bar_room(cx: &gpui::App) -> f32 {
+    if cx.global::<crate::appearance::Appearance>().status_bar {
+        STATUS_BAR
+    } else {
+        0.0
+    }
 }
 
 impl Workspace {
@@ -873,7 +883,10 @@ mod tests {
     #[test]
     fn the_words_say_how_long_only_while_there_is_news() {
         let min = |m: u64| Some(Duration::from_secs(m * 60));
-        assert_eq!(word_text(StatusWord::Working, min(4)), "Working \u{b7} 4m");
+        assert_eq!(
+            word_text(StatusWord::Working, min(4)),
+            "Cultivating \u{b7} 4m"
+        );
         assert_eq!(
             word_text(StatusWord::NeedsInput, min(2)),
             "Needs input \u{b7} 2m"
@@ -881,9 +894,9 @@ mod tests {
         assert_eq!(word_text(StatusWord::Done, min(1)), "Done \u{b7} 1m");
         assert_eq!(
             word_text(StatusWord::Working, Some(Duration::from_secs(12))),
-            "Working \u{b7} 12s"
+            "Cultivating \u{b7} 12s"
         );
-        assert_eq!(word_text(StatusWord::Working, None), "Working");
+        assert_eq!(word_text(StatusWord::Working, None), "Cultivating");
         assert_eq!(word_text(StatusWord::Running, min(9)), "Running");
         assert_eq!(word_text(StatusWord::Ready, min(9)), "Ready");
         assert_eq!(word_text(StatusWord::Idle, None), "Idle");

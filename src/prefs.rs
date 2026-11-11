@@ -118,6 +118,11 @@ pub fn browser_address_bar_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
+/// `status-bar` values to write: nothing when on (the default, so no line), `off` otherwise.
+pub fn status_bar_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
 /// `browser-keep-data` values to write: `on`, or nothing (off is the default, so no line).
 pub fn browser_keep_data_values(on: bool) -> Vec<String> {
     if on { vec!["on".to_string()] } else { vec![] }
@@ -332,6 +337,12 @@ mod tests {
     fn persistence_line_is_written_only_when_on() {
         assert_eq!(persistence_values(true), vec!["on".to_string()]);
         assert!(persistence_values(false).is_empty());
+    }
+
+    #[test]
+    fn the_status_bar_line_is_written_only_when_off() {
+        assert!(status_bar_values(true).is_empty());
+        assert_eq!(status_bar_values(false), vec!["off".to_string()]);
     }
 
     #[test]

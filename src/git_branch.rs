@@ -345,6 +345,24 @@ pub(crate) fn run_git_checked(
     cap: Duration,
     env: &[(&str, &str)],
 ) -> Result<String, String> {
+    run_git_checked_all(git, dir, args, cap, env).map_err(|err| {
+        err.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("git failed")
+            .to_string()
+    })
+}
+
+/// `run_git_checked`, but a refusal is all of git's stderr (the Changes bar picks the line that
+/// says why, M11v: a pull prints `From …` first).
+pub(crate) fn run_git_checked_all(
+    git: &Path,
+    dir: &Path,
+    args: &[&str],
+    cap: Duration,
+    env: &[(&str, &str)],
+) -> Result<String, String> {
     let mut command = Command::new(git);
     command
         .arg("-C")
@@ -359,9 +377,12 @@ pub(crate) fn run_git_checked(
             String::from_utf8(out).map_err(|_| "git could not run".to_string())
         }
         Ran::Exited(_, (_, err)) => {
-            let err = String::from_utf8_lossy(&err);
-            let line = err.lines().map(str::trim).find(|l| !l.is_empty());
-            Err(line.unwrap_or("git failed").to_string())
+            let err = String::from_utf8_lossy(&err).into_owned();
+            if err.trim().is_empty() {
+                Err("git failed".to_string())
+            } else {
+                Err(err)
+            }
         }
         Ran::TimedOut => Err("git timed out".to_string()),
         Ran::Failed => Err("git could not run".to_string()),

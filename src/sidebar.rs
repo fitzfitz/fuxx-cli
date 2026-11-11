@@ -51,7 +51,7 @@ use crate::title_area::{
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
-    SIDEBAR_ROW, SIDEBAR_ROW_THREE, SIDEBAR_ROW_TWO, STATUS_BAR, STATUS_MARK,
+    SIDEBAR_ROW, SIDEBAR_ROW_THREE, SIDEBAR_ROW_TWO, STATUS_MARK,
 };
 use crate::ui_tokens::text;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
@@ -108,10 +108,6 @@ pub struct HeaderRow {
     pub collapsed: bool,
     /// The group's most urgent status, shown only while it's collapsed (open, its rows say it).
     pub mark: Option<Status>,
-    /// The branch of its selected workspace, else of its first (M11r: on the header; its rows
-    /// leave it out), and that workspace (the branch switcher opens for it).
-    pub branch: Option<String>,
-    pub branch_from: Option<WorkspaceId>,
     /// How many of its workspaces wait for you ("N waiting" while it's collapsed).
     pub waiting: usize,
     /// Its first three workspaces' avatar colours and statuses (small avatars while collapsed).
@@ -199,13 +195,7 @@ pub fn rows(
             } => {
                 let inside = &sessions[first..first + len];
                 let statuses = inside.iter().map(|s| s.status);
-                let shown = inside
-                    .iter()
-                    .find(|s| active == Some(s.workspace))
-                    .or(inside.first());
                 SidebarRow::Header(HeaderRow {
-                    branch: shown.and_then(|s| s.branch).map(String::from),
-                    branch_from: shown.map(|s| s.workspace),
                     waiting: inside
                         .iter()
                         .filter(|s| s.status == Status::Waiting)
@@ -429,7 +419,7 @@ pub fn line_two(row: &WorkspaceRow) -> Option<LineTwo> {
 /// A row's status in words, when nothing else goes under its name (M11r).
 pub fn state_words(status: Status, running: bool) -> &'static str {
     match status {
-        Status::Working => "Working\u{2026}",
+        Status::Working => "Cultivating\u{2026}",
         Status::Waiting => NEEDS_INPUT,
         Status::Done => "\u{2713} Done",
         Status::Idle if running => "Running",
@@ -807,9 +797,8 @@ const FACES: usize = 3;
 /// A collapsed group's small avatars, and how much each overlaps the one before.
 const FACE: f32 = 14.0;
 const FACE_OVERLAP: f32 = 4.0;
-/// A group header's letter tile, and the most its branch takes.
+/// A group header's letter tile.
 const TILE: f32 = 18.0;
-const BRANCH_MAX: f32 = 110.0;
 const BRANCH_SHRINK: f32 = 20.0;
 /// A row's (and a header's) corners, as the panes' cards.
 const ROW_RADIUS: f32 = 8.0;
@@ -1681,42 +1670,6 @@ impl Workspace {
                 },
                 ui.text_dim,
             ));
-        // The branch (M11r: up from the rows), a button to the branch switcher as it was there.
-        let branch = header
-            .branch
-            .clone()
-            .zip(header.branch_from)
-            .map(|(b, ws)| {
-                div()
-                    .id(("header-branch", group_id(&header.key) as usize))
-                    // Short of room it gives way first, the group's name after it.
-                    .flex_shrink(BRANCH_SHRINK)
-                    .min_w(px(0.0))
-                    .max_w(px(BRANCH_MAX))
-                    .ml(px(6.0))
-                    .px(px(BRANCH_CHIP_PAD))
-                    .h(px(SUB_LINE))
-                    .flex()
-                    .items_center()
-                    .gap(px(3.0))
-                    .rounded(px(4.0))
-                    .overflow_hidden()
-                    .text_size(px(text::META))
-                    .text_color(hsla(ui.text_faint))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hsla(ui.card_hover)).text_color(hsla(ui.text)))
-                    .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                        cx.stop_propagation()
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        if let Some(terminal) = this.branch_terminal(ws) {
-                            this.open_branch_switcher(terminal, window, cx);
-                        }
-                    }))
-                    .child(glyph(Glyph::Branch, ui.text_faint))
-                    .child(div().min_w(px(0.0)).truncate().child(b))
-            });
         let header_row = div()
             .id(("group", group_id(&header.key)))
             .group("sidebar-header")
@@ -1743,7 +1696,6 @@ impl Workspace {
                     .text_color(hsla(ui.text_dim))
                     .child(header.label.clone()),
             )
-            .children(branch)
             .child(div().flex_1())
             .children(closed_marks)
             // The count, flush right like the rows' ages; on hover the + takes its place.
@@ -2655,7 +2607,7 @@ impl Workspace {
             .absolute()
             .left(px(ROW_INSET))
             // Above the footer, which sits on the status bar (M11i).
-            .bottom(px(STATUS_BAR + FOOTER + 4.0))
+            .bottom(px(crate::status_bar::status_bar_room(cx) + FOOTER + 4.0))
             .w(px(MENU_WIDTH))
             .p(px(4.0))
             .rounded(px(8.0))
@@ -3488,7 +3440,7 @@ mod tests {
         assert_eq!(words(Status::Idle, true), Some(LineTwo::State("Running")));
         assert_eq!(
             words(Status::Working, false),
-            Some(LineTwo::State("Working\u{2026}"))
+            Some(LineTwo::State("Cultivating\u{2026}"))
         );
         assert_eq!(
             words(Status::Done, false),
@@ -3847,8 +3799,9 @@ mod tests {
         assert_eq!(line_two(&row(titled)), Some(LineTwo::Title("vim".into())));
     }
 
+    /// A header says who waits inside; its branch moved to the Changes tab's bar (M11v).
     #[test]
-    fn a_header_knows_its_branch_and_who_waits_inside() {
+    fn a_header_knows_who_waits_inside() {
         let now = Instant::now();
         let mut a = facts("a", Status::Waiting, now, Some(folder("/api")));
         a.branch = Some("dev");
@@ -3864,42 +3817,11 @@ mod tests {
             now,
         );
         let h = header(&rows[0]);
-        assert_eq!(h.branch.as_deref(), Some("dev"));
         assert_eq!(h.waiting, 2);
         // At most three small avatars, in order.
         assert_eq!(h.faces.len(), 3);
         assert_eq!(h.faces[0], (TabColor::Teal, Status::Waiting));
         assert_eq!(h.faces[2].1, Status::Idle);
-        assert_eq!(h.branch_from, Some(w(0)));
-    }
-
-    /// Two repos in one group: the header says the branch of the selected workspace when it is
-    /// in the group, else the first one's (your report, 2026-11-10: "the sidebar branch is not
-    /// updated based on active cli").
-    #[test]
-    fn a_header_s_branch_follows_the_selected_workspace_in_its_group() {
-        let now = Instant::now();
-        let mut a = facts("a", Status::Idle, now, Some(folder("/api")));
-        a.branch = Some("dev");
-        let mut b = facts("b", Status::Idle, now, Some(folder("/api")));
-        b.branch = Some("main");
-        let c = facts("c", Status::Idle, now, None);
-        let sessions = numbered(vec![a, b, c]);
-        let branch = |active| {
-            let rows = rows(&sessions, &[], active, &[], now);
-            let h = header(&rows[0]);
-            (h.branch.clone(), h.branch_from)
-        };
-        assert_eq!(branch(Some(w(1))), (Some("main".into()), Some(w(1))));
-        assert_eq!(branch(Some(w(0))), (Some("dev".into()), Some(w(0))));
-        // Selected out of the group, or none: the first one's.
-        assert_eq!(branch(Some(w(2))), (Some("dev".into()), Some(w(0))));
-        assert_eq!(branch(None), (Some("dev".into()), Some(w(0))));
-        // The selected one is in no repo: no branch, not the first one's.
-        let mut sessions = sessions;
-        sessions[1].branch = None;
-        let rows = rows(&sessions, &[], Some(w(1)), &[], now);
-        assert_eq!(header(&rows[0]).branch, None);
     }
 
     #[test]
@@ -3922,7 +3844,7 @@ mod tests {
         // Working says so; nothing known: its status.
         assert_eq!(
             line(Status::Working, Some("~/api/src")),
-            Some(LineTwo::State("Working\u{2026}"))
+            Some(LineTwo::State("Cultivating\u{2026}"))
         );
         assert_eq!(line(Status::Idle, None), Some(LineTwo::State("Idle")));
     }

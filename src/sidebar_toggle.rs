@@ -110,17 +110,24 @@ pub(crate) struct Tip(pub SharedString);
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        div()
-            .px(px(8.0))
-            .py(px(4.0))
-            .rounded(px(6.0))
-            .bg(hsla(ui.panel))
-            .border_1()
-            .border_color(hsla(ui.panel_border))
-            .text_size(px(crate::ui_tokens::text::META))
-            .text_color(hsla(ui.text))
-            .child(self.0.clone())
+        tip_box(self.0.clone(), &ui)
     }
+}
+
+/// A tooltip's box with `text` (also drawn in place, as the Changes bar's tooltips above
+/// their buttons are, M11v).
+pub(crate) fn tip_box(text: SharedString, ui: &UiColors) -> Div {
+    div()
+        .px(px(8.0))
+        .py(px(4.0))
+        .rounded(px(6.0))
+        .bg(hsla(ui.panel))
+        .border_1()
+        .border_color(hsla(ui.panel_border))
+        .text_size(px(crate::ui_tokens::text::META))
+        .text_color(hsla(ui.text))
+        .whitespace_nowrap()
+        .child(text)
 }
 
 /// The icon: an outline with a divider, both in the current text colour of the `group`.

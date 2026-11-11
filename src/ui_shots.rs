@@ -230,6 +230,8 @@ const SCENES: &[(&str, fn())] = &[
     ("files", files_scenes),
     ("right-panels", right_panel_scenes),
     ("changes", changes_scenes),
+    ("changes-bar", changes_bar_scenes),
+    ("changes-staging", changes_staging_scenes),
     ("activity", activity_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
@@ -266,6 +268,7 @@ const SCENES: &[(&str, fn())] = &[
     ("panels", panel_scenes),
     ("preferences", preferences_scenes),
     ("status-bar", status_bar_scenes),
+    ("status-bar-hidden", status_bar_hidden_scenes),
     ("status-bar-ports", status_bar_ports_scenes),
     ("status-bar-narrow", status_bar_narrow_scenes),
     ("update-button", update_button_scenes),
@@ -833,6 +836,7 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         persistent: false,
         animations: true,
         browser_address_bar: true,
+        status_bar: true,
         browser_keep_data: false,
         check_updates: true,
         cursor_style: Default::default(),
@@ -6873,6 +6877,471 @@ fn right_panel_scenes() {
     }
 }
 
+/// The Changes tab grouped (M11v part 2, layout C, note 73), in both themes:
+/// - `changes-staging-mixed`: STAGED (2, green ✓ circles) over CHANGES (4, empty circles);
+///   `2 of 6 staged` with a green third of the bar; the pointer on `12 - Scope.md`'s row: ↺
+///   where its counts were.
+/// - `changes-staging-dialog`: the revert dialog over the tab, its red Revert button.
+/// - `changes-staging-all`: everything staged: the header's circle filled, no CHANGES divider.
+fn changes_staging_scenes() {
+    use crate::git_status::{Change, ChangeList, Counts, Mark};
+    use crate::right_sidebar::{Panel, ROW};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use gpui::Modifiers;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
+    let sidebar_right = window_right - GAP - FOCUS_RING;
+    let header_top = GAP + FOCUS_RING + TAB_BAR;
+    let list_top = header_top + crate::changes_panel::HEADER;
+    let root = files_fixture();
+    let lines = |added, removed| Counts::Lines { added, removed };
+    let entry = |path: &str, mark, counts, staged| Change {
+        path: PathBuf::from(path),
+        mark,
+        counts,
+        folder: false,
+        staged,
+        untracked: mark == Mark::Added && !staged,
+    };
+    let mixed = ChangeList {
+        entries: vec![
+            entry(
+                "docs/73 - Milestone 11v.md",
+                Mark::Added,
+                lines(119, 0),
+                true,
+            ),
+            entry("docs/M11v Plan.md", Mark::Added, lines(98, 0), true),
+            entry(".impeccable/config.json", Mark::Added, lines(62, 0), false),
+            entry("docs/12 - Scope.md", Mark::Modified, lines(7, 0), false),
+            entry(
+                "src/changes_panel.rs",
+                Mark::Modified,
+                lines(544, 20),
+                false,
+            ),
+            entry("src/sidebar.rs", Mark::Modified, lines(6, 84), false),
+        ],
+        more: 0,
+        counts_failed: false,
+    };
+    let all = ChangeList {
+        entries: mixed.entries[..2].to_vec(),
+        ..mixed.clone()
+    };
+    // Rows: 0 STAGED, 1–2 staged, 3 CHANGES, 4–7 the rest; Scope.md is row 5 (entry 3).
+    let row_top = |r: usize| list_top + r as f32 * ROW;
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let (green, _) = crate::changes_panel::count_inks(&theme);
+        let (_, _, red) = crate::changes_panel::bar_inks(&theme);
+        for state in ["mixed", "dialog", "all"] {
+            let n = format!("changes-staging-{state}-{slug}");
+            let list = if state == "all" {
+                all.clone()
+            } else {
+                mixed.clone()
+            };
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = {
+                let root = root.clone();
+                right_panel_workspace(
+                    theme,
+                    root.clone(),
+                    300.0,
+                    Panel::Changes,
+                    slot.clone(),
+                    move |ws| {
+                        let changes = &mut ws.right_sidebar.changes;
+                        changes.show_for_shots(root.clone(), true, Some(list.clone()));
+                        if state == "dialog" {
+                            changes.ask_revert_for_shots(3);
+                        }
+                    },
+                )
+            };
+            let n_act = n.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                cx.update_window(window, |_, window, _| window.refresh())
+                    .expect("refresh");
+                cx.run_until_parked();
+                if state == "dialog" {
+                    // Review: a click outside the dialog, over a staged row's circle, only
+                    // closes it: nothing under the dim layer is clicked. (Not for the shot: the
+                    // dialog opens again after.)
+                    let ws = slotted(&slot);
+                    let on = point(px(sidebar_left + 15.0), px(row_top(1) + ROW / 2.0));
+                    cx.simulate_click(window, on, Modifiers::none());
+                    cx.run_until_parked();
+                    let (open, working) = cx.read(|cx| {
+                        ws.read(cx)
+                            .right_sidebar
+                            .changes
+                            .dialog_and_work_for_shots()
+                    });
+                    assert!(!open, "{n_act}: a click outside closes the dialog");
+                    assert!(!working, "{n_act}: and clicks nothing under it");
+                    cx.update_window(window, |_, _, cx| {
+                        ws.update(cx, |ws, _| ws.right_sidebar.changes.ask_revert_for_shots(3))
+                    })
+                    .expect("open it again");
+                    cx.update_window(window, |_, window, _| window.refresh())
+                        .expect("refresh");
+                    cx.run_until_parked();
+                }
+                if state == "mixed" {
+                    let on = point(px(sidebar_left + 150.0), px(row_top(5) + ROW / 2.0));
+                    cx.simulate_mouse_move(window, on, None, Modifiers::none());
+                    cx.update_window(window, |_, window, _| window.refresh())
+                        .expect("refresh");
+                    cx.run_until_parked();
+                }
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(
+                "changes-staging",
+                &format!("{state}-{slug}"),
+                &theme,
+                dims,
+                build.clone(),
+                act.clone(),
+            );
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let near = |p: [u8; 3], c: Rgb, by: u8| {
+                p.iter()
+                    .zip([c.r, c.g, c.b])
+                    .all(|(x, y)| x.abs_diff(y) <= by)
+            };
+            let has = |x0: f32, x1: f32, y0: f32, y1: f32, c: Rgb, by: u8| {
+                let (w, h) = (((x1 - x0) * 2.0) as usize, ((y1 - y0) * 2.0) as usize);
+                (0..h).any(|dy| {
+                    (0..w).any(|dx| {
+                        near(
+                            pixel_at(&shot, dims, x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5),
+                            c,
+                            by,
+                        )
+                    })
+                })
+            };
+            let circle_green = |r: usize| {
+                has(
+                    sidebar_left + 6.0,
+                    sidebar_left + 24.0,
+                    row_top(r) + 2.0,
+                    row_top(r) + ROW - 2.0,
+                    green,
+                    16,
+                )
+            };
+            match state {
+                "mixed" => {
+                    assert!(
+                        circle_green(1) && circle_green(2),
+                        "{n}: staged rows' circles are green"
+                    );
+                    for r in 4..8 {
+                        assert!(!circle_green(r), "{n}: row {r}'s circle is empty");
+                    }
+                    // The bar's green third, then its track.
+                    let bar_y = header_top + crate::changes_panel::HEADER / 2.0 + 9.0;
+                    assert!(
+                        has(
+                            sidebar_left + 14.0,
+                            sidebar_left + 60.0,
+                            bar_y - 3.0,
+                            bar_y + 3.0,
+                            green,
+                            16
+                        ),
+                        "{n}: the progress bar's green share"
+                    );
+                    // The hovered row's ↺ replaced its `+7`.
+                    assert!(
+                        !has(
+                            sidebar_right - 40.0,
+                            sidebar_right - 4.0,
+                            row_top(5) + 2.0,
+                            row_top(5) + ROW - 2.0,
+                            green,
+                            16
+                        ),
+                        "{n}: the hovered row's counts are hidden"
+                    );
+                    assert!(
+                        has(
+                            sidebar_right - 32.0,
+                            sidebar_right - 6.0,
+                            row_top(5) + 2.0,
+                            row_top(5) + ROW - 2.0,
+                            ui.text_dim,
+                            12
+                        ),
+                        "{n}: ↺ shows on the hovered row"
+                    );
+                    assert!(
+                        has(
+                            sidebar_right - 40.0,
+                            sidebar_right - 4.0,
+                            row_top(6) + 2.0,
+                            row_top(6) + ROW - 2.0,
+                            green,
+                            16
+                        ),
+                        "{n}: the next row's counts show"
+                    );
+                }
+                "dialog" => {
+                    assert!(
+                        has(
+                            sidebar_left + 20.0,
+                            sidebar_right - 10.0,
+                            150.0,
+                            420.0,
+                            red,
+                            12
+                        ),
+                        "{n}: the red Revert button"
+                    );
+                }
+                _ => {
+                    // All staged: the header's circle is filled.
+                    assert!(
+                        has(
+                            sidebar_left + 8.0,
+                            sidebar_left + 26.0,
+                            header_top + 4.0,
+                            header_top + 28.0,
+                            green,
+                            16
+                        ),
+                        "{n}: the header's circle is filled"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The Changes tab's branch bar (M11v, note 73), in each state, in both themes:
+/// - `changes-bar-even`: up to date: the green line, ↻ only (no accent button).
+/// - `changes-bar-behind`: ↓2 behind: the accent Pull button; its tooltip "Pull 2 commits from
+///   origin" above it.
+/// - `changes-bar-ahead`, `changes-bar-diverged` (no accent button), `changes-bar-local`
+///   (Publish), `changes-bar-working` (dimmed, "Pulling 2 commits…"), `changes-bar-failed`
+///   (git's line in red).
+fn changes_bar_scenes() {
+    use crate::branch_list::Head;
+    use crate::branch_sync::{Action, Sync, Upstream};
+    use crate::git_status::{Change, ChangeList, Counts, Mark};
+    use crate::right_sidebar::Panel;
+    use crate::ui_tokens::size::FOCUS_RING;
+    use alacritty_terminal::vte::ansi::Rgb;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, SystemTime};
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
+    let sidebar_right = window_right - GAP - FOCUS_RING;
+    let root = files_fixture();
+    let list = ChangeList {
+        entries: vec![Change {
+            path: "CLAUDE.md".into(),
+            mark: Mark::Modified,
+            counts: Counts::Lines {
+                added: 1,
+                removed: 1,
+            },
+            folder: false,
+            staged: false,
+            untracked: false,
+        }],
+        more: 0,
+        counts_failed: false,
+    };
+    let at = |upstream, has_origin, head: Head| Sync {
+        head,
+        upstream,
+        has_origin,
+        fetched: Some(SystemTime::now() - Duration::from_secs(180)),
+    };
+    let branch = || Head::Branch("fix/hdw-approval-flow".into());
+    let track = |ahead, behind| Upstream::Track { ahead, behind };
+    // (slug, sync, busy, error, tooltip shown, accent button expected)
+    let states: Vec<(&str, Sync, Option<Action>, Option<String>, bool, bool)> = vec![
+        (
+            "even",
+            at(track(0, 0), true, branch()),
+            None,
+            None,
+            false,
+            false,
+        ),
+        (
+            "behind",
+            at(track(0, 2), true, branch()),
+            None,
+            None,
+            true,
+            true,
+        ),
+        (
+            "ahead",
+            at(track(1, 0), true, branch()),
+            None,
+            None,
+            false,
+            true,
+        ),
+        (
+            "diverged",
+            at(track(1, 2), true, branch()),
+            None,
+            None,
+            false,
+            false,
+        ),
+        (
+            "local",
+            at(Upstream::None, true, Head::Branch("feat/breadcrumb".into())),
+            None,
+            None,
+            false,
+            true,
+        ),
+        (
+            "working",
+            at(track(0, 2), true, branch()),
+            Some(Action::Pull(2)),
+            None,
+            false,
+            true,
+        ),
+        (
+            "failed",
+            at(track(0, 2), true, branch()),
+            None,
+            Some(
+                "Pull failed: Your local changes to the following files would be overwritten"
+                    .into(),
+            ),
+            false,
+            true,
+        ),
+    ];
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for (state, sync, busy, error, tip, accent) in states.clone() {
+            let n = format!("changes-bar-{state}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = {
+                let (root, list) = (root.clone(), list.clone());
+                right_panel_workspace(
+                    theme,
+                    root.clone(),
+                    300.0,
+                    Panel::Changes,
+                    slot.clone(),
+                    move |ws| {
+                        ws.right_sidebar.changes.show_for_shots(
+                            root.clone(),
+                            true,
+                            Some(list.clone()),
+                        );
+                        ws.right_sidebar.changes.show_bar_for_shots(
+                            sync.clone(),
+                            busy,
+                            error.clone(),
+                            tip,
+                        );
+                    },
+                )
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                cx.update_window(window, |_, window, _| window.refresh())
+                    .expect("refresh");
+                cx.run_until_parked();
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(
+                "changes-bar",
+                &format!("{state}-{slug}"),
+                &theme,
+                dims,
+                build.clone(),
+                act.clone(),
+            );
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let near = |p: [u8; 3], c: Rgb, by: u8| {
+                p.iter()
+                    .zip([c.r, c.g, c.b])
+                    .all(|(x, y)| x.abs_diff(y) <= by)
+            };
+            let has = |x0: f32, x1: f32, y0: f32, y1: f32, c: Rgb, by: u8| {
+                let (w, h) = (((x1 - x0) * 2.0) as usize, ((y1 - y0) * 2.0) as usize);
+                (0..h).any(|dy| {
+                    (0..w).any(|dx| {
+                        near(
+                            pixel_at(&shot, dims, x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5),
+                            c,
+                            by,
+                        )
+                    })
+                })
+            };
+            // The bar is the card's last 56 pt (476 to 532 in a 560 pt window); its buttons in
+            // its right 80 pt; the tooltip hangs just above them, where no row is.
+            let (bar_top, bar_bottom) = (476.0, 532.0);
+            let accented = has(
+                sidebar_right - 80.0,
+                sidebar_right,
+                bar_top,
+                bar_bottom,
+                ui.accent,
+                10,
+            );
+            if busy.is_some() {
+                // Dimmed: not the full accent.
+                assert!(!accented, "{n}: the accent dims while it works");
+            } else {
+                assert_eq!(accented, accent, "{n}: the accent button");
+            }
+            let tip_shown = has(
+                sidebar_right - 200.0,
+                sidebar_right,
+                bar_top - 24.0,
+                bar_top,
+                ui.text,
+                24,
+            );
+            assert_eq!(tip_shown, tip, "{n}: the tooltip above the button");
+            // The branch's name, in the text colour, at the bar's left.
+            assert!(
+                has(
+                    sidebar_left + 8.0,
+                    sidebar_left + 160.0,
+                    bar_top,
+                    bar_bottom,
+                    ui.text,
+                    24
+                ),
+                "{n}: the branch"
+            );
+        }
+    }
+}
+
 /// The Changes panel (M11h Task 4) in the right sidebar, beside a terminal, in a 1100 × 560
 /// window, in both themes, its list given (`show_for_shots`; nothing looked up):
 /// - `changes`: six rows and 3 more for the fixture folder as a repo: src/main.rs (M, +12 −3),
@@ -6888,10 +7357,10 @@ fn right_panel_scenes() {
 /// - `changes-click`: a click on the M row opens src/main.rs in the focused pane in Diff mode
 ///   (the model's tab), and that row is drawn `card_selected`.
 fn changes_scenes() {
-    use crate::changes_panel::{NO_CHANGES, NO_REPO, SSH_NOTE, file_count_label, totals};
+    use crate::changes_panel::{HEADER, NO_CHANGES, NO_REPO, SSH_NOTE, totals};
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::layout_model::{FileMode, TabKind};
-    use crate::right_sidebar::{Panel, ROOT_HEADER, ROW, mark_color};
+    use crate::right_sidebar::{Panel, ROW, mark_color};
     use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::{Focusable, Modifiers};
@@ -6904,7 +7373,9 @@ fn changes_scenes() {
     let sidebar_right = window_right - GAP - FOCUS_RING;
     let card_top = GAP + FOCUS_RING;
     let header_top = card_top + TAB_BAR;
-    let list_top = header_top + ROOT_HEADER;
+    let list_top = header_top + HEADER;
+    // M11v part 2: the CHANGES divider takes the first row; the entries start under it.
+    let rows_top = list_top + ROW;
     let root = files_fixture();
     let lines = |added, removed| Counts::Lines { added, removed };
     let change = |path: &str, mark, counts| Change {
@@ -6912,6 +7383,8 @@ fn changes_scenes() {
         mark,
         counts,
         folder: false,
+        staged: false,
+        untracked: mark == Mark::Added,
     };
     let six = ChangeList {
         entries: vec![
@@ -6934,7 +7407,7 @@ fn changes_scenes() {
             .expect("refresh");
         cx.run_until_parked();
     };
-    let row_mid = |i: usize| list_top + (i as f32 + 0.5) * ROW;
+    let row_mid = |i: usize| rows_top + (i as f32 + 0.5) * ROW;
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -7005,41 +7478,51 @@ fn changes_scenes() {
             })
         };
         let in_row = |i: usize, x0: f32, x1: f32, c: Rgb| {
-            let y0 = list_top + i as f32 * ROW;
+            let y0 = rows_top + i as f32 * ROW;
             has(x0, x1, y0 + 2.0, y0 + ROW - 2.0, c, 24)
         };
-        // The header: the repo's name, `9 files` at the right, the totals under them.
-        assert_eq!(file_count_label(six.entries.len() + six.more), "9 files");
+        // The header (M11v part 2): the stage-all circle, the repo's name, `0 of 9 staged` at
+        // the right (faint), and under them the progress bar's track.
         assert_eq!(totals(&six), (18, 14), "{n}: the totals");
-        let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
+        assert_eq!(crate::git_stage::staged_summary(&six), (0, 9));
+        let line_top = header_top + (HEADER - 28.0) / 2.0;
         let (left, right) = (sidebar_left + 10.0, sidebar_right - 6.0);
         assert!(
-            has(left, left + 120.0, line_top, line_top + 20.0, ui.text, 24),
+            has(
+                left + 20.0,
+                left + 140.0,
+                line_top,
+                line_top + 20.0,
+                ui.text,
+                24
+            ),
             "{n}: the repo's name"
         );
         assert!(
             has(
-                right - 45.0,
+                right - 110.0,
                 right,
                 line_top,
                 line_top + 20.0,
                 ui.text_faint,
                 24
             ),
-            "{n}: the file count, faint, at the right"
+            "{n}: `0 of 9 staged`, faint, at the right"
         );
         assert!(
-            !has(right - 45.0, right, line_top, line_top + 20.0, ui.text, 12),
-            "{n}: the file count isn't in the text colour"
+            has(
+                left + 40.0,
+                right - 40.0,
+                line_top + 24.0,
+                line_top + 29.0,
+                ui.divider,
+                6
+            ),
+            "{n}: the progress bar's track"
         );
-        for (what, c) in [("added", added), ("removed", removed)] {
-            assert!(
-                has(left, left + 80.0, line_top + 20.0, line_top + 34.0, c, 24),
-                "{n}: the {what} total"
-            );
-        }
         // Each row's letter in its mark's colour, and in no other mark's.
-        let letter = |i: usize, c: Rgb| in_row(i, sidebar_left + 8.0, sidebar_left + 20.0, c);
+        // Part 2: after the row's circle (14 pt and a 6 pt gap).
+        let letter = |i: usize, c: Rgb| in_row(i, sidebar_left + 28.0, sidebar_left + 40.0, c);
         for (i, mark) in [(0, m), (1, a), (2, d), (3, a), (4, m), (5, a)] {
             assert!(letter(i, mark), "{n}: row {i}'s letter in {mark:?}");
             for other in [m, a, d].into_iter().filter(|o| *o != mark) {
@@ -7347,7 +7830,7 @@ fn activity_scenes() {
                     let words: Vec<_> = rows.iter().map(|r| r.text.as_str()).collect();
                     assert_eq!(
                         words,
-                        ["Progress 20%", "a", "Done \u{2014} 11 min", "Working"],
+                        ["Progress 20%", "a", "Done \u{2014} 11 min", "Cultivating"],
                         "{n}: newest first; Done says how long it worked"
                     );
                     let marks: Vec<_> = rows.iter().map(|r| r.mark).collect();
@@ -11429,9 +11912,9 @@ fn branch_switcher_open_scene() {
             );
         }
 
-        // A click on the branch of api's header (M11r: the rows in a folder's group leave it to
-        // the header, which says the selected workspace's, shell's): the switcher opens for
-        // shell's terminal, the selection (shell) stays.
+        // The switcher for shell's terminal, as the Changes bar's branch opens it (M11v: the
+        // sidebar's group header no longer has a branch); the selection (shell) stays. The rows
+        // in a folder's group still leave their place to the header.
         let selected = cx.read(|cx| ws.read(cx).model.focused_workspace());
         if let SidebarRow::Workspace(w) = &rows[at] {
             assert!(
@@ -11439,29 +11922,15 @@ fn branch_switcher_open_scene() {
                     crate::sidebar::line_two(w),
                     Some(crate::sidebar::LineTwo::Place)
                 ),
-                "{n}: tests' row leaves its branch to the header"
+                "{n}: tests' row leaves its place to the header"
             );
         }
-        let header = (0..at)
-            .rev()
-            .find(|&i| matches!(rows[i], SidebarRow::Header(_)))
-            .expect("api's header");
-        if let SidebarRow::Header(h) = &rows[header] {
-            assert_eq!(
-                h.branch.as_deref(),
-                Some("main"),
-                "{n}: the header's branch"
-            );
-            assert_eq!(h.branch_from, selected, "{n}: the selected workspace's");
-        }
-        let b = cx
-            .read(|cx| ws.read(cx).sidebar.scroll.bounds_for_item(header))
-            .expect("api's header is laid out");
-        // The header is the bottom 28 pt of its item; its branch follows the tile and "api".
-        let branch_at = gpui::point(b.left() + px(85.0), b.bottom() - px(14.0));
-        cx.simulate_click(window, branch_at, Modifiers::none());
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.open_branch_switcher(shell, window, cx))
+        })
+        .expect("open shell's switcher");
         settle(cx, window);
-        let sw = branch_switcher_of(cx, &ws).expect("a click on the branch opens it");
+        let sw = branch_switcher_of(cx, &ws).expect("the bar opens it");
         assert!(
             settle_until(cx, window, 10, |cx| cx
                 .read(|cx| sw.read(cx).title() == "Switch branch \u{b7} repo")),
@@ -11471,7 +11940,7 @@ fn branch_switcher_open_scene() {
         assert_eq!(
             cx.read(|cx| ws.read(cx).model.focused_workspace()),
             selected,
-            "{n}: the click on the branch did not select the row"
+            "{n}: opening it did not select another row"
         );
         press_keys(cx, window, "escape");
         assert!(branch_switcher_of(cx, &ws).is_none(), "{n}: Escape closes");
@@ -14654,7 +15123,7 @@ fn title_area_scenes() {
                     );
                     // The popover hangs from the footer's right buttons: its right edge is the
                     // gear's, over the sidebar (at the narrowest, from the footer's left inset).
-                    let (left, bottom) = popover_anchor(sidebar_width, height);
+                    let (left, bottom) = popover_anchor(sidebar_width, height, STATUS_BAR);
                     let right = left + popover_width(sidebar_width);
                     let y = bottom - 20.0;
                     assert_eq!(at(left + 3.0, y), bg(ui.panel), "{n}: the popover's left");
@@ -14810,7 +15279,7 @@ fn title_area_scenes() {
         cx.simulate_click(window, point(px(800.0), px(40.0)), none);
         assert!(!open(cx), "title-area: a click outside closes it");
         // The closed terminal's entry (the fourth) does nothing; agent's (the first) jumps.
-        let popover_left = popover_anchor(SIDEBAR_DEFAULT_WIDTH, height).0;
+        let popover_left = popover_anchor(SIDEBAR_DEFAULT_WIDTH, height, STATUS_BAR).0;
         let entry = |i: usize| {
             point(
                 px(popover_left + 60.0),
@@ -15916,6 +16385,61 @@ fn chip_corner_inset() -> f32 {
     r - (r * r - (r - 1.5) * (r - 1.5)).sqrt()
 }
 
+/// `status-bar-hidden` (M11v part 3): Settings → General → Status Bar off: no bar along the
+/// window's bottom (no folder words where it was); the cards reach down instead.
+fn status_bar_hidden_scenes() {
+    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1000.0), px(480.0));
+    let (w, h) = (f32::from(dims.width), f32::from(dims.height));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for shown in [true, false] {
+            let n = format!("status-bar-hidden-{shown}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(Appearance {
+                    status_bar: shown,
+                    ..sidebar_appearance(theme, cx)
+                });
+                let ws = cx.new(|cx| {
+                    bar_workspace(0, SIDEBAR_DEFAULT_WIDTH, (FUXX, "main"), &[], window, cx)
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |_: &mut VisualTestAppContext, _: AnyWindowHandle| {
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            if !shown {
+                save_shot("status-bar-hidden", slug, &shot);
+            }
+            // The bar's folder words (faint) sit right of the sidebar, along the bottom 22 pt.
+            let rows = ((STATUS_BAR - 6.0) * 2.0) as usize;
+            let cols = ((w - 40.0 - SIDEBAR_DEFAULT_WIDTH) * 2.0) as usize;
+            let faint = (0..rows).any(|dy| {
+                (0..cols).any(|dx| {
+                    let p = pixel_at(
+                        &shot,
+                        dims,
+                        SIDEBAR_DEFAULT_WIDTH + dx as f32 * 0.5,
+                        h - STATUS_BAR + 3.0 + dy as f32 * 0.5,
+                    );
+                    p.iter()
+                        .zip([ui.text_faint.r, ui.text_faint.g, ui.text_faint.b])
+                        .all(|(a, b)| a.abs_diff(b) <= 10)
+                })
+            });
+            assert_eq!(faint, shown, "{n}: the bar's words along the bottom");
+        }
+    }
+}
+
 /// The status bar over a real workspace, in both themes:
 /// - `status-bar`: claude working: its mark, `Working · 4m` in `text_dim`, the branch glyph and
 ///   `main`, `~/Kerja/proj/fuxx-cli` in `text_faint`;
@@ -16016,7 +16540,7 @@ fn status_bar_scenes() {
                         ),
                         _ => (
                             StatusWord::Working,
-                            "Working \u{b7} 4m",
+                            "Cultivating \u{b7} 4m",
                             Some("main"),
                             "~/Kerja/proj/fuxx-cli",
                         ),

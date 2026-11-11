@@ -40,6 +40,7 @@ use crate::preferences;
 use crate::sidebar::{FOOTER, MARK_SLOT, ROW_INSET, mark_size, mark_slot, tabular};
 use crate::sidebar_toggle::{self, BAND_EDGE, HIT, Tip, band_button};
 use crate::status::{self, Status};
+use crate::status_bar::status_bar_room;
 use crate::status_mark;
 use crate::tab_bar::{Glyph, footer_glyph};
 use crate::tab_menu::Dismiss;
@@ -128,16 +129,17 @@ pub(crate) fn popover_width(sidebar_width: f32) -> f32 {
 /// footer's right-hand buttons (the 🔔 and the gear): its right edge is the gear's, so it sits
 /// over the sidebar, unless that is too narrow for it; then it starts at the footer's left
 /// inset, as the + menu does.
-pub(crate) fn popover_anchor(sidebar_width: f32, viewport_height: f32) -> (f32, f32) {
+/// `bar`: the status bar's height (0 while Settings turns it off, M11v part 3).
+pub(crate) fn popover_anchor(sidebar_width: f32, viewport_height: f32, bar: f32) -> (f32, f32) {
     let right = footer_buttons(sidebar_width)[2] + FOOTER_BUTTON;
     let left = (right - popover_width(sidebar_width)).max(ROW_INSET);
-    (left, viewport_height - STATUS_BAR - FOOTER - POPOVER_DROP)
+    (left, viewport_height - bar - FOOTER - POPOVER_DROP)
 }
 
 /// The most the list may take in a window `viewport_height` high: up to `LIST_MAX`, and short
 /// enough that the whole panel stays under the top band (where the traffic lights are).
-pub(crate) fn list_room(viewport_height: f32) -> f32 {
-    let above = viewport_height - STATUS_BAR - FOOTER - POPOVER_DROP - TOP_BAND - PANEL_CHROME;
+pub(crate) fn list_room(viewport_height: f32, bar: f32) -> f32 {
+    let above = viewport_height - bar - FOOTER - POPOVER_DROP - TOP_BAND - PANEL_CHROME;
     above.clamp(0.0, LIST_MAX)
 }
 
@@ -145,9 +147,9 @@ pub(crate) fn list_room(viewport_height: f32) -> f32 {
 /// above the footer: the list's foot is one padding and the edge above the anchor.
 #[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
 pub(crate) fn entry_top(i: usize, count: usize, sidebar_width: f32, viewport_height: f32) -> f32 {
-    let (_, y) = popover_anchor(sidebar_width, viewport_height);
+    let (_, y) = popover_anchor(sidebar_width, viewport_height, STATUS_BAR);
     let content = count as f32 * ENTRY + count.saturating_sub(1) as f32 * ENTRY_GAP;
-    let list = content.min(list_room(viewport_height));
+    let list = content.min(list_room(viewport_height, STATUS_BAR));
     y - 1.0 - PADDING - list + i as f32 * (ENTRY + ENTRY_GAP)
 }
 
@@ -166,8 +168,8 @@ pub(crate) fn band_popover_anchor(window_width: f32) -> (f32, f32) {
 /// The most the list may take in the popover from the band, in a window `viewport_height` high:
 /// up to `LIST_MAX`, and short enough that the whole panel stops `EDGE_MARGIN` above the status
 /// bar.
-pub(crate) fn band_list_room(viewport_height: f32) -> f32 {
-    let below = viewport_height - TOP_BAND - POPOVER_DROP - PANEL_CHROME - STATUS_BAR - EDGE_MARGIN;
+pub(crate) fn band_list_room(viewport_height: f32, bar: f32) -> f32 {
+    let below = viewport_height - TOP_BAND - POPOVER_DROP - PANEL_CHROME - bar - EDGE_MARGIN;
     below.clamp(0.0, LIST_MAX)
 }
 
@@ -269,10 +271,11 @@ impl Workspace {
         let (width, height) = (viewport.width.as_f32(), viewport.height.as_f32());
         // From the collapsed band's 🔔 it drops down; from the footer's it opens upward.
         let from_band = self.sidebar.hidden;
+        let bar = status_bar_room(cx);
         let (panel_width, list_room) = if from_band {
-            (band_popover_width(width), band_list_room(height))
+            (band_popover_width(width), band_list_room(height, bar))
         } else {
-            (popover_width(self.sidebar.width), list_room(height))
+            (popover_width(self.sidebar.width), list_room(height, bar))
         };
         let now = Instant::now();
         let rows: Vec<AnyElement> = self
@@ -348,7 +351,7 @@ impl Workspace {
         } else {
             (
                 Anchor::BottomLeft,
-                popover_anchor(self.sidebar.width, height),
+                popover_anchor(self.sidebar.width, height, bar),
             )
         };
         Some(
@@ -687,7 +690,7 @@ mod tests {
             260.0,
             SIDEBAR_MAX_WIDTH,
         ] {
-            let (x, _) = popover_anchor(width, 600.0);
+            let (x, _) = popover_anchor(width, 600.0, STATUS_BAR);
             let (w, right) = (popover_width(width), x + popover_width(width));
             let [_, bell, gear] = footer_buttons(width);
             assert!(
@@ -721,7 +724,7 @@ mod tests {
     #[test]
     fn the_popover_opens_upward_from_the_footer_clear_of_the_band() {
         for height in [300.0, 480.0, 600.0, 1000.0] {
-            let (_, y) = popover_anchor(260.0, height);
+            let (_, y) = popover_anchor(260.0, height, STATUS_BAR);
             // The footer sits on the status bar (M11i).
             assert_eq!(
                 y,
@@ -730,7 +733,7 @@ mod tests {
             );
             // The fullest list: its panel (header, padding and edge included) stays under
             // the top band, where the traffic lights are.
-            let panel = PANEL_CHROME + list_room(height);
+            let panel = PANEL_CHROME + list_room(height, STATUS_BAR);
             assert!(
                 y - panel >= TOP_BAND,
                 "height {height}: {} vs {TOP_BAND}",
@@ -741,14 +744,14 @@ mod tests {
 
     #[test]
     fn an_entrys_place_is_counted_up_from_the_footer() {
-        let (_, y) = popover_anchor(260.0, 600.0);
+        let (_, y) = popover_anchor(260.0, 600.0, STATUS_BAR);
         // The last of three ends one padding and the edge above the anchor.
         let last = entry_top(2, 3, 260.0, 600.0);
         assert_eq!(last + ENTRY, y - 1.0 - PADDING);
         assert_eq!(entry_top(1, 3, 260.0, 600.0) + ENTRY + ENTRY_GAP, last);
         // A list that scrolls fills `list_room`, whatever its length.
         let top = entry_top(0, 50, 260.0, 600.0);
-        assert_eq!(top, y - 1.0 - PADDING - list_room(600.0));
+        assert_eq!(top, y - 1.0 - PADDING - list_room(600.0, STATUS_BAR));
     }
 
     #[test]
@@ -801,22 +804,33 @@ mod tests {
         assert_eq!(band_popover_width(300.0), 300.0 - 2.0 * EDGE_MARGIN);
     }
 
+    /// M11v part 3: with the status bar off, the footer sits on the window's bottom and the
+    /// popovers come down with it (no 22 pt gap); the band's list may reach lower.
+    #[test]
+    fn with_the_status_bar_off_the_popovers_use_its_room() {
+        let (_, y) = popover_anchor(260.0, 600.0, 0.0);
+        assert_eq!(y, 600.0 - FOOTER - POPOVER_DROP);
+        assert_eq!(popover_anchor(260.0, 600.0, STATUS_BAR).1, y - STATUS_BAR);
+        assert!(list_room(400.0, 0.0) >= list_room(400.0, STATUS_BAR));
+        assert!(band_list_room(400.0, 0.0) >= band_list_room(400.0, STATUS_BAR));
+    }
+
     #[test]
     fn the_band_popovers_list_stops_above_the_status_bar() {
         for h in [300.0, 480.0, 600.0, 1000.0] {
             let (_, t) = band_popover_anchor(960.0);
             assert!(
-                t + PANEL_CHROME + band_list_room(h) <= h - STATUS_BAR - EDGE_MARGIN,
+                t + PANEL_CHROME + band_list_room(h, STATUS_BAR) <= h - STATUS_BAR - EDGE_MARGIN,
                 "height {h}: {} vs {}",
-                t + PANEL_CHROME + band_list_room(h),
+                t + PANEL_CHROME + band_list_room(h, STATUS_BAR),
                 h - STATUS_BAR - EDGE_MARGIN
             );
             assert!(
-                band_list_room(h) <= LIST_MAX,
+                band_list_room(h, STATUS_BAR) <= LIST_MAX,
                 "height {h}: at most LIST_MAX"
             );
         }
-        assert_eq!(band_list_room(100.0), 0.0);
+        assert_eq!(band_list_room(100.0, STATUS_BAR), 0.0);
     }
 
     #[test]

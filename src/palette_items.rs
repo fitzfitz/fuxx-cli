@@ -1738,7 +1738,7 @@ mod tests {
             headers(&settings),
             ["General", "Appearance", "Sessions", "Browser", "Sound"]
         );
-        assert_eq!(keys(&settings).len(), 19);
+        assert_eq!(keys(&settings).len(), 20);
 
         let root = Path::new("/w/fuxx-cli");
         let ready = |hits, total, capped| Files::Ready {

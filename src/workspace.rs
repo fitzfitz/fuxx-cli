@@ -3225,7 +3225,12 @@ impl Render for Workspace {
             Some(self.render_drag_strip("pane-strip", window, cx))
         };
         let panes = self.render_panes(colors, ui, window, cx);
-        let status_bar = self.render_status_bar(ui, window, cx);
+        // M11v part 3: Settings → General → Status Bar off leaves it out; the cards take its
+        // room.
+        let status_bar = cx
+            .global::<Appearance>()
+            .status_bar
+            .then(|| self.render_status_bar(ui, window, cx));
         // Tabs or rows sliding out of a drag's way (the bars and rows were just drawn): every
         // frame until they're there.
         if self.drag_slides.borrow().moving(Instant::now()) {
@@ -3408,7 +3413,7 @@ impl Render for Workspace {
                     .children(sliding_sidebar)
                     .children(sliding_right_sidebar),
             )
-            .child(status_bar)
+            .children(status_bar)
             // The collapsed title bar's name and buttons, over the bands (below the overlays, so
             // the Welcome scrim and the popovers stay above them).
             .children(name)

@@ -157,7 +157,7 @@ pub enum FetchMode {
 }
 
 impl FetchMode {
-    fn env(self) -> &'static [(&'static str, &'static str)] {
+    pub(crate) fn env(self) -> &'static [(&'static str, &'static str)] {
         match self {
             FetchMode::Auto => &[
                 ("GCM_INTERACTIVE", "never"),
