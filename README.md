@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/fitzfitz/fuxx-cli/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/fitzfitz/fuxx-cli?label=latest&color=00c853"></a>
-  <img alt="Version 0.9.0" src="https://img.shields.io/badge/version-0.9.0-0f172a">
+  <img alt="Version 0.10.0" src="https://img.shields.io/badge/version-0.10.0-0f172a">
   <img alt="macOS 11+" src="https://img.shields.io/badge/macOS-11%2B-black?logo=apple">
   <img alt="Apple Silicon and Intel" src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-555">
   <img alt="Built with Rust and Love" src="assets/badges/built-with-rust-n-love.svg">
@@ -29,7 +29,7 @@ something *right now*?
 waiting for you, done), pings you when it needs a human, and otherwise leaves you alone. The mascot is `╭∩╮`.
 That's the whole attitude: it gets out of your way, and it's not here to make friends.
 
-Current version: **0.9.0**. macOS 11 or newer, Apple Silicon and Intel.
+Current version: **0.10.0**. macOS 11 or newer, Apple Silicon and Intel.
 
 ---
 
