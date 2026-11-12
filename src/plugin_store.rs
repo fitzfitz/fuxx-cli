@@ -85,10 +85,30 @@ pub fn save(f: &Folders, records: &[Record]) -> std::io::Result<()> {
     crate::settings::write_atomic(&f.records(), &text)
 }
 
+/// Make every folder under `dir` owner-writable so `remove_dir_all` can empty it. An archive
+/// can hold read-only folders. Links are never followed.
+pub(crate) fn open_up(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mode = meta.permissions().mode() | 0o700;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode));
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.filter_map(|e| e.ok()) {
+            open_up(&e.path());
+        }
+    }
+}
+
 /// Delete one path we built ourselves. A symlink is unlinked, never followed.
 fn remove_path(path: &Path) {
     match std::fs::symlink_metadata(path) {
         Ok(m) if m.is_dir() => {
+            open_up(path);
             let _ = std::fs::remove_dir_all(path);
         }
         Ok(_) => {
@@ -164,9 +184,19 @@ pub fn commit(
         themes: m.themes.clone(),
         installed_at: now,
     };
-    records.retain(|r| r.id != m.id);
-    records.push(record.clone());
-    save(f, &records).map_err(|e| format!("Couldn't save the plugin list: {e}"))?;
+    // An update keeps its place: theme names are suffixed in record order.
+    match records.iter().position(|r| r.id == m.id) {
+        Some(i) => records[i] = record.clone(),
+        None => records.push(record.clone()),
+    }
+    if let Err(e) = save(f, &records) {
+        // Undo both moves so a failed save leaves what was there.
+        let _ = std::fs::rename(&dest, plugin_dir);
+        if let Some(t) = &trash {
+            let _ = std::fs::rename(t, &dest);
+        }
+        return Err(format!("Couldn't save the plugin list: {e}"));
+    }
     if let Some(t) = trash {
         remove_path(&t);
     }
@@ -205,6 +235,42 @@ pub fn uninstall(f: &Folders, id: &str) -> Result<Record, String> {
     Ok(record)
 }
 
+/// The id in a `.trash-<id>-<tag>-<n>` name. Ids can hold `-`, so only the last two parts go.
+fn trash_id(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix(".trash-")?;
+    let (rest, n) = rest.rsplit_once('-')?;
+    let (id, tag) = rest.rsplit_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (digits(n) && digits(tag) && valid_id(id)).then_some(id)
+}
+
+/// A crash between "old folder to trash" and "new folder into place" leaves a record with no
+/// folder. Put the newest trash for it back, so the plugin and its data survive.
+fn restore_trashed(f: &Folders) {
+    let Ok(records) = load_checked(f) else { return };
+    let Ok(entries) = std::fs::read_dir(&f.plugins) else {
+        return;
+    };
+    let trashed: Vec<(String, std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let id = trash_id(&name)?.to_string();
+            let m = std::fs::symlink_metadata(e.path()).ok()?;
+            Some((id, m.modified().ok()?, e.path()))
+        })
+        .collect();
+    for r in records.iter().filter(|r| !exists(&f.plugin(&r.id))) {
+        let newest = trashed
+            .iter()
+            .filter(|(id, _, _)| *id == r.id)
+            .max_by_key(|(_, t, _)| *t);
+        if let Some((_, _, path)) = newest {
+            let _ = std::fs::rename(path, f.plugin(&r.id));
+        }
+    }
+}
+
 /// Mend what a crash can leave behind: half-unpacked downloads, trash, records without a
 /// folder, and folders without a record. Anything not named like a plugin id is left alone.
 pub fn launch_cleanup(f: &Folders) {
@@ -221,6 +287,7 @@ pub fn launch_cleanup(f: &Folders) {
         Ok(_) => remove_path(&staging),
         Err(_) => {}
     }
+    restore_trashed(f);
     if let Ok(entries) = std::fs::read_dir(&f.plugins) {
         for e in entries.flatten() {
             if e.file_name().to_string_lossy().starts_with(".trash-") {
@@ -549,5 +616,88 @@ mod tests {
         launch_cleanup(&f);
         assert!(outside.join("keep.txt").exists());
         assert!(!exists(&f.staging()));
+    }
+
+    /// A staged plugin with a read-only subfolder, as an archive can leave.
+    fn stage_locked(f: &Folders, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let d = stage(f, name, "a.txt");
+        std::fs::create_dir_all(d.join("locked")).unwrap();
+        std::fs::write(d.join("locked/f"), "x").unwrap();
+        std::fs::set_permissions(d.join("locked"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        d
+    }
+    fn no_trash(f: &Folders) -> bool {
+        std::fs::read_dir(&f.plugins).unwrap().all(|e| {
+            !e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".trash-")
+        })
+    }
+
+    #[test]
+    fn a_read_only_subfolder_does_not_survive_uninstall_or_update() {
+        let (_h, f) = folders("readonly");
+        let a = stage_locked(&f, "a");
+        commit(&f, &a, &manifest("sunset"), &repo("o", "a"), &tag("v1"), 1).unwrap();
+        let b = stage_locked(&f, "b");
+        commit(&f, &b, &manifest("sunset"), &repo("o", "a"), &tag("v2"), 2).unwrap();
+        assert!(no_trash(&f));
+        uninstall(&f, "sunset").unwrap();
+        assert!(no_trash(&f));
+        assert!(!f.plugin("sunset").exists());
+        launch_cleanup(&f);
+        assert!(no_trash(&f));
+    }
+
+    #[test]
+    fn an_update_keeps_its_place_in_the_list() {
+        let (_h, f) = folders("order");
+        for (id, n) in [("aa", "a"), ("bb", "b")] {
+            let d = stage(&f, id, "x");
+            commit(&f, &d, &manifest(id), &repo("o", n), &tag("v1"), 1).unwrap();
+        }
+        let d = stage(&f, "again", "x");
+        commit(&f, &d, &manifest("aa"), &repo("o", "a"), &tag("v2"), 2).unwrap();
+        let rs = load(&f);
+        let ids: Vec<&str> = rs.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["aa", "bb"]);
+        assert_eq!(rs[0].installed, tag("v2"));
+    }
+
+    #[test]
+    fn trash_ids_keep_their_dashes() {
+        assert_eq!(trash_id(".trash-my-plug-12-0"), Some("my-plug"));
+        assert_eq!(trash_id(".trash-sunset-1"), None);
+        assert_eq!(trash_id("orphan"), None);
+    }
+
+    #[test]
+    fn a_crash_mid_update_is_undone_by_launch_cleanup() {
+        let (_h, f) = folders("midcrash");
+        let a = stage(&f, "a", "old.txt");
+        commit(&f, &a, &manifest("my-plug"), &repo("o", "a"), &tag("v1"), 1).unwrap();
+        std::fs::create_dir_all(f.data_of("my-plug")).unwrap();
+        std::fs::rename(f.plugin("my-plug"), f.plugins.join(".trash-my-plug-5-0")).unwrap();
+        launch_cleanup(&f);
+        assert!(f.plugin("my-plug").join("old.txt").exists());
+        assert!(f.data_of("my-plug").exists());
+        assert_eq!(load(&f).len(), 1);
+        assert!(no_trash(&f));
+    }
+
+    #[test]
+    fn a_failed_save_rolls_an_update_back() {
+        let (_h, f) = folders("save-fails");
+        let a = stage(&f, "a", "old.txt");
+        commit(&f, &a, &manifest("sunset"), &repo("o", "a"), &tag("v1"), 1).unwrap();
+        std::fs::remove_file(f.records()).unwrap();
+        std::fs::create_dir(f.records()).unwrap();
+        let b = stage(&f, "b", "new.txt");
+        assert!(commit(&f, &b, &manifest("sunset"), &repo("o", "a"), &tag("v2"), 2).is_err());
+        assert!(f.plugin("sunset").join("old.txt").exists());
+        assert!(b.join("new.txt").exists());
+        assert!(no_trash(&f));
     }
 }
