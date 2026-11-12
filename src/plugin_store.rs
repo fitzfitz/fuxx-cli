@@ -2,7 +2,7 @@
 //! deletes plugin files. Every delete is built from `Folders` plus a validated id, and
 //! never follows a symlink, so a plugin can't point an uninstall at someone else's files.
 
-use crate::plugin_manifest::{valid_id, Manifest};
+use crate::plugin_manifest::{Manifest, valid_id};
 use crate::plugin_source::{Installed, Repo};
 use std::path::{Path, PathBuf};
 
@@ -446,11 +446,12 @@ mod tests {
         assert_eq!(rs[0].installed, tag("v2"));
         assert!(f.plugin("sunset").join("new.txt").exists());
         assert!(!f.plugin("sunset").join("old.txt").exists());
-        assert!(std::fs::read_dir(&f.plugins).unwrap().all(|e| !e
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".trash-")));
+        assert!(std::fs::read_dir(&f.plugins).unwrap().all(|e| {
+            !e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".trash-")
+        }));
     }
 
     #[test]

@@ -27,7 +27,6 @@ pub struct Appearance {
     pub settings_path: Option<PathBuf>,
     pub user_theme_dir: Option<PathBuf>,
     /// Where plugins live (none without `$HOME`).
-    #[allow(dead_code)] // until the Plugins page reads it
     pub plugin_folders: Option<Folders>,
     /// The themes installed plugins bring, for the theme list and `read_theme_text`.
     pub plugin_themes: Vec<PluginTheme>,
