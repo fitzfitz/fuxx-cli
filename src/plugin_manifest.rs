@@ -12,8 +12,8 @@ use std::path::{Component, Path};
 pub const MANIFEST: &str = "fuxx-plugin.conf";
 /// The manifest format this fuxx understands.
 pub const FORMAT: u32 = 1;
-/// Whether plugins that run a program may be installed. M11z turns this on.
-pub const CODE_ALLOWED: bool = false;
+/// Whether plugins that run a program may be installed.
+pub const CODE_ALLOWED: bool = true;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Manifest {
@@ -54,6 +54,7 @@ pub enum ManifestError {
     PathOutside(String),
     FileMissing(String),
     RunsCode,
+    NoProgramForThisMac,
 }
 
 impl ManifestError {
@@ -74,6 +75,7 @@ impl ManifestError {
                 "This plugin runs a program. fuxx can install those from a later version."
                     .to_string()
             }
+            Self::NoProgramForThisMac => "This plugin has no program for this Mac.".to_string(),
         }
     }
 }
@@ -177,14 +179,65 @@ fn check_path(root: &Path, rel: &str, kind: Kind) -> Result<(), ManifestError> {
     }
 }
 
+/// True when `file` is something this Mac can run: a script with `#!`, or a Mach-O with a
+/// slice for this chip. The first bytes say which; `lipo` lists a Mach-O's chips.
+fn runs_on_this_mac(file: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    let read = std::fs::File::open(file).and_then(|mut f| f.read_exact(&mut head));
+    if read.is_err() {
+        return false;
+    }
+    if head.starts_with(b"#!") {
+        return true;
+    }
+    // Thin 64-bit Mach-O and fat (universal) headers, in either byte order.
+    let mach_o = matches!(
+        u32::from_be_bytes(head),
+        0xfeedfacf | 0xcffaedfe | 0xcafebabe | 0xbebafeca
+    );
+    if !mach_o {
+        return false;
+    }
+    std::process::Command::new("/usr/bin/lipo")
+        .arg("-archs")
+        .arg(file)
+        .output()
+        .map(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout)
+                    .split_whitespace()
+                    .any(|a| a == crate::plugin_source::chip())
+        })
+        .unwrap_or(false)
+}
+
+/// At least one file directly in `bin/` must be executable on this Mac. Links and folders
+/// are skipped, so a link can't borrow a program from outside the plugin.
+fn has_program_for_this_mac(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        let Ok(meta) = std::fs::symlink_metadata(e.path()) else {
+            return false;
+        };
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0 && runs_on_this_mac(&e.path())
+    })
+}
+
 /// Check that every file the manifest names exists inside `root` as a plain file (`bin` as a
-/// folder). Checked even for code entries, so the later program-plugin work reuses it.
+/// folder), and that a `bin` holds a program this Mac can run.
 pub fn check_files(root: &Path, m: &Manifest) -> Result<(), ManifestError> {
     for t in &m.themes {
         check_path(root, t, Kind::File)?;
     }
     if let Some(b) = &m.bin {
         check_path(root, b, Kind::Dir)?;
+        if !has_program_for_this_mac(&root.join(b)) {
+            return Err(ManifestError::NoProgramForThisMac);
+        }
     }
     for z in &m.zsh {
         check_path(root, z, Kind::File)?;
@@ -268,11 +321,120 @@ mod tests {
     }
 
     #[test]
-    fn code_is_refused_in_m11y() {
+    fn code_plugins_are_accepted_now() {
         let m = parse("format = 1\nid = ab\nname = n\nversion = 1\nzsh = a.zsh").unwrap();
         assert!(m.runs_code());
-        assert_eq!(accept(&m, CODE_ALLOWED), Err(ManifestError::RunsCode));
-        assert_eq!(accept(&m, true), Ok(()));
+        assert_eq!(accept(&m, CODE_ALLOWED), Ok(()));
+        // The refusal still works for a build that turns code off.
+        assert_eq!(accept(&m, false), Err(ManifestError::RunsCode));
+    }
+
+    fn put_executable(path: &Path, bytes: &[u8]) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_bin_needs_a_program_for_this_mac() {
+        let root = std::env::temp_dir().join(format!("fuxx-manifest-chip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let check = |name: &str, fill: &dyn Fn(&Path)| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(dir.join("bin")).unwrap();
+            fill(&dir.join("bin"));
+            check_files(&dir, &manifest_with("bin = bin\n"))
+        };
+        let none = Err(ManifestError::NoProgramForThisMac);
+
+        // Only a file without an execute bit.
+        assert_eq!(
+            check("plain", &|b| std::fs::write(b.join("tool"), "#!/bin/sh\n")
+                .unwrap()),
+            none
+        );
+        // An empty folder.
+        assert_eq!(check("empty", &|_| {}), none);
+        // An executable script.
+        assert_eq!(
+            check("script", &|b| put_executable(
+                &b.join("tool"),
+                b"#!/bin/sh\necho hi\n"
+            )),
+            Ok(())
+        );
+        // An executable that is neither a script nor a Mach-O.
+        assert_eq!(
+            check("junk", &|b| put_executable(&b.join("tool"), b"hello world")),
+            none
+        );
+        // A link to a script does not count.
+        assert_eq!(
+            check("link", &|b| {
+                put_executable(&root.join("link/real"), b"#!/bin/sh\n");
+                std::os::unix::fs::symlink(root.join("link/real"), b.join("tool")).unwrap();
+            }),
+            none
+        );
+        // A Mach-O built for this chip: the test program itself.
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(
+            check("this-chip", &|b| {
+                std::fs::copy(&me, b.join("tool")).unwrap();
+            }),
+            Ok(())
+        );
+        // /usr/bin/true holds an x86_64 slice, which is "the other chip" on an arm64 Mac.
+        let other = if crate::plugin_source::chip() == "arm64" {
+            "x86_64"
+        } else {
+            "arm64"
+        };
+        let thinned = root.join("thin-other");
+        let made = std::process::Command::new("/usr/bin/lipo")
+            .args(["/usr/bin/true", "-thin", other, "-output"])
+            .arg(&thinned)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        // If lipo can't cut that slice out here, there is nothing to assert.
+        if made {
+            assert_eq!(
+                check("other-chip", &|b| {
+                    put_executable(&b.join("tool"), &std::fs::read(&thinned).unwrap());
+                }),
+                none
+            );
+            // A universal binary holding this chip and the other one.
+            let universal = root.join("universal-bin");
+            let both = std::process::Command::new("/usr/bin/lipo")
+                .args(["-create"])
+                .arg(&me)
+                .arg(&thinned)
+                .arg("-output")
+                .arg(&universal)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if both {
+                assert_eq!(
+                    check("universal", &|b| {
+                        put_executable(&b.join("tool"), &std::fs::read(&universal).unwrap());
+                    }),
+                    Ok(())
+                );
+            }
+        }
+        // One good program among bad ones is enough.
+        assert_eq!(
+            check("mixed", &|b| {
+                put_executable(&b.join("a"), b"junk");
+                put_executable(&b.join("b"), b"#!/bin/sh\n");
+            }),
+            Ok(())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -284,6 +446,10 @@ mod tests {
         assert_eq!(
             ManifestError::RunsCode.message(),
             "This plugin runs a program. fuxx can install those from a later version."
+        );
+        assert_eq!(
+            ManifestError::NoProgramForThisMac.message(),
+            "This plugin has no program for this Mac."
         );
     }
 
@@ -302,6 +468,7 @@ mod tests {
         std::fs::create_dir_all(root.join("tools")).unwrap();
         std::fs::write(root.join("themes/Sunset"), "background = 000000\n").unwrap();
         std::fs::write(root.join("a.zsh"), "").unwrap();
+        put_executable(&root.join("tools/run"), b"#!/bin/sh\n");
         let outside =
             std::env::temp_dir().join(format!("fuxx-manifest-out-{}", std::process::id()));
         std::fs::write(&outside, "x").unwrap();
@@ -346,6 +513,13 @@ mod tests {
         assert_eq!(
             check("zsh = tools\n"),
             Err(ManifestError::FileMissing("tools".into()))
+        );
+
+        // A bin folder with nothing this Mac can run is refused.
+        std::fs::create_dir_all(root.join("empty-bin")).unwrap();
+        assert_eq!(
+            check("bin = empty-bin\n"),
+            Err(ManifestError::NoProgramForThisMac)
         );
 
         let _ = std::fs::remove_dir_all(&root);

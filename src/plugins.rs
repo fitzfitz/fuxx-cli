@@ -62,8 +62,11 @@ pub fn adds_text(m: &Manifest) -> String {
     format!("Adds {} {noun}: {}", names.len(), names.join(", "))
 }
 
+const CODE_WARNING: &str = "Runs a program on your Mac in every new terminal. fuxx can't limit what it does, so only install plugins from people you trust.";
+
 /// The install sheet's title and detail.
-pub fn install_prompt(m: &Manifest, repo: &Repo) -> (String, String) {
+/// A plugin that runs code gets a warning sheet and the warning as its last line.
+pub fn install_prompt(m: &Manifest, repo: &Repo) -> (String, String, PromptLevel) {
     let title = format!("Install {} {}?", m.name, m.version);
     let mut lines = vec![format!(
         "From {}",
@@ -73,7 +76,13 @@ pub fn install_prompt(m: &Manifest, repo: &Repo) -> (String, String) {
         lines.push(d.clone());
     }
     lines.push(adds_text(m));
-    (title, lines.join("\n"))
+    let level = if m.runs_code() {
+        lines.push(CODE_WARNING.to_string());
+        PromptLevel::Warning
+    } else {
+        PromptLevel::Info
+    };
+    (title, lines.join("\n"), level)
 }
 
 fn now_unix() -> u64 {
@@ -289,16 +298,10 @@ fn confirm_install(handle: AnyWindowHandle, f: Folders, repo: Repo, staged: Stag
     }
     cx.global_mut::<Plugins>().busy = Some(Busy::Checking);
     cx.refresh_windows();
-    let (title, detail) = install_prompt(&staged.manifest, &repo);
+    let (title, detail, level) = install_prompt(&staged.manifest, &repo);
     let work = staged.work.clone();
     let asked = handle.update(cx, move |_, window, cx| {
-        let answer = window.prompt(
-            PromptLevel::Info,
-            &title,
-            Some(&detail),
-            &["Install", "Cancel"],
-            cx,
-        );
+        let answer = window.prompt(level, &title, Some(&detail), &["Install", "Cancel"], cx);
         cx.spawn(async move |cx| {
             let yes = answer.await.ok() == Some(0);
             cx.update(|cx| {
@@ -481,7 +484,7 @@ mod tests {
 
     #[test]
     fn the_install_prompt() {
-        let (title, detail) = install_prompt(
+        let (title, detail, level) = install_prompt(
             &sunset_manifest(),
             &Repo {
                 owner: "o".into(),
@@ -492,6 +495,27 @@ mod tests {
         assert_eq!(
             detail,
             "From github.com/o/sunset\nWarm themes.\nAdds 2 themes: Sunset, Sunset Light"
+        );
+        assert_eq!(level, PromptLevel::Info);
+    }
+
+    #[test]
+    fn the_prompt_warns_about_code() {
+        let m = plugin_manifest::parse(
+            "format = 1\nid = helper\nname = Helper\nversion = 1\nzsh = a.zsh\n",
+        )
+        .unwrap();
+        let (_, detail, level) = install_prompt(
+            &m,
+            &Repo {
+                owner: "o".into(),
+                name: "helper".into(),
+            },
+        );
+        assert_eq!(level, PromptLevel::Warning);
+        assert_eq!(
+            detail.lines().last().unwrap(),
+            "Runs a program on your Mac in every new terminal. fuxx can't limit what it does, so only install plugins from people you trust."
         );
     }
 

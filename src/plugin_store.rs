@@ -47,6 +47,26 @@ pub struct Record {
     pub installed: Installed,
     pub themes: Vec<String>,
     pub installed_at: u64,
+    /// Off keeps a helper plugin installed but not loaded. Plugins from before M11z are on.
+    #[serde(default = "on")]
+    pub enabled: bool,
+    /// A folder of programs to put on `PATH`, from the manifest.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Shell scripts to load, from the manifest.
+    #[serde(default)]
+    pub zsh: Vec<String>,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Record {
+    /// True when the plugin brings a program or shell script, not only data.
+    pub fn runs_code(&self) -> bool {
+        self.bin.is_some() || !self.zsh.is_empty()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -174,6 +194,12 @@ pub fn commit(
         }
         return Err(format!("Couldn't install {}: {e}", m.id));
     }
+    // An update keeps On/Off: turning a helper off must survive getting a new version.
+    let enabled = records
+        .iter()
+        .find(|r| r.id == m.id)
+        .map(|r| r.enabled)
+        .unwrap_or(true);
     let record = Record {
         id: m.id.clone(),
         name: m.name.clone(),
@@ -183,6 +209,9 @@ pub fn commit(
         installed: installed.clone(),
         themes: m.themes.clone(),
         installed_at: now,
+        enabled,
+        bin: m.bin.clone(),
+        zsh: m.zsh.clone(),
     };
     // An update keeps its place: theme names are suffixed in record order.
     match records.iter().position(|r| r.id == m.id) {
@@ -200,6 +229,23 @@ pub fn commit(
     if let Some(t) = trash {
         remove_path(&t);
     }
+    // A helper keeps its files here. Failing to make it is not worth undoing the install.
+    if record.runs_code() {
+        let _ = std::fs::create_dir_all(f.data_of(&m.id));
+    }
+    Ok(record)
+}
+
+/// Turn a plugin On or Off. Only the record changes; its files stay.
+#[allow(dead_code)] // the On/Off switch (a later M11z task) is its first caller
+pub fn set_enabled(f: &Folders, id: &str, on: bool) -> Result<Record, String> {
+    let mut records = load_checked(f).map_err(|_| DAMAGED.to_string())?;
+    let Some(r) = records.iter_mut().find(|r| r.id == id) else {
+        return Err(format!("No plugin called {id} is installed."));
+    };
+    r.enabled = on;
+    let record = r.clone();
+    save(f, &records).map_err(|e| format!("Couldn't save the plugin list: {e}"))?;
     Ok(record)
 }
 
@@ -699,5 +745,73 @@ mod tests {
         assert!(f.plugin("sunset").join("old.txt").exists());
         assert!(b.join("new.txt").exists());
         assert!(no_trash(&f));
+    }
+
+    #[test]
+    fn an_m11y_record_file_still_reads() {
+        let (_h, f) = folders("m11y-record");
+        std::fs::write(
+            f.records(),
+            r#"{"plugins":[{"id":"sunset","name":"Sunset","version":"1.0","description":null,
+            "repo":"o/a","installed":{"tag":"v1"},"themes":["themes/Sunset"],"installed_at":5}]}"#,
+        )
+        .unwrap();
+        let records = load(&f);
+        assert_eq!(records.len(), 1);
+        assert!(records[0].enabled);
+        assert_eq!(records[0].bin, None);
+        assert!(records[0].zsh.is_empty());
+        assert!(!records[0].runs_code());
+    }
+
+    #[test]
+    fn install_creates_the_data_folder_for_code_only() {
+        let (_h, f) = folders("data-folder");
+        let staged = stage(&f, "1-a", "a.txt");
+        commit(
+            &f,
+            &staged,
+            &manifest("sunset"),
+            &repo("o", "a"),
+            &tag("v1"),
+            1,
+        )
+        .unwrap();
+        assert!(!f.data_of("sunset").exists());
+
+        let staged = stage(&f, "2-b", "a.zsh");
+        let mut helper = manifest("helper");
+        helper.zsh = vec!["a.zsh".into()];
+        let r = commit(&f, &staged, &helper, &repo("o", "b"), &tag("v1"), 2).unwrap();
+        assert!(f.data_of("helper").is_dir());
+        assert!(r.runs_code());
+        assert_eq!(r.zsh, ["a.zsh"]);
+        assert!(r.enabled);
+    }
+
+    #[test]
+    fn set_enabled_flips_and_survives_update() {
+        let (_h, f) = folders("set-enabled");
+        let mut helper = manifest("helper");
+        helper.zsh = vec!["a.zsh".into()];
+        let staged = stage(&f, "1-a", "a.zsh");
+        commit(&f, &staged, &helper, &repo("o", "b"), &tag("v1"), 1).unwrap();
+
+        let r = set_enabled(&f, "helper", false).unwrap();
+        assert!(!r.enabled);
+        assert!(!load(&f)[0].enabled);
+
+        let staged = stage(&f, "2-a", "a.zsh");
+        let r = commit(&f, &staged, &helper, &repo("o", "b"), &tag("v2"), 2).unwrap();
+        assert!(!r.enabled);
+        assert!(!load(&f)[0].enabled);
+
+        assert!(set_enabled(&f, "helper", true).unwrap().enabled);
+        assert_eq!(
+            set_enabled(&f, "nope", true),
+            Err("No plugin called nope is installed.".to_string())
+        );
+        std::fs::write(f.records(), "not json").unwrap();
+        assert_eq!(set_enabled(&f, "helper", true), Err(DAMAGED.to_string()));
     }
 }
