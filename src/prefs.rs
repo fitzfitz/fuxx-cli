@@ -22,12 +22,14 @@ fn finish(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// `Default`, then user and built-in theme names, sorted case-insensitively. Case-variants
-/// collapse to one row and the user's spelling wins (user themes are listed first).
-pub fn theme_choices(user_themes: &[String]) -> Vec<String> {
+/// `Default`, then user, plugin and built-in theme names, sorted case-insensitively.
+/// Case-variants collapse to one row and the user's spelling wins (user themes are listed first,
+/// then plugin themes, which `plugin_themes::list` already told apart from the others).
+pub fn theme_choices(user_themes: &[String], plugin_themes: &[String]) -> Vec<String> {
     finish(
         user_themes
             .iter()
+            .chain(plugin_themes)
             .cloned()
             .chain(BUILTIN_THEMES.iter().map(|s| s.to_string()))
             .collect(),
@@ -213,11 +215,23 @@ mod tests {
 
     #[test]
     fn theme_choices_merge_sort_and_dedupe() {
-        let c = theme_choices(&["Rose Pine".into(), "Nord".into()]);
+        let c = theme_choices(&["Rose Pine".into(), "Nord".into()], &[]);
         assert_eq!(c[0], DEFAULT_CHOICE);
         assert_eq!(c.iter().filter(|n| n.as_str() == "Nord").count(), 1);
         assert!(c.contains(&"Rose Pine".to_string()) && c.contains(&"Dracula".to_string()));
         assert_eq!(c.len(), 1 + 6 + 1);
+    }
+
+    #[test]
+    fn plugin_themes_join_the_sorted_list() {
+        assert_eq!(
+            theme_choices(&["mine".into()], &["Sunset".into()])[..3],
+            ["Default", "Catppuccin Latte", "Catppuccin Mocha"]
+        );
+        let c = theme_choices(&[], &["Sunset".into()]);
+        assert!(c.contains(&"Sunset".to_string()));
+        let sunset = c.iter().position(|n| n == "Sunset").unwrap();
+        assert!(c[sunset - 1].to_lowercase() < "sunset".to_string());
     }
 
     #[test]
@@ -239,7 +253,7 @@ mod tests {
 
     #[test]
     fn lists_never_duplicate_default_or_case_variants() {
-        let c = theme_choices(&["Default".into(), "nord".into()]);
+        let c = theme_choices(&["Default".into(), "nord".into()], &[]);
         assert_eq!(c.iter().filter(|n| n.as_str() == DEFAULT_CHOICE).count(), 1);
         assert_eq!(c[0], DEFAULT_CHOICE);
         let nords: Vec<_> = c.iter().filter(|n| n.to_lowercase() == "nord").collect();
