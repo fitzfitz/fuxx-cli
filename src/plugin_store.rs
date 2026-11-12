@@ -16,7 +16,10 @@ pub struct Folders {
 impl Folders {
     pub fn under(home: &Path) -> Folders {
         let base = home.join("Library/Application Support/fuxx");
-        Folders { plugins: base.join("plugins"), data: base.join("plugin-data") }
+        Folders {
+            plugins: base.join("plugins"),
+            data: base.join("plugin-data"),
+        }
     }
     /// Where downloads are unpacked. Inside `plugins/` so a rename into place stays on one volume.
     pub fn staging(&self) -> PathBuf {
@@ -61,7 +64,9 @@ pub fn load(f: &Folders) -> Vec<Record> {
 }
 
 pub fn save(f: &Folders, records: &[Record]) -> std::io::Result<()> {
-    let table = Table { plugins: records.to_vec() };
+    let table = Table {
+        plugins: records.to_vec(),
+    };
     let text = serde_json::to_string_pretty(&table).map_err(std::io::Error::other)?;
     crate::settings::write_atomic(&f.records(), &text)
 }
@@ -109,10 +114,17 @@ pub fn commit(
         return Err(format!("{} is not a valid plugin id.", m.id));
     }
     let mut records = load(f);
-    if let Some(old) = records.iter().find(|r| r.id == m.id && r.repo != repo.slug()) {
-        return Err(format!("A plugin called {} is already installed from github.com/{}.", m.id, old.repo));
+    if let Some(old) = records
+        .iter()
+        .find(|r| r.id == m.id && r.repo != repo.slug())
+    {
+        return Err(format!(
+            "A plugin called {} is already installed from github.com/{}.",
+            m.id, old.repo
+        ));
     }
-    std::fs::create_dir_all(&f.plugins).map_err(|e| format!("Couldn't make the plugins folder: {e}"))?;
+    std::fs::create_dir_all(&f.plugins)
+        .map_err(|e| format!("Couldn't make the plugins folder: {e}"))?;
     let dest = f.plugin(&m.id);
     let trash = if exists(&dest) {
         let t = trash_name(f, &m.id, now);
@@ -195,13 +207,19 @@ pub fn launch_cleanup(f: &Folders) {
         }
     }
     let records = load(f);
-    let kept: Vec<Record> = records.iter().filter(|r| exists(&f.plugin(&r.id))).cloned().collect();
+    let kept: Vec<Record> = records
+        .iter()
+        .filter(|r| exists(&f.plugin(&r.id)))
+        .cloned()
+        .collect();
     if kept.len() != records.len() {
         let _ = save(f, &kept);
     }
     let has = |name: &str| kept.iter().any(|r| r.id == name);
     for dir in [&f.plugins, &f.data] {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if valid_id(&name) && !has(&name) {
@@ -217,7 +235,8 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("fuxx-plugin-store-{tag}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("fuxx-plugin-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -242,7 +261,10 @@ mod tests {
         }
     }
     fn repo(o: &str, n: &str) -> Repo {
-        Repo { owner: o.into(), name: n.into() }
+        Repo {
+            owner: o.into(),
+            name: n.into(),
+        }
     }
     /// A staged folder as the downloader would leave it.
     fn stage(f: &Folders, name: &str, file: &str) -> PathBuf {
@@ -259,8 +281,14 @@ mod tests {
     #[test]
     fn folders_live_in_application_support() {
         let f = Folders::under(Path::new("/h"));
-        assert_eq!(f.plugins, Path::new("/h/Library/Application Support/fuxx/plugins"));
-        assert_eq!(f.data, Path::new("/h/Library/Application Support/fuxx/plugin-data"));
+        assert_eq!(
+            f.plugins,
+            Path::new("/h/Library/Application Support/fuxx/plugins")
+        );
+        assert_eq!(
+            f.data,
+            Path::new("/h/Library/Application Support/fuxx/plugin-data")
+        );
         assert_eq!(f.staging(), f.plugins.join(".staging"));
     }
 
@@ -277,7 +305,15 @@ mod tests {
         let home = tmp("commit-creates");
         let f = Folders::under(&home);
         std::fs::create_dir_all(home.join("stage")).unwrap();
-        let r = commit(&f, &home.join("stage"), &manifest("sunset"), &repo("o", "a"), &tag("v1"), 5).unwrap();
+        let r = commit(
+            &f,
+            &home.join("stage"),
+            &manifest("sunset"),
+            &repo("o", "a"),
+            &tag("v1"),
+            5,
+        )
+        .unwrap();
         assert_eq!(r.repo, "o/a");
         assert!(f.plugin("sunset").is_dir());
         assert_eq!(load(&f), vec![r]);
@@ -287,7 +323,15 @@ mod tests {
     fn install_then_uninstall_leaves_nothing() {
         let (_h, f) = folders("roundtrip");
         let staged = stage(&f, "123-x", "a.txt");
-        let r = commit(&f, &staged, &manifest("sunset"), &repo("o", "a"), &tag("v1"), 7).unwrap();
+        let r = commit(
+            &f,
+            &staged,
+            &manifest("sunset"),
+            &repo("o", "a"),
+            &tag("v1"),
+            7,
+        )
+        .unwrap();
         assert_eq!(r.themes, vec!["themes/Sunset".to_string()]);
         std::fs::create_dir_all(f.data_of("sunset")).unwrap();
         std::fs::write(f.data_of("sunset").join("state"), "s").unwrap();
@@ -313,7 +357,15 @@ mod tests {
         std::fs::write(outside.join("keep.txt"), "k").unwrap();
         let staged = stage(&f, "s", "a.txt");
         symlink(&outside, staged.join("escape")).unwrap();
-        commit(&f, &staged, &manifest("sunset"), &repo("o", "a"), &tag("v1"), 1).unwrap();
+        commit(
+            &f,
+            &staged,
+            &manifest("sunset"),
+            &repo("o", "a"),
+            &tag("v1"),
+            1,
+        )
+        .unwrap();
         uninstall(&f, "sunset").unwrap();
         assert!(outside.join("keep.txt").exists());
         assert!(!f.plugin("sunset").exists());
@@ -326,7 +378,15 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("keep.txt"), "k").unwrap();
         let staged = stage(&f, "s", "a.txt");
-        commit(&f, &staged, &manifest("sunset"), &repo("o", "a"), &tag("v1"), 1).unwrap();
+        commit(
+            &f,
+            &staged,
+            &manifest("sunset"),
+            &repo("o", "a"),
+            &tag("v1"),
+            1,
+        )
+        .unwrap();
         symlink(&outside, f.data_of("sunset")).unwrap();
         uninstall(&f, "sunset").unwrap();
         assert!(outside.join("keep.txt").exists());
@@ -340,7 +400,10 @@ mod tests {
         commit(&f, &a, &manifest("sunset"), &repo("o", "a"), &tag("v1"), 1).unwrap();
         let b = stage(&f, "b", "b.txt");
         let err = commit(&f, &b, &manifest("sunset"), &repo("o", "b"), &tag("v1"), 2).unwrap_err();
-        assert_eq!(err, "A plugin called sunset is already installed from github.com/o/a.");
+        assert_eq!(
+            err,
+            "A plugin called sunset is already installed from github.com/o/a."
+        );
         assert!(f.plugin("sunset").join("a.txt").exists());
         assert!(b.exists());
     }
@@ -360,7 +423,11 @@ mod tests {
         assert_eq!(rs[0].installed, tag("v2"));
         assert!(f.plugin("sunset").join("new.txt").exists());
         assert!(!f.plugin("sunset").join("old.txt").exists());
-        assert!(std::fs::read_dir(&f.plugins).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".trash-")));
+        assert!(std::fs::read_dir(&f.plugins).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".trash-")));
     }
 
     #[test]
@@ -368,8 +435,14 @@ mod tests {
         let (h, f) = folders("bad-id");
         std::fs::write(h.join("x"), "precious").unwrap();
         std::fs::create_dir_all(f.plugins.join("nope")).unwrap();
-        assert_eq!(uninstall(&f, "../x").unwrap_err(), "No plugin called ../x is installed.");
-        assert_eq!(uninstall(&f, "nope").unwrap_err(), "No plugin called nope is installed.");
+        assert_eq!(
+            uninstall(&f, "../x").unwrap_err(),
+            "No plugin called ../x is installed."
+        );
+        assert_eq!(
+            uninstall(&f, "nope").unwrap_err(),
+            "No plugin called nope is installed."
+        );
         assert!(h.join("x").exists());
         assert!(f.plugins.join("nope").exists());
     }
@@ -378,7 +451,15 @@ mod tests {
     fn launch_cleanup_mends_a_crash() {
         let (_h, f) = folders("cleanup");
         let kept = stage(&f, "k", "a.txt");
-        commit(&f, &kept, &manifest("sunset"), &repo("o", "a"), &tag("v1"), 1).unwrap();
+        commit(
+            &f,
+            &kept,
+            &manifest("sunset"),
+            &repo("o", "a"),
+            &tag("v1"),
+            1,
+        )
+        .unwrap();
         let mut rs = load(&f);
         let mut gone = rs[0].clone();
         gone.id = "gone".into();
