@@ -22,6 +22,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-12 — Fix: `ls` columns misaligned (tab cells)
+- **Did:** Your report: "when I try command ls, some is not aligned … example of packaging". Cause: macOS `ls -C` pads columns with HT; `alacritty_terminal` leaves a literal `'\t'` in the cell the tab starts from; `grid::snapshot` passed it to the shaper, CoreText gave it a tab-stop advance, and GPUI's `force_width` (which only re-snaps a glyph that moved over half a cell) left the text after it off the grid. Fix: a tab cell draws as a blank (as Alacritty's renderer does); copy still reads the real tab from the term. Test first (`snapshot_draws_a_tab_cell_as_a_blank`, failed `"ab\t     c "`); 1438 tests pass, clippy nothing new. You confirmed on screen: "it works now, aligned." Committed (`06305e7`) and pushed to master on your word.
+- **Next:** unchanged — your M11x check (note 75), then M11p.
+
 ### 2026-11-12 — M11x released in v0.10.0
 - **Did:** On your word ("commit, push and release"): M11x committed (`7082308`), master fast-forwarded, version 0.10.0 (`74f98c9`, tag `v0.10.0`); the Release run 43208136200 is green and published `fuxx-0.10.0.zip`. Before release: 1437 tests pass, fmt clean, clippy nothing new, all 80 ui-shot scenes pass.
 - **Next:** your on-screen check (note 75); then M11p (chrome caching) as planned.
