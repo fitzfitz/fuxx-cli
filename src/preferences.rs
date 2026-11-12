@@ -635,6 +635,10 @@ impl PreferencesView {
         let focus_handle = cx.focus_handle();
         let appearance_sub = cx.observe_global::<Appearance>(|_, cx| cx.notify());
         let section = last_section(cx);
+        // Reopening on Plugins is arriving there too.
+        if section == Section::Plugins {
+            plugins::check_updates(cx);
+        }
 
         // The tips card lives in the workspace's sidebar. Its workspace notifies often, so
         // redraw only when the card comes or goes.
@@ -775,12 +779,13 @@ impl PreferencesView {
     pub(crate) fn select(&mut self, section: Section, cx: &mut Context<Self>) {
         if section != self.section {
             self.scroll.set_offset(point(px(0.0), px(0.0)));
+            // Only on arriving: each look costs GitHub requests, and its limit is small.
+            if section == Section::Plugins {
+                plugins::check_updates(cx);
+            }
         }
         self.section = section;
         self.font_menu = false;
-        if section == Section::Plugins {
-            plugins::check_updates(cx);
-        }
         cx.set_global(LastSection(section));
         cx.notify();
     }

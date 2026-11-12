@@ -38,10 +38,10 @@ pub fn themes_text(count: usize) -> String {
 }
 
 /// The version as the card shows it: the plugin's own, plus the release it came from when that
-/// reads differently (`1.0 (v1.0.2)`).
+/// reads differently (`1.0 (v1.0.2)`); a `v` tag for the same number adds nothing.
 pub fn version_text(version: &str, installed: &Installed) -> String {
     let label = installed.label();
-    if label == version {
+    if label == version || label == format!("v{version}") {
         version.to_string()
     } else {
         format!("{version} ({label})")
@@ -283,4 +283,27 @@ pub(crate) fn plugin_cards(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
             plugin_card(i, state, ui, cx)
                 .when(i > 0, |c| c.border_t_1().border_color(hsla(ui.divider)))
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_shows_the_release_only_when_it_says_more() {
+        let tag = |t: &str| Installed::Tag(t.into());
+        assert_eq!(version_text("1.0.0", &tag("1.0.0")), "1.0.0");
+        assert_eq!(version_text("1.0.0", &tag("v1.0.0")), "1.0.0");
+        assert_eq!(version_text("1.0.0", &tag("v1.0.2")), "1.0.0 (v1.0.2)");
+        assert_eq!(
+            version_text("1.0.0", &Installed::Commit("abcdef0123".into())),
+            "1.0.0 (abcdef0)"
+        );
+    }
+
+    #[test]
+    fn themes_are_counted() {
+        assert_eq!(themes_text(1), "1 theme");
+        assert_eq!(themes_text(2), "2 themes");
+    }
 }
