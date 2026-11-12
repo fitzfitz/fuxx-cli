@@ -142,20 +142,51 @@ pub struct Staged {
 /// The plugin's root: the folder itself if it holds the manifest, else its only visible
 /// subfolder if that does (GitHub tarballs wrap everything in one folder).
 pub fn find_plugin_root(dir: &Path) -> Option<PathBuf> {
-    if dir.join(MANIFEST).is_file() {
+    if has_manifest(dir) {
         return Some(dir.to_path_buf());
     }
+    // Never follow links: an archive could point one at a folder outside itself.
     let mut subs = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
         .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-        .map(|e| e.path())
-        .filter(|p| p.is_dir());
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path());
     let only = subs.next()?;
     if subs.next().is_some() {
         return None;
     }
-    only.join(MANIFEST).is_file().then_some(only)
+    has_manifest(&only).then_some(only)
+}
+
+/// True when the folder holds a manifest that is a regular file, not a link to somewhere else.
+fn has_manifest(dir: &Path) -> bool {
+    std::fs::symlink_metadata(dir.join(MANIFEST))
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
+/// Deletes a scratch folder. An archive can hold read-only folders, which `remove_dir_all`
+/// cannot empty, so every folder is made owner-writable first (links are never followed).
+fn remove_work(work: &Path) {
+    fn open_up(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::symlink_metadata(dir) else {
+            return;
+        };
+        if !meta.is_dir() {
+            return;
+        }
+        let mode = meta.permissions().mode() | 0o700;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode));
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.filter_map(|e| e.ok()) {
+                open_up(&e.path());
+            }
+        }
+    }
+    open_up(work);
+    let _ = std::fs::remove_dir_all(work);
 }
 
 /// Downloads into a fresh folder under `staging`, checks size and checksum, unpacks and reads
@@ -177,7 +208,7 @@ pub fn stage(net: &dyn Net, d: &Download, staging: &Path) -> Result<Staged, Stri
             installed: d.installed.clone(),
         }),
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&work);
+            remove_work(&work);
             Err(e)
         }
     }
@@ -553,6 +584,101 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(e, "fuxx couldn't unpack this plugin.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_only_folder_is_still_cleaned_up() {
+        let dir = tmp("ro");
+        let wrap = dir.join("src").join("owner-repo-abc");
+        std::fs::create_dir_all(wrap.join("locked")).unwrap();
+        std::fs::write(wrap.join("locked/f"), "x").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(wrap.join("locked"), std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+        let t = dir.join("a.tar.gz");
+        let ok = Command::new("/usr/bin/tar")
+            .arg("-czf")
+            .arg(&t)
+            .arg("-C")
+            .arg(dir.join("src"))
+            .arg("owner-repo-abc")
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        std::fs::set_permissions(wrap.join("locked"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let staging = dir.join("staging");
+        let e = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, None),
+            &staging,
+        )
+        .unwrap_err();
+        assert!(e.starts_with("This repo isn't a fuxx plugin"));
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tar_of(dir: &Path, entry: &str) -> PathBuf {
+        let out = dir.join("a.tar.gz");
+        let ok = Command::new("/usr/bin/tar")
+            .arg("-czf")
+            .arg(&out)
+            .arg("-C")
+            .arg(dir.join("src"))
+            .arg(entry)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        out
+    }
+
+    #[test]
+    fn a_symlinked_plugin_folder_is_refused() {
+        let dir = tmp("lnkdir");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join(MANIFEST), conf("")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("src/owner-repo-abc")).unwrap();
+        let t = tar_of(&dir, "owner-repo-abc");
+        let staging = dir.join("staging");
+        let e = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, None),
+            &staging,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "This repo isn't a fuxx plugin (it has no fuxx-plugin.conf)."
+        );
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlinked_manifest_is_refused() {
+        let dir = tmp("lnkconf");
+        let outside = dir.join("real.conf");
+        std::fs::write(&outside, conf("")).unwrap();
+        let wrap = dir.join("src").join("owner-repo-abc");
+        std::fs::create_dir_all(&wrap).unwrap();
+        std::os::unix::fs::symlink(&outside, wrap.join(MANIFEST)).unwrap();
+        let t = tar_of(&dir, "owner-repo-abc");
+        let staging = dir.join("staging");
+        let e = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, None),
+            &staging,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "This repo isn't a fuxx plugin (it has no fuxx-plugin.conf)."
+        );
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
