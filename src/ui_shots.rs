@@ -4979,7 +4979,7 @@ fn file_diff_scenes() {
     use crate::file_tab::{FileTab, MISSING};
     use crate::git_status::LineChange;
     use crate::layout_model::{FileMode, TabKind};
-    use crate::right_sidebar::{FILTER_BAND, ROOT_HEADER, ROW};
+    use crate::right_sidebar::{FILTER_BAND, HEADER, LIST_TOP, ROW};
     use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
     use crate::ui_tokens::{MARK_MIN, ensure_contrast};
     use alacritty_terminal::vte::ansi::Rgb;
@@ -5321,7 +5321,7 @@ fn file_diff_scenes() {
         // The toggle, in a workspace with the Files panel (as the files scenes lay it out).
         let window_dims = size(px(1100.0), px(560.0));
         let sidebar_left = 1100.0 - GAP - 300.0 + FOCUS_RING;
-        let list_top = GAP + FOCUS_RING + TAB_BAR + ROOT_HEADER + FILTER_BAND;
+        let list_top = GAP + FOCUS_RING + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
         let build_ws = |slot: Slot| {
             let dir = dir.clone();
             move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -5985,9 +5985,7 @@ fn files_tree(root: &std::path::Path, open_util: bool) -> crate::file_tree::File
 fn files_scenes() {
     use crate::git_status::Mark;
     use crate::layout_model::{FileMode, TabKind};
-    use crate::right_sidebar::{
-        FILTER_BAND, FileKind, ROOT_HEADER, ROW, kind_color, mark_color, root_path_line,
-    };
+    use crate::right_sidebar::{FILTER_BAND, HEADER, LIST_TOP, ROW, mark_color};
     use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR, TAB_TOP_GAP, TOP_BAND};
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
@@ -6081,7 +6079,7 @@ fn files_scenes() {
                 if scene == "files-filter" {
                     let field = point(
                         px(sidebar_left + 60.0),
-                        px(top + TAB_BAR + ROOT_HEADER + FILTER_BAND / 2.0),
+                        px(top + TAB_BAR + HEADER + FILTER_BAND / 2.0),
                     );
                     cx.simulate_click(window, field, Modifiers::none());
                     let typing = cx
@@ -6127,14 +6125,15 @@ fn files_scenes() {
             assert!(near(below, ui.card, 3), "{n}: the card under it: {below:?}");
             // Each row's mark colour, somewhere along its name and letter (drawn in it), right
             // of its icon.
-            let list_top = top + TAB_BAR + ROOT_HEADER + FILTER_BAND;
+            let list_top = top + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
             let depths: &[usize] = match scene {
                 "files" => &[0, 0, 1, 2, 1, 1, 0, 0, 0, 0],
                 "files-filter" => &[0, 1],
                 _ => &[0, 0, 1, 1, 1, 0, 0, 0, 0],
             };
-            // A row's icon box: 8 pt in, 14 pt a level, after the 12 pt chevron column.
-            let icon_left = |row: usize| sidebar_left + 8.0 + depths[row] as f32 * 14.0 + 12.0;
+            // A row's icon box (M11v part 4): on the 12 pt edge (the pill 6 pt in, its padding
+            // 6), 16 pt a level, no chevron column.
+            let icon_left = |row: usize| sidebar_left + 12.0 + depths[row] as f32 * 16.0;
             let ink_in = |row: usize, x0: f32, x1: f32, c: alacritty_terminal::vte::ansi::Rgb| {
                 let y0 = list_top + row as f32 * ROW;
                 let steps = ((x1 - x0) * 2.0) as usize;
@@ -6187,37 +6186,36 @@ fn files_scenes() {
             if scene != "files" {
                 continue;
             }
-            // M11i: each row's icon in its own colour, in its 12 pt box: folders dim, files
-            // tinted by type (the names keep their marks' colours).
-            let (red, cyan) = (
-                kind_color(FileKind::Red, &theme),
-                kind_color(FileKind::Cyan, &theme),
-            );
-            let icon = |row: usize, c| ink_in(row, icon_left(row), icon_left(row) + 12.0, c);
-            for (row, what, c) in [
-                (0, "docs", ui.text_dim),
-                (1, "src (open)", ui.text_dim),
-                (2, "util (open)", ui.text_dim),
-                (3, "a.rs", red),
-                (4, "main.rs", red),
-                (6, "Cargo.toml", cyan),
-                (7, "notes.txt", ui.text_dim),
-                (9, "README.md", ui.text_dim),
+            // M11v part 4: every icon one quiet grey (`text_faint`), in its 16 pt box; colour is
+            // left to the changed files' names and letters.
+            let quiet = ui.text_faint;
+            let (red, cyan) = (theme.palette[1], theme.palette[6]);
+            let icon = |row: usize, c| ink_in(row, icon_left(row), icon_left(row) + 16.0, c);
+            for (row, what) in [
+                (0, "docs"),
+                (1, "src (open)"),
+                (2, "util (open)"),
+                (3, "a.rs"),
+                (4, "main.rs"),
+                (6, "Cargo.toml"),
+                (7, "notes.txt"),
+                (9, "README.md"),
             ] {
-                assert!(icon(row, c), "{n}: {what}'s icon in {c:?}");
+                assert!(icon(row, quiet), "{n}: {what}'s icon in the quiet grey");
+                assert!(
+                    !icon(row, red) && !icon(row, cyan),
+                    "{n}: {what}'s icon isn't tinted by its type"
+                );
             }
-            for (row, what) in [(6, "Cargo.toml"), (7, "notes.txt"), (9, "README.md")] {
-                assert!(!icon(row, red), "{n}: {what}'s icon isn't red");
-            }
-            assert!(!icon(4, cyan), "{n}: main.rs's icon isn't cyan");
             // An open folder's icon differs from a closed one's: its flap's top edge crosses
-            // the middle of the 12 pt box (5 pt down the row), where a closed folder is empty.
+            // the middle of the 16 pt box (6 pt down the 28 pt row), where a closed folder is
+            // empty. (No triangles, part 4: the icon alone says open or closed.)
             let open_flap = |row: usize| {
                 let (x, y) = (
-                    icon_left(row) + 6.0,
-                    list_top + row as f32 * ROW + 5.0 + 5.5,
+                    icon_left(row) + 8.0,
+                    list_top + row as f32 * ROW + 6.0 + 7.3,
                 );
-                near(at(x, y), ui.text_dim, 40)
+                near(at(x, y), quiet, 40)
             };
             assert!(open_flap(1) && !open_flap(0), "{n}: src open, docs closed");
             // Indent guides: 1 pt in `guide` at each level above the row, at the middle of
@@ -6231,14 +6229,16 @@ fn files_scenes() {
                         .all(|dy| near(at(sidebar_left + x, y0 + dy), ui.guide, 3))
                 })
             };
+            // Part 4: a level's guide runs down the middle of that level's icon box: 12 pt
+            // in, 16 pt a level, 8 pt to its middle.
             for row in [2, 3, 4, 5] {
-                assert!(guide_at(row, 14.0), "{n}: row {row}'s depth-1 guide");
+                assert!(guide_at(row, 20.0), "{n}: row {row}'s depth-1 guide");
             }
-            assert!(guide_at(3, 28.0), "{n}: a.rs's depth-2 guide");
-            assert!(!guide_at(4, 28.0), "{n}: main.rs is at depth 1");
+            assert!(guide_at(3, 36.0), "{n}: a.rs's depth-2 guide");
+            assert!(!guide_at(4, 36.0), "{n}: main.rs is at depth 1");
             for row in [6, 7, 9] {
                 assert!(
-                    !guide_at(row, 14.0),
+                    !guide_at(row, 20.0),
                     "{n}: no guide at the top level ({row})"
                 );
             }
@@ -6250,14 +6250,14 @@ fn files_scenes() {
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = build_for(false, true, slot.clone());
             let header_top = card_top + TAB_BAR;
-            // Line 1's middle: 3 pt (the header's room round its 34 pt of lines) + 10.
-            let line_one = header_top + (ROOT_HEADER - 34.0) / 2.0 + 10.0;
+            // Part 4: one line, centred in the 42 pt header; Collapse all is a 26 pt button 8 pt
+            // in from the right.
+            let line_one = header_top + HEADER / 2.0;
             let button = point(
-                px(window_right - GAP - FOCUS_RING - 6.0 - 10.0),
+                px(window_right - GAP - FOCUS_RING - 8.0 - 13.0),
                 px(line_one),
             );
             let name = point(px(sidebar_left + 60.0), px(line_one));
-            let root_for = root.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
                 let n = format!("{scene}-{slug}");
@@ -6271,33 +6271,6 @@ fn files_scenes() {
                         (tree.expanded_set(), selected)
                     })
                 };
-                // The path line, as drawn at this width: its start cut, its own name kept.
-                let drawn = cx
-                    .update_window(window, |_, window, cx| {
-                        let ws = ws.read(cx);
-                        let room = ws.right_sidebar.width - 2.0 * FOCUS_RING - 10.0 - 6.0;
-                        let wrapper = RefCell::new(window.text_system().line_wrapper(
-                            gpui::TextStyle::default().font(),
-                            px(crate::ui_tokens::text::META),
-                        ));
-                        let fits = |s: &str| {
-                            wrapper
-                                .borrow_mut()
-                                .should_truncate_line(
-                                    s,
-                                    px(room),
-                                    "\u{2026}",
-                                    gpui::TruncateFrom::End,
-                                )
-                                .is_none()
-                        };
-                        root_path_line(&root_for, ws.places.home.as_deref(), fits)
-                    })
-                    .expect("read");
-                assert!(
-                    drawn.starts_with("\u{2026}/") && drawn.ends_with("/fuxx-ui-shots-files"),
-                    "{n}: the path's start is cut at 300 pt, at a folder boundary: {drawn}"
-                );
                 cx.simulate_click(window, button, none);
                 frame(cx, window);
                 assert_eq!(
@@ -6345,46 +6318,36 @@ fn files_scenes() {
                     (0..w).any(|dx| near(at(x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5), c, by))
                 })
             };
-            let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
-            let (left, right) = (sidebar_left + 10.0, window_right - GAP - FOCUS_RING - 6.0);
-            // Line 1: the name in the text colour; line 2: the path, faint, inside the pads.
+            // Part 4: one line, centred in the 42 pt header: the name in the text colour on the
+            // 12 pt edge (its path is in its tooltip, no second line), Collapse all's icon in a
+            // 26 pt button 8 pt in from the right.
+            let line_top = header_top + (HEADER - 20.0) / 2.0;
+            let (left, right) = (sidebar_left + 12.0, window_right - GAP - FOCUS_RING - 8.0);
             assert!(
-                has(
-                    left + 10.0,
-                    left + 120.0,
-                    line_top,
-                    line_top + 20.0,
-                    ui.text,
-                    24
-                ),
+                has(left, left + 140.0, line_top, line_top + 20.0, ui.text, 24),
                 "{n}: the root's name"
-            );
-            assert!(
-                has(
-                    left,
-                    left + 200.0,
-                    line_top + 20.0,
-                    line_top + 34.0,
-                    ui.text_faint,
-                    24
-                ),
-                "{n}: the root's path"
             );
             assert!(
                 !has(
                     left,
                     left + 200.0,
-                    line_top + 20.0,
-                    line_top + 34.0,
-                    ui.text,
+                    line_top + 21.0,
+                    header_top + HEADER - 1.0,
+                    ui.text_faint,
                     12
                 ),
-                "{n}: the path is faint, not text"
+                "{n}: no path line under the name"
             );
-            // Collapse all's two chevrons, dim, in its 20 pt box at the right of line 1.
             assert!(
                 has(
-                    right - 20.0,
+                    right - 26.0,
+                    right,
+                    line_top,
+                    line_top + 20.0,
+                    ui.text_faint,
+                    24
+                ) || has(
+                    right - 26.0,
                     right,
                     line_top,
                     line_top + 20.0,
@@ -6393,14 +6356,14 @@ fn files_scenes() {
                 ),
                 "{n}: the collapse all button"
             );
-            let filter_middle = header_top + ROOT_HEADER + FILTER_BAND / 2.0;
+            let filter_middle = header_top + HEADER + FILTER_BAND / 2.0;
             let filter_box = (0..548)
                 .map(|i| sidebar_left + 6.0 + i as f32 * 0.5)
                 .any(|x| !near(at(x, filter_middle), ui.card, 3));
             if fold {
                 // Only the header: no filter box, no rows under it.
                 assert!(!filter_box, "{n}: no filter box");
-                let rows_top = header_top + ROOT_HEADER;
+                let rows_top = header_top + HEADER;
                 assert!(
                     !has(
                         sidebar_left + 2.0,
@@ -6426,7 +6389,7 @@ fn files_scenes() {
             let n = format!("files-keys-{slug}");
             let none = Modifiers::none();
             frame(cx, window);
-            let list_top = card_top + TAB_BAR + ROOT_HEADER + FILTER_BAND;
+            let list_top = card_top + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
             let row_at = |i: usize| {
                 point(
                     px(sidebar_left + 80.0),
@@ -6582,7 +6545,7 @@ fn files_scenes() {
             frame(cx, window);
             let field = point(
                 px(sidebar_left + 60.0),
-                px(card_top + TAB_BAR + ROOT_HEADER + FILTER_BAND / 2.0),
+                px(card_top + TAB_BAR + HEADER + FILTER_BAND / 2.0),
             );
             cx.simulate_click(window, field, Modifiers::none());
             let typing = cx
@@ -6677,7 +6640,7 @@ fn right_panel_workspace(
 /// - `right-panels-narrow`: the sidebar at its narrowest (220 pt): the three tabs fit, the
 ///   Activity tab's right edge at least 6 pt inside the card's.
 fn right_panel_scenes() {
-    use crate::right_sidebar::{FILTER_BAND, Panel, ROOT_HEADER};
+    use crate::right_sidebar::{FILTER_BAND, HEADER, Panel};
     use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR, TAB_TOP_GAP};
     use gpui::{Bounds, Focusable, Modifiers};
     use std::cell::{Cell, RefCell};
@@ -6820,7 +6783,7 @@ fn right_panel_scenes() {
                 frame(cx, window);
                 let field = point(
                     px(sidebar_left + 60.0),
-                    px(card_top + TAB_BAR + ROOT_HEADER + FILTER_BAND / 2.0),
+                    px(card_top + TAB_BAR + HEADER + FILTER_BAND / 2.0),
                 );
                 cx.simulate_click(window, field, Modifiers::none());
                 let keys = |cx: &mut VisualTestAppContext| {
@@ -7033,8 +6996,8 @@ fn changes_staging_scenes() {
             };
             let circle_green = |r: usize| {
                 has(
-                    sidebar_left + 6.0,
-                    sidebar_left + 24.0,
+                    sidebar_left + 10.0,
+                    sidebar_left + 30.0,
                     row_top(r) + 2.0,
                     row_top(r) + ROW - 2.0,
                     green,
@@ -7066,7 +7029,7 @@ fn changes_staging_scenes() {
                     // The hovered row's ↺ replaced its `+7`.
                     assert!(
                         !has(
-                            sidebar_right - 40.0,
+                            sidebar_right - 70.0,
                             sidebar_right - 4.0,
                             row_top(5) + 2.0,
                             row_top(5) + ROW - 2.0,
@@ -7088,7 +7051,7 @@ fn changes_staging_scenes() {
                     );
                     assert!(
                         has(
-                            sidebar_right - 40.0,
+                            sidebar_right - 70.0,
                             sidebar_right - 4.0,
                             row_top(6) + 2.0,
                             row_top(6) + ROW - 2.0,
@@ -7552,8 +7515,9 @@ fn changes_scenes() {
         let more = |i: usize, c: Rgb| in_row(i, sidebar_left + 26.0, sidebar_left + 120.0, c);
         assert!(more(6, ui.text_faint), "{n}: the more row");
         assert!(!more(7, ui.text_faint), "{n}: nothing after it");
-        // The hovered row filled `card_hover`, the one above it the card.
-        let fill = |i: usize| at(sidebar_left + 3.0, row_mid(i));
+        // The hovered row filled `card_hover`, the one above it the card (part 4: a pill 6 pt
+        // in from the side, so read 4 pt inside it).
+        let fill = |i: usize| at(sidebar_left + 10.0, row_mid(i));
         assert!(
             near(fill(4), ui.card_hover, 3),
             "{n}: hovered {:?}",
@@ -7677,7 +7641,8 @@ fn changes_scenes() {
         );
         println!("ui-shots: {}", path.display());
         let shot = render_with(&theme, dims, build, act);
-        let fill = |i: usize| pixel_at(&shot, dims, sidebar_left + 3.0, row_mid(i));
+        // Part 4: the selection is a pill 6 pt in from the side: read 4 pt inside it.
+        let fill = |i: usize| pixel_at(&shot, dims, sidebar_left + 10.0, row_mid(i));
         assert!(
             near(fill(0), ui.card_selected, 3),
             "{n}: the M row is selected: {:?}",
@@ -7746,7 +7711,7 @@ fn activity_workspace(
 fn activity_scenes() {
     use crate::activity::Kind;
     use crate::activity_panel::{NO_ACTIVITY, NO_TERMINAL, RowMark};
-    use crate::right_sidebar::{ROOT_HEADER, ROW};
+    use crate::right_sidebar::{HEADER, ROW};
     use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
@@ -7759,10 +7724,7 @@ fn activity_scenes() {
     let sidebar_right = window_right - GAP - FOCUS_RING;
     let card_top = GAP + FOCUS_RING;
     let header_top = card_top + TAB_BAR;
-    let list_top = header_top + ROOT_HEADER;
-    // A row: 8 pt in, the 36 pt time column, the 10 pt mark, 6 pt, the words.
-    let mark_x = sidebar_left + 8.0 + 36.0;
-    let words_x = mark_x + 10.0 + 6.0;
+    let list_top = header_top + HEADER;
     let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
         cx.update_window(window, |_, window, _| window.refresh())
             .expect("refresh");
@@ -7830,24 +7792,30 @@ fn activity_scenes() {
                     let words: Vec<_> = rows.iter().map(|r| r.text.as_str()).collect();
                     assert_eq!(
                         words,
-                        ["Progress 20%", "a", "Done \u{2014} 11 min", "Cultivating"],
-                        "{n}: newest first; Done says how long it worked"
+                        ["Progress 20%", "a", "Done", "Cultivating"],
+                        "{n}: newest first"
+                    );
+                    // Part 4 (timeline): how long it worked moves to Done's second line.
+                    assert_eq!(
+                        rows[2].detail.as_deref(),
+                        Some("Worked 11 min"),
+                        "{n}: Done says how long it worked"
                     );
                     let marks: Vec<_> = rows.iter().map(|r| r.mark).collect();
                     assert_eq!(
                         marks,
                         [
-                            RowMark::Dot,
-                            RowMark::Dot,
+                            RowMark::Progress,
+                            RowMark::Note,
                             RowMark::Status(Status::Done),
                             RowMark::Status(Status::Working)
                         ],
                         "{n}"
                     );
-                    let (label, words, waiting) = ws.activity_header().expect("followed");
+                    let (label, words, status) = ws.activity_header().expect("followed");
                     assert_eq!(
-                        (label.as_ref(), words.as_str(), waiting),
-                        ("api", "Done \u{b7} 4m", false),
+                        (label.as_ref(), words.as_str(), status),
+                        ("api", "Done \u{b7} 4m", Status::Done),
                         "{n}: the header"
                     );
                     assert_eq!(ws.activity_note(), None, "{n}: rows, no note");
@@ -7858,52 +7826,46 @@ fn activity_scenes() {
         let path = shoot_with("activity", slug, &theme, dims, build.clone(), act.clone());
         println!("ui-shots: {}", path.display());
         let shot = render_with(&theme, dims, build, act);
-        let row_box = |i: usize| {
-            (
-                list_top + i as f32 * ROW + 2.0,
-                list_top + (i + 1) as f32 * ROW - 2.0,
+        // Part 4, the timeline: each event's dot in its colour on the rail (12 pt in, 14 pt
+        // wide): progress the accent, a note faint, Done and Cultivating their status colours;
+        // the times faint at the right; nothing in the waiting colour.
+        let list = (list_top, list_top + 300.0);
+        let rail = |c: Rgb| {
+            has(
+                &shot,
+                sidebar_left + 12.0,
+                sidebar_left + 26.0,
+                list.0,
+                list.1,
+                c,
+                16,
             )
         };
-        let in_mark = |i: usize, c: Rgb| {
-            let (y0, y1) = row_box(i);
-            has(&shot, mark_x - 1.0, mark_x + 11.0, y0, y1, c, 24)
-        };
-        for i in [0, 1] {
-            assert!(in_mark(i, ui.text_faint), "{n}: row {i}'s dot");
-            for c in marks {
-                assert!(!in_mark(i, c), "{n}: row {i} has no status mark ({c:?})");
-            }
+        for (what, c) in [
+            ("progress", ui.accent),
+            ("a note", ui.text_faint),
+            ("Done", ui.ring_done),
+            ("Cultivating", ui.ring_working),
+        ] {
+            assert!(rail(c), "{n}: {what}'s dot on the rail");
         }
-        assert!(in_mark(2, ui.ring_done), "{n}: row 2 is Done's");
-        assert!(!in_mark(2, ui.ring_working), "{n}: row 2 isn't Working's");
-        assert!(in_mark(3, ui.ring_working), "{n}: row 3 is Working's");
-        assert!(!in_mark(3, ui.ring_done), "{n}: row 3 isn't Done's");
-        let (y0, y1) = row_box(4);
+        assert!(!rail(ui.ring_waiting), "{n}: no waiting dot");
         assert!(
-            !has(
+            has(
                 &shot,
-                sidebar_left + 4.0,
-                sidebar_right - 4.0,
-                y0,
-                y1,
-                ui.text,
-                24
+                sidebar_right - 50.0,
+                sidebar_right - 8.0,
+                list.0,
+                list.1,
+                ui.text_faint,
+                12
             ),
-            "{n}: nothing after the four rows"
+            "{n}: the times at the right"
         );
-        // The times faint in their column, the words in `text`.
-        let (y0, y1) = row_box(3);
-        assert!(
-            has(&shot, sidebar_left + 8.0, mark_x, y0, y1, ui.text_faint, 12),
-            "{n}: a time"
-        );
-        assert!(
-            has(&shot, words_x, words_x + 60.0, y0, y1, ui.text, 12),
-            "{n}: the words"
-        );
-        // The header: the name in `text`, under it the status words `text_dim`.
-        let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
-        let left = sidebar_left + 10.0;
+        // The header: the name in `text` on the 12 pt edge; the status as a pill (its tint and
+        // its words in Done's colour), never the waiting colour.
+        let line_top = header_top + (HEADER - 20.0) / 2.0;
+        let left = sidebar_left + 12.0;
         assert!(
             has(
                 &shot,
@@ -7916,30 +7878,20 @@ fn activity_scenes() {
             ),
             "{n}: the name"
         );
-        assert!(
+        let (fill, ink) = crate::activity_panel::pill_inks(Status::Done, &ui);
+        let pill = |c: Rgb| {
             has(
                 &shot,
-                left,
-                left + 60.0,
-                line_top + 20.0,
-                line_top + 34.0,
-                ui.text_dim,
-                12
-            ),
-            "{n}: the status words"
-        );
-        assert!(
-            !has(
-                &shot,
-                left,
-                left + 60.0,
-                line_top + 20.0,
-                line_top + 34.0,
-                ui.ring_waiting,
-                12
-            ),
-            "{n}: not in the waiting colour"
-        );
+                left + 40.0,
+                sidebar_right - 8.0,
+                header_top,
+                header_top + HEADER,
+                c,
+                8,
+            )
+        };
+        assert!(pill(fill) && pill(ink), "{n}: the Done pill");
+        assert!(!pill(ui.ring_waiting), "{n}: not in the waiting colour");
 
         // The focus to web (not shot): its own log, empty.
         let n = format!("activity-switch-{slug}");
@@ -8010,14 +7962,14 @@ fn activity_scenes() {
             assert!(
                 !has(
                     &shot,
-                    mark_x - 1.0,
-                    mark_x + 11.0,
+                    sidebar_left + 12.0,
+                    sidebar_left + 26.0,
                     list_top,
                     list_top + 4.0 * ROW,
                     c,
                     24
                 ),
-                "{n}: no rows ({c:?})"
+                "{n}: no events ({c:?})"
             );
         }
         println!("ui-shots: {n} ok");
@@ -8044,10 +7996,10 @@ fn activity_scenes() {
                         Some("Run the database migration on production now? (y/n)"),
                         "{n}: read off the screen"
                     );
-                    let (_, words, waiting) = ws.activity_header().expect("followed");
+                    let (_, words, status) = ws.activity_header().expect("followed");
                     assert_eq!(
-                        (words.as_str(), waiting),
-                        ("Needs input \u{b7} 2m", true),
+                        (words.as_str(), status),
+                        ("Needs input \u{b7} 2m", Status::Waiting),
                         "{n}"
                     );
                     let tip = ws.activity_rows()[0].tip.clone();
@@ -8070,85 +8022,63 @@ fn activity_scenes() {
         );
         println!("ui-shots: {}", path.display());
         let shot = render_with(&theme, dims, build, act);
-        let line_top = header_top + (ROOT_HEADER - 34.0) / 2.0;
-        let left = sidebar_left + 10.0;
+        // Part 4: the header's pill in the waiting colours; the newest event, Needs input, a red
+        // dot on the rail with its question whole in a tinted box under it (at least two lines,
+        // not the whole panel).
+        let left = sidebar_left + 12.0;
+        let (fill, ink) = crate::activity_panel::pill_inks(Status::Waiting, &ui);
+        let pill = |c: Rgb| {
+            has(
+                &shot,
+                left + 40.0,
+                sidebar_right - 8.0,
+                header_top,
+                header_top + HEADER,
+                c,
+                8,
+            )
+        };
+        assert!(
+            pill(fill) && pill(ink),
+            "{n}: the header's pill in the waiting colours"
+        );
         assert!(
             has(
                 &shot,
-                left,
-                left + 80.0,
-                line_top + 20.0,
-                line_top + 34.0,
+                sidebar_left + 12.0,
+                sidebar_left + 26.0,
+                list_top,
+                list_top + 80.0,
                 ui.ring_waiting,
-                6
+                16
             ),
-            "{n}: the header's words in the waiting colour"
+            "{n}: the newest event's dot is Waiting's"
         );
-        // The card: 6 pt in from the sides and under the header, filled `waiting_tint`.
-        let (card_left, card_right, top) =
-            (sidebar_left + 6.0, sidebar_right - 6.0, list_top + 6.0);
-        let tint = |x: f32, y: f32| near(pixel_at(&shot, dims, x, y), ui.waiting_tint, 3);
-        assert!(tint(card_left + 4.0, top + 10.0), "{n}: the card's fill");
-        assert!(tint(card_right - 4.0, top + 10.0), "{n}: across");
+        let (box_left, box_right) = (sidebar_left + 12.0 + 14.0 + 10.0, sidebar_right - 50.0);
+        let tint_at = |y: f32| {
+            (0..((box_right - box_left) as usize)).any(|dx| {
+                near(
+                    pixel_at(&shot, dims, box_left + dx as f32, y),
+                    ui.waiting_tint,
+                    3,
+                )
+            })
+        };
+        let rows: Vec<f32> = (0..600)
+            .map(|dy| list_top + dy as f32 * 0.5)
+            .filter(|&y| tint_at(y))
+            .collect();
+        let tall = rows.len() as f32 * 0.5;
+        println!("ui-shots: {n}: the question's box is {tall} pt tall");
         assert!(
-            !tint(sidebar_left + 3.0, top + 10.0),
-            "{n}: 6 pt in from the left"
-        );
-        assert!(
-            !tint(card_left + 4.0, list_top + 3.0),
-            "{n}: 6 pt under the header"
-        );
-        // Measured down a column just past its 6 pt corners (in its 8 pt padding).
-        let tall = (0..400)
-            .map(|dy| top + dy as f32 * 0.5)
-            .take_while(|&y| tint(card_left + 7.0, y))
-            .count() as f32
-            * 0.5;
-        println!("ui-shots: {n}: the card is {tall} pt tall");
-        // Padding 8 + `Needs input` (11 pt) + two lines of question (13 pt) + 8.
-        assert!(
-            tall >= 60.0,
+            tall >= 40.0,
             "{n}: two lines of question at least: {tall} pt"
         );
         assert!(tall < 120.0, "{n}: not the whole panel: {tall} pt");
-        let first = top + 8.0;
+        let (top, bottom) = (rows[0], rows[rows.len() - 1]);
         assert!(
-            has(
-                &shot,
-                card_left + 8.0,
-                card_left + 90.0,
-                first,
-                first + 14.0,
-                ui.ring_waiting,
-                6
-            ),
-            "{n}: Needs input"
-        );
-        assert!(
-            has(
-                &shot,
-                card_left + 8.0,
-                card_right - 8.0,
-                first + 16.0,
-                top + tall - 8.0,
-                ui.text,
-                12
-            ),
-            "{n}: the question"
-        );
-        // The timeline under it: Waiting's mark, then Working's.
-        let rows_top = top + tall + 6.0;
-        assert!(
-            has(
-                &shot,
-                mark_x - 1.0,
-                mark_x + 11.0,
-                rows_top,
-                rows_top + ROW,
-                ui.ring_waiting,
-                24
-            ),
-            "{n}: the newest row is Waiting's"
+            has(&shot, box_left, box_right, top, bottom, ui.text, 12),
+            "{n}: the question in the box"
         );
 
         // Empty.

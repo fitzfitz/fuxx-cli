@@ -808,6 +808,11 @@ const CARD_PAD: f32 = 4.0;
 const CARD_RADIUS: f32 = 12.0;
 /// The slot a status mark (or a header's chevron) sits in; a waiting mark fills it.
 pub(crate) const MARK_SLOT: f32 = 14.0;
+/// A group header's name and count (M11v part 4: a size up, 14 and 12 pt; the rows keep
+/// theirs) and its chevron's line.
+const HEADER_NAME: f32 = 14.0;
+const HEADER_COUNT: f32 = 12.0;
+const CHEVRON_STROKE: f32 = 1.25;
 /// The space between the mark and the name, and before the age.
 const SLOT_GAP: f32 = 8.0;
 /// A row's name line, and the small line under it (M11i).
@@ -1140,7 +1145,8 @@ pub(crate) fn color_dot(color: TabColor, ui: UiColors) -> Div {
         .bg(hsla(ui.tab(color)))
 }
 
-/// A header's chevron, `angle` radians clockwise from pointing right (a quarter turn: down).
+/// A header's thin line chevron (M11v part 4: › turning ⌄, was a filled triangle), `angle`
+/// radians clockwise from pointing right (a quarter turn: down), in its `CHEVRON` box.
 fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
     canvas(
         |_, _, _| (),
@@ -1149,18 +1155,17 @@ fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
             let (sin, cos) = angle.sin_cos();
             let p =
                 |x: f32, y: f32| point(c.x + px(x * cos - y * sin), c.y + px(x * sin + y * cos));
-            let mut path = PathBuilder::fill();
-            path.move_to(p(-1.6, -3.2));
-            path.line_to(p(2.4, 0.0));
-            path.line_to(p(-1.6, 3.2));
-            path.close();
+            let mut path = PathBuilder::stroke(px(CHEVRON_STROKE));
+            path.move_to(p(-1.5, -3.5));
+            path.line_to(p(2.0, 0.0));
+            path.line_to(p(-1.5, 3.5));
             if let Ok(path) = path.build() {
                 window.paint_path(path, hsla(color));
             }
         },
     )
     .flex_none()
-    .size(px(MARK_SLOT))
+    .size(px(crate::right_sidebar::CHEVRON))
 }
 
 impl Workspace {
@@ -1585,7 +1590,7 @@ impl Workspace {
                 let from = if header.collapsed { open } else { closed };
                 div()
                     .flex_none()
-                    .size(px(MARK_SLOT))
+                    .size(px(crate::right_sidebar::CHEVRON))
                     .with_animation(
                         ("chevron", *n),
                         Animation::new(CHEVRON_TURN),
@@ -1691,7 +1696,7 @@ impl Workspace {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis_start()
-                    .text_size(px(text::GROUP_HEADER))
+                    .text_size(px(HEADER_NAME))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text_dim))
                     .child(header.label.clone()),
@@ -1711,7 +1716,7 @@ impl Workspace {
                     .justify_end()
                     .child(
                         div()
-                            .text_size(px(text::META))
+                            .text_size(px(HEADER_COUNT))
                             .font_features(tabular())
                             .text_color(hsla(ui.text_faint))
                             .group_hover("sidebar-header", |style| style.invisible())
@@ -1743,7 +1748,8 @@ impl Workspace {
                             })),
                     ),
             )
-            .child(div().flex_none().ml(px(2.0)).child(chevron));
+            // The thin chevron at the far right, after the count (part 4).
+            .child(div().flex_none().ml(px(6.0)).child(chevron));
         div()
             .flex_none()
             .when(!first, |gap| gap.pt(px(GROUP_GAP - ROW_GAP)))
@@ -1848,9 +1854,42 @@ impl Workspace {
             .items_center()
             .h(px(NAME_LINE))
             .child(div().flex_1().min_w(px(0.0)).flex().child(name))
-            .when_some(age, |line, age| {
-                line.child(meta(age.into_any_element()).ml(px(SLOT_GAP)))
-            })
+            // The age, at the row's right edge; while the row is hovered its shortcut shows in
+            // its place (M11v part 4, your call: "remove the hidden cmd + #, the timer looks
+            // floating"). Only visibility changes on hover, never the layout: a hover style
+            // that changes what takes room (`hidden` → `flex`) makes GPUI paint an element it
+            // never prepainted. ⌘1–⌘9 work either way.
+            // With no age (a narrow sidebar), an empty slot at the right edge: the shortcut
+            // shows there on hover, over the name's end.
+            .when(
+                age.is_some() || shortcut_label(row.index).is_some(),
+                |line| {
+                    let keys = shortcut_label(row.index);
+                    let has_keys = keys.is_some();
+                    line.child(
+                        div()
+                            .flex_none()
+                            .relative()
+                            .when(age.is_some(), |slot| slot.ml(px(SLOT_GAP)))
+                            .children(age.map(|age| {
+                                meta(age.into_any_element())
+                                    .when(has_keys, |a| a.group_hover(ROW_GROUP, |s| s.invisible()))
+                            }))
+                            .children(keys.map(|keys| {
+                                div()
+                                    .absolute()
+                                    .right(px(0.0))
+                                    .top(px(0.0))
+                                    .bottom(px(0.0))
+                                    .flex()
+                                    .items_center()
+                                    .invisible()
+                                    .group_hover(ROW_GROUP, |s| s.visible())
+                                    .child(meta(keys.into_any_element()))
+                            })),
+                    )
+                },
+            )
             .when(row.pinned, |line| line.child(meta(PIN.into_any_element())))
             .when(row.on_screen, |line| {
                 line.child(
@@ -1860,15 +1899,6 @@ impl Workspace {
                         .size(px(4.0))
                         .rounded(px(1.0))
                         .bg(hsla(ui.text_dim)),
-                )
-            })
-            // The shortcut only while the row is hovered, to keep the rows quiet (its room is
-            // kept, so the name doesn't shift); ⌘1–⌘9 work either way.
-            .when_some(shortcut_label(row.index), |line, keys| {
-                line.child(
-                    meta(keys.into_any_element())
-                        .invisible()
-                        .group_hover(ROW_GROUP, |s| s.visible()),
                 )
             });
         // Under the name, level with it: one line, the first that applies (`line_two`), in the
@@ -3515,6 +3545,14 @@ mod tests {
         assert_eq!(GROUP_GAP, 10.0);
         assert_eq!(GROUP_HEADER, 28.0);
         assert_eq!(ROW_RADIUS, 8.0);
+    }
+
+    /// M11v part 4: a group header's name and count a size up (14 / 12 pt); the rows' text
+    /// keeps its size.
+    #[test]
+    fn group_headers_are_a_size_up_and_rows_keep_theirs() {
+        assert_eq!((HEADER_NAME, HEADER_COUNT), (14.0, 12.0));
+        assert_eq!((text::NAME, text::META), (13.0, 11.0));
     }
 
     #[test]

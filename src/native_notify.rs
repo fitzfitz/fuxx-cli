@@ -80,11 +80,18 @@ pub fn permission() -> Option<Permission> {
     })
 }
 
-/// Show a banner: `summary` as the title, `body` under it, no subtitle, no sound. `about` (the
-/// terminal it is about, and the run that numbered it) rides in the request identifier. Blocks
+/// Show a banner: `summary` as the title, `subtitle` (if any) and `body` under it, no sound.
+/// `about` (the terminal it is about, and the run that numbered it) rides in the request
+/// identifier, which is the same for every banner of that terminal (part 5: a new one replaces
+/// the one before), and groups its banners in Notification Center. Blocks
 /// up to 2 s for the system to take it; if it doesn't answer in time, the request is withdrawn
 /// (so a late one rarely shows next to the caller's fallback banner).
-pub fn post(summary: &str, body: &str, about: Option<Terminal>) -> Result<(), PostError> {
+pub fn post(
+    summary: &str,
+    subtitle: &str,
+    body: &str,
+    about: Option<Terminal>,
+) -> Result<(), PostError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -95,10 +102,16 @@ pub fn post(summary: &str, body: &str, about: Option<Terminal>) -> Result<(), Po
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(summary));
     content.setBody(&NSString::from_str(body));
+    if !subtitle.is_empty() {
+        content.setSubtitle(&NSString::from_str(subtitle));
+    }
+    if let Some(Terminal { run, id }) = about {
+        content.setThreadIdentifier(&NSString::from_str(&format!("fuxx-s{id}-r{run}")));
+    }
     let id = NSString::from_str(&request_id(
         about,
         this_run(),
-        COUNTER.fetch_add(1, Ordering::Relaxed),
+        banner_number(about, COUNTER.fetch_add(1, Ordering::Relaxed)),
     ));
     let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
     let (tx, rx) = mpsc::channel();
@@ -155,6 +168,12 @@ pub fn this_run() -> u64 {
         // std's `RandomState` is keyed from the OS's randomness.
         std::collections::hash_map::RandomState::new().hash_one((now, std::process::id()))
     })
+}
+
+/// The `n` in a banner's request identifier (part 5): 0 for a terminal's banners, so each one
+/// replaces that terminal's last; else `count`, so a script's never replace each other.
+pub fn banner_number(about: Option<Terminal>, count: u64) -> u64 {
+    if about.is_some() { 0 } else { count }
 }
 
 /// A banner's request identifier: `fuxx-s{N}-r{run}-{process}-{n}` for terminal `about` (so a
@@ -324,6 +343,25 @@ mod tests {
     /// Terminal `sN` as numbered by run 41.
     fn t(id: u64) -> Terminal {
         Terminal { run: 41, id }
+    }
+
+    #[test]
+    fn a_terminals_banners_replace_each_other() {
+        let about = Some(Terminal { run: 7, id: 3 });
+        // Part 5: every banner of terminal 3 in this process has one identifier, so the next
+        // replaces the last; a script's banners (no terminal) stay apart.
+        let first = request_id(about, 42, banner_number(about, 1));
+        let second = request_id(about, 42, banner_number(about, 2));
+        assert_eq!(first, second);
+        assert_eq!(
+            terminal_of(&first),
+            about,
+            "a click still finds the terminal"
+        );
+        assert_ne!(
+            request_id(None, 42, banner_number(None, 1)),
+            request_id(None, 42, banner_number(None, 2))
+        );
     }
 
     #[test]

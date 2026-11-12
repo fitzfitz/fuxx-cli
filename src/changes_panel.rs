@@ -38,44 +38,51 @@ use crate::git_stage::{self, FileWork};
 use crate::git_status::{self, Change, ChangeList, Counts, Mark};
 use crate::layout_model::{FileMode, TabKind};
 use crate::right_sidebar::{
-    NO_FOLDER, Panel, REFRESH, ROOT_LINE, ROOT_PAD_LEFT, ROOT_PAD_RIGHT, ROW, back_off, due,
-    find_root, mark_ink, note,
+    EDGE, HEADER_PAD_RIGHT, NO_FOLDER, PILL_INSET, PILL_PAD, PILL_RADIUS, Panel, REFRESH, ROW,
+    SMALL, TEXT, TITLE, back_off, due, find_root, mark_ink, note,
 };
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::{Tip, tip_box};
-use crate::tab_bar::{Glyph, glyph};
+use crate::tab_bar::{Glyph, footer_glyph, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
-use crate::ui_tokens::{TEXT_MIN, text};
+use crate::ui_tokens::TEXT_MIN;
 use crate::workspace::Workspace;
 
 pub(crate) const NO_CHANGES: &str = "No changes since the last commit.";
 pub(crate) const NO_REPO: &str = "Not a git repository.";
 pub(crate) const SSH_NOTE: &str = "Changes aren't shown for SSH terminals.";
 const BINARY: &str = "binary";
-/// A row: its room left of the mark, the mark's column, the room after the mark and between
-/// the name, the folder and the counts, and its room right of the counts.
-const ROW_LEFT: f32 = 8.0;
+/// A row (part 4: a pill inset `PILL_INSET`, its content from the 12 pt edge): the mark's
+/// column, and the room after the mark and between the name, the folder and the counts.
 const MARK_COLUMN: f32 = 12.0;
 const ROW_GAP: f32 = 6.0;
-const ROW_RIGHT: f32 = 8.0;
 /// Between the added and the removed count.
 const COUNTS_GAP: f32 = 4.0;
-/// The header (M11v part 2: the circle, the name and `N of M staged`, the progress bar).
-pub(crate) const HEADER: f32 = 38.0;
+/// The header (M11v part 2: the circle, the name and `N of M staged`, the progress bar; part
+/// 4: the panels' 42 pt) and its line.
+pub(crate) const HEADER: f32 = crate::right_sidebar::HEADER;
+const HEADER_LINE: f32 = 20.0;
 /// Part 2: the header's progress bar, the check circles, the dialog's widest.
 const PROGRESS: f32 = 3.0;
-const CIRCLE: f32 = 14.0;
+const CIRCLE: f32 = 16.0;
 const CONFIRM_WIDTH: f32 = 280.0;
+/// A group header's room under its words (part 6: the words at the row's foot).
+const DIVIDER_FOOT: f32 = 3.0;
 /// The branch bar (M11v): its padding, its buttons' size and corner, the gap between them,
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
 const BAR_PAD_X: f32 = 12.0;
 const BAR_PAD_Y: f32 = 8.0;
-const BAR_BUTTON: f32 = 28.0;
-const BAR_BUTTON_RADIUS: f32 = 7.0;
+const BAR_BUTTON: f32 = 26.0;
+const BAR_BUTTON_RADIUS: f32 = 6.0;
+/// The bar's icons: 15 pt (part 6, as the mockup), their lines 1.2 pt.
+const BAR_ICON: f32 = 15.0;
+const BAR_ICON_STROKE: f32 = 1.2;
 const BAR_GAP: f32 = 6.0;
 const TIP_GAP: f32 = 6.0;
 const TIP_DELAY: Duration = Duration::from_millis(400);
+/// The branch button's side padding (its hover fill); the line under it is set in as much.
+const BRANCH_PAD: f32 = 4.0;
 
 /// The Changes panel: the list last shown and what it was made from, its scroll, and the
 /// background work under way.
@@ -103,6 +110,8 @@ pub(crate) struct ChangesPanel {
     running: HashMap<PathBuf, Work>,
     /// The revert dialog (part 2, R1), while it asks.
     confirm: Option<Confirm>,
+    /// Which of STAGED and CHANGES are open (part 6).
+    groups: Groups,
     /// The last action's failure, as the bar says it; gone with the next action, another
     /// branch or another root.
     error: Option<String>,
@@ -137,9 +146,38 @@ pub(crate) enum RowItem {
     More,
 }
 
-/// The rows: STAGED's divider and entries, then CHANGES' (a group with none has no divider),
-/// then `… N more` (the list is sorted staged first).
+/// Which groups are open (part 6: STAGED and CHANGES are accordions; both open at first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Groups {
+    pub staged: bool,
+    pub changes: bool,
+}
+
+impl Default for Groups {
+    fn default() -> Self {
+        Self {
+            staged: true,
+            changes: true,
+        }
+    }
+}
+
+impl Groups {
+    fn open(self, staged: bool) -> bool {
+        if staged { self.staged } else { self.changes }
+    }
+}
+
+/// The rows with every group open (see `rows_of_in`).
+#[cfg(test)]
 pub(crate) fn rows_of(list: &ChangeList) -> Vec<RowItem> {
+    rows_of_in(list, Groups::default())
+}
+
+/// The rows: STAGED's divider and entries, then CHANGES' (a group with none has no divider),
+/// then `… N more` (the list is sorted staged first). A closed group keeps its divider (its
+/// header) and drops its entries; `… N more` goes with CHANGES.
+pub(crate) fn rows_of_in(list: &ChangeList, groups: Groups) -> Vec<RowItem> {
     let mut rows = Vec::new();
     for staged in [true, false] {
         let mut group = list
@@ -151,10 +189,12 @@ pub(crate) fn rows_of(list: &ChangeList) -> Vec<RowItem> {
             .peekable();
         if group.peek().is_some() {
             rows.push(RowItem::Divider(staged));
-            rows.extend(group);
+            if groups.open(staged) {
+                rows.extend(group);
+            }
         }
     }
-    if list.more > 0 {
+    if list.more > 0 && groups.changes {
         rows.push(RowItem::More);
     }
     rows
@@ -266,6 +306,7 @@ impl ChangesPanel {
             sync: None,
             running: HashMap::new(),
             confirm: None,
+            groups: Groups::default(),
             error: None,
             hover: None,
             auto_fetched: None,
@@ -310,6 +351,15 @@ impl ChangesPanel {
             .filter(|_| !auto)
             .map(|e| branch_sync::failed_text(action, &e));
         true
+    }
+
+    /// Open or close STAGED (`staged`) or CHANGES (part 6).
+    fn toggle_group(&mut self, staged: bool) {
+        if staged {
+            self.groups.staged = !self.groups.staged;
+        } else {
+            self.groups.changes = !self.groups.changes;
+        }
     }
 
     /// The git write under way on the root shown, if any.
@@ -605,21 +655,24 @@ fn circle(state: Circle, green: Rgb, ui: &UiColors) -> Div {
         Circle::Off => d.border_color(hsla(ui.text_faint)),
         Circle::Half => d
             .border_color(hsla(green))
-            .child(div().w(px(6.0)).h(px(1.5)).bg(hsla(green))),
+            .child(div().w(px(7.0)).h(px(1.5)).bg(hsla(green))),
         Circle::On => d
             .bg(hsla(green))
             .border_color(hsla(green))
-            .text_size(px(9.0))
+            .text_size(px(10.0))
             .font_weight(FontWeight::BOLD)
             .text_color(hsla(ui.panel))
             .child("\u{2713}"),
     }
 }
 
-/// A group's divider row (part 2): `STAGED` / `CHANGES` in small caps and a hairline; CHANGES'
-/// shows ↺ "Revert all…" on hover (`revert_all`).
+/// A group's header row (parts 2 and 6): a thin chevron (› closed, ⌄ open), `STAGED` /
+/// `CHANGES` in small caps and a hairline; a click opens or closes the group. Its words sit at
+/// the row's foot, which leaves room above it, between the groups (part 6: "more gap"; the
+/// list's rows are one height). CHANGES' shows ↺ "Revert all…" on hover (`revert_all`).
 fn divider_row(
     staged: bool,
+    open: bool,
     revert_all: bool,
     ui: &UiColors,
     cx: &mut Context<Workspace>,
@@ -629,27 +682,41 @@ fn divider_row(
         .id(("change-divider", usize::from(staged)))
         .group("change-divider")
         .flex()
-        .items_center()
-        .gap(px(8.0))
+        .items_end()
+        .gap(px(6.0))
         .h(px(ROW))
         .w_full()
-        .pl(px(ROW_LEFT + 2.0))
-        .pr(px(ROW_RIGHT))
+        .pl(px(EDGE))
+        .pr(px(EDGE))
+        .pb(px(DIVIDER_FOOT))
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.right_sidebar.changes.toggle_group(staged);
+            cx.notify();
+        }))
         .child(
             div()
                 .flex_none()
-                .text_size(px(text::META))
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .child(crate::right_sidebar::thin_chevron(open, ui.text_faint)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(SMALL))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(ui.text_faint))
                 .child(if staged { "STAGED" } else { "CHANGES" }),
         )
-        .child(div().flex_1().h(px(1.0)).bg(hsla(ui.divider)))
+        .child(div().flex_1().h(px(1.0)).mb(px(7.0)).bg(hsla(ui.divider)))
         .when(revert_all, |d| {
             d.relative().child(
                 div()
                     .absolute()
-                    .right(px(ROW_RIGHT - 2.0))
-                    .top(px((ROW - 20.0) / 2.0))
+                    .right(px(EDGE - 4.0))
+                    .bottom(px(DIVIDER_FOOT - 2.0))
                     .child(
                         revert_button(
                             "changes-revert-all",
@@ -705,7 +772,7 @@ fn counts_element(added: Option<String>, removed: Option<String>, inks: &ChangeI
         .flex()
         .flex_none()
         .gap(px(COUNTS_GAP))
-        .text_size(px(text::META))
+        .text_size(px(SMALL))
         .font_features(tabular())
         .children(added.map(|a| div().text_color(hsla(inks.added)).child(a)))
         .children(removed.map(|r| div().text_color(hsla(inks.removed)).child(r)))
@@ -738,7 +805,7 @@ fn change_row(
         CountsLabel::Binary => Some(
             div()
                 .flex_none()
-                .text_size(px(text::META))
+                .text_size(px(SMALL))
                 .text_color(hsla(ui.text_faint))
                 .child(BINARY)
                 .into_any_element(),
@@ -787,7 +854,7 @@ fn change_row(
     let revert = offers_revert.then(|| {
         div()
             .absolute()
-            .right(px(ROW_RIGHT - 2.0))
+            .right(px(PILL_PAD - 4.0))
             .top(px((ROW - 20.0) / 2.0))
             .child(
                 revert_button(
@@ -802,18 +869,19 @@ fn change_row(
                 })),
             )
     });
-    div()
+    let pill = div()
         .id(("change-row", i))
         .group("change-row")
         .relative()
         .flex()
         .items_center()
-        .h(px(ROW))
+        .h_full()
         .w_full()
-        .pl(px(ROW_LEFT))
-        .pr(px(ROW_RIGHT))
+        .pl(px(PILL_PAD))
+        .pr(px(PILL_PAD))
+        .rounded(px(PILL_RADIUS))
         .gap(px(ROW_GAP))
-        .text_size(px(text::NAME))
+        .text_size(px(TEXT))
         .when(opens, |r| r.cursor_pointer())
         .when(selected, |r| r.bg(hsla(ui.card_selected)))
         .when(!selected && opens, |r| r.hover(move |s| s.bg(hsla(hover))))
@@ -823,7 +891,7 @@ fn change_row(
             div()
                 .flex_none()
                 .w(px(MARK_COLUMN))
-                .text_size(px(text::META))
+                .text_size(px(SMALL))
                 .text_color(hsla(ink))
                 .child(mark_letter(change.mark)),
         )
@@ -840,7 +908,7 @@ fn change_row(
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
-                .text_size(px(text::META))
+                .text_size(px(SMALL))
                 .text_color(hsla(ui.text_faint))
                 .child(folder),
         )
@@ -851,7 +919,13 @@ fn change_row(
             r.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.changes_click(&rel, event.click_count() < 2, window, cx)
             }))
-        })
+        });
+    // The pill in its row: inset from the card's sides (part 4).
+    div()
+        .h(px(ROW))
+        .w_full()
+        .px(px(PILL_INSET))
+        .child(pill)
         .into_any_element()
 }
 
@@ -863,8 +937,8 @@ fn more_row(more: usize, ui: &UiColors) -> AnyElement {
         .items_center()
         .h(px(ROW))
         .w_full()
-        .pl(px(ROW_LEFT + MARK_COLUMN + ROW_GAP))
-        .text_size(px(text::NAME))
+        .pl(px(EDGE + CIRCLE + MARK_COLUMN + 2.0 * ROW_GAP))
+        .text_size(px(TEXT))
         .text_color(hsla(ui.text_faint))
         .child(format!("\u{2026} {more} more"))
         .into_any_element()
@@ -1131,7 +1205,7 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(ROW_GAP + 2.0))
-            .h(px(ROOT_LINE))
+            .h(px(HEADER_LINE))
             .w_full()
             .children(all)
             .child(
@@ -1139,7 +1213,7 @@ impl Workspace {
                     .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(text::NAME))
+                    .text_size(px(TITLE))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text))
                     .child(name),
@@ -1148,7 +1222,7 @@ impl Workspace {
                 div()
                     .flex_none()
                     .flex()
-                    .text_size(px(text::META))
+                    .text_size(px(SMALL))
                     .text_color(hsla(ui.text_faint))
                     .child(div().text_color(hsla(green)).child(staged.to_string()))
                     .child(format!("\u{a0}of {total} staged"))
@@ -1180,8 +1254,8 @@ impl Workspace {
             .justify_center()
             .h(px(HEADER))
             .w_full()
-            .pl(px(ROOT_PAD_LEFT))
-            .pr(px(ROOT_PAD_RIGHT))
+            .pl(px(EDGE))
+            .pr(px(HEADER_PAD_RIGHT))
             .child(line)
             .children(progress)
             .into_any_element()
@@ -1271,7 +1345,7 @@ impl Workspace {
                 .px(px(12.0))
                 .py(px(5.0))
                 .rounded(px(7.0))
-                .text_size(px(text::META))
+                .text_size(px(SMALL))
                 .cursor_pointer()
                 .child(label)
         };
@@ -1289,7 +1363,7 @@ impl Workspace {
             })
             .child(
                 div()
-                    .text_size(px(text::NAME))
+                    .text_size(px(TEXT))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text))
                     .child(confirm.title.clone()),
@@ -1297,7 +1371,7 @@ impl Workspace {
             .child(
                 div()
                     .mt(px(6.0))
-                    .text_size(px(text::META))
+                    .text_size(px(SMALL))
                     .text_color(hsla(ui.text_dim))
                     .child(confirm.body.clone()),
             )
@@ -1388,11 +1462,14 @@ impl Workspace {
         let followed = self.right_sidebar.followed;
         let name = div()
             .id("changes-branch")
+            // As wide as the branch, not the column (your call: "don't make it 100% width").
+            .self_start()
             .flex()
             .items_center()
             .gap(px(4.0))
             .min_w(px(0.0))
             .max_w_full()
+            .px(px(BRANCH_PAD))
             .rounded(px(4.0))
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(ui.card_hover)))
@@ -1406,17 +1483,10 @@ impl Workspace {
                 div()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(text::NAME))
+                    .text_size(px(TEXT))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text))
                     .child(branch.clone()),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(text::META))
-                    .text_color(hsla(ui.text_faint))
-                    .child("\u{25be}"),
             );
         let left = div()
             .flex()
@@ -1426,9 +1496,10 @@ impl Workspace {
             .child(name)
             .child(
                 div()
+                    .pl(px(BRANCH_PAD))
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(text::META))
+                    .text_size(px(SMALL))
                     .text_color(hsla(ink))
                     .child(words),
             );
@@ -1475,7 +1546,9 @@ impl Workspace {
             Action::Push(_) => Glyph::Push,
             Action::Publish => Glyph::Publish,
         };
-        let ink = if primary { ui.on_accent } else { ui.text_dim };
+        // Just the icon (your call: "make it just icon there waiting to be clicked"): the
+        // action's in the accent, Fetch's dim; a fill only under the pointer.
+        let ink = if primary { ui.accent } else { ui.text_dim };
         let shown = enabled && changes.hover == Some((which, true));
         let tip_text: SharedString = branch_sync::tip(action, branch).into();
         let id = match which {
@@ -1491,24 +1564,10 @@ impl Workspace {
             .justify_center()
             .size(px(BAR_BUTTON))
             .rounded(px(BAR_BUTTON_RADIUS))
-            .border_1()
-            .map(|d| {
-                if primary {
-                    d.bg(hsla(ui.accent)).border_color(hsla(ui.accent))
-                } else {
-                    d.border_color(hsla(ui.divider))
-                }
-            })
             .when(!enabled, |d| d.opacity(0.4))
             .when(enabled, |d| {
                 d.cursor_pointer()
-                    .hover(move |s| {
-                        if primary {
-                            s.opacity(0.85)
-                        } else {
-                            s.bg(hsla(ui.card_hover))
-                        }
-                    })
+                    .hover(move |s| s.bg(hsla(ui.card_hover)))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         this.bar_hover(which, *hovered, cx)
                     }))
@@ -1516,7 +1575,7 @@ impl Workspace {
                         this.run_bar_action(action, FetchMode::Button, cx)
                     }))
             })
-            .child(glyph(kind, ink))
+            .child(footer_glyph(kind, ink, BAR_ICON, BAR_ICON_STROKE))
             .when(shown, |d| {
                 // A zero-size point at the button's top right (`TIP_GAP` above it, a little
                 // right of it); the tooltip hangs from it by its bottom right corner.
@@ -1587,7 +1646,7 @@ impl Workspace {
             (Some(text), _) => Some(note(&ui, text)),
             (None, Some(l)) if root.is_some() => {
                 // Part 2: STAGED's divider and rows, then CHANGES', then `… N more`.
-                let count = rows_of(l).len();
+                let count = rows_of_in(l, changes.groups).len();
                 let list = uniform_list(
                     "change-rows",
                     count,
@@ -1599,13 +1658,18 @@ impl Workspace {
                         let Some(list) = changes.list.clone() else {
                             return Vec::new();
                         };
-                        let rows = rows_of(&list);
+                        let rows = rows_of_in(&list, changes.groups);
+                        let groups = changes.groups;
                         let revert_all = enabled && revert_all_work(&list).is_some();
                         range
                             .filter_map(|r| match *rows.get(r)? {
-                                RowItem::Divider(staged) => {
-                                    Some(divider_row(staged, !staged && revert_all, &inks.ui, cx))
-                                }
+                                RowItem::Divider(staged) => Some(divider_row(
+                                    staged,
+                                    groups.open(staged),
+                                    !staged && revert_all,
+                                    &inks.ui,
+                                    cx,
+                                )),
                                 RowItem::Entry(i) => {
                                     let change = list.entries.get(i)?;
                                     let chosen = selected.as_deref() == Some(&change.path);
@@ -1898,6 +1962,46 @@ mod tests {
         let nothing_staged = list_of(staged_list().entries[1..].to_vec(), 0);
         assert_eq!(rows_of(&nothing_staged)[0], RowItem::Divider(false));
         assert_eq!(rows_of(&list_of(vec![], 0)), vec![]);
+    }
+
+    /// Part 6: STAGED and CHANGES are accordions: a closed one keeps its header, its entries
+    /// go; `… N more` follows CHANGES, so it goes with it.
+    #[test]
+    fn a_closed_group_keeps_its_header_only() {
+        let open = Groups::default();
+        assert_eq!(rows_of_in(&staged_list(), open), rows_of(&staged_list()));
+        let staged_closed = Groups {
+            staged: false,
+            ..open
+        };
+        assert_eq!(
+            rows_of_in(&staged_list(), staged_closed),
+            vec![
+                RowItem::Divider(true),
+                RowItem::Divider(false),
+                RowItem::Entry(1),
+                RowItem::Entry(2),
+                RowItem::Entry(3),
+                RowItem::More,
+            ]
+        );
+        let changes_closed = Groups {
+            changes: false,
+            ..open
+        };
+        assert_eq!(
+            rows_of_in(&staged_list(), changes_closed),
+            vec![
+                RowItem::Divider(true),
+                RowItem::Entry(0),
+                RowItem::Divider(false)
+            ]
+        );
+        let mut panel = ChangesPanel::new();
+        panel.toggle_group(true);
+        assert!(!panel.groups.staged && panel.groups.changes);
+        panel.toggle_group(true);
+        assert!(panel.groups.staged);
     }
 
     /// Part 2: the header's circle stages everything, or unstages everything once all of it

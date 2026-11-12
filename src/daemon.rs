@@ -774,7 +774,7 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
                     id: session.id(),
                 };
                 // `osascript` blocks ~100 ms: never on the tick thread.
-                std::thread::spawn(move || notifier::fire(&summary, body, Some(about)));
+                std::thread::spawn(move || notifier::fire(&summary, "", body, Some(about)));
             }
         }
         // A session's `alive` turns false together with queueing `Exited`, so forgetting it now

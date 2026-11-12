@@ -35,7 +35,7 @@ pub fn route(bundled: bool, permission: Option<Permission>) -> Route {
 /// does not display notifications for an unbundled binary — `show()` succeeds but nothing
 /// appears. `osascript`'s `display notification` goes through an entitled system component and
 /// works without shipping fuxx as a signed `.app` bundle.
-pub fn fire(summary: &str, body: &str, about: Option<Terminal>) {
+pub fn fire(summary: &str, subtitle: &str, body: &str, about: Option<Terminal>) {
     let bundled = native_notify::is_bundled();
     let permission = if bundled {
         native_notify::permission()
@@ -43,7 +43,7 @@ pub fn fire(summary: &str, body: &str, about: Option<Terminal>) {
         None
     };
     if route(bundled, permission) == Route::Native {
-        match native_notify::post(summary, body, about) {
+        match native_notify::post(summary, subtitle, body, about) {
             Ok(()) => return,
             Err(PostError::Unbundled) => {}
             Err(why) => eprintln!(
@@ -51,16 +51,19 @@ pub fn fire(summary: &str, body: &str, about: Option<Terminal>) {
             ),
         }
     }
-    fire_script(summary, body);
+    fire_script(summary, subtitle, body);
 }
 
-/// The `osascript` banner.
-fn fire_script(summary: &str, body: &str) {
-    let script = format!(
+/// The `osascript` banner (with its subtitle, when there is one).
+fn fire_script(summary: &str, subtitle: &str, body: &str) {
+    let mut script = format!(
         "display notification \"{}\" with title \"{}\"",
         applescript_escape(body),
         applescript_escape(summary),
     );
+    if !subtitle.is_empty() {
+        script.push_str(&format!(" subtitle \"{}\"", applescript_escape(subtitle)));
+    }
     let _ = Command::new("osascript").arg("-e").arg(script).status();
 }
 
@@ -97,21 +100,119 @@ pub fn message(status: Status) -> Option<&'static str> {
     }
 }
 
-/// A notification's text under its title: what a waiting session asks (`question`), or how long
-/// a finished one worked (`worked`: the Working stretch that just ended). Without those, the
-/// plain message.
-pub fn body(status: Status, question: Option<&str>, worked: Option<Duration>) -> Option<String> {
-    let shown = match (status, question, worked) {
-        (Status::Waiting, Some(question), _) => question.to_string(),
-        (Status::Done, _, Some(worked)) => format!("Worked for {}", age_label(worked)),
+/// A notification's text under its title: what a waiting session asks (`question`), or, for a
+/// finished one, what it was doing (`doing`: its terminal's title, part 5) and how long it
+/// worked (`worked`: the Working stretch that just ended). Without those, the plain message.
+pub fn body(
+    status: Status,
+    question: Option<&str>,
+    worked: Option<Duration>,
+    doing: Option<&str>,
+) -> Option<String> {
+    let doing = doing.map(str::trim).filter(|d| !d.is_empty());
+    let shown = match (status, question, worked, doing) {
+        (Status::Waiting, Some(question), _, _) => question.to_string(),
+        (Status::Done, _, Some(worked), Some(doing)) => {
+            format!("{doing} \u{b7} worked {}", age_label(worked))
+        }
+        (Status::Done, _, Some(worked), None) => format!("Worked for {}", age_label(worked)),
         _ => message(status)?.to_string(),
     };
     Some(shown)
 }
 
+/// A banner's title (M11v part 5): the workspace's name, as the sidebar and the 🔔 list say it,
+/// and what happened: `Chores list — Finished`.
+pub fn banner_title(workspace: &str, message: &str) -> String {
+    format!("{workspace} \u{2014} {message}")
+}
+
+/// A banner's subtitle: `#3 · proj · claude`: its ⌘ number, its folder group (left out when it is
+/// the workspace's own name, or none) and the agent running there (if one is).
+pub fn banner_subtitle(
+    number: usize,
+    group: Option<&str>,
+    workspace: &str,
+    agent: Option<&str>,
+) -> String {
+    let mut parts = vec![format!("#{number}")];
+    parts.extend(group.filter(|g| *g != workspace).map(str::to_string));
+    parts.extend(agent.filter(|a| !a.is_empty()).map(str::to_string));
+    parts.join(" \u{b7} ")
+}
+
+/// Whether a Finished banner goes out: not for a run shorter than `QUIET_UNDER` (an agent's
+/// pause, not its work); the 🔔 list keeps it anyway. Unknown length: it does.
+pub fn worth_a_banner(status: Status, worked: Option<Duration>) -> bool {
+    status != Status::Done || worked.is_none_or(|w| w >= QUIET_UNDER)
+}
+
+/// Runs shorter than this finish without a banner (part 5, AI's call: 10 s).
+pub const QUIET_UNDER: Duration = Duration::from_secs(10);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Part 5: the banner names the workspace as fuxx does, says where and who in its subtitle,
+    /// and what the agent was doing in its body.
+    #[test]
+    fn banners_say_which_workspace_where_and_what() {
+        assert_eq!(
+            banner_title("Chores list", "Finished"),
+            "Chores list \u{2014} Finished"
+        );
+        assert_eq!(
+            banner_subtitle(3, Some("proj"), "Chores list", Some("claude")),
+            "#3 \u{b7} proj \u{b7} claude"
+        );
+        assert_eq!(
+            banner_subtitle(3, Some("proj"), "proj", None),
+            "#3",
+            "the group is the name"
+        );
+        assert_eq!(
+            banner_subtitle(4, None, "api", Some("codex")),
+            "#4 \u{b7} codex"
+        );
+        assert_eq!(
+            body(
+                Status::Done,
+                None,
+                Some(Duration::from_secs(34)),
+                Some("\u{2733} Breadcrumb tiket")
+            )
+            .as_deref(),
+            Some("\u{2733} Breadcrumb tiket \u{b7} worked 34s")
+        );
+        assert_eq!(
+            body(Status::Done, None, Some(Duration::from_secs(34)), None).as_deref(),
+            Some("Worked for 34s"),
+            "nothing to say what it was doing"
+        );
+        assert_eq!(
+            body(
+                Status::Waiting,
+                Some("Proceed? (y/n)"),
+                None,
+                Some("\u{2733} x")
+            )
+            .as_deref(),
+            Some("Proceed? (y/n)"),
+            "a question wins"
+        );
+    }
+
+    #[test]
+    fn short_runs_finish_without_a_banner() {
+        assert!(!worth_a_banner(Status::Done, Some(Duration::from_secs(3))));
+        assert!(worth_a_banner(Status::Done, Some(Duration::from_secs(10))));
+        assert!(worth_a_banner(Status::Done, None));
+        assert!(
+            worth_a_banner(Status::Waiting, Some(Duration::from_secs(1))),
+            "a question always"
+        );
+    }
 
     #[test]
     fn notifies_for_background_sessions_that_finish_or_wait() {
@@ -144,22 +245,34 @@ mod tests {
     #[test]
     fn notification_bodies() {
         let q = "Do you want to make this edit to auth.rs?";
-        assert_eq!(body(Status::Waiting, Some(q), None).as_deref(), Some(q));
         assert_eq!(
-            body(Status::Waiting, None, Some(Duration::from_secs(9))).as_deref(),
+            body(Status::Waiting, Some(q), None, None).as_deref(),
+            Some(q)
+        );
+        assert_eq!(
+            body(Status::Waiting, None, Some(Duration::from_secs(9)), None).as_deref(),
             Some("Needs your input")
         );
         assert_eq!(
-            body(Status::Done, None, Some(Duration::from_secs(4 * 60 + 12))).as_deref(),
+            body(
+                Status::Done,
+                None,
+                Some(Duration::from_secs(4 * 60 + 12)),
+                None
+            )
+            .as_deref(),
             Some("Worked for 4m")
         );
         assert_eq!(
-            body(Status::Done, Some(q), Some(Duration::from_secs(12))).as_deref(),
+            body(Status::Done, Some(q), Some(Duration::from_secs(12)), None).as_deref(),
             Some("Worked for 12s")
         );
-        assert_eq!(body(Status::Done, None, None).as_deref(), Some("Finished"));
-        assert_eq!(body(Status::Working, None, None), None);
-        assert_eq!(body(Status::Idle, Some(q), None), None);
+        assert_eq!(
+            body(Status::Done, None, None, None).as_deref(),
+            Some("Finished")
+        );
+        assert_eq!(body(Status::Working, None, None, None), None);
+        assert_eq!(body(Status::Idle, Some(q), None, None), None);
     }
 
     #[test]

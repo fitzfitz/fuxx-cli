@@ -29,15 +29,19 @@
 //! background executor, again when the sidebar is shown, when the terminal or its folder
 //! changes, and every 2 s while it can be seen (`back_off`: longer, up to 30 s, while git status
 //! fails or hits its cap; a failed git answer keeps the marks and ignored files shown). Above it
-//! (M11i) the root header: the root's name (a click folds the whole tree away, remembered per
-//! root for the run), collapse all, and the root's path, its start cut to fit; then a filter
-//! box; ↑ ↓ → ← Return and Esc in it (key context `FileTree`); a click on a file opens it in a
-//! file tab. Rows (M11i) have type icons (`file_kind`, tinted by `kind_color`) and indent
-//! guides (`guides`). The panel has its own focus: closing the sidebar while it has the
-//! keyboard gives the keyboard to the focused tab. An SSH terminal's files aren't shown.
+//! (M11v part 4, "Files A") the root header: the root's name (its whole path in the tooltip; a
+//! click folds the whole tree away, remembered per root for the run, its thin chevron turning
+//! › ), and collapse all as an icon button; then a borderless filter field; ↑ ↓ → ← Return and
+//! Esc in it (key context `FileTree`); a click on a file opens it in a file tab. Rows have no
+//! triangles: a folder's open or closed icon says it, all icons one quiet grey, only changed
+//! files in colour (`mark_look`), hairline indent guides (`guides`). The panel has its own
+//! focus: closing the sidebar while it has the keyboard gives the keyboard to the focused tab.
+//! An SSH terminal's files aren't shown. The sizes all three panels share are here (`ROW`,
+//! `TEXT`, `HEADER`, …).
 //!
 //! `Panel`, `clamp`, `drawn_width`, `width_for_edge`, `resolve_folder`, `lookup_due`, `back_off`,
-//! `file_kind`, `kind_color`, `guides` and `root_path_line` are pure and tested, as is the tree.
+//! `file_kind` (the palette's tints), `kind_color`, `guides`, `mark_look` and `root_path_line`
+//! (the status bar's) are pure and tested, as is the tree.
 
 #[cfg(feature = "ui-shots")]
 use std::cell::Cell;
@@ -49,9 +53,9 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, Context, DispatchPhase, Entity, FocusHandle, Focusable,
-    FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollStrategy,
-    SharedString, Subscription, TextStyle, TruncateFrom, UniformListScrollHandle, Window, actions,
-    canvas, div, prelude::*, px, uniform_list,
+    FontWeight, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window,
+    actions, canvas, div, prelude::*, px, uniform_list,
 };
 
 #[cfg(feature = "ui-shots")]
@@ -63,19 +67,18 @@ use crate::file_tree::{self, FileTree, Row, RowCache, TreeMemory, Want};
 use crate::git_branch::{find_git, is_this_mac, process_cwd};
 use crate::git_status::{self, DirEntry, Mark};
 use crate::name_input::{NameInput, NameInputEvent};
-use crate::overlay_panel;
 use crate::panes::{self, PaneColors};
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
 use crate::sidebar_toggle::{self, Slide, Tip};
-use crate::tab_bar::{self, Glyph, glyph};
+use crate::tab_bar::{self, Glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
+use crate::ui_tokens::MARK_MIN;
 use crate::ui_tokens::size::{
     CARD_GAP, CARD_RADIUS, DIVIDER_ACTIVE, FOCUS_RING, RIGHT_SIDEBAR_DEFAULT_WIDTH,
     RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TAB_TOP_GAP, TOP_BAND,
 };
-use crate::ui_tokens::{MARK_MIN, text};
 use crate::workspace::Workspace;
 
 // Bound in main.rs with the "FileTree" key context (the panel, its filter box included).
@@ -99,26 +102,51 @@ pub const REFRESH: Duration = Duration::from_secs(2);
 const PANEL_TABS_LEFT: f32 = crate::ui_tokens::size::TABS_LEFT;
 const PANEL_TAB_GAP: f32 = 2.0;
 const PANEL_TAB_PAD: f32 = 10.0;
-/// A tree row's height.
-pub(crate) const ROW: f32 = 22.0;
-/// The band holding the filter box, under the header.
-pub(crate) const FILTER_BAND: f32 = 34.0;
-/// How far each level of the tree is indented (M11i: 14, was 12).
-const INDENT: f32 = 14.0;
-/// A row's room left of its top level's chevron column.
-const ROW_LEFT: f32 = 8.0;
-/// The chevron column, then the icon and the gap after it (M11i).
-const CHEVRON: f32 = 12.0;
-const ICON: f32 = 12.0;
-const ICON_GAP: f32 = 6.0;
-/// The root header above the filter (M11i): its name line and its path line.
-pub(crate) const ROOT_HEADER: f32 = 40.0;
-pub(crate) const ROOT_LINE: f32 = 20.0;
-pub(crate) const PATH_LINE: f32 = 14.0;
-pub(crate) const ROOT_PAD_LEFT: f32 = 10.0;
-pub(crate) const ROOT_PAD_RIGHT: f32 = 6.0;
-/// Between the root's chevron and its name.
-const ROOT_CHEVRON_GAP: f32 = 4.0;
+/// M11v part 4 (note 73): one system for the three panels, Files, Changes and Activity. A
+/// row's height; its text and its small text (marks, counts, times); a header's height and
+/// its title; an icon; the 12 pt left edge everything lines up on: a row's hover and
+/// selection are pills (`PILL_RADIUS` corners) inset `PILL_INSET` from the card's sides, with
+/// `PILL_PAD` inside them; a header's icon buttons (`HEADER_BUTTON`, their icons `HEADER_ICON`)
+/// and its room right of them.
+pub(crate) const ROW: f32 = 28.0;
+pub(crate) const TEXT: f32 = 14.0;
+pub(crate) const SMALL: f32 = 12.0;
+pub(crate) const HEADER: f32 = 42.0;
+pub(crate) const TITLE: f32 = 14.0;
+pub(crate) const ICON: f32 = 16.0;
+pub(crate) const EDGE: f32 = 12.0;
+pub(crate) const PILL_INSET: f32 = 6.0;
+pub(crate) const PILL_PAD: f32 = 6.0;
+pub(crate) const PILL_RADIUS: f32 = 7.0;
+pub(crate) const HEADER_BUTTON: f32 = 26.0;
+pub(crate) const HEADER_ICON: f32 = 15.0;
+pub(crate) const HEADER_PAD_RIGHT: f32 = 8.0;
+/// The panel tabs' words (part 4: 13 pt).
+const TAB_LABEL: f32 = 13.0;
+/// A thin chevron's box (› / ⌄, part 4).
+pub(crate) const CHEVRON: f32 = 12.0;
+const CHEVRON_STROKE: f32 = 1.25;
+/// The tree's icons' lines (in their 16 pt box) and the header buttons'.
+const ICON_STROKE: f32 = 1.2;
+const HEADER_ICON_STROKE: f32 = 1.3;
+/// The filter field under the Files header: its height, its corners, its padding and the
+/// room under it; its search icon.
+pub(crate) const FILTER: f32 = 32.0;
+const FILTER_RADIUS: f32 = 8.0;
+const FILTER_PAD: f32 = 10.0;
+pub(crate) const FILTER_BELOW: f32 = 8.0;
+const FILTER_ICON: f32 = 14.0;
+const FILTER_TEXT: f32 = 13.0;
+/// The band holding the filter field, under the header.
+pub(crate) const FILTER_BAND: f32 = FILTER + FILTER_BELOW;
+/// How far each level of the tree is indented (part 4: 16, was 14).
+const INDENT: f32 = 16.0;
+/// Between a row's icon and its name.
+const ICON_GAP: f32 = 7.0;
+/// The room left of a row's mark letter.
+const MARK_GAP: f32 = 6.0;
+/// The tree's room above its first row and below its last.
+pub(crate) const LIST_TOP: f32 = 2.0;
 const COLLAPSE_ALL_TIP: &str = "Collapse all folders";
 const FILTER_PLACEHOLDER: &str = "Filter files";
 const SSH_NOTE: &str = "Files aren't shown for SSH terminals.";
@@ -207,7 +235,8 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    /// Every kind, in order (`RowInks` indexes its tints by it).
+    /// Every kind, in order (the tests go through them).
+    #[cfg(test)]
     pub const ALL: [FileKind; 7] = [
         FileKind::Red,
         FileKind::Green,
@@ -244,8 +273,8 @@ pub fn file_kind(name: &str) -> FileKind {
 
 /// A file icon's tint: the theme's ANSI colour for its kind, pushed (hue kept) to `MARK_MIN`
 /// on the card and the row fills (`on_rows`); `Plain` is the dim text colour.
-// (The tree draws from `RowInks`; the tests and the screenshots read it one colour at a time.)
-#[cfg(any(test, feature = "ui-shots"))]
+// (Part 4: the tree's icons are one quiet grey; the tests still read the kinds' inks.)
+#[cfg(test)]
 pub fn kind_color(kind: FileKind, theme: &Theme) -> Rgb {
     kind_ink(kind, theme, &theme.ui())
 }
@@ -264,11 +293,11 @@ pub(crate) fn kind_ink(kind: FileKind, theme: &Theme, ui: &UiColors) -> Rgb {
     on_rows(theme.palette[ansi], ui)
 }
 
-/// Where a row `depth` levels down draws its indent guides: the x (from the row's left) of
-/// each level above it, at the centre of that level's chevron column.
+/// Where a row `depth` levels down draws its indent guides (part 4): the x (from its pill's
+/// left) of each level above it, down the middle of that level's icon.
 pub fn guides(depth: usize) -> Vec<f32> {
     (0..depth)
-        .map(|d| ROW_LEFT + d as f32 * INDENT + CHEVRON / 2.0)
+        .map(|d| PILL_PAD + d as f32 * INDENT + ICON / 2.0)
         .collect()
 }
 
@@ -302,26 +331,20 @@ pub fn root_path_line(root: &Path, home: Option<&Path>, fits: impl Fn(&str) -> b
 }
 
 /// The colours the tree's rows are drawn in, worked out once per frame (not per row): the
-/// chrome's, and each type tint and git mark's (`kind_color`, `mark_color`).
+/// chrome's, and each git mark's (`mark_color`).
 struct RowInks {
     ui: UiColors,
-    kinds: [Rgb; 7],
     marks: [Rgb; 3],
 }
 
 impl RowInks {
-    /// Worked out from one `theme.ui()` (not one per tint and mark).
+    /// Worked out from one `theme.ui()` (not one per mark).
     fn of(theme: &Theme) -> Self {
         let ui = theme.ui();
         Self {
-            kinds: FileKind::ALL.map(|k| kind_ink(k, theme, &ui)),
             marks: [Mark::Modified, Mark::Added, Mark::Deleted].map(|m| mark_ink(m, theme, &ui)),
             ui,
         }
-    }
-
-    fn kind(&self, kind: FileKind) -> Rgb {
-        self.kinds[kind as usize]
     }
 
     fn mark(&self, mark: Mark) -> Rgb {
@@ -334,6 +357,33 @@ impl RowInks {
     }
 }
 
+/// How a tree row shows its git mark (part 4, Files A): what sits at its right (a file's
+/// letter, a folder's dot), whether its name takes the mark's colour (a file's only) and
+/// whether the name is struck through (a deleted file).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MarkLook {
+    pub tail: Option<&'static str>,
+    pub name_marked: bool,
+    pub struck: bool,
+}
+
+/// `MarkLook` for an entry (`is_dir`) with `mark`.
+pub(crate) fn mark_look(is_dir: bool, mark: Option<Mark>) -> MarkLook {
+    match (is_dir, mark) {
+        (_, None) => MarkLook::default(),
+        (true, Some(_)) => MarkLook {
+            tail: Some("\u{2022}"),
+            name_marked: false,
+            struck: false,
+        },
+        (false, Some(m)) => MarkLook {
+            tail: Some(mark_letter(m)),
+            name_marked: true,
+            struck: m == Mark::Deleted,
+        },
+    }
+}
+
 fn mark_letter(mark: Mark) -> &'static str {
     match mark {
         Mark::Modified => "M",
@@ -342,10 +392,12 @@ fn mark_letter(mark: Mark) -> &'static str {
     }
 }
 
-/// Tree row `i`: indented by its depth (an indent guide for each level above it), a folder's
-/// ▸ / ▾, its icon (a folder, open while expanded, in the dim text colour; a file's page tinted
-/// by its kind), its name and its mark (both in the mark's colour), filled while `selected`; a
-/// click on it is `files_click`. A `… N more` row is only its text (and its guides).
+/// Tree row `i` (part 4, Files A, no triangles): a pill inset from the card's sides, indented
+/// 16 pt a level (a hairline guide for each level above it), the icon (a folder, open while
+/// expanded, or a file's page; all in one quiet grey), its name and, at the right, its mark
+/// (`mark_look`: a file's letter, its name in the mark's colour, struck through when deleted;
+/// a folder's dot); filled while `selected`, else on hover. A click on it is `files_click` (a
+/// folder opens or closes). A `… N more` row is only its text (and its guides).
 fn file_row(
     i: usize,
     row: &Row,
@@ -354,7 +406,7 @@ fn file_row(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = inks.ui;
-    let left = ROW_LEFT + row.depth as f32 * INDENT;
+    let left = PILL_PAD + row.depth as f32 * INDENT;
     // 1 pt lines the row's full height, so they join from row to row.
     let lines = guides(row.depth).into_iter().map(|x| {
         div()
@@ -365,24 +417,36 @@ fn file_row(
             .h_full()
             .bg(hsla(ui.guide))
     });
-    let base = div()
+    let pill = div()
         .id(("file-row", i))
         .relative()
         .flex()
         .items_center()
-        .h(px(ROW))
+        .h_full()
         .w_full()
         .pl(px(left))
-        .pr(px(10.0))
-        .text_size(px(text::NAME))
+        .pr(px(PILL_PAD))
+        .rounded(px(PILL_RADIUS))
+        .text_size(px(TEXT))
         .children(lines);
+    // The pill in its row: inset from the card's sides.
+    let place = |pill: AnyElement| {
+        div()
+            .h(px(ROW))
+            .w_full()
+            .px(px(PILL_INSET))
+            .child(pill)
+            .into_any_element()
+    };
     if let Some(more) = row.more {
-        return base
-            // Under the names: past the chevron column, the icon and its gap.
-            .pl(px(left + CHEVRON + ICON + ICON_GAP))
-            .text_color(hsla(ui.text_faint))
-            .child(format!("\u{2026} {more} more"))
-            .into_any_element();
+        return place(
+            pill
+                // Under the names: past the icon and its gap.
+                .pl(px(left + ICON + ICON_GAP))
+                .text_color(hsla(ui.text_faint))
+                .child(format!("\u{2026} {more} more"))
+                .into_any_element(),
+        );
     }
     let chosen = selected == Some(row.rel.as_path());
     let name = row
@@ -390,64 +454,65 @@ fn file_row(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ink = row.mark.map_or(ui.text, |m| inks.mark(m));
-    let chevron = match (row.is_dir, row.expanded) {
-        (true, true) => "\u{25be}",
-        (true, false) => "\u{25b8}",
-        (false, _) => "",
+    let look = mark_look(row.is_dir, row.mark);
+    let mark_ink = row.mark.map(|m| inks.mark(m));
+    let name_ink = match mark_ink {
+        Some(ink) if look.name_marked => ink,
+        _ => ui.text,
     };
-    let icon = match (row.is_dir, row.expanded) {
-        (true, true) => glyph(Glyph::FolderOpen, ui.text_dim),
-        (true, false) => glyph(Glyph::Folder, ui.text_dim),
-        (false, _) => glyph(Glyph::File, inks.kind(file_kind(&name))),
+    let kind = match (row.is_dir, row.expanded) {
+        (true, true) => Glyph::FolderOpen,
+        (true, false) => Glyph::Folder,
+        (false, _) => Glyph::File,
     };
     let (rel, is_dir) = (row.rel.clone(), row.is_dir);
     let hover = ui.card_hover;
-    base.when(chosen, |r| r.bg(hsla(ui.card_selected)))
-        .when(!chosen, |r| r.hover(move |s| s.bg(hsla(hover))))
-        .cursor_pointer()
-        .child(
-            div()
-                .flex_none()
-                .w(px(CHEVRON))
-                .text_size(px(text::META))
-                .text_color(hsla(ui.text_dim))
-                .child(chevron),
-        )
-        .child(
-            div()
-                .flex_none()
-                .size(px(ICON))
-                .mr(px(ICON_GAP))
-                .child(icon),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .truncate()
-                .text_color(hsla(ink))
-                .child(name),
-        )
-        .children(row.mark.map(|m| {
-            div()
-                .flex_none()
-                .ml(px(6.0))
-                .text_size(px(text::META))
-                .text_color(hsla(ink))
-                .child(mark_letter(m))
-        }))
-        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-            // A folder's double-click: the terminal goes there (its first click opened it). A
-            // file's single click previews it, its double click opens it for good (M11t).
-            let double = event.click_count() == 2;
-            if is_dir && double {
-                this.files_cd(&rel, cx);
-            } else {
-                this.files_click(&rel, is_dir, !double, window, cx)
-            }
-        }))
-        .into_any_element()
+    place(
+        pill.when(chosen, |r| r.bg(hsla(ui.card_selected)))
+            .when(!chosen, |r| r.hover(move |s| s.bg(hsla(hover))))
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(ICON))
+                    .mr(px(ICON_GAP))
+                    .child(tab_bar::footer_glyph(
+                        kind,
+                        ui.text_faint,
+                        ICON,
+                        ICON_STROKE,
+                    )),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_color(hsla(name_ink))
+                    .when(look.struck, |n| n.line_through())
+                    .child(name),
+            )
+            .children(look.tail.zip(mark_ink).map(|(tail, ink)| {
+                div()
+                    .flex_none()
+                    .ml(px(MARK_GAP))
+                    .text_size(px(SMALL))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(ink))
+                    .child(tail)
+            }))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                // A folder's double-click: the terminal goes there (its first click opened it). A
+                // file's single click previews it, its double click opens it for good (M11t).
+                let double = event.click_count() == 2;
+                if is_dir && double {
+                    this.files_cd(&rel, cx);
+                } else {
+                    this.files_click(&rel, is_dir, !double, window, cx)
+                }
+            }))
+            .into_any_element(),
+    )
 }
 
 /// A folder's listing as the background job hands it to the tree.
@@ -744,12 +809,73 @@ impl FilesPanel {
 /// A panel's note in place of its rows (an empty state): 13 pt, dim, 12 pt in from the left.
 pub(crate) fn note(ui: &UiColors, text: &'static str) -> AnyElement {
     div()
-        .px(px(12.0))
+        .px(px(EDGE))
         .py(px(8.0))
-        .text_size(px(text::NAME))
+        .text_size(px(TEXT))
         .text_color(hsla(ui.text_dim))
         .child(text)
         .into_any_element()
+}
+
+/// A panel's header row (part 4): `HEADER` tall, its content from the 12 pt edge to
+/// `HEADER_PAD_RIGHT` from the right (where its icon buttons sit), centred.
+pub(crate) fn header_row() -> gpui::Div {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .h(px(HEADER))
+        .w_full()
+        .pl(px(EDGE))
+        .pr(px(HEADER_PAD_RIGHT))
+}
+
+/// A header's icon button (part 4): `HEADER_BUTTON` square, its `HEADER_ICON` glyph faint, the
+/// text colour and a `card_hover` fill under the pointer; `tip` in its tooltip.
+pub(crate) fn header_button(
+    id: &'static str,
+    kind: Glyph,
+    tip: &'static str,
+    ui: UiColors,
+) -> gpui::Stateful<gpui::Div> {
+    let icon = |ink: Rgb| tab_bar::footer_glyph(kind, ink, HEADER_ICON, HEADER_ICON_STROKE);
+    div()
+        .id(id)
+        // One `group_hover` per element (GPUI keeps the last): one per glyph.
+        .group(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .relative()
+        .size(px(HEADER_BUTTON))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hsla(ui.card_hover)))
+        .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+        .child(
+            icon(ui.text_faint)
+                .absolute()
+                .group_hover(id, |s| s.invisible()),
+        )
+        .child(
+            icon(ui.text)
+                .absolute()
+                .invisible()
+                .group_hover(id, |s| s.visible()),
+        )
+}
+
+/// A thin line chevron (part 4: every ▸ / ▾ that opens or closes something, but the Files
+/// tree's): ⌄ while `open`, else ›, in `ink`, in its `CHEVRON` box.
+pub(crate) fn thin_chevron(open: bool, ink: Rgb) -> gpui::Div {
+    let kind = if open {
+        Glyph::ChevronDown
+    } else {
+        Glyph::ChevronRight
+    };
+    tab_bar::footer_glyph(kind, ink, CHEVRON, CHEVRON_STROKE)
 }
 
 /// The wait before the next refresh, after one that waited `wait`: `REFRESH` after a good git
@@ -833,9 +959,12 @@ pub struct RightSidebarState {
     pub(crate) files: FilesPanel,
     /// The Changes panel (M11h).
     pub(crate) changes: ChangesPanel,
-    /// The Activity panel's scroll (M11h): back to the newest when it is shown again or
-    /// follows another terminal.
-    pub(crate) activity_scroll: UniformListScrollHandle,
+    /// The Activity panel's timeline (part 4: a `list`, its events differ in height) and what
+    /// its lines were last made from (the terminal, how many lines, its newest event's time):
+    /// when that changes, or the key is dropped (shown again, another terminal), the list starts
+    /// again at its top, the newest.
+    pub(crate) activity_list: ListState,
+    pub(crate) activity_key: std::cell::Cell<Option<(u64, usize, Option<std::time::SystemTime>)>>,
     /// The panel tabs, as last drawn (the screenshots click them).
     #[cfg(feature = "ui-shots")]
     tabs_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
@@ -856,7 +985,12 @@ impl RightSidebarState {
             panel: Panel::Files,
             files: FilesPanel::new(),
             changes: ChangesPanel::new(),
-            activity_scroll: UniformListScrollHandle::new(),
+            activity_list: ListState::new(
+                0,
+                ListAlignment::Top,
+                px(crate::activity_panel::OVERDRAW),
+            ),
+            activity_key: std::cell::Cell::new(None),
             #[cfg(feature = "ui-shots")]
             tabs_at: Rc::default(),
         }
@@ -881,7 +1015,7 @@ impl RightSidebarState {
         match self.panel {
             Panel::Files => self.files.refreshed = None,
             Panel::Changes => self.changes.refreshed = None,
-            Panel::Activity => self.activity_scroll = UniformListScrollHandle::new(),
+            Panel::Activity => self.activity_key.set(None),
         }
     }
 }
@@ -1260,7 +1394,7 @@ impl Workspace {
             .h_full()
             .px(px(PANEL_TAB_PAD))
             .rounded_t(px(tab_bar::TAB_RADIUS))
-            .text_size(px(text::NAME))
+            .text_size(px(TAB_LABEL))
             .text_color(hsla(if active { ui.text } else { ui.text_dim }))
             .when(active, |t| t.bg(hsla(ui.card)))
             .when(!active, |t| {
@@ -1300,7 +1434,12 @@ impl Workspace {
         if self.right_sidebar.files.input.is_some() {
             return;
         }
-        let input = cx.new(|cx| NameInput::new(String::new(), window, cx));
+        // Bare: the filter field draws its fill (part 4).
+        let input = cx.new(|cx| {
+            let mut input = NameInput::new(String::new(), window, cx);
+            input.bare();
+            input
+        });
         let events = cx.subscribe_in(&input, window, |this, input, event, window, cx| {
             match event {
                 NameInputEvent::Confirm(_) => this.files_open_selected(window, cx),
@@ -1636,15 +1775,14 @@ impl Workspace {
         }
     }
 
-    /// The root header (M11i), for a card `width` wide: ▾ (▸ while folded away), the root
-    /// folder's name and, at the right, collapse all; under them its path, home-relative, its
-    /// start cut to fit (the whole path in its tooltip). A click on the name line folds the
+    /// The root header (part 4, Files A, 42 pt): the root folder's name (14 pt semibold on the
+    /// 12 pt edge; its whole path in its tooltip), a thin chevron after it (⌄, › while folded
+    /// away) and, at the right, collapse all as an icon button. A click on the name folds the
     /// root away or brings it back.
     fn render_root_header(
         &self,
         tree: &FileTree,
         ui: UiColors,
-        width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let root = tree.root();
@@ -1652,105 +1790,46 @@ impl Workspace {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.display().to_string());
-        let chevron = if tree.root_collapsed() {
-            "\u{25b8}"
-        } else {
-            "\u{25be}"
-        };
-        let room = width - 2.0 * FOCUS_RING - ROOT_PAD_LEFT - ROOT_PAD_RIGHT;
-        let wrapper = std::cell::RefCell::new(
-            cx.text_system()
-                .line_wrapper(TextStyle::default().font(), px(text::META)),
-        );
-        // As the drawn line decides whether to cut itself (`truncate`).
-        let fits = |s: &str| {
-            wrapper
-                .borrow_mut()
-                .should_truncate_line(s, px(room), "\u{2026}", TruncateFrom::End)
-                .is_none()
-        };
-        let path = root_path_line(root, self.places.home.as_deref(), fits);
         let full: SharedString = root.display().to_string().into();
-        let group = "files-collapse-all";
-        let collapse_all = div()
-            .id(group)
-            .group(group)
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .relative()
-            .size(px(tab_bar::BUTTON))
-            .rounded(px(4.0))
-            .cursor_pointer()
-            .hover(move |s| s.bg(hsla(ui.card_hover)))
-            // Its press and click are its own, not the name line's.
-            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                cx.stop_propagation()
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                this.files_collapse_all(cx)
-            }))
-            .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip(COLLAPSE_ALL_TIP.into())).into() })
-            .child(
-                glyph(Glyph::CollapseAll, ui.text_dim)
-                    .absolute()
-                    .group_hover(group, |s| s.invisible()),
-            )
-            .child(
-                glyph(Glyph::CollapseAll, ui.text)
-                    .absolute()
-                    .invisible()
-                    .group_hover(group, |s| s.visible()),
-            );
-        let line = div()
+        let collapse_all = header_button(
+            "files-collapse-all",
+            Glyph::CollapseAll,
+            COLLAPSE_ALL_TIP,
+            ui,
+        )
+        // Its press and click are its own, not the name's.
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            cx.stop_propagation();
+            this.files_collapse_all(cx)
+        }));
+        let title = div()
             .id("files-root")
             .flex()
+            .flex_shrink(1.0)
+            .min_w(px(0.0))
             .items_center()
-            .h(px(ROOT_LINE))
-            .w_full()
+            .gap(px(4.0))
+            .h_full()
             .cursor_pointer()
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(full.clone())).into() })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.files_toggle_root(cx)))
             .child(
                 div()
-                    .flex_none()
-                    .mr(px(ROOT_CHEVRON_GAP))
-                    .text_size(px(text::META))
-                    .text_color(hsla(ui.text_dim))
-                    .child(chevron),
-            )
-            .child(
-                div()
-                    .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(text::NAME))
+                    .text_size(px(TITLE))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text))
                     .child(name),
             )
-            .child(collapse_all);
-        let path_line = div()
-            .id("files-root-path")
-            .h(px(PATH_LINE))
-            .w_full()
-            .truncate()
-            .text_size(px(text::META))
-            .text_color(hsla(ui.text_faint))
-            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(full.clone())).into() })
-            .child(path);
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .justify_center()
-            .h(px(ROOT_HEADER))
-            .w_full()
-            .pl(px(ROOT_PAD_LEFT))
-            .pr(px(ROOT_PAD_RIGHT))
-            .child(line)
-            .child(path_line)
+            .child(thin_chevron(!tree.root_collapsed(), ui.text_faint));
+        header_row()
+            .child(title)
+            .child(div().flex_1())
+            .child(collapse_all)
             .into_any_element()
     }
 
@@ -1758,13 +1837,14 @@ impl Workspace {
     /// (or what stands in for it: an SSH terminal's note, no folder, no match); with the root
     /// folded away, the header alone. It has its own focus, and the tree's keys (key context
     /// `FileTree`, the box included: ↑ ↓ move through the rows while typing).
-    fn render_files_panel(&self, ui: UiColors, width: f32, cx: &mut Context<Self>) -> AnyElement {
+    /// (`_width`: nothing here is cut to a measured width since part 4 took the path line away.)
+    fn render_files_panel(&self, ui: UiColors, _width: f32, cx: &mut Context<Self>) -> AnyElement {
         let files = &self.right_sidebar.files;
         let note = |text: &'static str| note(&ui, text);
         let ssh = self.followed_ssh();
         let tree = files.tree.as_ref().filter(|_| !ssh);
         let folded = tree.is_some_and(FileTree::root_collapsed);
-        let header = tree.map(|tree| self.render_root_header(tree, ui, width, cx));
+        let header = tree.map(|tree| self.render_root_header(tree, ui, cx));
         let body = if ssh {
             Some(note(SSH_NOTE))
         } else if folded {
@@ -1791,6 +1871,7 @@ impl Workspace {
                 }),
             )
             .track_scroll(&files.scroll)
+            .pt(px(LIST_TOP))
             .size_full();
             Some(list.into_any_element())
         };
@@ -1801,24 +1882,56 @@ impl Workspace {
             .map(|input| {
                 let empty = input.read(cx).text().is_empty();
                 let focus_box = input.clone();
-                div()
-                    .flex_none()
+                // Part 4: a borderless field filled one step darker than the card (the tab
+                // strip's colour), a search icon, then the box (bare: the field is its edge).
+                let field = div()
                     .flex()
                     .items_center()
+                    .gap(px(8.0))
+                    .h(px(FILTER))
+                    .w_full()
+                    .px(px(FILTER_PAD))
+                    .rounded(px(FILTER_RADIUS))
+                    .bg(hsla(ui.tab_bar))
+                    .child(tab_bar::footer_glyph(
+                        Glyph::Search,
+                        ui.text_faint,
+                        FILTER_ICON,
+                        HEADER_ICON_STROKE,
+                    ))
+                    .child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .text_size(px(FILTER_TEXT))
+                            .text_color(hsla(ui.text))
+                            .child(input)
+                            .when(empty, |field| {
+                                field.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        // Clear of the caret at the start.
+                                        .left(px(2.0))
+                                        .text_color(hsla(ui.text_faint))
+                                        .child(FILTER_PLACEHOLDER),
+                                )
+                            }),
+                    );
+                div()
+                    .flex_none()
                     .h(px(FILTER_BAND))
-                    .px(px(6.0))
+                    .px(px(EDGE))
+                    .pb(px(FILTER_BELOW))
                     // The box keeps its clicks from reaching whatever holds it, so it takes the
                     // keyboard here, before they arrive.
                     .capture_any_mouse_down(move |_, window, cx| {
                         let focus = focus_box.read(cx).focus_handle(cx);
                         focus.focus(window, cx);
                     })
-                    .child(div().flex_1().child(overlay_panel::filter_box(
-                        &ui,
-                        &input,
-                        empty,
-                        FILTER_PLACEHOLDER,
-                    )))
+                    .child(field)
             });
         let panel = div()
             .id("files-panel")
@@ -2373,16 +2486,10 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_inks_are_the_tints_and_marks() {
+    fn the_rows_inks_are_the_marks() {
+        // (Part 4: the tree's icons are one quiet grey; the type tints are the palette's.)
         for (name, theme) in crate::theme::every_theme() {
             let inks = RowInks::of(&theme);
-            for kind in FileKind::ALL {
-                assert_eq!(
-                    inks.kind(kind),
-                    kind_color(kind, &theme),
-                    "{name}: {kind:?}"
-                );
-            }
             for mark in [Mark::Modified, Mark::Added, Mark::Deleted] {
                 assert_eq!(
                     inks.mark(mark),
@@ -2404,11 +2511,72 @@ mod tests {
         assert_eq!(kind_color(FileKind::Cyan, &theme), theme.palette[6]);
     }
 
+    /// Part 4: no chevron column; each level is 16 pt, and a guide runs down the middle of
+    /// that level's 16 pt icon (from the pill's left: its 6 pt padding, then the levels).
     #[test]
-    fn guides_sit_at_each_ancestor_level_s_chevron_centre() {
+    fn guides_sit_at_each_ancestor_level_s_icon_centre() {
         assert!(guides(0).is_empty(), "none at the top level");
         assert_eq!(guides(1), vec![14.0]);
-        assert_eq!(guides(3), vec![14.0, 28.0, 42.0]);
+        assert_eq!(guides(3), vec![14.0, 30.0, 46.0]);
+    }
+
+    /// Part 4 (Files A): only changed files carry colour, a file's name and its letter; a
+    /// deleted file's name is struck through; a folder holding changes only shows a dot.
+    #[test]
+    fn a_changed_file_is_coloured_and_a_folder_with_changes_gets_a_dot() {
+        let file = |m| mark_look(false, m);
+        let folder = |m| mark_look(true, m);
+        assert_eq!(file(None), MarkLook::default(), "unchanged: plain");
+        assert_eq!(folder(None), MarkLook::default());
+        assert_eq!(
+            file(Some(Mark::Modified)),
+            MarkLook {
+                tail: Some("M"),
+                name_marked: true,
+                struck: false
+            }
+        );
+        assert_eq!(
+            file(Some(Mark::Added)),
+            MarkLook {
+                tail: Some("A"),
+                name_marked: true,
+                struck: false
+            }
+        );
+        assert_eq!(
+            file(Some(Mark::Deleted)),
+            MarkLook {
+                tail: Some("D"),
+                name_marked: true,
+                struck: true
+            }
+        );
+        for m in [Mark::Modified, Mark::Added, Mark::Deleted] {
+            assert_eq!(
+                folder(Some(m)),
+                MarkLook {
+                    tail: Some("\u{2022}"),
+                    name_marked: false,
+                    struck: false
+                },
+                "{m:?}: a dot, the name plain"
+            );
+        }
+    }
+
+    /// Part 4: one system for the three panels (note 73): 28 pt rows, a 42 pt header, 14 / 12 pt
+    /// text, 16 pt icons, pills inset 6 pt so everything starts on the 12 pt edge.
+    #[test]
+    fn the_panels_share_one_set_of_sizes() {
+        assert_eq!(ROW, 28.0);
+        assert_eq!(HEADER, 42.0);
+        assert_eq!((TEXT, SMALL, TITLE), (14.0, 12.0, 14.0));
+        assert_eq!(ICON, 16.0);
+        assert_eq!(PILL_INSET + PILL_PAD, EDGE);
+        assert_eq!(EDGE, 12.0);
+        assert_eq!((HEADER_BUTTON, HEADER_ICON), (26.0, 15.0));
+        assert_eq!(INDENT, 16.0);
     }
 
     #[test]

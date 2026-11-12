@@ -989,13 +989,16 @@ pub(crate) enum Glyph {
     /// branch leaving it for a third.
     Branch,
     /// The Changes bar's actions (M11v): an arrow down onto a line (Pull), an arrow up from a
-    /// line (Push), and a cloud with an arrow up into it (Publish). Fetch is `Reload`.
+    /// line (Push), and a branch with an arrow going up beside it (Publish). Fetch is `Reload`.
     Pull,
     Push,
     Publish,
     /// The Changes rows' revert (M11v part 2): an arrow back to the left, turning down and back
     /// under itself (a U-turn).
     Revert,
+    /// M11v part 4: the thin line chevrons that replace the ▸ / ▾ triangles (› closed, ⌄ open).
+    ChevronRight,
+    ChevronDown,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1287,6 +1290,20 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         branch.curve_to(p(top.0, 8.0), p(side.0, 8.0));
                         paths.push(branch);
                     }
+                    Glyph::ChevronRight => {
+                        let mut chevron = stroke();
+                        chevron.move_to(p(4.5, 2.5));
+                        chevron.line_to(p(8.0, 6.0));
+                        chevron.line_to(p(4.5, 9.5));
+                        paths.push(chevron);
+                    }
+                    Glyph::ChevronDown => {
+                        let mut chevron = stroke();
+                        chevron.move_to(p(2.5, 4.5));
+                        chevron.line_to(p(6.0, 8.0));
+                        chevron.line_to(p(9.5, 4.5));
+                        paths.push(chevron);
+                    }
                     Glyph::CollapseAll => {
                         for y in [1.5, 6.0] {
                             let mut chevron = stroke();
@@ -1321,23 +1338,29 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         paths.push(line);
                     }
                     Glyph::Publish => {
-                        // A cloud open at the bottom, where the arrow comes up into it.
-                        let mut cloud = stroke();
-                        cloud.move_to(p(4.0, 9.5));
-                        let small = point(px(2.2 * u), px(2.2 * u));
-                        cloud.arc_to(small, px(0.0), false, true, p(3.3, 5.2));
-                        let big = point(px(3.0 * u), px(3.0 * u));
-                        cloud.arc_to(big, px(0.0), false, true, p(9.0, 4.6));
-                        cloud.arc_to(small, px(0.0), false, true, p(8.0, 9.5));
-                        paths.push(cloud);
+                        // Part 6 (your pick, C): a branch (two commits on a trunk) and, beside
+                        // it, an arrow going up: "send this branch up".
+                        let r = 1.2;
+                        for (cx_, cy) in [(3.4, 2.6), (3.4, 9.4)] {
+                            let mut dot = stroke();
+                            let radii = point(px(r * u), px(r * u));
+                            dot.move_to(p(cx_, cy - r));
+                            dot.arc_to(radii, px(0.0), false, true, p(cx_, cy + r));
+                            dot.arc_to(radii, px(0.0), false, true, p(cx_, cy - r));
+                            paths.push(dot);
+                        }
+                        let mut trunk = stroke();
+                        trunk.move_to(p(3.4, 3.8));
+                        trunk.line_to(p(3.4, 8.2));
+                        paths.push(trunk);
                         let mut shaft = stroke();
-                        shaft.move_to(p(6.0, 11.0));
-                        shaft.line_to(p(6.0, 6.0));
+                        shaft.move_to(p(8.6, 10.0));
+                        shaft.line_to(p(8.6, 3.6));
                         paths.push(shaft);
                         let mut head = stroke();
-                        head.move_to(p(4.2, 7.8));
-                        head.line_to(p(6.0, 6.0));
-                        head.line_to(p(7.8, 7.8));
+                        head.move_to(p(6.7, 5.5));
+                        head.line_to(p(8.6, 3.6));
+                        head.line_to(p(10.5, 5.5));
                         paths.push(head);
                     }
                     Glyph::Revert => {
