@@ -115,14 +115,22 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.
   Only a short form (program and one subcommand) is ever shown outside the terminal. Not in it: a new Failed status,
   changing the silence guess, bash or fish integration. See [[68 - Milestone 11q - Which Command Finished]].
+- **Plugins** (M11y–M11z, moved into scope 2026-11-12 by you: "yes, plugins in scope, start the design"; design
+  approved 2026-11-13: "before M11p, approved, update the docs"): paste a public GitHub repo link in Settings →
+  Plugins to install, one button to uninstall, and uninstall removes it completely. Every plugin is a folder with a
+  `fuxx-plugin.conf` (plain `key = value`). This round: **theme plugins** (M11y, data only) and **helper-program
+  plugins** (M11z, a program plus a zsh hook loaded after your `.zshrc`; fuxx-completes is the first). Not in it:
+  plugins that show screens (sidebar widgets, panels, plugin tabs), fuxx drawing fuxx-completes' menu, private
+  repos, automatic updates, a store, sandboxing, bash and fish hooks. See [[76 - Milestones 11y-11z - Plugins]].
 
 ## Out of scope (for now — resist scope creep)
 
 - Being a general IDE / **editor**. *(Changed 2026-11-08 by you: a **read-only file viewer** is now in scope
   (the right sidebar's Files and file tabs, M11g–M11h, [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]).
   Editing, autocomplete, language servers and debugging stay out.)*
-- A plugin ecosystem, themes marketplace, or a config *language* (scripting, conditionals) beyond the
-  plain `key = value` settings file above.
+- A plugin store or marketplace, or a config *language* (scripting, conditionals) beyond the plain `key = value`
+  settings file above. *(Changed 2026-11-12 by you: **plugins** installed from a GitHub link are now in scope,
+  M11y–M11z above; a store, search or ratings stay out.)*
 - Windows support (later).
 - cmux's extras until the core is solid: **embedded browser, SSH workspaces, remote/tmux daemon** —
   all deferred (see [[40 - Roadmap]] "Later"). *(Split panes were on this list until 2026-10-27, when
