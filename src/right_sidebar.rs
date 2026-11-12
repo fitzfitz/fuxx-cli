@@ -2062,7 +2062,7 @@ impl Workspace {
                     .bottom_0()
                     .left(px((CARD_GAP - DIVIDER_ACTIVE) / 2.0))
                     .w(px(DIVIDER_ACTIVE))
-                    .bg(hsla(ui.accent))
+                    .bg(crate::panes::resize_line(&ui))
                     .when(!resizing, |line| {
                         line.invisible()
                             .group_hover("right-sidebar-edge", |style| style.visible())

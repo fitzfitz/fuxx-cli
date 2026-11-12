@@ -42,7 +42,7 @@
 //! answer carries the disk version, as the bars' does (`HeldDiff`). A refused file (over 20 MB
 //! or binary) never asks git.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Read;
@@ -92,6 +92,8 @@ const OPEN_IN_EDITOR: &str = "Open in Editor";
 /// The toolbar's File | Diff toggle (M11h): its words and tooltips.
 const TOGGLE_FILE: &str = "File";
 const TOGGLE_DIFF: &str = "Diff";
+const WRAP: &str = "Wrap";
+const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
 const TIP_FILE: &str = "Show the file";
 const TIP_DIFF: &str = "Show the changes since the last commit";
 const SHOW_IN_FINDER: &str = "Show in Finder";
@@ -540,6 +542,8 @@ pub struct Doc {
     pub version: u64,
     /// The widest line as shown, in cells (characters, tabs as four).
     pub widest: usize,
+    /// Each line's width in cells (M11x part 2: what Wrap cuts into rows).
+    pub widths: Arc<Vec<usize>>,
     /// The long lines' checkpoints (`checkpoints`), by line: drawn and hit-tested from the
     /// nearest one, not from the line's start.
     long: Arc<HashMap<usize, Vec<(usize, usize)>>>,
@@ -552,10 +556,12 @@ impl Doc {
         let lines = line_ranges(&text);
         let (mut widest, mut longest) = (0, 0);
         let mut long = HashMap::new();
+        let mut widths = Vec::with_capacity(lines.len());
         for (i, r) in lines.iter().enumerate() {
             let l = &text[r.clone()];
             longest = longest.max(l.len());
             let cells = scan_cell(l, (0, 0), l.len());
+            widths.push(cells);
             widest = widest.max(cells);
             if cells > LONG_LINE {
                 long.insert(i, checkpoints(l));
@@ -570,6 +576,7 @@ impl Doc {
             changes_version: None,
             version,
             widest,
+            widths: Arc::new(widths),
             long: Arc::new(long),
             longest,
         }
@@ -913,6 +920,86 @@ impl Highlighters {
     }
 }
 
+/// The screen rows of lines `widths` cells wide (M11x part 2): each as (line, the cell it starts
+/// at). With `wrap`, a line takes a row per `columns` cells (at least one row, an empty line
+/// too); without it, one row each.
+pub fn visual_rows(widths: &[usize], columns: usize, wrap: bool) -> Vec<(usize, usize)> {
+    let columns = columns.max(1);
+    let mut rows = Vec::with_capacity(widths.len());
+    for (line, &width) in widths.iter().enumerate() {
+        let count = if wrap {
+            width.div_ceil(columns).max(1)
+        } else {
+            1
+        };
+        rows.extend((0..count).map(|k| (line, k * columns)));
+    }
+    rows
+}
+
+/// Each line's first row in `rows` (from `visual_rows`), then the row count: `lines + 1` long.
+pub fn first_rows(rows: &[(usize, usize)], lines: usize) -> Vec<usize> {
+    let mut first = vec![rows.len(); lines + 1];
+    for (r, &(line, cell)) in rows.iter().enumerate().rev() {
+        if cell == 0 && line < lines {
+            first[line] = r;
+        }
+    }
+    first
+}
+
+/// A wrapped row of line `i` that starts at cell `cell0`, `columns` wide: its bytes
+/// `from..to` and the cell `from` starts at (`start`: a character crossing the row's start, a
+/// tab, begins the row whole). Painting and clicking both use it, so they agree.
+pub fn wrapped_row(doc: &Doc, i: usize, cell0: usize, columns: usize) -> (usize, usize, usize) {
+    let (from, start) = doc.byte_at_cell(i, cell0);
+    let (to, _) = doc.byte_at_cell(i, cell0 + columns.max(1));
+    (from, to.max(from), start)
+}
+
+/// The byte a click `x_cells` cells into a wrapped row lands on (`row`: `wrapped_row`'s span):
+/// the nearest character edge, kept in that row (right of a middle row's end: its end).
+pub fn row_hit(doc: &Doc, i: usize, row: (usize, usize, usize), last: bool, x_cells: f32) -> usize {
+    let (from, to, start) = row;
+    let cell = start + x_cells.max(0.0).round() as usize;
+    let (b, _) = doc.byte_at_cell(i, cell);
+    let end = if last { doc.line(i).len() } else { to };
+    b.clamp(from, end.max(from))
+}
+
+/// The top row after Wrap is switched (`from` → `to`, each wrapped or not): the row of the same
+/// line, so the line at the top stays at the top.
+pub fn rescroll_row(top: usize, from: Option<&Wrapped>, to: Option<&Wrapped>) -> usize {
+    let line = from.map_or(top, |w| w.row(top).0);
+    to.map_or(line, |w| w.first_row(line))
+}
+
+/// `bar_at` in wrapped rows: a press `y` on any of a changed line's rows is its bar; within half
+/// a row of the edge where lines were deleted, that ▸.
+pub fn bar_at_rows(
+    y: f32,
+    line_height: f32,
+    w: &Wrapped,
+    changes: &Changes,
+) -> Option<(usize, LineChange)> {
+    if y < 0.0 || line_height <= 0.0 {
+        return None;
+    }
+    let row = (y / line_height).floor() as usize;
+    if row < w.rows.len() {
+        let line = w.row(row).0;
+        if let Some(&change) = changes.by_line.get(&line) {
+            return Some((line + 1, change));
+        }
+    }
+    let edge_row = (y / line_height).round() as usize;
+    let edge = w.first.binary_search(&edge_row).ok()?;
+    changes
+        .deleted
+        .contains(&edge)
+        .then_some((edge, LineChange::DeletedAfter))
+}
+
 /// The lines in sight: from `scroll_y` down `height`, `line_height` each, of `count`.
 fn visible_rows(
     scroll_y: Pixels,
@@ -1181,6 +1268,24 @@ impl Laid {
         } else {
             (0, line.len(), 0)
         };
+        Laid::part(doc, i, from, to, cell, spans, fg, m, window)
+    }
+
+    /// Bytes `from..to` of line `i` laid out (`cell`: where `from` starts), as `new` does: a
+    /// wrapped row's part (M11x part 2).
+    #[allow(clippy::too_many_arguments)]
+    fn part(
+        doc: &Doc,
+        i: usize,
+        from: usize,
+        to: usize,
+        cell: usize,
+        spans: Option<&[Span]>,
+        fg: Rgb,
+        m: &CellMetrics,
+        window: &mut Window,
+    ) -> Laid {
+        let line = doc.line(i);
         let slice = &line[from..to];
         let shown = expand_tabs(slice);
         let runs = line_runs(line, spans, fg, from..to);
@@ -1241,6 +1346,44 @@ fn plain_run(len: usize, m: &CellMetrics, color: Rgb) -> TextRun {
     }
 }
 
+/// A text body wrapped at its width (M11x part 2): its screen rows and each line's first row,
+/// for the doc, mode and column count they were made for.
+#[derive(Clone)]
+pub struct Wrapped {
+    key: (FileMode, u64, usize),
+    rows: Arc<Vec<(usize, usize)>>,
+    first: Arc<Vec<usize>>,
+    columns: usize,
+}
+
+impl Wrapped {
+    /// `doc` wrapped at `columns` (each line's width from its cells).
+    fn of(doc: &Doc, mode: FileMode, columns: usize) -> Wrapped {
+        let count = doc.lines.len();
+        let rows = visual_rows(&doc.widths, columns, true);
+        let first = first_rows(&rows, count);
+        Wrapped {
+            key: (mode, doc.version, columns),
+            rows: Arc::new(rows),
+            first: Arc::new(first),
+            columns: columns.max(1),
+        }
+    }
+
+    /// Screen row `r` as (line, its first cell).
+    fn row(&self, r: usize) -> (usize, usize) {
+        self.rows.get(r).copied().unwrap_or((r, 0))
+    }
+
+    /// Line `i`'s first row (past the last line: the row count).
+    fn first_row(&self, i: usize) -> usize {
+        self.first
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| self.rows.len())
+    }
+}
+
 /// Everything one frame of the text body draws, read in `render`.
 struct Frame {
     doc: Doc,
@@ -1279,13 +1422,21 @@ fn paint_number(
 /// Paint the text body: `f`'s lines in sight, laid out as `g`. A file: its numbers, change bars
 /// and tints, the deleted-lines ▸. A diff: each row's old and new numbers, its sign and tint
 /// (removed red, added green), unchanged rows' colours dimmed (`diff_view::dim`).
-fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mut App) {
+fn paint_body(
+    f: &Frame,
+    g: &Geom,
+    m: &CellMetrics,
+    wrapped: Option<&Wrapped>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let ui = f.theme.ui();
     let bars = BarColours::of(&f.theme);
     let bounds = g.bounds;
     let lh = g.line_height;
-    let rows = visible_rows(g.scroll.y, bounds.size.height, lh, f.doc.lines.len());
-    let text_x = bounds.left() + g.text_left - g.scroll.x;
+    // Wrapped (M11x part 2): screen rows, each a part of a line; else a row a line.
+    let row_count = wrapped.map_or(f.doc.lines.len(), |w| w.rows.len());
+    let rows = visible_rows(g.scroll.y, bounds.size.height, lh, row_count);
     let mask = ContentMask {
         bounds: Bounds::from_corners(
             point(
@@ -1312,9 +1463,22 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
         sign(SIGN_REMOVED, removed_ink, window),
         sign(SIGN_ADDED, added_ink, window),
     );
-    for i in rows.clone() {
-        let y = bounds.top() + lh * i as f32 - g.scroll.y;
+    for r in rows.clone() {
+        let (i, cell0) = wrapped.map_or((r, 0), |w| w.row(r));
+        let y = bounds.top() + lh * r as f32 - g.scroll.y;
         let line = f.doc.line(i);
+        // A wrapped row: its line's part, drawn from the text's left edge; the line's first row
+        // has its number, bar and sign, its last row the selection's line end.
+        let first_row = cell0 == 0;
+        let part = wrapped.map(|w| {
+            let (from, to, start) = wrapped_row(&f.doc, i, cell0, w.columns);
+            let last = w.row(r + 1).0 != i || r + 1 >= w.rows.len();
+            (from, to, start, last)
+        });
+        let text_x = match part {
+            Some((_, _, start, _)) => bounds.left() + g.text_left - g.cell_width * start as f32,
+            None => bounds.left() + g.text_left - g.scroll.x,
+        };
         let row = f.diff.as_ref().and_then(|d| d.get(i)).copied();
         let change = match f.mode {
             FileMode::Plain => f.doc.changes.by_line.get(&i).copied(),
@@ -1344,16 +1508,21 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
             Some(d) => (Some(d.as_slice()), dim(f.theme.foreground, bg)),
             None => (line_spans, f.theme.foreground),
         };
-        let laid = Laid::new(
-            &f.doc,
-            i,
-            line_spans,
-            fg,
-            m,
-            g.scroll.x,
-            bounds.size.width,
-            window,
-        );
+        let laid = match part {
+            Some((from, to, start, _)) => {
+                Laid::part(&f.doc, i, from, to, start, line_spans, fg, m, window)
+            }
+            None => Laid::new(
+                &f.doc,
+                i,
+                line_spans,
+                fg,
+                m,
+                g.scroll.x,
+                bounds.size.width,
+                window,
+            ),
+        };
         let x_of = |col: usize| text_x + laid.x(col);
         window.with_content_mask(Some(mask), |window| {
             if let Some((s, e)) = f.selection
@@ -1362,8 +1531,14 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
             {
                 let from = if i == s.line { s.col } else { 0 };
                 let to = if i == e.line { e.col } else { line.len() };
-                // A line's end inside the selection shows as one more cell.
-                let end = if i == e.line { px(0.0) } else { g.cell_width };
+                // A line's end inside the selection shows as one more cell (wrapped: on its
+                // last row only).
+                let ends_here = part.is_none_or(|(_, _, _, last)| last);
+                let end = if i == e.line || !ends_here {
+                    px(0.0)
+                } else {
+                    g.cell_width
+                };
                 let (x0, x1) = (x_of(from), x_of(to) + end);
                 if x1 > x0 {
                     let b = Bounds::from_corners(point(x0, y), point(x1, y + lh));
@@ -1396,6 +1571,9 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
                 let _ = shaped.paint(origin, lh, TextAlign::Left, None, window, cx);
             }
         });
+        if !first_row {
+            continue;
+        }
         match row {
             None => {
                 let right = point(bounds.left() + g.numbers_right, y);
@@ -1444,6 +1622,7 @@ fn paint_body(f: &Frame, g: &Geom, m: &CellMetrics, window: &mut Window, cx: &mu
         None,
     );
     for &edge in &f.doc.changes.deleted {
+        let edge = wrapped.map_or(edge, |w| w.first_row(edge));
         if edge < rows.start || edge > rows.end {
             continue;
         }
@@ -1619,6 +1798,9 @@ pub struct FileTab {
     scroll: Point<Pixels>,
     diff_scroll: Point<Pixels>,
     geom: Rc<Cell<Option<Geom>>>,
+    /// The text body wrapped at its width, as last drawn with Wrap on (M11x part 2); none
+    /// with it off.
+    wrapped: Rc<RefCell<Option<Wrapped>>>,
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
@@ -1695,6 +1877,7 @@ impl FileTab {
             scroll: Point::default(),
             diff_scroll: Point::default(),
             geom: Rc::default(),
+            wrapped: Rc::default(),
             selection: None,
             selecting: false,
             find: None,
@@ -2340,13 +2523,24 @@ impl FileTab {
     fn pos_at(&self, p: Point<Pixels>, window: &mut Window, cx: &App) -> Option<Pos> {
         let g = self.geom.get()?;
         let doc = self.shown_doc()?;
-        let count = doc.lines.len();
+        let wrapped = self.wrapped.borrow().clone();
+        let count = wrapped.as_ref().map_or(doc.lines.len(), |w| w.rows.len());
         let y = p.y - g.bounds.top() + g.scroll.y;
-        let line = if y < px(0.0) {
+        let row = if y < px(0.0) {
             0
         } else {
             ((y / g.line_height).floor() as usize).min(count.saturating_sub(1))
         };
+        // Wrapped (M11x part 2): in cells from the row's start, kept in the row (as it's drawn).
+        if let Some(w) = &wrapped {
+            let (line, cell0) = w.row(row);
+            let span = wrapped_row(doc, line, cell0, w.columns);
+            let last = w.row(row + 1).0 != line || row + 1 >= w.rows.len();
+            let x = p.x - g.bounds.left() - g.text_left;
+            let col = row_hit(doc, line, span, last, x / g.cell_width.max(px(1.0)));
+            return Some(Pos { line, col });
+        }
+        let line = row;
         let x = p.x - g.bounds.left() - g.text_left + g.scroll.x;
         if x <= px(0.0) {
             return Some(Pos { line, col: 0 });
@@ -2400,6 +2594,9 @@ impl FileTab {
             return None;
         }
         let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
+        if let Some(w) = self.wrapped.borrow().as_ref() {
+            return bar_at_rows(y, f32::from(g.line_height), w, &doc.changes);
+        }
         bar_at(y, f32::from(g.line_height), &doc.changes)
     }
 
@@ -2521,6 +2718,7 @@ impl FileTab {
                     .geom
                     .get()
                     .map_or(0, |g| (g.scroll.y / g.line_height).floor() as usize);
+                let top = this.wrapped.borrow().as_ref().map_or(top, |w| w.row(top).0);
                 // Scrolled to its current match only for a new query (⌘G, ⇧⌘G and Return scroll
                 // by themselves): a reload's search leaves the view where it is.
                 let taken = this
@@ -2580,6 +2778,17 @@ impl FileTab {
         };
         let (lh, h, w) = (g.line_height, g.bounds.size.height, g.bounds.size.width);
         let mut to = g.scroll;
+        // Wrapped (M11x part 2): the row the match starts on; no sideways scroll.
+        let wrapped = self.wrapped.borrow().clone();
+        if let Some(w) = wrapped.as_ref() {
+            let cell = doc.cell_of(hit.line, hit.cols.start);
+            let top = lh * (w.first_row(hit.line) + cell / w.columns) as f32;
+            if top < to.y || top + lh > to.y + h {
+                to.y = top - (h - lh) / 2.0;
+            }
+            self.set_scroll(to, cx);
+            return;
+        }
         let top = lh * hit.line as f32;
         if top < to.y || top + lh > to.y + h {
             to.y = top - (h - lh) / 2.0;
@@ -2726,6 +2935,39 @@ impl FileTab {
     }
 
     /// The File | Diff toggle: two joined segments, a 1 pt border, 5 pt corners.
+    /// Wrap (M11x part 2): one button, filled when on, outlined when off; a click turns it the
+    /// other way for every file tab (`file-wrap`, kept in the settings).
+    fn wrap_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let on = cx.global::<Appearance>().file_wrap;
+        div()
+            .id("file-wrap")
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(BUTTON))
+            .px(px(10.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .text_size(px(text::NAME))
+            .when(on, |b| {
+                b.bg(hsla(ui.card_selected)).text_color(hsla(ui.text))
+            })
+            .when(!on, |b| {
+                b.text_color(hsla(ui.text_dim))
+                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
+            })
+            .cursor_pointer()
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(TIP_WRAP.into())).into() })
+            .child(WRAP)
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                let on = !cx.global::<Appearance>().file_wrap;
+                let values = if on { vec!["on".to_string()] } else { vec![] };
+                crate::preferences::apply(cx, "file-wrap", &values);
+            }))
+            .into_any_element()
+    }
+
     fn toggle(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
@@ -2749,6 +2991,9 @@ impl FileTab {
             _ => None,
         };
         let toggle = shows_toggle(self.git_place.is_some(), self.mode).then(|| self.toggle(ui, cx));
+        // Wrap, left of File | Diff (M11x part 2), wherever there's text to wrap.
+        let wrap = matches!(self.state, State::Text(_) | State::PlainTooLarge(_))
+            .then(|| self.wrap_button(ui, cx));
         // A refused file has its button in the middle; a missing one has none.
         let open = matches!(
             self.state,
@@ -2792,6 +3037,7 @@ impl FileTab {
                     .text_color(hsla(ui.text_faint))
                     .child(note)
             }))
+            .children(wrap)
             .children(toggle)
             .children(open)
             .into_any_element()
@@ -2985,6 +3231,7 @@ impl FileTab {
             theme,
         });
         let geom = self.geom.clone();
+        let wrapped = self.wrapped.clone();
         let drawn = self.drawn.clone();
         let view = cx.entity();
         let keep = view.clone();
@@ -3011,8 +3258,34 @@ impl FileTab {
                             let m = CellMetrics::measure(cx.global::<Appearance>(), window);
                             let count = laid.doc.lines.len();
                             let gutter = laid.gutter.unwrap_or_else(|| Gutter::plain(count));
-                            let g =
-                                Geom::of(bounds, &m, count, gutter, laid.doc.widest, laid.scroll);
+                            // Wrap on (M11x part 2): rows at the text's width, made again only
+                            // for another version, mode or width; no sideways scroll.
+                            let wrap = cx.global::<Appearance>().file_wrap.then(|| {
+                                let cw = f32::from(m.cell_width).max(1.0);
+                                let left = columns(cw, gutter).text_left;
+                                let room = f32::from(bounds.size.width) - left - RIGHT_PAD;
+                                let cols = (room / cw).floor().max(1.0) as usize;
+                                let key = (laid.mode, laid.doc.version, cols);
+                                let kept = wrapped.borrow().clone().filter(|w| w.key == key);
+                                kept.unwrap_or_else(|| Wrapped::of(&laid.doc, laid.mode, cols))
+                            });
+                            // Wrap switched: the same line stays at the top (review fix).
+                            let before = wrapped.borrow().clone();
+                            let mut scroll = laid.scroll;
+                            if before.is_some() != wrap.is_some() {
+                                let lh = f32::from(m.line_height).max(1.0);
+                                let top = (f32::from(scroll.y) / lh).floor().max(0.0) as usize;
+                                let row = rescroll_row(top, before.as_ref(), wrap.as_ref());
+                                scroll = point(px(0.0), m.line_height * row as f32);
+                                let mode = laid.mode;
+                                keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = scroll);
+                            }
+                            *wrapped.borrow_mut() = wrap.clone();
+                            let (rows, widest) = match &wrap {
+                                Some(w) => (w.rows.len(), 0),
+                                None => (count, laid.doc.widest),
+                            };
+                            let g = Geom::of(bounds, &m, rows, gutter, widest, scroll);
                             geom.set(Some(g));
                             // A new version (or mode) drawn: the scroll as kept in it is the
                             // scroll (after a shrink, the view doesn't jump back down when the
@@ -3023,11 +3296,11 @@ impl FileTab {
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = kept);
                             }
                             let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                            (m, g, hitbox)
+                            (m, g, hitbox, wrap)
                         },
-                        move |_, (m, g, hitbox), window, cx| {
+                        move |_, (m, g, hitbox, wrap), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-                            paint_body(&frame, &g, &m, window, cx);
+                            paint_body(&frame, &g, &m, wrap.as_ref(), window, cx);
                             // A drag keeps going outside the text; registered for this frame.
                             window.on_mouse_event({
                                 let view = view.clone();
@@ -3054,6 +3327,16 @@ impl FileTab {
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
 impl FileTab {
+    /// The lines of the text shown.
+    pub fn line_count(&self) -> usize {
+        self.shown_doc().map_or(0, |d| d.lines.len())
+    }
+
+    /// The screen rows as last drawn with Wrap on (M11x part 2); none with it off.
+    pub fn wrapped_rows(&self) -> Option<usize> {
+        self.wrapped.borrow().as_ref().map(|w| w.rows.len())
+    }
+
     /// "loading", "text", "plain", "refuse" or "missing".
     pub fn state_name(&self) -> &'static str {
         match self.state {
@@ -3200,7 +3483,13 @@ impl FileTab {
             Reveal::Change(change) => reveal_row(&d.rows, change).or_else(|| first_change(&d.rows)),
         };
         let m = CellMetrics::measure(cx.global::<Appearance>(), window);
-        let rows_up = row.unwrap_or(0).saturating_sub(REVEAL_ABOVE);
+        let mut rows_up = row.unwrap_or(0).saturating_sub(REVEAL_ABOVE);
+        // Wrap on (M11x part 2): that line's first screen row, the diff wrapped at the width
+        // last drawn (its own gutter may move it a column; the next frame wraps it exactly).
+        let columns = self.wrapped.borrow().as_ref().map(|w| w.columns);
+        if let (Some(columns), true) = (columns, cx.global::<Appearance>().file_wrap) {
+            rows_up = Wrapped::of(&d.doc, FileMode::Diff, columns).first_row(rows_up);
+        }
         self.diff_scroll = point(px(0.0), m.line_height * rows_up as f32);
     }
 }
@@ -3425,6 +3714,93 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M11x part 2: each line's width in cells is kept from reading the file (a rewrap on a
+    /// resize then costs a pass over the lines, not over the text).
+    #[test]
+    fn a_doc_keeps_each_line_s_width() {
+        let doc = Doc::new("ab\n\tx\n\nhé".to_string(), 0);
+        assert_eq!(*doc.widths, [2, 5, 0, 2]);
+    }
+
+    /// M11x part 2: each screen row as (line, its first cell); wrapped at `columns`, else one
+    /// row a line.
+    #[test]
+    fn wrapped_lines_take_as_many_rows_as_they_need() {
+        assert_eq!(
+            visual_rows(&[3, 10, 0], 4, true),
+            [(0, 0), (1, 0), (1, 4), (1, 8), (2, 0)]
+        );
+        assert_eq!(visual_rows(&[3, 10], 4, false), [(0, 0), (1, 0)]);
+        // Exactly full: no empty row after it.
+        assert_eq!(visual_rows(&[8], 4, true), [(0, 0), (0, 4)]);
+        // No room at all is one column.
+        assert_eq!(visual_rows(&[2], 0, true), [(0, 0), (0, 1)]);
+        // Each line's first row, and after the last line the row count.
+        let rows = visual_rows(&[3, 10, 0], 4, true);
+        assert_eq!(first_rows(&rows, 3), [0, 1, 4, 5]);
+        assert_eq!(first_rows(&[(0, 0), (1, 0)], 2), [0, 1, 2]);
+    }
+
+    /// Review fixes (M11x part 2): a row's span is where its first character starts (a tab that
+    /// crosses the row's end moves whole to the next row), and a click lands in its own row.
+    #[test]
+    fn a_wrapped_row_is_drawn_and_hit_from_the_same_start() {
+        let doc = Doc::new("abc\tdef".to_string(), 0);
+        // Cells: a b c, the tab 3-6, d e f 7-9; five columns.
+        assert_eq!(wrapped_row(&doc, 0, 0, 5), (0, 3, 0));
+        assert_eq!(wrapped_row(&doc, 0, 5, 5), (3, 7, 3));
+        // On the second row, x is from the tab's cell: its left edge is the tab, 4 cells on is d.
+        assert_eq!(row_hit(&doc, 0, (3, 7, 3), true, 0.2), 3);
+        assert_eq!(row_hit(&doc, 0, (3, 7, 3), true, 4.4), 4);
+        // Right of a middle row's last character: that row's end, not into the next row.
+        let long = Doc::new("abcdefghij".to_string(), 0);
+        assert_eq!(row_hit(&long, 0, (0, 4, 0), false, 9.0), 4);
+        assert_eq!(row_hit(&long, 0, (8, 10, 8), true, 9.0), 10);
+    }
+
+    /// Review fix (M11x part 2): switching Wrap keeps the same line at the top.
+    #[test]
+    fn switching_wrap_keeps_the_top_line() {
+        let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
+        let w = Wrapped::of(&doc, FileMode::Plain, 4);
+        // Rows: a | bbbb bbbb bb | c.
+        assert_eq!(rescroll_row(4, Some(&w), None), 2);
+        assert_eq!(rescroll_row(2, None, Some(&w)), 4);
+        // Inside line 1's rows: line 1's first row.
+        assert_eq!(rescroll_row(2, Some(&w), None), 1);
+        assert_eq!(rescroll_row(1, None, Some(&w)), 1);
+    }
+
+    /// Review fix (M11x part 2): with Wrap on, a press finds a change bar by its rows, and a
+    /// deleted-lines ▸ within half a row of its edge.
+    #[test]
+    fn bars_are_hit_by_their_rows_when_wrapped() {
+        let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
+        let w = Wrapped::of(&doc, FileMode::Plain, 4);
+        let lh = 10.0;
+        let mut changes = Changes::default();
+        changes.by_line.insert(1, LineChange::Changed);
+        // Any of line 1's three rows (rows 1-3): line 2 (1-based), changed.
+        for y in [12.0, 25.0, 39.0] {
+            assert_eq!(
+                bar_at_rows(y, lh, &w, &changes),
+                Some((2, LineChange::Changed))
+            );
+        }
+        assert_eq!(bar_at_rows(5.0, lh, &w, &changes), None);
+        // Lines deleted after line 1 (the edge at row 4): within half a row of it, either side.
+        let mut deleted = Changes::default();
+        deleted.deleted.push(2);
+        for y in [36.0, 44.0] {
+            assert_eq!(
+                bar_at_rows(y, lh, &w, &deleted),
+                Some((2, LineChange::DeletedAfter))
+            );
+        }
+        assert_eq!(bar_at_rows(30.0, lh, &w, &deleted), None);
+        assert_eq!(bar_at_rows(-3.0, lh, &w, &deleted), None);
+    }
     use alacritty_terminal::vte::ansi::Rgb;
 
     #[test]

@@ -64,7 +64,8 @@ pub(crate) struct GraphState {
 impl Default for GraphState {
     fn default() -> Self {
         Self {
-            open: true,
+            // Closed until you open it (your call, M11x); its commits are read only then.
+            open: false,
             scope: Scope::Auto,
             limit: PAGE,
             commits: Vec::new(),
@@ -730,6 +731,12 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Your call (2026-11-12, "make "Graph" by default collapsed"): GRAPH starts closed.
+    #[test]
+    fn the_graph_starts_closed() {
+        assert!(!GraphState::default().open);
+    }
 
     fn row(lane: usize, into: &[usize], out: &[usize], through: &[usize]) -> Row {
         Row {
