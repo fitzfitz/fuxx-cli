@@ -3,7 +3,8 @@
 //! `~/Library/Application Support/fuxx/shell-integration/zsh/`, and the environment that has a
 //! login zsh read them first (`ZDOTDIR`, Ghostty's and Kitty's method). Your dotfiles are never
 //! touched: fuxx's `.zshenv` puts your `ZDOTDIR` back and sources your own `.zshenv`, and zsh then
-//! reads the rest of your files from your own folder as always.
+//! reads the rest of your files from your own folder as always. With a helper plugin on (M11z),
+//! fuxx's `.zprofile` and `.zshrc` read yours with your `ZDOTDIR`, then load `plugins.zsh`.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -17,8 +18,19 @@ pub const ZSHENV: &str = include_str!("../assets/shell-integration/zsh/.zshenv")
 /// The hooks, sourced by that `.zshenv` in an interactive shell.
 pub const INTEGRATION: &str = include_str!("../assets/shell-integration/zsh/fuxx-integration.zsh");
 
+/// With a helper plugin on (M11z): the `.zprofile` that reads yours with your `ZDOTDIR`.
+pub const ZPROFILE: &str = include_str!("../assets/shell-integration/zsh/.zprofile");
+/// With a helper plugin on: the `.zshrc` that puts your `ZDOTDIR` back, reads yours, then loads
+/// `plugins.zsh` (written beside it by `plugin_shell`).
+pub const ZSHRC: &str = include_str!("../assets/shell-integration/zsh/.zshrc");
+
 /// Each script, by its file name in `<dir>/zsh/`.
-const FILES: [(&str, &str); 2] = [(".zshenv", ZSHENV), ("fuxx-integration.zsh", INTEGRATION)];
+const FILES: [(&str, &str); 4] = [
+    (".zshenv", ZSHENV),
+    ("fuxx-integration.zsh", INTEGRATION),
+    (".zprofile", ZPROFILE),
+    (".zshrc", ZSHRC),
+];
 
 /// Set once by `setup` when the scripts are in place.
 static INSTALLED: OnceLock<PathBuf> = OnceLock::new();
@@ -83,11 +95,12 @@ pub fn setup() {
 }
 
 /// Whether the scripts in `dir` (`installed`) can be given to a new shell, checked at each
-/// spawn: `<dir>/zsh/.zshenv` is there (a stat), or, if it was deleted while fuxx runs,
-/// installing it again worked. Otherwise `ZDOTDIR` would point at a missing folder, and zsh
-/// would start without your own files.
+/// spawn: each is there (a stat), or, if one was deleted while fuxx runs, installing them again
+/// worked. Otherwise `ZDOTDIR` would point at a missing folder, or (with a helper plugin on) at
+/// one without fuxx's `.zshrc`, and zsh would start without your own files.
 pub fn usable(dir: &Path) -> bool {
-    if dir.join("zsh/.zshenv").is_file() {
+    let zsh = dir.join("zsh");
+    if FILES.iter().all(|(name, _)| zsh.join(name).is_file()) {
         return true;
     }
     match install(dir) {
@@ -108,16 +121,19 @@ pub fn installed() -> Option<&'static Path> {
     INSTALLED.get().map(PathBuf::as_path)
 }
 
-/// What a new shell's environment gets so zsh reads the integration: `ZDOTDIR=<dir>/zsh`, and
-/// `FUXX_ZSH_ZDOTDIR` with yours when fuxx's own environment has one. Nothing unless `shell`'s
-/// file name is exactly `zsh`, `enabled` (`command-blocks`) and the scripts are installed.
+/// What a new shell's environment gets so zsh reads the integration: `ZDOTDIR=<dir>/zsh`,
+/// `FUXX_ZSH_ZDOTDIR` with yours when fuxx's own environment has one, `FUXX_ZSH_MARKS=1` with
+/// `marks` (`command-blocks`) and `FUXX_ZSH_PLUGINS=1` with `plugins` (a helper plugin that runs
+/// code is on, M11z). Nothing unless `shell`'s file name is exactly `zsh`, the scripts are
+/// installed (`dir`) and `marks` or `plugins`.
 pub fn env_for(
     shell: &Path,
     user_zdotdir: Option<&OsStr>,
-    enabled: bool,
+    marks: bool,
+    plugins: bool,
     dir: Option<&Path>,
 ) -> Vec<(String, String)> {
-    let Some(dir) = dir.filter(|_| enabled) else {
+    let Some(dir) = dir.filter(|_| marks || plugins) else {
         return Vec::new();
     };
     if shell.file_name() != Some(OsStr::new("zsh")) {
@@ -130,25 +146,27 @@ pub fn env_for(
             yours.to_string_lossy().into_owned(),
         ));
     }
+    for (on, key) in [(marks, "FUXX_ZSH_MARKS"), (plugins, "FUXX_ZSH_PLUGINS")] {
+        if on {
+            env.push((key.to_string(), "1".to_string()));
+        }
+    }
     env
 }
 
 /// For your login shell: add to `env` what `env_for` gives for `shell` (fuxx's `$SHELL`) with
-/// `user_zdotdir` (fuxx's own `ZDOTDIR`) and `integration` (the installed folder while
-/// `command-blocks` is on). When it injects and you have no `ZDOTDIR`, a `FUXX_ZSH_ZDOTDIR`
-/// inherited from elsewhere is removed, or fuxx's `.zshenv` would set `ZDOTDIR` to it.
+/// `user_zdotdir` (fuxx's own `ZDOTDIR`), `marks`, `plugins` and `integration` (the installed
+/// folder). When it injects and you have no `ZDOTDIR`, a `FUXX_ZSH_ZDOTDIR` inherited from
+/// elsewhere is removed, or fuxx's `.zshenv` would set `ZDOTDIR` to it.
 pub fn add_login_shell_env(
     env: &mut crate::pty::ShellEnv,
     shell: &OsStr,
     user_zdotdir: Option<&OsStr>,
+    marks: bool,
+    plugins: bool,
     integration: Option<&Path>,
 ) {
-    let added = env_for(
-        Path::new(shell),
-        user_zdotdir,
-        integration.is_some(),
-        integration,
-    );
+    let added = env_for(Path::new(shell), user_zdotdir, marks, plugins, integration);
     if added.is_empty() {
         return;
     }
@@ -158,16 +176,129 @@ pub fn add_login_shell_env(
     env.set.extend(added);
 }
 
+/// A real zsh in a terminal, for the tests here and elsewhere (M11z's end-to-end plugin test).
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_zsh {
+    use super::env_for;
     use crate::blocks::{Block, Outcome};
-    use crate::shell_marks::percent_decode;
     use crate::terminal::{TermDims, TermEvent, TerminalCore};
     use crate::theme::Theme;
     use futures::channel::mpsc::{UnboundedReceiver, unbounded};
     use portable_pty::CommandBuilder;
+    use std::path::Path;
     use std::time::{Duration, Instant};
+
+    /// Poll `f` until it holds or 10 s pass.
+    pub(crate) fn until(mut f: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// `/bin/zsh -il` in a terminal: `spawn_as` with `-il`.
+    pub(crate) fn spawn(
+        home: &Path,
+        user_zdotdir: Option<&Path>,
+        dir: &Path,
+        marks: bool,
+        plugins: bool,
+    ) -> (TerminalCore, UnboundedReceiver<TermEvent>) {
+        spawn_as("-il", home, user_zdotdir, dir, marks, plugins)
+    }
+
+    /// `/bin/zsh <flags>` in a terminal, `HOME` = `home`, with only the environment a fuxx
+    /// terminal would add (`env_for` with `marks` and `plugins`, the scripts in `dir`) on a small
+    /// fixed one, and `ZDOTDIR` = `user_zdotdir` if given.
+    pub(crate) fn spawn_as(
+        flags: &str,
+        home: &Path,
+        user_zdotdir: Option<&Path>,
+        dir: &Path,
+        marks: bool,
+        plugins: bool,
+    ) -> (TerminalCore, UnboundedReceiver<TermEvent>) {
+        let zd = user_zdotdir.map(Path::as_os_str);
+        let added = env_for(Path::new("/bin/zsh"), zd, marks, plugins, Some(dir));
+        spawn_with(flags, home, user_zdotdir, &added)
+    }
+
+    /// `/bin/zsh <flags>` in a terminal as `spawn_as` starts it, with `added` in place of what
+    /// `env_for` gives.
+    pub(crate) fn spawn_with(
+        flags: &str,
+        home: &Path,
+        user_zdotdir: Option<&Path>,
+        added: &[(String, String)],
+    ) -> (TerminalCore, UnboundedReceiver<TermEvent>) {
+        let mut cmd = CommandBuilder::new("/bin/zsh");
+        cmd.arg(flags);
+        cmd.env_clear();
+        cmd.env("HOME", home);
+        cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("LANG", "en_US.UTF-8");
+        if let Some(zd) = user_zdotdir {
+            cmd.env("ZDOTDIR", zd);
+        }
+        for (key, value) in added {
+            cmd.env(key, value);
+        }
+        cmd.cwd(home);
+        let (tx, rx) = unbounded();
+        let core = TerminalCore::spawn(cmd, TermDims { cols: 80, rows: 30 }, tx, Theme::default())
+            .expect("spawn zsh");
+        (core, rx)
+    }
+
+    pub(crate) fn screen_text(core: &TerminalCore) -> String {
+        core.snapshot()
+            .lines
+            .iter()
+            .map(|l| l.iter().map(|c| c.ch).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Type `line` and Return at the ready prompt, then wait for its block to finish and the
+    /// next prompt to be ready. The blocks then. Needs the marks (`command-blocks` on).
+    pub(crate) fn run(core: &TerminalCore, line: &str) -> Vec<Block> {
+        assert!(
+            until(|| core.prompt_ready() && core.cursor_at_input_start()),
+            "no ready prompt before {line:?}; screen:\n{}",
+            screen_text(core)
+        );
+        let before = core.blocks().len();
+        core.input(format!("{line}\r").as_bytes());
+        let done = until(|| {
+            let blocks = core.blocks();
+            blocks.len() == before + 1
+                && blocks.last().is_some_and(|b| b.outcome != Outcome::Running)
+                && core.prompt_ready()
+        });
+        assert!(
+            done,
+            "{line:?} didn't finish as a block; blocks {:?}; screen:\n{}",
+            core.blocks(),
+            screen_text(core)
+        );
+        core.blocks()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_zsh::{self, run, screen_text, until};
+    use super::*;
+    use crate::blocks::{Block, Outcome};
+    use crate::shell_marks::percent_decode;
+    use crate::terminal::{TermEvent, TerminalCore};
+    use futures::channel::mpsc::UnboundedReceiver;
+    use std::time::Duration;
 
     fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs
@@ -180,20 +311,55 @@ mod tests {
     fn env_for_zsh_only() {
         let i = Some(Path::new("/i"));
         let zsh = Path::new("/bin/zsh");
-        assert_eq!(env_for(zsh, None, true, i), kv(&[("ZDOTDIR", "/i/zsh")]));
+        let marks = ("FUXX_ZSH_MARKS", "1");
         assert_eq!(
-            env_for(zsh, Some(OsStr::new("/u/zd")), true, i),
-            kv(&[("ZDOTDIR", "/i/zsh"), ("FUXX_ZSH_ZDOTDIR", "/u/zd")])
+            env_for(zsh, None, true, false, i),
+            kv(&[("ZDOTDIR", "/i/zsh"), marks])
         );
         assert_eq!(
-            env_for(Path::new("/opt/homebrew/bin/zsh"), None, true, i),
-            kv(&[("ZDOTDIR", "/i/zsh")])
+            env_for(zsh, Some(OsStr::new("/u/zd")), true, false, i),
+            kv(&[("ZDOTDIR", "/i/zsh"), ("FUXX_ZSH_ZDOTDIR", "/u/zd"), marks])
+        );
+        assert_eq!(
+            env_for(Path::new("/opt/homebrew/bin/zsh"), None, true, false, i),
+            kv(&[("ZDOTDIR", "/i/zsh"), marks])
         );
         for other in ["/bin/bash", "/usr/local/bin/fish", "/bin/sh", "/bin/zsh5"] {
-            assert_eq!(env_for(Path::new(other), None, true, i), [], "{other}");
+            assert_eq!(
+                env_for(Path::new(other), None, true, true, i),
+                [],
+                "{other}"
+            );
         }
-        assert_eq!(env_for(zsh, Some(OsStr::new("/u/zd")), false, i), []);
-        assert_eq!(env_for(zsh, Some(OsStr::new("/u/zd")), true, None), []);
+        assert_eq!(env_for(zsh, Some(OsStr::new("/u/zd")), false, false, i), []);
+        assert_eq!(
+            env_for(zsh, Some(OsStr::new("/u/zd")), true, true, None),
+            []
+        );
+    }
+
+    #[test]
+    fn env_for_flags() {
+        let i = Some(Path::new("/i"));
+        let zsh = Path::new("/bin/zsh");
+        let zd = Some(OsStr::new("/u/zd"));
+        let base = [("ZDOTDIR", "/i/zsh"), ("FUXX_ZSH_ZDOTDIR", "/u/zd")];
+        let marks = ("FUXX_ZSH_MARKS", "1");
+        let plugins = ("FUXX_ZSH_PLUGINS", "1");
+        assert_eq!(env_for(zsh, zd, false, false, i), []);
+        assert_eq!(
+            env_for(zsh, zd, true, false, i),
+            kv(&[base[0], base[1], marks])
+        );
+        assert_eq!(
+            env_for(zsh, zd, false, true, i),
+            kv(&[base[0], base[1], plugins])
+        );
+        assert_eq!(
+            env_for(zsh, zd, true, true, i),
+            kv(&[base[0], base[1], marks, plugins])
+        );
+        assert_eq!(env_for(zsh, None, false, true, i), kv(&[base[0], plugins]));
     }
 
     /// A fresh, empty folder under the system's temp folder, removed when dropped.
@@ -230,7 +396,9 @@ mod tests {
         let read = |name: &str| std::fs::read_to_string(dir.join("zsh").join(name)).unwrap();
         assert_eq!(read(".zshenv"), ZSHENV);
         assert_eq!(read("fuxx-integration.zsh"), INTEGRATION);
-        for name in [".zshenv", "fuxx-integration.zsh"] {
+        assert_eq!(read(".zprofile"), ZPROFILE);
+        assert_eq!(read(".zshrc"), ZSHRC);
+        for name in [".zshenv", "fuxx-integration.zsh", ".zprofile", ".zshrc"] {
             let mode = std::fs::metadata(dir.join("zsh").join(name))
                 .unwrap()
                 .permissions()
@@ -250,7 +418,10 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, [".zshenv", "fuxx-integration.zsh"]);
+        assert_eq!(
+            names,
+            [".zprofile", ".zshenv", ".zshrc", "fuxx-integration.zsh"]
+        );
     }
 
     #[test]
@@ -269,6 +440,13 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("zsh/fuxx-integration.zsh")).unwrap(),
             INTEGRATION
+        );
+        // Only fuxx's .zshrc gone: in plugin mode zsh would skip yours, so it is written again.
+        std::fs::remove_file(dir.join("zsh/.zshrc")).unwrap();
+        assert!(usable(&dir));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zsh/.zshrc")).unwrap(),
+            ZSHRC
         );
         // Gone and can't be written again (its parent is a file): not usable, no ZDOTDIR.
         let file = t.write("a-file", "x");
@@ -586,78 +764,14 @@ mod tests {
 
     // --- A real zsh in a terminal ---
 
-    /// Poll `f` until it holds or 10 s pass.
-    fn until(mut f: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if f() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        false
-    }
-
-    /// `/bin/zsh -il` in a terminal, `HOME` = `home`, with only the environment a fuxx terminal
-    /// would add (`env_for`) on a small fixed one, and `ZDOTDIR` = `user_zdotdir` if given.
+    /// `/bin/zsh -il` as a fuxx terminal starts it while `command-blocks` is on and no helper
+    /// plugin is (M11l).
     fn spawn_zsh(
         home: &Path,
         user_zdotdir: Option<&Path>,
         dir: &Path,
     ) -> (TerminalCore, UnboundedReceiver<TermEvent>) {
-        let mut cmd = CommandBuilder::new("/bin/zsh");
-        cmd.arg("-il");
-        cmd.env_clear();
-        cmd.env("HOME", home);
-        cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("LANG", "en_US.UTF-8");
-        if let Some(zd) = user_zdotdir {
-            cmd.env("ZDOTDIR", zd);
-        }
-        let zd = user_zdotdir.map(Path::as_os_str);
-        for (key, value) in env_for(Path::new("/bin/zsh"), zd, true, Some(dir)) {
-            cmd.env(key, value);
-        }
-        cmd.cwd(home);
-        let (tx, rx) = unbounded();
-        let core = TerminalCore::spawn(cmd, TermDims { cols: 80, rows: 30 }, tx, Theme::default())
-            .expect("spawn zsh");
-        (core, rx)
-    }
-
-    fn screen_text(core: &TerminalCore) -> String {
-        core.snapshot()
-            .lines
-            .iter()
-            .map(|l| l.iter().map(|c| c.ch).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Type `line` and Return at the ready prompt, then wait for its block to finish and the
-    /// next prompt to be ready. The blocks then.
-    fn run(core: &TerminalCore, line: &str) -> Vec<Block> {
-        assert!(
-            until(|| core.prompt_ready() && core.cursor_at_input_start()),
-            "no ready prompt before {line:?}; screen:\n{}",
-            screen_text(core)
-        );
-        let before = core.blocks().len();
-        core.input(format!("{line}\r").as_bytes());
-        let done = until(|| {
-            let blocks = core.blocks();
-            blocks.len() == before + 1
-                && blocks.last().is_some_and(|b| b.outcome != Outcome::Running)
-                && core.prompt_ready()
-        });
-        assert!(
-            done,
-            "{line:?} didn't finish as a block; blocks {:?}; screen:\n{}",
-            core.blocks(),
-            screen_text(core)
-        );
-        core.blocks()
+        test_zsh::spawn(home, user_zdotdir, dir, true, false)
     }
 
     fn outcomes(blocks: &[Block]) -> Vec<Outcome> {
@@ -765,6 +879,387 @@ mod tests {
             core.block_output(&blocks[1].id),
             Some(format!("env:profile:rc:login\n[{}][unset]", zd3.display()))
         );
+    }
+
+    // --- Plugin mode (M11z): fuxx's .zprofile and .zshrc around yours ---
+
+    /// The last block's output.
+    fn last_output(core: &TerminalCore, blocks: &[Block]) -> Option<String> {
+        core.block_output(&blocks.last().unwrap().id)
+    }
+
+    /// What `HISTFILE` is without fuxx: macOS's `/etc/zshrc` sets it from your `ZDOTDIR` (or
+    /// `HOME`), read while fuxx's folder is `ZDOTDIR` in plugin mode.
+    fn histfile(yours: &Path) -> String {
+        let etc = std::fs::read_to_string("/etc/zshrc").unwrap_or_default();
+        if etc.contains("HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history") {
+            format!("{}/.zsh_history", yours.display())
+        } else {
+            String::new()
+        }
+    }
+
+    /// fuxx's helpers left in the shell, `HISTFILE`, and the flags a child would get.
+    const CLEAN: &str = "print -r -- \"[${(k)parameters[(I)(_fuxx_zdotdir*|_fuxx_file)]}][$HISTFILE][$T_PM]\"; \
+         /bin/sh -c 'echo \"[${FUXX_ZSH_MARKS-unset}][${FUXX_ZSH_PLUGINS-unset}]\"'";
+
+    #[test]
+    fn plugin_mode_runs_your_files_once_in_order() {
+        let t = TempDir::new("plugin-order");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        // plugins.zsh only marks that it was read (`T_PM`), and adds nothing to the log.
+        t.write("si/zsh/plugins.zsh", "# fuxx plugins\nT_PM=1\n");
+        let clean = |core: &TerminalCore, yours: &Path| {
+            let blocks = run(core, CLEAN);
+            assert_eq!(
+                last_output(core, &blocks),
+                Some(format!("[][{}][1]\n[unset][unset]", histfile(yours)))
+            );
+        };
+
+        // No ZDOTDIR of yours: your files in HOME, and ZDOTDIR unset inside.
+        let home = t.0.join("home");
+        startup_files(&t, "home");
+        let (core, _rx) = test_zsh::spawn(&home, None, &dir, true, true);
+        let blocks = run(&core, CHECK);
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("[][1][1][unset]")
+        );
+        let blocks = run(&core, ORDER_AND_CHILD);
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("env:profile:rc:login\n[unset][unset]")
+        );
+        clean(&core, &home);
+        drop(core);
+
+        // Your own ZDOTDIR: your files there, and ZDOTDIR yours inside and in children.
+        let home2 = t.0.join("home2");
+        std::fs::create_dir_all(&home2).unwrap();
+        startup_files(&t, "zd");
+        let zd = t.0.join("zd");
+        let (core, _rx) = test_zsh::spawn(&home2, Some(&zd), &dir, true, true);
+        let blocks = run(&core, CHECK);
+        assert_eq!(
+            last_output(&core, &blocks),
+            Some(format!("[{}][1][1][unset]", zd.display()))
+        );
+        let blocks = run(&core, ORDER_AND_CHILD);
+        assert_eq!(
+            last_output(&core, &blocks),
+            Some(format!("env:profile:rc:login\n[{}][unset]", zd.display()))
+        );
+        clean(&core, &zd);
+        drop(core);
+
+        // Your .zshenv sets ZDOTDIR itself: the rest is read from that folder, not HOME.
+        let home3 = t.0.join("home3");
+        let zd3 = home3.join("zd3");
+        t.write(
+            "home3/.zshenv",
+            &format!("export T_ENV=1 ZDOTDIR=\"$HOME/zd3\"\n{LOG}env\"\n"),
+        );
+        for name in [".zprofile", ".zshrc", ".zlogin"] {
+            t.write(&format!("home3/{name}"), &format!("{LOG}:wrong-{name}\"\n"));
+        }
+        t.write("home3/zd3/.zprofile", &format!("{LOG}:profile\"\n"));
+        t.write(
+            "home3/zd3/.zshrc",
+            &format!("PS1='%# '; export T_RC=1\n{LOG}:rc\"\n"),
+        );
+        t.write("home3/zd3/.zlogin", &format!("{LOG}:login\"\n"));
+        let (core, _rx) = test_zsh::spawn(&home3, None, &dir, true, true);
+        let blocks = run(&core, CHECK);
+        assert_eq!(
+            last_output(&core, &blocks),
+            Some(format!("[{}][1][1][unset]", zd3.display()))
+        );
+        let blocks = run(&core, ORDER_AND_CHILD);
+        assert_eq!(
+            last_output(&core, &blocks),
+            Some(format!("env:profile:rc:login\n[{}][unset]", zd3.display()))
+        );
+        clean(&core, &zd3);
+        drop(core);
+
+        // Not a login shell (`zsh -i`): your .zshenv and .zshrc only.
+        let (core, _rx) = test_zsh::spawn_as("-i", &home, None, &dir, true, true);
+        let blocks = run(&core, ORDER_AND_CHILD);
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("env:rc\n[unset][unset]")
+        );
+        clean(&core, &home);
+    }
+
+    #[test]
+    fn your_files_see_your_zdotdir() {
+        let t = TempDir::new("plugin-see");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        let see = "T_SEEN=\"${T_SEEN}[${ZDOTDIR-unset}]\"\n";
+        // A plugin sees yours too.
+        t.write("si/zsh/plugins.zsh", see);
+        let zd = t.0.join("zd");
+        for (folder, yours) in [("home", None), ("zd", Some(zd.as_path()))] {
+            t.write(&format!("{folder}/.zprofile"), see);
+            t.write(&format!("{folder}/.zshrc"), &format!("PS1='%# '\n{see}"));
+            t.write(&format!("{folder}/.zlogin"), see);
+            let home = t.0.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let (core, _rx) = test_zsh::spawn(&home, yours, &dir, true, true);
+            let blocks = run(&core, "print -r -- $T_SEEN");
+            let one = yours.map_or("unset".to_string(), |zd| zd.display().to_string());
+            // .zprofile, .zshrc, the plugin, .zlogin.
+            assert_eq!(
+                last_output(&core, &blocks),
+                Some(format!("[{one}]").repeat(4))
+            );
+            drop(core);
+        }
+
+        // Your .zshenv sets ZDOTDIR empty: set, not unset, so zsh looks in `/` (as without
+        // fuxx) and reads none of the files in HOME.
+        t.write("home4/.zshenv", &format!("ZDOTDIR=\n{LOG}env\"\n"));
+        for name in [".zprofile", ".zshrc", ".zlogin"] {
+            t.write(&format!("home4/{name}"), &format!("{LOG}:wrong-{name}\"\n"));
+        }
+        let (core, _rx) = test_zsh::spawn(&t.0.join("home4"), None, &dir, true, true);
+        let blocks = run(&core, "print -r -- \"[${+ZDOTDIR}][$ZDOTDIR][$T_LOG]\"");
+        assert_eq!(last_output(&core, &blocks).as_deref(), Some("[1][][env]"));
+    }
+
+    #[test]
+    fn your_nounset_doesnt_stop_plugin_mode() {
+        // `setopt nounset` in your .zshenv: fuxx's files read nothing unset without a default.
+        let t = TempDir::new("plugin-nounset");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("si/zsh/plugins.zsh", "T_LOG=\"${T_LOG}:plugin\"\n");
+        t.write("home/.zshenv", "setopt nounset\nT_LOG=env\n");
+        t.write("home/.zprofile", "T_LOG=\"${T_LOG}:profile\"\n");
+        t.write("home/.zshrc", "PS1='%# '\nT_LOG=\"${T_LOG}:rc\"\n");
+        t.write("home/.zlogin", "T_LOG=\"${T_LOG}:login\"\n");
+        let (core, _rx) = test_zsh::spawn(&t.0.join("home"), None, &dir, false, true);
+        core.input(b"print -r -- \"got-$T_LOG-${ZDOTDIR-unset}-$((6*7))\"\r");
+        assert!(
+            until(|| screen_text(&core).contains("got-env:profile:rc:plugin:login-unset-42")),
+            "{}",
+            screen_text(&core)
+        );
+    }
+
+    #[test]
+    fn plugins_load_after_your_zshrc_at_top_level() {
+        let t = TempDir::new("plugin-top");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        let plugin = t.write(
+            "plugin/a.zsh",
+            &format!("typeset X=1; print -r -- \"plugin:$T_RC\"\n{LOG}:plugin\"\n"),
+        );
+        t.write(
+            "si/zsh/plugins.zsh",
+            &format!(
+                "builtin source -- {}\n",
+                shell_quote(&plugin.display().to_string())
+            ),
+        );
+        startup_files(&t, "home");
+        let (core, _rx) = test_zsh::spawn(&t.0.join("home"), None, &dir, true, true);
+        assert!(
+            until(|| screen_text(&core).contains("plugin:1")),
+            "{}",
+            screen_text(&core)
+        );
+        let blocks = run(&core, "print -r -- \"[$X][${(t)X}][$T_LOG]\"");
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("[1][scalar][env:profile:rc:plugin:login]")
+        );
+    }
+
+    #[test]
+    fn a_broken_plugin_doesnt_stop_the_prompt() {
+        let t = TempDir::new("plugin-broken");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        let bad = t.write("plugin/bad.zsh", "echo one\nbroken() {\n");
+        let good = t.write("plugin/good.zsh", "Y=2\n");
+        t.write(
+            "si/zsh/plugins.zsh",
+            &format!(
+                "builtin source -- {}\nbuiltin source -- {}\n",
+                shell_quote(&bad.display().to_string()),
+                shell_quote(&good.display().to_string())
+            ),
+        );
+        t.write("home/.zshrc", "PS1='%# '\n");
+        let (core, _rx) = test_zsh::spawn(&t.0.join("home"), None, &dir, true, true);
+        run(&core, "false");
+        let blocks = run(&core, "print -r -- \"[$Y]\"");
+        assert_eq!(outcomes(&blocks), [Outcome::Failed(1), Outcome::Ok]);
+        assert_eq!(last_output(&core, &blocks).as_deref(), Some("[2]"));
+    }
+
+    #[test]
+    fn a_broken_zshrc_still_loads_plugins() {
+        let t = TempDir::new("plugin-broken-rc");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        let good = t.write("plugin/good.zsh", "Y=2\n");
+        t.write(
+            "si/zsh/plugins.zsh",
+            &format!(
+                "builtin source -- {}\n",
+                shell_quote(&good.display().to_string())
+            ),
+        );
+        startup_files(&t, "home");
+        // An error that stops the rest of your .zshrc.
+        t.write(
+            "home/.zshrc",
+            &format!("PS1='%# '\n{LOG}:rc\"\n: ${{T_NOPE?broken}}\n{LOG}:never\"\n"),
+        );
+        let (core, _rx) = test_zsh::spawn(&t.0.join("home"), None, &dir, true, true);
+        let blocks = run(&core, "print -r -- \"[$Y][$T_LOG][${ZDOTDIR-unset}]\"");
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("[2][env:profile:rc:login][unset]")
+        );
+    }
+
+    #[test]
+    fn plugins_without_command_blocks_send_no_marks() {
+        let t = TempDir::new("plugin-no-marks");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        let plugin = t.write("plugin/z.zsh", "Z=3\n");
+        t.write(
+            "si/zsh/plugins.zsh",
+            &format!(
+                "builtin source -- {}\n",
+                shell_quote(&plugin.display().to_string())
+            ),
+        );
+        t.write("home/.zshrc", "PS1='%# '\n");
+        let (core, _rx) = test_zsh::spawn(&t.0.join("home"), None, &dir, false, true);
+        // The plugin's variable, fuxx's functions (none: no marks), and a sum, so the typed
+        // line itself can't match.
+        core.input(b"print -r -- \"got-$Z-[${(k)functions[(I)_fuxx*]}]-$((6*7))\"\r");
+        assert!(
+            until(|| screen_text(&core).contains("got-3-[]-42")),
+            "{}",
+            screen_text(&core)
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(core.blocks().is_empty(), "{:?}", core.blocks());
+        assert!(!core.prompt_ready());
+    }
+
+    #[test]
+    fn no_plugins_is_m11l_exactly() {
+        let t = TempDir::new("plugin-none");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        // Markers in fuxx's own .zprofile, .zshrc and plugins.zsh: set only if zsh read them.
+        let mark = |name: &str, what: &str| {
+            let path = dir.join("zsh").join(name);
+            let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+            text.push_str(&format!("\nT_FUXX=\"${{T_FUXX}}:{what}\"\n"));
+            std::fs::write(&path, text).unwrap();
+        };
+        mark(".zprofile", "profile");
+        mark(".zshrc", "rc");
+        mark("plugins.zsh", "plugins");
+        startup_files(&t, "home");
+        let home = t.0.join("home");
+        const FUXX: &str = "print -r -- \"[${T_FUXX-unset}]\"";
+
+        let (core, _rx) = test_zsh::spawn(&home, None, &dir, true, false);
+        let blocks = run(&core, CHECK);
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("[][1][1][unset]")
+        );
+        let blocks = run(&core, ORDER_AND_CHILD);
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("env:profile:rc:login\n[unset][unset]")
+        );
+        let blocks = run(&core, FUXX);
+        assert_eq!(last_output(&core, &blocks).as_deref(), Some("[unset]"));
+        drop(core);
+
+        // With plugins on, the same markers show (the check above can fail).
+        let (core, _rx) = test_zsh::spawn(&home, None, &dir, true, true);
+        let blocks = run(&core, FUXX);
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("[:profile:plugins:rc]")
+        );
+    }
+
+    #[test]
+    fn an_older_fuxxs_environment_still_gets_marks() {
+        // An older fuxx (M11l) sharing this folder sets only ZDOTDIR: neither flag. env_for
+        // never injects without one, so that means command blocks, as it did then.
+        let t = TempDir::new("plugin-older");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("si/zsh/plugins.zsh", "T_PM=1\n");
+        startup_files(&t, "home");
+        let zdotdir = ("ZDOTDIR".to_string(), dir.join("zsh").display().to_string());
+        let (core, _rx) = test_zsh::spawn_with("-il", &t.0.join("home"), None, &[zdotdir]);
+        let blocks = run(&core, ORDER_AND_CHILD);
+        assert_eq!(
+            last_output(&core, &blocks).as_deref(),
+            Some("env:profile:rc:login\n[unset][unset]")
+        );
+        let blocks = run(&core, "print -r -- \"[${T_PM-unset}]\"");
+        assert_eq!(last_output(&core, &blocks).as_deref(), Some("[unset]"));
+    }
+
+    #[test]
+    fn a_non_interactive_zsh_ignores_plugin_mode() {
+        let t = TempDir::new("plugin-non-interactive");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        t.write("si/zsh/plugins.zsh", "print -r -- plugins-loaded\n");
+        startup_files(&t, "home");
+        startup_files(&t, "zd");
+        let home = t.0.join("home");
+        let zd = t.0.join("zd");
+        let script = "print -r -- \"[${ZDOTDIR-unset}][$T_LOG][${FUXX_ZSH_MARKS-unset}]\
+                      [${FUXX_ZSH_PLUGINS-unset}][${(k)parameters[(I)_fuxx_*]}]\"";
+        for (yours, flag, log) in [
+            (None, "-c", "env"),
+            (None, "-lc", "env:profile:login"),
+            (Some(&zd), "-c", "env"),
+            (Some(&zd), "-lc", "env:profile:login"),
+        ] {
+            let mut cmd = std::process::Command::new("/bin/zsh");
+            cmd.arg(flag).arg(script).env_clear();
+            cmd.env("HOME", &home)
+                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+            if let Some(zd) = yours {
+                cmd.env("ZDOTDIR", zd);
+            }
+            let zdo = yours.map(|zd| zd.as_os_str());
+            for (key, value) in env_for(Path::new("/bin/zsh"), zdo, true, true, Some(&dir)) {
+                cmd.env(key, value);
+            }
+            let out = cmd.output().unwrap();
+            let one = yours.map_or("unset".to_string(), |zd| zd.display().to_string());
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                format!("[{one}][{log}][unset][unset][]\n"),
+                "{flag} {yours:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 
     #[test]
@@ -1235,8 +1730,11 @@ fi
             remove: Vec::new(),
         };
         let i = Some(Path::new("/i"));
-        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), None, i);
-        assert_eq!(env.set, kv(&[("ZDOTDIR", "/i/zsh")]));
+        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), None, true, false, i);
+        assert_eq!(
+            env.set,
+            kv(&[("ZDOTDIR", "/i/zsh"), ("FUXX_ZSH_MARKS", "1")])
+        );
         assert_eq!(env.remove, ["FUXX_ZSH_ZDOTDIR"]);
         // With yours: set, not removed.
         let mut env = crate::pty::ShellEnv {
@@ -1244,10 +1742,21 @@ fi
             set: Vec::new(),
             remove: Vec::new(),
         };
-        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), Some(OsStr::new("/u")), i);
+        add_login_shell_env(
+            &mut env,
+            OsStr::new("/bin/zsh"),
+            Some(OsStr::new("/u")),
+            true,
+            false,
+            i,
+        );
         assert_eq!(
             env.set,
-            kv(&[("ZDOTDIR", "/i/zsh"), ("FUXX_ZSH_ZDOTDIR", "/u")])
+            kv(&[
+                ("ZDOTDIR", "/i/zsh"),
+                ("FUXX_ZSH_ZDOTDIR", "/u"),
+                ("FUXX_ZSH_MARKS", "1")
+            ])
         );
         assert!(env.remove.is_empty());
         // Not injected (bash, or off): nothing changes.
@@ -1256,8 +1765,9 @@ fi
             set: Vec::new(),
             remove: Vec::new(),
         };
-        add_login_shell_env(&mut env, OsStr::new("/bin/bash"), None, i);
-        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), None, None);
+        add_login_shell_env(&mut env, OsStr::new("/bin/bash"), None, true, true, i);
+        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), None, true, true, None);
+        add_login_shell_env(&mut env, OsStr::new("/bin/zsh"), None, false, false, i);
         assert!(env.set.is_empty() && env.remove.is_empty());
     }
 }
