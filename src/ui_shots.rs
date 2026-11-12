@@ -847,8 +847,9 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         cursor_follows_status: true,
         cursor_fun: Default::default(),
         command_blocks: true,
+        file_wrap: false,
         sound_links: Default::default(),
-        sound_on: [true, true],
+        sound_on: [true; crate::sounds::SoundKey::ALL.len()],
     }
 }
 
@@ -2459,6 +2460,17 @@ fn centre_of(
 }
 
 /// How many device pixels along the row at `y` points, between `x0` and `x1` points, are `c`.
+/// The resize line's colour over `canvas` (M11x, `panes::resize_line`): faint text at half
+/// strength.
+fn quiet_line(canvas: [u8; 3], ui: &crate::theme::UiColors) -> alacritty_terminal::vte::ansi::Rgb {
+    let half = |c: u8, t: u8| ((u16::from(c) + u16::from(t) + 1) / 2) as u8;
+    alacritty_terminal::vte::ansi::Rgb {
+        r: half(canvas[0], ui.text_faint.r),
+        g: half(canvas[1], ui.text_faint.g),
+        b: half(canvas[2], ui.text_faint.b),
+    }
+}
+
 fn count_along(
     shot: &Shot,
     dims: Size<Pixels>,
@@ -2566,7 +2578,11 @@ fn split_scenes() {
             let scale = shot.width as f32 / 960.0;
             let accent = count_along(&shot, dims, ui.accent, 450.0, x0, x1);
             if matches!(scene, "splits-hover" | "splits-drag") {
-                assert_eq!(accent, (2.0 * scale) as usize, "{n}: 2 px accent line");
+                // The quiet line (M11x: not the accent), 2 px.
+                let line = quiet_line(px_at((x0, 450.0)), &ui);
+                let quiet = count_along(&shot, dims, line, 450.0, x0, x1);
+                assert_eq!(quiet, (2.0 * scale) as usize, "{n}: 2 px quiet line");
+                assert_eq!(accent, 0, "{n}: the line isn't the accent");
             } else {
                 assert_eq!(accent, 0, "{n}: no accent in a quiet gap");
                 let p = px_at((at(ratio), 450.0));
@@ -2793,8 +2809,12 @@ fn card_split_scenes() {
             if scene == "cards-split-hover" {
                 let scale = shot.width as f32 / 960.0;
                 // In the gap only (the focused card's edge beside it is the accent too).
+                // The quiet line (M11x: not the accent), 2 pt.
+                let line = quiet_line(at(first_right + 1.0, 450.0), &ui);
+                let quiet = count_along(&shot, dims, line, 450.0, first_right, second_left);
+                assert_eq!(quiet, (2.0 * scale) as usize, "{n}: the 2 pt quiet line");
                 let accent = count_along(&shot, dims, ui.accent, 450.0, first_right, second_left);
-                assert_eq!(accent, (2.0 * scale) as usize, "{n}: the 2 pt accent line");
+                assert_eq!(accent, 0, "{n}: the line isn't the accent");
                 // In its middle: 2 pt of canvas either side.
                 for x in [first_right + 1.0, second_left - 1.0] {
                     let p = at(x, 450.0);
@@ -4575,6 +4595,42 @@ fn file_view_scenes() {
             assert!(inked(c), "{n}: a {what} in {c:?}");
         }
 
+        // Wrap on (M11x part 2): the long line takes more rows than there are lines, the wheel
+        // doesn't scroll sideways, and the Wrap button is filled.
+        let n = format!("file-tab-wrap-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(long_rs.clone(), slot.clone());
+        let act = {
+            let n = n.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                cx.update(|cx| cx.global_mut::<Appearance>().file_wrap = true);
+                frame(cx, window);
+                frame(cx, window);
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                cx.simulate_event(
+                    window,
+                    ScrollWheelEvent {
+                        position: g.bounds.center(),
+                        delta: ScrollDelta::Pixels(point(px(-5000.0), px(0.0))),
+                        modifiers: Modifiers::none(),
+                        touch_phase: TouchPhase::Moved,
+                    },
+                );
+                frame(cx, window);
+                let (scroll, rows, lines) = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.scroll(), t.wrapped_rows(), t.line_count())
+                });
+                assert_eq!(scroll.x, px(0.0), "{n}: no sideways scroll");
+                let rows = rows.expect("wrapped");
+                assert!(rows > lines, "{n}: {rows} rows for {lines} lines");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with("file-tab-wrap", slug, &theme, dims, build, act);
+        println!("ui-shots: {}", path.display());
+
         // A long line, scrolled sideways by the wheel: its end shows.
         let n = format!("file-tab-long-{slug}");
         let long_geom: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
@@ -5754,8 +5810,22 @@ fn right_sidebar_scenes() {
                     assert!(is_canvas(p, &ui), "{n}: the gap at {x}: {p:?}");
                 }
                 if scene == "right-sidebar-resize" {
+                    // A quiet line (M11x, your ask: the blue one was "ugly"): faint text at
+                    // half strength over the gap, never the accent.
+                    let gap = at(card_right - width - GAP + 1.0, y);
+                    let half = |g: u8, t: u8| ((u16::from(g) + u16::from(t)) / 2) as u8;
+                    let want = alacritty_terminal::vte::ansi::Rgb {
+                        r: half(gap[0], ui.text_faint.r),
+                        g: half(gap[1], ui.text_faint.g),
+                        b: half(gap[2], ui.text_faint.b),
+                    };
                     let p = at(card_right - width - GAP / 2.0, y);
-                    assert!(near(p, ui.accent), "{n}: the hovered gap's line: {p:?}");
+                    let close = p
+                        .iter()
+                        .zip([want.r, want.g, want.b])
+                        .all(|(a, b)| a.abs_diff(b) <= 6);
+                    assert!(close, "{n}: the hovered gap's line: {p:?}, want {want:?}");
+                    assert!(!near(p, ui.accent), "{n}: the line is the accent");
                 }
                 let p = at(card_right - width - GAP - 6.0, y);
                 assert!(near(p, theme.background), "{n}: the pane left of it: {p:?}");
@@ -6925,6 +6995,8 @@ fn changes_graph_scenes() {
                     move |ws| {
                         let changes = &mut ws.right_sidebar.changes;
                         changes.show_for_shots(root.clone(), true, Some(ChangeList::default()));
+                        // GRAPH starts closed (M11x, your call): these scenes open it.
+                        changes.graph.open = true;
                         changes.graph.apply(
                             "shot".into(),
                             commits.clone(),
@@ -7059,6 +7131,8 @@ fn changes_sticky_scenes() {
                 move |ws| {
                     let changes = &mut ws.right_sidebar.changes;
                     changes.show_for_shots(root.clone(), true, Some(ChangeList::default()));
+                    // GRAPH starts closed (M11x, your call): these scenes open it.
+                    changes.graph.open = true;
                     changes.graph.apply("shot".into(), commits.clone(), None);
                 },
             )
@@ -7422,6 +7496,7 @@ fn changes_bar_scenes() {
         upstream,
         has_origin,
         fetched: Some(SystemTime::now() - Duration::from_secs(180)),
+        base: None,
     };
     let branch = || Head::Branch("fix/hdw-approval-flow".into());
     let track = |ahead, behind| Upstream::Track { ahead, behind };
@@ -10459,7 +10534,7 @@ fn palette_keys_scene() {
 fn palette_run_scene() {
     use crate::palette_items::{Key, Line, Scope};
     use gpui::Focusable;
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
@@ -10534,11 +10609,6 @@ fn palette_run_scene() {
         let n = format!("palette-run-terminal-{slug}");
         let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
             let ws = slotted(&slot);
-            let preferences = Rc::new(Cell::new(0));
-            let count = preferences.clone();
-            cx.update(|cx| {
-                cx.on_action(move |_: &crate::OpenPreferences, _| count.set(count.get() + 1));
-            });
             // A first listing in (the scenes list nothing themselves): Enter doesn't wait.
             seed_palette_files(cx, &ws, &[]);
             open_palette_on(cx, window, &ws, Scope::All);
@@ -10566,7 +10636,7 @@ fn palette_run_scene() {
                 .expect("read");
             assert_eq!(renaming, Some(true), "{n}: the rename box, with the keys");
             assert!(palette_of(cx, &ws).is_none(), "{n}: the palette closed");
-            // Preferences…: the app's handler, once.
+            // Preferences…: the window opens its panel (M11x: the window handles ⌘, itself).
             open_palette_on(cx, window, &ws, Scope::All);
             cx.simulate_input(window, "preferences");
             settle(cx, window);
@@ -10576,7 +10646,8 @@ fn palette_run_scene() {
                 "{n}"
             );
             press_keys(cx, window, "enter");
-            assert_eq!(preferences.get(), 1, "{n}: Preferences… once");
+            let open = cx.read(|cx| ws.read(cx).preferences.is_some());
+            assert!(open, "{n}: Preferences… opened the panel");
             assert!(palette_of(cx, &ws).is_none(), "{n}: closed");
             slot.borrow_mut().take();
         };
@@ -10744,7 +10815,6 @@ fn palette_recent_scene() {
             // A file and a setting picked too: first, newest first.
             press_keys(cx, window, "escape");
             seed_palette_files(cx, &ws, &PALETTE_FILES);
-            let _preferences = shot_preferences_window(cx);
             let view = Key::File(PathBuf::from(PALETTE_ROOT).join("src/view.rs"));
             let glow = Key::Setting("Cursor breathing glow");
             for (query, key) in [("view", &view), ("glow", &glow)] {
@@ -10815,21 +10885,6 @@ fn seed_palette_files(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace
             cx.notify();
         })
     });
-}
-
-/// An off-screen Preferences window, as if it were open (`preferences::open_at` switches it
-/// instead of opening another).
-fn shot_preferences_window(
-    cx: &mut VisualTestAppContext,
-) -> gpui::WindowHandle<crate::preferences::PreferencesView> {
-    let handle = cx
-        .open_offscreen_window(size(px(700.0), px(480.0)), |window, cx| {
-            cx.new(|cx| crate::preferences::PreferencesView::new(window, cx))
-        })
-        .expect("open Preferences off screen");
-    cx.update(|cx| crate::preferences::set_window_for_shots(handle, cx));
-    cx.run_until_parked();
-    handle
 }
 
 /// The rightmost x (points) along the row's middle band where a pixel is colour `c`, between
@@ -11312,7 +11367,7 @@ fn palette_relist_scene() {
 /// slot in `text_dim`.
 ///
 /// Panics unless so, and (not shot) Enter closes the palette, makes Appearance the section
-/// Preferences opens on (`LastSection`) and switches the open Preferences window to it.
+/// Preferences opens on (`LastSection`) and opens the Preferences panel on it (M11x).
 fn palette_settings_scene() {
     use crate::palette_items::{Key, Scope, selectable};
     use crate::preferences::Section;
@@ -11332,7 +11387,14 @@ fn palette_settings_scene() {
             let n = format!("palette-settings-{slug}-{enter}");
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
-                let preferences = enter.then(|| shot_preferences_window(cx));
+                // Preferences open over the window (M11x): Enter switches its section.
+                if enter {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| ws.toggle_preferences(window, cx))
+                    })
+                    .expect("open Preferences");
+                    settle(cx, window);
+                }
                 if enter {
                     // A first listing in (the scenes list nothing themselves): Enter doesn't
                     // wait for one.
@@ -11355,17 +11417,24 @@ fn palette_settings_scene() {
                 assert_eq!(selected, Some(Key::Setting("Cursor breathing glow")), "{n}");
                 let palette = palette_of(cx, &ws).expect("open");
                 found.set(cx.read(|cx| palette.read(cx).row_bounds(first)));
-                if let Some(preferences) = preferences {
-                    let before = cx.read(crate::preferences::last_section_for_shots);
-                    assert_ne!(before, Some(Section::Appearance), "{n}: not yet");
+                if enter {
+                    let before = cx.read(crate::preferences::last_section);
+                    assert_ne!(before, Section::Appearance, "{n}: not yet");
                     press_keys(cx, window, "enter");
                     assert!(palette_of(cx, &ws).is_none(), "{n}: Enter closes it");
-                    let last = cx.read(crate::preferences::last_section_for_shots);
-                    assert_eq!(last, Some(Section::Appearance), "{n}: LastSection");
-                    let shown = cx
-                        .read(|cx| preferences.read(cx).map(|p| p.section_for_shots()))
-                        .expect("read Preferences");
-                    assert_eq!(shown, Section::Appearance, "{n}: the open window switched");
+                    let last = cx.read(crate::preferences::last_section);
+                    assert_eq!(last, Section::Appearance, "{n}: LastSection");
+                    let shown = cx.read(|cx| {
+                        ws.read(cx)
+                            .preferences
+                            .as_ref()
+                            .map(|p| p.read(cx).section())
+                    });
+                    assert_eq!(
+                        shown,
+                        Some(Section::Appearance),
+                        "{n}: the panel is open on Appearance"
+                    );
                 }
                 slot.borrow_mut().take();
             };
@@ -14374,6 +14443,7 @@ fn overlays() {
                         Overlay::Welcome => {
                             ws.open_welcome(crate::welcome_items::Origin::Help, window, cx)
                         }
+                        Overlay::Preferences => ws.toggle_preferences(window, cx),
                     }
                 })
             })
@@ -14777,187 +14847,298 @@ fn panel_scenes() {
     }
 }
 
-/// The Preferences window at its computed size, each section in both themes
-/// (`preferences-<section>-mocha`, `-latte`; General with the tips card dismissed, so its button
-/// is live, and `preferences-general-shown-mocha` with the card showing), and Appearance with Nord
-/// picked and ligatures off at 16 pt (`preferences-appearance-nord`) and 20 pt
-/// (`preferences-appearance-nord-20pt`), so the lists, switches and preview follow the choices and
-/// the preview's text fits its narrower screen.
-///
-/// Panics unless nothing is drawn in the bottom padding and Appearance's last control sits just
-/// above it (the window is the tallest section's height), the shown section's row in the list
-/// has the selection colour and the others don't, and Appearance's preview shows the theme's
-/// background and its magenta (the agent's box).
-fn preferences_scenes() {
-    use crate::preferences::{self, PreferencesView, SECTIONS_WIDTH, Section};
-
-    let dims = preferences::window_size();
-    // (slug, theme, section, tips card dismissed, font size changed to)
-    let mut shots: Vec<(String, &str, Section, bool, Option<f32>)> = Vec::new();
-    for section in Section::ALL {
-        let name = format!("{section:?}").to_lowercase();
-        for (slug, theme) in SHOT_THEMES {
-            shots.push((format!("{name}-{slug}"), theme, section, true, None));
-        }
-    }
-    let mocha = SHOT_THEMES[0].1;
-    shots.push((
-        "general-shown-mocha".into(),
-        mocha,
-        Section::General,
-        false,
-        None,
-    ));
-    for (slug, size) in [("appearance-nord", 16.0), ("appearance-nord-20pt", 20.0)] {
-        shots.push((slug.into(), "Nord", Section::Appearance, true, Some(size)));
-    }
-    for (slug, name, section, dismissed, changed) in shots {
-        let theme = shot_theme(name);
-        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
-            let mut a = shot_appearance(theme, cx);
-            a.theme_name = Some(name.to_string());
-            if let Some(size) = changed {
-                a.font_settings.size = size;
-                a.font_settings.features = vec![("calt".into(), 0)];
-                a.font = fonts::gpui_font(&a.font_settings, &cx.text_system().all_font_names());
-                a.font_size = size;
-            }
-            cx.set_global(a);
-            cx.new(|cx| PreferencesView::new(window, cx).shown_as(section, dismissed))
-                .into()
-        };
-        let path = shoot("preferences", &slug, &theme, dims, build);
-        let shot = render(&theme, dims, build);
-        let ui = theme.ui();
-        let scene = format!("preferences-{slug}");
-        let width = f32::from(dims.width);
-        let height = f32::from(dims.height);
-        let scale = shot.width as f32 / width;
-        // Every pixel along the row at `y`, from `x0` to `x1`, is the window's background.
-        let full = |y: f32, x0: f32, x1: f32| {
-            let pixels = (x1 * scale) as usize - (x0 * scale) as usize;
-            count_along(&shot, dims, ui.sidebar_background, y, x0, x1) == pixels
-        };
-        // The bottom padding is empty beside the section list's edge: the tallest section ends
-        // where the height says it does.
-        for y in [height - 14.0, height - 8.0, height - 3.0] {
-            assert!(
-                full(y, 0.0, SECTIONS_WIDTH - 1.0) && full(y, SECTIONS_WIDTH, width),
-                "{scene}: something is drawn at y = {y}"
-            );
-        }
-        // The shown section's row is filled with the selection colour; the others aren't.
-        for s in Section::ALL {
-            let (x, y, w, h) = preferences::section_row_area(s);
-            let filled = count_along(&shot, dims, ui.selection, y + h / 2.0, x, x + w);
-            if s == section {
-                assert!(
-                    filled as f32 > w * scale / 2.0,
-                    "{scene}: the {s:?} row isn't highlighted"
-                );
-            } else {
-                assert_eq!(filled, 0, "{scene}: the {s:?} row is highlighted");
-            }
-        }
-        if section == Section::Sessions {
-            command_blocks_row(&shot, &theme, &scene, build);
-        }
-        if section != Section::Appearance {
-            println!("ui-shots: {}", path.display());
-            continue;
-        }
-        // The last control is drawn just above the padding.
-        let (cx0, cy0, cw, ch) = preferences::last_control_area();
-        let inked = (0..ch as usize).any(|dy| !full(cy0 + dy as f32, cx0, cx0 + cw));
-        assert!(
-            inked,
-            "{scene}: the last control isn't where the layout puts it"
-        );
-        // The preview is painted in the theme: its background and the agent box's magenta.
-        let (px0, py0, pw, ph) = preferences::preview_area();
-        let rows = (py0 as usize + 4..(py0 + ph) as usize - 4).map(|y| y as f32);
-        let count = |c, y| count_along(&shot, dims, c, y, px0 + 4.0, px0 + pw - 4.0);
-        assert!(
-            count(theme.background, py0 + 4.0) > 0,
-            "{scene}: no terminal background in the preview"
-        );
-        assert!(
-            rows.into_iter().any(|y| count(theme.palette[5], y) > 0),
-            "{scene}: the preview's agent box isn't in the theme's magenta"
-        );
-        println!("ui-shots: {}", path.display());
-    }
+/// Open Preferences over `ws` on `section` (the tips card `dismissed` or not) and draw.
+fn open_preferences_on(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+    section: crate::preferences::Section,
+    dismissed: bool,
+) {
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.toggle_preferences(window, cx);
+            let panel = ws.preferences.clone().expect("Preferences opened");
+            panel.update(cx, |panel, cx| {
+                panel.shown_as(section, dismissed);
+                cx.notify();
+            });
+        })
+    })
+    .expect("open Preferences");
+    settle(cx, window);
 }
 
-/// Preferences → Sessions' Command blocks row (M11l) in `shot`: its label, its switch and its
-/// note line are drawn where the layout puts them. Then, in a second window over a temporary
-/// settings file, clicking its Off writes `command-blocks = off` (and nothing else).
-fn command_blocks_row(
-    shot: &Shot,
-    theme: &Theme,
-    scene: &str,
-    build: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
-) {
-    use crate::preferences;
+/// Preferences as a panel over the window (M11x): each section in both themes
+/// (`preferences-<section>-mocha`, `-latte`; General with the tips card dismissed, so its button
+/// is live) and `preferences-small-mocha` (a window smaller than the panel). Not shot: the keys.
+///
+/// Panics unless, outside the panel, the window is dimmed (each pixel the plain window's pulled
+/// toward the shadow colour by `SCRIM_ALPHA`), the page's top is the panel's colour, the section
+/// list has exactly one filled row, General's switches show the accent (they're on), and
+/// Appearance's preview shows the theme's background; small: the panel starts 24 pt in and the
+/// page scrolls; keys: Esc closes it, ⌘W closes it and leaves every terminal open, and while it's
+/// open the keyboard is the panel's, not a terminal's.
+fn preferences_scenes() {
+    use crate::preferences::{SCRIM_ALPHA, Section, panel_size};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
-    let dims = preferences::window_size();
+    // Wide and tall enough that the sampled points outside the panel are clear of its shadow.
+    let (w, h) = (1400.0, 900.0);
+    let dims = size(px(w), px(h));
+    let (pw, ph) = panel_size(w, h);
+    let (x0, y0) = ((w - pw) / 2.0, (h - ph) / 2.0);
+    // The section list's width (`preferences::NAV_WIDTH`).
+    let nav = 200.0;
+    let near = |p: [u8; 3], c: Rgb, by: u8| {
+        p.iter()
+            .zip([c.r, c.g, c.b])
+            .all(|(a, b)| a.abs_diff(b) <= by)
+    };
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        // The window without the panel: what the scrim dims.
+        let plain = {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            render(&theme, dims, palette_build(theme, slot))
+        };
+        for section in Section::ALL {
+            let scene = format!(
+                "preferences-{}-{slug}",
+                format!("{section:?}").to_lowercase()
+            );
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let act = {
+                let slot = slot.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    open_preferences_on(cx, window, &ws, section, true);
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(
+                "preferences",
+                &format!("{}-{slug}", format!("{section:?}").to_lowercase()),
+                &theme,
+                dims,
+                build.clone(),
+                act.clone(),
+            );
+            let shot = render_with(&theme, dims, build, act);
+            // Outside the panel: dimmed.
+            for (x, y) in [(60.0, h / 2.0), (w - 60.0, h / 2.0), (w / 2.0, 30.0)] {
+                let before = pixel_at(&plain, dims, x, y);
+                let dim = |a: u8, s: u8| {
+                    (f32::from(a) * (1.0 - SCRIM_ALPHA) + f32::from(s) * SCRIM_ALPHA).round() as u8
+                };
+                let want = Rgb {
+                    r: dim(before[0], ui.shadow.r),
+                    g: dim(before[1], ui.shadow.g),
+                    b: dim(before[2], ui.shadow.b),
+                };
+                let got = pixel_at(&shot, dims, x, y);
+                assert!(
+                    near(got, want, 6),
+                    "{scene}: ({x}, {y}) isn't dimmed: {got:?}, want {want:?}"
+                );
+            }
+            // The page's top padding is the panel's colour.
+            let top = pixel_at(&shot, dims, x0 + nav + 20.0, y0 + 12.0);
+            assert!(near(top, ui.panel, 3), "{scene}: the page's top {top:?}");
+            // The section list: exactly one filled row (the shown one), right of the names.
+            let bands = (0..(ph * 2.0) as usize)
+                .map(|i| y0 + i as f32 / 2.0)
+                .map(|y| near(pixel_at(&shot, dims, x0 + nav - 24.0, y), ui.row_active, 3))
+                .collect::<Vec<_>>()
+                .windows(2)
+                .filter(|pair| !pair[0] && pair[1])
+                .count();
+            assert_eq!(bands, 1, "{scene}: {bands} filled rows in the section list");
+            // The page's area, sampled every 2 pt.
+            let page_has = |c: Rgb, by: u8| {
+                let mut y = y0 + 60.0;
+                while y < y0 + ph - 20.0 {
+                    let mut x = x0 + nav + 20.0;
+                    while x < x0 + pw - 20.0 {
+                        if near(pixel_at(&shot, dims, x, y), c, by) {
+                            return true;
+                        }
+                        x += 2.0;
+                    }
+                    y += 2.0;
+                }
+                false
+            };
+            if section == Section::General {
+                assert!(page_has(ui.accent, 6), "{scene}: no switch is on");
+            }
+            if section == Section::Appearance {
+                assert!(
+                    page_has(theme.background, 2),
+                    "{scene}: no terminal background in the preview"
+                );
+            }
+            println!("ui-shots: {}", path.display());
+        }
+    }
+
+    // A window smaller than the panel: 24 pt in, and the page scrolls.
+    let theme = shot_theme(SHOT_THEMES[0].1);
     let ui = theme.ui();
-    let inked = |(x, y, w, h): (f32, f32, f32, f32)| {
-        (0..h as usize).any(|dy| {
-            let along = count_along(shot, dims, ui.sidebar_background, y + dy as f32, x, x + w);
-            let scale = shot.width as f32 / f32::from(dims.width);
-            along < ((x + w) * scale) as usize - (x * scale) as usize
-        })
+    let (sw, sh) = (760.0, 520.0);
+    let small = size(px(sw), px(sh));
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = palette_build(theme, slot.clone());
+    let act = {
+        let slot = slot.clone();
+        move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            open_preferences_on(cx, window, &ws, Section::Appearance, true);
+            let scroll = cx.read(|cx| {
+                ws.read(cx)
+                    .preferences
+                    .as_ref()
+                    .map(|p| p.read(cx).scroll_for_shots())
+                    .expect("open")
+            });
+            assert!(
+                f32::from(scroll.max_offset().y) > 0.0,
+                "preferences-small: the page doesn't scroll"
+            );
+            slot.borrow_mut().take();
+        }
     };
-    let [label, switch, note] = preferences::command_blocks_areas();
-    assert!(inked(label), "{scene}: no Command blocks label");
-    assert!(inked(switch), "{scene}: no Command blocks switch");
-    assert!(inked(note), "{scene}: no Command blocks note line");
-    // On is chosen (the default): its option is filled. Off starts just past that fill.
-    let (sx, sy, sw, sh) = switch;
-    let mid = sy + sh / 2.0;
-    let on_right = (0..(sw * 2.0) as usize)
-        .rev()
-        .map(|i| sx + i as f32 / 2.0)
-        .find(|&x| {
-            let p = pixel_at(shot, dims, x, mid);
-            p.iter()
-                .zip([ui.row_active.r, ui.row_active.g, ui.row_active.b])
-                .all(|(a, b)| a.abs_diff(b) <= 3)
-        })
-        .unwrap_or_else(|| panic!("{scene}: On isn't chosen"));
-    let dir = std::env::temp_dir().join(format!("fuxx-shots-blocks-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    // Laid out as a config home (`<dir>/fuxx/config`), so the reload after the write reads only
-    // from here (`appearance::ShotsHome`), never your own settings.
-    let config = crate::settings::settings_path(&dir, Some(&dir));
-    std::fs::create_dir_all(config.parent().expect("a folder")).expect("temp dir");
-    std::fs::write(&config, "theme = Nord\n").expect("write the settings");
-    let settings = config.clone();
-    let home = dir.clone();
-    let with_file = move |window: &mut Window, cx: &mut App| -> AnyView {
-        let view = build(window, cx);
-        cx.global_mut::<Appearance>().settings_path = Some(settings.clone());
-        cx.set_global(crate::appearance::ShotsHome(home.clone()));
-        view
-    };
-    let kept = config.clone();
-    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        let off = point(px(on_right + 8.0), px(mid));
-        cx.simulate_click(window, off, gpui::Modifiers::none());
-        // Reloaded from the temporary file: a second change would go there too.
-        let now = cx.read(|cx| cx.global::<Appearance>().settings_path.clone());
-        assert_eq!(now, Some(kept), "the reload left the temporary settings");
-        let blocks = cx.read(|cx| cx.global::<Appearance>().command_blocks);
-        assert!(!blocks, "the reload didn't read the change");
-    };
-    render_with(theme, dims, with_file, act);
-    let written = std::fs::read_to_string(&config).expect("read the settings");
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(
-        written, "theme = Nord\ncommand-blocks = off\n",
-        "{scene}: Off didn't write the setting"
+    let path = shoot_with(
+        "preferences",
+        "small-mocha",
+        &theme,
+        small,
+        build.clone(),
+        act.clone(),
     );
+    // The Sound page in the small window: its rows' controls under their words (review fix).
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let sound_build = palette_build(theme, slot.clone());
+    let sound_act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let ws = slotted(&slot);
+        open_preferences_on(cx, window, &ws, Section::Sound, true);
+        slot.borrow_mut().take();
+    };
+    let sound_path = shoot_with(
+        "preferences",
+        "small-sound-mocha",
+        &theme,
+        small,
+        sound_build,
+        sound_act,
+    );
+    println!("ui-shots: {}", sound_path.display());
+    let shot = render_with(&theme, small, build, act);
+    let (spw, _) = panel_size(sw, sh);
+    assert_eq!(spw, sw - 48.0, "preferences-small: the panel's width");
+    let inside = pixel_at(&shot, small, 24.0 + 4.0, sh / 2.0);
+    assert!(
+        near(inside, ui.sidebar_background, 3),
+        "preferences-small: the section list doesn't start 24 pt in: {inside:?}"
+    );
+    let outside = pixel_at(&shot, small, 24.0 - 6.0, sh / 2.0);
+    assert!(
+        !near(outside, ui.sidebar_background, 3),
+        "preferences-small: the panel starts left of 24 pt"
+    );
+    println!("ui-shots: {}", path.display());
+
+    // The keys.
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = palette_build(theme, slot.clone());
+    let act = {
+        let slot = slot.clone();
+        move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            let is_open =
+                |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).preferences.is_some());
+            let sessions =
+                |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).sessions.items().len());
+            let before = sessions(cx);
+            // Esc closes it.
+            open_preferences_on(cx, window, &ws, Section::General, true);
+            assert!(is_open(cx), "preferences-keys: opened");
+            press_keys(cx, window, "escape");
+            assert!(!is_open(cx), "preferences-keys: Esc closes it");
+            // ⌘, opens and closes it.
+            press_keys(cx, window, "cmd-,");
+            assert!(is_open(cx), "preferences-keys: ⌘, opens it");
+            press_keys(cx, window, "cmd-,");
+            assert!(!is_open(cx), "preferences-keys: ⌘, closes it");
+            // A click inside the panel (the nav's Appearance row) is the panel's: it stays open and
+            // shows Appearance (the scrim behind it gets only clicks outside it).
+            open_preferences_on(cx, window, &ws, Section::General, true);
+            let (pw, ph) = panel_size(w, h);
+            let (x0, y0) = ((w - pw) / 2.0, (h - ph) / 2.0);
+            // Appearance's row: under "Settings" (18 + 21 pt) and General's row (32 + 2 pt).
+            let row = point(px(x0 + 100.0), px(y0 + 18.0 + 21.0 + 34.0 + 16.0));
+            cx.simulate_click(window, row, gpui::Modifiers::none());
+            settle(cx, window);
+            assert!(is_open(cx), "preferences-keys: a click inside closed it");
+            let shown = cx.read(|cx| {
+                ws.read(cx)
+                    .preferences
+                    .as_ref()
+                    .map(|p| p.read(cx).section())
+            });
+            assert_eq!(
+                shown,
+                Some(Section::Appearance),
+                "preferences-keys: the nav's click"
+            );
+            press_keys(cx, window, "escape");
+            // While it's open the keyboard is the panel's; ⌘W closes it, never a terminal.
+            open_preferences_on(cx, window, &ws, Section::General, true);
+            let focused = cx
+                .update_window(window, |_, window, cx| {
+                    ws.read(cx).preferences.as_ref().map(|p| {
+                        gpui::Focusable::focus_handle(p.read(cx), cx).contains_focused(window, cx)
+                    })
+                })
+                .expect("read focus");
+            assert_eq!(
+                focused,
+                Some(true),
+                "preferences-keys: the panel has the keys"
+            );
+            press_keys(cx, window, "cmd-w");
+            assert!(!is_open(cx), "preferences-keys: ⌘W closes it");
+            assert_eq!(
+                sessions(cx),
+                before,
+                "preferences-keys: ⌘W closed a terminal"
+            );
+            // A terminal takes the keyboard while the panel is up (a script, a shortcut that
+            // focuses one): the panel goes, and ⌘W still never closes that terminal unseen.
+            // (The panel also closes when the keyboard leaves it, but an off-screen window is never
+            // active, so GPUI tells it no focus-out: here ⌘W with a terminal focused under it.)
+            open_preferences_on(cx, window, &ws, Section::General, true);
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.focus_active(window, cx))
+            })
+            .expect("focus a terminal");
+            settle(cx, window);
+            press_keys(cx, window, "cmd-w");
+            assert!(!is_open(cx), "preferences-keys: ⌘W left the panel up");
+            assert_eq!(
+                sessions(cx),
+                before,
+                "preferences-keys: ⌘W closed a terminal"
+            );
+            slot.borrow_mut().take();
+        }
+    };
+    render_with(&theme, dims, build, act);
+    println!("ui-shots: preferences-keys ok");
 }
 
 /// The sidebar button in the top band, as small windows of the top left corner, in both themes:

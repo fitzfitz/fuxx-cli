@@ -391,6 +391,8 @@ impl Workspace {
                 self.note_notification(entry);
                 cx.notify();
                 let about = self.banner_about(terminal);
+                // M11x: a script's banner is a banner too: its sound plays.
+                crate::sounds::banner(cx);
                 cx.background_spawn(async move { notifier::fire(&title, "", &body, about) })
                     .detach();
                 Ok(json!({}))

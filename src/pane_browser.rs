@@ -99,6 +99,8 @@ pub struct Overlays {
     pub help: bool,
     /// The Welcome card (M11k).
     pub welcome: bool,
+    /// The Preferences panel (M11x).
+    pub preferences: bool,
 }
 
 impl Overlays {
@@ -117,6 +119,7 @@ impl Overlays {
             notifications,
             help,
             welcome,
+            preferences,
         } = *self;
         rename
             || host_picker
@@ -131,6 +134,7 @@ impl Overlays {
             || notifications
             || help
             || welcome
+            || preferences
     }
 }
 
@@ -603,6 +607,10 @@ mod tests {
             Overlays { help: true, ..none },
             Overlays {
                 welcome: true,
+                ..none
+            },
+            Overlays {
+                preferences: true,
                 ..none
             },
         ];

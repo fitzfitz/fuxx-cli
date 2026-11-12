@@ -103,6 +103,13 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   coloured lanes, branch pills, a hover card (author, date, message, files changed, hash, Open on GitHub) and header
   actions (Auto / All / Current, go to HEAD, fetch, pull, push, refresh). No new library. Not in it: checkout, revert,
   cherry-pick or reset from the graph, search, a commit's diff in a tab. See [[74 - Milestone 11w - Graph]].
+- **Preferences as a panel** (M11x, asked for 2026-11-12 by you: "redesign the "Preference" window … tabs (sidebar),
+  category, fields, labels, window style" → "a panel over the terminal like the screenshot"; plus "a new sound field for
+  notification … this is oot but its small" → "only with a banner"): Preferences opens as a rounded panel over the
+  dimmed fuxx window (no window of its own), each section a page of grouped cards; the same settings plus **Banner
+  sound**, played only when fuxx shows a banner. No new library. Not in it: a search field, projects or account parts,
+  other new settings. Part 2 (your ask mid-build: "beside File | Diff … add 1 more toggle called Wrap"): a Wrap button
+  in a file tab's bar that wraps long lines at the tab's width. See [[75 - Milestone 11x - Preferences Panel]].
 - **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
   design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.

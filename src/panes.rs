@@ -51,6 +51,15 @@ pub struct PaneColors {
     pub shadow_alpha: f32,
 }
 
+/// The line on a resize edge under the pointer or being dragged (a pane split's, either
+/// sidebar's): faint text at half strength, a quiet grey (M11x, your ask: the accent was "ugly").
+pub fn resize_line(ui: &UiColors) -> Hsla {
+    Hsla {
+        a: 0.5,
+        ..hsla(ui.text_faint)
+    }
+}
+
 impl PaneColors {
     /// The layout's colours from the theme's UI colours.
     pub fn of(ui: &UiColors) -> PaneColors {
@@ -59,7 +68,7 @@ impl PaneColors {
                 a: UNFOCUSED_VEIL,
                 ..hsla(ui.card)
             },
-            accent: hsla(ui.accent),
+            accent: resize_line(ui),
             card: hsla(ui.card),
             card_border: hsla(ui.card_border),
             focus: hsla(ui.accent),

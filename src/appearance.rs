@@ -60,11 +60,13 @@ pub struct Appearance {
     /// `command-blocks = on|off`: new terminals' zsh gets fuxx's integration, and the window
     /// draws command blocks (default on, M11l).
     pub command_blocks: bool,
+    /// `file-wrap = on|off`: file tabs wrap long lines at their width (default off, M11x).
+    pub file_wrap: bool,
     /// `sound-enter` / `sound-ctrl-c` (M11s): each key's sound link, as typed (`SoundKey::ALL`
     /// order); empty: none.
-    pub sound_links: [String; 2],
+    pub sound_links: [String; SOUNDS],
     /// `sound-enter-on` / `sound-ctrl-c-on`: each key's sound switched on (the default) or off.
-    pub sound_on: [bool; 2],
+    pub sound_on: [bool; SOUNDS],
 }
 
 impl Global for Appearance {}
@@ -201,7 +203,11 @@ fn animations_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
 
 /// The last valid `key` entry wins (`on` / `off`, any case); an empty value resets to `default`.
 /// Returns the setting and a warning per invalid value (the previous value stays).
-fn switch_from_entries(entries: &[Entry], key: &str, default: bool) -> (bool, Vec<String>) {
+pub(crate) fn switch_from_entries(
+    entries: &[Entry],
+    key: &str,
+    default: bool,
+) -> (bool, Vec<String>) {
     let mut on = default;
     let mut warnings = Vec::new();
     for entry in entries.iter().filter(|e| e.key == key) {
@@ -230,9 +236,12 @@ fn browser_keep_data_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "browser-keep-data", false)
 }
 
-/// `sound-enter` and `sound-ctrl-c` (M11s), in `SoundKey::ALL` order: each key's last line (a
+/// How many sounds there are (`SoundKey::ALL`): Enter, Ctrl + C and the banner's (M11x).
+const SOUNDS: usize = crate::sounds::SoundKey::ALL.len();
+
+/// `sound-enter`, `sound-ctrl-c` and `sound-banner` (M11s, M11x), in `SoundKey::ALL` order: each key's last line (a
 /// blank one clears it); empty when it has none.
-fn sound_links_from_entries(entries: &[Entry]) -> [String; 2] {
+fn sound_links_from_entries(entries: &[Entry]) -> [String; SOUNDS] {
     crate::sounds::SoundKey::ALL.map(|key| {
         entries
             .iter()
@@ -244,7 +253,7 @@ fn sound_links_from_entries(entries: &[Entry]) -> [String; 2] {
 
 /// `sound-enter-on` and `sound-ctrl-c-on` (M11s): each key's sound is on unless switched off
 /// (see `switch_from_entries`), in `SoundKey::ALL` order.
-fn sound_on_from_entries(entries: &[Entry]) -> ([bool; 2], Vec<String>) {
+fn sound_on_from_entries(entries: &[Entry]) -> ([bool; SOUNDS], Vec<String>) {
     let mut warnings = vec![];
     let on = crate::sounds::SoundKey::ALL.map(|key| {
         let (on, w) = switch_from_entries(entries, key.switch_key(), true);
@@ -299,6 +308,11 @@ fn cursor_style_from_entries(entries: &[Entry]) -> (CursorShapeSetting, Vec<Stri
         &CursorShapeSetting::ALL,
         CursorShapeSetting::value,
     )
+}
+
+/// `file-wrap`, off by default (see `switch_from_entries`).
+fn file_wrap_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "file-wrap", false)
 }
 
 /// `command-blocks`, on by default (see `switch_from_entries`).
@@ -418,6 +432,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (cursor_follows_status, cursor_color_warnings) = cursor_color_from_entries(&entries);
     let (cursor_fun, cursor_fun_warnings) = cursor_fun_from_entries(&entries);
     let (command_blocks, command_blocks_warnings) = command_blocks_from_entries(&entries);
+    let (file_wrap, file_wrap_warnings) = file_wrap_from_entries(&entries);
     let (sound_on, sound_on_warnings) = sound_on_from_entries(&entries);
     for warning in preset_warnings
         .iter()
@@ -435,6 +450,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&cursor_color_warnings)
         .chain(&cursor_fun_warnings)
         .chain(&command_blocks_warnings)
+        .chain(&file_wrap_warnings)
         .chain(&sound_on_warnings)
     {
         eprintln!("[fuxx] config: {warning}");
@@ -463,6 +479,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         cursor_follows_status,
         cursor_fun,
         command_blocks,
+        file_wrap,
         sound_links: sound_links_from_entries(&entries),
         sound_on,
     }
@@ -498,11 +515,14 @@ mod tests {
             key: key.into(),
             value: value.into(),
         };
-        assert_eq!(sound_on_from_entries(&[]), ([true, true], vec![]));
+        assert_eq!(sound_on_from_entries(&[]), ([true, true, true], vec![]));
         let (on, warnings) =
             sound_on_from_entries(&[e("sound-enter-on", "off"), e("sound-ctrl-c-on", "loud")]);
-        assert_eq!(on, [false, true]);
+        assert_eq!(on, [false, true, true]);
         assert_eq!(warnings.len(), 1, "a junk value warns");
+        // M11x: the banner's sound, switched off by its own key.
+        let (on, _) = sound_on_from_entries(&[e("sound-banner-on", "off")]);
+        assert_eq!(on, [true, true, false]);
     }
 
     #[test]
@@ -513,7 +533,7 @@ mod tests {
         };
         assert_eq!(
             sound_links_from_entries(&[]),
-            [String::new(), String::new()]
+            [String::new(), String::new(), String::new()]
         );
         assert_eq!(
             sound_links_from_entries(&[
@@ -523,12 +543,18 @@ mod tests {
             ]),
             [
                 "/System/Library/Sounds/Tink.aiff".to_string(),
-                "https://x.io/b.mp3".to_string()
+                "https://x.io/b.mp3".to_string(),
+                String::new()
             ]
         );
         assert_eq!(
             sound_links_from_entries(&[e("sound-enter", "~/a.wav"), e("sound-enter", "")]),
-            [String::new(), String::new()]
+            [String::new(), String::new(), String::new()]
+        );
+        // M11x: the banner's link is the third.
+        assert_eq!(
+            sound_links_from_entries(&[e("sound-banner", "~/c.wav")])[2],
+            "~/c.wav"
         );
     }
 
@@ -824,6 +850,20 @@ mod tests {
         );
         assert_eq!(CursorShapeSetting::default(), CursorShapeSetting::Bar);
         assert_eq!(CursorFun::default(), CursorFun::Off);
+    }
+
+    /// M11x part 2: `file-wrap`, off by default.
+    #[test]
+    fn file_wrap_setting() {
+        assert_eq!(file_wrap_from_entries(&[]), (false, vec![]));
+        assert_eq!(
+            file_wrap_from_entries(&[entry("file-wrap", "on")]),
+            (true, vec![])
+        );
+        assert_eq!(
+            file_wrap_from_entries(&[entry("file-wrap", "on"), entry("file-wrap", "off")]),
+            (false, vec![])
+        );
     }
 
     #[test]

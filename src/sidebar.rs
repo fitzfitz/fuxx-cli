@@ -1048,11 +1048,6 @@ pub(crate) fn tabular() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }
 
-/// Every letter as a small capital (the system font has them): headers read as headers.
-pub(crate) fn small_caps() -> FontFeatures {
-    FontFeatures(Arc::new(vec![("smcp".into(), 1), ("c2sc".into(), 1)]))
-}
-
 /// A waiting mark is drawn bigger than the others.
 pub(crate) fn mark_size(status: Status) -> f32 {
     if status == Status::Waiting {
@@ -2767,7 +2762,7 @@ impl Workspace {
                     .bottom_0()
                     .right(px(1.0))
                     .w(px(DIVIDER_ACTIVE))
-                    .bg(hsla(ui.accent))
+                    .bg(crate::panes::resize_line(&ui))
                     .when(!resizing, |line| {
                         line.invisible()
                             .group_hover("sidebar-edge", |style| style.visible())

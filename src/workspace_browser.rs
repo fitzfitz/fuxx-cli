@@ -362,6 +362,7 @@ impl Workspace {
             notifications: self.notifications_popover.is_some(),
             help: self.help.is_some(),
             welcome: self.welcome.is_some(),
+            preferences: self.preferences.is_some(),
         }
     }
 
