@@ -86,6 +86,9 @@ mod tests {
             installed: Installed::Tag("v1".into()),
             themes: themes.iter().map(|s| s.to_string()).collect(),
             installed_at: 0,
+            enabled: true,
+            bin: None,
+            zsh: vec![],
         }
     }
 

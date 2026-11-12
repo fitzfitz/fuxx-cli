@@ -15178,6 +15178,9 @@ fn preferences_plugins_scene() {
                                 installed: Installed::Tag("v1.0.0".into()),
                                 themes: vec!["Sunset".into(), "Sunset Light".into()],
                                 installed_at: 0,
+                                enabled: true,
+                                bin: None,
+                                zsh: vec![],
                             }],
                             ..Plugins::default()
                         };
