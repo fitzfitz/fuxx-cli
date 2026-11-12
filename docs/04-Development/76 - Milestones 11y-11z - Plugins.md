@@ -5,8 +5,9 @@ status: designed
 
 # 76 - Milestones 11y-11z - Plugins (design)
 
-**Status:: 📝 Designed 2026-11-12, approved by you 2026-11-13 ("before M11p, approved, update the docs"). Plan not
-written yet, not built.** Comes **before M11p** (your call). Plugins moved **into scope** on 2026-11-12 by you
+**Status:: 📝 Designed 2026-11-12, approved by you 2026-11-13 ("before M11p, approved, update the docs"). M11y's plan
+written 2026-11-13 ([[M11y Plan - Plugins and Theme Plugins]]), waiting for your review; M11z's plan not written. Not
+built.** Comes **before M11p** (your call). Plugins moved **into scope** on 2026-11-12 by you
 ("yes, plugins in scope, start the design"). You handed the details over ("Do the thinking"), so everything below
 except "Decided by you" is **the AI's call** (revised after a builder check: §8's theme pairs, §9's loading after
 your `.zshrc` and independence from `command-blocks`, §10's double-load guard and M11z's test helper).
