@@ -232,6 +232,8 @@ const SCENES: &[(&str, fn())] = &[
     ("changes", changes_scenes),
     ("changes-bar", changes_bar_scenes),
     ("changes-staging", changes_staging_scenes),
+    ("changes-graph", changes_graph_scenes),
+    ("changes-sticky", changes_sticky_scenes),
     ("activity", activity_scenes),
     ("api-background", api_background),
     ("banner-click", banner_click),
@@ -6840,6 +6842,290 @@ fn right_panel_scenes() {
     }
 }
 
+/// The GRAPH (M11w, note 74), in both themes, a clean repo: "No changes", the GRAPH header,
+/// then a merge (HEAD, `feat/x` and `origin/feat/x`), its two parents on two lanes, their fork.
+/// - `changes-graph`: the lanes in their colours, HEAD's ring, the pills.
+/// - `changes-graph-card`: the pointer on the merge: its card, with Open on GitHub.
+fn changes_graph_scenes() {
+    use crate::git_graph::{Commit, Details, Ref};
+    use crate::git_status::ChangeList;
+    use crate::right_sidebar::{Panel, ROW};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
+    let list_top = GAP + FOCUS_RING + TAB_BAR + crate::changes_panel::HEADER;
+    let root = files_fixture();
+    let commit = |hash: &str, parents: &[&str], subject: &str, refs: Vec<Ref>, head: bool| Commit {
+        hash: hash.to_string(),
+        parents: parents.iter().map(|p| p.to_string()).collect(),
+        author: "Andri Ferinata".to_string(),
+        time: 1_794_455_520,
+        refs,
+        subject: subject.to_string(),
+        head,
+    };
+    let commits = vec![
+        commit(
+            "aaaaaaa1",
+            &["bbbbbbb2", "ccccccc3"],
+            "Merge pull request #786 from hubexo/release",
+            vec![
+                Ref::Head("feat/x".into()),
+                Ref::Remote("origin/feat/x".into()),
+            ],
+            true,
+        ),
+        commit(
+            "bbbbbbb2",
+            &["ddddddd4"],
+            "Complete the swagger information",
+            vec![],
+            false,
+        ),
+        commit(
+            "ccccccc3",
+            &["ddddddd4"],
+            "Conductor: auto flow until qa agent",
+            vec![],
+            false,
+        ),
+        commit(
+            "ddddddd4",
+            &[],
+            "chore(release): 1.192.0",
+            vec![Ref::Tag("v1.192.0".into())],
+            false,
+        ),
+    ];
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let inks = crate::graph_panel::lane_inks(&theme);
+        for card in [false, true] {
+            let scene = if card {
+                "changes-graph-card"
+            } else {
+                "changes-graph"
+            };
+            let n = format!("{scene}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = {
+                let (root, commits) = (root.clone(), commits.clone());
+                right_panel_workspace(
+                    theme,
+                    root.clone(),
+                    300.0,
+                    Panel::Changes,
+                    slot.clone(),
+                    move |ws| {
+                        let changes = &mut ws.right_sidebar.changes;
+                        changes.show_for_shots(root.clone(), true, Some(ChangeList::default()));
+                        changes.graph.apply(
+                            "shot".into(),
+                            commits.clone(),
+                            Some("git@github.com:hubexo/api.git".into()),
+                        );
+                        if card {
+                            changes.graph.hover = Some((0, true));
+                            changes.graph.details = Some((
+                            "aaaaaaa1".into(),
+                            Some(Details {
+                                body: "Merge pull request #786 from hubexo/release\n\nComplete the swagger information".into(),
+                                files: 9,
+                                insertions: 774,
+                                deletions: 65,
+                            }),
+                        ));
+                        }
+                    },
+                )
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                cx.update_window(window, |_, window, _| window.refresh())
+                    .expect("refresh");
+                cx.run_until_parked();
+                slot.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let near = |p: [u8; 3], c: Rgb, by: u8| {
+                p.iter()
+                    .zip([c.r, c.g, c.b])
+                    .all(|(x, y)| x.abs_diff(y) <= by)
+            };
+            let has = |x0: f32, x1: f32, y0: f32, y1: f32, c: Rgb, by: u8| {
+                let (w, h) = (((x1 - x0) * 2.0) as usize, ((y1 - y0) * 2.0) as usize);
+                (0..h).any(|dy| {
+                    (0..w).any(|dx| {
+                        near(
+                            pixel_at(&shot, dims, x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5),
+                            c,
+                            by,
+                        )
+                    })
+                })
+            };
+            // Rows: 0 "No changes", 1 GRAPH, 2–5 the commits; the lanes in the first 24 pt.
+            let commits_top = list_top + 2.0 * ROW;
+            let lanes = |c: Rgb| {
+                has(
+                    sidebar_left + 12.0,
+                    sidebar_left + 36.0,
+                    commits_top,
+                    commits_top + 4.0 * ROW,
+                    c,
+                    16,
+                )
+            };
+            assert!(lanes(inks[0]), "{n}: the first lane's colour");
+            assert!(lanes(inks[1]), "{n}: the merged lane's colour");
+            assert!(
+                has(
+                    sidebar_left + 12.0,
+                    sidebar_left + 290.0,
+                    list_top + ROW,
+                    list_top + 2.0 * ROW,
+                    ui.text_faint,
+                    16
+                ),
+                "{n}: the GRAPH header"
+            );
+            // The card: to the left of the panel, on `panel`, with its accent link.
+            let card_area = |c: Rgb| {
+                has(
+                    sidebar_left - 300.0,
+                    sidebar_left - 20.0,
+                    commits_top,
+                    commits_top + 200.0,
+                    c,
+                    6,
+                )
+            };
+            assert_eq!(card_area(ui.accent), card, "{n}: the card's links");
+        }
+    }
+}
+
+/// Sticky headers (your ask: "make other accordion sticky"): 60 commits, scrolled 8 rows down:
+/// the GRAPH's header stays pinned over the list's top, its hairline under it.
+fn changes_sticky_scenes() {
+    use crate::git_graph::Commit;
+    use crate::git_status::ChangeList;
+    use crate::right_sidebar::{Panel, ROW};
+    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let window_right = 1100.0_f32;
+    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
+    let list_top = GAP + FOCUS_RING + TAB_BAR + crate::changes_panel::HEADER;
+    let root = files_fixture();
+    let commits: Vec<Commit> = (0..60)
+        .map(|i| Commit {
+            hash: format!("{i:07x}"),
+            parents: if i < 59 {
+                vec![format!("{:07x}", i + 1)]
+            } else {
+                vec![]
+            },
+            author: "Ayu".into(),
+            time: 1_794_455_520 - i * 600,
+            refs: vec![],
+            subject: format!("Commit number {i}"),
+            head: i == 0,
+        })
+        .collect();
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("changes-sticky-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = {
+            let (root, commits) = (root.clone(), commits.clone());
+            right_panel_workspace(
+                theme,
+                root.clone(),
+                300.0,
+                Panel::Changes,
+                slot.clone(),
+                move |ws| {
+                    let changes = &mut ws.right_sidebar.changes;
+                    changes.show_for_shots(root.clone(), true, Some(ChangeList::default()));
+                    changes.graph.apply("shot".into(), commits.clone(), None);
+                },
+            )
+        };
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+            let ws = slotted(&slot);
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, _| {
+                    ws.right_sidebar
+                        .changes
+                        .scroll_offset_for_shots(point(px(0.0), px(-8.0 * ROW)))
+                });
+                window.refresh();
+            })
+            .expect("scroll");
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with(
+            "changes-sticky",
+            slug,
+            &theme,
+            dims,
+            build.clone(),
+            act.clone(),
+        );
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        let near = |p: [u8; 3], c: Rgb, by: u8| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(x, y)| x.abs_diff(y) <= by)
+        };
+        let has = |x0: f32, x1: f32, y0: f32, y1: f32, c: Rgb, by: u8| {
+            let (w, h) = (((x1 - x0) * 2.0) as usize, ((y1 - y0) * 2.0) as usize);
+            (0..h).any(|dy| {
+                (0..w).any(|dx| {
+                    near(
+                        pixel_at(&shot, dims, x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5),
+                        c,
+                        by,
+                    )
+                })
+            })
+        };
+        // The pinned header: `GRAPH` (faint) in the list's first row, though its row has
+        // scrolled away.
+        assert!(
+            has(
+                sidebar_left + 28.0,
+                sidebar_left + 90.0,
+                list_top + 2.0,
+                list_top + ROW - 2.0,
+                ui.text_faint,
+                16
+            ),
+            "{n}: the GRAPH header is pinned at the top"
+        );
+    }
+}
+
 /// The Changes tab grouped (M11v part 2, layout C, note 73), in both themes:
 /// - `changes-staging-mixed`: STAGED (2, green ✓ circles) over CHANGES (4, empty circles);
 ///   `2 of 6 staged` with a green third of the bar; the pointer on `12 - Scope.md`'s row: ↺
@@ -7511,10 +7797,15 @@ fn changes_scenes() {
             );
         }
         assert!(counts(3, ui.text_faint), "{n}: `binary`, faint");
-        // `… 3 more`, faint, under the names, last.
+        // `… 3 more`, faint, under the names; then the GRAPH's header (M11w; no commits here:
+        // the fixture isn't a git repo), and nothing after it.
         let more = |i: usize, c: Rgb| in_row(i, sidebar_left + 26.0, sidebar_left + 120.0, c);
         assert!(more(6, ui.text_faint), "{n}: the more row");
-        assert!(!more(7, ui.text_faint), "{n}: nothing after it");
+        assert!(more(7, ui.text_faint), "{n}: the GRAPH header after it");
+        assert!(
+            !more(8, ui.text_faint),
+            "{n}: nothing after the GRAPH header"
+        );
         // The hovered row filled `card_hover`, the one above it the card (part 4: a pill 6 pt
         // in from the side, so read 4 pt inside it).
         let fill = |i: usize| at(sidebar_left + 10.0, row_mid(i));
