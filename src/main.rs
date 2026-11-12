@@ -71,6 +71,8 @@ mod pane_browser;
 mod pane_tab_menu;
 mod panes;
 #[allow(dead_code)] // until the install tasks use it
+mod plugin_fetch;
+#[allow(dead_code)] // until the install tasks use it
 mod plugin_manifest;
 #[allow(dead_code)] // until the install tasks use it
 mod plugin_source;

@@ -1,0 +1,558 @@
+//! Download a plugin, unpack it and check it. This is the only plugin code that touches the
+//! network or runs `curl`, `tar`, `ditto` and `shasum`; everything else is pure. The network is
+//! behind `Net` so tests can serve archives from disk.
+
+use crate::plugin_manifest::{self, Manifest, MANIFEST};
+use crate::plugin_source::{self, ArchiveKind, Download, Installed, Repo};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// The most a plugin download may weigh: 100 MB.
+pub const MAX_BYTES: u64 = 104_857_600;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FetchError {
+    Offline,
+    Status(u16),
+    TooBig,
+}
+
+/// What fuxx needs from the network. A trait so tests never go online.
+pub trait Net {
+    fn get(&self, url: &str) -> Result<String, FetchError>;
+    fn download(&self, url: &str, to: &Path) -> Result<(), FetchError>;
+}
+
+/// The real network: `curl`, which ships with macOS.
+pub struct Curl;
+
+/// Reads curl's output (body, a newline, then `%{http_code}`). The code matters here, since a
+/// 404 means "no release" and a 403 means "rate limited", so it is kept rather than flattened.
+fn answer(succeeded: bool, stdout: &str) -> Result<String, FetchError> {
+    let Some((body, code)) = stdout.rsplit_once('\n') else {
+        return Err(FetchError::Offline);
+    };
+    let Ok(code) = code.trim().parse::<u16>() else {
+        return Err(FetchError::Offline);
+    };
+    match code {
+        200..=299 if succeeded => Ok(body.to_string()),
+        100..=199 | 300..=599 => Err(FetchError::Status(code)),
+        _ => Err(FetchError::Offline),
+    }
+}
+
+impl Net for Curl {
+    fn get(&self, url: &str) -> Result<String, FetchError> {
+        let out = Command::new("/usr/bin/curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "60",
+                "-H",
+                "Accept: application/vnd.github+json",
+                "-w",
+                "\n%{http_code}",
+                "--url",
+                url,
+            ])
+            .output()
+            .map_err(|_| FetchError::Offline)?;
+        answer(out.status.success(), &String::from_utf8_lossy(&out.stdout))
+    }
+
+    fn download(&self, url: &str, to: &Path) -> Result<(), FetchError> {
+        let out = Command::new("/usr/bin/curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "60",
+                "--max-filesize",
+                "104857600",
+                "-w",
+                "%{http_code}",
+                "-o",
+            ])
+            .arg(to)
+            .args(["--url", url])
+            .output()
+            .map_err(|_| FetchError::Offline)?;
+        if out.status.success() {
+            return Ok(());
+        }
+        // Exit 63 is curl's "maximum file size exceeded".
+        if out.status.code() == Some(63) {
+            return Err(FetchError::TooBig);
+        }
+        match String::from_utf8_lossy(&out.stdout).trim().parse::<u16>() {
+            Ok(code @ 400..=599) => Err(FetchError::Status(code)),
+            _ => Err(FetchError::Offline),
+        }
+    }
+}
+
+/// The sentence shown for a network failure.
+pub fn error_text(e: &FetchError) -> String {
+    match e {
+        FetchError::Offline => {
+            "fuxx couldn't reach GitHub. Check your connection and try again.".to_string()
+        }
+        FetchError::Status(403) | FetchError::Status(429) => {
+            "GitHub is limiting requests from this Mac for now. Try again in an hour.".to_string()
+        }
+        FetchError::Status(code) => format!("GitHub answered {code}. Try again later."),
+        FetchError::TooBig => "This plugin is over 100 MB, so fuxx won't download it.".to_string(),
+    }
+}
+
+/// Finds what to download for a repo: its latest release, else (no release) its newest commit.
+pub fn latest(net: &dyn Net, repo: &Repo, chip: &str) -> Result<Download, String> {
+    match net.get(&repo.release_api()) {
+        Ok(body) => {
+            return plugin_source::parse_release(&body)
+                .map(|r| plugin_source::from_release(&r, chip));
+        }
+        Err(FetchError::Status(404)) => {}
+        Err(e) => return Err(error_text(&e)),
+    }
+    match net.get(&repo.head_api()) {
+        Ok(body) => {
+            let sha = plugin_source::parse_head(&body)?;
+            Ok(plugin_source::from_head(repo, &sha))
+        }
+        Err(FetchError::Status(404)) => Err(format!(
+            "There's no public repo at github.com/{}.",
+            repo.slug()
+        )),
+        Err(e) => Err(error_text(&e)),
+    }
+}
+
+/// A downloaded, unpacked and checked plugin, waiting to be installed.
+#[derive(Debug)]
+pub struct Staged {
+    /// The folder that holds `fuxx-plugin.conf`.
+    pub plugin_dir: PathBuf,
+    /// The scratch folder holding everything; the caller removes it when done.
+    pub work: PathBuf,
+    pub manifest: Manifest,
+    pub installed: Installed,
+}
+
+/// The plugin's root: the folder itself if it holds the manifest, else its only visible
+/// subfolder if that does (GitHub tarballs wrap everything in one folder).
+pub fn find_plugin_root(dir: &Path) -> Option<PathBuf> {
+    if dir.join(MANIFEST).is_file() {
+        return Some(dir.to_path_buf());
+    }
+    let mut subs = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.path())
+        .filter(|p| p.is_dir());
+    let only = subs.next()?;
+    if subs.next().is_some() {
+        return None;
+    }
+    only.join(MANIFEST).is_file().then_some(only)
+}
+
+/// Downloads into a fresh folder under `staging`, checks size and checksum, unpacks and reads
+/// the manifest. On any error the scratch folder is removed before returning.
+pub fn stage(net: &dyn Net, d: &Download, staging: &Path) -> Result<Staged, String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_nanos())
+        .unwrap_or(0);
+    let work = staging.join(format!("{}-{nanos}", std::process::id()));
+    let unpacked = work.join("unpacked");
+    std::fs::create_dir_all(&unpacked)
+        .map_err(|_| "fuxx couldn't unpack this plugin.".to_string())?;
+    match stage_in(net, d, &work, &unpacked) {
+        Ok((plugin_dir, manifest)) => Ok(Staged {
+            plugin_dir,
+            work,
+            manifest,
+            installed: d.installed.clone(),
+        }),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&work);
+            Err(e)
+        }
+    }
+}
+
+fn stage_in(
+    net: &dyn Net,
+    d: &Download,
+    work: &Path,
+    unpacked: &Path,
+) -> Result<(PathBuf, Manifest), String> {
+    let archive = work.join("archive");
+    net.download(&d.url, &archive).map_err(|e| error_text(&e))?;
+    // A chunked download has no size header, so the size on disk is what counts.
+    let len = std::fs::metadata(&archive)
+        .map_err(|_| error_text(&FetchError::Offline))?
+        .len();
+    if len > MAX_BYTES {
+        return Err(error_text(&FetchError::TooBig));
+    }
+    if let Some(want) = &d.sha256 {
+        let got = sha256_of(&archive).unwrap_or_default();
+        if !got.eq_ignore_ascii_case(want.trim()) {
+            return Err(
+                "The download didn't match its checksum, so fuxx didn't install it.".into(),
+            );
+        }
+    }
+    let ok = match d.kind {
+        ArchiveKind::Tarball => Command::new("/usr/bin/tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(unpacked)
+            .status(),
+        ArchiveKind::Zip => Command::new("/usr/bin/ditto")
+            .args(["-x", "-k"])
+            .arg(&archive)
+            .arg(unpacked)
+            .status(),
+    };
+    if !ok.map(|s| s.success()).unwrap_or(false) {
+        return Err("fuxx couldn't unpack this plugin.".into());
+    }
+    let root = find_plugin_root(unpacked)
+        .ok_or_else(|| format!("This repo isn't a fuxx plugin (it has no {MANIFEST})."))?;
+    let text = std::fs::read_to_string(root.join(MANIFEST))
+        .map_err(|_| format!("This repo isn't a fuxx plugin (it has no {MANIFEST})."))?;
+    let manifest = plugin_manifest::parse(&text).map_err(|e| e.message())?;
+    plugin_manifest::check_files(&root, &manifest).map_err(|e| e.message())?;
+    Ok((root, manifest))
+}
+
+fn sha256_of(file: &Path) -> Option<String> {
+    let out = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(file)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.split_whitespace().next().map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin_manifest::ManifestError;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct FakeNet {
+        gets: HashMap<String, Result<String, FetchError>>,
+        files: HashMap<String, PathBuf>,
+        sparse: bool,
+    }
+
+    impl Net for FakeNet {
+        fn get(&self, url: &str) -> Result<String, FetchError> {
+            self.gets
+                .get(url)
+                .cloned()
+                .unwrap_or(Err(FetchError::Offline))
+        }
+        fn download(&self, url: &str, to: &Path) -> Result<(), FetchError> {
+            if self.sparse {
+                let f = std::fs::File::create(to).unwrap();
+                f.set_len(MAX_BYTES + 1).unwrap();
+                return Ok(());
+            }
+            let src = self.files.get(url).ok_or(FetchError::Offline)?;
+            std::fs::copy(src, to)
+                .map(|_| ())
+                .map_err(|_| FetchError::Offline)
+        }
+    }
+
+    fn tmp(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let p =
+            std::env::temp_dir().join(format!("fuxx-fetch-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn conf(extra: &str) -> String {
+        format!("format = 1\nid = demo\nname = Demo\nversion = 1.0\n{extra}")
+    }
+
+    /// A GitHub-style tarball: one wrapper folder holding the plugin files.
+    fn tarball(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let wrap = dir.join("src").join("owner-repo-abc");
+        for (name, text) in files {
+            let p = wrap.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        let out = dir.join("a.tar.gz");
+        let ok = Command::new("/usr/bin/tar")
+            .arg("-czf")
+            .arg(&out)
+            .arg("-C")
+            .arg(dir.join("src"))
+            .arg("owner-repo-abc")
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        out
+    }
+
+    fn download(kind: ArchiveKind, sha: Option<&str>) -> Download {
+        Download {
+            url: "https://x/a".into(),
+            kind,
+            sha256: sha.map(str::to_string),
+            installed: Installed::Tag("v1".into()),
+        }
+    }
+
+    fn net_with(file: &Path) -> FakeNet {
+        let mut n = FakeNet::default();
+        n.files.insert("https://x/a".into(), file.to_path_buf());
+        n
+    }
+
+    fn repo() -> Repo {
+        Repo {
+            owner: "o".into(),
+            name: "r".into(),
+        }
+    }
+
+    #[test]
+    fn answer_reads_curl_output() {
+        assert_eq!(answer(true, "{}\n200"), Ok("{}".to_string()));
+        assert_eq!(answer(false, "\n404"), Err(FetchError::Status(404)));
+        assert_eq!(answer(false, "\n403"), Err(FetchError::Status(403)));
+        assert_eq!(answer(false, "\n000"), Err(FetchError::Offline));
+        assert_eq!(answer(false, ""), Err(FetchError::Offline));
+        assert_eq!(answer(false, "x\n200"), Err(FetchError::Offline));
+    }
+
+    #[test]
+    fn release_first_then_head_then_no_repo() {
+        let r = repo();
+        let mut n = FakeNet::default();
+        n.gets.insert(
+            r.release_api(),
+            Ok(r#"{"tag_name":"v2","tarball_url":"https://t/v2","assets":[]}"#.into()),
+        );
+        let d = latest(&n, &r, "arm64").unwrap();
+        assert_eq!(d.url, "https://t/v2");
+
+        let mut n = FakeNet::default();
+        n.gets.insert(r.release_api(), Err(FetchError::Status(404)));
+        n.gets.insert(r.head_api(), Ok(r#"{"sha":"abc"}"#.into()));
+        let d = latest(&n, &r, "arm64").unwrap();
+        assert_eq!(d, plugin_source::from_head(&r, "abc"));
+
+        let mut n = FakeNet::default();
+        n.gets.insert(r.release_api(), Err(FetchError::Status(404)));
+        n.gets.insert(r.head_api(), Err(FetchError::Status(404)));
+        assert_eq!(
+            latest(&n, &r, "arm64"),
+            Err("There's no public repo at github.com/o/r.".to_string())
+        );
+    }
+
+    #[test]
+    fn other_failures_use_friendly_text() {
+        let r = repo();
+        let mut n = FakeNet::default();
+        n.gets.insert(r.release_api(), Err(FetchError::Status(403)));
+        assert_eq!(
+            latest(&n, &r, "arm64"),
+            Err(error_text(&FetchError::Status(403)))
+        );
+        let mut n = FakeNet::default();
+        n.gets
+            .insert(r.release_api(), Ok(r#"{"message":"Boom"}"#.into()));
+        assert!(latest(&n, &r, "arm64").unwrap_err().contains("Boom"));
+    }
+
+    #[test]
+    fn friendly_errors() {
+        assert_eq!(
+            error_text(&FetchError::Offline),
+            "fuxx couldn't reach GitHub. Check your connection and try again."
+        );
+        assert_eq!(
+            error_text(&FetchError::Status(403)),
+            "GitHub is limiting requests from this Mac for now. Try again in an hour."
+        );
+        assert_eq!(
+            error_text(&FetchError::Status(429)),
+            error_text(&FetchError::Status(403))
+        );
+        assert_eq!(
+            error_text(&FetchError::Status(500)),
+            "GitHub answered 500. Try again later."
+        );
+        assert_eq!(
+            error_text(&FetchError::TooBig),
+            "This plugin is over 100 MB, so fuxx won't download it."
+        );
+    }
+
+    #[test]
+    fn stages_a_real_tarball() {
+        let dir = tmp("tar");
+        let t = tarball(
+            &dir,
+            &[
+                (MANIFEST, &conf("theme = Sunset\n")),
+                ("Sunset", "background = #000000\n"),
+            ],
+        );
+        let staging = dir.join("staging");
+        let s = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, None),
+            &staging,
+        )
+        .unwrap();
+        assert!(s.plugin_dir.ends_with("owner-repo-abc"));
+        assert_eq!(s.manifest.id, "demo");
+        assert_eq!(s.installed, Installed::Tag("v1".into()));
+        assert!(s.work.starts_with(&staging));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stages_a_real_zip_with_files_at_its_root() {
+        let dir = tmp("zip");
+        let folder = dir.join("plug");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(MANIFEST), conf("")).unwrap();
+        let zip = dir.join("a.zip");
+        let ok = Command::new("/usr/bin/ditto")
+            .args(["-c", "-k"])
+            .arg(&folder)
+            .arg(&zip)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let staging = dir.join("staging");
+        let s = stage(&net_with(&zip), &download(ArchiveKind::Zip, None), &staging).unwrap();
+        assert_eq!(s.plugin_dir, s.work.join("unpacked"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_repo_without_a_manifest_is_not_a_plugin() {
+        let dir = tmp("nomf");
+        let t = tarball(&dir, &[("README.md", "hi")]);
+        let staging = dir.join("staging");
+        let e = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, None),
+            &staging,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "This repo isn't a fuxx plugin (it has no fuxx-plugin.conf)."
+        );
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checksum_mismatch_is_refused() {
+        let dir = tmp("sum");
+        let t = tarball(&dir, &[(MANIFEST, &conf(""))]);
+        let staging = dir.join("staging");
+        let zeros = "0".repeat(64);
+        let e = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, Some(&zeros)),
+            &staging,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "The download didn't match its checksum, so fuxx didn't install it."
+        );
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_matching_checksum_passes_in_any_case() {
+        let dir = tmp("sumok");
+        let t = tarball(&dir, &[(MANIFEST, &conf(""))]);
+        let sum = sha256_of(&t).unwrap().to_uppercase();
+        let staging = dir.join("staging");
+        let s = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, Some(&sum)),
+            &staging,
+        );
+        assert!(s.is_ok(), "{s:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn too_big_is_refused() {
+        let dir = tmp("big");
+        let staging = dir.join("staging");
+        let n = FakeNet {
+            sparse: true,
+            ..Default::default()
+        };
+        let e = stage(&n, &download(ArchiveKind::Tarball, None), &staging).unwrap_err();
+        assert_eq!(e, error_text(&FetchError::TooBig));
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_errors_come_through() {
+        let dir = tmp("fmt");
+        let t = tarball(
+            &dir,
+            &[(
+                MANIFEST,
+                "format = 2\nid = demo\nname = Demo\nversion = 1\n",
+            )],
+        );
+        let staging = dir.join("staging");
+        let e = stage(
+            &net_with(&t),
+            &download(ArchiveKind::Tarball, None),
+            &staging,
+        )
+        .unwrap_err();
+        assert_eq!(e, ManifestError::NewerFormat(2).message());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_archive_cannot_be_unpacked() {
+        let dir = tmp("bad");
+        let junk = dir.join("junk");
+        std::fs::write(&junk, "not an archive").unwrap();
+        let staging = dir.join("staging");
+        let e = stage(
+            &net_with(&junk),
+            &download(ArchiveKind::Tarball, None),
+            &staging,
+        )
+        .unwrap_err();
+        assert_eq!(e, "fuxx couldn't unpack this plugin.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
