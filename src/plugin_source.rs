@@ -47,12 +47,18 @@ fn valid_segment(s: &str) -> bool {
 /// Anything else (other hosts, deeper paths, ssh links) is None.
 pub fn parse_link(text: &str) -> Option<Repo> {
     let t = text.trim();
-    let t = t
+    let no_scheme = t
         .strip_prefix("https://")
         .or_else(|| t.strip_prefix("http://"))
         .unwrap_or(t);
-    let t = t.strip_prefix("www.").unwrap_or(t);
-    let rest = t.strip_prefix("github.com/").unwrap_or(t);
+    let no_www = no_scheme.strip_prefix("www.").unwrap_or(no_scheme);
+    // A scheme or `www.` is only allowed in front of github.com; otherwise the text must be
+    // the bare `owner/repo`.
+    let rest = match no_www.strip_prefix("github.com/") {
+        Some(r) => r,
+        None if no_www.len() == t.len() => t,
+        None => return None,
+    };
     let rest = rest.strip_suffix('/').unwrap_or(rest);
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
     let (owner, name) = rest.split_once('/')?;
@@ -261,6 +267,9 @@ mod tests {
             "https://gitlab.com/o/r",
             "o/r/x",
             "../x/y",
+            "https://gitlab.com/o",
+            "https://example.com/repo",
+            "www.foo/bar",
         ] {
             assert_eq!(parse_link(bad), None, "{bad}");
         }
