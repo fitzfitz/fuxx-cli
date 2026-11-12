@@ -75,9 +75,9 @@ mod plugin_manifest;
 mod plugin_source;
 mod plugin_store;
 mod plugin_themes;
-#[allow(dead_code)] // until the Plugins page calls the actions (M11y Task 7)
 mod plugins;
 mod preferences;
+mod preferences_plugins;
 mod prefs;
 mod presets;
 mod private_socket;

@@ -1736,9 +1736,20 @@ mod tests {
         let settings = f.compose(Scope::Settings, "");
         assert_eq!(
             headers(&settings),
-            ["General", "Appearance", "Sessions", "Browser", "Sound"]
+            [
+                "General",
+                "Appearance",
+                "Sessions",
+                "Browser",
+                "Sound",
+                "Plugins"
+            ]
         );
-        assert_eq!(keys(&settings).len(), 21, "M11x: Banner sound too");
+        assert_eq!(
+            keys(&settings).len(),
+            23,
+            "M11x: Banner sound too; M11y: two plugin controls"
+        );
 
         let root = Path::new("/w/fuxx-cli");
         let ready = |hits, total, capped| Files::Ready {

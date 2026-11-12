@@ -28,6 +28,8 @@ use crate::appearance::{self, Appearance, CursorFun, CursorShapeSetting};
 use crate::fonts;
 use crate::grid::{self, GridSnapshot};
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::plugins;
+use crate::preferences_plugins;
 use crate::prefs::{self, DEFAULT_CHOICE};
 use crate::restore::RestoreMode;
 use crate::settings;
@@ -104,16 +106,19 @@ pub(crate) enum Section {
     Browser,
     /// Key sounds (M11s).
     Sound,
+    /// Plugins from GitHub (M11y).
+    Plugins,
 }
 
 impl Section {
     /// In the list's order, top to bottom.
-    pub(crate) const ALL: [Section; 5] = [
+    pub(crate) const ALL: [Section; 6] = [
         Section::General,
         Section::Appearance,
         Section::Sessions,
         Section::Browser,
         Section::Sound,
+        Section::Plugins,
     ];
 
     pub(crate) fn title(self) -> &'static str {
@@ -123,6 +128,7 @@ impl Section {
             Section::Sessions => "Sessions",
             Section::Browser => "Browser",
             Section::Sound => "Sound",
+            Section::Plugins => "Plugins",
         }
     }
 
@@ -135,6 +141,9 @@ impl Section {
             Section::Browser => "The browser tabs inside your panes.",
             Section::Sound => {
                 "A sound file or web link for each moment; leave it empty for silence."
+            }
+            Section::Plugins => {
+                "Add themes from a GitHub link. Uninstalling removes everything a plugin added."
             }
         }
     }
@@ -200,6 +209,16 @@ impl Section {
                 Group {
                     title: "Notifications",
                     rows: &[Sound(SoundKey::Banner)],
+                },
+            ],
+            Section::Plugins => &[
+                Group {
+                    title: "Install",
+                    rows: &[PluginInstall],
+                },
+                Group {
+                    title: "Installed",
+                    rows: &[PluginList],
                 },
             ],
         }
@@ -274,6 +293,10 @@ pub(crate) enum Control {
     Switch(OnOff),
     /// A key's sound link (M11s): a field, ▶, and the problem under it.
     Sound(SoundKey),
+    /// The GitHub link field and its Install button (M11y).
+    PluginInstall,
+    /// The installed plugins, each with its buttons (M11y).
+    PluginList,
 }
 
 impl Control {
@@ -288,6 +311,8 @@ impl Control {
             Control::CursorStyle => "Style",
             Control::CursorFun => "Fun",
             Control::Sound(key) => key.label(),
+            Control::PluginInstall => "Install a plugin",
+            Control::PluginList => "Installed plugins",
             Control::Switch(OnOff::Animations) => "Animations",
             Control::Switch(OnOff::StatusBar) => "Status Bar",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
@@ -318,6 +343,8 @@ impl Control {
             Control::Sound(SoundKey::Banner) => {
                 "Plays when fuxx shows a banner; never for what only goes to the 🔔 list."
             }
+            Control::PluginInstall => "Paste a repo link and press Enter.",
+            Control::PluginList => "",
             Control::Switch(OnOff::Animations) => ANIMATIONS_NOTE,
             Control::Switch(OnOff::StatusBar) => "The line along the window's foot.",
             Control::Switch(OnOff::CheckUpdates) => CHECK_UPDATES_NOTE,
@@ -372,6 +399,8 @@ impl Control {
             Control::TipsCard => (None, &["tips", "welcome"]),
             Control::CursorStyle => (None, &["cursor-style", "bar", "block", "underline"]),
             Control::CursorFun => (None, &["cursor-fun", "trail", "sparks"]),
+            Control::PluginInstall => (None, &["plugin", "github", "theme", "install"]),
+            Control::PluginList => (None, &["plugin", "uninstall", "update"]),
             Control::Sound(SoundKey::Banner) => (
                 Some(SoundKey::Banner.key()),
                 &["sound", "audio", "notification", "banner"],
@@ -513,6 +542,37 @@ pub(crate) fn dismiss_on_escape(field_focused: bool) -> bool {
     !field_focused
 }
 
+/// `Default` and every theme, the plugin each came from, and each one's swatch: what the
+/// Appearance page lists, read from the current appearance.
+fn theme_lists(cx: &App) -> (Vec<String>, Vec<Option<String>>, Vec<[Rgb; 8]>) {
+    let appearance = cx.global::<Appearance>();
+    let user_dir = appearance.user_theme_dir.clone();
+    let plugin_themes = appearance.plugin_themes.clone();
+    let plugin_names: Vec<String> = plugin_themes.iter().map(|t| t.name.clone()).collect();
+    let themes = prefs::theme_choices(
+        &crate::appearance::user_theme_names(user_dir.as_deref()),
+        &plugin_names,
+    );
+    // The plugin behind each plugin theme, in the order of `themes`.
+    let theme_plugins = themes
+        .iter()
+        .map(|n| {
+            plugin_themes
+                .iter()
+                .find(|t| &t.name == n)
+                .map(|t| t.plugin.clone())
+        })
+        .collect();
+    // As the app reads a theme name (`appearance::read_theme_text`).
+    let read_theme =
+        |name: &str| crate::appearance::read_theme_text(name, user_dir.as_deref(), &plugin_themes);
+    let swatches = themes
+        .iter()
+        .map(|name| prefs::swatch(&prefs::choice_theme(name, &read_theme)))
+        .collect();
+    (themes, theme_plugins, swatches)
+}
+
 pub struct PreferencesView {
     focus_handle: FocusHandle,
     /// The section shown beside the list.
@@ -549,6 +609,10 @@ pub struct PreferencesView {
     sound_inputs: Vec<gpui::Entity<NameInput>>,
     /// Saves a field on Enter or as it loses focus; redraws when a sound loads or fails.
     _sounds: Vec<Subscription>,
+    /// The Plugins page's GitHub link field; Enter installs.
+    pub(crate) plugin_link: gpui::Entity<NameInput>,
+    /// Enter in the link field; the Plugins global changing redraws and rebuilds the theme lists.
+    _plugins: Vec<Subscription>,
 }
 
 impl EventEmitter<DismissEvent> for PreferencesView {}
@@ -584,33 +648,8 @@ impl PreferencesView {
             })
         });
 
-        let appearance = cx.global::<Appearance>();
-        let user_dir = appearance.user_theme_dir.clone();
-        let plugin_themes = appearance.plugin_themes.clone();
-        let plugin_names: Vec<String> = plugin_themes.iter().map(|t| t.name.clone()).collect();
-        let themes = prefs::theme_choices(
-            &crate::appearance::user_theme_names(user_dir.as_deref()),
-            &plugin_names,
-        );
-        // The plugin behind each plugin theme, in the order of `themes`.
-        let theme_plugins: Vec<Option<String>> = themes
-            .iter()
-            .map(|n| {
-                plugin_themes
-                    .iter()
-                    .find(|t| &t.name == n)
-                    .map(|t| t.plugin.clone())
-            })
-            .collect();
-        // As the app reads a theme name (`appearance::read_theme_text`).
-        let read_theme = |name: &str| {
-            crate::appearance::read_theme_text(name, user_dir.as_deref(), &plugin_themes)
-        };
-        let swatches = themes
-            .iter()
-            .map(|name| prefs::swatch(&prefs::choice_theme(name, &read_theme)))
-            .collect();
-        let families = appearance.font_settings.families.clone();
+        let (themes, theme_plugins, swatches) = theme_lists(cx);
+        let families = cx.global::<Appearance>().font_settings.families.clone();
 
         let text_system = cx.text_system().clone();
         let installed = text_system.all_font_names();
@@ -672,6 +711,24 @@ impl PreferencesView {
         // but not yet saved is kept.
         sound_subs.push(cx.on_release(|this, cx| this.save_fields(cx)));
 
+        let plugin_link = cx.new(|cx| NameInput::new(String::new(), window, cx));
+        let plugin_subs = vec![
+            // A plugin installed or removed changes the theme list, so the Appearance page
+            // is rebuilt without reopening the panel.
+            cx.observe_global::<plugins::Plugins>(|this, cx| {
+                (this.themes, this.theme_plugins, this.swatches) = theme_lists(cx);
+                cx.notify();
+            }),
+            cx.subscribe_in(&plugin_link, window, |_, input, event, window, cx| {
+                if let NameInputEvent::Confirm(text) = event {
+                    // Enter with focus in the box is Install; a blur is not.
+                    if gpui::Focusable::focus_handle(input.read(cx), cx).is_focused(window) {
+                        plugins::install(text, window, cx);
+                    }
+                }
+            }),
+        ];
+
         Self {
             focus_handle,
             section,
@@ -690,6 +747,8 @@ impl PreferencesView {
             _workspace: workspace_sub,
             sound_inputs,
             _sounds: sound_subs,
+            plugin_link,
+            _plugins: plugin_subs,
         }
     }
 
@@ -719,6 +778,9 @@ impl PreferencesView {
         }
         self.section = section;
         self.font_menu = false;
+        if section == Section::Plugins {
+            plugins::check_updates(cx);
+        }
         cx.set_global(LastSection(section));
         cx.notify();
     }
@@ -741,6 +803,7 @@ impl PreferencesView {
     fn field_focused(&self, window: &Window, cx: &App) -> bool {
         self.sound_inputs
             .iter()
+            .chain(std::iter::once(&self.plugin_link))
             .any(|input| input.focus_handle(cx).contains_focused(window, cx))
     }
 
@@ -924,6 +987,10 @@ impl PreferencesView {
     /// One row: the setting's name and its explanation (and a sound's problem) at the left, its
     /// control at the right.
     fn row(&self, control: Control, ui: UiColors, cx: &Context<Self>) -> Div {
+        // The list draws its own rows, each with its buttons.
+        if control == Control::PluginList {
+            return preferences_plugins::plugin_cards(ui, cx);
+        }
         let problem = match control {
             Control::Sound(key) => sounds::problem(key, cx),
             _ => None,
@@ -964,6 +1031,10 @@ impl PreferencesView {
             Control::CursorFun => cursor_fun_switch(ui, cx).into_any_element(),
             Control::Switch(s) => on_off_switch(s, ui, cx).into_any_element(),
             Control::Sound(key) => self.sound_control(key, ui, cx).into_any_element(),
+            Control::PluginInstall => {
+                preferences_plugins::install_card(self, ui, cx).into_any_element()
+            }
+            Control::PluginList => div().into_any_element(),
         };
         div()
             .flex()
@@ -1886,11 +1957,11 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        assert_eq!(all.len(), 21);
+        assert_eq!(all.len(), 23);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 21, "names unique");
+        assert_eq!(names.len(), 23, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -2209,13 +2280,38 @@ mod tests {
     }
 
     #[test]
+    fn plugins_page_follows_note_76() {
+        let titles: Vec<&str> = Section::Plugins.groups().iter().map(|g| g.title).collect();
+        assert_eq!(titles, ["Install", "Installed"]);
+        assert_eq!(Section::ALL.last(), Some(&Section::Plugins));
+        assert_eq!(
+            Section::Plugins.lede(),
+            "Add themes from a GitHub link. Uninstalling removes everything a plugin added."
+        );
+        // Found in ⌘K, opening Plugins.
+        let found = palette_settings()
+            .into_iter()
+            .find(|p| p.name == "Install a plugin")
+            .expect("listed");
+        assert_eq!(found.section, Section::Plugins);
+        assert!(found.keywords.contains(&"github"));
+    }
+
+    #[test]
     fn sections_list_every_control_once() {
         use Control::*;
         // The sections, in order, and what each holds (the 2026-11-06 amendment to note 53).
         let titles: Vec<&str> = Section::ALL.iter().map(|s| s.title()).collect();
         assert_eq!(
             titles,
-            ["General", "Appearance", "Sessions", "Browser", "Sound"]
+            [
+                "General",
+                "Appearance",
+                "Sessions",
+                "Browser",
+                "Sound",
+                "Plugins"
+            ]
         );
         assert_eq!(
             Section::General.controls(),
@@ -2261,6 +2357,7 @@ mod tests {
                 Sound(SoundKey::Banner)
             ]
         );
+        assert_eq!(Section::Plugins.controls(), [PluginInstall, PluginList]);
         // Every control, in exactly one section, under its own label.
         let every = [
             Theme,
@@ -2284,6 +2381,8 @@ mod tests {
             Sound(SoundKey::Enter),
             Sound(SoundKey::CtrlC),
             Sound(SoundKey::Banner),
+            PluginInstall,
+            PluginList,
         ];
         let listed: Vec<Control> = Section::ALL.iter().flat_map(|s| s.controls()).collect();
         for control in every {
@@ -2300,7 +2399,8 @@ mod tests {
         assert_eq!(Section::General.step(true), Section::Appearance);
         assert_eq!(Section::Sessions.step(false), Section::Appearance);
         assert_eq!(Section::Browser.step(true), Section::Sound);
-        assert_eq!(Section::Sound.step(true), Section::Sound);
+        assert_eq!(Section::Sound.step(true), Section::Plugins);
+        assert_eq!(Section::Plugins.step(true), Section::Plugins);
         assert_eq!(Section::General.step(false), Section::General);
         // A fresh run opens on General.
         assert_eq!(Section::default(), Section::General);

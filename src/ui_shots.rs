@@ -15141,6 +15141,75 @@ fn preferences_scenes() {
     };
     render_with(&theme, dims, build, act);
     println!("ui-shots: preferences-keys ok");
+    preferences_plugins_scene();
+}
+
+/// `preferences-plugins-installed-<theme>`: the Plugins page with one installed plugin (no
+/// network: the records are made up here) and, in one of two renders, a newer version waiting.
+///
+/// Panics unless the page draws and the waiting update changes it (the Update button is there).
+fn preferences_plugins_scene() {
+    use crate::plugin_source::Installed;
+    use crate::plugin_store::Record;
+    use crate::plugins::Plugins;
+    use crate::preferences::Section;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1400.0), px(900.0));
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let mut shots = Vec::new();
+        for with_update in [false, true] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = palette_build(theme, slot.clone());
+            let act = {
+                let slot = slot.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let ws = slotted(&slot);
+                    cx.update(|cx| {
+                        let mut plugins = Plugins {
+                            records: vec![Record {
+                                id: "sunset".into(),
+                                name: "Sunset".into(),
+                                version: "1.0.0".into(),
+                                description: Some("Warm evening colours.".into()),
+                                repo: "someone/fuxx-sunset".into(),
+                                installed: Installed::Tag("v1.0.0".into()),
+                                themes: vec!["Sunset".into(), "Sunset Light".into()],
+                                installed_at: 0,
+                            }],
+                            ..Plugins::default()
+                        };
+                        if with_update {
+                            plugins
+                                .updates
+                                .insert("sunset".into(), Installed::Tag("v1.1.0".into()));
+                        }
+                        cx.set_global(plugins);
+                    });
+                    open_preferences_on(cx, window, &ws, Section::Plugins, true);
+                    slot.borrow_mut().take();
+                }
+            };
+            if with_update {
+                let path = shoot_with(
+                    "preferences",
+                    &format!("plugins-installed-{slug}"),
+                    &theme,
+                    dims,
+                    build.clone(),
+                    act.clone(),
+                );
+                println!("ui-shots: {}", path.display());
+            }
+            shots.push(render_with(&theme, dims, build, act));
+        }
+        assert_ne!(
+            shots[0].rgba, shots[1].rgba,
+            "preferences-plugins-installed-{slug}: a waiting update doesn't change the page"
+        );
+    }
 }
 
 /// The sidebar button in the top band, as small windows of the top left corner, in both themes:
