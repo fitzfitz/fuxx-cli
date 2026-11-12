@@ -233,7 +233,9 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
             }
         }
         lines[row as usize][col] = CellView {
-            ch: if flags.contains(Flags::HIDDEN) {
+            // A tab (HT leaves '\t' in the cell it starts from, for copy) draws as a blank:
+            // shaped as text it gets a tab-stop advance and pushes the rest off the grid.
+            ch: if flags.contains(Flags::HIDDEN) || cell.c == '\t' {
                 ' '
             } else {
                 cell.c
@@ -558,6 +560,18 @@ z"
         assert_eq!(snap.lines[0][2].fg, RED);
         assert_eq!(snap.lines[0][0].fg, Theme::default().foreground);
         assert_eq!(snap.cursor.map(|c| (c.row, c.col)), Some((0, 3)));
+    }
+
+    #[test]
+    fn snapshot_draws_a_tab_cell_as_a_blank() {
+        // HT stores '\t' in the blank cell it starts from; shaped as text, CoreText gives it a
+        // tab-stop advance and knocks what follows off the grid (`ls -C` columns drift).
+        let snap = snapshot(&term_with(b"ab\tc"), &Theme::default());
+        let row: String = snap.lines[0].iter().map(|c| c.ch).collect();
+        assert_eq!(row, "ab      c ");
+        let spans = text_spans(&snap.lines[0]);
+        assert!(spans.iter().all(|s| !s.text.contains('\t')), "{spans:?}");
+        assert_eq!(spans[0].col + spans[0].text.find('c').unwrap(), 8);
     }
 
     #[test]
