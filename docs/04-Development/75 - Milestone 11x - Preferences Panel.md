@@ -1,8 +1,8 @@
 # Milestone 11x — Preferences Panel
 
-**Status:** 🟨 built 2026-11-12 on branch `m11x-preferences-panel` (not committed); waiting for your on-screen check
-(below). Designed with you (mockups round 9: `prefs-panel-v1`, `prefs-appearance-v1`, `prefs-rest-v1`; "all good, go
-ahead"). Plan [[M11x Plan - Preferences Panel]].
+**Status:** 🟨 built 2026-11-12, committed (`7082308`) and released in **v0.10.0** (run 43208136200) on your word
+("commit, push and release"); waiting for your on-screen check (below). Designed with you (mockups round 9:
+`prefs-panel-v1`, `prefs-appearance-v1`, `prefs-rest-v1`; "all good, go ahead"). Plan [[M11x Plan - Preferences Panel]].
 **Asked for:** 2026-11-12, by you, after v0.9.0: "I want to redesign the "Preference" window specifically on the tabs
 (sidebar), category, fields, labels, window style, etc." with a screenshot of a settings panel → why: "It looks plain
 and messy, everything crammed together. And the how it present the window, the image is much cooler (radius big and
