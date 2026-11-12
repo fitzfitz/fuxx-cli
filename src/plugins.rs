@@ -11,10 +11,12 @@ use gpui::{AnyWindowHandle, App, Global, PromptLevel, Window};
 use crate::appearance::{self, Appearance};
 use crate::plugin_fetch::{self, Curl, Staged};
 use crate::plugin_manifest::{self, CODE_ALLOWED, Manifest};
+use crate::plugin_shell;
 use crate::plugin_source::{self, Installed, LINK_HINT, Repo};
 use crate::plugin_store::{self, Folders, Record};
 use crate::plugin_themes;
 use crate::settings;
+use crate::shell_integration;
 
 /// How long after launch fuxx first asks GitHub whether installed plugins have a newer version.
 pub const FIRST_CHECK: Duration = Duration::from_secs(15);
@@ -28,6 +30,8 @@ pub enum Busy {
     Checking,
     Removing(String),
     Updating(String),
+    #[allow(dead_code)] // the On/Off switch on the page (a later M11z task) is the first caller
+    Switching(String),
 }
 
 /// The line the page shows under the list.
@@ -85,6 +89,57 @@ pub fn install_prompt(m: &Manifest, repo: &Repo) -> (String, String, PromptLevel
     (title, lines.join("\n"), level)
 }
 
+/// What happened, for the line under the list.
+#[allow(dead_code)] // the On/Off switch on the page (a later M11z task) is the first caller
+#[derive(Clone, Debug, PartialEq)]
+pub enum Done {
+    Installed,
+    /// The label of the version now installed.
+    Updated(String),
+    Uninstalled,
+    On,
+    Off,
+}
+
+const NEW_TERMINALS: &str =
+    "New terminals get the change; terminals already open keep it until you close them.";
+
+/// The success line. A plugin that runs code adds when the change reaches terminals.
+pub fn success_text(name: &str, done: &Done, runs_code: bool) -> String {
+    let base = match done {
+        Done::Installed => format!("Installed {name}. Its themes are in Appearance."),
+        Done::Updated(label) => format!("Updated {name} to {label}."),
+        Done::Uninstalled => format!("Uninstalled {name}."),
+        Done::On => format!("{name} is on."),
+        Done::Off => format!("{name} is off."),
+    };
+    if runs_code {
+        format!("{base} {NEW_TERMINALS}")
+    } else {
+        base
+    }
+}
+
+/// An update asks again when the new version runs code and the installed one doesn't.
+pub fn update_needs_a_prompt(record: &Record, m: &Manifest) -> bool {
+    m.runs_code() && !record.runs_code()
+}
+
+/// Rewrite `plugins.zsh` from the list as it is on disk, off the UI thread, so terminals
+/// opened from now on see it. Quiet when fuxx has nowhere to keep it.
+fn regenerate(f: Folders, cx: &mut App) {
+    let Some(dir) = shell_integration::integration_dir() else {
+        return;
+    };
+    cx.background_executor()
+        .spawn(async move {
+            let records = plugin_store::load(&f);
+            // A failed write leaves the old script; there's nobody to tell at this point.
+            let _ = plugin_shell::write(&dir, &f, &records);
+        })
+        .detach();
+}
+
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -107,7 +162,11 @@ fn set_message(cx: &mut App, text: impl Into<String>, error: bool) {
 /// Reread what is installed and rebuild the theme lists, so the page shows the disk as it is
 /// now. Runs after every operation, failed or not: a half-done one may have changed files.
 fn refresh(cx: &mut App, id: Option<&str>) {
-    let records = folders(cx).map(|f| plugin_store::load(&f));
+    let f = folders(cx);
+    let records = f.as_ref().map(plugin_store::load);
+    if let Some(f) = f {
+        regenerate(f, cx);
+    }
     let p = cx.global_mut::<Plugins>();
     if let Some(records) = records {
         p.records = records;
@@ -174,9 +233,14 @@ pub fn init(cx: &mut App) {
     });
     if let Some(f) = f {
         // Mending can delete big folders, so it runs off the UI thread; the list is read again after.
+        let dir = shell_integration::integration_dir();
         let mend = cx.background_executor().spawn(async move {
             plugin_store::launch_cleanup(&f);
-            plugin_store::load(&f)
+            let records = plugin_store::load(&f);
+            if let Some(dir) = dir {
+                let _ = plugin_shell::write(&dir, &f, &records);
+            }
+            records
         });
         cx.spawn(async move |cx| {
             let records = mend.await;
@@ -298,15 +362,37 @@ fn confirm_install(handle: AnyWindowHandle, f: Folders, repo: Repo, staged: Stag
     }
     cx.global_mut::<Plugins>().busy = Some(Busy::Checking);
     cx.refresh_windows();
-    let (title, detail, level) = install_prompt(&staged.manifest, &repo);
+    ask_then_commit(handle, f, repo, staged, false, cx);
+}
+
+/// Show the install sheet and commit on a yes. `update` is true for a newer version of an
+/// installed plugin. The window may have closed meanwhile, which counts as a no.
+fn ask_then_commit(
+    handle: AnyWindowHandle,
+    f: Folders,
+    repo: Repo,
+    staged: Staged,
+    update: bool,
+    cx: &mut App,
+) {
+    let (mut title, detail, level) = install_prompt(&staged.manifest, &repo);
+    let yes_label = if update { "Update" } else { "Install" };
+    if update {
+        title = title.replacen("Install", "Update", 1);
+    }
     let work = staged.work.clone();
     let asked = handle.update(cx, move |_, window, cx| {
-        let answer = window.prompt(level, &title, Some(&detail), &["Install", "Cancel"], cx);
+        let answer = window.prompt(level, &title, Some(&detail), &[yes_label, "Cancel"], cx);
         cx.spawn(async move |cx| {
             let yes = answer.await.ok() == Some(0);
             cx.update(|cx| {
                 if yes {
-                    finish_commit(f, repo, staged, "Installed", cx);
+                    let done = if update {
+                        Done::Updated(staged.installed.label())
+                    } else {
+                        Done::Installed
+                    };
+                    finish_commit(f, repo, staged, done, cx);
                 } else {
                     discard(staged.work.clone(), cx);
                     idle(cx);
@@ -321,10 +407,9 @@ fn confirm_install(handle: AnyWindowHandle, f: Folders, repo: Repo, staged: Stag
     }
 }
 
-/// Move the staged plugin into place and report it. `verb` is "Installed" or "Updated". The
-/// move (which deletes an old version) and the scratch folder's removal run off the UI thread.
-fn finish_commit(f: Folders, repo: Repo, staged: Staged, verb: &'static str, cx: &mut App) {
-    let label = staged.installed.label();
+/// Move the staged plugin into place and report it as `done`. The move (which deletes an old
+/// version) and the scratch folder's removal run off the UI thread.
+fn finish_commit(f: Folders, repo: Repo, staged: Staged, done: Done, cx: &mut App) {
     let id = staged.manifest.id.clone();
     let work = cx.background_executor().spawn(async move {
         let done = plugin_store::commit(
@@ -339,14 +424,10 @@ fn finish_commit(f: Folders, repo: Repo, staged: Staged, verb: &'static str, cx:
         done
     });
     cx.spawn(async move |cx| {
-        let done = work.await;
-        cx.update(|cx| match done {
+        let committed = work.await;
+        cx.update(|cx| match committed {
             Ok(record) => {
-                let text = if verb == "Installed" {
-                    format!("Installed {}. Its themes are in Appearance.", record.name)
-                } else {
-                    format!("Updated {} to {label}.", record.name)
-                };
+                let text = success_text(&record.name, &done, record.runs_code());
                 succeed(cx, &record.id, text);
             }
             Err(e) => fail(cx, Some(&id), e),
@@ -355,8 +436,9 @@ fn finish_commit(f: Folders, repo: Repo, staged: Staged, verb: &'static str, cx:
     .detach();
 }
 
-/// Update plugin `id` to its latest version. The click is the consent, so there is no sheet.
-pub fn update(id: &str, _window: &mut Window, cx: &mut App) {
+/// Update plugin `id` to its latest version. The click is the consent, so there is no sheet,
+/// unless the new version runs code and the installed one didn't: that asks like an install.
+pub fn update(id: &str, window: &mut Window, cx: &mut App) {
     if !can_start(cx.global::<Plugins>()) {
         return;
     }
@@ -376,6 +458,7 @@ pub fn update(id: &str, _window: &mut Window, cx: &mut App) {
     let Some(f) = begin(cx, Busy::Updating(record.id.clone())) else {
         return;
     };
+    let handle = window.window_handle();
     download(
         repo.clone(),
         f.staging(),
@@ -396,8 +479,11 @@ pub fn update(id: &str, _window: &mut Window, cx: &mut App) {
                             staged.manifest.id
                         ),
                     );
+                } else if update_needs_a_prompt(&record, &staged.manifest) {
+                    ask_then_commit(handle, f, repo, staged, true, cx);
                 } else {
-                    finish_commit(f, repo, staged, "Updated", cx);
+                    let done = Done::Updated(staged.installed.label());
+                    finish_commit(f, repo, staged, done, cx);
                 }
             }
         },
@@ -463,8 +549,36 @@ fn remove(record: Record, cx: &mut App) {
     cx.spawn(async move |cx| {
         let done = work.await;
         cx.update(|cx| match done {
-            Ok(()) => succeed(cx, &record.id, format!("Uninstalled {}.", record.name)),
+            Ok(()) => {
+                let text = success_text(&record.name, &Done::Uninstalled, record.runs_code());
+                succeed(cx, &record.id, text);
+            }
             Err(e) => fail(cx, Some(&record.id), e),
+        });
+    })
+    .detach();
+}
+
+/// Turn plugin `id` On or Off. Only its record changes, so it's quick, but it still runs off
+/// the UI thread like the rest.
+#[allow(dead_code)] // the On/Off switch on the page (a later M11z task) is the first caller
+pub fn set_enabled(id: &str, on: bool, cx: &mut App) {
+    let Some(f) = begin(cx, Busy::Switching(id.to_string())) else {
+        return;
+    };
+    let id = id.to_string();
+    let work = cx
+        .background_executor()
+        .spawn(async move { plugin_store::set_enabled(&f, &id, on) });
+    cx.spawn(async move |cx| {
+        let done = work.await;
+        cx.update(|cx| match done {
+            Ok(record) => {
+                let done = if on { Done::On } else { Done::Off };
+                let text = success_text(&record.name, &done, record.runs_code());
+                succeed(cx, &record.id, text);
+            }
+            Err(e) => fail(cx, None, e),
         });
     })
     .detach();
@@ -539,5 +653,75 @@ mod tests {
         assert!(!can_start(&p));
         p.cleaning = false;
         assert!(can_start(&p));
+    }
+
+    fn record(zsh: &[&str]) -> Record {
+        Record {
+            id: "helper".into(),
+            name: "Helper".into(),
+            version: "1".into(),
+            description: None,
+            repo: "o/helper".into(),
+            installed: plugin_source::Installed::Tag("v1".into()),
+            themes: Vec::new(),
+            installed_at: 0,
+            enabled: true,
+            bin: None,
+            zsh: zsh.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn an_update_asks_when_code_appears() {
+        let code = plugin_manifest::parse(
+            "format = 1\nid = helper\nname = Helper\nversion = 2\nzsh = a.zsh\n",
+        )
+        .unwrap();
+        assert!(update_needs_a_prompt(&record(&[]), &code));
+        assert!(!update_needs_a_prompt(&record(&["a.zsh"]), &code));
+        assert!(!update_needs_a_prompt(&record(&[]), &sunset_manifest()));
+        assert!(!update_needs_a_prompt(
+            &record(&["a.zsh"]),
+            &sunset_manifest()
+        ));
+    }
+
+    #[test]
+    fn success_lines() {
+        let more =
+            " New terminals get the change; terminals already open keep it until you close them.";
+        let updated = Done::Updated("v2".into());
+        assert_eq!(
+            success_text("Sunset", &Done::Installed, false),
+            "Installed Sunset. Its themes are in Appearance."
+        );
+        assert_eq!(
+            success_text("Sunset", &updated, false),
+            "Updated Sunset to v2."
+        );
+        assert_eq!(
+            success_text("Sunset", &Done::Uninstalled, false),
+            "Uninstalled Sunset."
+        );
+        assert_eq!(
+            success_text("Helper", &Done::Installed, true),
+            format!("Installed Helper. Its themes are in Appearance.{more}")
+        );
+        assert_eq!(
+            success_text("Helper", &updated, true),
+            format!("Updated Helper to v2.{more}")
+        );
+        assert_eq!(
+            success_text("Helper", &Done::Uninstalled, true),
+            format!("Uninstalled Helper.{more}")
+        );
+        assert_eq!(
+            success_text("Helper", &Done::On, true),
+            format!("Helper is on.{more}")
+        );
+        assert_eq!(
+            success_text("Helper", &Done::Off, true),
+            format!("Helper is off.{more}")
+        );
     }
 }
