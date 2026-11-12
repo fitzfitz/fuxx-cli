@@ -391,7 +391,7 @@ impl Workspace {
                 self.note_notification(entry);
                 cx.notify();
                 let about = self.banner_about(terminal);
-                cx.background_spawn(async move { notifier::fire(&title, &body, about) })
+                cx.background_spawn(async move { notifier::fire(&title, "", &body, about) })
                     .detach();
                 Ok(json!({}))
             }

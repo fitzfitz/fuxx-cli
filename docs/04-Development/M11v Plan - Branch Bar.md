@@ -141,3 +141,26 @@
 - [ ] Failing tests: the setting parses `on`/`off` (default on) and round-trips; the workspace's layout leaves out the status bar when off (a model/pure check where the layout is computed).
 - [ ] Implement: the setting, the General row (On/Off switch like the others), the render skips the bar.
 - [ ] ui-shots: `preferences` (the new row), a scene with the bar off.
+
+---
+
+## Part 4 — Files / Activity redesign, sizes, chevrons (note 73 "Part 4")
+
+### Task 11: shared sizes and the Files tab (A)
+- [ ] Constants: right sidebar `ROW` 22→28, text 14 / 12, icons 16, header 42, tab labels 13; Changes adopts them.
+- [ ] Files: header (name + tooltip path + Collapse all icon button), borderless filter field, tree without the
+  disclosure column (folder icon open/closed; click toggles), quiet grey icons, colour only on changed names and
+  letters, struck-through deleted names, a dot on folders with changes, 16 pt hairline guides, pill hover/selection.
+- [ ] Tests for any pure helper (e.g. a folder-has-changes check); `files`, `right-sidebar`, `right-panels`,
+  `changes`, `changes-staging`, `changes-bar` ui-shots updated to the new geometry and passing.
+
+### Task 12: Activity (A)
+- [ ] Header with the status pill; the timeline rows (rail, dot, title, second line, time, progress bar, question
+  box), a day heading. Pure helpers tested (the second line's words, the day heading). `activity` ui-shots updated.
+
+### Task 13: thin chevrons
+- [ ] A thin stroked chevron glyph (› / ⌄); the left sidebar's group headers use it at the far right after the
+  count (name 14 pt, count 12 pt); any other ▸/▾ disclosure in the app too. `sidebar`, `workspaces` ui-shots pass.
+
+### Task 14: verify and docs
+- [ ] Full `cargo test`, fmt, clippy (no new warnings), every ui-shot scene; note 73, Progress Log, Roadmap.

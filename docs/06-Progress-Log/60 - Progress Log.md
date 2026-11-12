@@ -22,6 +22,20 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-12 — M11v part 6: STAGED / CHANGES accordions, the Publish icon (branch `m11v-part4`, not committed)
+- **Did:** Your picks: Publish is C (a branch with an up arrow), the bar's icons 15 pt in 26 pt buttons; STAGED and CHANGES are accordions (a thin chevron before each, a click opens or closes it; closed keeps the header), their words at the row's foot for more room between the groups. Tests first (`rows_of_in`, `toggle_group`); the `changes`, `changes-staging`, `changes-bar` ui-shots pass.
+- **Next:** design "Graph" (an accordion under CHANGES) with you.
+
+### 2026-11-12 — M11v part 5: banners that say something (branch `m11v-part4`, not committed)
+- **Did:** Your report ("the notification … doesn't tell much … different from in-app notification") → proposal → "yess". Banners now: the workspace's name and what happened as the title (`Chores list — Finished`), a subtitle `#3 · proj · claude`, a body with what the agent was doing and for how long (`✳ Breadcrumb tiket … · worked 34s`); one banner per terminal (a new one replaces its last; grouped per terminal); no banner for a Finished run under 10 s (the 🔔 list keeps it); the 🔔 list says the same words. Tests first (banner_title, banner_subtitle, the body, worth_a_banner, banner_number); 1406 pass; fmt clean; clippy 27 (one fewer); `banner-click`, `api-background`, `overlays`, `title-area` ui-shots pass.
+- **Found:** your extra Claude Code banners aren't fuxx's: the ECC plugin's `stop:desktop-notify` hook posts its own `osascript` banner outside iTerm2. fuxx never turns a program's OSC 9 / 99 / 777 into a banner. Left to you (ECC's own switch: `ECC_DISABLED_HOOKS=stop:desktop-notify`).
+- **Next:** your look (cargo run), then commit / release on your word.
+
+### 2026-11-12 — M11v part 4: Files and Activity redesigned (branch `m11v-part4`, not committed, waiting for your check)
+- **Did:** Your asks after v0.8.0: the bar's ▾ gone and its hover as wide as the branch; icon-only bar buttons ("make it just icon … don't lose the hover"); "redesign the Files and Activity tab … too messy" → round 5 → "Files A and Activity A, include it in M11v … the text is too small and the icons are too small" → round 6 → "A. And use thin line chevrons on other sections with arrow"; then "remove the hidden cmd + #, the timer looks floating". Note 73 "Part 4", plan Tasks 11–14. Built (a sub-agent did most of the code, a hook stopped its shell mid-way; finished here): one right-sidebar system (28 pt rows, 14 / 12 pt text, 16 pt icons, 42 pt headers, a 12 pt edge, pill hovers); Files A (name + Collapse all, a borderless filter, no triangles, quiet grey icons, colour only on changed files, a struck-through deleted name, a dot on changed folders); Activity A (a status pill, a timeline with coloured dots, second lines, progress bars, the question in a tinted box, day headings); thin chevrons in the left sidebar's group headers; the ⌘N hint swaps with the age on hover. 1403 tests pass; fmt clean; clippy no new warnings; ui-shots rewritten and passing (see below).
+- **Learned:** a hover style that changes what takes room (`hidden` → `flex`) crashes GPUI ("must call prepaint before paint"): hover may only change looks; the ui-shots caught it in eight scenes.
+- **Next:** your look (cargo run), then commit / release on your word.
+
 ### 2026-11-11 — v0.8.0 released (M11v: the branch bar, Staged / Changes, Status Bar on/off)
 - **Did:** On your word ("commit, push dan release"): every ui-shot scene but the old title-bar one passed (79), M11v committed (`789fcab`) and fast-forwarded onto master, bumped to 0.8.0 with the README's version (`55f0bd9`), tagged `v0.8.0` and pushed; Release run 43001030843 green. Release: https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.8.0, asset `fuxx-0.8.0.zip`. 0.8.0, not 0.7.3: fuxx's first stage / unstage / revert, pull and push (AI's call).
 - **Next:** update fuxx.app to 0.8.0 (Update Available), then your check (note 73, 19 items); then M11p.

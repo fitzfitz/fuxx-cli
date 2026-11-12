@@ -2107,17 +2107,31 @@ impl Workspace {
             self.emit(&change, Some(index));
         }
         if notify && notifier::should_notify(old, new, is_active, window_active) {
-            if let Some((message, body)) =
-                notifier::message(new).zip(notifier::body(new, question.as_deref(), worked))
-            {
-                // The group says more than the name (often ╭∩╮) among many workspaces; the number
-                // is its workspace's (what ⌘1–⌘9 take you to).
+            // Part 5: what the agent was doing (its terminal's title) and who it is.
+            let doing = self.sessions.items()[index].title.clone();
+            let agent = match self.programs.state(id) {
+                ProgramState::Running(name) if !name.is_empty() => Some(name),
+                _ => None,
+            };
+            if let Some((message, body)) = notifier::message(new).zip(notifier::body(
+                new,
+                question.as_deref(),
+                worked,
+                doing.as_deref(),
+            )) {
+                // The workspace's name, as the sidebar and the 🔔 list say it (part 5); where
+                // and who in the subtitle: its number (what ⌘1–⌘9 take you to), its group, the
+                // agent.
                 let ws = self.workspace_of(index);
-                let who = ws
-                    .and_then(|ws| self.group_label(ws))
-                    .unwrap_or_else(|| label.to_string());
+                let name = ws.map_or_else(
+                    || label.to_string(),
+                    |ws| self.workspace_label(ws).to_string(),
+                );
+                let group = ws.and_then(|ws| self.group_label(ws));
                 let number = ws.and_then(|ws| self.workspace_number(ws)).unwrap_or(0);
-                let summary = notification_summary(number, &who, message);
+                let summary = notifier::banner_title(&name, message);
+                let subtitle =
+                    notifier::banner_subtitle(number, group.as_deref(), &name, agent.as_deref());
                 let posted = Event::Notification {
                     title: &summary,
                     body: &body,
@@ -2125,17 +2139,19 @@ impl Workspace {
                 self.emit(&posted, Some(index));
                 self.note_notification(notification_list::Entry {
                     terminal: Some(self.sessions.items()[index].id),
-                    title: ws.map_or_else(
-                        || label.to_string(),
-                        |ws| self.workspace_label(ws).to_string(),
-                    ),
+                    title: name,
                     message: body.clone(),
                     status: Some(new),
                     at: Instant::now(),
                 });
-                let about = self.banner_about(terminal);
-                cx.background_spawn(async move { notifier::fire(&summary, &body, about) })
+                // A short run (an agent's pause) is in the 🔔 list but makes no banner.
+                if notifier::worth_a_banner(new, worked) {
+                    let about = self.banner_about(terminal);
+                    cx.background_spawn(async move {
+                        notifier::fire(&summary, &subtitle, &body, about)
+                    })
                     .detach();
+                }
             }
         }
         self.check_waits(&[], cx);
@@ -3539,12 +3555,6 @@ impl Workspace {
     }
 }
 
-/// A notification's title: `#<n> <who> — <message>`, `n` being the session's workspace's place
-/// in the sidebar and `who` its group (else the session's name).
-pub(crate) fn notification_summary(number: usize, who: &str, message: &str) -> String {
-    format!("#{number} {who} — {message}")
-}
-
 /// The window's title for the focused workspace: `fuxx — #<n> <name>`.
 pub(crate) fn window_title(number: usize, name: &str) -> String {
     format!("fuxx — #{number} {name}")
@@ -3784,8 +3794,8 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, daemon_create, notification_summary,
-        programs_wait, scripting_env, session_env, starts_window_move, window_title,
+        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, daemon_create, programs_wait, scripting_env,
+        session_env, starts_window_move, window_title,
     };
     use crate::presets::Preset;
     use crate::procs::{ProgramState, parse_ps};
@@ -4092,14 +4102,6 @@ mod tests {
 
     #[test]
     fn notification_and_title_text() {
-        assert_eq!(
-            notification_summary(3, "api", "Needs your input"),
-            "#3 api \u{2014} Needs your input"
-        );
-        assert_eq!(
-            notification_summary(12, "\u{1f595}", "Finished"),
-            "#12 \u{1f595} \u{2014} Finished"
-        );
         assert_eq!(window_title(3, "claude"), "fuxx \u{2014} #3 claude");
     }
 }

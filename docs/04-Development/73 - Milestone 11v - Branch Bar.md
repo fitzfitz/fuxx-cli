@@ -107,6 +107,90 @@ and implement it"**.
   when the bar is on (the update itself still downloads in the background as before). The label is "Status Bar",
   as you wrote it. With the bar off, the 🔔 list and the + menu sit on the footer (no gap where the bar was).
 
+## Part 4: Files and Activity redesigned, bigger, no triangles (added 2026-11-11)
+
+**Asked for:** "remove arrow and don't make it 100% width" + "make the icon smaller, reduce the padding and remove the
+border … just icon … don't lose the hover" (the bar: done) → "redesign the Files and Activity tab … too messy … the
+gaps are messy" → mockups round 5 → "Files A and Activity A, include it in M11v. But I dont like the overall arrow
+icon on File tree, and other places. Also the text is too small and the icons are too small" → round 6 → "A. And
+use thin line chevrons on other sections with arrow".
+
+- **One system for the right sidebar's three tabs:** tab labels 13 pt; a 42 pt header (title 14 pt semibold on a
+  12 pt left edge; icon buttons 26 pt with 15 pt icons at the right); rows 28 pt; text 14 pt, small text 12 pt;
+  icons 16 pt; hover and selection as rounded pills (7 pt corners) inset 6 pt, so every row's content starts on
+  the 12 pt edge. Changes takes the same sizes (its circles 16 pt).
+- **Files (A, quiet tree):** the header is the repo's name (its full path in the tooltip; the path line is gone) and
+  Collapse all as an icon button. Under it a borderless filter field (filled one step darker than the panel, 32 pt,
+  a search icon and "Filter files"). The tree has **no triangles**: a folder shows the open or the closed folder icon
+  and a click opens or closes it. All icons one quiet grey; only changed files have colour (the name and its
+  M / A / D letter at the right); a deleted file's name is struck through; a folder with changes inside shows a
+  small dot. Indent guides are hairlines, 16 pt a level.
+- **Activity (A, timeline):** the header is the terminal's name and its status as a coloured pill (`Done · 4m`,
+  green; waiting red; cultivating yellow; idle grey), a hairline under it, then the events on a thin rail: an 8 pt
+  dot coloured by kind (status colours; progress the accent; a note grey), the event 14 pt, a faint 12 pt second
+  line (`Worked 11 min`, `Note`), the time right-aligned (12 pt, faint, tabular); progress has a 3 pt bar; a waiting
+  question shows in a tinted box. Grouped under a small-caps day heading (`TODAY`, else the date).
+- **The ⌘N hint** (your ask: "remove the hidden cmd + #, the timer looks floating when it's hidden"): the age sits
+  at the row's right edge; hovering shows the hint in its place.
+- **Arrows:** the Files tree has none (above). Every other ▸ / ▾ that opens or closes something becomes a **thin
+  line chevron** (› turning ⌄, 12 pt, faint): the left sidebar's group headers (at the far right, after the count).
+  The left sidebar's group header text a size up too (name 14 pt, count 12 pt).
+- **AI's calls:** no "reveal the open file" button, no ⌘F hint and no Clear in Activity: none exists today, and
+  adding them is new behaviour (ask if you want them); the terminal and the left sidebar's rows keep their sizes.
+
+### Part 4 as built
+
+- The branch bar first (your two asks): no ▾ after the branch, the branch's hover as wide as its name; Fetch and the
+  action are bare 11 pt icons in 22 pt buttons, no border (the action's icon in the accent), a fill only on hover.
+- One right-sidebar system (`right_sidebar.rs`: rows 28, text 14 / 12, header 42, icons 16, a 12 pt edge, pills
+  inset 6, header buttons 26 with 15 pt icons, tab labels 13) shared by Files, Changes and Activity.
+- Files: the root keeps its fold, with a thin chevron after its name (the "other arrows" rule); the filter field is
+  filled with the tab strip's colour; type tints left the tree (still in the palette).
+- Activity: a timeline in a variable-height list; the separate waiting card is gone (the newest Needs input event
+  shows its question in its tinted box); it jumps back to the newest event when the log changes.
+- Left sidebar: group headers 14 / 12 pt with a thin chevron that still turns; the ⌘N hint no longer leaves a gap:
+  the age sits at the row's right edge and, on hover, the hint shows in its place (first built with `hidden` →
+  `flex` on hover, which crashed GPUI: a hover style must never change what takes room; found by the ui-shots).
+- Built by a sub-agent (stopped by a hook mid-way), finished and checked here: 1403 tests, fmt clean, clippy no new
+  warnings, every ui-shot scene but the old `title-bar` one (the Files, Activity, Changes and sidebar scenes'
+  checks rewritten to the new geometry).
+
+## Part 5: banners that say something (added 2026-11-12)
+
+**Asked for:** "check also the notification. it doesn't tell much about what it is and its different from in-app
+notification" → (proposal) "yess".
+
+- **Title:** the workspace's name, as the sidebar and the 🔔 list say it, and what happened:
+  `Chores list — Finished` / `Chores list — Needs your input` (was `#3 proj — Finished`).
+- **Subtitle** (new): `#3 · proj · claude`: its ⌘ number, its folder group (left out when it is the name) and the
+  agent running there.
+- **Body:** Finished says what the agent was doing (its terminal's title) and for how long:
+  `✳ Breadcrumb tiket dan dropdown · worked 34s` (else `Worked for 34s`); Needs input shows the question.
+- **One banner per terminal:** a terminal's new banner replaces its last (one request identifier per terminal in a
+  run; a click still goes to that terminal), and Notification Center groups each terminal's banners.
+- **Short runs stay quiet:** a Finished run shorter than 10 s (an agent's pause) makes no banner; the 🔔 list still
+  has it (AI's call: 10 s).
+- **The 🔔 list** says the same: the workspace's name, then the same body.
+- **Not fuxx's:** the extra banners from Claude Code come from the ECC plugin's `stop:desktop-notify` hook (outside
+  iTerm2 it posts its own `osascript` banner, owned by Script Editor); fuxx never turns a program's notification
+  escape (OSC 9 / 99 / 777) into a banner, it only reads it as "the agent is done or waiting". Your plugin setting,
+  left to you.
+
+## Part 6: accordions and a clearer Publish (added 2026-11-12)
+
+**Asked for:** "the publish button now look too small, is there any more icon for this?" → round 7 → "go with C";
+"can we make Staged and Changes as accordion? we use chevron beside text … Add more gap between Staged and Changes
+sections".
+
+- **Publish** is a small branch with an arrow going up beside it (C); the bar's icons are 15 pt in 26 pt buttons
+  (as the mockup), still bare (a fill on hover).
+- **STAGED and CHANGES are accordions:** a thin chevron before each (› closed, ⌄ open); a click on the header opens or
+  closes it; a closed group keeps its header, its rows go (`… N more` goes with CHANGES). Both open at first; not
+  saved between runs (AI's call).
+- **More room between the groups:** a header's words sit at the foot of its row, so the space above each group is
+  larger than between rows (the list's rows are one height; AI's call).
+- **Next (your ask):** a "Graph" accordion below CHANGES, to be designed with you first.
+
 ## How (the git)
 
 - **Reading** where the branch stands is local only (no network): with the Changes list's 2 s refresh, while the tab
