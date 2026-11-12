@@ -148,7 +148,7 @@ sound-enter = /System/Library/Sounds/Tink.aiff
 A plugin is a public GitHub repo with a `fuxx-plugin.conf` file at its top. Anyone can install it from
 **Settings → Plugins** by pasting the repo's link, and remove it again from the same page.
 
-This version installs **theme plugins**. A theme is a plain text file in fuxx's theme format. Here is a plugin
+A plugin can share **themes** or bring **helper programs** (below). A theme is a plain text file in fuxx's theme format. Here is a plugin
 that shares two:
 
 ```ini
@@ -172,6 +172,8 @@ There is a complete example in [`examples/plugins/sunset-themes`](examples/plugi
 | `name` | yes | What Settings → Plugins shows. |
 | `version` | yes | Shown next to the name. Free text. |
 | `description` | no | One line under the name. |
+| `bin` | no | A folder of programs to put on `PATH`. See Helper programs. |
+| `zsh` | no, repeat it | A zsh script to load in every new terminal. |
 | `theme` | no, repeat it | A theme file, as a path inside the plugin. Its file name is the theme's name. |
 
 Good to know:
@@ -181,7 +183,30 @@ Good to know:
 - Without releases, fuxx installs and updates from the default branch, so pushing is enough to offer an update.
   Once the repo has a release, fuxx installs the newest release instead (a `fuxx-plugin-macos-*.zip` asset if you
   attach one, otherwise the release's source), so make a new release after you change the plugin.
-- Plugins that run programs come in a later version. For now fuxx refuses a plugin that has `bin` or `zsh`.
+
+### Helper programs
+
+A plugin can also bring a program and a zsh script. Add these keys:
+
+```ini
+bin = bin
+zsh = shell/hello.zsh
+```
+
+- `bin` is a folder in the plugin. fuxx puts it on your `PATH` in every new terminal, so what's inside runs by name.
+- `zsh` is a script (repeat the key for more). fuxx loads it in every new terminal, after the user's own `.zshrc`.
+- While your scripts load, `$FUXX_PLUGIN_DIR` (the plugin's folder) and `$FUXX_PLUGIN_DATA` (a folder for your data)
+  are set. They are unset afterwards, so keep a copy if you need them later, as the example does.
+- zsh only. Terminals running bash or fish don't get helper plugins.
+- People see this before installing: "Runs a program on your Mac in every new terminal. fuxx can't limit what it
+  does, so only install plugins from people you trust."
+- Scripts work straight from a plain repo. A compiled program goes in a release zip named
+  `fuxx-plugin-macos-arm64.zip` or `fuxx-plugin-macos-x86_64.zip`, or one universal `fuxx-plugin-macos.zip`.
+- If one plugin's script fails, the others still load.
+- Installing, updating, switching off or removing a helper changes new terminals; terminals already open keep
+  what they had until you close them.
+
+There is a complete example in [`examples/plugins/hello-helper`](examples/plugins/hello-helper).
 
 ---
 
