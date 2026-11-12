@@ -169,23 +169,7 @@ fn has_manifest(dir: &Path) -> bool {
 /// Deletes a scratch folder. An archive can hold read-only folders, which `remove_dir_all`
 /// cannot empty, so every folder is made owner-writable first (links are never followed).
 pub(crate) fn remove_work(work: &Path) {
-    fn open_up(dir: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        let Ok(meta) = std::fs::symlink_metadata(dir) else {
-            return;
-        };
-        if !meta.is_dir() {
-            return;
-        }
-        let mode = meta.permissions().mode() | 0o700;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode));
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.filter_map(|e| e.ok()) {
-                open_up(&e.path());
-            }
-        }
-    }
-    open_up(work);
+    crate::plugin_store::open_up(work);
     let _ = std::fs::remove_dir_all(work);
 }
 

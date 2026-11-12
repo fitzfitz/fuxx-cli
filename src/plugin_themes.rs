@@ -22,7 +22,7 @@ pub struct PluginTheme {
 }
 
 /// The plugin themes, in record order then each record's own order. A name equal (ignoring
-/// case) to one in `taken` (the user's themes and the built-ins) or to an earlier plugin
+/// case) to one in `taken` (the user's themes and the built-ins), to "Default" or to an earlier plugin
 /// theme's becomes `<name> (<plugin name>)`, so a plugin can't hide a theme you already have.
 pub fn list(f: &Folders, records: &[Record], taken: &[String]) -> Vec<PluginTheme> {
     let mut out: Vec<PluginTheme> = Vec::new();
@@ -35,6 +35,7 @@ pub fn list(f: &Folders, records: &[Record], taken: &[String]) -> Vec<PluginThem
             let clash = taken
                 .iter()
                 .map(String::as_str)
+                .chain(std::iter::once(crate::prefs::DEFAULT_CHOICE))
                 .chain(out.iter().map(|t| t.name.as_str()))
                 .any(|n| n.eq_ignore_ascii_case(&plain));
             let name = if clash {
@@ -120,6 +121,16 @@ mod tests {
         let got = list(&f, &records, &[]);
         assert_eq!(got[0].name, "Dusk");
         assert_eq!(got[1].name, "dusk (Beta)");
+    }
+
+    #[test]
+    fn a_plugin_theme_named_default_is_told_apart() {
+        let got = list(
+            &folders(),
+            &[record("a", "Alpha", &["themes/Default"])],
+            &[],
+        );
+        assert_eq!(got[0].name, "Default (Alpha)");
     }
 
     #[test]

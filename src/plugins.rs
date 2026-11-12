@@ -43,6 +43,8 @@ pub struct Plugins {
     /// Plugin id to the newer version waiting on GitHub.
     pub updates: HashMap<String, Installed>,
     pub busy: Option<Busy>,
+    /// Launch cleanup is still running; nothing may start until it ends.
+    pub cleaning: bool,
     pub message: Option<Message>,
 }
 
@@ -50,7 +52,7 @@ impl Global for Plugins {}
 
 /// Whether a new install, update or uninstall may begin.
 pub fn can_start(p: &Plugins) -> bool {
-    p.busy.is_none()
+    p.busy.is_none() && !p.cleaning
 }
 
 /// "Adds 2 themes: Sunset, Sunset Light".
@@ -158,6 +160,7 @@ pub fn init(cx: &mut App) {
     let records = f.as_ref().map(plugin_store::load).unwrap_or_default();
     cx.set_global(Plugins {
         records,
+        cleaning: f.is_some(),
         ..Plugins::default()
     });
     if let Some(f) = f {
@@ -169,7 +172,10 @@ pub fn init(cx: &mut App) {
         cx.spawn(async move |cx| {
             let records = mend.await;
             cx.update(|cx| {
-                cx.global_mut::<Plugins>().records = records;
+                let p = cx.global_mut::<Plugins>();
+                p.records = records;
+                p.cleaning = false;
+                appearance::reload(cx);
                 cx.refresh_windows();
             });
         })
@@ -200,6 +206,7 @@ pub fn check_updates(cx: &mut App) {
                     r.id,
                     plugin_source::is_newer(&r.installed, &d.installed),
                     d.installed,
+                    r.installed,
                 ))
             })
             .collect::<Vec<_>>()
@@ -208,7 +215,15 @@ pub fn check_updates(cx: &mut App) {
         let found = work.await;
         cx.update(|cx| {
             let p = cx.global_mut::<Plugins>();
-            for (id, newer, installed) in found {
+            for (id, newer, installed, checked) in found {
+                // Skip a plugin removed or changed while we were asking.
+                if !p
+                    .records
+                    .iter()
+                    .any(|r| r.id == id && r.installed == checked)
+                {
+                    continue;
+                }
                 if newer {
                     p.updates.insert(id, installed);
                 } else {
@@ -495,5 +510,10 @@ mod tests {
         assert!(can_start(&p));
         p.busy = Some(Busy::Downloading);
         assert!(!can_start(&p));
+        p.busy = None;
+        p.cleaning = true;
+        assert!(!can_start(&p));
+        p.cleaning = false;
+        assert!(can_start(&p));
     }
 }

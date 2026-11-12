@@ -117,8 +117,12 @@ pub fn parse(text: &str) -> Result<Manifest, ManifestError> {
     if !valid_id(&id) {
         return Err(ManifestError::BadId(id));
     }
-    let name = last("name").ok_or(ManifestError::Missing("name"))?;
-    let version = last("version").ok_or(ManifestError::Missing("version"))?;
+    let name = last("name")
+        .filter(|v| !v.is_empty())
+        .ok_or(ManifestError::Missing("name"))?;
+    let version = last("version")
+        .filter(|v| !v.is_empty())
+        .ok_or(ManifestError::Missing("version"))?;
     Ok(Manifest {
         format,
         id,
@@ -231,6 +235,18 @@ mod tests {
         assert_eq!(
             parse("format = 1\nid = A_b\nname = n\nversion = 1"),
             Err(ManifestError::BadId("A_b".into()))
+        );
+    }
+
+    #[test]
+    fn an_empty_name_or_version_is_missing() {
+        assert_eq!(
+            parse("format = 1\nid = ab\nname =\nversion = 1"),
+            Err(ManifestError::Missing("name"))
+        );
+        assert_eq!(
+            parse("format = 1\nid = ab\nname = n\nversion ="),
+            Err(ManifestError::Missing("version"))
         );
     }
 
