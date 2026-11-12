@@ -3796,14 +3796,18 @@ fn session_env(
     env
 }
 
+/// Whether an enabled helper plugin runs code (false while the plugins global isn't set).
+fn helper_plugins_on(p: Option<&crate::plugins::Plugins>) -> bool {
+    p.is_some_and(|p| crate::plugin_shell::any_enabled(&p.records))
+}
+
 /// The installed zsh integration while `command-blocks` is on or a helper plugin that runs code
 /// is enabled, and its scripts are still there (`shell_integration::usable`); none otherwise
 /// (read when a terminal is spawned, so a change applies to new terminals only).
 fn zsh_integration(cx: &App) -> Option<ZshIntegration> {
     let marks = cx.global::<Appearance>().command_blocks;
-    let plugins = cx
-        .try_global::<crate::plugins::Plugins>()
-        .is_some_and(|p| crate::plugin_shell::any_enabled(&p.records));
+    // `plugins::init` must have run before the first terminal opens, or this reads no global.
+    let plugins = helper_plugins_on(cx.try_global::<crate::plugins::Plugins>());
     if !marks && !plugins {
         return None;
     }
@@ -3952,8 +3956,9 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, daemon_create, programs_wait,
-        scripting_env, session_env, starts_window_move, window_title,
+        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, daemon_create,
+        helper_plugins_on, programs_wait, scripting_env, session_env, starts_window_move,
+        window_title,
     };
     use crate::presets::Preset;
     use crate::procs::{ProgramState, parse_ps};
@@ -4138,6 +4143,59 @@ mod tests {
             own.set.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v),
             Some(&expected)
         );
+    }
+
+    #[test]
+    fn an_enabled_helper_injects_plugins_even_with_command_blocks_off() {
+        use crate::plugin_source::Installed;
+        let helper = crate::plugin_store::Record {
+            id: "h".into(),
+            name: "H".into(),
+            version: "1".into(),
+            description: None,
+            repo: "o/r".into(),
+            installed: Installed::Tag("v1".into()),
+            themes: Vec::new(),
+            installed_at: 0,
+            enabled: true,
+            bin: Some("bin".into()),
+            zsh: vec!["a.zsh".into()],
+        };
+        let p = crate::plugins::Plugins {
+            records: vec![helper],
+            ..Default::default()
+        };
+        assert!(!helper_plugins_on(None));
+        assert!(helper_plugins_on(Some(&p)));
+        let env = session_env(
+            None,
+            None,
+            None,
+            None,
+            true,
+            Some(ZshIntegration {
+                dir: Path::new("/i"),
+                marks: false,
+                plugins: helper_plugins_on(Some(&p)),
+            }),
+        );
+        let shell = std::env::var_os("SHELL").unwrap_or_default();
+        if Path::new(&shell).file_name() == Some(OsStr::new("zsh")) {
+            assert!(
+                env.set
+                    .iter()
+                    .any(|(k, v)| k == "FUXX_ZSH_PLUGINS" && v == "1")
+            );
+        }
+    }
+
+    /// The window restores its terminals as it opens, so the plugins must be set before it does.
+    #[test]
+    fn main_sets_up_plugins_before_opening_the_window() {
+        let main = include_str!("main.rs");
+        let init = main.find("plugins::init(cx)").expect("plugins::init call");
+        let open = main.find(".open_window(").expect("open_window call");
+        assert!(init < open, "plugins::init must run before open_window");
     }
 
     #[test]
