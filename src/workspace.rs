@@ -3748,17 +3748,26 @@ fn scripting_env(
     }
 }
 
+/// The zsh integration a new terminal gets: the installed scripts' folder, and whether its
+/// shell sends the command marks (`command-blocks`, M11l) and loads the helper plugins (M11z).
+#[derive(Clone, Copy)]
+struct ZshIntegration {
+    dir: &'static Path,
+    marks: bool,
+    plugins: bool,
+}
+
 /// A session's environment: `scripting_env` on fuxx's own, or with `login` (an SSH session's,
 /// M10b: your login shell's) on that, its `PATH` included. For your login shell
 /// (`login_shell`: no `program`), also what `shell_integration::env_for` adds for `$SHELL` with
-/// `integration`, the installed scripts' folder while `command-blocks` is on (M11l).
+/// `integration` (M11l, M11z).
 fn session_env(
     socket: Option<&Path>,
     id: Option<u64>,
     exe_dir: Option<&Path>,
     login: Option<&[(String, String)]>,
     login_shell: bool,
-    integration: Option<&Path>,
+    integration: Option<ZshIntegration>,
 ) -> ShellEnv {
     let path = match login {
         Some(login) => login
@@ -3771,7 +3780,7 @@ fn session_env(
         base: login.map(<[_]>::to_vec),
         ..scripting_env(socket, id, exe_dir, path.as_deref())
     };
-    if login_shell {
+    if login_shell && let Some(zsh) = integration {
         // The shell `pty::command` starts for no program; `$SHELL` unset: no integration.
         let shell = std::env::var_os("SHELL").unwrap_or_default();
         let zdotdir = std::env::var_os("ZDOTDIR");
@@ -3779,21 +3788,32 @@ fn session_env(
             &mut env,
             &shell,
             zdotdir.as_deref(),
-            integration,
+            zsh.marks,
+            zsh.plugins,
+            Some(zsh.dir),
         );
     }
     env
 }
 
-/// The installed zsh integration's folder while `command-blocks` is on and its scripts are
-/// still there (`shell_integration::usable`); none otherwise (read when a terminal is
-/// spawned, so the setting applies to new terminals only).
-fn zsh_integration(cx: &App) -> Option<&'static Path> {
-    cx.global::<Appearance>()
-        .command_blocks
-        .then(crate::shell_integration::installed)
-        .flatten()
-        .filter(|dir| crate::shell_integration::usable(dir))
+/// The installed zsh integration while `command-blocks` is on or a helper plugin that runs code
+/// is enabled, and its scripts are still there (`shell_integration::usable`); none otherwise
+/// (read when a terminal is spawned, so a change applies to new terminals only).
+fn zsh_integration(cx: &App) -> Option<ZshIntegration> {
+    let marks = cx.global::<Appearance>().command_blocks;
+    let plugins = cx
+        .try_global::<crate::plugins::Plugins>()
+        .is_some_and(|p| crate::plugin_shell::any_enabled(&p.records));
+    if !marks && !plugins {
+        return None;
+    }
+    let dir = crate::shell_integration::installed()
+        .filter(|dir| crate::shell_integration::usable(dir))?;
+    Some(ZshIntegration {
+        dir,
+        marks,
+        plugins,
+    })
 }
 
 /// An SSH session's base environment: the login shell's, once read (`ssh_program` reads it
@@ -3932,8 +3952,8 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, daemon_create, programs_wait, scripting_env,
-        session_env, starts_window_move, window_title,
+        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, daemon_create, programs_wait,
+        scripting_env, session_env, starts_window_move, window_title,
     };
     use crate::presets::Preset;
     use crate::procs::{ProgramState, parse_ps};
@@ -4123,7 +4143,11 @@ mod tests {
     #[test]
     fn session_env_injects_only_a_login_shell() {
         let ours = Path::new("/me/fuxx.sock");
-        let i = Some(Path::new("/i"));
+        let i = Some(ZshIntegration {
+            dir: Path::new("/i"),
+            marks: true,
+            plugins: false,
+        });
         let keys = |env: &crate::pty::ShellEnv| -> Vec<String> {
             env.set.iter().map(|(k, _)| k.clone()).collect()
         };
@@ -4137,8 +4161,13 @@ mod tests {
         let login = session_env(Some(ours), Some(4), None, None, true, i);
         let shell = std::env::var_os("SHELL").unwrap_or_default();
         let zdotdir = std::env::var_os("ZDOTDIR");
-        let added =
-            crate::shell_integration::env_for(Path::new(&shell), zdotdir.as_deref(), true, i);
+        let added = crate::shell_integration::env_for(
+            Path::new(&shell),
+            zdotdir.as_deref(),
+            true,
+            false,
+            Some(Path::new("/i")),
+        );
         assert_eq!(login.set[..program.set.len()], program.set[..]);
         assert_eq!(login.set[program.set.len()..], added[..]);
         // Only a stray saved ZDOTDIR is removed, and only when you have none.
