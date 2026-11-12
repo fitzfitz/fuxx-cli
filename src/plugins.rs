@@ -78,7 +78,9 @@ pub fn install_prompt(m: &Manifest, repo: &Repo) -> (String, String, PromptLevel
     if let Some(d) = &m.description {
         lines.push(d.clone());
     }
-    lines.push(adds_text(m));
+    if !m.themes.is_empty() {
+        lines.push(adds_text(m));
+    }
     let level = if m.runs_code() {
         lines.push(CODE_WARNING.to_string());
         PromptLevel::Warning
@@ -134,9 +136,11 @@ fn regenerate(f: Folders, cx: &mut App) {
     };
     cx.background_executor()
         .spawn(async move {
-            let records = plugin_store::load(&f);
-            // A failed write leaves the old script; there's nobody to tell at this point.
-            let _ = plugin_shell::write(&dir, &f, &records);
+            // The list is read inside the write's turn, so an older, slower rewrite can't land
+            // after a newer one with stale On/Off state.
+            if let Err(err) = plugin_shell::write_from(&dir, &f, || plugin_store::load(&f)) {
+                eprintln!("[fuxx] plugins: could not write plugins.zsh: {err}");
+            }
         })
         .detach();
 }
@@ -238,8 +242,10 @@ pub fn init(cx: &mut App) {
         let mend = cx.background_executor().spawn(async move {
             plugin_store::launch_cleanup(&f);
             let records = plugin_store::load(&f);
-            if let Some(dir) = dir {
-                let _ = plugin_shell::write(&dir, &f, &records);
+            if let Some(dir) = dir
+                && let Err(err) = plugin_shell::write(&dir, &f, &records)
+            {
+                eprintln!("[fuxx] plugins: could not write plugins.zsh: {err}");
             }
             records
         });
@@ -542,6 +548,17 @@ fn remove(record: Record, cx: &mut App) {
     let config = appearance.settings_path.clone();
     let id = record.id.clone();
     let work = cx.background_executor().spawn(async move {
+        // The script first, without this plugin, so a terminal opened meanwhile never sources
+        // a file that is about to be deleted.
+        if let Some(dir) = shell_integration::integration_dir()
+            && let Err(err) = plugin_shell::write_from(&dir, &f, || {
+                let mut records = plugin_store::load(&f);
+                records.retain(|r| r.id != id);
+                records
+            })
+        {
+            eprintln!("[fuxx] plugins: could not write plugins.zsh: {err}");
+        }
         plugin_store::uninstall(&f, &id)?;
         if let Some(path) = config
             && let Ok(text) = std::fs::read_to_string(&path)
@@ -630,22 +647,28 @@ mod tests {
 
     #[test]
     fn the_prompt_warns_about_code() {
+        let repo = Repo {
+            owner: "o".into(),
+            name: "helper".into(),
+        };
         let m = plugin_manifest::parse(
-            "format = 1\nid = helper\nname = Helper\nversion = 1\nzsh = a.zsh\n",
+            "format = 1\nid = helper\nname = Helper\nversion = 1\ndescription = Does things.\nzsh = a.zsh\n",
         )
         .unwrap();
-        let (_, detail, level) = install_prompt(
-            &m,
-            &Repo {
-                owner: "o".into(),
-                name: "helper".into(),
-            },
-        );
+        let (title, detail, level) = install_prompt(&m, &repo);
+        assert_eq!(title, "Install Helper 1?");
         assert_eq!(level, PromptLevel::Warning);
         assert_eq!(
-            detail.lines().last().unwrap(),
-            "Runs a program on your Mac in every new terminal. fuxx can't limit what it does, so only install plugins from people you trust."
+            detail,
+            "From github.com/o/helper\nDoes things.\nRuns a program on your Mac in every new terminal. fuxx can't limit what it does, so only install plugins from people you trust."
         );
+        let t = plugin_manifest::parse(
+            "format = 1\nid = sunset\nname = Sunset\nversion = 2\ntheme = themes/Sunset\n",
+        )
+        .unwrap();
+        let (_, detail, level) = install_prompt(&t, &repo);
+        assert_eq!(level, PromptLevel::Info);
+        assert_eq!(detail, "From github.com/o/helper\nAdds 1 theme: Sunset");
     }
 
     #[test]

@@ -949,6 +949,10 @@ fn main() {
             let scripting = start_scripting(cx);
             set_menus(cx, persistent.then_some(0));
 
+            // Before the window: opening it restores terminals, and each reads the plugins global
+            // to decide whether its shell loads helper plugins. Set later, launch terminals would
+            // start without them. (`Appearance`, which it needs, is set above.)
+            plugins::init(cx);
             let bounds = Bounds::centered(None, size(px(1280.0), px(800.0)), cx);
             let windows_before = reduce_motion::window_numbers();
             let (light_x, light_y) = TRAFFIC_LIGHTS;
@@ -1012,7 +1016,6 @@ fn main() {
             .detach();
             // A bundled fuxx asks GitHub for a newer release 10 s from now, then daily.
             updater::start_schedule(cx);
-            plugins::init(cx);
             // Only now that the window has opened does an updated fuxx delete the app its
             // update replaced (`fuxx.app.previous`), so a release that crashes opening its
             // window leaves the old copy to open by hand. Its own thread, so a big folder

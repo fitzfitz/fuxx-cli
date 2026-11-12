@@ -148,8 +148,8 @@ sound-enter = /System/Library/Sounds/Tink.aiff
 A plugin is a public GitHub repo with a `fuxx-plugin.conf` file at its top. Anyone can install it from
 **Settings → Plugins** by pasting the repo's link, and remove it again from the same page.
 
-A plugin can share **themes** or bring **helper programs** (below). A theme is a plain text file in fuxx's theme format. Here is a plugin
-that shares two:
+A plugin can share **themes** or bring **helper programs** (below). A theme is a plain text file in fuxx's
+theme format. Here is a plugin that shares two:
 
 ```ini
 # A theme plugin
@@ -178,8 +178,8 @@ There is a complete example in [`examples/plugins/sunset-themes`](examples/plugi
 
 Good to know:
 
-- Keep any data your plugin needs in `$FUXX_PLUGIN_DATA`. fuxx can only remove what's in its own folders, so
-  that is how uninstalling leaves nothing behind.
+- Keep any data your plugin needs in `$FUXX_PLUGIN_DATA` (set only while your scripts load; see Helper
+  programs). fuxx can only remove what's in its own folders, so that is how uninstalling leaves nothing behind.
 - Without releases, fuxx installs and updates from the default branch, so pushing is enough to offer an update.
   Once the repo has a release, fuxx installs the newest release instead (a `fuxx-plugin-macos-*.zip` asset if you
   attach one, otherwise the release's source), so make a new release after you change the plugin.
@@ -203,6 +203,7 @@ zsh = shell/hello.zsh
 - Scripts work straight from a plain repo. A compiled program goes in a release zip named
   `fuxx-plugin-macos-arm64.zip` or `fuxx-plugin-macos-x86_64.zip`, or one universal `fuxx-plugin-macos.zip`.
 - If one plugin's script fails, the others still load.
+- `exec zsh` or a zsh started inside a fuxx terminal starts without plugins; open a new terminal instead.
 - Installing, updating, switching off or removing a helper changes new terminals; terminals already open keep
   what they had until you close them.
 
