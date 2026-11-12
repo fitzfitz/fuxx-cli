@@ -832,6 +832,8 @@ fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         font_settings: fonts::from_entries(&[]),
         settings_path: None,
         user_theme_dir: None,
+        plugin_folders: None,
+        plugin_themes: Vec::new(),
         presets: Vec::new(),
         restore: RestoreMode::default(),
         scripting: false,

@@ -78,6 +78,8 @@ mod plugin_manifest;
 mod plugin_source;
 #[allow(dead_code)] // until the install tasks use it
 mod plugin_store;
+#[allow(dead_code)] // until the install tasks use it
+mod plugin_themes;
 mod preferences;
 mod prefs;
 mod presets;

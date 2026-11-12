@@ -34,7 +34,7 @@ use crate::settings;
 use crate::sounds::{self, SoundKey};
 use crate::terminal::TermDims;
 use crate::terminal_view::{hsla, paint_fixed_screen};
-use crate::theme::{self, Theme, UiColors};
+use crate::theme::{Theme, UiColors};
 use crate::ui_tokens::text;
 use crate::workspace::{CloseSession, Workspace};
 
@@ -519,6 +519,9 @@ pub struct PreferencesView {
     section: Section,
     /// `Default`, then every theme (built-in and the user's), worked out once.
     themes: Vec<String>,
+    /// The display name of the plugin each theme came from (`None` for built-in and the user's),
+    /// in the order of `themes`.
+    theme_plugins: Vec<Option<String>>,
     /// Each theme's swatch (`prefs::swatch`: background, foreground, palette 1-6), in the order
     /// of `themes`.
     swatches: Vec<[Rgb; 8]>,
@@ -583,13 +586,25 @@ impl PreferencesView {
 
         let appearance = cx.global::<Appearance>();
         let user_dir = appearance.user_theme_dir.clone();
-        let themes = prefs::theme_choices(&user_theme_names(user_dir.as_deref()));
-        // As the app reads a theme name: the user's folder first, then the built-ins.
+        let plugin_themes = appearance.plugin_themes.clone();
+        let plugin_names: Vec<String> = plugin_themes.iter().map(|t| t.name.clone()).collect();
+        let themes = prefs::theme_choices(
+            &crate::appearance::user_theme_names(user_dir.as_deref()),
+            &plugin_names,
+        );
+        // The plugin behind each plugin theme, in the order of `themes`.
+        let theme_plugins: Vec<Option<String>> = themes
+            .iter()
+            .map(|n| {
+                plugin_themes
+                    .iter()
+                    .find(|t| &t.name == n)
+                    .map(|t| t.plugin.clone())
+            })
+            .collect();
+        // As the app reads a theme name (`appearance::read_theme_text`).
         let read_theme = |name: &str| {
-            user_dir
-                .as_ref()
-                .and_then(|dir| std::fs::read_to_string(dir.join(name)).ok())
-                .or_else(|| theme::builtin_theme(name).map(str::to_string))
+            crate::appearance::read_theme_text(name, user_dir.as_deref(), &plugin_themes)
         };
         let swatches = themes
             .iter()
@@ -661,6 +676,7 @@ impl PreferencesView {
             focus_handle,
             section,
             themes,
+            theme_plugins,
             swatches,
             fonts,
             installed,
@@ -1025,6 +1041,14 @@ impl PreferencesView {
                                 n.child(div().text_color(hsla(ui.accent)).child("\u{2713}"))
                             }),
                     )
+                    .children(self.theme_plugins.get(i).cloned().flatten().map(|plugin| {
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(EXPLANATION_SIZE))
+                            .text_color(hsla(ui.text_faint))
+                            .child(plugin)
+                    }))
                     .on_click(
                         cx.listener(move |_, _: &ClickEvent, _, cx| apply(cx, "theme", &values)),
                     )
@@ -1759,20 +1783,6 @@ fn button(id: &'static str, ui: UiColors) -> Stateful<Div> {
         .border_color(hsla(ui.sidebar_border))
         .hover(|s| s.bg(hsla(ui.row_hover)))
         .cursor_pointer()
-}
-
-/// The names of the files in the user's theme folder (none if there is no folder). Hidden files
-/// such as `.DS_Store` are not themes.
-fn user_theme_names(dir: Option<&Path>) -> Vec<String> {
-    let Some(entries) = dir.and_then(|d| std::fs::read_dir(d).ok()) else {
-        return vec![];
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_file())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| !n.starts_with('.'))
-        .collect()
 }
 
 /// The font family in use: the first configured one that is installed (as `fonts::gpui_font`
