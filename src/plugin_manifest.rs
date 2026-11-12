@@ -146,12 +146,22 @@ fn check_path(root: &Path, rel: &str, kind: Kind) -> Result<(), ManifestError> {
     if escapes {
         return Err(ManifestError::PathOutside(rel.to_string()));
     }
-    // symlink_metadata so a link is seen as a link, never followed out of the folder
-    let meta = std::fs::symlink_metadata(root.join(p))
-        .map_err(|_| ManifestError::FileMissing(rel.to_string()))?;
-    if meta.file_type().is_symlink() {
-        return Err(ManifestError::PathOutside(rel.to_string()));
+    // symlink_metadata on every prefix, so a link is seen as a link and a linked folder in the
+    // middle of the path can't lead out of the plugin either
+    let mut walked = root.to_path_buf();
+    let mut meta = None;
+    for c in p.components() {
+        if let Component::Normal(part) = c {
+            walked.push(part);
+            let m = std::fs::symlink_metadata(&walked)
+                .map_err(|_| ManifestError::FileMissing(rel.to_string()))?;
+            if m.file_type().is_symlink() {
+                return Err(ManifestError::PathOutside(rel.to_string()));
+            }
+            meta = Some(m);
+        }
     }
+    let meta = meta.ok_or_else(|| ManifestError::FileMissing(rel.to_string()))?;
     let right_kind = match kind {
         Kind::File => meta.is_file(),
         Kind::Dir => meta.is_dir(),
@@ -280,6 +290,11 @@ mod tests {
             std::env::temp_dir().join(format!("fuxx-manifest-out-{}", std::process::id()));
         std::fs::write(&outside, "x").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("themes/Link")).unwrap();
+        let outside_dir =
+            std::env::temp_dir().join(format!("fuxx-manifest-outdir-{}", std::process::id()));
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("Sunset"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside_dir, root.join("linked")).unwrap();
 
         let check = |extra: &str| check_files(&root, &manifest_with(extra));
         assert_eq!(check("theme = themes/Sunset\n"), Ok(()));
@@ -299,6 +314,10 @@ mod tests {
             check("theme = themes/Link\n"),
             Err(ManifestError::PathOutside("themes/Link".into()))
         );
+        assert_eq!(
+            check("theme = linked/Sunset\n"),
+            Err(ManifestError::PathOutside("linked/Sunset".into()))
+        );
         assert_eq!(check("bin = tools\nzsh = a.zsh\n"), Ok(()));
         assert_eq!(
             check("bin = a.zsh\n"),
@@ -315,5 +334,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&outside_dir);
     }
 }
