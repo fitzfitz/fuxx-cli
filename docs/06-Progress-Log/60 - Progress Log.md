@@ -22,6 +22,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-12 — M11w Graph started (branch `m11w-graph`, in progress)
+- **Did:** M11v parts 4–6 committed and pushed on your word ("commit and push, then start M11w": `e6412e4`). M11w designed from your Cursor screenshot ([[74 - Milestone 11w - Graph]], [[M11w Plan - Graph]], [[12 - Scope]], [[40 - Roadmap]]); no new library. Task 1 `src/graph_layout.rs` (lanes and edges, 6 tests) and Task 2 `src/git_graph.rs` (commits with full-name refs, details with first-parent stats, GitHub links, scopes; 5 tests against real repos) done, tests first.
+- **Then:** Task 3, the GRAPH accordion (`src/graph_panel.rs`; header with the scope, ◎ and Refresh; lanes drawn per row; pills; the author on rows without pills; the hover card with details read on show; a clean repo shows "No changes" with the GRAPH under it); ui-shots `changes-graph`, `changes-graph-card`. 1422+ tests; fmt clean; clippy 27.
+- **Then:** your ask "make other accordion sticky … make it easy for the user experience": while the Changes list scrolls, the header of the group you're in (STAGED / CHANGES / GRAPH) stays pinned at the list's top; ui-shot `changes-sticky` (60 commits scrolled 8 rows) passes.
+- **Next:** a fresh review, your on-screen check (note 74), then commit on your word.
+
 ### 2026-11-12 — M11v part 6: STAGED / CHANGES accordions, the Publish icon (branch `m11v-part4`, not committed)
 - **Did:** Your picks: Publish is C (a branch with an up arrow), the bar's icons 15 pt in 26 pt buttons; STAGED and CHANGES are accordions (a thin chevron before each, a click opens or closes it; closed keeps the header), their words at the row's foot for more room between the groups. Tests first (`rows_of_in`, `toggle_group`); the `changes`, `changes-staging`, `changes-bar` ui-shots pass.
 - **Next:** design "Graph" (an accordion under CHANGES) with you.

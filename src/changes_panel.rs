@@ -112,6 +112,8 @@ pub(crate) struct ChangesPanel {
     confirm: Option<Confirm>,
     /// Which of STAGED and CHANGES are open (part 6).
     groups: Groups,
+    /// The GRAPH under STAGED and CHANGES (M11w).
+    pub(crate) graph: crate::graph_panel::GraphState,
     /// The last action's failure, as the bar says it; gone with the next action, another
     /// branch or another root.
     error: Option<String>,
@@ -144,6 +146,12 @@ pub(crate) enum RowItem {
     Divider(bool),
     Entry(usize),
     More,
+    /// "No changes since the last commit.", above the GRAPH in a clean repo (M11w).
+    Clean,
+    /// The GRAPH's header, a commit (its index in the graph) and "Load more" (M11w).
+    GraphHeader,
+    Commit(usize),
+    LoadMore,
 }
 
 /// Which groups are open (part 6: STAGED and CHANGES are accordions; both open at first).
@@ -307,6 +315,7 @@ impl ChangesPanel {
             running: HashMap::new(),
             confirm: None,
             groups: Groups::default(),
+            graph: crate::graph_panel::GraphState::default(),
             error: None,
             hover: None,
             auto_fetched: None,
@@ -351,6 +360,41 @@ impl ChangesPanel {
             .filter(|_| !auto)
             .map(|e| branch_sync::failed_text(action, &e));
         true
+    }
+
+    /// Every row the list shows: STAGED and CHANGES (or "No changes" in a clean repo), then, in
+    /// a repo, the GRAPH's header and, open, its commits and "Load more" (M11w).
+    pub(crate) fn all_rows(&self) -> Vec<RowItem> {
+        let mut rows = match &self.list {
+            Some(l) if !l.entries.is_empty() || l.more > 0 => rows_of_in(l, self.groups),
+            Some(_) => vec![RowItem::Clean],
+            None => Vec::new(),
+        };
+        if self.in_repo && self.root.is_some() {
+            rows.push(RowItem::GraphHeader);
+            if self.graph.open {
+                rows.extend((0..self.graph.commits.len()).map(RowItem::Commit));
+                if !self.graph.commits.is_empty() && self.graph.commits.len() >= self.graph.limit {
+                    rows.push(RowItem::LoadMore);
+                }
+            }
+        }
+        rows
+    }
+
+    /// The repo's top folder, when the panel shows a repo.
+    pub(crate) fn repo_root(&self) -> Option<PathBuf> {
+        self.root.clone().filter(|_| self.in_repo)
+    }
+
+    /// ◎ in the GRAPH's header: scroll to HEAD's row.
+    pub(crate) fn scroll_to_graph_head(&self) {
+        let at = self.all_rows().iter().position(|r| {
+            matches!(r, RowItem::Commit(i) if self.graph.commits.get(*i).is_some_and(|c| c.head))
+        });
+        if let Some(at) = at {
+            self.scroll.scroll_to_item(at, gpui::ScrollStrategy::Center);
+        }
     }
 
     /// Open or close STAGED (`staged`) or CHANGES (part 6).
@@ -404,6 +448,12 @@ impl ChangesPanel {
 
     /// The UI screenshots: the revert dialog asks to revert entry `i` (as ↺ would).
     #[cfg(feature = "ui-shots")]
+    /// The UI screenshots: scroll the list to `offset` (y negative: scrolled down).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) fn scroll_offset_for_shots(&self, offset: gpui::Point<gpui::Pixels>) {
+        self.scroll.0.borrow().base_handle.set_offset(offset);
+    }
+
     /// The UI screenshots: whether the dialog shows, and whether a git write runs or ran (its
     /// work, or the error a failed one left).
     #[cfg(feature = "ui-shots")]
@@ -457,6 +507,7 @@ impl ChangesPanel {
     /// No root (an SSH terminal's, or no folder): nothing shown, nothing under way holds the
     /// next root up.
     fn forget(&mut self) {
+        self.graph.forget();
         self.root = None;
         self.in_repo = false;
         self.list = None;
@@ -929,6 +980,40 @@ fn change_row(
         .into_any_element()
 }
 
+/// "No changes since the last commit." as a row, above the GRAPH (M11w).
+fn clean_row(ui: &UiColors) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .h(px(ROW))
+        .w_full()
+        .pl(px(EDGE))
+        .text_size(px(SMALL))
+        .text_color(hsla(ui.text_dim))
+        .child(NO_CHANGES)
+        .into_any_element()
+}
+
+/// The GRAPH's "Load more" row (M11w): the next page of commits.
+fn load_more_row(ui: &UiColors, cx: &mut Context<Workspace>) -> AnyElement {
+    let ui = *ui;
+    div()
+        .id("graph-more")
+        .flex()
+        .items_center()
+        .h(px(ROW))
+        .mx(px(PILL_INSET))
+        .px(px(PILL_PAD))
+        .rounded(px(PILL_RADIUS))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hsla(ui.card_hover)))
+        .text_size(px(SMALL))
+        .text_color(hsla(ui.text_faint))
+        .child("Load more\u{2026}")
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.graph_load_more(cx)))
+        .into_any_element()
+}
+
 /// The `… N more` row: its words under the names.
 fn more_row(more: usize, ui: &UiColors) -> AnyElement {
     div()
@@ -1008,15 +1093,35 @@ impl Workspace {
         };
         changes.refreshing = true;
         changes.refreshed = Some(now);
+        // M11w: the GRAPH too, while it's open, when a ref moved since its last read.
+        let graph_ask = changes.graph.open.then(|| {
+            (
+                changes.graph.scope,
+                changes.graph.limit,
+                changes.graph.stamp.clone(),
+            )
+        });
         cx.spawn(async move |this, cx| {
             let at = root.clone();
             // The list and where the branch stands (M11v), read together: local git only.
-            let (list, sync) = cx
+            let (list, sync, graph) = cx
                 .background_executor()
                 .spawn(async move {
                     match find_git() {
-                        Some(git) => (git_status::changes(&git, &at), branch_sync::read(&git, &at)),
-                        None => (None, None),
+                        Some(git) => (
+                            git_status::changes(&git, &at),
+                            branch_sync::read(&git, &at),
+                            graph_ask.and_then(|(scope, limit, seen)| {
+                                crate::graph_panel::read_if_changed(
+                                    &git,
+                                    &at,
+                                    scope,
+                                    limit,
+                                    seen.as_deref(),
+                                )
+                            }),
+                        ),
+                        None => (None, None, None),
                     }
                 })
                 .await;
@@ -1028,7 +1133,14 @@ impl Workspace {
                     .is_some_and(|l| changes.list.as_ref() != Some(l));
                 let listed = changes.apply(&root, list) && new;
                 let synced = changes.apply_sync(&root, sync);
-                if listed || synced {
+                let graphed = match graph {
+                    Some((stamp, commits, origin)) if changes.root.as_ref() == Some(&root) => {
+                        changes.graph.apply(stamp, commits, origin);
+                        true
+                    }
+                    _ => false,
+                };
+                if listed || synced || graphed {
                     cx.notify();
                 }
                 this.auto_fetch_changes(cx);
@@ -1642,11 +1754,14 @@ impl Workspace {
         let bar = root
             .and(changes.sync.clone())
             .map(|sync| self.render_changes_bar(&sync, &inks, cx));
+        // M11w: a clean repo shows "No changes" as a row, the GRAPH under it.
+        let clean_repo = shown == Some(NO_CHANGES) && root.is_some();
         let body = match (shown, &changes.list) {
-            (Some(text), _) => Some(note(&ui, text)),
-            (None, Some(l)) if root.is_some() => {
-                // Part 2: STAGED's divider and rows, then CHANGES', then `… N more`.
-                let count = rows_of_in(l, changes.groups).len();
+            (Some(text), _) if !clean_repo => Some(note(&ui, text)),
+            (_, Some(_)) if root.is_some() => {
+                // Part 2: STAGED's divider and rows, then CHANGES', then `… N more`; then the
+                // GRAPH (M11w).
+                let count = changes.all_rows().len();
                 let list = uniform_list(
                     "change-rows",
                     count,
@@ -1658,8 +1773,9 @@ impl Workspace {
                         let Some(list) = changes.list.clone() else {
                             return Vec::new();
                         };
-                        let rows = rows_of_in(&list, changes.groups);
+                        let rows = changes.all_rows();
                         let groups = changes.groups;
+                        let theme = cx.global::<Appearance>().theme;
                         let revert_all = enabled && revert_all_work(&list).is_some();
                         range
                             .filter_map(|r| match *rows.get(r)? {
@@ -1676,13 +1792,61 @@ impl Workspace {
                                     Some(change_row(i, change, chosen, enabled, &inks, cx))
                                 }
                                 RowItem::More => Some(more_row(list.more, &inks.ui)),
+                                RowItem::Clean => Some(clean_row(&inks.ui)),
+                                RowItem::GraphHeader => Some(this.graph_header_row(&inks.ui, cx)),
+                                RowItem::Commit(i) => this.graph_commit_row(i, &theme, cx),
+                                RowItem::LoadMore => Some(load_more_row(&inks.ui, cx)),
                             })
                             .collect::<Vec<_>>()
                     }),
                 )
                 .track_scroll(&changes.scroll)
                 .size_full();
-                Some(list.into_any_element())
+                // Sticky headers (your ask: "make other accordion sticky"): the header of the
+                // section the top row is in stays pinned over the list's top while its rows
+                // scroll under it; it works as the header itself (opens or closes the section).
+                let rows = changes.all_rows();
+                // The top row: how far the list is scrolled, in rows (all rows are `ROW` tall).
+                let scrolled = -f32::from(changes.scroll.0.borrow().base_handle.offset().y);
+                let top = (scrolled.max(0.0) / ROW).floor() as usize;
+                let is_header =
+                    |r: &RowItem| matches!(r, RowItem::Divider(_) | RowItem::GraphHeader);
+                let pinned = rows
+                    .get(..=top.min(rows.len().saturating_sub(1)))
+                    .filter(|_| top > 0 && !rows.get(top).is_some_and(is_header))
+                    .and_then(|above| above.iter().rev().find(|r| is_header(r)).copied());
+                let enabled = changes.work().is_none();
+                let revert_all = enabled
+                    && changes
+                        .list
+                        .as_ref()
+                        .is_some_and(|l| revert_all_work(l).is_some());
+                let groups = changes.groups;
+                let sticky = pinned.map(|header| {
+                    let row = match header {
+                        RowItem::Divider(staged) => {
+                            divider_row(staged, groups.open(staged), !staged && revert_all, &ui, cx)
+                        }
+                        _ => self.graph_header_row(&ui, cx),
+                    };
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bg(hsla(ui.card))
+                        .border_b_1()
+                        .border_color(hsla(ui.divider))
+                        .child(row)
+                });
+                Some(
+                    div()
+                        .relative()
+                        .size_full()
+                        .child(list)
+                        .children(sticky)
+                        .into_any_element(),
+                )
             }
             _ => None,
         };

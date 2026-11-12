@@ -98,6 +98,11 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   R1, go ahead"):* the list in STAGED and CHANGES groups with check circles to stage and unstage, `N of M staged`
   with a bar, and ↺ to revert (a new file: delete) behind a confirmation every time. Not in it: committing,
   hunks, stash, a staged-only diff. *Part 3 (by you, "Part of M11v"):* Settings → General → **Status Bar** On/Off.
+- **A Graph in Changes** (M11w, asked for 2026-11-12 by you: "add more accordion below changes called "Graph"" →
+  "I want something like this like in cursor/IDE" → "commit and push, then start M11w"): the commit history with
+  coloured lanes, branch pills, a hover card (author, date, message, files changed, hash, Open on GitHub) and header
+  actions (Auto / All / Current, go to HEAD, fetch, pull, push, refresh). No new library. Not in it: checkout, revert,
+  cherry-pick or reset from the graph, search, a commit's diff in a tab. See [[74 - Milestone 11w - Graph]].
 - **Say which command finished** (M11q, asked for 2026-11-10 by you, after M11p: "ok, brainstorm it, after M11p";
   design waiting for your review): while a command started at the prompt runs, the pane is named after it; when it
   ends, the banner, the 🔔 list and Activity say which command and how it ended, from the shell's OSC 133 marks.
