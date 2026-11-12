@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: built-m11y
+status: built-m11z
 ---
 
 # 76 - Milestones 11y-11z - Plugins (design)
 
-**Status:: M11y 🟨 built 2026-11-13 on branch `m11y-plugins`, waiting for your on-screen check; M11z not planned yet.** Comes **before M11p** (your call). Plugins moved **into scope** on 2026-11-12 by you
+**Status:: M11y and M11z 🟨 built 2026-11-13 (M11y merged to master; M11z on branch `m11z-helper-plugins`), waiting for your on-screen checks.** Comes **before M11p** (your call). Plugins moved **into scope** on 2026-11-12 by you
 ("yes, plugins in scope, start the design"). You handed the details over ("Do the thinking"), so everything below
 except "Decided by you" is **the AI's call** (revised after a builder check: §8's theme pairs, §9's loading after
 your `.zshrc` and independence from `command-blocks`, §10's double-load guard and M11z's test helper).
@@ -323,6 +323,12 @@ This replaces its design's "fuxx links the crates directly" (§2 goal 6, §4, §
 - **A plugin's zsh script can slow or break the prompt.** fuxx can't prevent it; Off and Uninstall are the fix.
 - **fuxx-completes isn't built yet.** M11z closes on a test helper; fuxx-completes in fuxx waits for its own M0
   and packaging.
+- **A fuxx started from Terminal.app inherits `TERM_PROGRAM=Apple_Terminal`**, so macOS's
+  `/etc/zshrc_Apple_Terminal` puts its session files in fuxx's folder in plugin mode. A normally opened fuxx.app
+  doesn't.
+- **`/etc/zshrc`'s zkbd lookup** looks in fuxx's folder in plugin mode.
+- **`exec zsh` or a nested zsh inside a fuxx terminal** starts without plugins (and without command marks), by
+  design.
 - **Keeping `ZDOTDIR` through `.zprofile` and `.zshrc` (§9)** touches the most delicate part of M11l: a mistake
   there could skip your own dotfiles. It's off unless a helper plugin is on, and it gets real-zsh tests for login
   and non-login shells, with and without your own `ZDOTDIR`.
@@ -341,3 +347,19 @@ On branch `m11y-plugins`. Run fuxx, open Settings → Plugins, and check each:
 
 The sample plugin lives in `examples/plugins/sunset-themes`; an automated test installs and uninstalls it
 against a fake network (`example_plugin_installs_and_uninstalls_cleanly`).
+
+## M11z on-screen check
+
+On branch `m11z-helper-plugins`. Run fuxx, open Settings → Plugins, and check each:
+
+1. Install the helper repo (the sample in `examples/plugins/hello-helper`, or a copy you push yourself): the
+   confirmation is the warning, "Runs a program on your Mac in every new terminal. …".
+2. Open a new terminal: `fuxx-hello` prints "hello from a fuxx plugin".
+3. Switch the plugin off: a new terminal says `command not found: fuxx-hello`, and the page says new terminals get
+   the change while open ones keep it.
+4. Turn command blocks off with the helper on: a new terminal still loads the helper.
+5. Uninstall: `plugins.zsh` holds only its header line, and `plugins/hello-helper` and `plugin-data/hello-helper`
+   are gone.
+
+An automated test installs the sample against a fake network, loads it in a real zsh, switches it off and
+uninstalls it (`helper_plugin_loads_and_uninstalls_cleanly`).
