@@ -54,13 +54,27 @@ struct Table {
     plugins: Vec<Record>,
 }
 
+/// `plugins.json` exists but can't be read as a list.
+struct Damaged;
+
+const DAMAGED: &str =
+    "fuxx couldn't read its list of installed plugins, so it didn't change anything.";
+
+/// Like `load`, but tells a missing file (no plugins yet) from a damaged one. Code that
+/// deletes or rewrites must use this, or one bad edit would look like "nothing installed".
+fn load_checked(f: &Folders) -> Result<Vec<Record>, Damaged> {
+    match std::fs::read_to_string(f.records()) {
+        Ok(t) => serde_json::from_str::<Table>(&t)
+            .map(|t| t.plugins)
+            .map_err(|_| Damaged),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+        Err(_) => Err(Damaged),
+    }
+}
+
 /// The installed plugins. A missing or damaged file means none.
 pub fn load(f: &Folders) -> Vec<Record> {
-    std::fs::read_to_string(f.records())
-        .ok()
-        .and_then(|t| serde_json::from_str::<Table>(&t).ok())
-        .map(|t| t.plugins)
-        .unwrap_or_default()
+    load_checked(f).unwrap_or_default()
 }
 
 pub fn save(f: &Folders, records: &[Record]) -> std::io::Result<()> {
@@ -113,7 +127,7 @@ pub fn commit(
     if !valid_id(&m.id) {
         return Err(format!("{} is not a valid plugin id.", m.id));
     }
-    let mut records = load(f);
+    let mut records = load_checked(f).map_err(|_| DAMAGED.to_string())?;
     if let Some(old) = records
         .iter()
         .find(|r| r.id == m.id && r.repo != repo.slug())
@@ -165,7 +179,7 @@ pub fn uninstall(f: &Folders, id: &str) -> Result<Record, String> {
     if !valid_id(id) {
         return Err(unknown());
     }
-    let mut records = load(f);
+    let mut records = load_checked(f).map_err(|_| DAMAGED.to_string())?;
     let Some(pos) = records.iter().position(|r| r.id == id) else {
         return Err(unknown());
     };
@@ -194,10 +208,18 @@ pub fn uninstall(f: &Folders, id: &str) -> Result<Record, String> {
 /// Mend what a crash can leave behind: half-unpacked downloads, trash, records without a
 /// folder, and folders without a record. Anything not named like a plugin id is left alone.
 pub fn launch_cleanup(f: &Folders) {
-    if let Ok(entries) = std::fs::read_dir(f.staging()) {
-        for e in entries.flatten() {
-            remove_path(&e.path());
+    let staging = f.staging();
+    match std::fs::symlink_metadata(&staging) {
+        Ok(m) if m.is_dir() => {
+            if let Ok(entries) = std::fs::read_dir(&staging) {
+                for e in entries.flatten() {
+                    remove_path(&e.path());
+                }
+            }
         }
+        // A link here is not ours: unlink it, never touch what it points at.
+        Ok(_) => remove_path(&staging),
+        Err(_) => {}
     }
     if let Ok(entries) = std::fs::read_dir(&f.plugins) {
         for e in entries.flatten() {
@@ -206,7 +228,8 @@ pub fn launch_cleanup(f: &Folders) {
             }
         }
     }
-    let records = load(f);
+    // With a damaged record list we can't tell what is an orphan, so delete nothing more.
+    let Ok(records) = load_checked(f) else { return };
     let kept: Vec<Record> = records
         .iter()
         .filter(|r| exists(&f.plugin(&r.id)))
@@ -484,5 +507,46 @@ mod tests {
         assert!(f.data_of("sunset").exists());
         let ids: Vec<String> = load(&f).into_iter().map(|r| r.id).collect();
         assert_eq!(ids, vec!["sunset".to_string()]);
+    }
+
+    #[test]
+    fn a_damaged_record_file_deletes_nothing() {
+        let (_h, f) = folders("damaged");
+        std::fs::create_dir_all(f.plugin("sunset")).unwrap();
+        std::fs::create_dir_all(f.data_of("sunset")).unwrap();
+        std::fs::write(f.records(), "{ not json").unwrap();
+        launch_cleanup(&f);
+        assert!(f.plugin("sunset").exists());
+        assert!(f.data_of("sunset").exists());
+        assert_eq!(std::fs::read_to_string(f.records()).unwrap(), "{ not json");
+        let staged = stage(&f, "s", "a.txt");
+        let err = commit(
+            &f,
+            &staged,
+            &manifest("other"),
+            &repo("o", "a"),
+            &tag("v1"),
+            1,
+        )
+        .unwrap_err();
+        assert_eq!(err, DAMAGED);
+        assert!(staged.exists());
+        assert!(!f.plugin("other").exists());
+        assert_eq!(uninstall(&f, "sunset").unwrap_err(), DAMAGED);
+        assert!(f.plugin("sunset").exists());
+        assert_eq!(std::fs::read_to_string(f.records()).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn a_symlinked_staging_folder_is_unlinked_not_emptied() {
+        let (h, f) = folders("staging-link");
+        let outside = h.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), "k").unwrap();
+        std::fs::remove_dir_all(f.staging()).unwrap();
+        symlink(&outside, f.staging()).unwrap();
+        launch_cleanup(&f);
+        assert!(outside.join("keep.txt").exists());
+        assert!(!exists(&f.staging()));
     }
 }
