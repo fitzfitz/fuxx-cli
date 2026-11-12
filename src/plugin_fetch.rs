@@ -879,4 +879,97 @@ mod tests {
         assert!(left.is_empty(), "left behind: {left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn helper_plugin_loads_and_uninstalls_cleanly() {
+        use crate::plugin_source::Repo;
+        use crate::plugin_store::{self, Folders};
+        use crate::shell_integration::test_zsh::{run, screen_text, spawn};
+
+        let dir = tmp("helper");
+        let wrap = dir.join("src").join("owner-repo-sha");
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins/hello-helper");
+        std::fs::create_dir_all(&wrap).unwrap();
+        // `cp -R` keeps the executable bit, as a GitHub tarball does.
+        let ok = Command::new("/bin/cp")
+            .arg("-R")
+            .arg(format!("{}/.", example.display()))
+            .arg(&wrap)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let tar = dir.join("a.tar.gz");
+        let ok = Command::new("/usr/bin/tar")
+            .arg("-czf")
+            .arg(&tar)
+            .arg("-C")
+            .arg(dir.join("src"))
+            .arg("owner-repo-sha")
+            .status()
+            .unwrap();
+        assert!(ok.success());
+
+        let repo = Repo {
+            owner: "owner".into(),
+            name: "repo".into(),
+        };
+        let mut net = FakeNet::default();
+        net.gets
+            .insert(repo.release_api(), Err(FetchError::Status(404)));
+        net.gets
+            .insert(repo.head_api(), Ok(r#"{"sha":"abc1234def"}"#.to_string()));
+        let tarball_url = "https://api.github.com/repos/owner/repo/tarball/abc1234def";
+        net.files.insert(tarball_url.into(), tar);
+
+        let download = latest(&net, &repo, "arm64").unwrap();
+        let home = dir.join("home");
+        let folders = Folders::under(&home);
+        let staged = stage(&net, &download, &folders.staging()).unwrap();
+        crate::plugin_manifest::accept(&staged.manifest, true).unwrap();
+        assert_eq!(staged.manifest.id, "hello-helper");
+        let record = plugin_store::commit(
+            &folders,
+            &staged.plugin_dir,
+            &staged.manifest,
+            &repo,
+            &staged.installed,
+            1,
+        )
+        .unwrap();
+        remove_work(&staged.work);
+        assert!(record.runs_code());
+
+        let si = dir.join("si");
+        crate::shell_integration::install(&si).unwrap();
+        let load = || {
+            crate::plugin_shell::write(&si, &folders, &plugin_store::load(&folders)).unwrap();
+            let (core, _rx) = spawn(&home, None, &si, true, true);
+            // Short output: the screen wraps at 80 columns.
+            run(
+                &core,
+                "print -r -- \"[$(fuxx-hello 2>&1 | head -c 20)][${FUXX_HELLO-none}][${FUXX_HELLO_DATA:h:t}/${FUXX_HELLO_DATA:t}]\"",
+            );
+            screen_text(&core)
+        };
+        let screen = load();
+        assert!(
+            screen.contains("[hello from a fuxx pl][1][plugin-data/hello-helper]"),
+            "screen:\n{screen}"
+        );
+
+        plugin_store::set_enabled(&folders, "hello-helper", false).unwrap();
+        let screen = load();
+        assert!(
+            screen.contains("[zsh: command not fou][none][./]"),
+            "screen:\n{screen}"
+        );
+
+        plugin_store::uninstall(&folders, "hello-helper").unwrap();
+        crate::plugin_shell::write(&si, &folders, &plugin_store::load(&folders)).unwrap();
+        let script = std::fs::read_to_string(si.join("zsh/plugins.zsh")).unwrap();
+        assert_eq!(script.lines().count(), 1, "only the header: {script}");
+        assert!(!folders.plugin("hello-helper").exists());
+        assert!(!folders.data_of("hello-helper").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

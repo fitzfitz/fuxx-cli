@@ -143,7 +143,7 @@ impl Section {
                 "A sound file or web link for each moment; leave it empty for silence."
             }
             Section::Plugins => {
-                "Add themes from a GitHub link. Uninstalling removes everything a plugin added."
+                "Add themes and helper programs from a GitHub link. Uninstalling removes everything a plugin added."
             }
         }
     }
@@ -2291,7 +2291,7 @@ mod tests {
         assert_eq!(Section::ALL.last(), Some(&Section::Plugins));
         assert_eq!(
             Section::Plugins.lede(),
-            "Add themes from a GitHub link. Uninstalling removes everything a plugin added."
+            "Add themes and helper programs from a GitHub link. Uninstalling removes everything a plugin added."
         );
         // Found in ⌘K, opening Plugins.
         let found = palette_settings()
