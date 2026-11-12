@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use gpui::{App, Font, Global, WindowAppearance};
 
 use crate::fonts;
+use crate::plugin_store::{self, Folders};
+use crate::plugin_themes::{self, PluginTheme};
 use crate::presets::{self, Preset};
 use crate::restore::RestoreMode;
 use crate::settings::{self, Entry};
@@ -24,6 +26,11 @@ pub struct Appearance {
     pub font_settings: fonts::FontSettings,
     pub settings_path: Option<PathBuf>,
     pub user_theme_dir: Option<PathBuf>,
+    /// Where plugins live (none without `$HOME`).
+    #[allow(dead_code)] // until the Plugins page reads it
+    pub plugin_folders: Option<Folders>,
+    /// The themes installed plugins bring, for the theme list and `read_theme_text`.
+    pub plugin_themes: Vec<PluginTheme>,
     /// The agent presets: built-ins plus `agent-preset` lines.
     pub presets: Vec<Preset>,
     pub restore: RestoreMode,
@@ -376,21 +383,23 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         }
     };
 
-    // A theme name is an absolute file, then a file in the user's theme folder, then a built-in.
-    // Without $HOME there is no user folder, only the built-ins.
+    // A theme name is an absolute file, then a file in the user's theme folder, then a plugin's
+    // theme, then a built-in. Without $HOME there is no user folder and no plugins.
     let user_dir = home
         .as_deref()
         .map(|h| theme::user_theme_dir(h, xdg.as_deref()));
-    let read_theme = |name: &str| {
-        let path = Path::new(name);
-        if path.is_absolute() {
-            return read_file(path);
+    let plugin_folders = home.as_deref().map(Folders::under);
+    let plugin_themes = match &plugin_folders {
+        Some(f) => {
+            let taken: Vec<String> = user_theme_names(user_dir.as_deref())
+                .into_iter()
+                .chain(theme::BUILTIN_THEMES.iter().map(|s| s.to_string()))
+                .collect();
+            plugin_themes::list(f, &plugin_store::load(f), &taken)
         }
-        user_dir
-            .as_ref()
-            .and_then(|dir| read_file(&dir.join(name)))
-            .or_else(|| theme::builtin_theme(name).map(str::to_string))
+        None => vec![],
     };
+    let read_theme = |name: &str| read_theme_text(name, user_dir.as_deref(), &plugin_themes);
     let dark = !matches!(
         cx.window_appearance(),
         WindowAppearance::Light | WindowAppearance::VibrantLight
@@ -464,6 +473,8 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         font_settings: settings,
         settings_path,
         user_theme_dir: user_dir,
+        plugin_folders,
+        plugin_themes,
         presets,
         restore,
         scripting,
@@ -483,6 +494,43 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         sound_links: sound_links_from_entries(&entries),
         sound_on,
     }
+}
+
+/// The names of the files in the user's theme folder (none if there is no folder). Hidden files
+/// such as `.DS_Store` are not themes.
+pub fn user_theme_names(dir: Option<&Path>) -> Vec<String> {
+    let Some(entries) = dir.and_then(|d| std::fs::read_dir(d).ok()) else {
+        return vec![];
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .collect()
+}
+
+/// A theme's text by name: an absolute file, then a file in the user's folder, then a plugin
+/// theme with that exact listed name, then a built-in. The user's own file always wins.
+pub fn read_theme_text(
+    name: &str,
+    user_dir: Option<&Path>,
+    plugin_themes: &[PluginTheme],
+) -> Option<String> {
+    let read_file = |p: &Path| std::fs::read_to_string(p).ok();
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return read_file(path);
+    }
+    user_dir
+        .and_then(|dir| read_file(&dir.join(name)))
+        .or_else(|| {
+            plugin_themes
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| read_file(&t.path))
+        })
+        .or_else(|| theme::builtin_theme(name).map(str::to_string))
 }
 
 /// Re-read the settings and replace the global; observers (every view) then redraw.
@@ -508,6 +556,37 @@ impl Global for ShotsHome {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_lookup_order() {
+        let dir = std::env::temp_dir().join(format!("fuxx-theme-lookup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("user")).unwrap();
+        std::fs::create_dir_all(dir.join("plug")).unwrap();
+        std::fs::write(dir.join("user/Sunset"), "background = #111111\n").unwrap();
+        std::fs::write(dir.join("plug/Sunset"), "background = #222222\n").unwrap();
+        std::fs::write(dir.join("plug/Dusk"), "background = #333333\n").unwrap();
+        let plugin = |name: &str| PluginTheme {
+            name: name.into(),
+            plugin: "P".into(),
+            plugin_id: "p".into(),
+            path: dir.join("plug").join(name.split(' ').next().unwrap()),
+        };
+        let plugins = [plugin("Sunset"), plugin("Dusk")];
+        let user = dir.join("user");
+        let read = |name: &str| read_theme_text(name, Some(&user), &plugins);
+        // the user's file beats a plugin theme of the same name
+        assert_eq!(read("Sunset").unwrap(), "background = #111111\n");
+        // a plugin theme is read before any built-in
+        assert_eq!(read("Dusk").unwrap(), "background = #333333\n");
+        // a built-in still reads, and an unknown name does not
+        assert_eq!(read("Nord").as_deref(), theme::builtin_theme("Nord"));
+        assert!(read("Nord").is_some());
+        assert_eq!(read("Nowhere"), None);
+        // no user folder: the plugin theme still reads
+        assert!(read_theme_text("Sunset", None, &plugins).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn each_key_s_sound_is_on_unless_switched_off() {
