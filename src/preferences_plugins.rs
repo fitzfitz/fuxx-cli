@@ -29,6 +29,7 @@ pub fn busy_text(busy: &Busy) -> &'static str {
         Busy::Checking => "Checking\u{2026}",
         Busy::Removing(_) => "Removing\u{2026}",
         Busy::Updating(_) => "Updating\u{2026}",
+        Busy::Switching(_) => "Working\u{2026}",
     }
 }
 

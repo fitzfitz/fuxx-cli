@@ -237,7 +237,7 @@ pub fn commit(
 }
 
 /// Turn a plugin On or Off. Only the record changes; its files stay.
-#[allow(dead_code)] // the On/Off switch (a later M11z task) is its first caller
+#[allow(dead_code)] // the On/Off switch on the page (a later M11z task) is the first caller
 pub fn set_enabled(f: &Folders, id: &str, on: bool) -> Result<Record, String> {
     let mut records = load_checked(f).map_err(|_| DAMAGED.to_string())?;
     let Some(r) = records.iter_mut().find(|r| r.id == id) else {
