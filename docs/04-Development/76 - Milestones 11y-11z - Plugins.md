@@ -354,7 +354,8 @@ On branch `m11z-helper-plugins`. Run fuxx, open Settings → Plugins, and check 
 
 1. Install the helper repo (the sample in `examples/plugins/hello-helper`, or a copy you push yourself): the
    confirmation is the warning, "Runs a program on your Mac in every new terminal. …".
-2. Open a new terminal: `fuxx-hello` prints "hello from a fuxx plugin".
+2. Open a new terminal: `fuxx-hello` prints "hello from a fuxx plugin". Then quit fuxx and open it again: the
+   terminals it opens at launch have `fuxx-hello` too (the final review found they didn't; fixed in `59d8013`).
 3. Switch the plugin off: a new terminal says `command not found: fuxx-hello`, and the page says new terminals get
    the change while open ones keep it.
 4. Turn command blocks off with the helper on: a new terminal still loads the helper.
