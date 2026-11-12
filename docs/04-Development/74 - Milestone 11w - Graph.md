@@ -1,6 +1,6 @@
 # Milestone 11w — Graph
 
-**Status:** 🟨 built 2026-11-12 on branch `m11w-graph` (not committed); waiting for your on-screen check (below). Plan [[M11w Plan - Graph]].
+**Status:** 🟨 built 2026-11-12, committed (`7d94c1a`) and released in **v0.9.0** (run 43177618415) on your word ("commit, push and release"); waiting for your on-screen check (below). Plan [[M11w Plan - Graph]].
 **Asked for:** 2026-11-12, by you: "If everything good, I want to add more accordion below changes called "Graph"" →
 "see the commit history of the branch with lanes" → (mockups round 8, then your screenshot of Cursor's / VS Code's
 Source Control Graph) "I want something like this like in cursor/IDE. do we need any library for this?" → (no
