@@ -10,6 +10,16 @@ use std::process::Command;
 /// The most a plugin download may weigh: 100 MB.
 pub const MAX_BYTES: u64 = 104_857_600;
 
+/// The most a plugin may unpack to: 500 MB (your call, 2026-11-13). A small archive can expand
+/// enormously, and fuxx unpacks before it asks, so the size is read from the archive's own
+/// listing first and nothing is written when it's over.
+pub const MAX_UNPACKED: u64 = 524_288_000;
+
+/// What a plugin over `MAX_UNPACKED` says.
+pub const UNPACKS_TOO_BIG: &str = "This plugin unpacks to over 500 MB, so fuxx won't install it.";
+
+const CANT_UNPACK: &str = "fuxx couldn't unpack this plugin.";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FetchError {
     Offline,
@@ -221,6 +231,7 @@ fn stage_in(
             );
         }
     }
+    too_big_unpacked(&archive, d.kind, MAX_UNPACKED)?;
     let ok = match d.kind {
         ArchiveKind::Tarball => Command::new("/usr/bin/tar")
             .arg("-xzf")
@@ -235,7 +246,7 @@ fn stage_in(
             .status(),
     };
     if !ok.map(|s| s.success()).unwrap_or(false) {
-        return Err("fuxx couldn't unpack this plugin.".into());
+        return Err(CANT_UNPACK.into());
     }
     let root = find_plugin_root(unpacked)
         .ok_or_else(|| format!("This repo isn't a fuxx plugin (it has no {MANIFEST})."))?;
@@ -244,6 +255,61 @@ fn stage_in(
     let manifest = plugin_manifest::parse(&text).map_err(|e| e.message())?;
     plugin_manifest::check_files(&root, &manifest).map_err(|e| e.message())?;
     Ok((root, manifest))
+}
+
+/// Refuse an archive whose listed contents add up to more than `cap` bytes; one that can't be
+/// listed can't be unpacked either.
+fn too_big_unpacked(archive: &Path, kind: ArchiveKind, cap: u64) -> Result<(), String> {
+    match unpacked_size(archive, kind) {
+        Some(size) if size <= cap => Ok(()),
+        Some(_) => Err(UNPACKS_TOO_BIG.into()),
+        None => Err(CANT_UNPACK.into()),
+    }
+}
+
+/// What `archive` would unpack to, from its listing (`tar -tvzf`, `zipinfo -t`), without
+/// unpacking it.
+fn unpacked_size(archive: &Path, kind: ArchiveKind) -> Option<u64> {
+    let out = match kind {
+        ArchiveKind::Tarball => Command::new("/usr/bin/tar")
+            .arg("-tvzf")
+            .arg(archive)
+            .output(),
+        ArchiveKind::Zip => Command::new("/usr/bin/zipinfo")
+            .arg("-t")
+            .arg(archive)
+            .output(),
+    }
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    match kind {
+        ArchiveKind::Tarball => tar_listing_size(&text),
+        ArchiveKind::Zip => zipinfo_total(&text),
+    }
+}
+
+/// The sum of the sizes in a `tar -tv` listing (the fifth column); None if a line isn't one.
+fn tar_listing_size(listing: &str) -> Option<u64> {
+    listing
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .try_fold(0u64, |sum, line| {
+            let size: u64 = line.split_whitespace().nth(4)?.parse().ok()?;
+            sum.checked_add(size)
+        })
+}
+
+/// The "N bytes uncompressed" total from `zipinfo -t`.
+fn zipinfo_total(out: &str) -> Option<u64> {
+    out.split(',')
+        .find(|part| part.trim_end().ends_with("bytes uncompressed"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn sha256_of(file: &Path) -> Option<String> {
@@ -569,6 +635,72 @@ mod tests {
         .unwrap_err();
         assert_eq!(e, "fuxx couldn't unpack this plugin.");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tar_listing_sizes_add_up() {
+        let listing = "drwxr-xr-x  0 me staff       0 Nov 13 05:44 p/\n\
+                       -rw-r--r--  0 me staff       5 Nov 13 05:44 p/a\n\
+                       lrwxr-xr-x  0 me staff       0 Nov 13 05:44 p/link -> a\n\
+                       -rw-r--r--  0 me staff      10 Nov 13 05:44 p/sub/b c\n";
+        assert_eq!(tar_listing_size(listing), Some(15));
+        assert_eq!(tar_listing_size(""), Some(0));
+        assert_eq!(tar_listing_size("not a listing\n"), None);
+    }
+
+    #[test]
+    fn zipinfo_total_reads_the_uncompressed_bytes() {
+        let out = "8 files, 668 bytes uncompressed, 364 bytes compressed:  45.5%\n";
+        assert_eq!(zipinfo_total(out), Some(668));
+        assert_eq!(zipinfo_total("nonsense"), None);
+    }
+
+    #[test]
+    fn the_unpacked_size_is_read_before_unpacking() {
+        let dir = tmp("unpacked-size");
+        let body = "x".repeat(600);
+        let tgz = tarball(
+            &dir,
+            &[("fuxx-plugin.conf", &conf("")), ("big", body.as_str())],
+        );
+        let size = unpacked_size(&tgz, ArchiveKind::Tarball).unwrap();
+        assert!((600..2000).contains(&size), "{size}");
+        assert!(too_big_unpacked(&tgz, ArchiveKind::Tarball, 1000).is_ok());
+        assert_eq!(
+            too_big_unpacked(&tgz, ArchiveKind::Tarball, 500),
+            Err(UNPACKS_TOO_BIG.to_string())
+        );
+        // A zip is measured too.
+        let zip = dir.join("a.zip");
+        let ok = Command::new("/usr/bin/ditto")
+            .args(["-c", "-k", "--norsrc"])
+            .arg(dir.join("src").join("owner-repo-abc"))
+            .arg(&zip)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert!(unpacked_size(&zip, ArchiveKind::Zip).unwrap() >= 600);
+        assert_eq!(
+            too_big_unpacked(&zip, ArchiveKind::Zip, 500),
+            Err(UNPACKS_TOO_BIG.to_string())
+        );
+        // Something that can't be listed is refused as unpackable.
+        let junk = dir.join("junk");
+        std::fs::write(&junk, "not an archive").unwrap();
+        assert_eq!(
+            too_big_unpacked(&junk, ArchiveKind::Tarball, MAX_UNPACKED),
+            Err("fuxx couldn't unpack this plugin.".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_unpacked_cap_is_500_mb() {
+        assert_eq!(MAX_UNPACKED, 500 * 1024 * 1024);
+        assert_eq!(
+            UNPACKS_TOO_BIG,
+            "This plugin unpacks to over 500 MB, so fuxx won't install it."
+        );
     }
 
     #[test]

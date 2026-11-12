@@ -137,6 +137,11 @@ zsh         = shell/fuxx-completes.plugin.zsh
   "This plugin has no program for this Mac."
 - **Limits:** a download over **100 MB** is refused (curl `--max-filesize`); 60 s per request; offline or a GitHub
   error says so in plain words and installs nothing.
+- **Unpacked size: at most 500 MB** (your call, 2026-11-13: "add the 500 MB cap", after the final review found
+  that a small archive could expand enough to fill the disk before the confirmation). Before unpacking, fuxx adds
+  up the archive's own listing (`tar -tvzf`, `zipinfo -t`); over 500 MB → "This plugin unpacks to over 500 MB, so
+  fuxx won't install it." and nothing is unpacked. An archive that can't be listed → "fuxx couldn't unpack this
+  plugin."
 
 ### 4. Installing
 
