@@ -1172,7 +1172,7 @@ impl Workspace {
             Key::Setting(name) => {
                 let settings = crate::preferences::palette_settings();
                 if let Some(setting) = settings.iter().find(|s| s.name == name) {
-                    crate::preferences::open_at(setting.section, cx);
+                    self.open_preferences_at(setting.section, window, cx);
                 }
             }
             Key::More(_) => {}

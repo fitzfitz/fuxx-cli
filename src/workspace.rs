@@ -22,10 +22,10 @@ use std::time::{Duration, Instant, SystemTime};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, EntityId,
-    FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Stateful,
-    StyleRefinement, Subscription, Task, Window, WindowControlArea, actions, canvas, div,
+    AnyElement, App, Bounds, ClickEvent, Context, DismissEvent, DispatchPhase, Div, Entity,
+    EntityId, FocusHandle, Focusable, Hsla, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollHandle, SharedString,
+    Stateful, StyleRefinement, Subscription, Task, Window, WindowControlArea, actions, canvas, div,
     prelude::*, px,
 };
 
@@ -563,6 +563,7 @@ overlays!(
     Notifications,
     Help,
     Welcome,
+    Preferences,
 );
 
 /// What the rename box names: a workspace (its sidebar row) or a terminal (its pane tab).
@@ -652,6 +653,11 @@ pub struct Workspace {
     pub(crate) branch_switcher: Option<Entity<BranchSwitcher>>,
     /// The Help panel (Keyboard Shortcuts or the Command Reference), while it is open (M11d).
     pub(crate) help: Option<Entity<HelpPanel>>,
+    /// The Preferences panel over the window, while it is open (M11x).
+    pub(crate) preferences: Option<Entity<crate::preferences::PreferencesView>>,
+    /// Closes the panel when the keyboard leaves it (a terminal focused by a script or a
+    /// shortcut): it never stays up over a terminal that has the keys.
+    preferences_focus: Option<Subscription>,
     /// The Welcome card, while it is open (M11k).
     pub(crate) welcome: Option<Entity<Welcome>>,
     /// The card's agent detection never runs (the UI screenshots set the answers themselves).
@@ -865,6 +871,8 @@ impl Workspace {
             palette_recent: Recent::default(),
             branch_switcher: None,
             help: None,
+            preferences: None,
+            preferences_focus: None,
             welcome: None,
             agents_frozen: false,
             browser_tabs: HashMap::new(),
@@ -2147,6 +2155,8 @@ impl Workspace {
                 // A short run (an agent's pause) is in the 🔔 list but makes no banner.
                 if notifier::worth_a_banner(new, worked) {
                     let about = self.banner_about(terminal);
+                    // M11x: the banner's sound, with the banner (never for the 🔔 list alone).
+                    crate::sounds::banner(cx);
                     cx.background_spawn(async move {
                         notifier::fire(&summary, &subtitle, &body, about)
                     })
@@ -2540,6 +2550,10 @@ impl Workspace {
         }
         if keep != Overlay::Welcome {
             self.welcome = None;
+        }
+        if keep != Overlay::Preferences {
+            self.preferences = None;
+            self.preferences_focus = None;
         }
     }
 
@@ -3230,6 +3244,10 @@ impl Render for Workspace {
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
         let pane_actions = self.render_pane_actions(ui, cx);
+        let preferences = self
+            .preferences
+            .clone()
+            .map(|panel| self.preferences_layer(panel, ui, window, cx));
         self.refresh_palette(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
@@ -3281,7 +3299,16 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &OpenBrowser, window, cx| this.open_address_box(window, cx)),
             )
+            // ⌘, (M11x): Preferences over this window, or closed if it's open.
+            .on_action(cx.listener(|this, _: &crate::OpenPreferences, window, cx| {
+                this.toggle_preferences(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
+                // ⌘W with Preferences up closes it, never a terminal behind it (M11x).
+                if this.preferences.is_some() {
+                    this.close_preferences(window, cx);
+                    return;
+                }
                 if let Some(tab) = this.model.focused_tab() {
                     this.close_tab(tab, window, cx);
                 }
@@ -3458,6 +3485,117 @@ impl Render for Workspace {
             .children(pane_tab_menu)
             .children(pane_actions)
             .children(notifications)
+            // Preferences (M11x): over everything, the whole window dimmed behind it.
+            .children(preferences)
+    }
+}
+
+/// The Preferences panel (M11x): over the window, which is dimmed behind it.
+impl Workspace {
+    /// ⌘,: open Preferences over this window, or close it if it's open.
+    pub(crate) fn toggle_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preferences.is_some() {
+            self.close_preferences(window, cx);
+        } else {
+            self.open_preferences(window, cx);
+        }
+    }
+
+    /// Open Preferences on `section` (the ⌘K palette's settings); an open panel switches to it.
+    pub(crate) fn open_preferences_at(
+        &mut self,
+        section: crate::preferences::Section,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preferences.is_none() {
+            self.open_preferences(window, cx);
+        }
+        if let Some(panel) = self.preferences.clone() {
+            panel.update(cx, |panel, cx| panel.select(section, cx));
+        }
+    }
+
+    /// Open the panel and give it the keyboard; every other box over the window closes.
+    fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_overlays(Overlay::Preferences);
+        let workspace = cx.entity().downgrade();
+        let dismissed = self.sidebar.hint_dismissed;
+        let panel =
+            cx.new(|cx| crate::preferences::PreferencesView::new(workspace, dismissed, window, cx));
+        cx.subscribe_in(
+            &panel,
+            window,
+            |this, panel, _: &DismissEvent, window, cx| {
+                // A late event from a panel already replaced or closed changes nothing.
+                if this.preferences.as_ref() == Some(panel) {
+                    this.close_preferences(window, cx);
+                }
+            },
+        )
+        .detach();
+        let handle = panel.focus_handle(cx);
+        handle.focus(window, cx);
+        self.preferences_focus = Some(cx.on_focus_out(&handle, window, |this, _, _, cx| {
+            // The keyboard went elsewhere on purpose: leave it there.
+            this.preferences = None;
+            this.preferences_focus = None;
+            cx.notify();
+        }));
+        self.preferences = Some(panel);
+        cx.notify();
+    }
+
+    /// Close the panel; the keyboard goes back to the terminal (or tab) in front.
+    pub(crate) fn close_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preferences_focus = None;
+        if self.preferences.take().is_some() {
+            self.focus_active(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The panel centred over a scrim that dims the whole window; a click on the scrim closes
+    /// it.
+    fn preferences_layer(
+        &self,
+        panel: Entity<crate::preferences::PreferencesView>,
+        ui: UiColors,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let viewport = window.viewport_size();
+        let (width, height) =
+            crate::preferences::panel_size(f32::from(viewport.width), f32::from(viewport.height));
+        let dim = Hsla {
+            a: crate::preferences::SCRIM_ALPHA,
+            ..hsla(ui.shadow)
+        };
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(dim)
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                            this.close_preferences(window, cx)
+                        }),
+                    ),
+            )
+            // The panel takes its own clicks: the scrim behind it gets only those outside it.
+            .child(div().w(px(width)).h(px(height)).occlude().child(panel))
     }
 }
 

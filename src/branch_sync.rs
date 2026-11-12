@@ -37,6 +37,25 @@ pub struct Sync {
     pub has_origin: bool,
     /// When origin was last fetched here (`FETCH_HEAD`'s time); none: never.
     pub fetched: Option<SystemTime>,
+    /// A branch not on origin yet (no upstream): where it stands against origin's default
+    /// branch, the one it most likely came from (M11x); none when there's no such branch.
+    pub base: Option<Base>,
+}
+
+/// A local-only branch against origin's default branch (`origin/main`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Base {
+    pub name: String,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+/// `git rev-list --left-right --count HEAD...<base>`'s answer: (ahead, behind).
+pub fn parse_counts(out: &str) -> Option<(u32, u32)> {
+    let mut parts = out.split_whitespace();
+    let ahead = parts.next()?.parse().ok()?;
+    let behind = parts.next()?.parse().ok()?;
+    Some((ahead, behind))
 }
 
 /// What a bar button does.
@@ -116,7 +135,22 @@ pub fn line(sync: &Sync, now: SystemTime) -> (String, Tone) {
     }
     match &sync.upstream {
         Upstream::Other(name) => (format!("Tracks {name} \u{b7} not origin"), Tone::Faint),
-        Upstream::None => ("Local only \u{b7} not on origin".into(), Tone::Faint),
+        Upstream::None => match &sync.base {
+            None => ("Local only \u{b7} not on origin".into(), Tone::Faint),
+            Some(Base {
+                name,
+                ahead,
+                behind,
+            }) => {
+                let against = match (ahead, behind) {
+                    (0, 0) => format!("even with {name}"),
+                    (a, 0) => format!("\u{2191}{a} ahead of {name}"),
+                    (0, b) => format!("\u{2193}{b} behind {name}"),
+                    (a, b) => format!("\u{2191}{a} \u{2193}{b} vs {name}"),
+                };
+                (format!("Local only \u{b7} {against}"), Tone::Faint)
+            }
+        },
         Upstream::Gone => (fetched("Upstream gone".into()), Tone::Faint),
         Upstream::Track {
             ahead: 0,
@@ -245,11 +279,39 @@ pub fn read(git: &Path, root: &Path) -> Option<Sync> {
         .map(|p| root.join(p.trim_end_matches('\n')))
         .and_then(|p| std::fs::metadata(p).ok())
         .and_then(|m| m.modified().ok());
+    // Not on origin yet: against origin's default branch (`origin/HEAD`, else main or master).
+    let base = match (&head, &upstream, has_origin) {
+        (Head::Branch(_), Upstream::None, true) => base_of(git, root),
+        _ => None,
+    };
     Some(Sync {
         head,
         upstream,
         has_origin,
         fetched,
+        base,
+    })
+}
+
+/// HEAD against origin's default branch: `origin/HEAD` as git knows it, else `origin/main`, else
+/// `origin/master`; none when origin has none of them (or git fails).
+fn base_of(git: &Path, root: &Path) -> Option<Base> {
+    let name = run_git(git, root, &["rev-parse", "--abbrev-ref", "origin/HEAD"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.starts_with("origin/") && s != "origin/HEAD")
+        .or_else(|| {
+            ["origin/main", "origin/master"].into_iter().find_map(|b| {
+                let full = format!("refs/remotes/{b}");
+                run_git(git, root, &["rev-parse", "-q", "--verify", &full]).map(|_| b.to_string())
+            })
+        })?;
+    let range = format!("HEAD...{name}");
+    let out = run_git(git, root, &["rev-list", "--left-right", "--count", &range])?;
+    let (ahead, behind) = parse_counts(&out)?;
+    Some(Base {
+        name,
+        ahead,
+        behind,
     })
 }
 
@@ -304,7 +366,57 @@ mod tests {
             upstream,
             has_origin: true,
             fetched: Some(at(0)),
+            base: None,
         }
+    }
+
+    /// Your ask (2026-11-12, "I cannot tell if my local branch is ahead/behind the source"): a
+    /// branch not on origin yet says where it stands against origin's default branch.
+    #[test]
+    fn a_local_branch_counts_against_origin_s_default() {
+        let based = |ahead, behind| Sync {
+            base: Some(Base {
+                name: "origin/main".into(),
+                ahead,
+                behind,
+            }),
+            ..sync(Upstream::None)
+        };
+        let now = at(0);
+        assert_eq!(
+            line(&based(3, 0), now),
+            (
+                "Local only \u{b7} \u{2191}3 ahead of origin/main".into(),
+                Tone::Faint
+            )
+        );
+        assert_eq!(
+            line(&based(0, 2), now),
+            (
+                "Local only \u{b7} \u{2193}2 behind origin/main".into(),
+                Tone::Faint
+            )
+        );
+        assert_eq!(
+            line(&based(3, 2), now),
+            (
+                "Local only \u{b7} \u{2191}3 \u{2193}2 vs origin/main".into(),
+                Tone::Faint
+            )
+        );
+        assert_eq!(
+            line(&based(0, 0), now),
+            (
+                "Local only \u{b7} even with origin/main".into(),
+                Tone::Faint
+            )
+        );
+        // Still Publish: the branch isn't on origin.
+        assert_eq!(action(&based(3, 0)), Some(Action::Publish));
+        // `rev-list --left-right --count HEAD...<base>`: ahead, then behind.
+        assert_eq!(parse_counts("3\t2\n"), Some((3, 2)));
+        assert_eq!(parse_counts("0\t0"), Some((0, 0)));
+        assert_eq!(parse_counts("nope"), None);
     }
 
     fn track(ahead: u32, behind: u32) -> Upstream {
@@ -573,6 +685,37 @@ mod tests {
         let s = read(&git, &work).unwrap();
         assert!(!s.has_origin);
         assert_eq!(s.upstream, Upstream::None, "its upstream went with origin");
+    }
+
+    /// M11x: a branch not on origin is counted against origin's default branch (`origin/HEAD`,
+    /// else `origin/main`).
+    #[test]
+    fn read_counts_a_local_branch_against_origin_s_default() {
+        let Some(git) = crate::git_branch::find_git() else {
+            return;
+        };
+        let (work, other) = repo::fixture("base", &git);
+        // On main (it has an upstream): no base.
+        assert_eq!(read(&git, &work).unwrap().base, None);
+        repo::git_in(&git, &work, &["switch", "-q", "-c", "feat/icons"]);
+        repo::commit_file(&git, &work, "b.txt", "two\n");
+        repo::commit_file(&git, &work, "c.txt", "three\n");
+        let base = |ahead, behind| {
+            Some(Base {
+                name: "origin/main".into(),
+                ahead,
+                behind,
+            })
+        };
+        assert_eq!(read(&git, &work).unwrap().base, base(2, 0));
+        // origin's main moves on: one behind it too.
+        repo::commit_file(&git, &other, "a.txt", "from other\n");
+        repo::git_in(&git, &other, &["push", "-q", "origin", "main"]);
+        repo::git_in(&git, &work, &["fetch", "-q", "origin"]);
+        assert_eq!(read(&git, &work).unwrap().base, base(2, 1));
+        // Without `origin/HEAD`: origin/main all the same.
+        repo::git_in(&git, &work, &["remote", "set-head", "origin", "-d"]);
+        assert_eq!(read(&git, &work).unwrap().base, base(2, 1));
     }
 
     /// `other` pushes a commit changing `a.txt`; `work` fetches it (now 1 behind).

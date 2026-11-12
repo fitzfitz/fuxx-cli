@@ -1981,6 +1981,7 @@ mod tests {
             },
             has_origin: true,
             fetched: None,
+            base: None,
         }
     }
 
