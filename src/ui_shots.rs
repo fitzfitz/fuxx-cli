@@ -15147,7 +15147,11 @@ fn preferences_scenes() {
 /// `preferences-plugins-installed-<theme>`: the Plugins page with one installed plugin (no
 /// network: the records are made up here) and, in one of two renders, a newer version waiting.
 ///
-/// Panics unless the page draws and the waiting update changes it (the Update button is there).
+/// Two helper plugins that run code are listed too, with the second on in one render and off in
+/// another.
+///
+/// Panics unless the page draws, the waiting update changes it (the Update button is there) and
+/// so does switching the second helper off (its On/Off switch is there).
 fn preferences_plugins_scene() {
     use crate::plugin_source::Installed;
     use crate::plugin_store::Record;
@@ -15160,7 +15164,9 @@ fn preferences_plugins_scene() {
     for (slug, name) in SHOT_THEMES {
         let theme = shot_theme(name);
         let mut shots = Vec::new();
-        for with_update in [false, true] {
+        // (a newer version waiting, the second helper on)
+        for (with_update, second_on) in [(false, true), (true, true), (false, false), (true, false)]
+        {
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = palette_build(theme, slot.clone());
             let act = {
@@ -15168,20 +15174,37 @@ fn preferences_plugins_scene() {
                 move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                     let ws = slotted(&slot);
                     cx.update(|cx| {
+                        let helper = |id: &str, name: &str, enabled: bool| Record {
+                            id: id.into(),
+                            name: name.into(),
+                            version: "0.3.0".into(),
+                            description: Some("Adds a command to every terminal.".into()),
+                            repo: format!("someone/fuxx-{id}"),
+                            installed: Installed::Tag("v0.3.0".into()),
+                            themes: vec![],
+                            installed_at: 0,
+                            enabled,
+                            bin: Some("bin".into()),
+                            zsh: vec!["init.zsh".into()],
+                        };
                         let mut plugins = Plugins {
-                            records: vec![Record {
-                                id: "sunset".into(),
-                                name: "Sunset".into(),
-                                version: "1.0.0".into(),
-                                description: Some("Warm evening colours.".into()),
-                                repo: "someone/fuxx-sunset".into(),
-                                installed: Installed::Tag("v1.0.0".into()),
-                                themes: vec!["Sunset".into(), "Sunset Light".into()],
-                                installed_at: 0,
-                                enabled: true,
-                                bin: None,
-                                zsh: vec![],
-                            }],
+                            records: vec![
+                                Record {
+                                    id: "sunset".into(),
+                                    name: "Sunset".into(),
+                                    version: "1.0.0".into(),
+                                    description: Some("Warm evening colours.".into()),
+                                    repo: "someone/fuxx-sunset".into(),
+                                    installed: Installed::Tag("v1.0.0".into()),
+                                    themes: vec!["Sunset".into(), "Sunset Light".into()],
+                                    installed_at: 0,
+                                    enabled: true,
+                                    bin: None,
+                                    zsh: vec![],
+                                },
+                                helper("tidy", "Tidy", true),
+                                helper("sparkle", "Sparkle", second_on),
+                            ],
                             ..Plugins::default()
                         };
                         if with_update {
@@ -15195,7 +15218,7 @@ fn preferences_plugins_scene() {
                     slot.borrow_mut().take();
                 }
             };
-            if with_update {
+            if with_update && !second_on {
                 let path = shoot_with(
                     "preferences",
                     &format!("plugins-installed-{slug}"),
@@ -15211,6 +15234,10 @@ fn preferences_plugins_scene() {
         assert_ne!(
             shots[0].rgba, shots[1].rgba,
             "preferences-plugins-installed-{slug}: a waiting update doesn't change the page"
+        );
+        assert_ne!(
+            shots[0].rgba, shots[2].rgba,
+            "preferences-plugins-installed-{slug}: switching a helper off doesn't change the page"
         );
     }
 }

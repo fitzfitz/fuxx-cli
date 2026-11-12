@@ -30,7 +30,6 @@ pub enum Busy {
     Checking,
     Removing(String),
     Updating(String),
-    #[allow(dead_code)] // the On/Off switch on the page (a later M11z task) is the first caller
     Switching(String),
 }
 
@@ -90,7 +89,6 @@ pub fn install_prompt(m: &Manifest, repo: &Repo) -> (String, String, PromptLevel
 }
 
 /// What happened, for the line under the list.
-#[allow(dead_code)] // the On/Off switch on the page (a later M11z task) is the first caller
 #[derive(Clone, Debug, PartialEq)]
 pub enum Done {
     Installed,
@@ -105,9 +103,12 @@ const NEW_TERMINALS: &str =
     "New terminals get the change; terminals already open keep it until you close them.";
 
 /// The success line. A plugin that runs code adds when the change reaches terminals.
-pub fn success_text(name: &str, done: &Done, runs_code: bool) -> String {
+pub fn success_text(name: &str, done: &Done, runs_code: bool, has_themes: bool) -> String {
     let base = match done {
-        Done::Installed => format!("Installed {name}. Its themes are in Appearance."),
+        Done::Installed if has_themes => {
+            format!("Installed {name}. Its themes are in Appearance.")
+        }
+        Done::Installed => format!("Installed {name}."),
         Done::Updated(label) => format!("Updated {name} to {label}."),
         Done::Uninstalled => format!("Uninstalled {name}."),
         Done::On => format!("{name} is on."),
@@ -427,7 +428,12 @@ fn finish_commit(f: Folders, repo: Repo, staged: Staged, done: Done, cx: &mut Ap
         let committed = work.await;
         cx.update(|cx| match committed {
             Ok(record) => {
-                let text = success_text(&record.name, &done, record.runs_code());
+                let text = success_text(
+                    &record.name,
+                    &done,
+                    record.runs_code(),
+                    !record.themes.is_empty(),
+                );
                 succeed(cx, &record.id, text);
             }
             Err(e) => fail(cx, Some(&id), e),
@@ -550,7 +556,12 @@ fn remove(record: Record, cx: &mut App) {
         let done = work.await;
         cx.update(|cx| match done {
             Ok(()) => {
-                let text = success_text(&record.name, &Done::Uninstalled, record.runs_code());
+                let text = success_text(
+                    &record.name,
+                    &Done::Uninstalled,
+                    record.runs_code(),
+                    !record.themes.is_empty(),
+                );
                 succeed(cx, &record.id, text);
             }
             Err(e) => fail(cx, Some(&record.id), e),
@@ -561,7 +572,6 @@ fn remove(record: Record, cx: &mut App) {
 
 /// Turn plugin `id` On or Off. Only its record changes, so it's quick, but it still runs off
 /// the UI thread like the rest.
-#[allow(dead_code)] // the On/Off switch on the page (a later M11z task) is the first caller
 pub fn set_enabled(id: &str, on: bool, cx: &mut App) {
     let Some(f) = begin(cx, Busy::Switching(id.to_string())) else {
         return;
@@ -575,7 +585,12 @@ pub fn set_enabled(id: &str, on: bool, cx: &mut App) {
         cx.update(|cx| match done {
             Ok(record) => {
                 let done = if on { Done::On } else { Done::Off };
-                let text = success_text(&record.name, &done, record.runs_code());
+                let text = success_text(
+                    &record.name,
+                    &done,
+                    record.runs_code(),
+                    !record.themes.is_empty(),
+                );
                 succeed(cx, &record.id, text);
             }
             Err(e) => fail(cx, None, e),
@@ -692,35 +707,43 @@ mod tests {
             " New terminals get the change; terminals already open keep it until you close them.";
         let updated = Done::Updated("v2".into());
         assert_eq!(
-            success_text("Sunset", &Done::Installed, false),
+            success_text("Sunset", &Done::Installed, false, true),
             "Installed Sunset. Its themes are in Appearance."
         );
         assert_eq!(
-            success_text("Sunset", &updated, false),
+            success_text("Sunset", &updated, false, true),
             "Updated Sunset to v2."
         );
         assert_eq!(
-            success_text("Sunset", &Done::Uninstalled, false),
+            success_text("Sunset", &Done::Uninstalled, false, true),
             "Uninstalled Sunset."
         );
         assert_eq!(
-            success_text("Helper", &Done::Installed, true),
+            success_text("Helper", &Done::Installed, true, true),
             format!("Installed Helper. Its themes are in Appearance.{more}")
         );
         assert_eq!(
-            success_text("Helper", &updated, true),
+            success_text("Helper", &Done::Installed, true, false),
+            format!("Installed Helper.{more}")
+        );
+        assert_eq!(
+            success_text("Plain", &Done::Installed, false, false),
+            "Installed Plain."
+        );
+        assert_eq!(
+            success_text("Helper", &updated, true, true),
             format!("Updated Helper to v2.{more}")
         );
         assert_eq!(
-            success_text("Helper", &Done::Uninstalled, true),
+            success_text("Helper", &Done::Uninstalled, true, true),
             format!("Uninstalled Helper.{more}")
         );
         assert_eq!(
-            success_text("Helper", &Done::On, true),
+            success_text("Helper", &Done::On, true, true),
             format!("Helper is on.{more}")
         );
         assert_eq!(
-            success_text("Helper", &Done::Off, true),
+            success_text("Helper", &Done::Off, true, true),
             format!("Helper is off.{more}")
         );
     }

@@ -8,6 +8,7 @@ use gpui::{ClickEvent, Context, Div, InteractiveElement, ParentElement, Styled, 
 use crate::plugin_source::{Installed, parse_link};
 use crate::plugins::{self, Busy, Plugins};
 use crate::preferences::PreferencesView;
+use crate::preferences::toggle;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::text;
@@ -31,6 +32,14 @@ pub fn busy_text(busy: &Busy) -> &'static str {
         Busy::Updating(_) => "Updating\u{2026}",
         Busy::Switching(_) => "Working\u{2026}",
     }
+}
+
+/// What a card says about a plugin that runs code.
+pub const RUNS_A_PROGRAM: &str = "Runs a program";
+
+/// The card's theme count; a plugin with no themes leaves it out.
+pub fn themes_part(count: usize) -> Option<String> {
+    (count > 0).then(|| themes_text(count))
 }
 
 /// "1 theme", "3 themes".
@@ -173,7 +182,14 @@ fn plugin_card(index: usize, state: &Plugins, ui: UiColors, cx: &Context<Prefere
     }
     meta = meta
         .children(record.description.clone())
-        .child(themes_text(record.themes.len()));
+        .children(themes_part(record.themes.len()))
+        .when(record.runs_code(), |m| {
+            m.child(
+                div()
+                    .text_color(hsla(ui.ring_waiting))
+                    .child(RUNS_A_PROGRAM),
+            )
+        });
     let words = div()
         .flex_1()
         .min_w(px(220.0))
@@ -197,7 +213,11 @@ fn plugin_card(index: usize, state: &Plugins, ui: UiColors, cx: &Context<Prefere
 
     // While this plugin is being changed its buttons give way to what is happening.
     let working = match &state.busy {
-        Some(b @ (Busy::Removing(id) | Busy::Updating(id))) if *id == record.id => Some(b),
+        Some(b @ (Busy::Removing(id) | Busy::Updating(id) | Busy::Switching(id)))
+            if *id == record.id =>
+        {
+            Some(b)
+        }
         _ => None,
     };
     let mut buttons = div().flex_none().flex().items_center().gap(px(8.0));
@@ -209,6 +229,21 @@ fn plugin_card(index: usize, state: &Plugins, ui: UiColors, cx: &Context<Prefere
                 .child(busy_text(busy)),
         );
     } else {
+        if record.runs_code() {
+            let id = record.id.clone();
+            let on = record.enabled;
+            let mut switch = toggle(("plugin-switch", index), on, ui);
+            if free {
+                switch =
+                    switch.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        plugins::set_enabled(&id, !on, cx)
+                    }));
+            } else {
+                // Faint and dead while something else is running.
+                switch = switch.opacity(0.45).cursor_default();
+            }
+            buttons = buttons.child(switch);
+        }
         if let Some(newer) = state.updates.get(&record.id) {
             let id = record.id.clone();
             let mut update = action(

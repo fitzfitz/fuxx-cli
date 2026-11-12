@@ -72,7 +72,6 @@ mod pane_tab_menu;
 mod panes;
 mod plugin_fetch;
 mod plugin_manifest;
-#[allow(dead_code)] // M11z task 4 wires it into launch and the plugin actions.
 mod plugin_shell;
 mod plugin_source;
 mod plugin_store;
