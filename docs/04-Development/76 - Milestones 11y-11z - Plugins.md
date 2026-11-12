@@ -5,9 +5,7 @@ status: designed
 
 # 76 - Milestones 11y-11z - Plugins (design)
 
-**Status:: 📝 Designed 2026-11-12, approved by you 2026-11-13 ("before M11p, approved, update the docs"). M11y's plan
-written 2026-11-13 ([[M11y Plan - Plugins and Theme Plugins]]), waiting for your review; M11z's plan not written. Not
-built.** Comes **before M11p** (your call). Plugins moved **into scope** on 2026-11-12 by you
+**Status:: M11y 🟨 built 2026-11-13 on branch `m11y-plugins`, waiting for your on-screen check; M11z not planned yet.** Comes **before M11p** (your call). Plugins moved **into scope** on 2026-11-12 by you
 ("yes, plugins in scope, start the design"). You handed the details over ("Do the thinking"), so everything below
 except "Decided by you" is **the AI's call** (revised after a builder check: §8's theme pairs, §9's loading after
 your `.zshrc` and independence from `command-blocks`, §10's double-load guard and M11z's test helper).
@@ -323,3 +321,18 @@ This replaces its design's "fuxx links the crates directly" (§2 goal 6, §4, §
 - **Keeping `ZDOTDIR` through `.zprofile` and `.zshrc` (§9)** touches the most delicate part of M11l: a mistake
   there could skip your own dotfiles. It's off unless a helper plugin is on, and it gets real-zsh tests for login
   and non-login shells, with and without your own `ZDOTDIR`.
+
+## M11y on-screen check
+
+On branch `m11y-plugins`. Run fuxx, open Settings → Plugins, and check each:
+
+1. Settings → Plugins shows the empty state and the "How to make a plugin" link.
+2. A bad link shows the hint.
+3. Pasting the sample repo (or any theme repo you pick) shows the confirmation with "Adds 2 themes: Sunset, Sunset Light".
+4. Install: both themes appear in Appearance with "Sunset Themes" under them.
+5. Choose Sunset: it applies live.
+6. Uninstall → confirmation → fuxx returns to the default theme live, the `theme` line is gone from `~/.config/fuxx/config`, and `ls ~/Library/Application\ Support/fuxx/plugins` shows only `plugins.json`.
+7. After a push to the sample repo, reopening Settings → Plugins shows "Update to …".
+
+The sample plugin lives in `examples/plugins/sunset-themes`; an automated test installs and uninstalls it
+against a fake network (`example_plugin_installs_and_uninstalls_cleanly`).

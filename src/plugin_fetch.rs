@@ -681,4 +681,86 @@ mod tests {
         assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn example_plugin_installs_and_uninstalls_cleanly() {
+        use crate::plugin_source::Repo;
+        use crate::plugin_store::{self, Folders};
+        use crate::plugin_themes;
+
+        let dir = tmp("example");
+        let wrap = dir.join("src").join("owner-repo-sha");
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins/sunset-themes");
+        std::fs::create_dir_all(&wrap).unwrap();
+        let ok = Command::new("/bin/cp")
+            .arg("-R")
+            .arg(format!("{}/.", example.display()))
+            .arg(&wrap)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let tar = dir.join("a.tar.gz");
+        let ok = Command::new("/usr/bin/tar")
+            .arg("-czf")
+            .arg(&tar)
+            .arg("-C")
+            .arg(dir.join("src"))
+            .arg("owner-repo-sha")
+            .status()
+            .unwrap();
+        assert!(ok.success());
+
+        let repo = Repo {
+            owner: "owner".into(),
+            name: "repo".into(),
+        };
+        let mut net = FakeNet::default();
+        net.gets
+            .insert(repo.release_api(), Err(FetchError::Status(404)));
+        net.gets
+            .insert(repo.head_api(), Ok(r#"{"sha":"abc1234def"}"#.to_string()));
+        let tarball_url = "https://api.github.com/repos/owner/repo/tarball/abc1234def";
+        net.files.insert(tarball_url.into(), tar);
+
+        let download = latest(&net, &repo, "arm64").unwrap();
+        assert_eq!(download.url, tarball_url);
+        let home = dir.join("home");
+        let folders = Folders::under(&home);
+        let staged = stage(&net, &download, &folders.staging()).unwrap();
+        crate::plugin_manifest::accept(&staged.manifest, false).unwrap();
+        assert_eq!(staged.manifest.id, "sunset-themes");
+        let record = plugin_store::commit(
+            &folders,
+            &staged.plugin_dir,
+            &staged.manifest,
+            &repo,
+            &staged.installed,
+            1,
+        )
+        .unwrap();
+        remove_work(&staged.work);
+        assert_eq!(record.themes.len(), 2);
+
+        let records = plugin_store::load(&folders);
+        let themes = plugin_themes::list(&folders, &records, &[]);
+        let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Sunset", "Sunset Light"]);
+        for name in names {
+            let text = crate::appearance::read_theme_text(name, None, &themes).unwrap();
+            assert!(text.contains("background ="), "{name} reads as a theme");
+        }
+
+        plugin_store::uninstall(&folders, "sunset-themes").unwrap();
+        assert!(!folders.plugin("sunset-themes").exists());
+        assert!(!folders.data_of("sunset-themes").exists());
+        assert!(plugin_store::load(&folders).is_empty());
+        let left: Vec<String> = std::fs::read_dir(&folders.plugins)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "plugins.json" && n != ".staging")
+            .collect();
+        assert!(left.is_empty(), "left behind: {left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

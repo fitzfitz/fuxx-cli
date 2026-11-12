@@ -143,6 +143,47 @@ sound-enter = /System/Library/Sounds/Tink.aiff
 
 ---
 
+## Making a plugin
+
+A plugin is a public GitHub repo with a `fuxx-plugin.conf` file at its top. Anyone can install it from
+**Settings → Plugins** by pasting the repo's link, and remove it again from the same page.
+
+This version installs **theme plugins**. A theme is a plain text file in fuxx's theme format. Here is a plugin
+that shares two:
+
+```ini
+# A theme plugin
+format      = 1
+id          = sunset-themes
+name        = Sunset Themes
+version     = 1.0.0
+description = Warm themes from the design team.
+theme       = themes/Sunset
+theme       = themes/Sunset Light
+```
+
+Put that file at the top of the repo, add the two theme files under `themes/`, push it, and share the link.
+There is a complete example in [`examples/plugins/sunset-themes`](examples/plugins/sunset-themes).
+
+| Key | Required | What it is |
+| :--- | :--- | :--- |
+| `format` | yes | The plugin format. Today that is `1`. |
+| `id` | yes | `a-z`, `0-9` and `-`, 2 to 40 characters. Also the plugin's folder name. |
+| `name` | yes | What Settings → Plugins shows. |
+| `version` | yes | Shown next to the name. Free text. |
+| `description` | no | One line under the name. |
+| `theme` | no, repeat it | A theme file, as a path inside the plugin. Its file name is the theme's name. |
+
+Good to know:
+
+- Keep any data your plugin needs in `$FUXX_PLUGIN_DATA`. fuxx can only remove what's in its own folders, so
+  that is how uninstalling leaves nothing behind.
+- If the repo has a release, fuxx installs the latest one; if not, it installs the newest commit. Pushing again
+  makes Settings → Plugins offer an update.
+- Plugins that run programs come in a later version. For now fuxx refuses a plugin that has `bin` or `zsh`.
+
+---
+
 ## Handy keys
 
 | Keys | What happens |
