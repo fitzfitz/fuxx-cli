@@ -74,6 +74,8 @@ mod panes;
 mod plugin_manifest;
 #[allow(dead_code)] // until the install tasks use it
 mod plugin_source;
+#[allow(dead_code)] // until the install tasks use it
+mod plugin_store;
 mod preferences;
 mod prefs;
 mod presets;
