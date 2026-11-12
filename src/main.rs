@@ -70,16 +70,13 @@ mod pane_actions;
 mod pane_browser;
 mod pane_tab_menu;
 mod panes;
-#[allow(dead_code)] // until the install tasks use it
 mod plugin_fetch;
-#[allow(dead_code)] // until the install tasks use it
 mod plugin_manifest;
-#[allow(dead_code)] // until the install tasks use it
 mod plugin_source;
-#[allow(dead_code)] // until the install tasks use it
 mod plugin_store;
-#[allow(dead_code)] // until the install tasks use it
 mod plugin_themes;
+#[allow(dead_code)] // until the Plugins page calls the actions (M11y Task 7)
+mod plugins;
 mod preferences;
 mod prefs;
 mod presets;
@@ -1014,6 +1011,7 @@ fn main() {
             .detach();
             // A bundled fuxx asks GitHub for a newer release 10 s from now, then daily.
             updater::start_schedule(cx);
+            plugins::init(cx);
             // Only now that the window has opened does an updated fuxx delete the app its
             // update replaced (`fuxx.app.previous`), so a release that crashes opening its
             // window leaves the old copy to open by hand. Its own thread, so a big folder

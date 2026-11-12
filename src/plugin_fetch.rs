@@ -2,7 +2,7 @@
 //! network or runs `curl`, `tar`, `ditto` and `shasum`; everything else is pure. The network is
 //! behind `Net` so tests can serve archives from disk.
 
-use crate::plugin_manifest::{self, Manifest, MANIFEST};
+use crate::plugin_manifest::{self, MANIFEST, Manifest};
 use crate::plugin_source::{self, ArchiveKind, Download, Installed, Repo};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -168,7 +168,7 @@ fn has_manifest(dir: &Path) -> bool {
 
 /// Deletes a scratch folder. An archive can hold read-only folders, which `remove_dir_all`
 /// cannot empty, so every folder is made owner-writable first (links are never followed).
-fn remove_work(work: &Path) {
+pub(crate) fn remove_work(work: &Path) {
     fn open_up(dir: &Path) {
         use std::os::unix::fs::PermissionsExt;
         let Ok(meta) = std::fs::symlink_metadata(dir) else {
