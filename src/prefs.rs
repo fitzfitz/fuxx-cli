@@ -231,7 +231,7 @@ mod tests {
         let c = theme_choices(&[], &["Sunset".into()]);
         assert!(c.contains(&"Sunset".to_string()));
         let sunset = c.iter().position(|n| n == "Sunset").unwrap();
-        assert!(c[sunset - 1].to_lowercase() < "sunset".to_string());
+        assert!(c[sunset - 1].to_lowercase().as_str() < "sunset");
     }
 
     #[test]
