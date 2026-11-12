@@ -93,24 +93,44 @@ fn set_message(cx: &mut App, text: impl Into<String>, error: bool) {
     cx.refresh_windows();
 }
 
-/// An operation ended without a change: the page is free again and says why.
-fn fail(cx: &mut App, text: impl Into<String>) {
-    cx.global_mut::<Plugins>().busy = None;
-    set_message(cx, text, true);
-}
-
-/// An operation ended with a change: reread what is installed, so the page and the theme
-/// lists show it.
-fn succeed(cx: &mut App, id: &str, text: String) {
+/// Reread what is installed and rebuild the theme lists, so the page shows the disk as it is
+/// now. Runs after every operation, failed or not: a half-done one may have changed files.
+fn refresh(cx: &mut App, id: Option<&str>) {
     let records = folders(cx).map(|f| plugin_store::load(&f));
     let p = cx.global_mut::<Plugins>();
     if let Some(records) = records {
         p.records = records;
     }
-    p.updates.remove(id);
+    if let Some(id) = id {
+        p.updates.remove(id);
+    }
     p.busy = None;
-    p.message = Some(Message { text, error: false });
     appearance::reload(cx);
+    cx.refresh_windows();
+}
+
+/// An operation ended with an error (`id` is the plugin it was about, when known).
+fn fail(cx: &mut App, id: Option<&str>, text: impl Into<String>) {
+    refresh(cx, id);
+    set_message(cx, text, true);
+}
+
+/// An operation ended with a change.
+fn succeed(cx: &mut App, id: &str, text: String) {
+    refresh(cx, Some(id));
+    set_message(cx, text, false);
+}
+
+/// Delete a scratch folder on a background thread: it can be big, and the UI shouldn't wait.
+fn discard(work: PathBuf, cx: &mut App) {
+    cx.background_executor()
+        .spawn(async move { plugin_fetch::remove_work(&work) })
+        .detach();
+}
+
+/// The page is free again, nothing changed.
+fn idle(cx: &mut App) {
+    cx.global_mut::<Plugins>().busy = None;
     cx.refresh_windows();
 }
 
@@ -134,17 +154,27 @@ fn begin(cx: &mut App, busy: Busy) -> Option<Folders> {
 /// Set the global, mend what a crash left in the plugins folder, and look for newer versions
 /// once `FIRST_CHECK` has passed.
 pub fn init(cx: &mut App) {
-    let records = match folders(cx) {
-        Some(f) => {
-            plugin_store::launch_cleanup(&f);
-            plugin_store::load(&f)
-        }
-        None => Vec::new(),
-    };
+    let f = folders(cx);
+    let records = f.as_ref().map(plugin_store::load).unwrap_or_default();
     cx.set_global(Plugins {
         records,
         ..Plugins::default()
     });
+    if let Some(f) = f {
+        // Mending can delete big folders, so it runs off the UI thread; the list is read again after.
+        let mend = cx.background_executor().spawn(async move {
+            plugin_store::launch_cleanup(&f);
+            plugin_store::load(&f)
+        });
+        cx.spawn(async move |cx| {
+            let records = mend.await;
+            cx.update(|cx| {
+                cx.global_mut::<Plugins>().records = records;
+                cx.refresh_windows();
+            });
+        })
+        .detach();
+    }
     let executor = cx.background_executor().clone();
     cx.spawn(async move |cx| {
         executor.timer(FIRST_CHECK).await;
@@ -229,7 +259,7 @@ pub fn install(link: &str, window: &mut Window, cx: &mut App) {
         cx,
         move |staged, cx| match staged {
             Ok(staged) => confirm_install(handle, f, repo, staged, cx),
-            Err(e) => fail(cx, e),
+            Err(e) => fail(cx, None, e),
         },
     );
 }
@@ -238,8 +268,8 @@ pub fn install(link: &str, window: &mut Window, cx: &mut App) {
 /// counts as a no.
 fn confirm_install(handle: AnyWindowHandle, f: Folders, repo: Repo, staged: Staged, cx: &mut App) {
     if let Err(e) = plugin_manifest::accept(&staged.manifest, CODE_ALLOWED) {
-        plugin_fetch::remove_work(&staged.work);
-        fail(cx, e.message());
+        discard(staged.work.clone(), cx);
+        fail(cx, None, e.message());
         return;
     }
     cx.global_mut::<Plugins>().busy = Some(Busy::Checking);
@@ -258,46 +288,53 @@ fn confirm_install(handle: AnyWindowHandle, f: Folders, repo: Repo, staged: Stag
             let yes = answer.await.ok() == Some(0);
             cx.update(|cx| {
                 if yes {
-                    finish_commit(&f, &repo, staged, "Installed", cx);
+                    finish_commit(f, repo, staged, "Installed", cx);
                 } else {
-                    plugin_fetch::remove_work(&staged.work);
-                    cx.global_mut::<Plugins>().busy = None;
-                    cx.refresh_windows();
+                    discard(staged.work.clone(), cx);
+                    idle(cx);
                 }
             });
         })
         .detach();
     });
     if asked.is_err() {
-        plugin_fetch::remove_work(&work);
-        cx.global_mut::<Plugins>().busy = None;
-        cx.refresh_windows();
+        discard(work, cx);
+        idle(cx);
     }
 }
 
-/// Move the staged plugin into place and report it. `verb` is "Installed" or "Updated".
-fn finish_commit(f: &Folders, repo: &Repo, staged: Staged, verb: &str, cx: &mut App) {
-    let m = &staged.manifest;
-    let done = plugin_store::commit(
-        f,
-        &staged.plugin_dir,
-        m,
-        repo,
-        &staged.installed,
-        now_unix(),
-    );
-    plugin_fetch::remove_work(&staged.work);
-    match done {
-        Ok(record) => {
-            let text = if verb == "Installed" {
-                format!("Installed {}. Its themes are in Appearance.", record.name)
-            } else {
-                format!("Updated {} to {}.", record.name, staged.installed.label())
-            };
-            succeed(cx, &record.id, text);
-        }
-        Err(e) => fail(cx, e),
-    }
+/// Move the staged plugin into place and report it. `verb` is "Installed" or "Updated". The
+/// move (which deletes an old version) and the scratch folder's removal run off the UI thread.
+fn finish_commit(f: Folders, repo: Repo, staged: Staged, verb: &'static str, cx: &mut App) {
+    let label = staged.installed.label();
+    let id = staged.manifest.id.clone();
+    let work = cx.background_executor().spawn(async move {
+        let done = plugin_store::commit(
+            &f,
+            &staged.plugin_dir,
+            &staged.manifest,
+            &repo,
+            &staged.installed,
+            now_unix(),
+        );
+        plugin_fetch::remove_work(&staged.work);
+        done
+    });
+    cx.spawn(async move |cx| {
+        let done = work.await;
+        cx.update(|cx| match done {
+            Ok(record) => {
+                let text = if verb == "Installed" {
+                    format!("Installed {}. Its themes are in Appearance.", record.name)
+                } else {
+                    format!("Updated {} to {label}.", record.name)
+                };
+                succeed(cx, &record.id, text);
+            }
+            Err(e) => fail(cx, Some(&id), e),
+        });
+    })
+    .detach();
 }
 
 /// Update plugin `id` to its latest version. The click is the consent, so there is no sheet.
@@ -326,22 +363,23 @@ pub fn update(id: &str, _window: &mut Window, cx: &mut App) {
         f.staging(),
         cx,
         move |staged, cx| match staged {
-            Err(e) => fail(cx, e),
+            Err(e) => fail(cx, Some(&record.id), e),
             Ok(staged) => {
                 if let Err(e) = plugin_manifest::accept(&staged.manifest, CODE_ALLOWED) {
-                    plugin_fetch::remove_work(&staged.work);
-                    fail(cx, e.message());
+                    discard(staged.work.clone(), cx);
+                    fail(cx, Some(&record.id), e.message());
                 } else if staged.manifest.id != record.id {
-                    plugin_fetch::remove_work(&staged.work);
+                    discard(staged.work.clone(), cx);
                     fail(
                         cx,
+                        Some(&record.id),
                         format!(
                             "The new version is a different plugin ({}).",
                             staged.manifest.id
                         ),
                     );
                 } else {
-                    finish_commit(&f, &repo, staged, "Updated", cx);
+                    finish_commit(f, repo, staged, "Updated", cx);
                 }
             }
         },
@@ -408,7 +446,7 @@ fn remove(record: Record, cx: &mut App) {
         let done = work.await;
         cx.update(|cx| match done {
             Ok(()) => succeed(cx, &record.id, format!("Uninstalled {}.", record.name)),
-            Err(e) => fail(cx, e),
+            Err(e) => fail(cx, Some(&record.id), e),
         });
     })
     .detach();
