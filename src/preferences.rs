@@ -1598,7 +1598,7 @@ fn on_off_switch(setting: OnOff, ui: UiColors, cx: &Context<PreferencesView>) ->
 
 /// A switch (M11x): a 38 × 22 pt track, filled in the accent colour with its knob at the right
 /// when on, grey with its knob at the left when off.
-fn toggle(id: impl Into<ElementId>, on: bool, ui: UiColors) -> Stateful<Div> {
+pub(crate) fn toggle(id: impl Into<ElementId>, on: bool, ui: UiColors) -> Stateful<Div> {
     let inset = (TOGGLE_HEIGHT - TOGGLE_KNOB) / 2.0;
     div()
         .id(id)
@@ -2300,6 +2300,13 @@ mod tests {
             .expect("listed");
         assert_eq!(found.section, Section::Plugins);
         assert!(found.keywords.contains(&"github"));
+        // A plugin that runs code says so on its card; one with no themes doesn't count "0 themes".
+        assert_eq!(crate::preferences_plugins::RUNS_A_PROGRAM, "Runs a program");
+        assert_eq!(crate::preferences_plugins::themes_part(0), None);
+        assert_eq!(
+            crate::preferences_plugins::themes_part(2).as_deref(),
+            Some("2 themes")
+        );
     }
 
     #[test]
