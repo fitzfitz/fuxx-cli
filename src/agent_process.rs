@@ -235,7 +235,7 @@ fn run(
             .name("fuxx-agent-reader".into())
             .spawn(move || read_lines(stdout, &events))
     });
-    let err_reader = child.stderr.take().map(|mut stderr| {
+    let err_reader = child.stderr.take().map(|stderr| {
         std::thread::Builder::new()
             .name("fuxx-agent-stderr".into())
             .spawn(move || read_tail(stderr))
