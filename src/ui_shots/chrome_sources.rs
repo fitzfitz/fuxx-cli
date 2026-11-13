@@ -132,36 +132,23 @@ impl Steps {
     /// After a step: if an age label (by the real clock) turned just now, within what the app
     /// takes by design to draw a turned label (its timer, 20 ms past the turn; or the marks'
     /// next tick, while they move), wait that out and let it draw (`catch_up`), so the check
-    /// isn't about a label caught mid-turn (`chrome-ages-current` is about those). The same
-    /// for one about to turn (within that time): the check's full redraw would draw it turned
-    /// before the app had to (M11p Task 6: a faster step reached a turn 10 ms ahead of it).
+    /// isn't about a label caught mid-turn (`chrome-ages-current` is about those).
     fn past_age_turns(&mut self, cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
         let late = LABEL_LATE;
-        let (turned, upcoming) = cx.read(|cx| {
+        let turned = cx.read(|cx| {
             let now = Instant::now();
-            let ages: Vec<Duration> = self
-                .ws
+            self.ws
                 .read(cx)
                 .sessions
                 .items()
                 .iter()
                 .filter(|s| s.status != Status::Idle)
-                .map(|s| now.saturating_duration_since(s.status_since))
-                .collect();
-            let turned = ages
-                .iter()
-                .any(|age| *age >= late && crate::sidebar::next_age_change(*age - late) <= late);
-            let upcoming = ages
-                .iter()
-                .map(|age| crate::sidebar::next_age_change(*age))
-                .filter(|wait| *wait <= late)
-                .min();
-            (turned, upcoming)
+                .any(|s| {
+                    let age = now.saturating_duration_since(s.status_since);
+                    age >= late && crate::sidebar::next_age_change(age - late) <= late
+                })
         });
-        if let Some(wait) = upcoming {
-            std::thread::sleep(wait + late);
-            self.catch_up(cx, window);
-        } else if turned {
+        if turned {
             std::thread::sleep(late);
             self.catch_up(cx, window);
         }
@@ -289,6 +276,20 @@ fn report(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str, sta
     let i = index_of(cx, ws, name);
     let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
     cx.update(|cx| view.update(cx, |view, cx| view.shot_status(status, cx)));
+}
+
+/// Session `name`'s status dated minutes back (M11p Task 6, review): its age label turns once a
+/// minute, not every second, so a step's check never lands on a turn (a turn the step's own
+/// wait drew would repair a stale part before the check).
+fn minutes_old(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str) {
+    let i = index_of(cx, ws, name);
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            let s = ws.sessions.get_mut(i).expect("a session");
+            s.status_since = Instant::now() - Duration::from_secs(5 * 60 + 10);
+            cx.notify();
+        })
+    });
 }
 
 /// Act on the workspace in the window (the app's own functions, as its handlers call them).
@@ -481,12 +482,21 @@ pub(super) fn chrome_notifications() {
     let n = "chrome-notifications";
     let (mut cx, window, ws) = elsewhere_window();
     let ws = &ws;
+    // Animations off: no marks' ticker, whose frames redraw the window's uncached root (the
+    // popover) on their own and would hide a missing redraw (M11p Task 6, review).
+    cx.update(|cx| {
+        use gpui::BorrowAppContext;
+        cx.update_global::<crate::appearance::Appearance, _>(|a, _| a.animations = false)
+    });
     report(&mut cx, ws, "agent", Status::Working);
     report(&mut cx, ws, "tests", Status::Working);
+    minutes_old(&mut cx, ws, "agent");
+    minutes_old(&mut cx, ws, "tests");
     let mut steps = Steps::new(n, &mut cx, window, ws);
     let unseen = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).notifications.unseen());
     steps.step(&mut cx, window, "agent done: unseen", Seen::Changes, |cx| {
-        report(cx, ws, "agent", Status::Done)
+        report(cx, ws, "agent", Status::Done);
+        minutes_old(cx, ws, "agent");
     });
     assert_eq!(unseen(&mut cx), 1, "{n}: one unseen");
     let (width, height) = cx
@@ -535,7 +545,10 @@ pub(super) fn chrome_notifications() {
         window,
         "hidden: tests done: unseen",
         Seen::Changes,
-        |cx| report(cx, ws, "tests", Status::Done),
+        |cx| {
+            report(cx, ws, "tests", Status::Done);
+            minutes_old(cx, ws, "tests");
+        },
     );
     assert_eq!(unseen(&mut cx), 1, "{n}: one unseen again");
     steps.done();
@@ -742,7 +755,10 @@ pub(super) fn chrome_globals() {
         cx.set_global(SystemReduceMotion::for_shots(false));
         cx.set_global(WindowVisible::for_shots(true));
     });
-    report(&mut cx, ws, "agent", Status::Working);
+    // tests works in a pane in front (its tab's mark moves; since M11p Task 6 a working row
+    // elsewhere, a still badge, doesn't run the marks' ticker).
+    report(&mut cx, ws, "tests", Status::Working);
+    minutes_old(&mut cx, ws, "tests");
     let mut steps = Steps::new(n, &mut cx, window, ws);
     steps.step(
         &mut cx,
@@ -758,7 +774,7 @@ pub(super) fn chrome_globals() {
         },
     );
     let ticking = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).marks_ticking);
-    assert!(ticking(&mut cx), "{n}: agent's mark moves");
+    assert!(ticking(&mut cx), "{n}: tests' mark moves");
     steps.step(&mut cx, window, "Reduce motion on", Seen::Maybe, |cx| {
         cx.update(|cx| reduce_motion_changed(true, cx));
         // The ticker's next tick finds nothing moving and stops.
