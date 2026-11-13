@@ -23,6 +23,12 @@ pub fn agent_for<'a>(program: &str, presets: &'a [Preset]) -> Option<&'a Preset>
         .find(|p| p.name == program || p.command.split_whitespace().next() == Some(program))
 }
 
+/// The provider that can run `preset` as an agent tab (M11aa), if fuxx has one by its name.
+#[allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
+pub fn provider_for(preset: &Preset) -> Option<&'static dyn crate::providers::Provider> {
+    crate::providers::by_name(&preset.name)
+}
+
 /// The menu holds at most this many presets (one per digit key).
 pub const MAX_PRESETS: usize = 9;
 
@@ -87,6 +93,14 @@ pub fn from_entries(entries: &[Entry]) -> (Vec<Preset>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_for_knows_claude_not_codex() {
+        let presets = builtins();
+        let find = |n: &str| presets.iter().find(|p| p.name == n).unwrap();
+        assert!(provider_for(find("claude")).is_some());
+        assert!(provider_for(find("codex")).is_none());
+    }
 
     /// A running program is a preset's agent when it is the preset's name or its command's
     /// first word (M11u): `claude` is, `make` isn't.

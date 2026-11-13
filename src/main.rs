@@ -83,6 +83,7 @@ mod prefs;
 mod presets;
 mod private_socket;
 mod procs;
+mod providers;
 mod pty;
 mod reduce_motion;
 mod restore;
