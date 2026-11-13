@@ -346,7 +346,7 @@ impl NameInput {
 }
 
 /// The byte offset of UTF-16 offset `utf16` in `s` (clamped to the end).
-fn utf8_offset(s: &str, utf16: usize) -> usize {
+pub(crate) fn utf8_offset(s: &str, utf16: usize) -> usize {
     let mut count = 0;
     for (i, c) in s.char_indices() {
         if count >= utf16 {
@@ -358,7 +358,7 @@ fn utf8_offset(s: &str, utf16: usize) -> usize {
 }
 
 /// The UTF-16 offset of byte offset `utf8` in `s`.
-fn utf16_offset(s: &str, utf8: usize) -> usize {
+pub(crate) fn utf16_offset(s: &str, utf8: usize) -> usize {
     s.char_indices()
         .take_while(|(i, _)| *i < utf8)
         .map(|(_, c)| c.len_utf16())
@@ -376,12 +376,12 @@ fn erase(text: &str, selected: &Range<usize>, to: fn(&str, usize) -> usize) -> R
 }
 
 /// The character boundary before byte `i` of `s` (the start stays put).
-fn prev_char(s: &str, i: usize) -> usize {
+pub(crate) fn prev_char(s: &str, i: usize) -> usize {
     s[..i].char_indices().next_back().map_or(0, |(j, _)| j)
 }
 
 /// The character boundary after byte `i` of `s` (the end stays put).
-fn next_char(s: &str, i: usize) -> usize {
+pub(crate) fn next_char(s: &str, i: usize) -> usize {
     s[i..].chars().next().map_or(i, |c| i + c.len_utf8())
 }
 
@@ -391,7 +391,7 @@ fn in_word(c: char) -> bool {
 }
 
 /// ⌥←: back over spaces and punctuation, then to the start of the word before them.
-fn word_start(s: &str, i: usize) -> usize {
+pub(crate) fn word_start(s: &str, i: usize) -> usize {
     let before = |j: usize| s[..j].chars().next_back();
     let mut j = i;
     while before(j).is_some_and(|c| !in_word(c)) {
@@ -404,7 +404,7 @@ fn word_start(s: &str, i: usize) -> usize {
 }
 
 /// ⌥→: on over spaces and punctuation, then to the end of the word after them.
-fn word_end(s: &str, i: usize) -> usize {
+pub(crate) fn word_end(s: &str, i: usize) -> usize {
     let after = |j: usize| s[j..].chars().next();
     let mut j = i;
     while after(j).is_some_and(|c| !in_word(c)) {
