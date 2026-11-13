@@ -10,9 +10,10 @@
 //! (its folder and branch are on the bar): `place_subjects`.
 //!
 //! `parse_head`, `short_sha`, `due`, `git_program`, `subjects` and `Places` are pure and tested;
-//! `branch_at` runs git and `process_cwd` asks the kernel. The Workspace's `refresh_places` (on
-//! each frame, rate-limited by `due`) and `tick_places` (every 5 s while a place can be seen,
-//! so nothing wakes a hidden or covered window) do the lookups.
+//! `branch_at` runs git and `process_cwd` asks the kernel. The Workspace's `refresh_places`
+//! (from `check_folders`, every 1 s, rate-limited by `due`) and `tick_places` (every 5 s) do
+//! the lookups, each only while a place can be seen, so nothing wakes a hidden or covered
+//! window; never from a frame (M11p: a redraw asked for while drawing reaches no one).
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, c_int, c_void};
@@ -32,7 +33,8 @@ pub const REFRESH: Duration = Duration::from_secs(5);
 /// How long git may take before it is killed (and the branch left unknown).
 pub const GIT_CAP: Duration = Duration::from_secs(2);
 
-/// How often a frame may check the rows on screen for a lookup that's due (`Places::check_due`).
+/// How often the rows on screen are checked for a lookup that's due (`tick_folders`), and how
+/// often a frame may restart the places' and programs' refreshes (`Places::check_due`).
 pub const CHECK: Duration = Duration::from_secs(1);
 
 /// Whether a folder report naming `host` is about this Mac (named `hostname`): no host,
@@ -491,7 +493,7 @@ pub struct Places {
     /// This Mac's name (`gethostname`): a local terminal's folder report counts only when it's
     /// about this Mac (`is_this_mac`).
     pub hostname: Option<String>,
-    /// When the rows are next checked from a frame (`check_due`).
+    /// When a frame next restarts the places' and programs' refreshes (`check_due`).
     next_check: Option<Instant>,
 }
 
@@ -505,8 +507,8 @@ impl Places {
         }
     }
 
-    /// Whether a frame checks the rows `now` (at most once every `CHECK`): each check builds
-    /// the rows, so a frame between checks doesn't.
+    /// Whether a frame restarts the places' and programs' refreshes `now` (at most once every
+    /// `CHECK`): each restart builds the rows, so a frame between them doesn't.
     pub fn check_due(&mut self, now: Instant) -> bool {
         if self.next_check.is_some_and(|next| now < next) {
             return false;
@@ -687,6 +689,47 @@ impl Workspace {
             .detach();
         }
         changed
+    }
+
+    /// The 1 s folder check (`CHECK`): look up again the places due (`refresh_places`) and
+    /// redraw when a folder changed. Its own timer runs it (`tick_folders`), never a frame: a
+    /// redraw asked for while drawing reaches no one, and a `cd` with no OSC 7 must show with
+    /// nothing else redrawing. True when a folder changed.
+    pub(crate) fn check_folders(&mut self, cx: &mut Context<Self>) -> bool {
+        let changed = self.refresh_places(cx);
+        if changed {
+            cx.notify();
+        }
+        changed
+    }
+
+    /// Start the 1 s folder check (`check_folders`, at once, then every `CHECK`) unless it's
+    /// running or nothing is wanted (`places_wanted`); it stops once nothing is, so a hidden
+    /// or covered window is never woken. `render` calls it, so showing the window again starts
+    /// it (the check itself runs after the frame, outside drawing).
+    pub(crate) fn tick_folders(&mut self, cx: &mut Context<Self>) {
+        if self.folders_ticking || !self.places_wanted(cx) {
+            return;
+        }
+        self.folders_ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let wanted = this
+                    .update(cx, |this, cx| {
+                        this.folders_ticking = this.places_wanted(cx);
+                        if this.folders_ticking {
+                            this.check_folders(cx);
+                        }
+                        this.folders_ticking
+                    })
+                    .unwrap_or(false);
+                if !wanted {
+                    break;
+                }
+                cx.background_executor().timer(CHECK).await;
+            }
+        })
+        .detach();
     }
 
     /// Start the places' 5 s refresh unless it's running or nothing is wanted (`places_wanted`);

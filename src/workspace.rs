@@ -423,7 +423,8 @@ impl Workspace {
     /// descendants in the programs' last `ps` table, then one `lsof` on the background executor
     /// (capped at 2 s). With no program running there any more, its ports go. True when what
     /// the bar shows changed now (an answer redraws when it comes). `render` calls it on every
-    /// frame, the refresh (`tick_ports`) between frames.
+    /// frame once drawn (never while drawing: what it clears must redraw), the refresh
+    /// (`tick_ports`) between frames.
     pub(crate) fn refresh_ports(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.ports_seen(cx) {
             return false;
@@ -773,6 +774,10 @@ pub struct Workspace {
     save_due: bool,
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
     pub(crate) places_ticking: bool,
+    /// Whether the 1 s folder check is running (`tick_folders`; only while a row can be seen).
+    pub(crate) folders_ticking: bool,
+    /// The window title as last set (`Workspace::render` sets it only when it changes).
+    last_title: Option<String>,
     /// The palette's file listings (`palette_files`).
     pub(crate) palette_files: crate::palette_files::PaletteFiles,
     /// What runs in each terminal, for its name (`Programs`).
@@ -931,6 +936,8 @@ impl Workspace {
             agents_now: HashMap::new(),
             save_due: false,
             places_ticking: false,
+            folders_ticking: false,
+            last_title: None,
             palette_files: Default::default(),
             programs: Programs::default(),
             programs_ticking: false,
@@ -2493,6 +2500,8 @@ impl Workspace {
     /// `activate` without moving the focus (an SSH session reconnected by its timer, M10b).
     pub(crate) fn note_active(&mut self, cx: &mut Context<Self>) {
         self.note_focus();
+        // The status bar describes the newly focused terminal in the frame this asks for.
+        self.follow_terminal(cx);
         self.sidebar.reveal_active = true;
         if let Some(key) = self
             .model
@@ -3165,19 +3174,29 @@ impl Render for Workspace {
         self.show_file_tabs(cx);
         self.tick_marks(cx);
         self.refresh_ages(self.marks_ticking, cx);
-        // Before the rows are drawn, so a folder found now shows in this frame; at most once a
-        // second (each check builds the rows).
+        // Nothing the window shows is changed while it's drawn (M11p: a redraw asked for now
+        // reaches no one). The timers below look things up between frames and redraw when
+        // something changed; render only starts them. The folders: checked every second on
+        // their own timer. The places' and programs' refreshes: restarted at most once a second
+        // (each restart builds the rows).
+        self.tick_folders(cx);
         if self.places.check_due(Instant::now()) {
-            self.refresh_places(cx);
             self.tick_places(cx);
             self.tick_programs(cx);
         }
-        // The terminal the right sidebar follows, and its folder looked up where due.
+        // Once this frame is drawn: follow the focused terminal (most focus changes already
+        // did, `note_active`; this catches any other route), then its listening ports for the
+        // status bar (where due; none with no program running there). Each redraws if what the
+        // window shows changed.
+        cx.defer_in(window, |this, _, cx| {
+            this.follow_terminal(cx);
+            if this.refresh_ports(cx) {
+                cx.notify();
+            }
+        });
+        // The followed terminal's folder looked up where due, for the right sidebar.
         self.refresh_right_sidebar(cx);
         self.tick_right_sidebar(cx);
-        // Its listening ports, for the status bar (after the line above: it follows the same
-        // terminal).
-        self.refresh_ports(cx);
         self.tick_ports(cx);
         let title = self
             .model
@@ -3189,7 +3208,12 @@ impl Render for Workspace {
                 ))
             })
             .unwrap_or_else(|| "fuxx".into());
-        window.set_window_title(&title);
+        // Set only when it changes (a platform call, not free on every frame).
+        if self.last_title.as_deref() != Some(title.as_str()) {
+            crate::chrome_cache::bump(crate::chrome_cache::Counted::WindowTitle);
+            window.set_window_title(&title);
+            self.last_title = Some(title);
+        }
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
         let colors = PaneColors::of(&ui);
@@ -3676,13 +3700,29 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> u64 {
+        let cat = vec!["/bin/cat".to_string()];
+        self.open_shot_program(name, project, cat, None, text, at, window, cx)
+    }
+
+    /// `open_shot_at` running `program` in `cwd` (none: your home) instead of the quiet `cat`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_shot_program(
+        &mut self,
+        name: Option<&str>,
+        project: Option<&Path>,
+        program: Vec<String>,
+        cwd: Option<&Path>,
+        text: &str,
+        at: At,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> u64 {
         let quiet = ShellEnv {
             base: None,
             set: Vec::new(),
             remove: Vec::new(),
         };
-        let view = TerminalView::spawn(cx, Some(vec!["/bin/cat".into()]), None, None, &quiet)
-            .expect("start cat");
+        let view = TerminalView::spawn(cx, Some(program), cwd, None, &quiet).expect("start it");
         view.read(cx).show_text(text);
         let saved = SavedSession {
             name: name.map(Into::into),
