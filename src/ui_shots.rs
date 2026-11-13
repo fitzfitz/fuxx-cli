@@ -226,8 +226,10 @@ const SCENES: &[(&str, fn())] = &[
     ("browser-tab", browser_tab_scenes),
     ("file-tab", file_tab_scenes),
     ("file-diff", file_diff_scenes),
+    ("file-tab-md", file_tab_md_scenes),
     ("right-sidebar", right_sidebar_scenes),
     ("files", files_scenes),
+    ("files-follow", files_follow_scenes),
     ("right-panels", right_panel_scenes),
     ("changes", changes_scenes),
     ("changes-bar", changes_bar_scenes),
@@ -19663,5 +19665,403 @@ impl Drop for ClipboardKeeper {
                 .unwrap_or_else(|| gpui::ClipboardItem::new_string(String::new()));
             app.write_to_clipboard(item);
         }
+    }
+}
+
+/// The README the Preview scenes show (M11ac): a little of everything the reader draws.
+const MD_FIXTURE: &str = r#"# fuxx preview
+
+A **native** terminal for *AI agents*, with `inline code` and a [link](https://example.com).
+
+## Tasks
+
+- [x] Parse the Markdown
+- [ ] Draw it as a reader
+  - a nested bullet
+    1. deeper, numbered
+
+> A block quote, with **bold** inside.
+
+| Feature | State | Notes |
+|:--|:-:|--:|
+| Tables | done | right |
+| Task lists | done | ☑ |
+
+---
+
+```rust
+fn main() {
+    println!("hi");
+}
+```
+
+![logo](logo.png) Images show their alt text.
+"#;
+
+/// M11ac's Markdown Preview in a file tab, on `MD_FIXTURE` (README.md), 760 × 600, in both
+/// themes:
+/// - `file-tab-md-source-with-toggle`: the source as before, with Preview beside Wrap,
+///   outlined (off). A `.rs` file has no Preview button.
+/// - `file-tab-md-preview`: after a click on Preview: filled (on), the file drawn as a reader
+///   (headings by level, the paragraph's bold, italic, inline code and link, ☑ / ☐ tasks, a
+///   nested bullet and number, the quote's bar, the table's grid, the rule, the code block on
+///   its fill, the image's alt text in brackets). The tab told its workspace (`Preview(true)`).
+///
+/// Not shot: a long file scrolled down in the Preview, rewritten on disk and read again: parsed
+/// again, the scroll kept; ⌘F then turns Preview off (`Preview(false)`) and opens the find
+/// bar on the source; Diff mode shows no Preview.
+fn file_tab_md_scenes() {
+    use crate::file_tab::{FileTab, FileTabEvent};
+    use crate::layout_model::FileMode;
+    use crate::md_preview::Colours;
+    use gpui::{Focusable, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let readme = dir.join("README.md");
+    std::fs::write(&readme, MD_FIXTURE).expect("README.md");
+    let code = dir.join("main.rs");
+    std::fs::write(&code, "fn main() {}\n").expect("main.rs");
+    let long = dir.join("LONG.md");
+    let long_text = |title: &str| {
+        let mut t = format!("# {title}\n\n");
+        for i in 0..60 {
+            t.push_str(&format!("Paragraph {i}, long enough to read as prose.\n\n"));
+        }
+        t
+    };
+    std::fs::write(&long, long_text("Long")).expect("LONG.md");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    type Events = Rc<RefCell<Vec<bool>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let dims = size(px(760.0), px(600.0));
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let build_for = |path: PathBuf, slot: TabSlot, events: Events| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                let seen = events.clone();
+                cx.subscribe(&tab, move |_, e: &FileTabEvent, _| {
+                    if let FileTabEvent::Preview(on) = e {
+                        seen.borrow_mut().push(*on);
+                    }
+                })
+                .detach();
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        // The source, with Preview (off) beside Wrap; none for a .rs file.
+        let n = format!("file-tab-md-source-with-toggle-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(readme.clone(), slot.clone(), Rc::default());
+        let act = {
+            let n = n.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                frame(cx, window);
+                let tab = tab_of(&slot);
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    assert_eq!(t.state_name(), "text", "{n}");
+                    assert!(!t.preview_shown(), "{n}: off by default");
+                    assert!(t.preview_bounds().is_some(), "{n}: Preview is drawn");
+                });
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-source-with-toggle",
+            slug,
+            &theme,
+            dims,
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+        let slot: TabSlot = Rc::default();
+        let build = build_for(code.clone(), slot.clone(), Rc::default());
+        render_with(&theme, dims, build, move |cx, window| {
+            frame(cx, window);
+            let tab = tab_of(&slot);
+            let drawn = cx.read(|cx| tab.read(cx).preview_bounds());
+            assert!(drawn.is_none(), "a .rs file has no Preview button");
+            slot.borrow_mut().take();
+        });
+
+        // A click on Preview: the reader.
+        let n = format!("file-tab-md-preview-{slug}");
+        let slot: TabSlot = Rc::default();
+        let events: Events = Rc::default();
+        let build = build_for(readme.clone(), slot.clone(), events.clone());
+        let act = {
+            let n = n.clone();
+            let events = events.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                // Shot, then rendered again for the checks: each run counts its own.
+                events.borrow_mut().clear();
+                frame(cx, window);
+                let tab = tab_of(&slot);
+                let button = cx
+                    .read(|cx| tab.read(cx).preview_bounds())
+                    .expect("Preview is drawn");
+                cx.simulate_click(window, button.center(), Modifiers::none());
+                frame(cx, window);
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    assert!(t.preview_shown(), "{n}: a click turns it on");
+                    assert!(t.parsed_version().is_some(), "{n}: parsed");
+                });
+                assert_eq!(*events.borrow(), [true], "{n}: the workspace is told");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-preview",
+            slug,
+            &theme,
+            dims,
+            build.clone(),
+            act.clone(),
+        );
+        println!("ui-shots: {}", path.display());
+        let shot = render_with(&theme, dims, build, act);
+        // The code block's fill and the link's colour are drawn somewhere in the body.
+        let colours = Colours::of(&theme);
+        let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, by: u8| {
+            p.iter()
+                .zip([c.r, c.g, c.b])
+                .all(|(a, b)| a.abs_diff(b) <= by)
+        };
+        let found = |c, by| {
+            (40..600).step_by(2).any(|y| {
+                (0..760)
+                    .step_by(2)
+                    .any(|x| near(pixel_at(&shot, dims, x as f32, y as f32), c, by))
+            })
+        };
+        assert!(found(colours.code_bg, 2), "{n}: the code's fill");
+        assert!(found(colours.link, 40), "{n}: the link's colour");
+
+        // A long file, scrolled, rewritten: parsed again, the scroll kept; then ⌘F turns
+        // Preview off and opens find; Diff mode shows none (not shot).
+        let slot: TabSlot = Rc::default();
+        let events: Events = Rc::default();
+        let build = build_for(long.clone(), slot.clone(), events.clone());
+        let long = long.clone();
+        render_with(&theme, dims, build, move |cx, window| {
+            let n = format!("file-tab-md-reload-{slug}");
+            frame(cx, window);
+            let tab = tab_of(&slot);
+            let button = cx.read(|cx| tab.read(cx).preview_bounds()).expect("drawn");
+            cx.simulate_click(window, button.center(), Modifiers::none());
+            frame(cx, window);
+            let scroll = cx.read(|cx| tab.read(cx).preview_scroll());
+            scroll.set_offset(point(px(0.0), px(-400.0)));
+            frame(cx, window);
+            let before = cx.read(|cx| tab.read(cx).parsed_version());
+            std::fs::write(&long, long_text("Long, edited")).expect("rewrite");
+            cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+            cx.run_until_parked();
+            frame(cx, window);
+            let after = cx.read(|cx| tab.read(cx).parsed_version());
+            assert!(after > before, "{n}: parsed again ({before:?} → {after:?})");
+            assert_eq!(scroll.offset().y, px(-400.0), "{n}: the scroll stays");
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            cx.simulate_keystrokes(window, "cmd-f");
+            frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                assert!(!t.preview_shown(), "{n}: ⌘F shows the source");
+                assert!(t.find_open(), "{n}: with the find bar");
+            });
+            assert_eq!(*events.borrow(), [true, false], "{n}: both saved");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_mode(FileMode::Diff, None, cx);
+                })
+            });
+            frame(cx, window);
+            assert!(
+                !cx.read(|cx| tab.read(cx).preview_shown()),
+                "{n}: none in Diff"
+            );
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+/// M11ac: the Files panel follows the focused pane's file tab, on `files_fixture` beside a
+/// terminal in its src/ (util closed), 1100 × 560, both themes:
+/// - `files-panel-follows-active-tab`: after opening src/util/a.rs (util opens, a.rs
+///   selected), ⌃Tab to the terminal (kept), a file outside the folder (kept), docs/guide.md
+///   (docs opens), README.md in Diff mode, ⌃⇧Tab back through them by keyboard (each one
+///   selected in turn): docs/guide.md's file tab shown and its row selected.
+fn files_follow_scenes() {
+    use crate::layout_model::FileMode;
+    use std::cell::RefCell;
+    use std::path::Path;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let root = files_fixture();
+    let outside = std::env::temp_dir().join("fuxx-ui-shots-outside.md");
+    std::fs::write(&outside, "# elsewhere\n").expect("the outside file");
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = {
+            let root = root.clone();
+            let slot = slot.clone();
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    ws.right_sidebar.hidden = false;
+                    ws.open_shot_session("api", &root.join("src"), SHELL_TEXT, None, window, cx);
+                    ws.right_sidebar
+                        .files
+                        .show_for_shots(files_tree(&root, false));
+                    ws
+                });
+                *slot.borrow_mut() = Some(ws.clone());
+                ws.into()
+            }
+        };
+        let act = {
+            let root = root.clone();
+            let outside = outside.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let n = format!("files-panel-follows-active-tab-{slug}");
+                let ws = slotted(&slot);
+                let frame = |cx: &mut VisualTestAppContext| {
+                    for _ in 0..2 {
+                        cx.update_window(window, |_, window, _| window.refresh())
+                            .expect("refresh");
+                        cx.run_until_parked();
+                    }
+                };
+                let selected = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| {
+                        let files = &ws.read(cx).right_sidebar.files;
+                        files
+                            .tree
+                            .as_ref()
+                            .and_then(|t| t.selected().map(Path::to_path_buf))
+                    })
+                };
+                let shows = |cx: &mut VisualTestAppContext, rel: &str| {
+                    cx.read(|cx| {
+                        let files = &ws.read(cx).right_sidebar.files;
+                        files.rows.iter().any(|r| r.rel == Path::new(rel))
+                    })
+                };
+                let open = |cx: &mut VisualTestAppContext, path: PathBuf, mode| {
+                    cx.update_window(window, |_, window, cx| {
+                        ws.update(cx, |ws, cx| ws.open_file_tab(path, mode, window, cx))
+                    })
+                    .expect("open");
+                };
+                frame(cx);
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("src")),
+                    "{n}: the terminal's"
+                );
+                assert!(!shows(cx, "src/util/a.rs"), "{n}: util closed");
+                open(cx, root.join("src/util/a.rs"), FileMode::Plain);
+                frame(cx);
+                assert_eq!(selected(cx), Some(PathBuf::from("src/util/a.rs")), "{n}");
+                assert!(shows(cx, "src/util/a.rs"), "{n}: util opened and listed");
+                cx.simulate_keystrokes(window, "ctrl-tab");
+                frame(cx);
+                assert!(
+                    cx.read(|cx| ws.read(cx).focused_file_tab().is_none()),
+                    "{n}"
+                );
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("src/util/a.rs")),
+                    "{n}: kept"
+                );
+                open(cx, outside.clone(), FileMode::Plain);
+                frame(cx);
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("src/util/a.rs")),
+                    "{n}: a file outside the folder changes nothing"
+                );
+                open(cx, root.join("docs/guide.md"), FileMode::Plain);
+                frame(cx);
+                assert_eq!(selected(cx), Some(PathBuf::from("docs/guide.md")), "{n}");
+                assert!(shows(cx, "docs/guide.md"), "{n}: docs opened and listed");
+                open(cx, root.join("README.md"), FileMode::Diff);
+                frame(cx);
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("README.md")),
+                    "{n}: Diff too"
+                );
+                // By keyboard: README → guide → outside (kept) → a.rs.
+                cx.simulate_keystrokes(window, "ctrl-shift-tab");
+                frame(cx);
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("docs/guide.md")),
+                    "{n}: ⌃⇧Tab"
+                );
+                cx.simulate_keystrokes(window, "ctrl-shift-tab");
+                frame(cx);
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("docs/guide.md")),
+                    "{n}: outside"
+                );
+                cx.simulate_keystrokes(window, "ctrl-shift-tab");
+                frame(cx);
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("src/util/a.rs")),
+                    "{n}: a.rs"
+                );
+                cx.simulate_keystrokes(window, "ctrl-tab ctrl-tab");
+                frame(cx);
+                assert_eq!(
+                    selected(cx),
+                    Some(PathBuf::from("docs/guide.md")),
+                    "{n}: back"
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "files-panel-follows-active-tab",
+            slug,
+            &theme,
+            dims,
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
     }
 }
