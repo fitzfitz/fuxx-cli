@@ -1,9 +1,10 @@
 //! The file tab's Markdown Preview (M11ac): a `.md` or `.markdown` file shown rendered, read-only,
 //! instead of its source. The file is parsed with `agent_markdown::parse` (again only when the
-//! tab reads a new version) and drawn as GPUI elements: a block per `Md`, scrolled by GPUI (its
-//! `ScrollHandle` kept by the tab, so a reload keeps the place as near as the new text allows).
+//! tab reads a new version) and drawn as GPUI elements: a block per `Md`, each a row of a GPUI
+//! `list` (only the rows in sight are drawn; its `ListState` is kept by the tab, so a reload keeps
+//! the place, by block, as near as the new text allows).
 //! Prose is in the UI font, wrapped to the tab's width; code (blocks and inline) in the
-//! terminal's font on the panel colour. Links are clickable: a web or mail link opens in the
+//! terminal's font on a tint of the text. Links are clickable: a web or mail link opens in the
 //! default browser, one to a file next to it opens that file in a tab; anything else does
 //! nothing. Colours come from the theme (`UiColors`), the text held to `TEXT_MIN`.
 //!
@@ -247,19 +248,31 @@ pub struct Draw {
     pub links: Cell<usize>,
 }
 
-/// The reader's column: `blocks` drawn one under another, padded, at most `COLUMN_MAX` wide.
-pub fn column(blocks: &[Md], draw: &Draw) -> AnyElement {
+/// Block `ix` of `blocks` as one row of the reader's list (review fix: GPUI's `list` draws
+/// only the rows in sight): padded at the sides, the space above it (`gap_before`; the
+/// column's top padding over the first, its bottom padding under the last), at most
+/// `COLUMN_MAX` wide. Its links' element ids start from its index, so they stay the same from
+/// frame to frame (a click's press and release meet).
+pub fn row(blocks: &[Md], ix: usize, draw: &Draw) -> AnyElement {
+    let Some(md) = blocks.get(ix) else {
+        return div().into_any_element();
+    };
+    draw.links.set(ix << 20);
+    let top = match ix {
+        0 => PAD_Y,
+        _ => gap_before(blocks.get(ix - 1), md),
+    };
+    let bottom = if ix + 1 == blocks.len() { PAD_Y } else { 0.0 };
     div()
-        .flex()
-        .flex_col()
         .w_full()
         .max_w(px(COLUMN_MAX + 2.0 * PAD_X))
         .px(px(PAD_X))
-        .py(px(PAD_Y))
+        .pt(px(top))
+        .pb(px(bottom))
         .text_size(px(BODY))
         .line_height(relative(1.5))
         .text_color(hsla(draw.colours.text))
-        .children(blocks_of(blocks, draw))
+        .child(block(md, draw))
         .into_any_element()
 }
 
