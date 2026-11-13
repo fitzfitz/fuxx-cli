@@ -150,6 +150,8 @@ pub struct Model {
     /// The panes' preview tabs (M11t): at most one per pane, a file tab a single click shows
     /// and the next single click shows another file in. Not saved.
     previews: Vec<TabId>,
+    /// The file tabs showing their Markdown rendered (M11ac: Preview on). Saved with each tab.
+    md_previews: Vec<TabId>,
 }
 
 /// The saved-file version that holds workspaces (version 1 held sessions and their layouts).
@@ -201,6 +203,10 @@ pub enum SavedTab {
         path: PathBuf,
         #[serde(default)]
         mode: FileMode,
+        /// M11ac: a Markdown file shown rendered (its Preview on). Off when missing, and not
+        /// written when off, so older files load and the file reads as before.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        preview: bool,
     },
 }
 
@@ -437,6 +443,8 @@ impl Model {
                     .flat_map(|p| &mut p.tabs)
                     .find(|t| t.id == tab)?;
                 t.kind = TabKind::File { path, mode };
+                // Another file: shown as source (M11ac).
+                self.md_previews.retain(|&t| t != tab);
                 tab
             }
             (None, None) => {
@@ -463,6 +471,28 @@ impl Model {
         let before = self.previews.len();
         self.previews.retain(|&t| t != tab);
         self.previews.len() != before
+    }
+
+    /// Whether file tab `tab` shows its Markdown rendered (M11ac: its Preview on).
+    pub fn md_preview(&self, tab: TabId) -> bool {
+        self.md_previews.contains(&tab)
+    }
+
+    /// Turn file tab `tab`'s Markdown Preview on or off (M11ac). False when `tab` is unknown,
+    /// not a file tab, or already so.
+    pub fn set_md_preview(&mut self, tab: TabId, on: bool) -> bool {
+        let is_file = self
+            .tab(tab)
+            .is_some_and(|t| matches!(t.kind, TabKind::File { .. }));
+        if !is_file || self.md_preview(tab) == on {
+            return false;
+        }
+        if on {
+            self.md_previews.push(tab);
+        } else {
+            self.md_previews.retain(|&t| t != tab);
+        }
+        true
     }
 
     /// Show file tab `tab` in `mode`. False when `tab` is unknown, not a file tab, or already
@@ -505,6 +535,7 @@ impl Model {
     /// one before).
     pub fn close_tab(&mut self, tab: TabId) -> Option<Closed> {
         let (taken, mut closed) = self.take_tab(tab)?;
+        self.md_previews.retain(|&t| t != tab);
         closed.tabs.insert(0, taken);
         Some(closed)
     }
@@ -812,6 +843,7 @@ impl Model {
                         TabKind::File { path, mode } => SavedTab::File {
                             path: path.clone(),
                             mode: *mode,
+                            preview: self.md_preview(t.id),
                         },
                     };
                     if t.id == pane.active {
@@ -1041,7 +1073,7 @@ impl Model {
                 }
                 SavedTab::Browser { url } => TabKind::Browser { url: url.clone() },
                 // A file gone since comes back too: its tab says so (M11g Task 6).
-                SavedTab::File { path, mode } => TabKind::File {
+                SavedTab::File { path, mode, .. } => TabKind::File {
                     path: path.clone(),
                     mode: *mode,
                 },
@@ -1049,6 +1081,9 @@ impl Model {
             let id = TabId(self.next());
             if i == saved.active {
                 active = Some(id);
+            }
+            if let SavedTab::File { preview: true, .. } = st {
+                self.md_previews.push(id);
             }
             tabs.push(Tab { id, kind });
         }
@@ -2880,6 +2915,7 @@ mod tests {
                 SavedTab::File {
                     path: PathBuf::from("/w/api/src/main.rs"),
                     mode: FileMode::Plain,
+                    preview: false,
                 },
             ]
         );
@@ -2909,6 +2945,7 @@ mod tests {
             SavedTab::File {
                 path: PathBuf::from("/x"),
                 mode: FileMode::Plain,
+                preview: false,
             }
         );
         let diff: SavedTab =
@@ -2918,9 +2955,93 @@ mod tests {
             SavedTab::File {
                 path: PathBuf::from("/x"),
                 mode: FileMode::Diff,
+                preview: false,
             }
         );
         assert_eq!(FileMode::default(), FileMode::Plain);
+    }
+
+    /// M11ac: a file tab's Markdown Preview is saved with it; a file from before has it off,
+    /// and a tab with it off is written as before (no `preview` key).
+    #[test]
+    fn a_saved_file_tab_keeps_its_preview_and_an_old_one_has_it_off() {
+        let old: SavedTab = serde_json::from_str(r#"{"kind":"file","path":"/x.md"}"#).unwrap();
+        assert_eq!(
+            old,
+            SavedTab::File {
+                path: PathBuf::from("/x.md"),
+                mode: FileMode::Plain,
+                preview: false,
+            }
+        );
+        let off = serde_json::to_string(&old).unwrap();
+        assert!(!off.contains("preview"), "{off}");
+        let on = SavedTab::File {
+            path: PathBuf::from("/x.md"),
+            mode: FileMode::Plain,
+            preview: true,
+        };
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains(r#""preview":true"#), "{json}");
+        assert_eq!(serde_json::from_str::<SavedTab>(&json).unwrap(), on);
+    }
+
+    #[test]
+    fn a_file_tab_s_preview_round_trips_and_follows_a_move() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(11)).unwrap();
+        let f = m.add_tab(a.pane, file("/w/README.md")).unwrap();
+        let g = m.add_tab(a.pane, file("/w/notes.md")).unwrap();
+        assert!(!m.md_preview(f.tab));
+        assert!(m.set_md_preview(f.tab, true));
+        assert!(!m.set_md_preview(f.tab, true), "already on");
+        assert!(!m.set_md_preview(TabId(999), true), "unknown");
+        assert!(!m.set_md_preview(a.tab, true), "not a file tab");
+        // Moved to its own pane: still on.
+        m.split(a.pane, Axis::Row, file("/w/other.md")).unwrap();
+        let right = m.focused_pane().unwrap();
+        m.move_tab(f.tab, right, 0).unwrap();
+        assert!(m.md_preview(f.tab));
+        let session = |id: u64| Some((id - 11) as usize);
+        let (saved, active) = m.to_saved(session);
+        let back = Model::from_saved(&saved, active, &[Some(11)]);
+        let previews: Vec<PathBuf> = back
+            .panes()
+            .flat_map(|p| &p.tabs)
+            .filter(|t| back.md_preview(t.id))
+            .filter_map(|t| match &t.kind {
+                TabKind::File { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(previews, [PathBuf::from("/w/README.md")]);
+        assert_eq!(back.to_saved(session), (saved, active));
+        // Off again, and closed: forgotten.
+        assert!(m.set_md_preview(f.tab, false));
+        assert!(!m.md_preview(f.tab));
+        m.set_md_preview(g.tab, true);
+        m.close_tab(g.tab);
+        assert!(!m.md_preview(g.tab));
+    }
+
+    /// A single click's preview tab (M11t) showing another file shows it as source.
+    #[test]
+    fn a_preview_tab_showing_another_file_turns_preview_off() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let first = m
+            .preview_file(a.pane, PathBuf::from("/w/a.md"), FileMode::Plain)
+            .unwrap();
+        m.set_md_preview(first.tab, true);
+        let again = m
+            .preview_file(a.pane, PathBuf::from("/w/a.md"), FileMode::Plain)
+            .unwrap();
+        assert!(m.md_preview(again.tab), "the same file keeps it");
+        let next = m
+            .preview_file(a.pane, PathBuf::from("/w/b.md"), FileMode::Plain)
+            .unwrap();
+        assert_eq!(next.tab, first.tab);
+        assert!(!m.md_preview(next.tab));
     }
 
     /// A version-2 file as fuxx wrote it before file tabs: a pane of a terminal and a page, and
