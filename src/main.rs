@@ -4,7 +4,9 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_conversation;
 mod agent_detect;
+mod agent_markdown;
 mod api;
 mod api_client;
 mod api_events;
