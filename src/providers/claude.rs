@@ -94,6 +94,8 @@ impl Provider for Claude {
 struct ClaudeTranslator {
     /// Open permission requests by request id: the tool input and the suggestions to send back.
     pending: HashMap<String, (Value, Value)>,
+    /// The model named by `system/init`, whose `modelUsage` entry sizes the context.
+    model: Option<String>,
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -226,11 +228,18 @@ fn describe_suggestion(sug: &Value) -> String {
 }
 
 /// The share of the context window the last model call used, from a `result` event.
-fn context_pct(result: &Value) -> Option<u8> {
-    let window = result["modelUsage"]
-        .as_object()?
-        .values()
-        .find_map(|m| m["contextWindow"].as_u64())?;
+/// The window is the session model's (`model`, from init), else the largest one reported.
+fn context_pct(result: &Value, model: Option<&str>) -> Option<u8> {
+    let usage = result["modelUsage"].as_object()?;
+    let window = model
+        .and_then(|m| usage.get(m))
+        .and_then(|m| m["contextWindow"].as_u64())
+        .or_else(|| {
+            usage
+                .values()
+                .filter_map(|m| m["contextWindow"].as_u64())
+                .max()
+        })?;
     let last = result["usage"]["iterations"].as_array()?.last()?;
     let used: u64 = [
         "input_tokens",
@@ -262,6 +271,7 @@ impl ClaudeTranslator {
                         out.push(Event::MessageDone {
                             message: message.clone(),
                             text: text.into(),
+                            parent: parent.clone(),
                         });
                     }
                 }
@@ -305,12 +315,15 @@ impl ClaudeTranslator {
             .collect()
     }
 
-    fn system(&self, v: &Value) -> Vec<Event> {
+    fn system(&mut self, v: &Value) -> Vec<Event> {
         match v["subtype"].as_str() {
-            Some("init") => vec![Event::Started {
-                conversation: s(&v["session_id"]).unwrap_or_default(),
-                model: s(&v["model"]),
-            }],
+            Some("init") => {
+                self.model = s(&v["model"]);
+                vec![Event::Started {
+                    conversation: s(&v["session_id"]).unwrap_or_default(),
+                    model: s(&v["model"]),
+                }]
+            }
             Some("permission_denied") => s(&v["message"])
                 .or_else(|| s(&v["tool_name"]).map(|t| format!("{t} was denied")))
                 .map(Event::Notice)
@@ -341,6 +354,7 @@ impl ClaudeTranslator {
         vec![Event::TextDelta {
             message: s(&v["api_message_id"]).unwrap_or_default(),
             text: s(&delta["text"]).unwrap_or_default(),
+            parent: s(&v["parent_tool_use_id"]),
         }]
     }
 
@@ -350,15 +364,25 @@ impl ClaudeTranslator {
             .as_array()
             .map(|e| e.iter().filter_map(|m| m.as_str()).collect())
             .unwrap_or_default();
+        let aborted = v["terminal_reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("aborted"));
         let mut out = Vec::new();
         let mut message = s(&v["result"]).filter(|m| !m.is_empty());
-        if is_error && !errors.is_empty() {
+        if aborted {
+            // Stop: the `errors` are an internal diagnostic, not for the user.
+            out.push(Event::Notice("Stopped".into()));
+            message = None;
+        } else if is_error && !errors.is_empty() {
             let joined = errors.join("; ");
             out.push(Event::Error(joined.clone()));
             message = Some(joined);
+        } else if is_error && message.is_none() {
+            // A failure with no text (e.g. `error_max_turns`): say which kind it was.
+            message = Some(s(&v["subtype"]).unwrap_or_else(|| "The turn failed".into()));
         }
         out.push(Event::Usage {
-            context_pct: context_pct(v),
+            context_pct: context_pct(v, self.model.as_deref()),
             cost_usd: v["total_cost_usd"].as_f64(),
         });
         out.push(Event::TurnDone {
@@ -484,11 +508,11 @@ mod tests {
         assert!(matches!(ev.last(), Some(Event::TurnDone { ok: true, .. })));
         // The delta and the finished message share the API message id.
         let delta = ev.iter().find_map(|e| match e {
-            Event::TextDelta { message, text } => Some((message.clone(), text.clone())),
+            Event::TextDelta { message, text, .. } => Some((message.clone(), text.clone())),
             _ => None,
         });
         let done = ev.iter().find_map(|e| match e {
-            Event::MessageDone { message, text } => Some((message.clone(), text.clone())),
+            Event::MessageDone { message, text, .. } => Some((message.clone(), text.clone())),
             _ => None,
         });
         let (dm, dt) = delta.unwrap();
@@ -843,6 +867,93 @@ mod tests {
             Event::Error(m) if m.contains("No conversation found")
         )));
         assert!(matches!(ev.last(), Some(Event::TurnDone { ok: false, .. })));
+    }
+
+    #[test]
+    fn a_stop_is_a_notice_not_a_diagnostic() {
+        let ev = decode_all(
+            &CLAUDE,
+            include_str!("fixtures/claude-interrupt-text.jsonl"),
+        );
+        assert!(ev.contains(&Event::Notice("Stopped".into())));
+        assert!(!ev.iter().any(|e| matches!(e, Event::Error(_))));
+        assert!(!format!("{ev:?}").contains("ede_diagnostic"));
+        assert!(matches!(
+            ev.last(),
+            Some(Event::TurnDone {
+                ok: false,
+                message: None
+            })
+        ));
+    }
+
+    /// Synthetic: no fixture has a failed turn without text (e.g. max turns).
+    #[test]
+    fn a_failure_without_text_falls_back_to_the_subtype() {
+        let line = json!({"type":"result","subtype":"error_max_turns","is_error":true,
+            "result":null,"terminal_reason":"max_turns","total_cost_usd":0.1})
+        .to_string();
+        let ev = CLAUDE.translator().decode(&line);
+        assert!(matches!(
+            ev.last(),
+            Some(Event::TurnDone { ok: false, message: Some(m) }) if m == "error_max_turns"
+        ));
+    }
+
+    /// Synthetic: a two-model `result` (the fixtures have one model each).
+    #[test]
+    fn context_uses_the_session_models_window() {
+        let init =
+            json!({"type":"system","subtype":"init","session_id":"s","model":"big"}).to_string();
+        let result = json!({"type":"result","subtype":"success","is_error":false,"result":"ok",
+            "modelUsage":{"small":{"contextWindow":200000},"big":{"contextWindow":1000000}},
+            "usage":{"iterations":[{"input_tokens":100000}]}})
+        .to_string();
+        let pct = |t: &mut Box<dyn Translator>| {
+            t.decode(&result).into_iter().find_map(|e| match e {
+                Event::Usage { context_pct, .. } => context_pct,
+                _ => None,
+            })
+        };
+        let mut t = CLAUDE.translator();
+        t.decode(&init);
+        assert_eq!(pct(&mut t), Some(10)); // 100k of big's 1M, not small's 200k
+        // Without init: the largest window.
+        assert_eq!(pct(&mut CLAUDE.translator()), Some(10));
+        // Init names the small one: 100k of 200k.
+        let mut t = CLAUDE.translator();
+        t.decode(&init.replace("big", "small"));
+        assert_eq!(pct(&mut t), Some(50));
+    }
+
+    /// Synthetic: sub-agent lines carry `parent_tool_use_id` on stream and assistant lines.
+    #[test]
+    fn subagent_text_keeps_its_parent() {
+        let mut t = CLAUDE.translator();
+        let delta =
+            json!({"type":"stream_event","parent_tool_use_id":"toolu_p","api_message_id":"m",
+            "event":{"type":"content_block_delta","index":0,
+                "delta":{"type":"text_delta","text":"hi"}}})
+            .to_string();
+        let done = json!({"type":"assistant","parent_tool_use_id":"toolu_p","message":{"id":"m",
+            "content":[{"type":"text","text":"hi"}]}})
+        .to_string();
+        assert_eq!(
+            t.decode(&delta),
+            vec![Event::TextDelta {
+                message: "m".into(),
+                text: "hi".into(),
+                parent: Some("toolu_p".into())
+            }]
+        );
+        assert_eq!(
+            t.decode(&done),
+            vec![Event::MessageDone {
+                message: "m".into(),
+                text: "hi".into(),
+                parent: Some("toolu_p".into())
+            }]
+        );
     }
 
     #[test]

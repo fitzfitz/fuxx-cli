@@ -61,10 +61,13 @@ pub enum Event {
     TextDelta {
         message: String,
         text: String,
+        /// The tool call of the sub-agent that said it; `None` for the main agent.
+        parent: Option<String>,
     },
     MessageDone {
         message: String,
         text: String,
+        parent: Option<String>,
     },
     ToolStarted {
         id: String,
