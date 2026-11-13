@@ -137,6 +137,7 @@ pub fn describe(action: &str) -> Describe {
         // A file tab's Esc (it closes the find bar).
         | "file_tab::CloseFind" => Unlisted,
         other if other.starts_with("name_input::") => Unlisted,
+        other if other.starts_with("composer::") => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("palette::") => Unlisted,
         // The branch switcher's arrows (in its panel only).
