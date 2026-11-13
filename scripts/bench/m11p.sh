@@ -6,8 +6,15 @@
 # Results: scripts/bench/results/m11p-<mode>-<date>.md (gitignored).
 set -euo pipefail
 
-MODE="${1:-}"; DRY=0
-[[ "${2:-}" == "--dry-run" ]] && DRY=1
+unset FUXX_CHROME_CACHE   # an exported value would leak into every variant; only branchoff sets it
+MODE=""; DRY=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    baseline|final) MODE="$a" ;;
+    *) echo "usage: $0 baseline|final [--dry-run]"; exit 2 ;;
+  esac
+done
 [[ "$MODE" == baseline || "$MODE" == final ]] || { echo "usage: $0 baseline|final [--dry-run]"; exit 2; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -58,6 +65,7 @@ if [[ "$MODE" == final ]]; then
   run cp "$cp_master" "$WORK/fuxx-master"
   run cargo build --release --manifest-path "$ROOT/Cargo.toml"
   run cp "$cp_master" "$WORK/fuxx-branch"
+  ((DRY)) || ! cmp -s "$WORK/fuxx-master" "$WORK/fuxx-branch" || { say "ABORT: branch binary is byte-identical to master"; exit 1; }
 else
   run cp "$cp_master" "$WORK/fuxx-master"
 fi
@@ -76,6 +84,9 @@ phase() {  # phase APP PHASE TAG
     run python3 "$RUN" --bench "$BENCH" "$1" "$2" --tag "$3"
   fi
 }
+
+say "== clear stale results =="
+run bash -c "rm -f '$BENCH'/results/*.json"
 
 say "== measure (interleaved) =="
 for i in 1 2 3 4 5; do for v in "${VARIANTS[@]}"; do phase "$(app "$v")" cpu_base "$i"; done; done
