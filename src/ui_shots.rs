@@ -215,6 +215,7 @@ const SCENES: &[(&str, fn())] = &[
     ("chrome-pane-churn", chrome_pane_churn),
     ("chrome-kill-switch", chrome_kill_switch),
     ("chrome-pixels-same", chrome_pixels_same),
+    ("chrome-ages-current", chrome_ages_current),
     ("chrome-folder-polled", chrome_folder_polled),
     ("chrome-followed", chrome_followed),
     ("chrome-title-once", chrome_title_once),
@@ -1283,6 +1284,195 @@ fn draws_of(
     act(cx);
     draw(cx, window);
     chrome_cache::get(c)
+}
+
+/// Frames as the app gets them, and nothing else: the effects settle (timers due by the
+/// harness's clock run, and a notify draws), then each frame something asked for. No explicit
+/// draw (one would run `Workspace::render`, which restarts timers and hides a missing one).
+fn settle_frames(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    cx.run_until_parked();
+    for _ in 0..100 {
+        if !next_frame(cx, window) {
+            break;
+        }
+        cx.run_until_parked();
+    }
+}
+
+/// Panics (`what`) unless the window as it was last drawn (no draw now) is what a full redraw
+/// draws. On a failure both are saved as `target/ui-shots/stale-{now,fresh}.png`.
+fn assert_shown_current(cx: &mut VisualTestAppContext, window: AnyWindowHandle, what: &str) {
+    let image = cx.capture_screenshot(window).expect("capture the window");
+    let shown = Shot {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    };
+    let fresh = frame_fresh(cx, window);
+    let differ = bytes_differ(&shown, &fresh);
+    if differ > 0 {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+        std::fs::write(dir.join("stale-now.png"), png(&shown)).expect("PNG");
+        std::fs::write(dir.join("stale-fresh.png"), png(&fresh)).expect("PNG");
+    }
+    assert_eq!(
+        differ, 0,
+        "{what}: {differ} bytes differ from a full redraw (stale)"
+    );
+}
+
+/// M11p Task 4, fix round 1 (Ruling 8): ages never go stale with the chrome cached, with
+/// nothing breathing and frames only as the app would get them (`settle_frames`).
+/// - Done and Idle terminals only, animations off: as an age label turns, the row and the
+///   status bar show it; the tooltip of a Done tab that is neither its row's subject nor the
+///   status bar's terminal (so no age timer covers it) says its age as it opens, not as the
+///   bar was last drawn.
+/// - The last Working terminal turns Done (the marks' ticker stops on its next tick): the
+///   row's and the status bar's age still turn on time.
+///
+/// Panics unless all of that holds.
+fn chrome_ages_current() {
+    use std::time::{Duration, Instant};
+
+    use crate::sidebar::SidebarRow;
+
+    let n = "chrome-ages-current";
+    let api = std::path::Path::new(API);
+    let web = std::path::Path::new(WEB);
+
+    // Done and Idle only, animations off.
+    let (mut cx, window, ws) = chrome_window(move |ws, window, cx| {
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("tests", api, SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_session("shell", web, SHELL_TEXT, None, window, cx);
+        let first = ws.workspace_of(0).expect("api's workspace");
+        ws.select_workspace(first, window, cx);
+    });
+    cx.update(|cx| cx.update_global::<Appearance, _>(|a, _| a.animations = false));
+    let since = |cx: &mut VisualTestAppContext, i: usize, ago: Duration| {
+        cx.update(|cx| {
+            ws.update(cx, |ws, cx| {
+                let s = ws.sessions.get_mut(i).expect("a session");
+                s.status = Status::Done;
+                s.status_since = Instant::now() - ago;
+                cx.notify();
+            })
+        })
+    };
+    since(&mut cx, 0, Duration::from_secs(5 * 60 + 10));
+    since(&mut cx, 1, Duration::from_secs(5 * 60 + 10));
+    settle_frames(&mut cx, window);
+    // The row's subject (S, also focused: the status bar's) and the other Done one (O).
+    let subject = |cx: &mut VisualTestAppContext| {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let api_ws = ws.workspace_of(0).expect("api's workspace");
+            ws.rows_in_view(Instant::now())
+                .into_iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(w) if w.workspace == api_ws => w.subject,
+                    _ => None,
+                })
+                .expect("api's row has a subject")
+        })
+    };
+    let s = subject(&mut cx);
+    let o = 1 - s;
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let id = ws.sessions.items()[s].id;
+            let tab = ws.model.terminal_tab(id).expect("S's tab");
+            let (_, pane) = ws.model.locate(tab).expect("S's pane");
+            ws.select_pane(pane, window, cx);
+        })
+    })
+    .expect("focus S");
+    since(&mut cx, o, Duration::from_millis(59_600));
+    settle_frames(&mut cx, window);
+    assert_eq!(subject(&mut cx), s, "{n}: the subject stays");
+    let followed = cx.read(|cx| {
+        let ws = ws.read(cx);
+        ws.right_sidebar.followed == Some(ws.sessions.items()[s].id)
+    });
+    assert!(followed, "{n}: the status bar follows S");
+    assert_shown_current(&mut cx, window, &format!("{n}: done, before"));
+    // O's age turns ("59s" to "1m") with nothing notified.
+    std::thread::sleep(Duration::from_millis(500));
+    cx.advance_clock(Duration::from_secs(2));
+    settle_frames(&mut cx, window);
+    // O's tab's tooltip, opened now (before any full redraw, which would draw its bar anew).
+    let at = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let id = ws.sessions.items()[o].id;
+        let tab = ws.model.terminal_tab(id).expect("O's tab");
+        let (_, pane) = ws.model.locate(tab).expect("O's pane");
+        let scroll = ws
+            .tab_scroll
+            .borrow()
+            .get(&pane)
+            .expect("its row")
+            .0
+            .clone();
+        scroll.bounds_for_item(0).expect("laid out").center()
+    });
+    if let Ok(mut shown) = crate::sidebar_toggle::SHOWN_TIP.lock() {
+        *shown = None;
+    }
+    cx.simulate_mouse_move(window, at, None, gpui::Modifiers::none());
+    cx.advance_clock(Duration::from_secs(1));
+    settle_frames(&mut cx, window);
+    draw(&mut cx, window);
+    let tip = crate::sidebar_toggle::SHOWN_TIP
+        .lock()
+        .ok()
+        .and_then(|t| t.clone());
+    println!("ui-shots: {n}: O's tooltip {tip:?}");
+    assert_eq!(
+        tip.as_deref(),
+        Some("tests — done 1m"),
+        "{n}: O's tooltip says its age as it opens"
+    );
+    assert_shown_current(&mut cx, window, &format!("{n}: done, O's age turned"));
+
+    // The last Working terminal turns Done: the ticker stops; the ages still turn.
+    let (mut cx, window, ws) = chrome_window(move |ws, window, cx| {
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("shell", web, SHELL_TEXT, None, window, cx);
+        let first = ws.workspace_of(0).expect("api's workspace");
+        ws.select_workspace(first, window, cx);
+    });
+    let set = |cx: &mut VisualTestAppContext, status: Status, ago: Duration| {
+        cx.update(|cx| {
+            ws.update(cx, |ws, cx| {
+                let s = ws.sessions.get_mut(0).expect("api");
+                s.status = status;
+                s.status_since = Instant::now() - ago;
+                cx.notify();
+            })
+        })
+    };
+    set(&mut cx, Status::Working, Duration::from_secs(1));
+    settle_frames(&mut cx, window);
+    cx.advance_clock(Duration::from_millis(250));
+    settle_frames(&mut cx, window);
+    assert!(
+        cx.read(|cx| ws.read(cx).marks_ticking),
+        "{n}: the marks tick while api works"
+    );
+    set(&mut cx, Status::Done, Duration::from_millis(59_600));
+    settle_frames(&mut cx, window);
+    cx.advance_clock(Duration::from_millis(250));
+    settle_frames(&mut cx, window);
+    assert!(
+        !cx.read(|cx| ws.read(cx).marks_ticking),
+        "{n}: the ticker stopped"
+    );
+    // (No check here: a full redraw would run `Workspace::render`, which starts the age timer.)
+    std::thread::sleep(Duration::from_millis(500));
+    cx.advance_clock(Duration::from_secs(2));
+    settle_frames(&mut cx, window);
+    assert_shown_current(&mut cx, window, &format!("{n}: done, its age turned"));
 }
 
 /// The chrome's cached parts (M11p Task 4), as counted.

@@ -107,8 +107,16 @@ pub fn tooltip_text(hidden: bool) -> &'static str {
 /// The tooltip's view.
 pub(crate) struct Tip(pub SharedString);
 
+/// ui-shots only: the text of the tooltip drawn last, for the scenes to read.
+#[cfg(feature = "ui-shots")]
+pub(crate) static SHOWN_TIP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "ui-shots")]
+        if let Ok(mut shown) = SHOWN_TIP.lock() {
+            *shown = Some(self.0.to_string());
+        }
         let ui = cx.global::<Appearance>().theme.ui();
         tip_box(self.0.clone(), &ui)
     }

@@ -331,6 +331,16 @@ const BUTTONS_PAD: f32 = 4.0;
 const STROKE: f32 = 1.25;
 
 impl Workspace {
+    /// Tab `tab`'s tooltip at `now` (its age then); none for a tab gone.
+    pub(crate) fn tab_tip(&self, tab: TabId, now: Instant) -> Option<String> {
+        let (_, pane) = self.model.locate(tab)?;
+        let p = self.model.pane(pane)?;
+        self.pane_bar_tabs(p, now)
+            .into_iter()
+            .find(|t| t.tab == tab)
+            .map(|t| t.tip)
+    }
+
     /// Pane `p`'s tabs as its bar draws them `now`: each terminal by its name
     /// (`terminal_label`), a browser tab by its page's title, a file tab by its file's name.
     pub(crate) fn pane_bar_tabs(&self, p: &Pane, now: Instant) -> Vec<BarTab> {
@@ -579,7 +589,10 @@ impl Workspace {
                 this.close_tab(id, window, cx)
             }));
         let terminal = tab.terminal;
+        // The tooltip says the tab's age as it opens, not as the bar was last drawn (M11p: a
+        // cached bar's frame, and its tooltip, can be older than the age it shows).
         let tip = tab.tip.clone();
+        let workspace = cx.entity().downgrade();
         let lifted = self.dragged_tab(cx) == Some(id);
         let (source, rows) = (self.tab_drag.clone(), self.sidebar.drag_source.clone());
         let (chip_title, chip_icon) = (tab.title.clone(), tab.icon);
@@ -646,7 +659,13 @@ impl Workspace {
                     this.open_pane_tab_menu(id, event.position, window, cx)
                 }),
             )
-            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() });
+            .tooltip(move |_, cx| -> AnyView {
+                let now = workspace
+                    .upgrade()
+                    .and_then(|ws| ws.read(cx).tab_tip(id, Instant::now()))
+                    .unwrap_or_else(|| tip.clone());
+                cx.new(|_| Tip(now.into())).into()
+            });
         // Its place in the row: the size the row gives it, where the tab is drawn from.
         div()
             .relative()
