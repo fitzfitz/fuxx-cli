@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, App, FontStyle, FontWeight, HighlightStyle, Image, InteractiveText, SharedString,
-    StyledText, UnderlineStyle, Window, div, img, prelude::*, px, relative,
+    AnyElement, App, FontStyle, FontWeight, HighlightStyle, InteractiveText, RenderImage,
+    SharedString, StyledText, UnderlineStyle, Window, div, img, prelude::*, px, relative,
 };
 
 use crate::agent_markdown::{Align, Md, Span};
@@ -248,7 +248,11 @@ pub type OnLink = Rc<dyn Fn(String, &mut Window, &mut App)>;
 /// it renders).
 #[derive(Clone)]
 pub enum Shown {
-    Diagram { image: Arc<Image>, w: f32, h: f32 },
+    Diagram {
+        image: Arc<RenderImage>,
+        w: f32,
+        h: f32,
+    },
     Code(Option<String>),
 }
 

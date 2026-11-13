@@ -1,7 +1,7 @@
 # Vendored Mermaid (M11ac Part 2)
 
 The Markdown Preview draws ```` ```mermaid ```` blocks with this file, offline, in a hidden
-WebKit view (`src/mermaid_render.rs`). It is embedded in the fuxx binary with `include_str!`;
+WebKit view (`src/mermaid_render.rs`), injected as a WebKit user script. It is embedded in the fuxx binary with `include_str!`;
 nothing is fetched at run time.
 
 - **Package:** `mermaid` (npm), **version 12.2.0** (published 2026-10-13)
@@ -17,4 +17,4 @@ nothing is fetched at run time.
 
 To update: download the new release's tarball, check its `integrity` against the npm registry,
 copy `package/dist/mermaid.min.js` and `package/LICENSE` here, and update this file and the
-`MERMAID_JS_SHA256` test in `src/mermaid.rs`.
+`the_bundled_mermaid_is_the_pinned_release` test in `src/mermaid.rs`.

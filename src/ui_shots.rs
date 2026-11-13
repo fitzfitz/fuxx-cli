@@ -20148,11 +20148,17 @@ fn file_tab_md_mermaid_scenes() {
 
         // Scrolling reads the cache: nothing renders again.
         let before = cx.update(Mermaids::counts);
+        let (cached, bytes, queued, running) = before;
         assert_eq!(
-            before,
-            (3, 0),
+            (cached, queued, running),
+            (3, 0, false),
             "{n}: 2 diagrams and 1 error cached, none waiting"
         );
+        assert!(
+            bytes > 0 && bytes <= crate::mermaid::CACHE_BYTES,
+            "{n}: {bytes} bytes"
+        );
+        println!("ui-shots: {n}: {bytes} bytes of decoded images cached");
         let rows = cx.read(|cx| tab.read(cx).preview_list());
         for item_ix in [3, 0, 5, 1] {
             rows.scroll_to(gpui::ListOffset {
@@ -20178,13 +20184,15 @@ fn file_tab_md_mermaid_scenes() {
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(30) {
             turn(&mut cx);
-            if cx.update(Mermaids::counts) == (6, 0) {
+            let (cached, _, queued, running) = cx.update(Mermaids::counts);
+            if (cached, queued, running) == (6, 0, false) {
                 break;
             }
         }
+        let (cached, _, queued, running) = cx.update(Mermaids::counts);
         assert_eq!(
-            cx.update(Mermaids::counts),
-            (6, 0),
+            (cached, queued, running),
+            (6, 0, false),
             "{n}: rendered for the other theme"
         );
         let drawn = cx.read(|cx| tab.read(cx).mermaid_drawn());
@@ -20258,6 +20266,36 @@ fn file_tab_md_mermaid_scenes() {
     }
     println!("ui-shots: file-tab-md-mermaid-no-network: no connection");
     assert_eq!(drawn.0, 1, "no-network: the diagram renders ({drawn:?})");
+    // Review fix: the page runs no script of its own (an inline handler, an inserted script).
+    let mut probe = cx
+        .update(Mermaids::probe_page_script)
+        .expect("the web view is up");
+    let started = Instant::now();
+    let answer = loop {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+        if let Ok(Some(answer)) = probe.try_recv() {
+            break answer;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "no-script: no answer"
+        );
+    };
+    println!("ui-shots: file-tab-md-mermaid-no-script: {answer:?}");
+    assert_eq!(
+        answer.as_deref(),
+        Ok(r#"{"handler":false,"script":false}"#),
+        "no-script: the page ran a script of its own"
+    );
+    // Review fix: after a minute with nothing to render, the web view (and its WebKit
+    // process) goes.
+    cx.advance_clock(Duration::from_secs(61));
+    cx.run_until_parked();
+    assert!(
+        cx.update(Mermaids::probe_page_script).is_none(),
+        "idle: the web view is let go after 60 s"
+    );
+    println!("ui-shots: file-tab-md-mermaid-idle: the web view went after 60 s idle");
     std::mem::forget(cx);
 }
 
