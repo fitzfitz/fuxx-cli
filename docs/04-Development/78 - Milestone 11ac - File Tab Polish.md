@@ -87,10 +87,10 @@ Files panel selects the active file's row and opens its folders, like VS Code's 
 6. Code in the Preview (and a table's header) is drawn on **a tint of the text over the page** instead of `ui.panel`
    (in Catppuccin Latte the panel colour is all but the page, so code didn't show); the code in the terminal's font at
    13 pt; prose is 14 pt at 1.5 line height; table columns are equal widths. (Accepted by the controller at review.)
-9. Preview's limits from the review: 1 MB of coloured text, quotes 16 deep.
 7. Links to files open in the focused pane as an ordinary (kept) tab, showing source.
 8. A soft line break inside a paragraph is a space (as Markdown renders it); a hard break (two trailing spaces) isn't
    kept.
+9. Preview's limits from the review: 1 MB of coloured text, quotes 16 deep.
 
 ## Limits
 
@@ -109,7 +109,12 @@ Files panel selects the active file's row and opens its folders, like VS Code's 
   `*` between characters makes italics (`2*3*4` shows the 3 in italics; `src/*.rs and tests/*.rs` italicises
   `.rs and tests/`); a line starting with `>` is a quote and `---` under a line makes it a heading. While a reply
   streams, a setext heading (`Title` then `===`) and a table (its header before its `|---|` line) first show as plain
-  text and then change shape (a flicker) once the next line arrives.
+  text and then change shape (a flicker) once the next line arrives. A link whose address holds a `[` no longer
+  links (the linear scanner stops there): `[a](http://x/[1])`, `[local](http://[::1]:3000)` stay text.
+- A small `.md` with one line over 20,000 characters (`COLOUR_LINE_MAX`; an inline base64 image, say) is "Too large to
+  colour", so it gets no Preview: the button says "Too large to preview" though the file is tiny.
+- One very large block (a huge paragraph, table or code block) is a single row of the list, so its text is built
+  again every frame while it is on screen (acceptable under the 1 MB cap).
 
 ## Verification
 
