@@ -31,6 +31,8 @@ use crate::ui_tokens::{self, contrast};
 use crate::workspace::{Overlay, Workspace};
 use crate::{fonts, settings};
 
+mod chrome_sources;
+
 /// The two themes every scene is shot in: (file slug, built-in theme name).
 pub const SHOT_THEMES: [(&str, &str); 2] =
     [("mocha", "Catppuccin Mocha"), ("latte", "Catppuccin Latte")];
@@ -220,6 +222,29 @@ const SCENES: &[(&str, fn())] = &[
     ("chrome-followed", chrome_followed),
     ("chrome-title-once", chrome_title_once),
     ("chrome-rows-once", chrome_rows_once),
+    (
+        "chrome-status-elsewhere",
+        chrome_sources::chrome_status_elsewhere,
+    ),
+    ("chrome-model-edits", chrome_sources::chrome_model_edits),
+    ("chrome-notifications", chrome_sources::chrome_notifications),
+    (
+        "chrome-places-programs-ports",
+        chrome_sources::chrome_places_programs_ports,
+    ),
+    ("chrome-globals", chrome_sources::chrome_globals),
+    ("chrome-resize-title", chrome_sources::chrome_resize_title),
+    ("chrome-drag-cancel", chrome_sources::chrome_drag_cancel),
+    ("chrome-renaming", chrome_sources::chrome_renaming),
+    (
+        "chrome-new-bar-reveal",
+        chrome_sources::chrome_new_bar_reveal,
+    ),
+    ("chrome-session-facts", chrome_sources::chrome_session_facts),
+    (
+        "chrome-bars-and-edges",
+        chrome_sources::chrome_bars_and_edges,
+    ),
     ("sidebar", sidebar_scenes),
     ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-selection", sidebar_selection_scenes),

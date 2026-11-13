@@ -162,7 +162,12 @@ impl Workspace {
     }
 
     /// A choice from the menu: it closes, then does `action` to its workspace.
-    fn choose(&mut self, action: TabAction, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn choose(
+        &mut self,
+        action: TabAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(menu) = self.sidebar.tab_menu.take() else {
             return;
         };

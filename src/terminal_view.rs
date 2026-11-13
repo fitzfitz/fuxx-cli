@@ -412,6 +412,13 @@ impl TerminalView {
         self.core.show_local(text);
     }
 
+    /// The status tracker found `status`: passed on as `on_term_event` passes its answers
+    /// (`TerminalEvent::StatusChanged` to the workspace), for scenes with no agent to make one.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_status(&self, status: Status, cx: &mut Context<Self>) {
+        self.status_changed(status, cx);
+    }
+
     /// Count this terminal's window as the key window (an off-screen window never is).
     #[cfg(feature = "ui-shots")]
     pub fn pretend_key_window(&self) {
