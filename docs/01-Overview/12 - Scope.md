@@ -136,8 +136,10 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   .md file, add 1 toggle button like wrap called "Preview" so that the showing .md file is an md reader with rich
   format"; your choices: "New M11ac, in parallel", "Highlight + reveal"): the Files panel follows the focused pane's
   file tab (its row selected, its folders opened, scrolled into view), and a Markdown file tab gets a **Preview**
-  toggle beside Wrap that shows it rendered, read-only (remembered per tab). Not in it: editing, Mermaid or math,
-  HTML in Markdown, a side-by-side source-and-preview, syntax colours in the Preview's code blocks. See
+  toggle beside Wrap that shows it rendered, read-only (remembered per tab). **Part 2** (added 2026-11-13 by you:
+  "put/add it in M11ac as an additional milestone"): ```` ```mermaid ```` blocks drawn as diagrams, offline, by a
+  bundled mermaid.js in fuxx's own WebKit. Not in it: editing, math, HTML in Markdown, a side-by-side
+  source-and-preview, syntax colours in the Preview's code blocks, clickable or interactive diagrams. See
   [[78 - Milestone 11ac - File Tab Polish]].
 
 ## Out of scope (for now — resist scope creep)
