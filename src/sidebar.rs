@@ -1173,6 +1173,7 @@ impl Workspace {
 
     /// The sidebar's rows as they are now: one per workspace, in display order.
     fn sidebar_rows(&self, now: Instant) -> Vec<SidebarRow> {
+        crate::chrome_cache::bump(crate::chrome_cache::Counted::SidebarRows);
         let items = self.sessions.items();
         let status = |id: u64| {
             items
@@ -1395,6 +1396,7 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        crate::chrome_cache::bump(crate::chrome_cache::Counted::Sidebar);
         let rows = self.sidebar_rows(Instant::now());
         if self.sidebar.reveal_active && !rows.is_empty() {
             if self.sidebar.scroll.children_count() == 0 {

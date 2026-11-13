@@ -540,6 +540,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        crate::chrome_cache::bump(crate::chrome_cache::Counted::StatusBar);
         let facts = self.status_bar_facts();
         let update = cx.try_global::<updater::Updates>().map(|u| u.state.clone());
         let wide = update.as_ref().and_then(|s| updater::button(s, true));

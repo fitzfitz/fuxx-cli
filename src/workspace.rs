@@ -3144,6 +3144,9 @@ fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::chrome_cache::bump(crate::chrome_cache::Counted::Workspace);
+        // The title area is composed on every pass (its name and buttons, or the sidebar's band).
+        crate::chrome_cache::bump(crate::chrome_cache::Counted::Title);
         // No drag: a tab or row drag GPUI ended without a drop (released elsewhere) leaves
         // nothing behind, so a later drag of something else (a file from Finder) isn't taken for
         // it (a row taken for dragged would show empty). The slides go with the drag: the layout

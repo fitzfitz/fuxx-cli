@@ -27,6 +27,7 @@ mod browser_js;
 mod browser_tab;
 mod browser_url;
 mod changes_panel;
+mod chrome_cache;
 mod cli;
 mod colors;
 mod composer;
