@@ -129,6 +129,21 @@ impl Steps {
         })
     }
 
+    /// Each terminal's age label (not idle), now.
+    fn age_labels(&self, cx: &VisualTestAppContext) -> Vec<String> {
+        cx.read(|cx| {
+            let now = Instant::now();
+            self.ws
+                .read(cx)
+                .sessions
+                .items()
+                .iter()
+                .filter(|s| s.status != Status::Idle)
+                .map(|s| crate::status::age_label(now.saturating_duration_since(s.status_since)))
+                .collect()
+        })
+    }
+
     /// After a step: if an age label (by the real clock) turned just now, within what the app
     /// takes by design to draw a turned label (its timer, 20 ms past the turn; or the marks'
     /// next tick, while they move), wait that out and let it draw (`catch_up`), so the check
@@ -177,8 +192,25 @@ impl Steps {
         self.catch_up(cx, window);
         self.past_age_turns(cx, window);
         let ages = self.ages(cx);
-        let now = shown(cx, window);
-        let fresh = frame_fresh(cx, window);
+        // An age label turning between the two captures would show as a stale part (or hide
+        // one): read the labels around them; if one turned, wait the turn out and capture once
+        // more, and fail as a turn (not as stale) if one turns again.
+        let mut retried = false;
+        let (now, fresh) = loop {
+            let labels = self.age_labels(cx);
+            let now = shown(cx, window);
+            let fresh = frame_fresh(cx, window);
+            if labels == self.age_labels(cx) {
+                break (now, fresh);
+            }
+            assert!(
+                !retried,
+                "{n}: {what}: an age turned during the check (twice)"
+            );
+            retried = true;
+            std::thread::sleep(LABEL_LATE);
+            self.catch_up(cx, window);
+        };
         let stale = bytes_differ(&now, &fresh);
         let changed = bytes_differ(&before, &fresh);
         println!("ui-shots: {n}: {what}: parts drawn {parts:?}; {changed} bytes changed");
@@ -280,7 +312,12 @@ fn report(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str, sta
 
 /// Session `name`'s status dated minutes back (M11p Task 6, review): its age label turns once a
 /// minute, not every second, so a step's check never lands on a turn (a turn the step's own
-/// wait drew would repair a stale part before the check).
+/// wait drew would repair a stale part before the check). It notifies the workspace: the status
+/// the callers just reported dated its own change now, and without the notify the rows built
+/// after the report show the new date only if the report's own path happens to notify (tried:
+/// chrome-notifications' steps show a part stale without it). So in a step's `act` it can mask
+/// a missing notify of the source; the callers there are `report`s, whose path
+/// (`on_terminal_event`) is what those steps test elsewhere (chrome-status-elsewhere).
 fn minutes_old(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str) {
     let i = index_of(cx, ws, name);
     cx.update(|cx| {
@@ -1567,6 +1604,76 @@ pub(super) fn chrome_sidebar_scroll() {
     steps.done();
 }
 
+/// A closed group's header mark scrolled into view: a group closed, its header (below the 16
+/// rows of another group, out of view) carrying a Working mark. While the header is out of view
+/// no mark is on screen and the marks' ticker doesn't run; the list scrolled with the wheel
+/// brings the header in, and its mark is on screen and the ticker runs.
+///
+/// Panics unless the header's mark is off screen before the scroll and on screen, with the
+/// ticker running, after it, and after each step the window shows what a full redraw does.
+pub(super) fn chrome_sidebar_header_mark() {
+    use crate::groups::GroupKey;
+    use crate::reduce_motion::{SystemReduceMotion, WindowVisible};
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+    let n = "chrome-sidebar-header-mark";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        for i in 0..16 {
+            ws.open_shot_session(&format!("w{i}"), api, super::SHELL_TEXT, None, window, cx);
+        }
+        let web = std::path::Path::new(super::WEB);
+        ws.open_shot_session("far", web, super::SHELL_TEXT, None, window, cx);
+        let first = ws.sessions.position(|s| s.label() == "w0").expect("w0");
+        ws.select(first, window, cx);
+        ws.toggle_group(&GroupKey::Folder(super::WEB.into()), cx);
+    });
+    let ws = &ws;
+    cx.update(|cx| {
+        use gpui::BorrowAppContext;
+        cx.set_global(SystemReduceMotion::for_shots(false));
+        cx.set_global(WindowVisible::for_shots(true));
+        cx.update_global::<crate::appearance::Appearance, _>(|a, _| a.animations = true)
+    });
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let marks = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).marks_on_screen().len());
+    let ticking = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).marks_ticking);
+    steps.step(
+        &mut cx,
+        window,
+        "the closed group's terminal works, its header out of view",
+        Seen::Maybe,
+        |cx| {
+            report(cx, ws, "far", Status::Working);
+            minutes_old(cx, ws, "far");
+        },
+    );
+    assert_eq!(marks(&mut cx), 0, "{n}: its header's mark is off screen");
+    assert!(!ticking(&mut cx), "{n}: nothing on screen moves");
+    let list = super::row_point(&mut cx, ws, 1, 0.0);
+    steps.step(
+        &mut cx,
+        window,
+        "the list scrolled to the header (the wheel)",
+        Seen::Changes,
+        |cx| {
+            cx.simulate_mouse_move(window, list, None, Modifiers::none());
+            cx.simulate_event(
+                window,
+                ScrollWheelEvent {
+                    position: list,
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(-2000.0))),
+                    modifiers: Modifiers::none(),
+                    touch_phase: TouchPhase::Moved,
+                },
+            )
+        },
+    );
+    assert_eq!(marks(&mut cx), 1, "{n}: the header's mark is on screen");
+    assert!(ticking(&mut cx), "{n}: the marks' ticker runs");
+    steps.done();
+}
+
 /// A row's other sources: a waiting terminal's question (read off its screen by `set_status`;
 /// without the banner, which would be a real one), the terminal a row is named after and reads
 /// its branch from (`named_terminal` / `branch_terminal`: the workspace's focused pane's,
@@ -1625,6 +1732,8 @@ pub(super) fn chrome_row_sources() {
         Some(super::CLAUDE_QUESTION),
         "{n}: the question read off its screen"
     );
+    // Its age turns every second from here; date it minutes back so no turn lands in a check.
+    minutes_old(&mut cx, ws, "agent");
     // api's workspace: named after, and its branch read from, its focused pane's terminal.
     let row = |cx: &mut VisualTestAppContext| {
         cx.read(|cx| {
