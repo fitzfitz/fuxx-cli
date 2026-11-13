@@ -98,11 +98,11 @@ fn spans(text: &str) -> Vec<Span> {
             rest[1..]
                 .find('`')
                 .map(|e| (Span::Code(rest[1..1 + e].to_string()), e + 2))
-        } else if rest.starts_with("**") {
-            rest[2..]
+        } else if let Some(inner) = rest.strip_prefix("**") {
+            inner
                 .find("**")
                 .filter(|&e| e > 0)
-                .map(|e| (Span::Bold(rest[2..2 + e].to_string()), e + 4))
+                .map(|e| (Span::Bold(inner[..e].to_string()), e + 4))
         } else if c == '[' {
             link(rest)
         } else {
