@@ -227,6 +227,7 @@ const SCENES: &[(&str, fn())] = &[
     ("file-tab", file_tab_scenes),
     ("file-diff", file_diff_scenes),
     ("file-tab-md", file_tab_md_scenes),
+    ("file-tab-md-mermaid", file_tab_md_mermaid_scenes),
     ("right-sidebar", right_sidebar_scenes),
     ("files", files_scenes),
     ("files-follow", files_follow_scenes),
@@ -19956,6 +19957,308 @@ fn file_tab_md_scenes() {
             slot.borrow_mut().take();
         });
     }
+}
+
+/// M11ac Part 2's fixture: a flowchart, a sequence diagram and a broken diagram.
+const MERMAID_FIXTURE: &str = r#"# Diagrams
+
+A flowchart:
+
+```mermaid
+flowchart LR
+  A[Agent] -->|edits| B(File tab)
+  B --> C{Preview?}
+  C -->|on| D[Diagram]
+  C -->|off| E[Source]
+```
+
+A sequence diagram:
+
+```Mermaid
+sequenceDiagram
+  participant You
+  participant fuxx
+  You->>fuxx: open README.md
+  fuxx-->>You: Preview, with diagrams
+```
+
+A broken one keeps its code:
+
+```mermaid
+flowchart TD
+  A -->
+```
+"#;
+
+/// M11ac Part 2: Mermaid diagrams in the Markdown Preview, on `MERMAID_FIXTURE`, 760 × 980,
+/// both themes:
+/// - `file-tab-md-mermaid-pending`: the first frame after the click on Preview, before WebKit
+///   answers: every block still code, no notes.
+/// - `file-tab-md-mermaid`: the hidden web view (real WebKit) renders the flowchart and the
+///   sequence diagram, shown as images at their natural size, centred; the broken one stays
+///   code with "Mermaid: <error>" under it in the dim colour. Checked: 2 diagrams, 1 note
+///   starting with "Mermaid: ".
+///
+/// WebKit answers through the main run loop, which the off-screen harness never turns, so this
+/// scene turns it by hand. Doing that in a process where earlier scenes dropped their windows
+/// runs GPUI's deferred window closes for apps already gone (they panic), so the rendered half
+/// runs in a child process (`FUXX_SHOTS_WEBKIT`), first and alone, its contexts kept alive.
+fn file_tab_md_mermaid_scenes() {
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::mermaid_render::Mermaids;
+    use gpui::Modifiers;
+    use objc2_foundation::{NSDate, NSRunLoop};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    const CHILD: &str = "FUXX_SHOTS_WEBKIT";
+    let child = std::env::var_os(CHILD).is_some();
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-mermaid");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let readme = dir.join("README.md");
+    std::fs::write(&readme, MERMAID_FIXTURE).expect("README.md");
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let dims = size(px(760.0), px(980.0));
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    let build_for = |theme: Theme, slot: TabSlot| {
+        let path = readme.clone();
+        move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let tab = cx.new(|cx| {
+                let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                tab.frozen = true;
+                tab
+            });
+            *slot.borrow_mut() = Some(tab.clone());
+            tab.into()
+        }
+    };
+    let click_preview =
+        move |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
+            frame(cx, window);
+            let button = cx
+                .read(|cx| tab.read(cx).preview_bounds())
+                .expect("Preview is drawn");
+            cx.simulate_click(window, button.center(), Modifiers::none());
+            frame(cx, window);
+        };
+
+    if !child {
+        // Before WebKit answers: code, no notes.
+        for (slug, name) in SHOT_THEMES {
+            let theme = shot_theme(name);
+            let n = format!("file-tab-md-mermaid-pending-{slug}");
+            let slot: TabSlot = Rc::default();
+            let act = {
+                let slot = slot.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let tab = slot.borrow().clone().expect("the tab");
+                    click_preview(cx, window, &tab);
+                    let (diagrams, notes) = cx.read(|cx| tab.read(cx).mermaid_drawn());
+                    assert_eq!((diagrams, notes.len()), (0, 0), "{n}: still code");
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(
+                "file-tab-md-mermaid-pending",
+                slug,
+                &theme,
+                dims,
+                build_for(theme, slot.clone()),
+                act,
+            );
+            println!("ui-shots: {}", path.display());
+        }
+        let exe = std::env::current_exe().expect("this program");
+        let status = std::process::Command::new(exe)
+            .args(["__ui-shots", "file-tab-md-mermaid"])
+            .env(CHILD, "1")
+            .status()
+            .expect("run the WebKit half");
+        assert!(status.success(), "file-tab-md-mermaid (WebKit): {status}");
+        return;
+    }
+
+    // The child: rendered, the run loop turned by hand until both diagrams and the error are in.
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let n = format!("file-tab-md-mermaid-{slug}");
+        let slot: TabSlot = Rc::default();
+        let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+        fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+        let build = build_for(theme, slot.clone());
+        let window = cx
+            .open_offscreen_window(dims, move |window, cx| {
+                let scene = build(window, cx);
+                cx.new(|_| Root { theme, scene })
+            })
+            .expect("open an off-screen window");
+        cx.run_until_parked();
+        let window: AnyWindowHandle = window.into();
+        let tab = slot.borrow().clone().expect("the tab");
+        click_preview(&mut cx, window, &tab);
+        let started = Instant::now();
+        let mut drawn = (0, Vec::new());
+        while started.elapsed() < Duration::from_secs(30) {
+            NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+            frame(&mut cx, window);
+            drawn = cx.read(|cx| tab.read(cx).mermaid_drawn());
+            if drawn.0 + drawn.1.len() == 3 {
+                break;
+            }
+        }
+        println!(
+            "ui-shots: {n}: {} diagrams, notes {:?}, after {:?}",
+            drawn.0,
+            drawn.1,
+            started.elapsed()
+        );
+        assert_eq!(drawn.0, 2, "{n}: the flowchart and the sequence diagram");
+        assert_eq!(drawn.1.len(), 1, "{n}: the broken one's note");
+        assert!(drawn.1[0].starts_with("Mermaid: "), "{n}: {:?}", drawn.1);
+        // A few more frames, so GPUI's decoding of the images (off the UI thread) is in.
+        for _ in 0..10 {
+            NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+            cx.advance_clock(Duration::from_millis(250));
+            frame(&mut cx, window);
+        }
+        let image = cx.capture_screenshot(window).expect("capture the window");
+        let shot = Shot {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.as_raw().to_vec(),
+        };
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("ui-shots");
+        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+        let path = dir.join(format!("file-tab-md-mermaid-{slug}.png"));
+        std::fs::write(&path, png(&shot)).expect("write the PNG");
+        println!("ui-shots: {}", path.display());
+        let turn = |cx: &mut VisualTestAppContext| {
+            NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+            frame(cx, window);
+        };
+
+        // Scrolling reads the cache: nothing renders again.
+        let before = cx.update(Mermaids::counts);
+        assert_eq!(
+            before,
+            (3, 0),
+            "{n}: 2 diagrams and 1 error cached, none waiting"
+        );
+        let rows = cx.read(|cx| tab.read(cx).preview_list());
+        for item_ix in [3, 0, 5, 1] {
+            rows.scroll_to(gpui::ListOffset {
+                item_ix,
+                offset_in_item: px(0.0),
+            });
+            turn(&mut cx);
+        }
+        assert_eq!(
+            cx.update(Mermaids::counts),
+            before,
+            "{n}: scrolling rendered again"
+        );
+
+        // The other theme (light ↔ dark): every diagram rendered again for it.
+        let other = shot_theme(if slug == "mocha" {
+            "Catppuccin Latte"
+        } else {
+            "Catppuccin Mocha"
+        });
+        cx.update(|cx| cx.set_global(shot_appearance(other, cx)));
+        frame(&mut cx, window);
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(30) {
+            turn(&mut cx);
+            if cx.update(Mermaids::counts) == (6, 0) {
+                break;
+            }
+        }
+        assert_eq!(
+            cx.update(Mermaids::counts),
+            (6, 0),
+            "{n}: rendered for the other theme"
+        );
+        let drawn = cx.read(|cx| tab.read(cx).mermaid_drawn());
+        assert_eq!(
+            (drawn.0, drawn.1.len()),
+            (2, 1),
+            "{n}: after the theme change"
+        );
+        println!("ui-shots: {n}: the theme change rendered again, scrolling didn't");
+        // Kept alive: dropping it queues window closes that would run (and panic) the next
+        // time the run loop turns.
+        std::mem::forget(cx);
+    }
+
+    // No network: a diagram whose label holds an <img>, whose init loads a stylesheet, and
+    // which has a click link, all to a server on this machine: nothing connects to it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+    listener.set_nonblocking(true).expect("non-blocking");
+    let port = listener.local_addr().expect("its address").port();
+    let net = dir.join("NET.md");
+    std::fs::write(
+        &net,
+        format!(
+            "# Net\n\n```mermaid\n%%{{init: {{\"themeCSS\": \"@import url(http://127.0.0.1:{port}/a.css);\"}}}}%%\n\
+             flowchart LR\n  A[\"<img src='http://127.0.0.1:{port}/a.png'> pic\"] --> B\n  \
+             click A href \"http://127.0.0.1:{port}/click\"\n```\n"
+        ),
+    )
+    .expect("NET.md");
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: TabSlot = Rc::default();
+    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    let path = net.clone();
+    let tab_slot = slot.clone();
+    let window = cx
+        .open_offscreen_window(dims, move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let tab = cx.new(|cx| {
+                let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                tab.frozen = true;
+                tab
+            });
+            *tab_slot.borrow_mut() = Some(tab.clone());
+            let scene: AnyView = tab.into();
+            cx.new(|_| Root { theme, scene })
+        })
+        .expect("open an off-screen window");
+    cx.run_until_parked();
+    let window: AnyWindowHandle = window.into();
+    let tab = slot.borrow().clone().expect("the tab");
+    click_preview(&mut cx, window, &tab);
+    let started = Instant::now();
+    let mut drawn = (0, Vec::new());
+    while started.elapsed() < Duration::from_secs(10) {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+        frame(&mut cx, window);
+        drawn = cx.read(|cx| tab.read(cx).mermaid_drawn());
+        if drawn.0 + drawn.1.len() == 1 {
+            break;
+        }
+    }
+    // A little longer, for any late request.
+    for _ in 0..10 {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+    }
+    println!("ui-shots: file-tab-md-mermaid-no-network: {drawn:?}");
+    match listener.accept() {
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("no-network: the diagram reached the local server: {other:?}"),
+    }
+    println!("ui-shots: file-tab-md-mermaid-no-network: no connection");
+    assert_eq!(drawn.0, 1, "no-network: the diagram renders ({drawn:?})");
+    std::mem::forget(cx);
 }
 
 /// M11ac: the Files panel follows the focused pane's file tab, on `files_fixture` beside a

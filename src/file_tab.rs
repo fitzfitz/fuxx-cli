@@ -72,6 +72,8 @@ use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes
 use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{FileMode, PaneId, TabId, TabKind};
 use crate::md_preview::{self, LinkTarget, is_markdown, link_target};
+use crate::mermaid;
+use crate::mermaid_render::{Entry, Mermaids};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
@@ -1848,8 +1850,16 @@ pub struct FileTab {
     preview_list: ListState,
     parsed: Option<(u64, Rc<Vec<Md>>)>,
     preview_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// M11ac Part 2: what each block of the parsed version does as a Mermaid diagram, for the
+    /// version and light or dark it was planned for (`mermaid::plan`), and how they were shown
+    /// last frame.
+    mermaid_plan: Option<(u64, bool, MermaidPlan)>,
+    mermaid_shown: Rc<Vec<Option<md_preview::Shown>>>,
     _appearance: Subscription,
 }
+
+/// What each block does as a Mermaid diagram (M11ac Part 2, `mermaid::plan`).
+type MermaidPlan = Rc<Vec<Option<mermaid::Plan>>>;
 
 /// Where a diff scrolls to when its rows are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1926,6 +1936,8 @@ impl FileTab {
             preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
             parsed: None,
             preview_at: Rc::default(),
+            mermaid_plan: None,
+            mermaid_shown: Rc::default(),
             _appearance: appearance,
         };
         tab.check_disk(cx);
@@ -2533,6 +2545,7 @@ impl FileTab {
                 blocks
             }
         };
+        let mermaid = self.mermaid_shown(version, &blocks, theme.is_dark(), cx);
         let view = cx.entity().downgrade();
         let draw = md_preview::Draw {
             colours: md_preview::Colours::of(&theme),
@@ -2541,6 +2554,7 @@ impl FileTab {
                 view.update(cx, |this, cx| this.follow_link(&url, cx)).ok();
             }),
             links: Cell::new(0),
+            mermaid,
         };
         div()
             .id("file-md-preview")
@@ -2554,6 +2568,65 @@ impl FileTab {
                 .size_full(),
             )
             .into_any_element()
+    }
+
+    /// How each Mermaid block of `blocks` (version `version`) is shown this frame (M11ac Part
+    /// 2): planned once per version and light or dark; each diagram read from the cache, or
+    /// queued to render (its code shown meanwhile; when it is ready the rows are measured again
+    /// and drawn). A file with none costs nothing past the plan.
+    fn mermaid_shown(
+        &mut self,
+        version: u64,
+        blocks: &Rc<Vec<Md>>,
+        dark: bool,
+        cx: &mut Context<Self>,
+    ) -> Rc<Vec<Option<md_preview::Shown>>> {
+        use md_preview::Shown;
+        use mermaid::Plan;
+        let plan = match &self.mermaid_plan {
+            Some((v, d, plan)) if *v == version && *d == dark => plan.clone(),
+            _ => {
+                let plan = Rc::new(mermaid::plan(blocks, dark));
+                self.mermaid_plan = Some((version, dark, plan.clone()));
+                plan
+            }
+        };
+        if plan.iter().all(Option::is_none) {
+            self.mermaid_shown = Rc::default();
+            return self.mermaid_shown.clone();
+        }
+        let view = cx.entity().downgrade();
+        let who = cx.entity_id().as_u64();
+        let shown: Vec<Option<Shown>> = plan
+            .iter()
+            .zip(blocks.iter())
+            .map(|(plan, md)| {
+                Some(match plan.as_ref()? {
+                    Plan::TooMany => Shown::Code(Some(mermaid::note(mermaid::TOO_MANY))),
+                    Plan::TooLarge => Shown::Code(Some(mermaid::note(mermaid::TOO_LARGE))),
+                    Plan::Diagram(key) => {
+                        let Md::Code { text, .. } = md else {
+                            return None;
+                        };
+                        let view = view.clone();
+                        let then = move |cx: &mut App| {
+                            view.update(cx, |this, cx| {
+                                this.preview_list.remeasure();
+                                cx.notify();
+                            })
+                            .ok();
+                        };
+                        match Mermaids::shown(*key, text, who, then, cx) {
+                            Some(Entry::Ready { image, w, h }) => Shown::Diagram { image, w, h },
+                            Some(Entry::Failed(e)) => Shown::Code(Some(mermaid::note(&e))),
+                            None => Shown::Code(None),
+                        }
+                    }
+                })
+            })
+            .collect();
+        self.mermaid_shown = Rc::new(shown);
+        self.mermaid_shown.clone()
     }
 
     /// Show the file as it is, or its diff (`reveal`: a change bar's change, shown when the
@@ -3508,6 +3581,20 @@ impl FileTab {
 
     pub fn preview_list(&self) -> ListState {
         self.preview_list.clone()
+    }
+
+    /// M11ac Part 2: how many Mermaid blocks show as diagrams, and the notes under the others,
+    /// as last drawn.
+    pub fn mermaid_drawn(&self) -> (usize, Vec<String>) {
+        let mut diagrams = 0;
+        let mut notes = Vec::new();
+        for shown in self.mermaid_shown.iter().flatten() {
+            match shown {
+                md_preview::Shown::Diagram { .. } => diagrams += 1,
+                md_preview::Shown::Code(note) => notes.extend(note.clone()),
+            }
+        }
+        (diagrams, notes)
     }
 
     pub fn parsed_version(&self) -> Option<u64> {

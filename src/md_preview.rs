@@ -14,11 +14,12 @@ use std::cell::Cell;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    AnyElement, App, FontStyle, FontWeight, HighlightStyle, InteractiveText, SharedString,
-    StyledText, UnderlineStyle, Window, div, prelude::*, px, relative,
+    AnyElement, App, FontStyle, FontWeight, HighlightStyle, Image, InteractiveText, SharedString,
+    StyledText, UnderlineStyle, Window, div, img, prelude::*, px, relative,
 };
 
 use crate::agent_markdown::{Align, Md, Span};
@@ -242,13 +243,24 @@ impl Colours {
 /// What a link click does, given its address.
 pub type OnLink = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
+/// How a Mermaid block is drawn (M11ac Part 2): its diagram, at its natural size in points
+/// (scaled down to fit, never up), or its code with a line under it saying why not (none while
+/// it renders).
+#[derive(Clone)]
+pub enum Shown {
+    Diagram { image: Arc<Image>, w: f32, h: f32 },
+    Code(Option<String>),
+}
+
 /// What drawing needs besides the blocks: the colours, the code font, what a link click does,
-/// and a count for the links' element ids.
+/// a count for the links' element ids, and how each Mermaid block is shown (by block index;
+/// `None` or missing for every other block).
 pub struct Draw {
     pub colours: Colours,
     pub code_font: SharedString,
     pub on_link: OnLink,
     pub links: Cell<usize>,
+    pub mermaid: Rc<Vec<Option<Shown>>>,
 }
 
 /// Block `ix` of `blocks` as one row of the reader's list (review fix: GPUI's `list` draws
@@ -275,8 +287,46 @@ pub fn row(blocks: &[Md], ix: usize, draw: &Draw) -> AnyElement {
         .text_size(px(BODY))
         .line_height(relative(1.5))
         .text_color(hsla(draw.colours.text))
-        .child(block(md, draw))
+        .child(match draw.mermaid.get(ix) {
+            Some(Some(shown)) => mermaid_block(md, shown, draw),
+            _ => block(md, draw),
+        })
         .into_any_element()
+}
+
+/// A Mermaid block (M11ac Part 2): its diagram centred, at its natural width or the column's,
+/// whichever is less, its height kept in proportion; or its code, with the reason under it.
+fn mermaid_block(md: &Md, shown: &Shown, draw: &Draw) -> AnyElement {
+    match shown {
+        Shown::Diagram { image, w, h } => div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(*w))
+                    .aspect_ratio(w / h.max(1.0))
+                    .child(img(image.clone()).size_full().rounded(px(6.0))),
+            )
+            .into_any_element(),
+        Shown::Code(note) => div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(block(md, draw))
+            .when_some(note.clone(), |d, note| {
+                d.child(
+                    div()
+                        .mt(px(4.0))
+                        .text_size(px(12.0))
+                        .line_height(relative(1.4))
+                        .text_color(hsla(draw.colours.dim))
+                        .child(note),
+                )
+            })
+            .into_any_element(),
+    }
 }
 
 fn blocks_of(blocks: &[Md], draw: &Draw) -> Vec<AnyElement> {

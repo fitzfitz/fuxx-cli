@@ -725,7 +725,7 @@ fn script_answer(result: Option<&AnyObject>, error: Option<&NSError>) -> Result<
 }
 
 /// The JavaScript exception an evaluation error carries (`SyntaxError: …`), if it carries one.
-fn exception_message(error: &NSError) -> Option<String> {
+pub(crate) fn exception_message(error: &NSError) -> Option<String> {
     let key = NSString::from_str("WKJavaScriptExceptionMessage");
     let message = error.userInfo().objectForKey(&key)?;
     message.downcast::<NSString>().ok().map(|m| m.to_string())
@@ -1110,7 +1110,7 @@ fn load_error(
 }
 
 /// The width and height a PNG's header gives, in pixels.
-fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     if png.len() < 24 || !png.starts_with(b"\x89PNG\r\n\x1a\n") || &png[12..16] != b"IHDR" {
         return None;
     }
@@ -1119,7 +1119,7 @@ fn png_size(png: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Encode an image as PNG (through its TIFF form, which every `NSImage` has).
-fn png_bytes(image: &NSImage) -> Result<Vec<u8>, String> {
+pub(crate) fn png_bytes(image: &NSImage) -> Result<Vec<u8>, String> {
     let tiff = image
         .TIFFRepresentation()
         .ok_or("the screenshot has no bitmap form")?;
