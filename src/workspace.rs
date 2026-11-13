@@ -756,6 +756,17 @@ pub struct Workspace {
     /// The sidebar: its width, whether it's hidden (⌘\; the pane area then has the top band
     /// itself), its scroll, its hint card and menu.
     pub(crate) sidebar: SidebarState,
+    /// The sidebar's rows as last built (`rows`), kept until `rows_generation` moves or an age
+    /// label turns (M11p: built once per change, not several times per frame).
+    pub(crate) rows_cache: RefCell<Option<sidebar::RowsCache>>,
+    /// Bumped on every notify of this workspace (`_rows_observer`): what `rows_cache` is keyed on.
+    pub(crate) rows_generation: u64,
+    /// The workspace observing itself: each notify (once its effects flush, before the next
+    /// frame) bumps `rows_generation`.
+    _rows_observer: Subscription,
+    /// Whether the workspace has rendered: until then, rows kept while it was being built are
+    /// not trusted (its first frame is drawn before its notifies reach `_rows_observer`).
+    rows_drawn: bool,
     /// The top band was pressed and the mouse hasn't moved since: the next move drags the window.
     pub(crate) band_pressed: bool,
     /// The sidebar sliding in or out (`sidebar_toggle`); none when it isn't moving.
@@ -856,6 +867,8 @@ impl Workspace {
                 view.read(cx).follow_appearance();
             }
         });
+        // Any notify may change what the rows show: the next `rows` builds them again.
+        let rows_observer = cx.observe_self(|this, _| this.rows_generation += 1);
         let (socket, requests) = scripting.unzip();
         Self {
             sessions: SessionList::new(),
@@ -928,6 +941,10 @@ impl Workspace {
             deferred: Vec::new(),
             deferred_ticking: false,
             sidebar: SidebarState::new(),
+            rows_cache: RefCell::new(None),
+            rows_generation: 0,
+            _rows_observer: rows_observer,
+            rows_drawn: false,
             band_pressed: false,
             slide: None,
             right_sidebar: RightSidebarState::new(),
@@ -3167,6 +3184,13 @@ impl Render for Workspace {
             self.sidebar.drop_slot = None;
             self.sidebar.drop_at = None;
             self.drag_slides.borrow_mut().clear();
+        }
+        // The first frame: the workspace was built in this same update (the window draws once
+        // before its effects flush), so a notify made while building hasn't bumped
+        // `rows_generation` yet. Rows kept from then are built again.
+        if !self.rows_drawn {
+            self.rows_drawn = true;
+            self.rows_cache.get_mut().take();
         }
         self.ensure_browser_tabs(window, cx);
         self.ensure_file_tabs(window, cx);

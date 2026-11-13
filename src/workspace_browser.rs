@@ -417,6 +417,9 @@ impl Workspace {
         cx.subscribe_in(&view, window, Self::on_browser_tab_event)
             .detach();
         self.browser_titles.insert(tab, view.read(cx).title());
+        // A browser workspace's row is named by this title, and `render` makes the view
+        // (`ensure_browser_tabs`), where a notify reaches no one: the rows are built again.
+        self.rows_cache.get_mut().take();
         self.browser_tabs.insert(tab, view.clone());
         view
     }

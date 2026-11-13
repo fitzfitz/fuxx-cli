@@ -751,17 +751,49 @@ pub fn run_drop_index(in_run: &[bool], slot: usize) -> Option<usize> {
     Some(start + slot)
 }
 
-/// How long until an age label (`status::age_label`) of `age` next changes.
-pub fn next_age_change(age: Duration) -> Duration {
-    let unit = match age.as_secs() {
+/// The unit, in seconds, an age label (`status::age_label`) of `secs` counts in.
+fn age_unit(secs: u64) -> u64 {
+    match secs {
         0..60 => 1,
         60..3600 => 60,
         3600..86400 => 3600,
         _ => 86400,
-    };
-    let unit = Duration::from_secs(unit);
+    }
+}
+
+/// How long until an age label (`status::age_label`) of `age` next changes.
+pub fn next_age_change(age: Duration) -> Duration {
+    let unit = Duration::from_secs(age_unit(age.as_secs()));
     let into = Duration::from_nanos((age.as_nanos() % unit.as_nanos()) as u64);
     unit - into
+}
+
+/// The sidebar's rows as last built (`Workspace::rows`), kept until the workspace notifies
+/// (`generation`, bumped by its own observer on every notify) or an age label would read
+/// differently (`age_bucket`) (M11p).
+pub(crate) struct RowsCache {
+    pub(crate) generation: u64,
+    pub(crate) age_bucket: u64,
+    pub(crate) rows: Rc<Vec<SidebarRow>>,
+}
+
+/// The ages' bucket at `now`, for sessions in their status since each of `sinces`: it
+/// changes exactly when one of their age labels (`status::age_label`) would, at the
+/// granularity `next_age_change` uses (and when a session gains or loses an age).
+pub fn age_bucket(now: Instant, sinces: impl IntoIterator<Item = Instant>) -> u64 {
+    let mut hash = DefaultHasher::new();
+    for since in sinces {
+        let secs = now.saturating_duration_since(since).as_secs();
+        let unit = age_unit(secs);
+        (unit, secs / unit).hash(&mut hash);
+    }
+    hash.finish()
+}
+
+/// Whether rows built as `cached` (its generation and age bucket; none yet) must be built
+/// again for the workspace's `generation` and the ages' `age_bucket` now.
+pub fn rows_stale(cached: Option<(u64, u64)>, generation: u64, age_bucket: u64) -> bool {
+    cached != Some((generation, age_bucket))
 }
 
 /// Whether a list item laid out at `top..bottom` (before scrolling) shows in a viewport at
@@ -1261,11 +1293,38 @@ impl Workspace {
         )
     }
 
+    /// The sidebar's rows as they are now (`sidebar_rows`), built once per change: kept until
+    /// the workspace notifies (its own observer bumps `rows_generation`) or an age label on
+    /// them would read differently at `now` (`age_bucket`) (M11p). Every row user reads this.
+    pub(crate) fn rows(&self, now: Instant) -> Rc<Vec<SidebarRow>> {
+        let sinces = self
+            .sessions
+            .items()
+            .iter()
+            .filter(|s| s.status != Status::Idle)
+            .map(|s| s.status_since);
+        let bucket = age_bucket(now, sinces);
+        let generation = self.rows_generation;
+        if let Some(cache) = self.rows_cache.borrow().as_ref() {
+            let built = Some((cache.generation, cache.age_bucket));
+            if !rows_stale(built, generation, bucket) {
+                return cache.rows.clone();
+            }
+        }
+        let rows = Rc::new(self.sidebar_rows(now));
+        *self.rows_cache.borrow_mut() = Some(RowsCache {
+            generation,
+            age_bucket: bucket,
+            rows: rows.clone(),
+        });
+        rows
+    }
+
     /// The workspaces (by place in the sidebar) that have a row: all but those folded in a
     /// closed group (scrolled out of view or not).
     pub(crate) fn workspaces_with_rows(&self) -> Vec<usize> {
-        self.sidebar_rows(Instant::now())
-            .into_iter()
+        self.rows(Instant::now())
+            .iter()
             .filter_map(|row| match row {
                 SidebarRow::Workspace(s) => Some(s.index),
                 SidebarRow::Header(_) => None,
@@ -1329,11 +1388,11 @@ impl Workspace {
         if self.sidebar.hidden {
             return Vec::new();
         }
-        self.sidebar_rows(now)
-            .into_iter()
+        self.rows(now)
+            .iter()
             .enumerate()
             .filter(|(i, _)| self.sidebar.row_in_view(*i))
-            .map(|(_, row)| row)
+            .map(|(_, row)| row.clone())
             .collect()
     }
 
@@ -1341,7 +1400,7 @@ impl Workspace {
     /// row drag lays it over the items' last drawn bounds). Built when asked, not kept by the
     /// frame: nothing is written while drawing (M11p).
     fn listed(&self) -> Vec<Listed> {
-        self.sidebar_rows(Instant::now())
+        self.rows(Instant::now())
             .iter()
             .map(|row| match row {
                 SidebarRow::Workspace(s) => Listed::Row(s.workspace),
@@ -1375,7 +1434,8 @@ impl Workspace {
                 .filter(|s| s.status != Status::Idle)
                 .map(|s| s.status_since);
             let sinces = rows
-                .map(|i| self.sessions.items()[i].status_since)
+                .filter_map(|i| self.sessions.items().get(i))
+                .map(|s| s.status_since)
                 .chain(followed);
             // And the palette's workspace rows, while it's open.
             let palette = self
@@ -1407,7 +1467,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         crate::chrome_cache::bump(crate::chrome_cache::Counted::Sidebar);
-        let rows = self.sidebar_rows(Instant::now());
+        let rows = self.rows(Instant::now());
         if self.sidebar.reveal_active && !rows.is_empty() {
             if self.sidebar.scroll.children_count() == 0 {
                 // Not laid out yet, so a scroll asked for now would be lost: once it is.
@@ -3261,6 +3321,46 @@ mod tests {
                 "{age:?}"
             );
         }
+    }
+
+    #[test]
+    fn rows_cache_rebuilds_on_change_and_on_age_bucket() {
+        let s = Duration::from_secs;
+        let ms = Duration::from_millis;
+        let start = Instant::now();
+        // Two non-idle sessions: "12s" (12.3 s along) and "4m" (4 min 59.8 s along).
+        let sinces = [start - ms(12_300), start - ms(299_800)];
+        let bucket = |at: Duration| age_bucket(start + at, sinces);
+        let built = Some((7, bucket(Duration::ZERO)));
+        // Nothing changed, the same labels: the cached rows stand.
+        assert!(!rows_stale(built, 7, bucket(Duration::ZERO)));
+        assert!(!rows_stale(built, 7, bucket(ms(199))));
+        // The workspace notified since: built again.
+        assert!(rows_stale(built, 8, bucket(Duration::ZERO)));
+        // Nothing built yet.
+        assert!(rows_stale(None, 7, bucket(Duration::ZERO)));
+        // The second's "4m" turns "5m" 200 ms on; the first's "12s" turns "13s" 700 ms on.
+        assert!(rows_stale(built, 7, bucket(ms(200))));
+        assert!(rows_stale(built, 7, bucket(ms(700))));
+        // A label's bucket changes exactly when `next_age_change` says, at every scale.
+        for age in [
+            ms(12_300),
+            s(59),
+            s(4 * 60 + 10),
+            s(2 * 3600 + 60),
+            s(3 * 86400),
+        ] {
+            let since = start - age;
+            let next = next_age_change(age);
+            let at = |d: Duration| age_bucket(start + d, [since]);
+            assert_eq!(at(Duration::ZERO), at(next - ms(1)), "{age:?}");
+            assert_ne!(at(Duration::ZERO), at(next), "{age:?}");
+        }
+        // One more session with an age (its status left Idle): a different bucket.
+        assert_ne!(
+            age_bucket(start, [start - s(5)]),
+            age_bucket(start, [start - s(5), start - s(5)])
+        );
     }
 
     #[test]
