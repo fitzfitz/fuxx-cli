@@ -8,8 +8,9 @@
 //!
 //! Every mark reads one shared clock, `phase`: 0 to 1 over a 4.8 s beat, so the arc's four turns
 //! and the halo's three breaths both fit it exactly and every spinner on screen turns together.
-//! The Workspace advances it (`advance`) every `TICK` while `should_tick`; that ticker is the
-//! only continuous redraw in fuxx.
+//! The Workspace's ticker advances it (`advance`) every `TICK` while `should_tick`, in a
+//! `mark_view::MarkClock` that only the moving marks' own views (and the open palette) watch
+//! (M11p); that ticker is the only continuous redraw in fuxx.
 //!
 //! With motion off (`App::reduce_motion`, which fuxx sets from the `animations` setting and
 //! macOS Reduce motion, see `reduce_motion`) the marks are drawn still: the arc doesn't turn, the
@@ -93,20 +94,10 @@ fn halo_alpha(phase: f32) -> f32 {
     mid - (HALO_MAX - HALO_MIN) / 2.0 * (breath * TAU).cos()
 }
 
-/// `status`'s mark in a `size` box (12 px in the chrome; it scales with the box). `phase` is the
-/// shared clock (see the module); `popping`, how far (0-1) through its pop a Done mark is.
-pub fn mark(
-    status: Status,
-    ui: &UiColors,
-    phase: f32,
-    popping: Option<f32>,
-    size: Pixels,
-) -> impl IntoElement {
-    mark_on(status, ui, phase, popping, size, ui.sidebar_background)
-}
-
-/// `mark` on a surface of colour `fill` (a filled or tinted row): Done's check is cut out of
-/// its dot in that colour, so it reads as a hole whatever the row is.
+/// `status`'s mark in a `size` box (12 px in the chrome; it scales with the box), on a surface
+/// of colour `fill` (the sidebar, a filled or tinted row): Done's check is cut out of its dot in
+/// that colour, so it reads as a hole whatever the row is. `phase` is the shared clock (see the
+/// module); `popping`, how far (0-1) through its pop a Done mark is.
 pub fn mark_on(
     status: Status,
     ui: &UiColors,

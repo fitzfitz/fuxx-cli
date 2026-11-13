@@ -610,7 +610,14 @@ impl Workspace {
                 Some(session) if f.status != Status::Idle => {
                     // Its halo's box scaled as the sidebar's is to its mark.
                     let size = MARK * crate::sidebar::mark_size(f.status) / STATUS_MARK;
-                    self.session_mark_sized("status-bar", session, ui, ui.sidebar_background, size)
+                    self.session_mark_sized(
+                        "status-bar",
+                        session,
+                        ui,
+                        ui.sidebar_background,
+                        size,
+                        cx,
+                    )
                 }
                 _ => status_mark::idle_mark(f.running, &ui).into_any_element(),
             };

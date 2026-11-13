@@ -29,6 +29,7 @@ use crate::help_panel::render_group;
 use crate::help_shortcuts::binding_pairs;
 use crate::host_picker::move_selection;
 use crate::layout_model::{FileMode, TabKind, WorkspaceId};
+use crate::mark_view::MarkClock;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::palette_files::{CachedFiles, rank_files};
@@ -264,7 +265,8 @@ pub struct PaletteData {
     pub settings: Vec<PaletteSetting>,
     pub files: FilesData,
     pub open_files: Vec<PathBuf>,
-    pub phase: f32,
+    /// The marks' clock (M11p: read as each row is drawn; its ticks redraw the palette).
+    pub clock: Entity<MarkClock>,
 }
 
 pub enum PaletteEvent {
@@ -311,6 +313,7 @@ pub struct Palette {
     chip_bounds: Rc<RefCell<[Option<Bounds<Pixels>>; 5]>>,
     _input_events: Subscription,
     _input_changes: Subscription,
+    _clock: Subscription,
 }
 
 impl EventEmitter<PaletteEvent> for Palette {}
@@ -351,6 +354,15 @@ impl Palette {
             NameInputEvent::Cancel => cx.emit(PaletteEvent::Cancel),
         });
         let input_changes = cx.observe(&input, |this, _, cx| this.query_changed(cx));
+        // The marks' ticks (M11p): they notify only the clock, so its rows' marks turn by this.
+        let clock = cx.observe(&data.clock, |this: &mut Self, _, cx| {
+            let moves = this
+                .shown_workspaces()
+                .any(|e| matches!(e.status, Status::Working | Status::Waiting));
+            if moves {
+                cx.notify();
+            }
+        });
         let mut this = Self {
             input,
             query: String::new(),
@@ -371,6 +383,7 @@ impl Palette {
             chip_bounds: Rc::default(),
             _input_events: input_events,
             _input_changes: input_changes,
+            _clock: clock,
         };
         this.relist(false);
         this
@@ -469,19 +482,12 @@ impl Palette {
     }
 
     /// What can change while it's open, as it is now (each time the Workspace draws): the
-    /// workspaces, the files and the marks' clock. The actions and the settings stay as they
+    /// workspaces and the files (the marks' clock it reads itself). The actions and the settings stay as they
     /// were at open. The chosen row stays on its item while it is still listed; else the first
     /// is chosen.
     /// The files are compared by their listing's pointer (`FilesData::same`), so this stays
     /// cheap with 50,000 paths; a new listing is ranked again.
-    pub fn refresh(
-        &mut self,
-        workspaces: Vec<Entry>,
-        files: FilesData,
-        phase: f32,
-        cx: &mut Context<Self>,
-    ) {
-        self.data.phase = phase;
+    pub fn refresh(&mut self, workspaces: Vec<Entry>, files: FilesData, cx: &mut Context<Self>) {
         let files_changed = !files.same(&self.data.files);
         // Back to listing (another folder, or a listing turned away): ask for it again.
         if matches!(files, FilesData::Listing) && !matches!(self.data.files, FilesData::Listing) {
@@ -691,7 +697,8 @@ impl Palette {
                     return div().into_any_element();
                 };
                 let highlights = byte_ranges(&entry.label, positions);
-                workspace_row(entry, place + 1, chosen, &highlights, self.data.phase, ui)
+                let phase = self.data.clock.read(cx).phase;
+                workspace_row(entry, place + 1, chosen, &highlights, phase, ui)
             }
             // The file's icon in its kind's ink, its name, then (6 pt on) its folder, faint and
             // cut at its start.
@@ -1021,7 +1028,7 @@ impl Workspace {
             settings: crate::preferences::palette_settings(),
             files: self.palette_files_data(cx),
             open_files: self.open_file_paths(),
-            phase: self.phase,
+            clock: self.clock.clone(),
         }
     }
 
@@ -1184,8 +1191,7 @@ impl Workspace {
     pub(crate) fn refresh_palette(&self, cx: &mut Context<Self>) {
         if let Some(palette) = &self.palette {
             let (workspaces, files) = (self.switcher_entries(cx), self.palette_files_data(cx));
-            let phase = self.phase;
-            palette.update(cx, |p, cx| p.refresh(workspaces, files, phase, cx));
+            palette.update(cx, |p, cx| p.refresh(workspaces, files, cx));
         }
     }
 

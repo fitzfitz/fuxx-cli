@@ -132,23 +132,36 @@ impl Steps {
     /// After a step: if an age label (by the real clock) turned just now, within what the app
     /// takes by design to draw a turned label (its timer, 20 ms past the turn; or the marks'
     /// next tick, while they move), wait that out and let it draw (`catch_up`), so the check
-    /// isn't about a label caught mid-turn (`chrome-ages-current` is about those).
+    /// isn't about a label caught mid-turn (`chrome-ages-current` is about those). The same
+    /// for one about to turn (within that time): the check's full redraw would draw it turned
+    /// before the app had to (M11p Task 6: a faster step reached a turn 10 ms ahead of it).
     fn past_age_turns(&mut self, cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
         let late = LABEL_LATE;
-        let turned = cx.read(|cx| {
+        let (turned, upcoming) = cx.read(|cx| {
             let now = Instant::now();
-            self.ws
+            let ages: Vec<Duration> = self
+                .ws
                 .read(cx)
                 .sessions
                 .items()
                 .iter()
                 .filter(|s| s.status != Status::Idle)
-                .any(|s| {
-                    let age = now.saturating_duration_since(s.status_since);
-                    age >= late && crate::sidebar::next_age_change(age - late) <= late
-                })
+                .map(|s| now.saturating_duration_since(s.status_since))
+                .collect();
+            let turned = ages
+                .iter()
+                .any(|age| *age >= late && crate::sidebar::next_age_change(*age - late) <= late);
+            let upcoming = ages
+                .iter()
+                .map(|age| crate::sidebar::next_age_change(*age))
+                .filter(|wait| *wait <= late)
+                .min();
+            (turned, upcoming)
         });
-        if turned {
+        if let Some(wait) = upcoming {
+            std::thread::sleep(wait + late);
+            self.catch_up(cx, window);
+        } else if turned {
             std::thread::sleep(late);
             self.catch_up(cx, window);
         }

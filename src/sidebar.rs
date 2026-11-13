@@ -31,6 +31,7 @@ use crate::appearance::Appearance;
 use crate::drag_gap::{self, Slid};
 use crate::groups::{self, GroupKey, Row};
 use crate::layout_model::{Model, TabDrop, TabKind, WorkspaceId};
+use crate::mark_view::MarkView;
 use crate::palette_items::Scope;
 use crate::preferences;
 use crate::presets::MAX_PRESETS;
@@ -934,8 +935,10 @@ pub(crate) struct SidebarState {
     /// The group last opened or closed, and that toggle's number: its chevron turns.
     pub turned: Option<(GroupKey, u64)>,
     turns: u64,
-    /// Redraws the rows when an age on them next changes, while the marks' ticker is off.
+    /// Redraws the chrome when an age on it next changes (`refresh_ages`), and when that is
+    /// (none once it has fired).
     age_refresh: Option<Task<()>>,
+    age_due: Rc<Cell<Option<Instant>>>,
 }
 
 impl SidebarState {
@@ -955,6 +958,7 @@ impl SidebarState {
             turned: None,
             turns: 0,
             age_refresh: None,
+            age_due: Rc::default(),
         }
     }
 
@@ -1115,6 +1119,17 @@ pub(crate) fn avatar(label: &str, color: Option<TabColor>, ui: UiColors, side: f
         .text_color(hsla(ink))
         .text_size(px(AVATAR_TEXT))
         .font_weight(FontWeight::BOLD)
+}
+
+/// The place of a closed group's header mark among the mark views (`Workspace::marks`), keyed
+/// by `group_hash`.
+pub(crate) const HEADER_MARK: &str = "header";
+
+/// A group's key as a mark view's key.
+pub(crate) fn group_hash(key: &GroupKey) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A row's status badge (M11r, as the mockup): a dot in a ring of the row's `surface` over the
@@ -1409,13 +1424,15 @@ impl Workspace {
             .collect()
     }
 
-    /// While the marks' ticker isn't redrawing (nothing moves, or motion is off), redraw once
-    /// when an age on screen next changes ("59s" to "1m"), so Done's time stays true. Nothing
-    /// while the window can't be seen: showing it again redraws.
-    pub(crate) fn refresh_ages(&mut self, ticking: bool, cx: &mut Context<Self>) {
+    /// Redraw once when an age on screen next changes ("59s" to "1m"), so every age stays true.
+    /// Nothing while the window can't be seen: showing it again redraws. `render` calls it each
+    /// frame; a timer already set for that change or sooner is kept (each frame setting a new one
+    /// would push it back for ever while the marks tick, M11p: their ticks draw frames but
+    /// redraw no age).
+    pub(crate) fn refresh_ages(&mut self, cx: &mut Context<Self>) {
         let seen = cx.try_global::<WindowVisible>().is_none_or(|w| w.visible);
         let now = Instant::now();
-        let next = if ticking || !seen {
+        let next = if !seen {
             None
         } else {
             let rows = self
@@ -1448,14 +1465,25 @@ impl Workspace {
                 .map(|since| next_age_change(now.saturating_duration_since(since)))
                 .min()
         };
-        self.sidebar.age_refresh = next.map(|wait| {
-            cx.spawn(async move |this, cx| {
-                // Just past the change, so the label has turned when it's drawn.
-                let wait = wait + Duration::from_millis(20);
-                cx.background_executor().timer(wait).await;
-                this.update(cx, |_, cx| cx.notify()).ok();
-            })
-        });
+        let Some(wait) = next else {
+            self.sidebar.age_refresh = None;
+            self.sidebar.age_due.set(None);
+            return;
+        };
+        // Just past the change, so the label has turned when it's drawn.
+        let due = now + wait + Duration::from_millis(20);
+        if self.sidebar.age_due.get().is_some_and(|set| set <= due) {
+            return;
+        }
+        self.sidebar.age_due.set(Some(due));
+        let fired = self.sidebar.age_due.clone();
+        self.sidebar.age_refresh = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(due.saturating_duration_since(Instant::now()))
+                .await;
+            fired.set(None);
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
     }
 
     /// The sidebar: the top band (under the traffic lights), the rows (scrolling), the
@@ -1687,13 +1715,11 @@ impl Workspace {
                 .flatten()
                 .filter(|s| *s != Status::Idle)
                 .map(|status| {
-                    div().flex_none().ml(px(6.0)).child(status_mark::mark(
-                        status,
-                        &ui,
-                        self.phase,
-                        None,
-                        px(STATUS_MARK),
-                    ))
+                    let key = group_hash(&header.key);
+                    let size = px(STATUS_MARK);
+                    let mark =
+                        self.mark_view(HEADER_MARK, key, status, size, ui.sidebar_background, cx);
+                    div().flex_none().ml(px(6.0)).child(mark)
                 });
             let waiting = (header.waiting > 0).then(|| {
                 div()
@@ -2268,17 +2294,18 @@ impl Workspace {
         row_offsets(&in_run, own, self.sidebar.drop_slot, row_height(dragged))
     }
 
-    /// A session's mark on its surface's `fill` (a row, or a pane tab: `place` keeps their
-    /// animations apart); a Done one that just arrived pops (keyed by its pop, so it plays once;
-    /// after it, the mark is drawn plain).
+    /// A session's mark on its surface's `fill` (a pane tab, or the status bar: `place` keeps
+    /// their animations and views apart); a Done one that just arrived pops (keyed by its pop,
+    /// so it plays once; after it, the mark is drawn plain, in its own view).
     pub(crate) fn session_mark(
         &self,
         place: &'static str,
         session: &Session,
         ui: UiColors,
         fill: Rgb,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.session_mark_sized(place, session, ui, fill, mark_size(session.status))
+        self.session_mark_sized(place, session, ui, fill, mark_size(session.status), cx)
     }
 
     /// `session_mark` in a `size` box (the status bar's is smaller, M11i).
@@ -2289,6 +2316,7 @@ impl Workspace {
         ui: UiColors,
         fill: Rgb,
         size: f32,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let size = px(size);
         let popping = session
@@ -2296,7 +2324,7 @@ impl Workspace {
             .filter(|(_, at)| session.status == Status::Done && at.elapsed() < POP_SHOWN);
         match popping {
             Some((pop, _)) => {
-                let phase = self.phase;
+                let phase = self.phase(cx);
                 div()
                     .flex_none()
                     .size(size)
@@ -2316,9 +2344,41 @@ impl Workspace {
                     )
                     .into_any_element()
             }
-            None => status_mark::mark_on(session.status, &ui, self.phase, None, size, fill)
-                .into_any_element(),
+            None => self.mark_view(place, session.id, session.status, size, fill, cx),
         }
+    }
+
+    /// The marks' clock now (`status_mark`'s phase).
+    pub(crate) fn phase(&self, cx: &App) -> f32 {
+        self.clock.read(cx).phase
+    }
+
+    /// The mark at (`place`, `key`) as its own view (M11p, `mark_view`): made the first time,
+    /// else given what it shows now (its part is being drawn, and draws it after this). The
+    /// marks' ticker then turns it by notifying the clock, not the workspace.
+    pub(crate) fn mark_view(
+        &self,
+        place: &'static str,
+        key: u64,
+        status: Status,
+        size: Pixels,
+        fill: Rgb,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let view = self.marks.borrow().get(&(place, key)).cloned();
+        let view = match view {
+            Some(view) => {
+                view.update(cx, |v, _| v.set(status, size, fill));
+                view
+            }
+            None => {
+                let clock = self.clock.clone();
+                let view = cx.new(|cx| MarkView::new(&clock, status, size, fill, cx));
+                self.marks.borrow_mut().insert((place, key), view.clone());
+                view
+            }
+        };
+        view.into_any_element()
     }
 
     /// A row's avatar (M11r): its letters on its colour, its session's status mark as a badge on

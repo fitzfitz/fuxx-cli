@@ -535,11 +535,11 @@ impl Workspace {
             .terminal
             .and_then(|t| self.sessions.items().iter().find(|s| s.id == t));
         let icon: AnyElement = match (tab.icon, session) {
-            (TabIcon::Mark(_), Some(session)) => self.session_mark("tab", session, ui, surface),
+            (TabIcon::Mark(_), Some(session)) => self.session_mark("tab", session, ui, surface, cx),
             (TabIcon::Mark(status), None) => status_mark::mark_on(
                 status,
                 &ui,
-                self.phase,
+                self.phase(cx),
                 None,
                 px(mark_size(status)),
                 surface,

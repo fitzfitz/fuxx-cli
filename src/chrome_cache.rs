@@ -174,6 +174,12 @@ impl Workspace {
         {
             part.read(cx);
         }
+        // The same for the marks' views (M11p Task 6), which their clock's ticks notify, and
+        // for the clock.
+        self.clock.read(cx);
+        for mark in self.marks.borrow().values() {
+            mark.read(cx);
+        }
     }
 
     /// The tab-bar parts the screen wants: each pane of the shown layout, and whether its bar
@@ -244,6 +250,8 @@ pub enum Counted {
     SidebarRows,
     /// `Window::set_window_title`, from `Workspace::render`.
     WindowTitle,
+    /// A `MarkView` (M11p Task 6): one status mark, every one counted together.
+    Mark,
 }
 
 #[cfg(feature = "ui-shots")]
@@ -252,7 +260,7 @@ mod counters {
 
     use super::Counted;
 
-    static COUNTS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+    static COUNTS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
     pub fn bump(c: Counted) {
         COUNTS[c as usize].fetch_add(1, Ordering::Relaxed);

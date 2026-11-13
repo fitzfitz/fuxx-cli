@@ -218,6 +218,7 @@ const SCENES: &[(&str, fn())] = &[
     ("chrome-kill-switch", chrome_kill_switch),
     ("chrome-pixels-same", chrome_pixels_same),
     ("chrome-ages-current", chrome_ages_current),
+    ("chrome-working-marks", chrome_working_marks),
     ("chrome-folder-polled", chrome_folder_polled),
     ("chrome-followed", chrome_followed),
     ("chrome-title-once", chrome_title_once),
@@ -1177,7 +1178,14 @@ impl Render for MarkBoard {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(status_mark::mark(status, &ui, phase, popping, px(side)))
+                        .child(status_mark::mark_on(
+                            status,
+                            &ui,
+                            phase,
+                            popping,
+                            px(side),
+                            ui.sidebar_background,
+                        ))
                 })
             });
             div()
@@ -1503,6 +1511,171 @@ fn chrome_ages_current() {
     cx.advance_clock(Duration::from_secs(2));
     settle_frames(&mut cx, window);
     assert_shown_current(&mut cx, window, &format!("{n}: done, its age turned"));
+
+    // Ages turn while the marks tick (M11p Task 6: a tick notifies only the marks' clock, so it
+    // redraws no age, and the sidebar, with no moving mark, isn't drawn by it). tests is Done
+    // 59.6 s and focused (the status bar's), next to api Working (its tab's mark ticks).
+    let (mut cx, window, ws) = chrome_window(move |ws, window, cx| {
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("tests", api, SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_session("shell", web, SHELL_TEXT, None, window, cx);
+        let first = ws.workspace_of(0).expect("api's workspace");
+        ws.select_workspace(first, window, cx);
+    });
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            let now = Instant::now();
+            for (i, status, ago) in [
+                (0, Status::Working, Duration::from_secs(5 * 60 + 10)),
+                (1, Status::Done, Duration::from_millis(59_600)),
+            ] {
+                let s = ws.sessions.get_mut(i).expect("a session");
+                s.status = status;
+                s.status_since = now - ago;
+            }
+            cx.notify();
+        })
+    });
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let id = ws.sessions.items()[1].id;
+            let tab = ws.model.terminal_tab(id).expect("tests' tab");
+            let (_, pane) = ws.model.locate(tab).expect("tests' pane");
+            ws.select_pane(pane, window, cx);
+        })
+    })
+    .expect("focus tests");
+    settle_frames(&mut cx, window);
+    cx.advance_clock(status_mark::TICK);
+    settle_frames(&mut cx, window);
+    let ticking = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).marks_ticking);
+    assert!(ticking(&mut cx), "{n}: the marks tick while api works");
+    let followed = cx.read(|cx| {
+        let ws = ws.read(cx);
+        ws.right_sidebar.followed == Some(ws.sessions.items()[1].id)
+    });
+    assert!(followed, "{n}: the status bar follows tests");
+    std::thread::sleep(Duration::from_millis(500));
+    cx.advance_clock(Duration::from_secs(2));
+    settle_frames(&mut cx, window);
+    assert!(ticking(&mut cx), "{n}: the marks still tick");
+    assert_shown_current(&mut cx, window, &format!("{n}: ticking, its age turned"));
+}
+
+/// M11p Task 6: with an agent working, the marks' 100 ms clock turns its marks without notifying
+/// the workspace. api works in a pane split beside web (Done), focused, so the status bar
+/// follows it; a second workspace (Idle) sits in the sidebar.
+///
+/// The limit (GPUI, pinned rev): a notify of a view marks every view above it dirty too
+/// (`Window::mark_view_dirty`, window.rs:1814), and a dirty cached view is drawn again
+/// (view.rs:390). So a part holding a moving mark (api's tab bar, the status bar) is still drawn
+/// once per tick; every other part isn't (the title area, web's tab bar, the sidebar, whose rows
+/// show still badges), and the rows aren't built again.
+///
+/// Panics unless, over 10 ticks: the title area and the sidebar aren't drawn, the tab bars are
+/// drawn at most once a tick (api's only), the status bar at most once a tick, the rows aren't
+/// built, and each moving mark view is drawn once a tick (10).
+fn chrome_working_marks() {
+    use std::time::{Duration, Instant};
+
+    let n = "chrome-working-marks";
+    let (mut cx, window, ws) = chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(API);
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("web", api, SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_session(
+            "shell",
+            std::path::Path::new(WEB),
+            SHELL_TEXT,
+            None,
+            window,
+            cx,
+        );
+        let first = ws.workspace_of(0).expect("api's workspace");
+        ws.select_workspace(first, window, cx);
+    });
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            // 5m10s: no age label turns during the ticks (an age turning redraws every part).
+            for (i, status) in [(0, Status::Working), (1, Status::Done)] {
+                let s = ws.sessions.get_mut(i).expect("a session");
+                s.status = status;
+                s.status_since = Instant::now() - Duration::from_secs(5 * 60 + 10);
+            }
+            cx.notify();
+        })
+    });
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let id = ws.sessions.items()[0].id;
+            let tab = ws.model.terminal_tab(id).expect("api's tab");
+            let (_, pane) = ws.model.locate(tab).expect("api's pane");
+            ws.select_pane(pane, window, cx);
+        })
+    })
+    .expect("focus api");
+    settle_frames(&mut cx, window);
+    cx.advance_clock(status_mark::TICK);
+    settle_frames(&mut cx, window);
+    assert!(
+        cx.read(|cx| ws.read(cx).marks_ticking),
+        "{n}: the marks tick while api works"
+    );
+    let followed = cx.read(|cx| {
+        let ws = ws.read(cx);
+        ws.right_sidebar.followed == Some(ws.sessions.items()[0].id)
+    });
+    assert!(followed, "{n}: the status bar follows api");
+    // Each moving mark's view, and how often it was drawn so far.
+    let moving = |cx: &mut VisualTestAppContext| {
+        cx.read(|cx| {
+            let mut views: Vec<_> = (ws.read(cx).marks.borrow().iter())
+                .filter(|(_, v)| v.read(cx).moves())
+                .map(|(key, v)| (*key, v.read(cx).renders))
+                .collect();
+            views.sort();
+            views
+        })
+    };
+    let before = moving(&mut cx);
+    let api_id = cx.read(|cx| ws.read(cx).sessions.items()[0].id);
+    let keys: Vec<_> = before.iter().map(|(key, _)| *key).collect();
+    assert_eq!(
+        keys,
+        [("status-bar", api_id), ("tab", api_id)],
+        "{n}: api's moving marks: the status bar's and its tab's"
+    );
+    chrome_cache::reset();
+    for _ in 0..10 {
+        cx.advance_clock(status_mark::TICK);
+        settle_frames(&mut cx, window);
+    }
+    let frames = chrome_cache::get(Counted::Workspace);
+    let parts = PARTS.map(|c| (c, chrome_cache::get(c)));
+    let rows = chrome_cache::get(Counted::SidebarRows);
+    println!(
+        "ui-shots: {n}: 10 ticks: workspace {frames} frames; parts {parts:?}; rows built {rows}"
+    );
+    for c in [Counted::Title, Counted::Sidebar] {
+        let count = chrome_cache::get(c);
+        assert_eq!(count, 0, "{n}: {c:?} drawn {count} times in 10 ticks");
+    }
+    for c in [Counted::TabBar, Counted::StatusBar] {
+        let count = chrome_cache::get(c);
+        assert!(count <= 10, "{n}: {c:?} drawn {count} times in 10 ticks");
+    }
+    assert_eq!(rows, 0, "{n}: the rows built in 10 ticks");
+    let after = moving(&mut cx);
+    let drawn: Vec<_> = (before.iter().zip(&after))
+        .map(|((key, was), (_, now))| (*key, now - was))
+        .collect();
+    println!("ui-shots: {n}: moving marks drawn {drawn:?}");
+    for (key, count) in drawn {
+        assert_eq!(
+            count, 10,
+            "{n}: mark {key:?} drawn {count} times in 10 ticks"
+        );
+    }
 }
 
 /// The chrome's cached parts (M11p Task 4), as counted.
@@ -1959,11 +2132,38 @@ fn chrome_pixels_same() {
     ];
     let n = "chrome-pixels-same";
     let (mut cx, window, ws) = chrome_window_with(|window, cx| {
-        let mut ws = sidebar_workspace(&BUSY, Some(3), 3, &[], window, cx);
+        // codex's workspace shown: its Working mark in its tab and the status bar.
+        let mut ws = sidebar_workspace(&BUSY, Some(3), 1, &[], window, cx);
         ws.sidebar.hint_dismissed = true;
         shot_notifications(&mut ws);
         ws
     });
+    // A Working mark mid-beat (M11p Task 6: it is its own view, turned by the clock): its arc
+    // has turned 144°, as the cached frame, the uncached one and a full redraw all draw it.
+    let clock = cx.read(|cx| ws.read(cx).clock.clone());
+    cx.update(|cx| {
+        clock.update(cx, |clock, cx| {
+            clock.phase = 0.1;
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    draw(&mut cx, window);
+    let moving = cx.read(|cx| {
+        let marks = ws.read(cx).marks.borrow();
+        marks
+            .iter()
+            .filter(|(_, v)| v.read(cx).moves())
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>()
+    });
+    println!("ui-shots: {n}: moving marks {moving:?}");
+    assert!(
+        ["tab", "status-bar"]
+            .iter()
+            .all(|place| moving.iter().any(|(p, _)| p == place)),
+        "{n}: codex's Working mark is a view in its tab and the status bar"
+    );
     for hidden in [false, true] {
         let step = if hidden {
             "sidebar hidden"
@@ -1980,7 +2180,7 @@ fn chrome_pixels_same() {
             cx.run_until_parked();
             draw(&mut cx, window);
         }
-        let phase = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).phase);
+        let phase = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).phase(cx));
         let at = phase(&mut cx);
         // A breath: the parts' reused frame.
         let view = focused_view(&mut cx, &ws);
@@ -12882,8 +13082,9 @@ fn palette_motion_scene() {
                 std::thread::sleep(Duration::from_millis(200));
                 cx.advance_clock(Duration::from_millis(200));
                 // The marks' clock on by 200 ms whether or not its ticker runs.
-                ws.update(cx, |ws, cx| {
-                    ws.phase = status_mark::advance(status_mark::advance(ws.phase));
+                let clock = cx.read(|cx| ws.read(cx).clock.clone());
+                clock.update(cx, |clock, cx| {
+                    clock.phase = status_mark::advance(status_mark::advance(clock.phase));
                     cx.notify();
                 });
                 settle(cx, window);
@@ -18175,7 +18376,7 @@ fn status_bar_scenes() {
                 cx.set_global(sidebar_appearance(theme, cx));
                 cx.set_reduce_motion(still);
                 let ws = cx.new(|cx| {
-                    let mut ws = bar_workspace(
+                    let ws = bar_workspace(
                         active,
                         SIDEBAR_DEFAULT_WIDTH,
                         (FUXX, "main"),
@@ -18184,7 +18385,7 @@ fn status_bar_scenes() {
                         cx,
                     );
                     // A tenth into the beat: a moving Working mark has turned 144°.
-                    ws.phase = 0.1;
+                    ws.clock.update(cx, |clock, _| clock.phase = 0.1);
                     ws
                 });
                 *keep.borrow_mut() = Some(ws.clone());
