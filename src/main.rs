@@ -29,6 +29,7 @@ mod browser_url;
 mod changes_panel;
 mod cli;
 mod colors;
+mod composer;
 mod cursor_look;
 mod daemon;
 mod daemon_client;
@@ -399,6 +400,44 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             "ctrl-cmd-space",
             name_input::ShowCharacterPalette,
             Some("NameInput"),
+        ),
+        // The agent tab's message box: Enter sends, ⇧Enter is a newline, Esc stops the agent.
+        KeyBinding::new("enter", composer::Send, Some("Composer")),
+        KeyBinding::new("shift-enter", composer::Newline, Some("Composer")),
+        KeyBinding::new("escape", composer::Stop, Some("Composer")),
+        KeyBinding::new("backspace", composer::Backspace, Some("Composer")),
+        KeyBinding::new("cmd-backspace", composer::Clear, Some("Composer")),
+        KeyBinding::new("delete", composer::Delete, Some("Composer")),
+        KeyBinding::new("left", composer::MoveLeft, Some("Composer")),
+        KeyBinding::new("right", composer::MoveRight, Some("Composer")),
+        KeyBinding::new("up", composer::MoveUp, Some("Composer")),
+        KeyBinding::new("down", composer::MoveDown, Some("Composer")),
+        KeyBinding::new("alt-left", composer::WordLeft, Some("Composer")),
+        KeyBinding::new("alt-right", composer::WordRight, Some("Composer")),
+        KeyBinding::new("cmd-left", composer::LineStart, Some("Composer")),
+        KeyBinding::new("cmd-right", composer::LineEnd, Some("Composer")),
+        KeyBinding::new("home", composer::LineStart, Some("Composer")),
+        KeyBinding::new("end", composer::LineEnd, Some("Composer")),
+        KeyBinding::new("shift-left", composer::SelectLeft, Some("Composer")),
+        KeyBinding::new("shift-right", composer::SelectRight, Some("Composer")),
+        KeyBinding::new("shift-up", composer::SelectUp, Some("Composer")),
+        KeyBinding::new("shift-down", composer::SelectDown, Some("Composer")),
+        KeyBinding::new("alt-shift-left", composer::SelectWordLeft, Some("Composer")),
+        KeyBinding::new(
+            "alt-shift-right",
+            composer::SelectWordRight,
+            Some("Composer"),
+        ),
+        KeyBinding::new("cmd-shift-left", composer::SelectToStart, Some("Composer")),
+        KeyBinding::new("cmd-shift-right", composer::SelectToEnd, Some("Composer")),
+        KeyBinding::new("cmd-a", composer::SelectAll, Some("Composer")),
+        KeyBinding::new("cmd-c", composer::Copy, Some("Composer")),
+        KeyBinding::new("cmd-x", composer::Cut, Some("Composer")),
+        KeyBinding::new("cmd-v", composer::Paste, Some("Composer")),
+        KeyBinding::new(
+            "ctrl-cmd-space",
+            composer::ShowCharacterPalette,
+            Some("Composer"),
         ),
     ];
     bindings.extend(browser_tab::page_bindings());
