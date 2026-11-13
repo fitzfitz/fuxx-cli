@@ -7,6 +7,7 @@ mod adopt;
 mod agent_conversation;
 mod agent_detect;
 mod agent_markdown;
+mod agent_process;
 mod api;
 mod api_client;
 mod api_events;
