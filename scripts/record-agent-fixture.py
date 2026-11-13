@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record a real headless agent session as a JSONL fixture (stdlib only).
 
-Usage: python3 -I scripts/record-agent-fixture.py <claude|agy> <scenario> <workdir> <out> [session-id]
+Usage: python3 -I scripts/record-agent-fixture.py <claude|agy> <scenario> <workdir> <out> [session-id] [--no-trim]
 
 Scenarios (claude): text, tools, permission-allow, permission-deny, permission-always,
   interrupt, interrupt-text, queue, resume (needs session-id), slash, bad-resume
@@ -28,6 +28,27 @@ ZERO = "00000000-0000-0000-0000-000000000000"
 
 
 IS_AGY = False
+TRIM = True  # --trim (default) / --no-trim: shorten the huge list fields of init events
+KEEP = 3
+
+
+def trim_event(e):
+    """Cut every list longer than KEEP to its first KEEP entries in the two bulky events: the
+    `system/init` line and the initialize `control_response` (its `response.response`)."""
+    if not isinstance(e, dict):
+        return e
+    box = None
+    if e.get("type") == "system" and e.get("subtype") == "init":
+        box = e
+    elif e.get("type") == "control_response" and isinstance(e.get("response", {}).get("response"), dict):
+        box = e["response"]["response"]
+    elif e.get("event") == "init" and isinstance(e.get("init"), dict):  # agy
+        box = e["init"]
+    if box is not None:
+        for k, v in box.items():
+            if isinstance(v, list) and len(v) > KEEP:
+                box[k] = v[:KEEP]
+    return e
 
 
 def tool_starts(r, name="Bash"):
@@ -105,6 +126,8 @@ class Run:
         split a path, so per content block: join the fragments, scrub, and if that changed
         anything put the whole scrubbed text in the first fragment and "" in the rest."""
         evs = [self._scrub_obj(x) if isinstance(x, dict) else x for x in self.lines]
+        if TRIM:
+            evs = [trim_event(x) for x in evs]
         raws, deltas = [], []  # raw fragment text, and the matching scrubbed delta dicts
         for orig, ev in zip(self.lines, evs):
             inner = orig.get("event") if isinstance(orig, dict) else None
@@ -197,8 +220,11 @@ class Run:
 
 
 def main():
-    agent, scenario, workdir, out = sys.argv[1:5]
-    sid = sys.argv[5] if len(sys.argv) > 5 else None
+    global TRIM
+    args = [a for a in sys.argv[1:] if a not in ("--trim", "--no-trim")]
+    TRIM = "--no-trim" not in sys.argv
+    agent, scenario, workdir, out = args[:4]
+    sid = args[4] if len(args) > 4 else None
     claude = agent == "claude"
     global IS_AGY
     IS_AGY = not claude
@@ -269,4 +295,5 @@ def main():
     print(f"{agent} {scenario}: exit={code} prompts={r.prompts} out={out}")
 
 
-main()
+if __name__ == "__main__":
+    main()
