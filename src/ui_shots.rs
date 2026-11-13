@@ -823,6 +823,111 @@ mod tests {
         assert_eq!(&bytes[16..24], &[0, 0, 0, 2, 0, 0, 0, 1]);
         assert!(bytes.ends_with(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]));
     }
+
+    /// A `w` × `h` device-pixel shot of `bg`, with column `x` (all rows) mixed `cover` of the
+    /// way from `bg` to `ink`.
+    fn columns(w: u32, h: u32, bg: [u8; 3], ink: [u8; 3], cover: &[(u32, f32)]) -> Shot {
+        let mut rgba = Vec::new();
+        for _ in 0..h {
+            for x in 0..w {
+                let c = cover
+                    .iter()
+                    .find(|(cx, _)| *cx == x)
+                    .map_or(0.0, |(_, c)| *c);
+                for k in 0..3 {
+                    let v = f32::from(bg[k]) + (f32::from(ink[k]) - f32::from(bg[k])) * c;
+                    rgba.push(v.round() as u8);
+                }
+                rgba.push(255);
+            }
+        }
+        Shot {
+            width: w,
+            height: h,
+            rgba,
+        }
+    }
+
+    /// A stem whose left edge column is `left` covered and right edge column `right` covered,
+    /// solid in between (device columns 9 to 20 of 40, 1x).
+    fn stem(bg: [u8; 3], ink: [u8; 3], left: f32, right: f32) -> Shot {
+        let mut cover = vec![(9, left), (20, right)];
+        cover.extend((10..20).map(|x| (x, 1.0)));
+        columns(40, 4, bg, ink, &cover)
+    }
+
+    #[test]
+    fn ink_span_reads_an_edge_pixel_s_coverage_as_a_fraction_of_it() {
+        let (bg, ink) = ([25, 25, 38], [156, 162, 186]);
+        let dims = size(px(40.0), px(4.0));
+        let shot = stem(bg, ink, 0.4, 0.3);
+        let (x0, x1, y0, y1) = ink_span(&shot, dims, (0.0, 0.0, 40.0, 4.0), bg, ink).expect("ink");
+        assert!((x0 - 9.6).abs() < 0.02, "left edge {x0}");
+        assert!((x1 - 20.3).abs() < 0.02, "right edge {x1}");
+        assert_eq!((y0, y1), (0.0, 4.0));
+    }
+
+    #[test]
+    fn ink_span_moves_a_little_where_ink_box_jumps_a_whole_pixel() {
+        // The same edge pixel just under and just over half covered: `ink_box` (a half-way
+        // threshold) moves its left edge by a whole device pixel, `ink_span` by 0.04.
+        let (bg, ink) = ([232, 235, 239], [90, 90, 108]);
+        let dims = size(px(40.0), px(4.0));
+        let area = (0.0, 0.0, 40.0, 4.0);
+        let under = stem(bg, ink, 0.48, 1.0);
+        let over = stem(bg, ink, 0.52, 1.0);
+        let jump = ink_box(&under, dims, area, bg, ink).expect("ink").0
+            - ink_box(&over, dims, area, bg, ink).expect("ink").0;
+        assert_eq!(jump, 1.0);
+        let slide = ink_span(&under, dims, area, bg, ink).expect("ink").0
+            - ink_span(&over, dims, area, bg, ink).expect("ink").0;
+        assert!((slide - 0.04).abs() < 0.02, "moved {slide}");
+    }
+
+    #[test]
+    fn ink_span_is_the_same_on_a_dark_and_a_light_background() {
+        // Light text on dark and dark text on light, the same coverage: the same span.
+        let dims = size(px(40.0), px(4.0));
+        let area = (0.0, 0.0, 40.0, 4.0);
+        let (dark, light) = (
+            ([25, 25, 38], [156, 162, 186]),
+            ([232, 235, 239], [90, 90, 108]),
+        );
+        let a = ink_span(
+            &stem(dark.0, dark.1, 0.45, 0.35),
+            dims,
+            area,
+            dark.0,
+            dark.1,
+        );
+        let b = ink_span(
+            &stem(light.0, light.1, 0.45, 0.35),
+            dims,
+            area,
+            light.0,
+            light.1,
+        );
+        let (a, b) = (a.expect("ink"), b.expect("ink"));
+        assert!(
+            (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02,
+            "{a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn ink_span_works_in_points_at_2x_and_finds_nothing_on_bare_background() {
+        let (bg, ink) = ([25, 25, 38], [156, 162, 186]);
+        // 40 device pixels across a 20 pt window: the edges come back in points.
+        let dims = size(px(20.0), px(2.0));
+        let shot = stem(bg, ink, 0.5, 0.5);
+        let (x0, x1, _, _) = ink_span(&shot, dims, (0.0, 0.0, 20.0, 2.0), bg, ink).expect("ink");
+        assert!(
+            (x0 - 4.75).abs() < 0.02 && (x1 - 10.25).abs() < 0.02,
+            "{x0} {x1}"
+        );
+        // Over the bare background beside the stem: nothing.
+        assert_eq!(ink_span(&shot, dims, (12.0, 0.0, 8.0, 2.0), bg, ink), None);
+    }
 }
 
 /// The appearance a scene's app runs with: `theme`, and the default font and size.
@@ -2435,6 +2540,60 @@ fn ink_box(
         }
     }
     found
+}
+
+/// The box, `(x0, x1, y0, y1)` in points, round the ink inside `area` (`x`, `y`, `w`, `h` in
+/// points), to a fraction of a device pixel: each pixel's coverage is how far it is from `bg`
+/// toward `ink` (0 to 1), and each side of the box sits inside its outermost inked pixel by the
+/// part of that pixel its column's (or row's) most covered pixel leaves bare. `None` when nothing
+/// is inked (no pixel 1/50 of the way). For text, where `ink_box` is not enough: anti-aliased
+/// glyph edges cover a pixel part-way, by different amounts in a dark and a light theme
+/// (CoreGraphics thickens light-on-dark strokes), so a half-way threshold moves a box edge a
+/// whole device pixel when an edge pixel's coverage crosses one half; here it moves smoothly.
+fn ink_span(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    area: (f32, f32, f32, f32),
+    bg: [u8; 3],
+    ink: [u8; 3],
+) -> Option<(f32, f32, f32, f32)> {
+    const FAINT: f32 = 0.02;
+    let towards: [f32; 3] = std::array::from_fn(|k| f32::from(ink[k]) - f32::from(bg[k]));
+    let full: f32 = towards.iter().map(|d| d * d).sum();
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (x, y, w, h) = area;
+    let (left, top) = ((x * scale) as usize, (y * scale) as usize);
+    let right = (left + (w * scale) as usize).min(shot.width as usize);
+    let bottom = (top + (h * scale) as usize).min(shot.height as usize);
+    if right <= left || bottom <= top || full == 0.0 {
+        return None;
+    }
+    let (mut cols, mut rows) = (vec![0.0f32; right - left], vec![0.0f32; bottom - top]);
+    for py in top..bottom {
+        for px_ in left..right {
+            let i = (py * shot.width as usize + px_) * 4;
+            let along: f32 = (0..3)
+                .map(|k| (f32::from(shot.rgba[i + k]) - f32::from(bg[k])) * towards[k])
+                .sum();
+            let c = (along / full).clamp(0.0, 1.0);
+            cols[px_ - left] = cols[px_ - left].max(c);
+            rows[py - top] = rows[py - top].max(c);
+        }
+    }
+    // The near and far edges, in device pixels from the area's start, of the inked run.
+    let edges = |cover: &[f32]| -> Option<(f32, f32)> {
+        let first = cover.iter().position(|&c| c >= FAINT)?;
+        let last = cover.iter().rposition(|&c| c >= FAINT)?;
+        Some((first as f32 + 1.0 - cover[first], last as f32 + cover[last]))
+    };
+    let (x0, x1) = edges(&cols)?;
+    let (y0, y1) = edges(&rows)?;
+    Some((
+        (left as f32 + x0) / scale,
+        (left as f32 + x1) / scale,
+        (top as f32 + y0) / scale,
+        (top as f32 + y1) / scale,
+    ))
 }
 
 /// The middle of the pixels that are `c`, in points; none if there are none.
@@ -15972,10 +16131,15 @@ fn title_bar_scenes() {
     use std::time::{Duration, Instant};
 
     const FOOTER: f32 = 36.0;
-    // Where the title's ink centre sits against its box's centre: measured 1 pt left (GPUI
-    // snaps the text's origin, and the glyphs' side bearings are uneven). Rebaseline it if the
-    // system font or the GPUI rev changes.
-    const TITLE_INK_SHIFT: f32 = -1.0;
+    // Where the title's ink centre sits against the sidebar's middle, read to a fraction of a
+    // device pixel (`ink_span`): measured 0.27 pt left on a 2x screen and 0.72 pt left on a 1x
+    // one, in both themes. GPUI rounds the text's measured width up to a whole device pixel and
+    // the centred box's edges to device pixels (0.12 pt left of exact at 2x, 0.62 at 1x, for
+    // its 60.77 pt), and the glyphs' side bearings put the ink about 0.13 pt further left. The
+    // shots run at the main screen's scale, so the baseline is the middle of the two, and
+    // half a point either way holds both. Rebaseline it if the system font or the GPUI rev
+    // changes.
+    const TITLE_INK_SHIFT: f32 = -0.5;
     // The narrowest sidebar that shows the title, up to the next half point.
     let threshold = (2.0 * (lights_clear(false) + TITLE_ROOM / 2.0) * 2.0).ceil() / 2.0;
     let dims = size(px(760.0), px(200.0));
@@ -16007,7 +16171,10 @@ fn title_bar_scenes() {
             println!("ui-shots: {}", path.display());
             let n = format!("{scene}-{slug}");
             let button_x = open_button_x(sidebar_width);
-            let title = ink_box(&shot, dims, (0.0, 0.0, button_x, TOP_BAND), band, dim);
+            // The title's ink to a fraction of a pixel (`ink_span`): a half-way threshold
+            // (`ink_box`) takes or drops a whole device pixel at each side as the theme thickens
+            // or thins its anti-aliased edges, and moved the centre 0.25 pt between the themes.
+            let title = ink_span(&shot, dims, (0.0, 0.0, button_x, TOP_BAND), band, dim);
             let button = ink_box(&shot, dims, (button_x, BUTTON_Y, HIT, HIT), band, dim)
                 .unwrap_or_else(|| panic!("{n}: no button ink"));
             // The footer gear's ink, in its slot centred in the footer under its 1 px edge.
@@ -16059,7 +16226,7 @@ fn title_bar_scenes() {
                     );
                     // Against the measured baseline (both ways within half a point): this is
                     // the binding check. The sanity bound around the sidebar's middle is wider
-                    // (±1.5) than baseline ± 0.5 reaches (−1.5 to −0.5), so it never fails first.
+                    // (±1.5) than baseline ± 0.5 reaches (−1 to 0), so it never fails first.
                     assert!(
                         (tx - (sidebar_width / 2.0 + TITLE_INK_SHIFT)).abs() <= 0.5,
                         "{n}: the title's ink is centred at {tx}, its baseline {}",
@@ -16283,11 +16450,31 @@ fn title_bar_scenes() {
                 b[0] + HIT - DOT_INSET - DOT / 2.0,
                 BUTTON_Y + DOT_INSET + DOT / 2.0,
             );
+            // The device pixels of the sidebar's own fill (`sidebar_background`) down the line
+            // x = 30, over the pane's body (under the band, above the status bar): none once the
+            // sidebar has gone (the pane is there: its card is the terminal's colour), some
+            // while it is partly in (round its search box, rows and footer). Not one point: the
+            // sidebar's group cards are `card`, which is the terminal's background
+            // (`theme.rs`), so a point on one can't tell the sidebar from the pane.
+            let sidebar_fill = || {
+                let scale = shot.width as f32 / w;
+                let (top, foot) = (TOP_BAND + 8.0, h - STATUS_BAR - 12.0);
+                ((top * scale) as usize..(foot * scale) as usize)
+                    .filter(|&y| {
+                        near(
+                            pixel_at(&shot, dims, 30.0, y as f32 / scale),
+                            ui.sidebar_background,
+                        )
+                    })
+                    .count()
+            };
             match scene {
                 "title-bar-collapsed" => {
                     icons_at_slots();
                     assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
                     centred(name_ink);
+                    let fill = sidebar_fill();
+                    assert_eq!(fill, 0, "{n}: {fill} pixels of sidebar at x 30, slid out");
                     // Where the sidebar button was (x 80) and the band's left: bare, and no
                     // title anywhere.
                     let left = ink_box(&shot, dims, (0.0, 0.0, 100.0, TOP_BAND), band, dim);
@@ -16341,7 +16528,8 @@ fn title_bar_scenes() {
                 "title-bar-sliding" => {
                     icons_at_slots();
                     // The sidebar is partly in (and partly out), as in `sidebar-button-sliding`.
-                    assert_ne!(at(30.0, 80.0), bg(theme.background), "{n}: still partly in");
+                    let fill = sidebar_fill();
+                    assert!(fill > 0, "{n}: no sidebar at x 30, not still partly in");
                     assert_eq!(at(150.0, 80.0), bg(theme.background), "{n}: slid out");
                     // The sliding sidebar still carries its own button, and nothing is drawn at
                     // the collapsed button's old place (x 80) over it.
