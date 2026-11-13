@@ -180,6 +180,19 @@ pub fn shown_entries(
     (shown, more)
 }
 
+/// `path`'s place under `root`, by their parts (M11ac): none for the root itself, a path
+/// outside it, or one with a `..`.
+pub fn rel_in_root(root: &Path, path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let rel = path.strip_prefix(root).ok()?;
+    let rel: PathBuf = rel
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect();
+    let up = rel.components().any(|c| !matches!(c, Component::Normal(_)));
+    (!up && !rel.as_os_str().is_empty()).then_some(rel)
+}
+
 impl FileTree {
     /// A tree at `root`, nothing listed yet. `revealed` (from the root): the terminal's folder,
     /// opened with its folders and selected.
@@ -413,6 +426,24 @@ impl FileTree {
             .into_iter()
             .filter(|f| !self.listings.contains_key(f))
             .collect()
+    }
+
+    /// Reveal file `path` (M11ac: the active file tab's): selected, its folders opened (those
+    /// not listed yet are then `wanted`). False, and nothing changed, when it isn't under the
+    /// root (`rel_in_root`).
+    pub fn reveal_file(&mut self, path: &Path) -> bool {
+        let Some(rel) = rel_in_root(&self.root, path) else {
+            return false;
+        };
+        for folder in rel.ancestors().skip(1) {
+            if !folder.as_os_str().is_empty() {
+                self.expanded.insert(folder.to_path_buf());
+            }
+        }
+        self.selected = Some(rel);
+        self.selected_at = None;
+        self.changed();
+        true
     }
 
     pub fn selected(&self) -> Option<&Path> {
@@ -986,6 +1017,58 @@ mod tests {
         // What to list, outermost first: the root, then down to it.
         assert_eq!(t.wanted(), vec![p(""), p("src"), p("src/util")]);
         assert_eq!(t.open_folders(), vec![p(""), p("src"), p("src/util")]);
+    }
+
+    /// M11ac: a path's place under the root, by its parts: none for the root, a path outside
+    /// it (also one only sharing a prefix of a name), or one going up.
+    #[test]
+    fn a_path_under_the_root_is_relative_and_one_outside_is_none() {
+        let root = p("/w");
+        assert_eq!(
+            rel_in_root(&root, Path::new("/w/src/main.rs")),
+            Some(p("src/main.rs"))
+        );
+        assert_eq!(rel_in_root(&root, Path::new("/w")), None);
+        assert_eq!(rel_in_root(&root, Path::new("/wx/a.rs")), None);
+        assert_eq!(rel_in_root(&root, Path::new("/other/a.rs")), None);
+        assert_eq!(rel_in_root(&root, Path::new("/w/../x/a.rs")), None);
+        assert_eq!(rel_in_root(&root, Path::new("/w/./a.rs")), Some(p("a.rs")));
+    }
+
+    /// M11ac: the active file tab's file is revealed: selected, its folders opened (the one not
+    /// listed yet is wanted), other open folders left as they are. One outside the root changes
+    /// nothing.
+    #[test]
+    fn revealing_a_file_selects_it_and_opens_its_folders() {
+        let mut t = tree();
+        t.select(Path::new("Cargo.toml"));
+        assert!(!t.reveal_file(Path::new("/elsewhere/x.md")));
+        assert!(!t.reveal_file(Path::new("/repo")));
+        assert_eq!(t.selected(), Some(Path::new("Cargo.toml")), "kept");
+        let before = t.generation();
+        assert!(t.reveal_file(Path::new("/repo/docs/guide/intro.md")));
+        assert_ne!(t.generation(), before, "the rows change");
+        assert_eq!(t.selected(), Some(Path::new("docs/guide/intro.md")));
+        assert_eq!(
+            t.expanded_set().expanded,
+            HashSet::from([p("src"), p("docs"), p("docs/guide")])
+        );
+        assert_eq!(t.wanted(), vec![p("docs"), p("docs/guide")]);
+        t.expand(p("docs"), vec![dir("guide")], 0);
+        t.expand(p("docs/guide"), vec![file("intro.md")], 0);
+        let rows = t.rows("");
+        assert_eq!(
+            shape(&rows)[..3],
+            [
+                ("docs".into(), 0),
+                ("docs/guide".into(), 1),
+                ("docs/guide/intro.md".into(), 2)
+            ]
+        );
+        // A file at the top: only selected.
+        assert!(t.reveal_file(Path::new("/repo/README.md")));
+        assert_eq!(t.selected(), Some(Path::new("README.md")));
+        assert_eq!(t.expanded_set().expanded.len(), 3);
     }
 
     #[test]
