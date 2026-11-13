@@ -19734,6 +19734,12 @@ fn file_tab_md_scenes() {
         t
     };
     std::fs::write(&long, long_text("Long")).expect("LONG.md");
+    // Review fixes: lines of 16,000 `>` (quotes nest 16 deep at most; a line under the 20,000
+    // a coloured line may have, so the file is Preview's), and a file past Preview's 1 MB.
+    let deep = dir.join("DEEP.md");
+    std::fs::write(&deep, format!("{}\n", ">".repeat(16_000)).repeat(4)).expect("DEEP.md");
+    let huge = dir.join("HUGE.md");
+    std::fs::write(&huge, "word ".repeat(crate::file_tab::PREVIEW_MAX / 5 + 1)).expect("HUGE.md");
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     type Events = Rc<RefCell<Vec<bool>>>;
@@ -19871,8 +19877,11 @@ fn file_tab_md_scenes() {
             let button = cx.read(|cx| tab.read(cx).preview_bounds()).expect("drawn");
             cx.simulate_click(window, button.center(), Modifiers::none());
             frame(cx, window);
-            let scroll = cx.read(|cx| tab.read(cx).preview_scroll());
-            scroll.set_offset(point(px(0.0), px(-400.0)));
+            let rows = cx.read(|cx| tab.read(cx).preview_list());
+            rows.scroll_to(gpui::ListOffset {
+                item_ix: 20,
+                offset_in_item: px(5.0),
+            });
             frame(cx, window);
             let before = cx.read(|cx| tab.read(cx).parsed_version());
             std::fs::write(&long, long_text("Long, edited")).expect("rewrite");
@@ -19881,7 +19890,12 @@ fn file_tab_md_scenes() {
             frame(cx, window);
             let after = cx.read(|cx| tab.read(cx).parsed_version());
             assert!(after > before, "{n}: parsed again ({before:?} → {after:?})");
-            assert_eq!(scroll.offset().y, px(-400.0), "{n}: the scroll stays");
+            let top = rows.logical_scroll_top();
+            assert_eq!(
+                (top.item_ix, top.offset_in_item),
+                (20, px(5.0)),
+                "{n}: the scroll stays"
+            );
             cx.update_window(window, |_, window, cx| {
                 tab.read(cx).focus_handle(cx).focus(window, cx)
             })
@@ -19904,6 +19918,41 @@ fn file_tab_md_scenes() {
                 !cx.read(|cx| tab.read(cx).preview_shown()),
                 "{n}: none in Diff"
             );
+            slot.borrow_mut().take();
+        });
+
+        // 64,000 `>` in Preview: drawn (16 quotes deep, the rest text), no stack overflow.
+        let slot: TabSlot = Rc::default();
+        let build = build_for(deep.clone(), slot.clone(), Rc::default());
+        render_with(&theme, dims, build, move |cx, window| {
+            frame(cx, window);
+            let tab = tab_of(&slot);
+            let button = cx.read(|cx| tab.read(cx).preview_bounds()).expect("drawn");
+            cx.simulate_click(window, button.center(), Modifiers::none());
+            frame(cx, window);
+            assert!(
+                cx.read(|cx| tab.read(cx).preview_shown()),
+                "deep quotes: shown"
+            );
+            slot.borrow_mut().take();
+        });
+
+        // Over 1 MB: the button is drawn but does nothing; the source stays.
+        let slot: TabSlot = Rc::default();
+        let events: Events = Rc::default();
+        let build = build_for(huge.clone(), slot.clone(), events.clone());
+        render_with(&theme, dims, build, move |cx, window| {
+            frame(cx, window);
+            let tab = tab_of(&slot);
+            let button = cx.read(|cx| tab.read(cx).preview_bounds());
+            let button = button.expect("drawn, faint");
+            cx.simulate_click(window, button.center(), Modifiers::none());
+            frame(cx, window);
+            assert!(
+                !cx.read(|cx| tab.read(cx).preview_shown()),
+                "over 1 MB: source"
+            );
+            assert!(events.borrow().is_empty(), "over 1 MB: nothing saved");
             slot.borrow_mut().take();
         });
     }
