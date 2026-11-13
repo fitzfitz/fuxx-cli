@@ -132,6 +132,13 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   each command reads like a message with its output underneath; **design first, on its own** (like M11l), not
   planned. Not in them: one mixed shell-and-agent timeline, agents on remote hosts, other providers than the first
   two. See [[Proposal - Chat View and Agent Tabs]] and [[M11aa Plan - Agent Tabs]].
+- **File tab polish** (M11ac, added 2026-11-13 by you: "active file doesn't reflect/active on the file tab. If it's
+  .md file, add 1 toggle button like wrap called "Preview" so that the showing .md file is an md reader with rich
+  format"; your choices: "New M11ac, in parallel", "Highlight + reveal"): the Files panel follows the focused pane's
+  file tab (its row selected, its folders opened, scrolled into view), and a Markdown file tab gets a **Preview**
+  toggle beside Wrap that shows it rendered, read-only (remembered per tab). Not in it: editing, Mermaid or math,
+  HTML in Markdown, a side-by-side source-and-preview, syntax colours in the Preview's code blocks. See
+  [[78 - Milestone 11ac - File Tab Polish]].
 
 ## Out of scope (for now — resist scope creep)
 
