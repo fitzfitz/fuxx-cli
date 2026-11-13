@@ -214,6 +214,7 @@ const SCENES: &[(&str, fn())] = &[
     ("chrome-folder-polled", chrome_folder_polled),
     ("chrome-followed", chrome_followed),
     ("chrome-title-once", chrome_title_once),
+    ("chrome-rows-once", chrome_rows_once),
     ("sidebar", sidebar_scenes),
     ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-selection", sidebar_selection_scenes),
@@ -1281,8 +1282,8 @@ fn draws_of(
 }
 
 /// M11p baseline (today's behaviour): a breath-like tick (the focused terminal notifies, not
-/// the workspace) redraws the whole workspace, so every chrome part renders once per draw and
-/// the sidebar's rows are built several times. Task 4 flips this scene's expectation.
+/// the workspace) redraws the whole workspace, so every chrome part renders once per draw (the
+/// sidebar's rows, kept since Task 3, aren't built again). Task 4 flips this scene's expectation.
 fn chrome_counts_baseline() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1358,8 +1359,9 @@ fn chrome_counts_baseline() {
     }
 }
 
-/// How many times `sidebar_rows` runs per workspace render today (Task 3 has to beat this).
-const SIDEBAR_ROWS_PER_FRAME: u64 = 3;
+/// How many times `sidebar_rows` runs per workspace render on a breath tick: none since Task 3
+/// (the rows are kept until the workspace notifies or an age turns; it was 3 before).
+const SIDEBAR_ROWS_PER_FRAME: u64 = 0;
 
 /// Frames a breath-like tick draws in `draws_of`: the platform's own draw when the notify's
 /// effects flush, plus the explicit one.
@@ -1664,6 +1666,95 @@ fn chrome_title_once() {
         1,
         "{n}: another workspace's title, set once"
     );
+}
+
+/// M11p Task 3: the sidebar's rows are built once per change, not several times per frame.
+/// Ten explicit draws with nothing changed (no notify) build them at most once in all. A
+/// change the workspace notifies (a workspace renamed) is built once and drawn; an age label
+/// turning ("59s" to "1m") with nothing notified is built again by the next frame, so the
+/// labels stay true.
+///
+/// Panics unless all of that holds.
+fn chrome_rows_once() {
+    use std::time::{Duration, Instant};
+
+    use crate::sidebar::SidebarRow;
+
+    let n = "chrome-rows-once";
+    let (mut cx, window, ws) = chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new("/Users/me/code/api");
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("web", api, SHELL_TEXT, None, window, cx);
+    });
+    // The rows as the workspace has them now (its cache: no build when nothing changed).
+    let rows =
+        |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).rows_in_view(Instant::now()));
+
+    chrome_cache::reset();
+    for _ in 0..10 {
+        draw(&mut cx, window);
+    }
+    let built = chrome_cache::get(Counted::SidebarRows);
+    let frames = chrome_cache::get(Counted::Workspace);
+    println!("ui-shots: {n}: rows built {built} times over {frames} frames with no change");
+    assert!(frames >= 10, "{n}: the draws drew ({frames} frames)");
+    assert!(
+        built <= 1,
+        "{n}: rows built {built} times in 10 unchanged frames"
+    );
+
+    // A rename the workspace notifies: built once, and the row says it.
+    let api = cx.read(|cx| ws.read(cx).workspace_of(0).expect("api's workspace"));
+    chrome_cache::reset();
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            ws.model.set_name(api, Some("renamed".into()));
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    draw(&mut cx, window);
+    let built = chrome_cache::get(Counted::SidebarRows);
+    println!("ui-shots: {n}: rows built {built} times for a rename");
+    assert_eq!(built, 1, "{n}: a rename builds the rows once");
+    let named = rows(&mut cx).into_iter().any(
+        |row| matches!(row, SidebarRow::Workspace(w) if w.workspace == api && w.label == "renamed"),
+    );
+    assert!(named, "{n}: the renamed row shows its new name");
+
+    // An age about to turn: api working for 59.7 s ("59s"), told by a notify.
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            let s = ws.sessions.get_mut(0).expect("api's session");
+            s.status = Status::Working;
+            s.status_since = Instant::now() - Duration::from_millis(59_700);
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    draw(&mut cx, window);
+    let age = |cx: &mut VisualTestAppContext| {
+        rows(cx).into_iter().find_map(|row| match row {
+            SidebarRow::Workspace(w) if w.workspace == api => w.age,
+            _ => None,
+        })
+    };
+    assert_eq!(
+        age(&mut cx).as_deref(),
+        Some("59s"),
+        "{n}: api's age before it turns"
+    );
+    // Past the minute, nothing notified: the next frame builds the rows again ("1m").
+    std::thread::sleep(Duration::from_millis(500));
+    chrome_cache::reset();
+    draw(&mut cx, window);
+    let built = chrome_cache::get(Counted::SidebarRows);
+    println!("ui-shots: {n}: rows built {built} times as an age turned");
+    assert_eq!(
+        built, 1,
+        "{n}: the frame after an age turns builds the rows again"
+    );
+    assert_eq!(age(&mut cx).as_deref(), Some("1m"), "{n}: api's age turned");
 }
 
 /// What the waiting session shows: a Claude Code style prompt, drawn in a box 40 columns wide so
@@ -12571,7 +12662,7 @@ fn branch_switcher_open_scene() {
             (ids[0], ids[2], ids[3], vec![ids[6], ids[7]])
         });
         cx.update_window(window, |_, _, cx| {
-            ws.update(cx, |ws, _| {
+            ws.update(cx, |ws, cx| {
                 for (id, at) in [(claude, &folder), (tests, &folder2), (shell, &folder)] {
                     ws.places.set_folder(id, Some(at.clone()), Instant::now());
                 }
@@ -12580,6 +12671,8 @@ fn branch_switcher_open_scene() {
                 ws.programs
                     .set_for_shots(claude, ProgramState::Running("claude".into()));
                 ws.sync();
+                // As the lookups that find these do (M11p: the rows are kept until a notify).
+                cx.notify();
             })
         })
         .expect("point the terminals at the repo");
