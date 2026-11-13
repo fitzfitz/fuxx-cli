@@ -43,6 +43,7 @@ use crate::groups::{self, GroupKey};
 use crate::help_panel::HelpPanel;
 use crate::host_picker::HostPicker;
 use crate::layout_model::{self, Model, PaneId, TabDrop, TabId, TabKind, WorkspaceId};
+use crate::mark_view::{MarkClock, MarkView};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::native_notify::{self, PendingShow, Terminal};
@@ -61,7 +62,7 @@ use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::right_sidebar::RightSidebarState;
 use crate::session_list::SessionList;
 use crate::settings;
-use crate::sidebar::{self, RowGrab, SidebarRow, SidebarState};
+use crate::sidebar::{self, HEADER_MARK, RowGrab, SidebarRow, SidebarState, group_hash};
 use crate::sidebar_toggle::{self, Slide};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
@@ -731,8 +732,12 @@ pub struct Workspace {
     _window_visible: Subscription,
     /// Browser tabs' pages follow macOS's light or dark when it changes.
     _system_appearance: Subscription,
-    /// The status marks' shared clock (see `status_mark`), advanced by their ticker.
-    pub(crate) phase: f32,
+    /// The status marks' shared clock (see `status_mark`), advanced by their ticker, which
+    /// notifies only it (M11p: `mark_view`).
+    pub(crate) clock: Entity<MarkClock>,
+    /// The marks drawn as their own views (`mark_view`), by (place, session id; a closed
+    /// group's header: its key's hash). Pruned in `sync`.
+    pub(crate) marks: RefCell<HashMap<(&'static str, u64), Entity<MarkView>>>,
     /// Whether the marks' 100 ms ticker is running (only while a mark on screen moves).
     pub(crate) marks_ticking: bool,
     /// The last Done pop's number.
@@ -927,7 +932,8 @@ impl Workspace {
             _reduce_motion: reduce_motion,
             _window_visible: window_visible,
             _system_appearance: system_appearance,
-            phase: 0.0,
+            clock: cx.new(|_| MarkClock { phase: 0.0 }),
+            marks: RefCell::default(),
             marks_ticking: false,
             pops: 0,
             persistent,
@@ -1627,11 +1633,23 @@ impl Workspace {
             );
             debug_assert!(repaired.is_empty(), "tabs and sessions out of step");
         }
-        // A gone pane's tab-bar part goes (M11p).
+        // A gone pane's tab-bar part goes (M11p), and a gone session's or group's marks.
         let model = &self.model;
         self.chrome
             .tab_bars
             .retain(|(pane, _), _| model.pane(*pane).is_some());
+        let sessions = self.sessions.items();
+        let groups: Vec<u64> = sessions
+            .iter()
+            .filter_map(|s| s.group().map(|g| group_hash(&g)))
+            .collect();
+        self.marks.get_mut().retain(|(place, key), _| {
+            if *place == HEADER_MARK {
+                groups.contains(key)
+            } else {
+                sessions.iter().any(|s| s.id == *key)
+            }
+        });
         // A ⋯ menu whose pane went goes with it.
         if let Some(menu) = &self.pane_actions
             && self.model.pane(menu.pane).is_none()
@@ -3161,9 +3179,10 @@ impl Workspace {
     }
 
     /// Start the marks' 100 ms ticker unless it's running or nothing on screen moves; it stops,
-    /// without a redraw, once nothing does. `render` calls it, so everything that redraws the
-    /// sidebar (a status, a group closed, the sidebar hidden, the `animations` setting, Reduce
-    /// motion, the window shown again) re-checks it.
+    /// without a redraw, once nothing does. Each tick advances the marks' clock and notifies
+    /// only it (M11p, `mark_view`); the ages keep their own timer (`refresh_ages`). `render`
+    /// calls it, so everything that redraws the sidebar (a status, a group closed, the sidebar
+    /// hidden, the `animations` setting, Reduce motion, the window shown again) re-checks it.
     fn tick_marks(&mut self, cx: &mut Context<Self>) {
         if self.marks_ticking || !self.marks_move(cx) {
             return;
@@ -3176,14 +3195,14 @@ impl Workspace {
                     .update(cx, |this, cx| {
                         this.marks_ticking = this.marks_move(cx);
                         if this.marks_ticking {
-                            this.phase = status_mark::advance(this.phase);
-                            cx.notify();
-                        } else {
-                            // The ages' own timer, which `render` leaves off while the marks
-                            // tick (their redraws turn the ages): stopping draws nothing, so no
-                            // frame would start it (M11p: nothing else redraws a cached sidebar
-                            // or status bar).
-                            this.refresh_ages(false, cx);
+                            // Only the clock (M11p): its moving marks are drawn again, with
+                            // the parts holding them (GPUI redraws a view's ancestors too);
+                            // the workspace isn't notified, so no other part is redrawn and
+                            // the rows aren't built again.
+                            this.clock.update(cx, |clock, cx| {
+                                clock.phase = status_mark::advance(clock.phase);
+                                cx.notify();
+                            });
                         }
                         this.marks_ticking
                     })
@@ -3244,7 +3263,7 @@ impl Render for Workspace {
         // Only the file tabs on screen watch their files.
         self.show_file_tabs(cx);
         self.tick_marks(cx);
-        self.refresh_ages(self.marks_ticking, cx);
+        self.refresh_ages(cx);
         // Nothing the window shows is changed while it's drawn (M11p: a redraw asked for now
         // reaches no one). The timers below look things up between frames and redraw when
         // something changed; render only starts them. The folders: checked every second on

@@ -58,6 +58,7 @@ mod host_picker;
 mod keys;
 mod layout_model;
 mod links;
+mod mark_view;
 mod mcp;
 mod mouse;
 #[allow(dead_code)] // used by the daemon and client from M10a Task 3/4
