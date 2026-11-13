@@ -181,7 +181,6 @@ fn plugin_card(index: usize, state: &Plugins, ui: UiColors, cx: &Context<Prefere
         );
     }
     meta = meta
-        .children(record.description.clone())
         .children(themes_part(record.themes.len()))
         .when(record.runs_code(), |m| {
             m.child(
@@ -209,6 +208,16 @@ fn plugin_card(index: usize, state: &Plugins, ui: UiColors, cx: &Context<Prefere
                         .child(version_text(&record.version, &record.installed)),
                 ),
         )
+        // The description on a line of its own: inside the wrapping row above it was one item as
+        // wide as its whole sentence, so a long one ran under the switch and the buttons. Here it
+        // has the column's width and wraps.
+        .children(record.description.clone().map(|d| {
+            div()
+                .w_full()
+                .text_size(px(NOTE_SIZE))
+                .text_color(hsla(ui.text_dim))
+                .child(d)
+        }))
         .child(meta);
 
     // While this plugin is being changed its buttons give way to what is happening.

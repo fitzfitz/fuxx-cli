@@ -15178,7 +15178,12 @@ fn preferences_plugins_scene() {
                             id: id.into(),
                             name: name.into(),
                             version: "0.3.0".into(),
-                            description: Some("Adds a command to every terminal.".into()),
+                            // As long as fuxx-completes' own: a description that has to wrap
+                            // beside the switch and the buttons (it ran under them, 2026-11-13).
+                            description: Some(
+                                "Grey ghost-text suggestions from your history as you type (zsh)."
+                                    .into(),
+                            ),
                             repo: format!("someone/fuxx-{id}"),
                             installed: Installed::Tag("v0.3.0".into()),
                             themes: vec![],
@@ -15211,6 +15216,10 @@ fn preferences_plugins_scene() {
                             plugins
                                 .updates
                                 .insert("sunset".into(), Installed::Tag("v1.1.0".into()));
+                            // A helper with its switch, an update and Uninstall: the widest card.
+                            plugins
+                                .updates
+                                .insert("tidy".into(), Installed::Tag("v0.3.1".into()));
                         }
                         cx.set_global(plugins);
                     });
