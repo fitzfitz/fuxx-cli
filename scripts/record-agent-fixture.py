@@ -9,10 +9,12 @@ Scenarios (agy): text, tools, resume (needs session-id = conversation id)
 agy: `-p=` and {"event":"user","message":{"content":...}} input (see comments).
 
 Run each recording in a fresh temp dir, never in the repo. The user's own hooks run (nothing
-is switched off). stdout lines are scrubbed (workdir -> /tmp/fx, $HOME -> ~, thinking
-`signature` -> "") and written to <out>; stderr, if any, goes to <out>.stderr.
+is switched off). stdout lines are scrubbed and written to <out>; stderr, if any, goes to
+<out>.stderr. The scrub is always on (workdir -> /tmp/fx, $HOME -> ~, username -> user, thinking
+and signature_delta signatures blanked, `account` replaced, hook output removed). `--no-trim`
+only keeps the long lists in the init lines; the default cuts them to 3 entries.
 """
-import json, os, queue, re, signal, subprocess, sys, threading, time
+import copy, json, os, queue, re, signal, subprocess, sys, threading, time
 
 TIMEOUT = 180
 CLAUDE = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
@@ -32,11 +34,37 @@ TRIM = True  # --trim (default) / --no-trim: shorten the huge list fields of ini
 KEEP = 3
 
 
-def trim_event(e):
-    """Cut every list longer than KEEP to its first KEEP entries in the two bulky events: the
-    `system/init` line and the initialize `control_response` (its `response.response`)."""
-    if not isinstance(e, dict):
-        return e
+def scrub_event(e, scrub):
+    """The one always-on privacy scrub (in place, returns e). `scrub` maps a str to a clean str.
+    Strings: workdir/home/username. Opaque signatures blanked. `account` replaced. Hook output
+    (the user's own hooks) removed."""
+    def walk(o):
+        if isinstance(o, dict):
+            if o.get("type") == "thinking" and "signature" in o:
+                o["signature"] = ""
+            if o.get("type") == "signature_delta" and "signature" in o:
+                o["signature"] = ""
+            if isinstance(o.get("account"), dict):
+                o["account"] = {k: "user@example.com" if k == "email" else "example"
+                                for k in o["account"]}
+            for k, v in o.items():
+                o[k] = walk(v)
+            return o
+        if isinstance(o, list):
+            return [walk(v) for v in o]
+        return scrub(o) if isinstance(o, str) else o
+
+    e = walk(e)
+    if str(e.get("subtype", "")).startswith("hook_"):
+        for k in ("output", "stdout", "stderr"):
+            if e.get(k):
+                e[k] = "<hook output removed>"
+    return e
+
+
+def trim_lists(e):
+    """Optional (--no-trim skips it): cut every list longer than KEEP to its first KEEP entries
+    in the bulky init events: `system/init`, the initialize `control_response`, agy's `init`."""
     box = None
     if e.get("type") == "system" and e.get("subtype") == "init":
         box = e
@@ -48,16 +76,6 @@ def trim_event(e):
         for k, v in box.items():
             if isinstance(v, list) and len(v) > KEEP:
                 box[k] = v[:KEEP]
-        if isinstance(box.get("account"), dict):  # who is logged in
-            box["account"] = {k: "user@example.com" if k == "email" else "example"
-                              for k in box["account"]}
-    inner = e.get("event")
-    if isinstance(inner, dict) and inner.get("delta", {}).get("type") == "signature_delta":
-        inner["delta"]["signature"] = ""  # opaque, large
-    if str(e.get("subtype", "")).startswith("hook_"):  # the user's hook output is private
-        for k in ("output", "stdout", "stderr"):
-            if e.get(k):
-                e[k] = "<hook output removed>"
     return e
 
 
@@ -73,7 +91,7 @@ def tool_starts(r, name="Bash"):
         blocked = any(("hook error" in json.dumps(x) or "Blocked:" in json.dumps(x)) for x in r.lines[mark:] if isinstance(x, dict))
         if not blocked:
             return True
-    return False
+    raise RuntimeError(f"{name} never started (hooks kept blocking it); aborting the scenario")
 
 
 def user(text):
@@ -87,7 +105,7 @@ class Run:
         self.workdir, self.policy = os.path.realpath(workdir), policy
         self.raw_workdir = workdir
         self.out_path = out
-        self.lines = []  # scrubbed output lines (str, or parsed dict while buffered)
+        self.lines = []  # raw output: parsed dicts (or str for non-JSON lines); scrubbed in _write
         self.err_path = out + ".stderr"
         self.deadline = time.time() + TIMEOUT
         self.prompts = 0
@@ -110,35 +128,14 @@ class Run:
         s = re.sub(r"-(private-)?(var-folders|tmp)-[A-Za-z0-9-]+", "-tmp-fx", s)  # mangled cwd in ~/.claude/projects names
         return s.replace(os.path.basename(os.path.expanduser("~")), "user")  # e.g. `ls -l` owners
 
-    def _clean(self, o):
-        """In place: blank thinking signatures, hide the account identity."""
-        if isinstance(o, dict):
-            if o.get("type") == "thinking" and "signature" in o:
-                o["signature"] = ""
-            if isinstance(o.get("account"), dict):
-                o["account"].update({k: v for k, v in (("email", "user@example.com"),
-                                                       ("organization", "Example Org"))
-                                     if k in o["account"]})
-            for v in o.values():
-                self._clean(v)
-        elif isinstance(o, list):
-            for v in o:
-                self._clean(v)
-
-    def _scrub_obj(self, o):
-        if isinstance(o, dict):
-            return {k: self._scrub_obj(v) for k, v in o.items()}
-        if isinstance(o, list):
-            return [self._scrub_obj(v) for v in o]
-        return self.scrub(o) if isinstance(o, str) else o
-
     def _write(self):
         """Scrub every string. Streamed tool input arrives as `partial_json` fragments that can
         split a path, so per content block: join the fragments, scrub, and if that changed
         anything put the whole scrubbed text in the first fragment and "" in the rest."""
-        evs = [self._scrub_obj(x) if isinstance(x, dict) else x for x in self.lines]
+        evs = [scrub_event(copy.deepcopy(x), self.scrub) if isinstance(x, dict) else self.scrub(x)
+               for x in self.lines]
         if TRIM:
-            evs = [trim_event(x) for x in evs]
+            evs = [trim_lists(x) if isinstance(x, dict) else x for x in evs]
         raws, deltas = [], []  # raw fragment text, and the matching scrubbed delta dicts
         for orig, ev in zip(self.lines, evs):
             inner = orig.get("event") if isinstance(orig, dict) else None
@@ -177,11 +174,13 @@ class Run:
                 return None
             try:
                 e = json.loads(line)
-                self._clean(e)
-                text = json.dumps(e, ensure_ascii=False)
+                if not isinstance(e, dict):
+                    raise ValueError
             except ValueError:
-                e, text = {}, line.rstrip("\n")
-            self.lines.append(e if e else self.scrub(text))
+                e = {}
+                self.lines.append(line.rstrip("\n"))  # not JSON: kept as text, scrubbed on write
+            else:
+                self.lines.append(e)
             if e.get("type") == "control_request" and e.get("request", {}).get("subtype") == "can_use_tool":
                 self.prompts += 1
                 self.send(self.answer(e))
@@ -203,6 +202,19 @@ class Run:
     def result(self, secs=None):
         return self.pump(lambda e: e.get("type") == "result", secs)
 
+    def expect_result(self, secs=None):
+        e = self.result(secs)
+        if e is None:
+            raise RuntimeError("no `result` event arrived in time")
+        return e
+
+    def kill(self):
+        """Kill the child's whole process group (it runs in its own session). Safe to repeat."""
+        try:
+            os.killpg(self.p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
     def finish(self):
         try:
             self.p.stdin.close()
@@ -212,10 +224,7 @@ class Run:
             self.p.wait(timeout=10)
         except subprocess.TimeoutExpired:
             pass
-        try:
-            os.killpg(self.p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        self.kill()
         time.sleep(0.3)
         self.deadline = time.time() + 5  # the overall deadline may already have passed
         self.pump(None, 3)  # record anything printed during shutdown (returns at EOF)
@@ -230,62 +239,53 @@ class Run:
         return self.p.returncode
 
 
-def main():
-    global TRIM
-    args = [a for a in sys.argv[1:] if a not in ("--trim", "--no-trim")]
-    TRIM = "--no-trim" not in sys.argv
-    agent, scenario, workdir, out = args[:4]
-    sid = args[4] if len(args) > 4 else None
-    claude = agent == "claude"
-    global IS_AGY
-    IS_AGY = not claude
-    argv = list(CLAUDE if claude else AGY)
-    if scenario == "bad-resume":
-        sid = ZERO
-    if scenario in ("resume", "bad-resume"):
-        if not sid:
-            sys.exit("resume needs a session id as the 5th argument")
-        argv += ["--resume", sid] if claude else ["--conversation", sid]
-    policy = {"permission-deny": "deny", "permission-always": "always"}.get(scenario, "allow")
-    r = Run(argv, workdir, out, policy)
-    if claude:
-        r.send(INIT)
-    tool_prompt = ("Do these four things in order, using the matching tools: 1) Read the file notes.txt "
-                   "2) Edit notes.txt, changing 'alpha' to 'beta' 3) run `ls` with Bash "
-                   "4) write a todo list with two items, using the TodoWrite tool (or the task-list tool, if "
-                   "TodoWrite does not exist). Then say done.")
-    write_prompt = "Create a file named hello.txt containing the word hi, using the Write tool. Do nothing else."
-    if scenario in ("tools",):
-        open(os.path.join(workdir, "notes.txt"), "w").write("alpha\n")
-    if scenario == "text" or scenario == "bad-resume":
+SCENARIOS = {
+    "claude": {"text", "tools", "permission-allow", "permission-deny", "permission-always", "interrupt",
+               "interrupt-text", "queue", "resume", "slash", "bad-resume"},
+    "agy": {"text", "tools", "resume"},
+}
+TOOL_PROMPT = ("Do these four things in order, using the matching tools: 1) Read the file notes.txt "
+               "2) Edit notes.txt, changing 'alpha' to 'beta' 3) run `ls` with Bash "
+               "4) write a todo list with two items, using the TodoWrite tool (or the task-list tool, if "
+               "TodoWrite does not exist). Then say done.")
+WRITE_PROMPT = "Create a file named hello.txt containing the word hi, using the Write tool. Do nothing else."
+SLEEP = "Run `python3 -c 'import time; time.sleep({n})'` with the Bash tool in the foreground (do not background it), then say done."
+
+
+def play(r, scenario):
+    """Send the scenario's messages and wait for what it needs. Raises on a stuck scenario."""
+    if scenario in ("text", "bad-resume"):
         r.send(user("Say hello in one word"))
         r.result()
     elif scenario == "tools":
-        r.send(user(tool_prompt))
+        r.send(user(TOOL_PROMPT))
         r.result()
     elif scenario in ("permission-allow", "permission-deny"):
-        r.send(user(write_prompt))
+        r.send(user(WRITE_PROMPT))
         r.result()
     elif scenario == "permission-always":
-        r.send(user(write_prompt))
+        r.send(user(WRITE_PROMPT))
         r.result()
         r.send(user("Now create hello2.txt containing the word hi, using the Write tool. Do nothing else."))
         r.result()
     elif scenario == "interrupt":
-        r.send(user("Run `python3 -c 'import time; time.sleep(60)'` with the Bash tool in the foreground (do not background it), then say done."))
-        tool_starts(r)
+        r.send(user(SLEEP.format(n=60)))
+        tool_starts(r)  # raises if the tool never really started
         r.send(STOP)
-        r.result(40)
-        r.pump(None, 6)  # whatever arrives after the interrupt
+        r.expect_result(120)  # stdin stays open until the turn has ended
+        # The interrupt's control_response may land after `result`: wait for it too.
+        r.pump(lambda e: e.get("type") == "control_response"
+               and e.get("response", {}).get("request_id") == "fuxx-stop", 10)
     elif scenario == "interrupt-text":  # interrupt while the model is streaming text
         r.send(user("Write a 500-word essay about trains. No tools."))
         r.pump(lambda e: e.get("type") == "stream_event"
                and e["event"].get("delta", {}).get("type") == "text_delta")
         r.send(STOP)
-        r.result(40)
-        r.pump(None, 6)
+        r.expect_result(60)
+        r.pump(lambda e: e.get("type") == "control_response"
+               and e.get("response", {}).get("request_id") == "fuxx-stop", 10)
     elif scenario == "queue":
-        r.send(user("Run `python3 -c 'import time; time.sleep(20)'` with the Bash tool in the foreground (do not background it), then say done."))
+        r.send(user(SLEEP.format(n=20)))
         tool_starts(r)
         r.send(user("Say hello in one word"))
         r.result()
@@ -298,12 +298,50 @@ def main():
         r.result()
         r.send(user("/compact"))
         r.result(90)
-    else:
-        sys.exit("unknown scenario " + scenario)
+
+
+def main():
+    global TRIM, IS_AGY
+    if {"-h", "--help"} & set(sys.argv[1:]) or len(sys.argv) < 5:
+        print(__doc__)
+        sys.exit(0 if len(sys.argv) >= 2 and {"-h", "--help"} & set(sys.argv[1:]) else 2)
+    args = [a for a in sys.argv[1:] if a not in ("--trim", "--no-trim")]
+    TRIM = "--no-trim" not in sys.argv
+    agent, scenario, workdir, out = args[:4]
+    sid = args[4] if len(args) > 4 else None
+    # Validate everything BEFORE spawning the agent, so a bad invocation leaks no child.
+    if agent not in SCENARIOS:
+        sys.exit(f"unknown agent {agent!r} (claude|agy)")
+    if scenario not in SCENARIOS[agent]:
+        sys.exit(f"unknown scenario {scenario!r} for {agent}: {sorted(SCENARIOS[agent])}")
+    if not os.path.isdir(workdir):
+        sys.exit(f"workdir {workdir!r} is not a directory")
+    claude = agent == "claude"
+    IS_AGY = not claude
+    argv = list(CLAUDE if claude else AGY)
     if scenario == "bad-resume":
-        pass
-    code = r.finish()
+        sid = ZERO
+    if scenario in ("resume", "bad-resume"):
+        if not sid:
+            sys.exit("resume needs a session id as the 5th argument")
+        argv += ["--resume", sid] if claude else ["--conversation", sid]
+    if scenario == "tools":
+        open(os.path.join(workdir, "notes.txt"), "w").write("alpha\n")
+    policy = {"permission-deny": "deny", "permission-always": "always"}.get(scenario, "allow")
+    r = Run(argv, workdir, out, policy)
+    failure = None
+    try:
+        if claude:
+            r.send(INIT)
+        play(r, scenario)
+    except (RuntimeError, KeyboardInterrupt, Exception) as ex:  # keep what was captured, then re-raise
+        failure = ex
+    finally:
+        code = r.finish()  # always writes <out>, and always kills the process group
+        r.kill()
     print(f"{agent} {scenario}: exit={code} prompts={r.prompts} out={out}")
+    if failure is not None:
+        raise failure
 
 
 if __name__ == "__main__":

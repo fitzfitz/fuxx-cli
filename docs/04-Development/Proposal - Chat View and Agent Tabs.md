@@ -150,8 +150,9 @@ deny both work.
   - *While a foreground Bash tool runs* (`claude-interrupt.jsonl`, one run): **the interrupt did not stop the
     tool.** The 60 s command ran to completion, the model finished its turn, and the interrupt's `control_response`
     arrived only at the very end (after `result`). So Esc during a long tool may not act until the tool ends; the
-    UI must not claim "stopped" until the `control_response` / `result` shows it. One recording only; worth a
-    second look in M11aa.
+    UI must not claim "stopped" until the `control_response` / `result` shows it. One recording only, and the
+    ordering of the `control_response` relative to `result` is a single observation (the recorder at that time
+    could only capture it because shutdown waited for stragglers); worth a second look in M11aa.
 - **A second user message while a turn runs is accepted and queued** (`claude-queue.jsonl`): sent ~2 s into a
   20 s Bash tool, it produced no event until the first turn's `result`, then a second `system/init` and a normal
   second turn + `result`. `queued_turn_count` was `0` on the first `result` (and on every result seen), so it
