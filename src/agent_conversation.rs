@@ -27,6 +27,8 @@ pub enum Item {
         message: String,
         text: String,
         done: bool,
+        /// The tool call of the sub-agent that said it; `None` for the main agent.
+        parent: Option<String>,
     },
     Tool {
         id: String,
@@ -60,7 +62,9 @@ pub struct Conversation {
     model: Option<String>,
     cost_usd: Option<f64>,
     context_pct: Option<u8>,
-    turn_running: bool,
+    /// Sends not yet answered by a `TurnDone`: Claude queues a message sent mid-turn and
+    /// answers each with its own `result`.
+    outstanding: u32,
     ended: bool,
     /// A turn has finished since the last `you`.
     finished: bool,
@@ -82,11 +86,17 @@ impl Conversation {
                     self.model = model;
                 }
             }
-            Event::TextDelta { message, text } => {
-                let found = self.items.iter_mut().find_map(|i| match i {
+            Event::TextDelta {
+                message,
+                text,
+                parent,
+            } => {
+                // A finished block is closed: a later block of the same message starts anew.
+                let found = self.items.iter_mut().rev().find_map(|i| match i {
                     Item::Agent {
                         message: m,
                         text: t,
+                        done: false,
                         ..
                     } if *m == message => Some(t),
                     _ => None,
@@ -97,15 +107,21 @@ impl Conversation {
                         message,
                         text,
                         done: false,
+                        parent,
                     }),
                 }
             }
-            Event::MessageDone { message, text } => {
-                let found = self.items.iter_mut().find_map(|i| match i {
+            Event::MessageDone {
+                message,
+                text,
+                parent,
+            } => {
+                let found = self.items.iter_mut().rev().find_map(|i| match i {
                     Item::Agent {
                         message: m,
                         text: t,
-                        done,
+                        done: done @ false,
+                        ..
                     } if *m == message => Some((t, done)),
                     _ => None,
                 });
@@ -118,6 +134,7 @@ impl Conversation {
                         message,
                         text,
                         done: true,
+                        parent,
                     }),
                 }
             }
@@ -203,7 +220,13 @@ impl Conversation {
                 }
             }
             Event::TurnDone { ok, message } => {
-                self.turn_running = false;
+                // One finished turn answers one send; a failed or stopped turn drops what was
+                // queued behind it (an interrupt cancels queued messages).
+                self.outstanding = if ok {
+                    self.outstanding.saturating_sub(1)
+                } else {
+                    0
+                };
                 self.finished = true;
                 self.settle();
                 if !ok && let Some(text) = message {
@@ -221,7 +244,7 @@ impl Conversation {
 
     pub fn you(&mut self, text: String, attachments: Vec<String>) {
         self.items.push(Item::You { text, attachments });
-        self.turn_running = true;
+        self.outstanding += 1;
         self.ended = false;
         self.finished = false;
     }
@@ -241,7 +264,7 @@ impl Conversation {
 
     pub fn process_ended(&mut self, code: Option<i32>, stderr_tail: &str) {
         self.ended = true;
-        self.turn_running = false;
+        self.outstanding = 0;
         self.settle();
         let tail = stderr_tail.trim();
         let what = match code {
@@ -263,6 +286,7 @@ impl Conversation {
         for item in &mut self.items {
             match item {
                 Item::Tool { running, .. } => *running = false,
+                Item::Agent { done, .. } => *done = true,
                 Item::Permission { answer, .. } if answer.is_none() => {
                     *answer = Some(Answer::Expired)
                 }
@@ -286,7 +310,7 @@ impl Conversation {
             Status::Done
         } else if self.pending_permission().is_some() {
             Status::Waiting
-        } else if self.turn_running {
+        } else if self.outstanding > 0 {
             Status::Working
         } else if self.finished || !self.items.is_empty() {
             // Anything said (even replayed history) with no turn running reads Done.
@@ -374,7 +398,21 @@ mod tests {
         Event::TextDelta {
             message: message.into(),
             text: text.into(),
+            parent: None,
         }
+    }
+
+    fn done(message: &str, text: &str) -> Event {
+        Event::MessageDone {
+            message: message.into(),
+            text: text.into(),
+            parent: None,
+        }
+    }
+
+    fn decode(fixture: &str) -> Vec<Event> {
+        let mut t = crate::providers::claude::CLAUDE.translator();
+        fixture.lines().flat_map(|l| t.decode(l)).collect()
     }
 
     fn todo(text: &str) -> Event {
@@ -423,10 +461,7 @@ mod tests {
         assert_eq!(c.items().len(), 1);
         assert!(matches!(&c.items()[0],
             Item::Agent { text, done: false, .. } if text == "Hello"));
-        c.apply(Event::MessageDone {
-            message: "m1".into(),
-            text: "Hello!".into(),
-        });
+        c.apply(done("m1", "Hello!"));
         assert_eq!(c.items().len(), 1);
         assert!(matches!(&c.items()[0],
             Item::Agent { text, done: true, .. } if text == "Hello!"));
@@ -662,5 +697,104 @@ mod tests {
                 .iter()
                 .all(|i| matches!(i, Item::Tool { running: false, .. }))
         );
+    }
+
+    #[test]
+    fn a_queued_second_message_keeps_working_until_its_own_result() {
+        // claude-queue.jsonl: two messages sent mid-turn, two `result`s.
+        let mut c = Conversation::new();
+        c.you("A".into(), vec![]);
+        c.you("B".into(), vec![]);
+        let mut results = 0;
+        for e in decode(include_str!("providers/fixtures/claude-queue.jsonl")) {
+            let is_done = matches!(e, Event::TurnDone { .. });
+            c.apply(e);
+            if is_done {
+                results += 1;
+                let want = if results == 1 {
+                    Status::Working
+                } else {
+                    Status::Done
+                };
+                assert_eq!(c.status(), want, "after result {results}");
+            }
+        }
+        assert_eq!(results, 2);
+    }
+
+    #[test]
+    fn an_interrupt_drops_queued_turns_so_status_does_not_stick() {
+        let mut c = Conversation::new();
+        c.you("A".into(), vec![]);
+        c.you("B".into(), vec![]);
+        for e in decode(include_str!(
+            "providers/fixtures/claude-interrupt-text.jsonl"
+        )) {
+            c.apply(e);
+        }
+        assert_eq!(c.status(), Status::Done);
+        // A crash with sends outstanding also clears them.
+        let mut d = Conversation::new();
+        d.you("A".into(), vec![]);
+        d.you("B".into(), vec![]);
+        d.process_ended(Some(1), "");
+        d.you("C".into(), vec![]);
+        d.apply(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        assert_eq!(d.status(), Status::Done);
+    }
+
+    #[test]
+    fn subagent_text_keeps_its_parent() {
+        let mut c = Conversation::new();
+        c.apply(Event::TextDelta {
+            message: "m".into(),
+            text: "hi".into(),
+            parent: Some("toolu_p".into()),
+        });
+        c.apply(Event::MessageDone {
+            message: "m".into(),
+            text: "hi!".into(),
+            parent: Some("toolu_p".into()),
+        });
+        c.apply(done("main", "ok"));
+        assert!(matches!(&c.items()[0],
+            Item::Agent { parent: Some(p), text, done: true, .. } if p == "toolu_p" && text == "hi!"));
+        assert!(matches!(&c.items()[1], Item::Agent { parent: None, .. }));
+    }
+
+    #[test]
+    fn a_second_text_block_does_not_overwrite_the_first() {
+        let mut c = Conversation::new();
+        c.apply(delta("m", "one"));
+        c.apply(done("m", "one"));
+        c.apply(delta("m", "two"));
+        c.apply(done("m", "two"));
+        // Without streaming, a second finished block also stands alone.
+        c.apply(done("n", "a"));
+        c.apply(done("n", "b"));
+        let texts: Vec<&str> = c
+            .items()
+            .iter()
+            .filter_map(|i| match i {
+                Item::Agent { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["one", "two", "a", "b"]);
+    }
+
+    #[test]
+    fn a_turn_end_finishes_a_half_streamed_message() {
+        let mut c = Conversation::new();
+        c.you("x".into(), vec![]);
+        c.apply(delta("m", "partial"));
+        c.apply(Event::TurnDone {
+            ok: false,
+            message: None,
+        });
+        assert!(matches!(&c.items()[1], Item::Agent { done: true, .. }));
     }
 }

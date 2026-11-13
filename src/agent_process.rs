@@ -65,7 +65,13 @@ fn terminate_group(pgid: i32, done: Arc<AtomicBool>) {
 pub enum ProcessEvent {
     /// One stdout line (without its newline).
     Line(String),
-    /// The process ended and stdout was fully read; sent exactly once, after every `Line`.
+    /// The child was reaped (its exit code is known); sent at most once, right after the wait
+    /// and before the output is drained, so a straggler holding stdout open delays `Exited` but
+    /// not this. Lines may still follow it. Not sent when the child was never started (killed
+    /// before spawn: only `Exited { code: None }` comes) or on `SpawnFailed`.
+    Ended { code: Option<i32> },
+    /// The process ended and stdout was fully read; sent exactly once, last, after every `Line`
+    /// and any `Ended` (not after `SpawnFailed`).
     Exited {
         code: Option<i32>,
         stderr_tail: String,
@@ -79,7 +85,7 @@ pub struct AgentProcess {
     pid: Arc<AtomicI32>,
     /// Set by `kill`, so a child spawned after it is killed at once.
     killed: Arc<AtomicBool>,
-    /// Set once the child is reaped and its output is read.
+    /// Set once the child is reaped (or was never started); `kill` then signals nothing.
     done: Arc<AtomicBool>,
     writer: mpsc::Sender<String>,
 }
@@ -244,6 +250,8 @@ fn run(
     let was_killed = killed.load(Ordering::SeqCst);
     // From here `kill` must not signal the group id again.
     done.store(true, Ordering::SeqCst);
+    let code = status.ok().and_then(|status| status.code());
+    let _ = events.unbounded_send(ProcessEvent::Ended { code });
     if was_killed {
         // Stragglers of the group could hold the pipes open; the leader is gone, not the group.
         signal_group(child.id() as i32, SIGKILL);
@@ -255,7 +263,6 @@ fn run(
         .and_then(Result::ok)
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
-    let code = status.ok().and_then(|status| status.code());
     let _ = events.unbounded_send(ProcessEvent::Exited { code, stderr_tail });
 }
 
@@ -342,8 +349,18 @@ mod tests {
         (spawn(argv, Path::new("/"), None, tx), rx)
     }
 
-    /// The next event, or panic after 5 s.
+    /// The next event other than `Ended`, or panic after 5 s.
     fn next(rx: &mut UnboundedReceiver<ProcessEvent>) -> ProcessEvent {
+        loop {
+            match next_raw(rx) {
+                ProcessEvent::Ended { .. } => {}
+                event => return event,
+            }
+        }
+    }
+
+    /// The next event, `Ended` included, or panic after 5 s.
+    fn next_raw(rx: &mut UnboundedReceiver<ProcessEvent>) -> ProcessEvent {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match rx.try_recv() {
@@ -401,6 +418,45 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn ended_comes_once_before_exited_and_nothing_follows() {
+        let (_process, mut rx) = start(&argv("echo out; exit 4"));
+        let mut events = Vec::new();
+        loop {
+            let event = next_raw(&mut rx);
+            let exited = matches!(event, ProcessEvent::Exited { .. });
+            events.push(event);
+            if exited {
+                break;
+            }
+        }
+        let ended: Vec<usize> = (0..events.len())
+            .filter(|i| matches!(events[*i], ProcessEvent::Ended { .. }))
+            .collect();
+        assert_eq!(ended.len(), 1, "{events:?}");
+        assert_eq!(events[ended[0]], ProcessEvent::Ended { code: Some(4) });
+        assert!(matches!(
+            events.last(),
+            Some(ProcessEvent::Exited { code: Some(4), .. })
+        ));
+        assert!(events.contains(&line("out")));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(TryRecvError::Empty | TryRecvError::Closed)
+        ));
+    }
+
+    #[test]
+    fn a_straggler_delays_exited_but_not_ended() {
+        // The shell exits at once; the backgrounded sleep keeps stdout open for ~1 s.
+        let (_process, mut rx) = start(&argv("sleep 1 & exit 0"));
+        let began = Instant::now();
+        assert_eq!(next_raw(&mut rx), ProcessEvent::Ended { code: Some(0) });
+        assert!(began.elapsed() < Duration::from_millis(800));
+        assert!(matches!(next_raw(&mut rx), ProcessEvent::Exited { .. }));
     }
 
     #[test]
