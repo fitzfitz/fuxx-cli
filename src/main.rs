@@ -58,6 +58,7 @@ mod keys;
 mod layout_model;
 mod links;
 mod mcp;
+mod md_preview;
 mod mouse;
 #[allow(dead_code)] // used by the daemon and client from M10a Task 3/4
 mod mux_proto;
