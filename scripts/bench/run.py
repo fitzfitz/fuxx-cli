@@ -4,8 +4,9 @@ HOME and only ever signals PIDs it started (and their descendants, found by walk
 
   run.py --bench DIR bundle NAME BINARY    make DIR/apps/NAME.app (single-arch, ad-hoc signed,
                                            bundle id io.github.fitzfitz.fuxx.bench-NAME)
-  run.py --bench DIR APP PHASE [--tag N]   APP: fuxx-base | fuxx-m11n | ghostty
-                                           PHASE: launch | mem | tput | cpu_base | cpu_noglow | cpu_rest | grid
+  run.py --bench DIR APP PHASE [--tag N]   APP: fuxx-<name> (any bundle made by `bundle`) | ghostty
+                                           PHASE: launch | mem | tput | cpu_base | cpu_working |
+                                           cpu_noglow | cpu_rest | grid
                                            -> DIR/results/APP-PHASE[N].json
   run.py --bench DIR ghostty-bundle        ditto copy of ~/Applications/Ghostty.app -> DIR/apps/Ghostty-bench.app
                                            (not re-signed; the source is only read)
@@ -88,7 +89,8 @@ def med(xs):
 
 
 def do_summary():
-    for app in ("fuxx-base", "fuxx-m11n", "ghostty"):
+    apps = sorted({os.path.basename(f).split("-cpu")[0] for f in glob.glob(f"{B}/results/*-cpu*.json")})
+    for app in apps or ("fuxx-base", "fuxx-m11n", "ghostty"):
         R = lambda p: json.load(open(f"{B}/results/{app}-{p}.json")) if os.path.exists(f"{B}/results/{app}-{p}.json") else None
         if not glob.glob(f"{B}/results/{app}-*.json"):
             continue
@@ -108,7 +110,7 @@ def do_summary():
             for k, label in (("cat100mb", "cat100mb"), ("colors200k", "colors200k")):
                 xs = t[k]["s"]
                 print(f"   {label} {med(xs):.3f} ({min(xs):.3f}-{max(xs):.3f}) {[round(x, 3) for x in xs]}")
-        for phase in ("cpu_base", "cpu_noglow", "cpu_rest"):
+        for phase in ("cpu_base", "cpu_working", "cpu_noglow", "cpu_rest"):
             ok, dropped = [], []
             for f in sorted(glob.glob(f"{B}/results/{app}-{phase}*.json")):
                 r = json.load(open(f))
@@ -148,8 +150,8 @@ else:
 if "--tag" in args and args.index("--tag") + 1 >= len(args):
     sys.exit(__doc__)
 tag = args[args.index("--tag") + 1] if "--tag" in args else ""
-if app not in ("fuxx-base", "fuxx-m11n", "ghostty", "selftest"):
-    sys.exit("APP must be fuxx-base | fuxx-m11n | ghostty")
+if not (app.startswith("fuxx-") or app in ("ghostty", "selftest")):
+    sys.exit("APP must be fuxx-<name> | ghostty")
 if app == "ghostty" and phase in ("cpu_noglow", "cpu_rest"):
     sys.exit(f"{phase} is a fuxx phase (the glow); not for ghostty")
 BIN = bin_of(app) if not SELFTEST else "/bin/sleep"
@@ -198,6 +200,8 @@ def env(extra=None):
         "XDG_STATE_HOME": f"{HOME}/.local/state", "CFFIXED_USER_HOME": HOME,
         "ZDOTDIR": f"{HOME}/zdot",
     }
+    if "FUXX_CHROME_CACHE" in os.environ:  # M11p: the chrome-cache switch (off = the uncached path), passed through
+        e["FUXX_CHROME_CACHE"] = os.environ["FUXX_CHROME_CACHE"]
     e.update(extra or {})
     return e
 
@@ -449,12 +453,20 @@ def run_tput(n):
     return r
 
 
+WORKING_CMD = "while true; do print working $EPOCHREALTIME; sleep 0.5; done"
+
+
 def run_cpu_once():
     """One cpu run: ps CPU time over a 30 s window; frontmost checked every 2 s over the window
     (15 checks), or over the whole 335 s for cpu_rest. frontmost_ok only when every check passed."""
     rest = phase == "cpu_rest"
     mk = marker_path("cpu")
-    p, t0 = launch({"BENCH_MARKER": mk})
+    extra = {"BENCH_MARKER": mk}
+    if phase == "cpu_working":
+        # Keep the terminal Working (M11p): a line every 0.5 s, so StatusTracker holds Working and the marks tick.
+        # Unconfirmed until a real run shows the status reading Working.
+        extra["BENCH_CMD"] = WORKING_CMD
+    p, t0 = launch(extra)
     t_ready = wait_ready(mk)
     start = t_ready + (REST_SKIP if rest else CPU_SKIP)
     check_from = t_ready if rest else start
