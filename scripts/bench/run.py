@@ -89,8 +89,8 @@ def med(xs):
 
 
 def do_summary():
-    apps = sorted({os.path.basename(f).split("-cpu")[0] for f in glob.glob(f"{B}/results/*-cpu*.json")})
-    for app in apps or ("fuxx-base", "fuxx-m11n", "ghostty"):
+    found = {re.sub(r"-(launch|mem|tput|cpu_\w+?)\d*\.json$", "", os.path.basename(f)) for f in glob.glob(f"{B}/results/*.json")}
+    for app in sorted(found | {"fuxx-base", "fuxx-m11n", "ghostty"}):
         R = lambda p: json.load(open(f"{B}/results/{app}-{p}.json")) if os.path.exists(f"{B}/results/{app}-{p}.json") else None
         if not glob.glob(f"{B}/results/{app}-*.json"):
             continue
