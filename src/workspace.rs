@@ -789,6 +789,8 @@ pub struct Workspace {
     pub(crate) folders_ticking: bool,
     /// The window title as last set (`Workspace::render` sets it only when it changes).
     last_title: Option<String>,
+    /// The chrome's cached parts (M11p, `chrome_cache`): made as they're first drawn.
+    pub(crate) chrome: crate::chrome_cache::ChromeParts,
     /// The palette's file listings (`palette_files`).
     pub(crate) palette_files: crate::palette_files::PaletteFiles,
     /// What runs in each terminal, for its name (`Programs`).
@@ -955,6 +957,7 @@ impl Workspace {
             places_ticking: false,
             folders_ticking: false,
             last_title: None,
+            chrome: Default::default(),
             palette_files: Default::default(),
             programs: Programs::default(),
             programs_ticking: false,
@@ -1624,6 +1627,11 @@ impl Workspace {
             );
             debug_assert!(repaired.is_empty(), "tabs and sessions out of step");
         }
+        // A gone pane's tab-bar part goes (M11p).
+        let model = &self.model;
+        self.chrome
+            .tab_bars
+            .retain(|(pane, _), _| model.pane(*pane).is_some());
         // A ⋯ menu whose pane went goes with it.
         if let Some(menu) = &self.pane_actions
             && self.model.pane(menu.pane).is_none()
@@ -2373,7 +2381,12 @@ impl Workspace {
     }
 
     /// A click in a pane, or a move to it: give it the focus (if it hasn't already).
-    fn select_pane(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn select_pane(
+        &mut self,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.model.focused_pane() != Some(pane) {
             if self.model.focus_pane(pane) {
                 self.sync();
@@ -2938,7 +2951,29 @@ impl Workspace {
         let bars: RefCell<HashMap<PaneId, AnyElement>> = RefCell::new(
             tree.leaves()
                 .into_iter()
-                .filter_map(|id| Some((id, self.render_tab_bar(id, ui, top.contains(&id), cx)?)))
+                .filter_map(|id| {
+                    let drags = top.contains(&id);
+                    let part = self
+                        .chrome
+                        .tab_bars
+                        .get(&(id, drags))
+                        .filter(|_| crate::chrome_cache::enabled());
+                    let bar = match part {
+                        Some(part) => {
+                            self.model.pane(id)?;
+                            part.clone()
+                                .cached(
+                                    StyleRefinement::default()
+                                        .flex_none()
+                                        .w_full()
+                                        .h(px(crate::ui_tokens::size::TAB_BAR)),
+                                )
+                                .into_any_element()
+                        }
+                        None => self.render_tab_bar(id, ui, drags, cx)?,
+                    };
+                    Some((id, bar))
+                })
                 .collect(),
         );
         self.tab_scroll
@@ -3171,19 +3206,25 @@ fn key_refs(keys: &[Option<GroupKey>]) -> Vec<Option<&GroupKey>> {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::chrome_cache::bump(crate::chrome_cache::Counted::Workspace);
-        // The title area is composed on every pass (its name and buttons, or the sidebar's band).
-        crate::chrome_cache::bump(crate::chrome_cache::Counted::Title);
         // No drag: a tab or row drag GPUI ended without a drop (released elsewhere) leaves
         // nothing behind, so a later drag of something else (a file from Finder) isn't taken for
         // it (a row taken for dragged would show empty). The slides go with the drag: the layout
         // now matches its gap.
+        // M11p: the chrome's cached parts show these, and are drawn after this. GPUI redraws
+        // the whole window, caches bypassed, on the frame after every drag of ours ends (a
+        // release anywhere, `stop_active_drag` for Esc), so they are drawn afresh with the
+        // reset. Should a drag ever end without that, the reset asks for a redraw once drawn.
         if !cx.has_active_drag() {
-            self.tab_drag.set(None);
-            self.sidebar.drag_source.set(None);
-            self.tab_drop = None;
-            self.sidebar.drop_slot = None;
-            self.sidebar.drop_at = None;
-            self.drag_slides.borrow_mut().clear();
+            let had = self.tab_drag.take().is_some()
+                | self.sidebar.drag_source.take().is_some()
+                | self.tab_drop.take().is_some()
+                | self.sidebar.drop_slot.take().is_some()
+                | self.sidebar.drop_at.take().is_some()
+                | !self.drag_slides.get_mut().is_empty();
+            self.drag_slides.get_mut().clear();
+            if had {
+                cx.defer_in(window, |_, _, cx| cx.notify());
+            }
         }
         // The first frame: the workspace was built in this same update (the window draws once
         // before its effects flush), so a notify made while building hasn't bumped
@@ -3241,6 +3282,12 @@ impl Render for Workspace {
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
         let colors = PaneColors::of(&ui);
+        // M11p: the sidebar, status bar, tab bars and title area as cached parts, unless
+        // `FUXX_CHROME_CACHE=off`; each embedded at a definite size (a cached view isn't measured).
+        let cached = crate::chrome_cache::enabled();
+        if cached {
+            self.sync_chrome(window, cx);
+        }
         // The slide in progress: how much of the sidebar shows. It ends on the first frame past
         // its time; until then every frame asks for the next.
         self.slide = self
@@ -3253,8 +3300,20 @@ impl Render for Workspace {
         // The top band is the sidebar's top; with the sidebar hidden, the pane area's. Sliding,
         // the sidebar is laid over the pane column (which already has its final width, so the
         // terminals re-fit once), not beside it.
-        let sidebar_node =
-            (!self.sidebar.hidden || slide.is_some()).then(|| self.render_sidebar(ui, window, cx));
+        let sidebar_node = (!self.sidebar.hidden || slide.is_some()).then(|| {
+            match self.chrome.sidebar.clone().filter(|_| cached) {
+                // Its own width also while it slides: the holder below moves it.
+                Some(part) => part
+                    .cached(
+                        StyleRefinement::default()
+                            .flex_none()
+                            .w(px(self.sidebar.width))
+                            .h_full(),
+                    )
+                    .into_any_element(),
+                None => self.render_sidebar(ui, window, cx),
+            }
+        });
         let sidebar_width = self.sidebar.width;
         let (sidebar, sliding_sidebar) = match (sidebar_node, slide) {
             (Some(node), Some(shown)) => (
@@ -3279,13 +3338,25 @@ impl Render for Workspace {
         // [🔔] [⚙] [sidebar] at its far right, at the root so they sit over the panes' band and
         // the right sidebar's alike (and over a sidebar sliding out). The name waits for the
         // hide slide to end, so it never paints over the sliding sidebar's title and rows; it
-        // shows at once when the sidebar has left.
-        let name = if self.sidebar.hidden && slide.is_none() {
-            self.render_workspace_name(ui, window)
-        } else {
-            None
+        // shows at once when the sidebar has left (`render_title`).
+        let title_box = || {
+            StyleRefinement::default()
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h(px(TOP_BAND))
         };
-        let band_buttons = self.render_band_buttons(ui, window, cx);
+        let title = match self.chrome.title.clone().filter(|_| cached) {
+            Some(part) => part.cached(title_box()).into_any_element(),
+            None => {
+                let mut holder = div();
+                *holder.style() = title_box();
+                holder
+                    .child(self.render_title(ui, window, cx))
+                    .into_any_element()
+            }
+        };
         let notifications = self.render_notifications(ui, window, cx);
         let new_menu = self.render_new_menu(ui, cx);
         let welcome = self
@@ -3312,12 +3383,22 @@ impl Render for Workspace {
         let panes = self.render_panes(colors, ui, window, cx);
         // M11v part 3: Settings → General → Status Bar off leaves it out; the cards take its
         // room.
-        let status_bar = cx
-            .global::<Appearance>()
-            .status_bar
-            .then(|| self.render_status_bar(ui, window, cx));
-        // Tabs or rows sliding out of a drag's way (the bars and rows were just drawn): every
-        // frame until they're there.
+        let status_bar = cx.global::<Appearance>().status_bar.then(|| {
+            match self.chrome.status_bar.clone().filter(|_| cached) {
+                Some(part) => part
+                    .cached(
+                        StyleRefinement::default()
+                            .flex_none()
+                            .w_full()
+                            .h(px(crate::ui_tokens::size::STATUS_BAR)),
+                    )
+                    .into_any_element(),
+                None => self.render_status_bar(ui, window, cx),
+            }
+        });
+        // Tabs or rows sliding out of a drag's way (drawn inline, the bars and rows were just
+        // drawn): every frame until they're there. (Cached, each part asks for its own frames,
+        // `render_chrome`.)
         if self.drag_slides.borrow().moving(Instant::now()) {
             window.request_animation_frame();
         }
@@ -3510,8 +3591,7 @@ impl Render for Workspace {
             .children(status_bar)
             // The collapsed title bar's name and buttons, over the bands (below the overlays, so
             // the Welcome scrim and the popovers stay above them).
-            .children(name)
-            .children(band_buttons)
+            .child(title)
             // The host picker, the palette, the Help panel and the address box: over
             // everything, centred near the top of the window.
             .when_some(self.host_picker.clone(), |root, picker| {

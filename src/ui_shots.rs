@@ -210,7 +210,11 @@ const SCENES: &[(&str, fn())] = &[
     ("marks", marks),
     ("sidebar-marks", sidebar_marks),
     ("cached-panes", cached_panes),
-    ("chrome-counts-baseline", chrome_counts_baseline),
+    ("chrome-breath-skips-parts", chrome_breath_skips_parts),
+    ("chrome-notify-redraws-parts", chrome_notify_redraws_parts),
+    ("chrome-pane-churn", chrome_pane_churn),
+    ("chrome-kill-switch", chrome_kill_switch),
+    ("chrome-pixels-same", chrome_pixels_same),
     ("chrome-folder-polled", chrome_folder_polled),
     ("chrome-followed", chrome_followed),
     ("chrome-title-once", chrome_title_once),
@@ -1281,80 +1285,516 @@ fn draws_of(
     chrome_cache::get(c)
 }
 
-/// M11p baseline (today's behaviour): a breath-like tick (the focused terminal notifies, not
-/// the workspace) redraws the whole workspace, so every chrome part renders once per draw (the
-/// sidebar's rows, kept since Task 3, aren't built again). Task 4 flips this scene's expectation.
-fn chrome_counts_baseline() {
-    use std::cell::RefCell;
-    use std::rc::Rc;
+/// The chrome's cached parts (M11p Task 4), as counted.
+const PARTS: [Counted; 4] = [
+    Counted::Sidebar,
+    Counted::StatusBar,
+    Counted::TabBar,
+    Counted::Title,
+];
 
-    let theme = shot_theme("Catppuccin Mocha");
-    let dims = size(px(900.0), px(500.0));
-    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
-    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
-    let slot = Rc::new(RefCell::new(None));
-    let window = {
-        let slot = slot.clone();
-        cx.open_offscreen_window(dims, move |window, cx| {
-            cx.set_global(shot_appearance(theme, cx));
-            let ws = cx.new(|cx| {
-                let mut ws = Workspace::for_shots(window, cx);
-                let project = std::path::Path::new("/Users/me/code/api");
-                ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
-                ws.open_shot_session("web", project, SHELL_TEXT, None, window, cx);
-                ws
-            });
-            *slot.borrow_mut() = Some(ws.clone());
-            cx.new(|_| Root {
-                theme,
-                scene: ws.into(),
-            })
-        })
-        .expect("open an off-screen window")
-    };
-    cx.run_until_parked();
-    draw(&mut cx, window.into());
-    draw(&mut cx, window.into());
-    let ws = slot.borrow().clone().expect("the workspace");
-    let view = cx.read(|cx| {
-        let ws = ws.read(cx);
-        let id = ws.focused_terminal().expect("a focused terminal");
-        ws.sessions
-            .items()
-            .iter()
-            .find(|s| s.id == id)
-            .expect("its session")
-            .view
-            .clone()
-    });
-    let tick = |cx: &mut VisualTestAppContext| {
+/// Two terminals split side by side (two tab bars) in one workspace, and a second workspace:
+/// the chrome scenes' window with every part on screen.
+fn chrome_split_window() -> (
+    VisualTestAppContext,
+    AnyWindowHandle,
+    gpui::Entity<Workspace>,
+) {
+    chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new("/Users/me/code/api");
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("web", api, SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_session("docs", api, SHELL_TEXT, None, window, cx);
+        let first = ws.workspace_of(0).expect("api's workspace");
+        ws.select_workspace(first, window, cx);
+    })
+}
+
+/// `breaths` breath ticks (the focused terminal notifies, as the glow does, then a draw):
+/// each part's renders over them, and the workspace's.
+fn breath_counts(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &gpui::Entity<Workspace>,
+    breaths: u64,
+) -> (u64, [(Counted, u64); 4]) {
+    let view = focused_view(cx, ws);
+    chrome_cache::reset();
+    for _ in 0..breaths {
         cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
-    };
-    let mut seen = Vec::new();
-    for c in [
-        Counted::Workspace,
-        Counted::Sidebar,
-        Counted::StatusBar,
-        Counted::TabBar,
-        Counted::Title,
-        Counted::SidebarRows,
-    ] {
-        let n = draws_of(c, &mut cx, window.into(), tick);
-        println!(
-            "ui-shots: chrome-counts-baseline {c:?} = {n} per breath tick ({FRAMES_PER_TICK} frames)"
-        );
-        seen.push((c, n));
+        draw(cx, window);
     }
-    for (c, n) in seen {
-        let per_frame = if c == Counted::SidebarRows {
-            SIDEBAR_ROWS_PER_FRAME
-        } else {
-            1
-        };
+    (
+        chrome_cache::get(Counted::Workspace),
+        PARTS.map(|c| (c, chrome_cache::get(c))),
+    )
+}
+
+/// M11p Task 4 (was Task 1's `chrome-counts-baseline`): a breath redraws the workspace (the
+/// terminal's ancestor) but none of the chrome's cached parts, which reuse their last frame.
+///
+/// Panics unless 10 breath ticks draw the workspace 10 × `FRAMES_PER_TICK` times and each part
+/// (sidebar, status bar, both tab bars, title area) not once; the sidebar's rows aren't built.
+fn chrome_breath_skips_parts() {
+    let n = "chrome-breath-skips-parts";
+    let (mut cx, window, ws) = chrome_split_window();
+    let (frames, parts) = breath_counts(&mut cx, window, &ws, 10);
+    let rows = chrome_cache::get(Counted::SidebarRows);
+    println!("ui-shots: {n}: workspace {frames} frames; parts {parts:?}; rows built {rows}");
+    assert_eq!(frames, 10 * FRAMES_PER_TICK, "{n}: the breaths drew");
+    for (c, count) in parts {
+        assert_eq!(count, 0, "{n}: {c:?} rendered {count} times in 10 breaths");
+    }
+    assert_eq!(rows, SIDEBAR_ROWS_PER_FRAME, "{n}: the rows built");
+}
+
+/// M11p Task 4: one notify of the workspace redraws every part once (each observes it), and
+/// the next frame, with nothing new, none. Then the title area (the sidebar hidden): its
+/// name shows once the hide slide ends, its band buttons take their clicks, and the box it
+/// fills takes none (the band under it still starts a window drag); the sidebar, shown again
+/// by the band's button, is drawn as it is. After every step the frame is the one a full
+/// redraw (every part drawn afresh) gives.
+///
+/// Panics unless all of that holds.
+fn chrome_notify_redraws_parts() {
+    use crate::sidebar_toggle::{BUTTON_Y, HIT, SLIDE};
+    use crate::title_area::band_buttons;
+    use gpui::Modifiers;
+
+    let n = "chrome-notify-redraws-parts";
+    let (mut cx, window, ws) = chrome_split_window();
+    let frames = draws_of(Counted::Workspace, &mut cx, window, |cx| {
+        cx.update(|cx| ws.update(cx, |_, cx| cx.notify()));
+        cx.run_until_parked();
+    });
+    // (Read from the same notify and draw.)
+    let parts = PARTS.map(|c| (c, chrome_cache::get(c)));
+    println!("ui-shots: {n}: one notify: workspace {frames} frames; parts {parts:?}");
+    assert_eq!(
+        frames, FRAMES_PER_TICK,
+        "{n}: the notify's frame and a draw"
+    );
+    for (c, count) in parts {
+        let bars = if c == Counted::TabBar { 2 } else { 1 };
         assert_eq!(
-            n,
-            per_frame * FRAMES_PER_TICK,
-            "chrome-counts-baseline: {c:?} per breath tick"
+            count, bars,
+            "{n}: {c:?} rendered {count} times for one notify"
+        );
+    }
+    assert_fresh(&mut cx, window, &format!("{n}: after a notify"));
+
+    // The sidebar hidden (⌘\), sliding out: the name waits for the slide's end, then shows
+    // with nothing notified (the workspace ends the slide while drawing).
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_sidebar(window, cx))
+    })
+    .expect("hide the sidebar");
+    let start = std::time::Instant::now();
+    while cx.read(|cx| ws.read(cx).slide.is_some()) {
+        assert!(start.elapsed() < SLIDE * 20, "{n}: the slide ends");
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        cx.run_until_parked();
+        next_frame(&mut cx, window);
+    }
+    cx.run_until_parked();
+    draw(&mut cx, window);
+    assert_fresh(&mut cx, window, &format!("{n}: the hide slide ended"));
+
+    // The band under the title's box: a press there starts a window drag.
+    let width = f32::from(
+        cx.update_window(window, |_, window, _| window.viewport_size().width)
+            .expect("the window's width"),
+    );
+    let [bell_x, _, sidebar_x] = band_buttons(width);
+    let band = point(px(width * 0.25), px(BUTTON_Y + HIT / 2.0));
+    cx.simulate_mouse_down(window, band, gpui::MouseButton::Left, Modifiers::none());
+    assert!(
+        cx.read(|cx| ws.read(cx).band_pressed),
+        "{n}: a press on the band under the title's box reaches the band"
+    );
+    cx.simulate_mouse_up(window, band, gpui::MouseButton::Left, Modifiers::none());
+    // The 🔔: its popover.
+    let bell = point(px(bell_x + HIT / 2.0), px(BUTTON_Y + HIT / 2.0));
+    cx.simulate_click(window, bell, Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        cx.read(|cx| ws.read(cx).notifications_popover.is_some()),
+        "{n}: a click on the band's 🔔 opens its popover"
+    );
+    draw(&mut cx, window);
+    assert_fresh(&mut cx, window, &format!("{n}: the popover open"));
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.dismiss_notifications(window, cx))
+    })
+    .expect("close the popover");
+    cx.run_until_parked();
+    // The sidebar button: the sidebar slides back in.
+    let toggle = point(px(sidebar_x + HIT / 2.0), px(BUTTON_Y + HIT / 2.0));
+    cx.simulate_click(window, toggle, Modifiers::none());
+    assert!(
+        !cx.read(|cx| ws.read(cx).sidebar.hidden),
+        "{n}: a click on the band's sidebar button shows the sidebar"
+    );
+    let start = std::time::Instant::now();
+    while cx.read(|cx| ws.read(cx).slide.is_some()) {
+        assert!(start.elapsed() < SLIDE * 20, "{n}: the slide ends");
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        cx.run_until_parked();
+        next_frame(&mut cx, window);
+    }
+    cx.run_until_parked();
+    draw(&mut cx, window);
+    assert_fresh(&mut cx, window, &format!("{n}: the show slide ended"));
+
+    // With the sidebar shown, the top tab bars sit under the title's box: a click on the
+    // other pane's tab reaches it.
+    let (other, tab) = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let focused = ws.model.focused_pane().expect("a focused pane");
+        let other = ws
+            .shown_layout()
+            .expect("a layout")
+            .leaves()
+            .into_iter()
+            .find(|p| *p != focused)
+            .expect("the other pane");
+        let scroll = ws
+            .tab_scroll
+            .borrow()
+            .get(&other)
+            .expect("its row")
+            .0
+            .clone();
+        (other, scroll.bounds_for_item(0).expect("its tab, laid out"))
+    });
+    let on = tab.center();
+    assert!(
+        f32::from(on.y) < crate::ui_tokens::size::TOP_BAND,
+        "{n}: the tab ({on:?}) is under the title's box"
+    );
+    cx.simulate_click(window, on, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| ws.read(cx).model.focused_pane()),
+        Some(other),
+        "{n}: a click on a top tab reaches it"
+    );
+    draw(&mut cx, window);
+    assert_fresh(&mut cx, window, &format!("{n}: the other pane focused"));
+}
+
+/// The platform's next frame, as its display link would deliver it: what was asked for the
+/// next frame (`request_animation_frame`, `on_next_frame`) runs, and the window draws if that
+/// notified something (as the app's would: no explicit draw, which would redraw the workspace
+/// whatever was asked). Whether anything was asked.
+fn next_frame(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> bool {
+    cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx) > 0)
+        .expect("the next frame")
+}
+
+/// The window as it is now (a draw, then its pixels).
+fn frame_now(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> Shot {
+    draw(cx, window);
+    let image = cx.capture_screenshot(window).expect("capture the window");
+    Shot {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    }
+}
+
+/// The window drawn afresh: a refresh, which draws every cached part again.
+fn frame_fresh(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> Shot {
+    cx.update_window(window, |_, window, _| window.refresh())
+        .expect("refresh");
+    frame_now(cx, window)
+}
+
+/// How many bytes of two shots of one window differ (all of them if the sizes do).
+fn bytes_differ(a: &Shot, b: &Shot) -> usize {
+    if (a.width, a.height) != (b.width, b.height) {
+        return a.rgba.len().max(b.rgba.len());
+    }
+    a.rgba.iter().zip(&b.rgba).filter(|(x, y)| x != y).count()
+}
+
+/// Panics (`what`) unless the window as drawn now is what a full redraw draws: no part stale.
+/// On a failure both are saved as `target/ui-shots/stale-{now,fresh}.png`.
+fn assert_fresh(cx: &mut VisualTestAppContext, window: AnyWindowHandle, what: &str) {
+    let now = frame_now(cx, window);
+    let fresh = frame_fresh(cx, window);
+    let differ = bytes_differ(&now, &fresh);
+    if differ > 0 {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+        std::fs::write(dir.join("stale-now.png"), png(&now)).expect("PNG");
+        std::fs::write(dir.join("stale-fresh.png"), png(&fresh)).expect("PNG");
+    }
+    assert_eq!(
+        differ, 0,
+        "{what}: {differ} bytes differ from a full redraw (a part is stale)"
+    );
+}
+
+/// M11p Task 4, Review Focus 5: a pane split, closed or moved: one tab-bar part per pane on
+/// screen, keyed by (pane, whether its bar drags the window); a gone pane's part is dropped,
+/// and a pane that comes to the top edge gets a part that drags the window.
+///
+/// Panics unless after each step the parts are exactly the screen's keys, and the frame is a
+/// full redraw's.
+fn chrome_pane_churn() {
+    use std::collections::HashSet;
+
+    let n = "chrome-pane-churn";
+    let (mut cx, window, ws) = chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new("/Users/me/code/api");
+        let web = std::path::Path::new("/Users/me/code/web");
+        // A workspace not shown yet whose one pane holds more tabs than its bar shows, the
+        // last one shown.
+        ws.open_shot_session("many", web, SHELL_TEXT, None, window, cx);
+        for i in 1..16 {
+            ws.open_shot_tab(&format!("tab {i}"), web, SHELL_TEXT, window, cx);
+        }
+        ws.open_shot_session("a", api, SHELL_TEXT, None, window, cx);
+    });
+    let check = |cx: &mut VisualTestAppContext, step: &str, panes: usize| {
+        cx.run_until_parked();
+        draw(cx, window);
+        let (parts, live) = cx
+            .update_window(window, |_, window, cx| {
+                let ws = ws.read(cx);
+                let parts: HashSet<_> = ws.chrome.tab_bars.keys().copied().collect();
+                let live: HashSet<_> = ws.tab_bar_keys(window).into_iter().collect();
+                (parts, live)
+            })
+            .expect("read the parts");
+        println!("ui-shots: {n}: {step}: parts {parts:?}");
+        assert_eq!(live.len(), panes, "{n}: {step}: panes on screen");
+        assert_eq!(parts, live, "{n}: {step}: one part per pane on screen");
+        assert_fresh(cx, window, &format!("{n}: {step}"));
+    };
+    let act = |cx: &mut VisualTestAppContext,
+               f: &dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| {
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| f(ws, window, cx))
+        })
+        .expect("act on the workspace");
+    };
+    let pane_of = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).model.focused_pane());
+    check(&mut cx, "one pane", 1);
+    let a = pane_of(&mut cx).expect("a's pane");
+    // [a | b]
+    // (A silent `cat`, as `split` would open a shell, whose prompt would come in meanwhile.)
+    let api = std::path::Path::new("/Users/me/code/api");
+    act(&mut cx, &move |ws, w, cx| {
+        ws.open_shot_session("b", api, SHELL_TEXT, Some(Axis::Row), w, cx)
+    });
+    check(&mut cx, "split right", 2);
+    let b = pane_of(&mut cx).expect("b's pane");
+    // [a / c | b]: c under a, not at the top edge.
+    act(&mut cx, &move |ws, w, cx| ws.select_pane(a, w, cx));
+    act(&mut cx, &move |ws, w, cx| {
+        ws.open_shot_session("c", api, SHELL_TEXT, Some(Axis::Column), w, cx)
+    });
+    check(&mut cx, "split a down", 3);
+    let c = pane_of(&mut cx).expect("c's pane");
+    let top = |cx: &mut VisualTestAppContext, pane| {
+        cx.update_window(window, |_, window, cx| {
+            ws.read(cx)
+                .tab_bar_keys(window)
+                .into_iter()
+                .find(|(p, _)| *p == pane)
+                .map(|(_, top)| top)
+        })
+        .expect("read the keys")
+    };
+    assert_eq!(top(&mut cx, c), Some(false), "{n}: c is under a");
+    // a's tab moved into b: a goes, and c comes up to the top edge.
+    act(&mut cx, &move |ws, w, cx| {
+        let tab = ws.model.pane(a).expect("a").tabs[0].id;
+        ws.move_tab(tab, b, 0, w, cx);
+    });
+    check(&mut cx, "a's tab moved into b", 2);
+    assert_eq!(top(&mut cx, c), Some(true), "{n}: c is at the top now");
+    // b closed (its two tabs).
+    act(&mut cx, &move |ws, w, cx| {
+        for tab in ws
+            .model
+            .pane(b)
+            .expect("b")
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .collect::<Vec<_>>()
+        {
+            ws.close_tab(tab, w, cx);
+        }
+    });
+    check(&mut cx, "b closed", 1);
+
+    // The other workspace, shown for the first time: its new bar, not laid out on its first
+    // frame, scrolls to its shown tab (the last) on the frame after, which it asks for itself.
+    act(&mut cx, &|ws, w, cx| {
+        let many = ws.workspace_of(0).expect("many's workspace");
+        ws.select_workspace(many, w, cx);
+    });
+    cx.run_until_parked();
+    while next_frame(&mut cx, window) {
+        cx.run_until_parked();
+    }
+    let (row, left, width) = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let pane = ws.model.focused_pane().expect("many's pane");
+        let p = ws.model.pane(pane).expect("the pane");
+        let last = p.tabs.len() - 1;
+        assert_eq!(p.tabs[last].id, p.active, "{n}: the last tab is shown");
+        let scroll = ws
+            .tab_scroll
+            .borrow()
+            .get(&pane)
+            .expect("its row")
+            .0
+            .clone();
+        let item = scroll.bounds_for_item(last).expect("laid out");
+        // Where it's drawn: its place in the row moved by the row's scroll.
+        (
+            scroll.bounds(),
+            item.origin.x + scroll.offset().x,
+            item.size.width,
+        )
+    });
+    println!("ui-shots: {n}: the row {row:?}, its shown tab drawn at x {left:?}");
+    assert!(
+        left >= row.left() - px(1.0) && left + width <= row.right() + px(1.0),
+        "{n}: the shown tab (x {left:?}, {width:?} wide) is in its row {row:?}"
+    );
+    assert_fresh(
+        &mut cx,
+        window,
+        &format!("{n}: a workspace shown the first time"),
+    );
+}
+
+/// M11p Task 4: `FUXX_CHROME_CACHE=off` draws every part inline, as before M11p: a breath
+/// renders each part once per frame (and no part is made). This scene runs the check in a
+/// child process with the variable set (it is read once per process); in this process (the
+/// cache on) the same breaths render no part.
+///
+/// Panics unless both hold.
+fn chrome_kill_switch() {
+    let n = "chrome-kill-switch";
+    let (mut cx, window, ws) = chrome_split_window();
+    let (frames, parts) = breath_counts(&mut cx, window, &ws, 10);
+    let made = cx.read(|cx| {
+        let c = &ws.read(cx).chrome;
+        [
+            c.sidebar.is_some(),
+            c.status_bar.is_some(),
+            c.title.is_some(),
+        ]
+    });
+    if chrome_cache::enabled() {
+        println!("ui-shots: {n}: cache on: workspace {frames} frames; parts {parts:?}");
+        assert_eq!(made, [true; 3], "{n}: the parts are made");
+        for (c, count) in parts {
+            assert_eq!(count, 0, "{n}: cache on: {c:?} rendered {count} times");
+        }
+        let exe = std::env::current_exe().expect("this program");
+        let child = std::process::Command::new(exe)
+            .args(["__ui-shots", n])
+            .env("FUXX_CHROME_CACHE", "off")
+            .status()
+            .expect("run the scene with the cache off");
+        assert!(child.success(), "{n}: with FUXX_CHROME_CACHE=off: {child}");
+    } else {
+        println!("ui-shots: {n}: cache off: workspace {frames} frames; parts {parts:?}");
+        assert_eq!(made, [false; 3], "{n}: no part is made with the cache off");
+        assert_eq!(frames, 10 * FRAMES_PER_TICK, "{n}: the breaths drew");
+        for (c, count) in parts {
+            let bars = if c == Counted::TabBar { 2 } else { 1 };
+            assert_eq!(
+                count,
+                bars * frames,
+                "{n}: cache off: {c:?} rendered {count} times in {frames} frames"
+            );
+        }
+    }
+}
+
+/// M11p Task 4: a busy window (six workspaces in two groups, a split, waiting, working and done
+/// terminals, notifications, an unseen one) looks the same drawn from the cached parts as drawn
+/// with the cache off, and drawn afresh; with the sidebar shown and hidden (the title area).
+///
+/// Panics unless the frames are identical byte for byte, and the cached frame was drawn with
+/// no part rendering (so it was the parts' reused frame).
+fn chrome_pixels_same() {
+    const BUSY: [ShotSession; 7] = [
+        shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
+        shot("codex", API, Status::Working, 3 * 60, AGENT_TEXT),
+        shot("tests", API, Status::Done, 12 * 60, SHELL_TEXT),
+        shot("shell", API, Status::Idle, 0, SHELL_TEXT),
+        shot("agent", WEB, Status::Waiting, 5 * 60, SHELL_TEXT),
+        shot("server", WEB, Status::Idle, 0, SHELL_TEXT),
+        shot("build", WEB, Status::Done, 40 * 60, SHELL_TEXT),
+    ];
+    let n = "chrome-pixels-same";
+    let (mut cx, window, ws) = chrome_window_with(|window, cx| {
+        let mut ws = sidebar_workspace(&BUSY, Some(3), 3, &[], window, cx);
+        ws.sidebar.hint_dismissed = true;
+        shot_notifications(&mut ws);
+        ws
+    });
+    for hidden in [false, true] {
+        let step = if hidden {
+            "sidebar hidden"
+        } else {
+            "sidebar shown"
+        };
+        if hidden {
+            cx.update(|cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.sidebar.hidden = true;
+                    cx.notify();
+                })
+            });
+            cx.run_until_parked();
+            draw(&mut cx, window);
+        }
+        let phase = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).phase);
+        let at = phase(&mut cx);
+        // A breath: the parts' reused frame.
+        let view = focused_view(&mut cx, &ws);
+        chrome_cache::reset();
+        cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+        let cached = frame_now(&mut cx, window);
+        let parts = PARTS.map(|c| (c, chrome_cache::get(c)));
+        println!("ui-shots: {n}: {step}: parts rendered for the cached frame {parts:?}");
+        for (c, count) in parts {
+            assert_eq!(count, 0, "{n}: {step}: {c:?} rendered for the cached frame");
+        }
+        chrome_cache::shots_off::set(true);
+        let off = frame_fresh(&mut cx, window);
+        chrome_cache::shots_off::set(false);
+        let fresh = frame_fresh(&mut cx, window);
+        assert_eq!(
+            phase(&mut cx),
+            at,
+            "{n}: {step}: the marks didn't move meanwhile"
+        );
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+        let slug = if hidden { "hidden" } else { "shown" };
+        std::fs::write(dir.join(format!("{n}-{slug}-mocha.png")), png(&cached)).expect("PNG");
+        std::fs::write(dir.join(format!("{n}-{slug}-off-mocha.png")), png(&off)).expect("PNG");
+        assert_eq!(
+            bytes_differ(&cached, &off),
+            0,
+            "{n}: {step}: cached vs FUXX_CHROME_CACHE=off"
+        );
+        assert_eq!(
+            bytes_differ(&cached, &fresh),
+            0,
+            "{n}: {step}: cached vs drawn afresh"
         );
     }
 }
@@ -1376,6 +1816,21 @@ fn chrome_window(
     AnyWindowHandle,
     gpui::Entity<Workspace>,
 ) {
+    chrome_window_with(|window, cx| {
+        let mut ws = Workspace::for_shots(window, cx);
+        build(&mut ws, window, cx);
+        ws
+    })
+}
+
+/// `chrome_window` over the workspace `make` makes.
+fn chrome_window_with(
+    make: impl FnOnce(&mut Window, &mut Context<Workspace>) -> Workspace + 'static,
+) -> (
+    VisualTestAppContext,
+    AnyWindowHandle,
+    gpui::Entity<Workspace>,
+) {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1388,11 +1843,7 @@ fn chrome_window(
         let slot = slot.clone();
         cx.open_offscreen_window(dims, move |window, cx| {
             cx.set_global(shot_appearance(theme, cx));
-            let ws = cx.new(|cx| {
-                let mut ws = Workspace::for_shots(window, cx);
-                build(&mut ws, window, cx);
-                ws
-            });
+            let ws = cx.new(|cx| make(window, cx));
             *slot.borrow_mut() = Some(ws.clone());
             cx.new(|_| Root {
                 theme,
@@ -1744,16 +2195,21 @@ fn chrome_rows_once() {
         Some("59s"),
         "{n}: api's age before it turns"
     );
-    // Past the minute, nothing notified: the next frame builds the rows again ("1m").
+    // Past the minute: the age's own redraw (its timer, `refresh_ages`; or, as here, the
+    // moving marks' ticker) builds the rows again ("1m") and the sidebar draws them (M11p
+    // Task 4: a frame with no notify reuses the cached sidebar, so the redraw is what turns it).
+    // (The labels read the real clock, the timers the harness's.)
     std::thread::sleep(Duration::from_millis(500));
     chrome_cache::reset();
+    cx.advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
     draw(&mut cx, window);
     let built = chrome_cache::get(Counted::SidebarRows);
-    println!("ui-shots: {n}: rows built {built} times as an age turned");
-    assert_eq!(
-        built, 1,
-        "{n}: the frame after an age turns builds the rows again"
-    );
+    let drawn = chrome_cache::get(Counted::Sidebar);
+    println!("ui-shots: {n}: rows built {built} times as an age turned, the sidebar drawn {drawn}");
+    assert!(built >= 1, "{n}: an age turning builds the rows");
+    assert!(drawn >= 1, "{n}: the sidebar is drawn as an age turns");
+    assert_fresh(&mut cx, window, &format!("{n}: the turned age"));
     assert_eq!(age(&mut cx).as_deref(), Some("1m"), "{n}: api's age turned");
 }
 
