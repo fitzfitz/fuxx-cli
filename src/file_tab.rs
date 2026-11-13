@@ -72,8 +72,8 @@ use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes
 use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{FileMode, PaneId, TabId, TabKind};
 use crate::md_preview::{self, LinkTarget, is_markdown, link_target};
-use crate::mermaid;
-use crate::mermaid_render::{Entry, Mermaids};
+use crate::mermaid::{self, Asked, Key};
+use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
@@ -2608,18 +2608,29 @@ impl FileTab {
                         let Md::Code { text, .. } = md else {
                             return None;
                         };
-                        let view = view.clone();
-                        let then = move |cx: &mut App| {
-                            view.update(cx, |this, cx| {
-                                this.preview_list.remeasure();
-                                cx.notify();
-                            })
-                            .ok();
+                        let (tell_view, wanted_view) = (view.clone(), view.clone());
+                        let waiter = Waiter {
+                            tell: Box::new(move |cx: &mut App| {
+                                tell_view
+                                    .update(cx, |this, cx| {
+                                        this.preview_list.remeasure();
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }),
+                            // Still wanted: the tab is open, shows its Preview, and its plan
+                            // (this file version, the theme's light or dark) has the diagram.
+                            wanted: Box::new(move |cx: &App, key: &Key| {
+                                wanted_view
+                                    .upgrade()
+                                    .is_some_and(|tab| tab.read(cx).wants_mermaid(key, cx))
+                            }),
                         };
-                        match Mermaids::shown(*key, text, who, then, cx) {
-                            Some(Entry::Ready { image, w, h }) => Shown::Diagram { image, w, h },
-                            Some(Entry::Failed(e)) => Shown::Code(Some(mermaid::note(&e))),
-                            None => Shown::Code(None),
+                        match Mermaids::shown(*key, text, who, waiter, cx) {
+                            Asked::Ready(Drawn { image, w, h }) => Shown::Diagram { image, w, h },
+                            Asked::Failed(e) => Shown::Code(Some(mermaid::note(&e))),
+                            Asked::TooMuch => Shown::Code(Some(mermaid::note(mermaid::TOO_MUCH))),
+                            Asked::Waiting => Shown::Code(None),
                         }
                     }
                 })
@@ -2627,6 +2638,18 @@ impl FileTab {
             .collect();
         self.mermaid_shown = Rc::new(shown);
         self.mermaid_shown.clone()
+    }
+
+    /// Whether this tab still wants diagram `key` drawn (M11ac Part 2, asked before it
+    /// renders): Preview shows, the plan for the file as read has it, and the theme is still
+    /// light or dark as the key says.
+    fn wants_mermaid(&self, key: &Key, cx: &App) -> bool {
+        let dark = cx.global::<Appearance>().theme.is_dark();
+        key.dark == dark
+            && self.preview_shown()
+            && self.mermaid_plan.as_ref().is_some_and(|(_, d, plan)| {
+                *d == dark && plan.contains(&Some(mermaid::Plan::Diagram(*key)))
+            })
     }
 
     /// Show the file as it is, or its diff (`reveal`: a change bar's change, shown when the
