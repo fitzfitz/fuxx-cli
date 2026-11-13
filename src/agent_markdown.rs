@@ -2,6 +2,12 @@
 //! The small markdown subset agent messages use (M11aa): paragraphs, headings, bullets, numbered
 //! items, fenced code, and inline code / bold / links. Pure and GPUI-free. Anything it does not
 //! understand stays literal text, and an unterminated fence is code to the end (streaming).
+//!
+//! M11ac extends it, additively, for the file tab's Markdown Preview: italic, images (their alt
+//! text), autolinks, `\` escapes, block quotes (holding blocks), tables, horizontal rules,
+//! setext headings, task items, and list items nested by their indent (`Md::Nested`). An item's
+//! indented next line joins it. Not understood (left as text): HTML, indented code blocks,
+//! reference links, footnotes, strikethrough, a span inside bold or italic.
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Md {
@@ -9,7 +15,33 @@ pub enum Md {
     Heading(u8, Vec<Span>),
     Bullet(Vec<Span>),
     Numbered(u32, Vec<Span>),
-    Code { lang: Option<String>, text: String },
+    Code {
+        lang: Option<String>,
+        text: String,
+    },
+    /// M11ac (a whole file read as Markdown, the file tab's Preview): a task item, done or not.
+    Task(bool, Vec<Span>),
+    /// A list item (`Bullet`, `Numbered`, `Task`) this many levels in (1 and up).
+    Nested(u8, Box<Md>),
+    /// A block quote: the blocks inside it.
+    Quote(Vec<Md>),
+    /// A table: each column's alignment, the header's cells, and each row's (as many cells).
+    Table {
+        align: Vec<Align>,
+        head: Vec<Vec<Span>>,
+        rows: Vec<Vec<Vec<Span>>>,
+    },
+    /// A horizontal rule.
+    Rule,
+}
+
+/// A table column's alignment (`:--`, `:-:`, `--:`; none given: `Default`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    Default,
+    Left,
+    Center,
+    Right,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -17,64 +49,289 @@ pub enum Span {
     Text(String),
     Code(String),
     Bold(String),
-    Link { text: String, url: String },
+    Link {
+        text: String,
+        url: String,
+    },
+    /// M11ac: `*text*` or `_text_`.
+    Italic(String),
+    /// M11ac: `![alt](url)` (shown as its alt text).
+    Image {
+        alt: String,
+        url: String,
+    },
 }
 
-/// Parse message text into blocks.
+/// What a list item is.
+#[derive(Clone, Copy)]
+enum Item {
+    Bullet,
+    Numbered(u32),
+    Task(bool),
+}
+
+/// Parse message text into blocks. (M11ac: also a whole file read as Markdown: block quotes,
+/// tables, rules, setext headings, task items and nested lists; the agent subset parses as
+/// before.)
 pub fn parse(text: &str) -> Vec<Md> {
-    let mut out = Vec::new();
-    let mut para: Vec<&str> = Vec::new();
-    let mut lines = text.lines();
-    while let Some(line) = lines.next() {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut p = Parser::default();
+    let mut i = 0;
+    while i < lines.len() {
+        i = p.line(&lines, i);
+    }
+    p.flush();
+    p.out
+}
+
+#[derive(Default)]
+struct Parser<'a> {
+    out: Vec<Md>,
+    para: Vec<&'a str>,
+    /// The list item being read: its depth, kind and lines (an indented line joins it).
+    item: Option<(u8, Item, Vec<&'a str>)>,
+    /// The open list items' indents, outermost first: an item's depth is its place here.
+    indents: Vec<usize>,
+}
+
+impl<'a> Parser<'a> {
+    /// Read the line at `i` (and any after it that belong to the same block); the next one's
+    /// index.
+    fn line(&mut self, lines: &[&'a str], i: usize) -> usize {
+        let line = lines[i];
         let trimmed = line.trim_start();
+        let indent = indent_of(line);
+        if trimmed.trim().is_empty() {
+            self.flush();
+            return i + 1;
+        }
         if let Some(rest) = trimmed.strip_prefix("```") {
-            flush(&mut para, &mut out);
+            self.block(indent);
             let lang = rest.trim();
             let mut body: Vec<&str> = Vec::new();
-            for l in lines.by_ref() {
+            let mut at = i + 1;
+            while at < lines.len() {
+                let l = lines[at];
+                at += 1;
                 if l.trim_start().starts_with("```") {
                     break;
                 }
                 body.push(l);
             }
-            out.push(Md::Code {
+            self.out.push(Md::Code {
                 lang: (!lang.is_empty()).then(|| lang.to_string()),
                 text: body.join("\n"),
             });
-        } else if trimmed.trim().is_empty() {
-            flush(&mut para, &mut out);
-        } else if let Some((level, rest)) = heading(trimmed) {
-            flush(&mut para, &mut out);
-            out.push(Md::Heading(level, spans(rest)));
-        } else if let Some(rest) = trimmed
-            .strip_prefix("- ")
-            .or_else(|| trimmed.strip_prefix("* "))
+            return at;
+        }
+        if trimmed.starts_with('>') {
+            self.block(indent);
+            let mut inner: Vec<&str> = Vec::new();
+            let mut at = i;
+            while let Some(rest) = lines.get(at).and_then(|l| l.trim_start().strip_prefix('>')) {
+                inner.push(rest.strip_prefix(' ').unwrap_or(rest));
+                at += 1;
+            }
+            self.out.push(Md::Quote(parse(&inner.join("\n"))));
+            return at;
+        }
+        if let Some(align) = lines.get(i + 1).and_then(|next| separator(next))
+            && trimmed.contains('|')
+            && cells(trimmed).len() == align.len()
         {
-            flush(&mut para, &mut out);
-            out.push(Md::Bullet(spans(rest.trim())));
-        } else if let Some((n, rest)) = numbered(trimmed) {
-            flush(&mut para, &mut out);
-            out.push(Md::Numbered(n, spans(rest.trim())));
+            self.block(indent);
+            let head: Vec<Vec<Span>> = cells(trimmed).into_iter().map(spans).collect();
+            let width = head.len();
+            let mut rows = Vec::new();
+            let mut at = i + 2;
+            while let Some(l) = lines
+                .get(at)
+                .filter(|l| !l.trim().is_empty() && l.contains('|'))
+            {
+                let mut row: Vec<Vec<Span>> = cells(l.trim()).into_iter().map(spans).collect();
+                row.resize(width, Vec::new());
+                rows.push(row);
+                at += 1;
+            }
+            self.out.push(Md::Table { align, head, rows });
+            return at;
+        }
+        if !self.para.is_empty() {
+            let bare = line.trim();
+            let all = |c: char| bare.chars().all(|x| x == c);
+            let level = if all('=') && !bare.is_empty() {
+                Some(1)
+            } else if all('-') && bare.len() >= 3 {
+                Some(2)
+            } else {
+                None
+            };
+            if let Some(level) = level {
+                let title = spans(&self.para.join("\n"));
+                self.para.clear();
+                self.out.push(Md::Heading(level, title));
+                self.indents.clear();
+                return i + 1;
+            }
+        }
+        if is_rule(trimmed) {
+            self.block(indent);
+            self.out.push(Md::Rule);
+        } else if let Some((level, rest)) = heading(trimmed) {
+            self.block(indent);
+            self.out.push(Md::Heading(level, spans(rest)));
+        } else if let Some((kind, rest)) = list_item(trimmed) {
+            self.flush();
+            while self.indents.last().is_some_and(|&top| top > indent) {
+                self.indents.pop();
+            }
+            if self.indents.last() != Some(&indent) {
+                self.indents.push(indent);
+            }
+            let depth = (self.indents.len() - 1).min(u8::MAX as usize) as u8;
+            self.item = Some((depth, kind, vec![rest.trim()]));
+        } else if let Some((_, _, item_lines)) = self.item.as_mut().filter(|_| indent >= 2) {
+            item_lines.push(line.trim());
         } else {
-            para.push(line.trim());
+            self.flush_item();
+            if self.para.is_empty() && indent == 0 {
+                self.indents.clear();
+            }
+            self.para.push(line.trim());
+        }
+        i + 1
+    }
+
+    /// A block that isn't a list item starts: what was being read ends, and at the left edge,
+    /// so do the lists.
+    fn block(&mut self, indent: usize) {
+        self.flush();
+        if indent == 0 {
+            self.indents.clear();
         }
     }
-    flush(&mut para, &mut out);
-    out
+
+    fn flush(&mut self) {
+        self.flush_item();
+        if !self.para.is_empty() {
+            self.out.push(Md::Para(spans(&self.para.join("\n"))));
+            self.para.clear();
+        }
+    }
+
+    fn flush_item(&mut self) {
+        let Some((depth, kind, lines)) = self.item.take() else {
+            return;
+        };
+        let text = spans(&lines.join("\n"));
+        let md = match kind {
+            Item::Bullet => Md::Bullet(text),
+            Item::Numbered(n) => Md::Numbered(n, text),
+            Item::Task(done) => Md::Task(done, text),
+        };
+        self.out.push(match depth {
+            0 => md,
+            d => Md::Nested(d, Box::new(md)),
+        });
+    }
 }
 
-fn flush(para: &mut Vec<&str>, out: &mut Vec<Md>) {
-    if !para.is_empty() {
-        out.push(Md::Para(spans(&para.join("\n"))));
-        para.clear();
+/// A line's indent in columns (a tab: 4).
+fn indent_of(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| c.is_whitespace())
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum()
+}
+
+/// A list item's kind and text: `- `, `* `, `+ `, `1. `; a bullet's `[ ] ` or `[x] ` makes it
+/// a task.
+fn list_item(line: &str) -> Option<(Item, &str)> {
+    if let Some(rest) = ["- ", "* ", "+ "].iter().find_map(|m| line.strip_prefix(m)) {
+        let rest = rest.trim_start();
+        for (mark, done) in [("[ ]", false), ("[x]", true), ("[X]", true)] {
+            if let Some(after) = rest.strip_prefix(mark)
+                && (after.is_empty() || after.starts_with(' '))
+            {
+                return Some((Item::Task(done), after));
+            }
+        }
+        return Some((Item::Bullet, rest));
     }
+    if line == "-" || line == "*" || line == "+" {
+        return Some((Item::Bullet, ""));
+    }
+    numbered(line).map(|(n, rest)| (Item::Numbered(n), rest))
+}
+
+/// `---`, `***` or `___` (three or more, spaces allowed between).
+fn is_rule(line: &str) -> bool {
+    let marks: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+    marks.len() >= 3 && matches!(marks[0], '-' | '*' | '_') && marks.iter().all(|&c| c == marks[0])
+}
+
+/// A table's separator line (`|:--|:-:|--:|`): each column's alignment.
+fn separator(line: &str) -> Option<Vec<Align>> {
+    let line = line.trim();
+    if !line.contains('-') {
+        return None;
+    }
+    cells(line)
+        .into_iter()
+        .map(|cell| {
+            let left = cell.starts_with(':');
+            let right = cell.ends_with(':');
+            let dashes = cell.trim_start_matches(':').trim_end_matches(':');
+            if dashes.is_empty() || !dashes.chars().all(|c| c == '-') {
+                return None;
+            }
+            Some(match (left, right) {
+                (true, true) => Align::Center,
+                (true, false) => Align::Left,
+                (false, true) => Align::Right,
+                (false, false) => Align::Default,
+            })
+        })
+        .collect()
+}
+
+/// A table line's cells, trimmed: split at each `|` that isn't escaped or in inline code, the
+/// first and last dropped when the line starts or ends with one.
+fn cells(line: &str) -> Vec<&str> {
+    let line = line.trim();
+    let line = line.strip_prefix('|').unwrap_or(line);
+    let line = match line.strip_suffix('|') {
+        Some(rest) if !rest.ends_with('\\') => rest,
+        _ => line,
+    };
+    let mut out = Vec::new();
+    let (mut start, mut code, mut escaped) = (0, false, false);
+    for (i, c) in line.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '`' => code = !code,
+            '|' if !code => {
+                out.push(line[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(line[start..].trim());
+    out
 }
 
 fn heading(line: &str) -> Option<(u8, &str)> {
     let hashes = line.chars().take_while(|&c| c == '#').count();
     if (1..=6).contains(&hashes) {
-        let rest = line[hashes..].strip_prefix(' ')?;
-        return Some((hashes as u8, rest.trim()));
+        let rest = line[hashes..].strip_prefix(' ')?.trim();
+        // Closing hashes (`## Title ##`) go.
+        let open = rest.trim_end_matches('#');
+        if open.len() < rest.len() && (open.is_empty() || open.ends_with(' ')) {
+            return Some((hashes as u8, open.trim_end()));
+        }
+        return Some((hashes as u8, rest));
     }
     None
 }
@@ -88,12 +345,21 @@ fn numbered(line: &str) -> Option<(u32, &str)> {
     Some((line[..digits].parse().ok()?, rest))
 }
 
-/// Inline spans. A marker without its closing partner stays literal text.
+/// Inline spans. A marker without its closing partner stays literal text; `\` before a
+/// punctuation mark keeps the mark literal (M11ac).
 fn spans(text: &str) -> Vec<Span> {
     let mut out = Vec::new();
     let mut plain = String::new();
     let mut rest = text;
+    let mut prev: Option<char> = None;
     while let Some(c) = rest.chars().next() {
+        let next = rest[c.len_utf8()..].chars().next();
+        if let Some(n) = next.filter(|n| c == '\\' && n.is_ascii_punctuation()) {
+            plain.push(n);
+            prev = Some(n);
+            rest = &rest[2..];
+            continue;
+        }
         let found = if c == '`' {
             rest[1..]
                 .find('`')
@@ -103,8 +369,17 @@ fn spans(text: &str) -> Vec<Span> {
                 .find("**")
                 .filter(|&e| e > 0)
                 .map(|e| (Span::Bold(inner[..e].to_string()), e + 4))
+        } else if c == '*' || c == '_' {
+            italic(rest, c, prev)
         } else if c == '[' {
             link(rest)
+        } else if c == '!' && next == Some('[') {
+            link(&rest[1..]).map(|(span, used)| match span {
+                Span::Link { text, url } => (Span::Image { alt: text, url }, used + 1),
+                other => (other, used + 1),
+            })
+        } else if c == '<' {
+            autolink(rest)
         } else {
             None
         };
@@ -114,10 +389,12 @@ fn spans(text: &str) -> Vec<Span> {
                     out.push(Span::Text(std::mem::take(&mut plain)));
                 }
                 out.push(span);
+                prev = rest[..used].chars().last();
                 rest = &rest[used..];
             }
             None => {
                 plain.push(c);
+                prev = Some(c);
                 rest = &rest[c.len_utf8()..];
             }
         }
@@ -126,6 +403,53 @@ fn spans(text: &str) -> Vec<Span> {
         out.push(Span::Text(plain));
     }
     out
+}
+
+/// `*text*` or `_text_` at the start of `rest` (`prev`: the character before it). Its text
+/// starts and ends with no space; an `_` inside a word (`snake_case`) is a letter.
+fn italic(rest: &str, mark: char, prev: Option<char>) -> Option<(Span, usize)> {
+    if mark == '_' && prev.is_some_and(char::is_alphanumeric) {
+        return None;
+    }
+    let body = &rest[1..];
+    let first = body.chars().next()?;
+    if first.is_whitespace() || first == mark {
+        return None;
+    }
+    for (i, c) in body.char_indices().skip(1) {
+        if c != mark {
+            continue;
+        }
+        let before = body[..i].chars().last()?;
+        let after = body[i + 1..].chars().next();
+        if before.is_whitespace() || before == mark || after == Some(mark) {
+            continue;
+        }
+        if mark == '_' && after.is_some_and(char::is_alphanumeric) {
+            continue;
+        }
+        return Some((Span::Italic(body[..i].to_string()), i + 2));
+    }
+    None
+}
+
+/// `<https://…>`, `<http://…>` or `<mailto:…>`: a link showing its address.
+fn autolink(rest: &str) -> Option<(Span, usize)> {
+    let end = rest.find('>')?;
+    let url = &rest[1..end];
+    let known = ["https://", "http://", "mailto:"]
+        .iter()
+        .any(|s| url.starts_with(s));
+    if !known || url.contains(char::is_whitespace) || url.contains('<') {
+        return None;
+    }
+    Some((
+        Span::Link {
+            text: url.to_string(),
+            url: url.to_string(),
+        },
+        end + 1,
+    ))
 }
 
 fn link(rest: &str) -> Option<(Span, usize)> {
@@ -215,5 +539,135 @@ mod tests {
                 t(" é")
             ])]
         );
+    }
+}
+
+/// M11ac: the rest of the Markdown a README uses, for the file tab's Preview.
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    fn t(s: &str) -> Span {
+        Span::Text(s.into())
+    }
+
+    #[test]
+    fn italic_needs_a_closing_marker_and_spares_snake_case() {
+        assert_eq!(
+            parse("*a* and _b_ in snake_case_name, a * b * c, **bold**"),
+            vec![Md::Para(vec![
+                Span::Italic("a".into()),
+                t(" and "),
+                Span::Italic("b".into()),
+                t(" in snake_case_name, a * b * c, "),
+                Span::Bold("bold".into()),
+            ])]
+        );
+        assert_eq!(
+            parse("an *open one"),
+            vec![Md::Para(vec![t("an *open one")])]
+        );
+    }
+
+    #[test]
+    fn escapes_images_and_autolinks() {
+        assert_eq!(
+            parse(r"\*not\* ![logo](a.png) <https://e.x/y>"),
+            vec![Md::Para(vec![
+                t("*not* "),
+                Span::Image {
+                    alt: "logo".into(),
+                    url: "a.png".into()
+                },
+                t(" "),
+                Span::Link {
+                    text: "https://e.x/y".into(),
+                    url: "https://e.x/y".into()
+                },
+            ])]
+        );
+    }
+
+    #[test]
+    fn rules_setext_headings_and_closing_hashes() {
+        assert_eq!(
+            parse("Title\n=====\nSub\n---\n\npara\n\n---\n***\n_ _ _\n## Closed ##"),
+            vec![
+                Md::Heading(1, vec![t("Title")]),
+                Md::Heading(2, vec![t("Sub")]),
+                Md::Para(vec![t("para")]),
+                Md::Rule,
+                Md::Rule,
+                Md::Rule,
+                Md::Heading(2, vec![t("Closed")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn block_quotes_hold_blocks() {
+        assert_eq!(
+            parse("> # T\n> - a\n>\n> b\nafter"),
+            vec![
+                Md::Quote(vec![
+                    Md::Heading(1, vec![t("T")]),
+                    Md::Bullet(vec![t("a")]),
+                    Md::Para(vec![t("b")]),
+                ]),
+                Md::Para(vec![t("after")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn task_items_and_nesting_by_indent() {
+        assert_eq!(
+            parse(
+                "- [ ] todo\n* [X] done\n  - inner\n    1. deep\n      more\n- back\n\ntext\n  - fresh"
+            ),
+            vec![
+                Md::Task(false, vec![t("todo")]),
+                Md::Task(true, vec![t("done")]),
+                Md::Nested(1, Box::new(Md::Bullet(vec![t("inner")]))),
+                Md::Nested(2, Box::new(Md::Numbered(1, vec![t("deep\nmore")]))),
+                Md::Bullet(vec![t("back")]),
+                Md::Para(vec![t("text")]),
+                Md::Bullet(vec![t("fresh")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn tables_with_alignment_and_short_rows() {
+        let cell = |s: &str| vec![t(s)];
+        assert_eq!(
+            parse(
+                "| A | B | C |\n|:--|:-:|--:|\n| `x` | **y** | z |\n| 1 |\n\na | b\n--- | ---\n1 | 2"
+            ),
+            vec![
+                Md::Table {
+                    align: vec![Align::Left, Align::Center, Align::Right],
+                    head: vec![cell("A"), cell("B"), cell("C")],
+                    rows: vec![
+                        vec![
+                            vec![Span::Code("x".into())],
+                            vec![Span::Bold("y".into())],
+                            cell("z")
+                        ],
+                        vec![cell("1"), vec![], vec![]],
+                    ],
+                },
+                Md::Table {
+                    align: vec![Align::Default, Align::Default],
+                    head: vec![cell("a"), cell("b")],
+                    rows: vec![vec![cell("1"), cell("2")]],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_header_still_streaming_is_a_paragraph() {
+        assert_eq!(parse("| a | b |"), vec![Md::Para(vec![t("| a | b |")])]);
     }
 }
