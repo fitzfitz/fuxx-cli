@@ -34,7 +34,8 @@ pub fn system_reduce_motion() -> bool {
 /// changes.
 pub struct SystemReduceMotion {
     pub on: bool,
-    _observer: Observer,
+    /// None only in the UI screenshots (`for_shots`), which hear of no change from macOS.
+    _observer: Option<Observer>,
 }
 
 impl Global for SystemReduceMotion {}
@@ -43,7 +44,8 @@ impl Global for SystemReduceMotion {}
 /// another Space or covered by other windows); the Workspace redraws when it changes.
 pub struct WindowVisible {
     pub visible: bool,
-    _observer: Observer,
+    /// None only in the UI screenshots (`for_shots`), which hear of no change from macOS.
+    _observer: Option<Observer>,
 }
 
 impl Global for WindowVisible {}
@@ -60,19 +62,35 @@ pub fn watch(cx: &mut App) {
     // SAFETY: a static NSString from AppKit.
     let name = unsafe { NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification };
     let observer = observe(&center, name, None, cx, |cx| {
-        let on = system_reduce_motion();
-        if cx.global::<SystemReduceMotion>().on != on {
-            // `global_mut` tells the global's observers (the Workspace).
-            cx.global_mut::<SystemReduceMotion>().on = on;
-            apply(cx);
-        }
+        reduce_motion_changed(system_reduce_motion(), cx)
     });
     cx.set_global(SystemReduceMotion {
         on: system_reduce_motion(),
-        _observer: observer,
+        _observer: Some(observer),
     });
     apply(cx);
     cx.observe_global::<Appearance>(apply).detach();
+}
+
+/// macOS says Reduce motion is now `on` (what `watch`'s observer does with the setting read).
+pub(crate) fn reduce_motion_changed(on: bool, cx: &mut App) {
+    if cx.global::<SystemReduceMotion>().on != on {
+        // `global_mut` tells the global's observers (the Workspace).
+        cx.global_mut::<SystemReduceMotion>().on = on;
+        apply(cx);
+    }
+}
+
+#[cfg(feature = "ui-shots")]
+impl SystemReduceMotion {
+    /// The global as `watch` sets it, minus the macOS observer (the UI screenshots change it
+    /// with `reduce_motion_changed`).
+    pub fn for_shots(on: bool) -> Self {
+        Self {
+            on,
+            _observer: None,
+        }
+    }
 }
 
 /// Motion is off when the `animations` setting is off or macOS asks for reduced motion.
@@ -99,15 +117,33 @@ pub fn watch_window(before: &[isize], cx: &mut App) {
     let name = unsafe { NSWindowDidChangeOcclusionStateNotification };
     let seen = window.clone();
     let observer = observe(&center, name, Some(&window), cx, move |cx| {
-        let visible = is_visible(&seen);
-        if cx.global::<WindowVisible>().visible != visible {
-            cx.global_mut::<WindowVisible>().visible = visible;
-        }
+        visibility_changed(is_visible(&seen), cx)
     });
     cx.set_global(WindowVisible {
         visible: is_visible(&window),
-        _observer: observer,
+        _observer: Some(observer),
     });
+}
+
+/// The main window can now be seen (`visible`) or not (what `watch_window`'s observer does with
+/// the occlusion state read).
+pub(crate) fn visibility_changed(visible: bool, cx: &mut App) {
+    if cx.global::<WindowVisible>().visible != visible {
+        // `global_mut` tells the global's observers (the Workspace).
+        cx.global_mut::<WindowVisible>().visible = visible;
+    }
+}
+
+#[cfg(feature = "ui-shots")]
+impl WindowVisible {
+    /// The global as `watch_window` sets it, minus the macOS observer (the UI screenshots
+    /// change it with `visibility_changed`).
+    pub fn for_shots(visible: bool) -> Self {
+        Self {
+            visible,
+            _observer: None,
+        }
+    }
 }
 
 /// The first of the app's windows that isn't in `before` (`window_numbers`): the one GPUI just

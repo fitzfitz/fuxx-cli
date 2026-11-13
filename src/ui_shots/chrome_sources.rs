@@ -1,0 +1,1447 @@
+//! M11p Task 5: every source of change reaches its cached chrome part (the user's rule: every
+//! chrome part always shows current data; every source of change gets a test). One scene per
+//! dependency group of note 77, plus the two frames a part asks for itself.
+//!
+//! Each step changes its source the way the app does (the code path the app runs, not a field
+//! poked), then lets frames come only as the app would get them (`settle_frames`: what a notify
+//! draws, then each frame something asked for; no explicit draw, no notify of the scene's own),
+//! and checks the window as shown is what a full redraw draws (no part stale) and, where the
+//! source changes what is seen, that it differs from before.
+//!
+//! `FUXX_SHOTS_KEEP_GOING=1`: a stale step is reported and the scene goes on, failing at its end
+//! (to see every step's outcome under one deliberate break of a source).
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use gpui::{
+    AnyWindowHandle, App, Context, Entity, Modifiers, MouseButton, Pixels, Point,
+    VisualTestAppContext, Window, point, px,
+};
+
+use super::{Shot, bytes_differ, frame_fresh, next_frame, png};
+use crate::chrome_cache;
+use crate::split_tree::Axis;
+use crate::status::Status;
+use crate::terminal_view::TerminalEvent;
+use crate::workspace::Workspace;
+
+/// How late the app may draw an age label that turned, by design: the marks' next tick while
+/// they move (or the age's timer, 20 ms past the turn), and the harness's next catch-up after
+/// it (`Steps::catch_up`).
+const LABEL_LATE: Duration = Duration::from_millis(250);
+
+/// What a step's source should do to the screen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Seen {
+    /// Something shown changes (the step is void if nothing does).
+    Changes,
+    /// Maybe nothing shown changes (the source is still followed by a redraw that must be
+    /// current).
+    Maybe,
+}
+
+/// A scene's steps, each checked as it runs (`step`), and the stale ones (kept going).
+pub(super) struct Steps {
+    n: &'static str,
+    count: usize,
+    stale: Vec<String>,
+    /// When the harness's clock last caught up with the real one (`catch_up`).
+    synced: Instant,
+    /// The scene's workspace (for the ages it shows).
+    ws: Entity<Workspace>,
+}
+
+impl Steps {
+    /// A scene's steps over `window`, once what its setup started has settled and the window
+    /// is drawn afresh (so the first step's frames are its own).
+    pub(super) fn new(
+        n: &'static str,
+        cx: &mut VisualTestAppContext,
+        window: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+    ) -> Self {
+        settle_frames(cx, window);
+        frame_fresh(cx, window);
+        settle_frames(cx, window);
+        Self {
+            n,
+            count: 0,
+            stale: Vec::new(),
+            synced: Instant::now(),
+            ws: ws.clone(),
+        }
+    }
+
+    /// The app's timers run on the harness's clock, the labels they turn (ages) read the real
+    /// one: move the harness's clock on by the real time since it last caught up, so what came
+    /// due meanwhile runs as it would in the app, then its frames.
+    fn catch_up(&mut self, cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+        cx.advance_clock(self.synced.elapsed());
+        self.synced = Instant::now();
+        settle_frames(cx, window);
+    }
+
+    /// Before a step that stops what turns age labels (the window hidden: by design nothing is
+    /// redrawn then, and showing it again redraws): if a label turns within `within`, wait
+    /// until it has and is drawn, so it doesn't turn unseen during the step.
+    pub(super) fn clear_of_age_turns(
+        &mut self,
+        cx: &mut VisualTestAppContext,
+        window: AnyWindowHandle,
+        within: Duration,
+    ) {
+        let soonest = cx.read(|cx| {
+            let now = Instant::now();
+            let ws = self.ws.read(cx);
+            ws.sessions
+                .items()
+                .iter()
+                .filter(|s| s.status != Status::Idle)
+                .map(|s| {
+                    crate::sidebar::next_age_change(now.saturating_duration_since(s.status_since))
+                })
+                .min()
+        });
+        if let Some(wait) = soonest.filter(|w| *w < within) {
+            std::thread::sleep(wait + LABEL_LATE);
+            self.catch_up(cx, window);
+        }
+    }
+
+    /// Each terminal's age (not idle), now: what a stale step reports, to tell an age label
+    /// caught turning from a part not drawn.
+    fn ages(&self, cx: &VisualTestAppContext) -> Vec<(String, Duration)> {
+        cx.read(|cx| {
+            let ws = self.ws.read(cx);
+            let ticking = ws.marks_ticking;
+            ws.sessions
+                .items()
+                .iter()
+                .filter(|s| s.status != Status::Idle)
+                .map(|s| {
+                    (
+                        format!("{} (ticking {ticking})", s.label()),
+                        s.status_since.elapsed(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// After a step: if an age label (by the real clock) turned just now, within what the app
+    /// takes by design to draw a turned label (its timer, 20 ms past the turn; or the marks'
+    /// next tick, while they move), wait that out and let it draw (`catch_up`), so the check
+    /// isn't about a label caught mid-turn (`chrome-ages-current` is about those).
+    fn past_age_turns(&mut self, cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+        let late = LABEL_LATE;
+        let turned = cx.read(|cx| {
+            let now = Instant::now();
+            self.ws
+                .read(cx)
+                .sessions
+                .items()
+                .iter()
+                .filter(|s| s.status != Status::Idle)
+                .any(|s| {
+                    let age = now.saturating_duration_since(s.status_since);
+                    age >= late && crate::sidebar::next_age_change(age - late) <= late
+                })
+        });
+        if turned {
+            std::thread::sleep(late);
+            self.catch_up(cx, window);
+        }
+    }
+
+    /// One source of change: `act` changes it as the app does; then frames as the app gets them
+    /// (`settle_frames`, and the timers that came due meanwhile, `catch_up`); the window as
+    /// shown must be a full redraw's and (`Seen::Changes`) not what it showed before. Panics
+    /// (or, kept going, records) when a part is stale.
+    pub(super) fn step(
+        &mut self,
+        cx: &mut VisualTestAppContext,
+        window: AnyWindowHandle,
+        what: &str,
+        seen: Seen,
+        act: impl FnOnce(&mut VisualTestAppContext),
+    ) {
+        self.count += 1;
+        let n = self.n;
+        self.catch_up(cx, window);
+        let before = shown(cx, window);
+        chrome_cache::reset();
+        act(cx);
+        settle_frames(cx, window);
+        let parts = super::PARTS.map(|c| (c, chrome_cache::get(c)));
+        self.catch_up(cx, window);
+        self.past_age_turns(cx, window);
+        let ages = self.ages(cx);
+        let now = shown(cx, window);
+        let fresh = frame_fresh(cx, window);
+        let stale = bytes_differ(&now, &fresh);
+        let changed = bytes_differ(&before, &fresh);
+        println!("ui-shots: {n}: {what}: parts drawn {parts:?}; {changed} bytes changed");
+        if seen == Seen::Changes {
+            assert!(
+                changed > 0,
+                "{n}: {what}: nothing shown changed (the step tests nothing)"
+            );
+        }
+        if stale > 0 {
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+            let k = self.count;
+            std::fs::write(dir.join(format!("{n}-{k}-stale-now.png")), png(&now)).expect("PNG");
+            std::fs::write(dir.join(format!("{n}-{k}-stale-fresh.png")), png(&fresh)).expect("PNG");
+            let what = format!(
+                "{n}: {what}: {stale} bytes differ from a full redraw (stale); ages then {ages:?}"
+            );
+            if !keep_going() {
+                panic!("{what}");
+            }
+            println!("ui-shots: STALE {what}");
+            self.stale.push(what);
+        }
+    }
+
+    /// Panics if a step was stale (kept going).
+    pub(super) fn done(self) {
+        let n = self.n;
+        assert!(
+            self.stale.is_empty(),
+            "{n}: {} of {} steps stale: {:#?}",
+            self.stale.len(),
+            self.count,
+            self.stale
+        );
+        println!("ui-shots: {n}: {} steps, each current", self.count);
+    }
+}
+
+/// Frames as the app gets them, and nothing else (`settle_frames`, with no cap on how many: an
+/// animation asks for one each frame until it ends, by the real clock): the effects settle (a
+/// notify draws), then each frame something asked for. No explicit draw.
+pub(super) fn settle_frames(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    let started = Instant::now();
+    cx.run_until_parked();
+    while next_frame(cx, window) {
+        cx.run_until_parked();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "frames are still asked for after 10 s"
+        );
+    }
+}
+
+/// Whether a stale step lets the scene go on (`FUXX_SHOTS_KEEP_GOING=1`).
+fn keep_going() -> bool {
+    std::env::var("FUXX_SHOTS_KEEP_GOING").is_ok_and(|v| v == "1")
+}
+
+/// The window as it was last drawn (no draw now).
+pub(super) fn shown(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> Shot {
+    let image = cx.capture_screenshot(window).expect("capture the window");
+    Shot {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    }
+}
+
+/// The AppKit window titled `title` (the scene names its window so; the harness has no other
+/// way to it).
+fn ns_window(title: &str) -> objc2::rc::Retained<objc2_app_kit::NSWindow> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+
+    let mtm = MainThreadMarker::new().expect("the main thread");
+    NSApplication::sharedApplication(mtm)
+        .windows()
+        .to_vec()
+        .into_iter()
+        .find(|w| w.title().to_string() == title)
+        .unwrap_or_else(|| panic!("a window titled {title}"))
+}
+
+/// Session `name`'s place in the list.
+fn index_of(cx: &VisualTestAppContext, ws: &Entity<Workspace>, name: &str) -> usize {
+    cx.read(|cx| ws.read(cx).sessions.position(|s| s.label() == name))
+        .unwrap_or_else(|| panic!("a session named {name}"))
+}
+
+/// Session `name`'s terminal reports `status` as its status tracker would (`shot_status`: the
+/// view's `TerminalEvent::StatusChanged`, which the workspace hears in `on_terminal_event`).
+fn report(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str, status: Status) {
+    let i = index_of(cx, ws, name);
+    let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.shot_status(status, cx)));
+}
+
+/// Act on the workspace in the window (the app's own functions, as its handlers call them).
+fn on_ws(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>),
+) {
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| f(ws, window, cx))
+    })
+    .expect("act on the workspace");
+}
+
+/// api and tests split side by side in one workspace (shown, api focused), and agent in a
+/// workspace of its own (not shown), in another group.
+fn elsewhere_window() -> (VisualTestAppContext, AnyWindowHandle, Entity<Workspace>) {
+    super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        let web = std::path::Path::new(super::WEB);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("tests", api, super::SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_session("agent", web, super::SHELL_TEXT, None, window, cx);
+        let first = ws.sessions.position(|s| s.label() == "api").expect("api");
+        ws.select(first, window, cx);
+    })
+}
+
+/// Review Focus 2: a terminal's status changing where you aren't looking reaches the sidebar
+/// (its row's mark, ring, age and the line under its name) and, for a pane of the shown
+/// workspace, its tab's mark; each by the status's own path (`on_terminal_event`), no other
+/// redraw. The marks' ticker turns a working mark on its own. A Waiting status (which would post a real banner from there) by `set_status` without
+/// the notification, as an SSH hold does; it is the same function.
+///
+/// Panics unless after each the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_status_elsewhere() {
+    let n = "chrome-status-elsewhere";
+    let (mut cx, window, ws) = elsewhere_window();
+    let mut steps = Steps::new(n, &mut cx, window, &ws);
+    let ws = &ws;
+    steps.step(
+        &mut cx,
+        window,
+        "agent (elsewhere) works",
+        Seen::Changes,
+        |cx| report(cx, ws, "agent", Status::Working),
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "agent is done (a short run)",
+        Seen::Changes,
+        |cx| report(cx, ws, "agent", Status::Done),
+    );
+    steps.step(&mut cx, window, "agent waits", Seen::Changes, |cx| {
+        let i = index_of(cx, ws, "agent");
+        cx.update(|cx| ws.update(cx, |ws, cx| ws.set_status(i, Status::Waiting, false, cx)));
+    });
+    steps.step(&mut cx, window, "agent idle", Seen::Changes, |cx| {
+        report(cx, ws, "agent", Status::Idle)
+    });
+    steps.step(
+        &mut cx,
+        window,
+        "tests (not focused) works",
+        Seen::Changes,
+        |cx| report(cx, ws, "tests", Status::Working),
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "the marks' ticker turns tests's tab mark",
+        Seen::Changes,
+        |cx| {
+            for _ in 0..3 {
+                cx.advance_clock(crate::status_mark::TICK);
+                cx.run_until_parked();
+            }
+        },
+    );
+    steps.step(&mut cx, window, "tests is done", Seen::Changes, |cx| {
+        report(cx, ws, "tests", Status::Done)
+    });
+    let unseen = cx.read(|cx| ws.read(cx).notifications.unseen());
+    assert_eq!(
+        unseen, 2,
+        "{n}: the two Done ones are in the 🔔 list, unseen"
+    );
+    steps.done();
+}
+
+/// The model's edits reach the sidebar, the tab bars and the title: a terminal renamed (as
+/// `session.rename`), its workspace moved down (the menu's Move Workspace Down), a row's menu
+/// opened, a colour and a pin chosen from it, a group closed (its header's click), a
+/// workspace opened and one closed.
+///
+/// Panics unless after each the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_model_edits() {
+    use crate::groups::GroupKey;
+    use crate::tab_color::TabColor;
+    use crate::tab_menu::TabAction;
+    use crate::workspace::MoveSessionDown;
+
+    let n = "chrome-model-edits";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        let web = std::path::Path::new(super::WEB);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("tests", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("web", web, super::SHELL_TEXT, None, window, cx);
+        let first = ws.sessions.position(|s| s.label() == "api").expect("api");
+        ws.select(first, window, cx);
+    });
+    let mut steps = Steps::new(n, &mut cx, window, &ws);
+    let ws = &ws;
+    let workspace = |cx: &mut VisualTestAppContext, name: &str| {
+        let i = index_of(cx, ws, name);
+        cx.read(|cx| ws.read(cx).workspace_of(i))
+            .expect("its workspace")
+    };
+    steps.step(&mut cx, window, "api renamed", Seen::Changes, |cx| {
+        let i = index_of(cx, ws, "api");
+        cx.update(|cx| ws.update(cx, |ws, cx| ws.rename_at(i, "server", cx)));
+    });
+    let order = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).model.display_order());
+    let before = order(&mut cx);
+    steps.step(
+        &mut cx,
+        window,
+        "its workspace moved down",
+        Seen::Changes,
+        |cx| cx.dispatch_action(window, MoveSessionDown),
+    );
+    assert_ne!(order(&mut cx), before, "{n}: the order changed");
+    let tests = workspace(&mut cx, "tests");
+    steps.step(
+        &mut cx,
+        window,
+        "tests's row menu opened",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.open_tab_menu(tests, point(px(120.0), px(120.0)), window, cx)
+            })
+        },
+    );
+    steps.step(&mut cx, window, "a colour chosen", Seen::Changes, |cx| {
+        on_ws(cx, window, ws, |ws, window, cx| {
+            ws.choose(TabAction::Color(Some(TabColor::Blue)), window, cx)
+        })
+    });
+    let web = workspace(&mut cx, "web");
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.open_tab_menu(web, point(px(120.0), px(120.0)), window, cx)
+    });
+    steps.step(&mut cx, window, "web pinned", Seen::Changes, |cx| {
+        on_ws(cx, window, ws, |ws, window, cx| {
+            ws.choose(TabAction::Pin(true), window, cx)
+        })
+    });
+    let key = GroupKey::Folder(super::API.into());
+    steps.step(&mut cx, window, "api's group closed", Seen::Changes, |cx| {
+        cx.update(|cx| ws.update(cx, |ws, cx| ws.toggle_group(&key, cx)))
+    });
+    steps.step(&mut cx, window, "a workspace opened", Seen::Changes, |cx| {
+        on_ws(cx, window, ws, |ws, window, cx| {
+            let web = std::path::Path::new(super::WEB);
+            ws.open_shot_session("new", web, super::SHELL_TEXT, None, window, cx)
+        })
+    });
+    let new = workspace(&mut cx, "new");
+    steps.step(&mut cx, window, "it closed", Seen::Changes, |cx| {
+        on_ws(cx, window, ws, |ws, window, cx| {
+            ws.close_workspace(new, window, cx)
+        })
+    });
+    steps.done();
+}
+
+/// Notifications reach the footer's 🔔 and, with the sidebar hidden, the title band's: a
+/// terminal elsewhere is done after a short run (listed, unseen, no banner), the 🔔 clicked
+/// open (all seen), the popover closed; then hidden, another one.
+///
+/// Panics unless after each the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_notifications() {
+    use crate::title_area::{FOOTER_BUTTON, footer_buttons};
+    use crate::ui_tokens::size::STATUS_BAR;
+
+    let n = "chrome-notifications";
+    let (mut cx, window, ws) = elsewhere_window();
+    let ws = &ws;
+    report(&mut cx, ws, "agent", Status::Working);
+    report(&mut cx, ws, "tests", Status::Working);
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let unseen = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).notifications.unseen());
+    steps.step(&mut cx, window, "agent done: unseen", Seen::Changes, |cx| {
+        report(cx, ws, "agent", Status::Done)
+    });
+    assert_eq!(unseen(&mut cx), 1, "{n}: one unseen");
+    let (width, height) = cx
+        .update_window(window, |_, window, cx| {
+            let size = window.viewport_size();
+            (ws.read(cx).sidebar.width, f32::from(size.height))
+        })
+        .expect("the window");
+    let [_, bell_x, _] = footer_buttons(width);
+    let bell = point(
+        px(bell_x + FOOTER_BUTTON / 2.0),
+        px(height - STATUS_BAR - crate::sidebar::FOOTER / 2.0),
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "the 🔔 clicked open",
+        Seen::Changes,
+        |cx| cx.simulate_click(window, bell, Modifiers::none()),
+    );
+    assert!(
+        cx.read(|cx| ws.read(cx).notifications_popover.is_some()),
+        "{n}: the popover opened"
+    );
+    assert_eq!(unseen(&mut cx), 0, "{n}: all seen");
+    steps.step(&mut cx, window, "the popover closed", Seen::Changes, |cx| {
+        on_ws(cx, window, ws, |ws, window, cx| {
+            ws.dismiss_notifications(window, cx)
+        })
+    });
+    // The sidebar hidden: the title band's 🔔.
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.toggle_sidebar(window, cx)
+    });
+    let start = Instant::now();
+    while cx.read(|cx| ws.read(cx).slide.is_some()) {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{n}: the slide ends"
+        );
+        std::thread::sleep(Duration::from_millis(16));
+        settle_frames(&mut cx, window);
+    }
+    steps.step(
+        &mut cx,
+        window,
+        "hidden: tests done: unseen",
+        Seen::Changes,
+        |cx| report(cx, ws, "tests", Status::Done),
+    );
+    assert_eq!(unseen(&mut cx), 1, "{n}: one unseen again");
+    steps.done();
+}
+
+/// Where a terminal is and what runs there, found by the app's own lookups on a real shell: a
+/// `cd` into a git repository (told by OSC 7, then its branch looked up), a program started
+/// (the `ps` lookup), its listening port (the `lsof` lookup): the sidebar's row and the status
+/// bar.
+///
+/// Panics unless each is found and, after each, the window shows what a full redraw does, and
+/// it changed.
+pub(super) fn chrome_places_programs_ports() {
+    use crate::procs::ProgramState;
+    use crate::workspace::{At, PROGRAMS_REFRESH};
+
+    let n = "chrome-places-programs-ports";
+    let dir = std::env::temp_dir().join(format!("fuxx-{n}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(dir.join(sub)).expect("the fixture's folders");
+    }
+    let dir = dir.canonicalize().expect("the fixture's folder");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("/usr/bin/git")
+            .args(["-C", &b.display().to_string()])
+            .args(["-c", "user.name=fuxx", "-c", "user.email=fuxx@example.com"])
+            .args(args)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(ok, "{n}: git {args:?}");
+    };
+    git(&["init", "-q", "-b", "m11p-branch"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "fixture"]);
+    // A shell with job control (so a program it runs is its terminal's foreground job), no rc
+    // files, that waits for a line before each step: the cd (and its OSC 7, as shell
+    // integration says it), then a program, which waits for a line before it listens on a port.
+    let script = r#"read -r _; cd "$0/b" && printf '\033]7;file://%s\a' "$PWD"; read -r _; /usr/bin/perl -MIO::Socket::INET -e '<STDIN>; my $s = IO::Socket::INET->new(Listen => 5, LocalAddr => "127.0.0.1", LocalPort => 0, Proto => "tcp") or die; sleep 600'"#;
+    let program = [
+        "/usr/bin/env",
+        "BASH_SILENCE_DEPRECATION_WARNING=1",
+        "/bin/bash",
+        "--norc",
+        "--noprofile",
+        "-i",
+        "-c",
+        script,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain([dir.display().to_string()])
+    .collect::<Vec<_>>();
+    let start = a.clone();
+    let (mut cx, window, ws) = super::chrome_window(move |ws, window, cx| {
+        // Looked up for real here.
+        ws.places.frozen = false;
+        ws.programs.frozen = false;
+        ws.ports.frozen = false;
+        let api = std::path::Path::new(super::API);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_program(
+            Some("shell"),
+            None,
+            program,
+            Some(&start),
+            "",
+            At::New,
+            window,
+            cx,
+        );
+    });
+    let ws = &ws;
+    let id = cx.read(|cx| ws.read(cx).focused_terminal().expect("the shell"));
+    let view = cx.read(|cx| {
+        let ws = ws.read(cx);
+        ws.sessions.items()[ws.index_of(id).expect("its session")]
+            .view
+            .clone()
+    });
+    // Run the app's timers and lookups until `found` holds (the shell and its program run on
+    // their own time).
+    let until = |cx: &mut VisualTestAppContext, what: &str, found: &dyn Fn(&App) -> bool| {
+        let started = Instant::now();
+        while !cx.read(|cx| found(cx)) {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "{n}: {what} wasn't found"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+            cx.advance_clock(PROGRAMS_REFRESH);
+            cx.run_until_parked();
+        }
+    };
+    until(&mut cx, "the shell's first folder", &|cx| {
+        ws.read(cx).places.folder(id) == Some(a.as_path())
+    });
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let line = |cx: &mut VisualTestAppContext| cx.read(|cx| view.read(cx).write_to_program(b"\n"));
+    steps.step(
+        &mut cx,
+        window,
+        "cd into a git repository",
+        Seen::Changes,
+        |cx| {
+            line(cx);
+            until(cx, "the new folder and its branch", &|cx| {
+                let ws = ws.read(cx);
+                ws.places.folder(id) == Some(b.as_path())
+                    && ws.places.branch(&b) == Some("m11p-branch")
+            });
+        },
+    );
+    let facts = cx.read(|cx| ws.read(cx).status_bar_facts()).expect("facts");
+    assert_eq!(
+        facts.folder.as_deref(),
+        Some(b.as_path()),
+        "{n}: the bar's folder"
+    );
+    assert_eq!(
+        facts.branch.as_deref(),
+        Some("m11p-branch"),
+        "{n}: the bar's branch"
+    );
+    steps.step(&mut cx, window, "a program starts", Seen::Changes, |cx| {
+        line(cx);
+        until(cx, "the program", &|cx| {
+            matches!(ws.read(cx).programs.state(id), ProgramState::Running(_))
+        });
+    });
+    println!(
+        "ui-shots: {n}: running {:?}",
+        cx.read(|cx| ws.read(cx).programs.state(id))
+    );
+    assert!(
+        cx.read(|cx| ws.read(cx).ports.of(id).is_empty()),
+        "{n}: no port yet"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "it listens on a port",
+        Seen::Changes,
+        |cx| {
+            line(cx);
+            until(cx, "its port", &|cx| !ws.read(cx).ports.of(id).is_empty())
+        },
+    );
+    let facts = cx.read(|cx| ws.read(cx).status_bar_facts()).expect("facts");
+    println!(
+        "ui-shots: {n}: the bar: {:?}, ports {:?}",
+        facts.text, facts.ports
+    );
+    assert!(facts.running, "{n}: the bar says a program runs");
+    // The program goes now (it would outlive the terminal by a hang-up it may not get here).
+    let shell = cx
+        .read(|cx| view.read(cx).working_folder().1)
+        .expect("the shell's pid");
+    let table = cx
+        .read(|cx| ws.read(cx).programs.table())
+        .expect("a ps table");
+    for pid in crate::procs::descendants(&table, shell) {
+        let _ = std::process::Command::new("/bin/kill")
+            .arg(pid.to_string())
+            .status();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    steps.done();
+}
+
+/// The globals the chrome reads: the theme switched (the `Appearance` set anew, as a settings
+/// reload sets it), macOS's Reduce motion on and off, the window hidden and shown again (its
+/// occlusion), and an update found (the status bar's pill).
+///
+/// Panics unless after each the window shows what a full redraw does (and, where it should
+/// look different, it changed).
+pub(super) fn chrome_globals() {
+    use crate::reduce_motion::{
+        SystemReduceMotion, WindowVisible, reduce_motion_changed, visibility_changed,
+    };
+    use crate::update_release::CheckOutcome;
+
+    let n = "chrome-globals";
+    let (mut cx, window, ws) = elsewhere_window();
+    let ws = &ws;
+    cx.update(|cx| {
+        cx.set_global(SystemReduceMotion::for_shots(false));
+        cx.set_global(WindowVisible::for_shots(true));
+    });
+    report(&mut cx, ws, "agent", Status::Working);
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    steps.step(
+        &mut cx,
+        window,
+        "theme switched to Latte",
+        Seen::Changes,
+        |cx| {
+            let latte = super::shot_theme("Catppuccin Latte");
+            cx.update(|cx| {
+                let appearance = super::shot_appearance(latte, cx);
+                cx.set_global(appearance)
+            });
+        },
+    );
+    let ticking = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).marks_ticking);
+    assert!(ticking(&mut cx), "{n}: agent's mark moves");
+    steps.step(&mut cx, window, "Reduce motion on", Seen::Maybe, |cx| {
+        cx.update(|cx| reduce_motion_changed(true, cx));
+        // The ticker's next tick finds nothing moving and stops.
+        cx.advance_clock(crate::status_mark::TICK);
+    });
+    assert!(!ticking(&mut cx), "{n}: the marks stopped");
+    steps.step(&mut cx, window, "Reduce motion off", Seen::Maybe, |cx| {
+        cx.update(|cx| reduce_motion_changed(false, cx))
+    });
+    assert!(ticking(&mut cx), "{n}: the marks move again");
+    // (Hidden, nothing turns the ages, by design: none may turn during the step.)
+    steps.clear_of_age_turns(&mut cx, window, Duration::from_millis(600));
+    steps.step(&mut cx, window, "the window hidden", Seen::Maybe, |cx| {
+        cx.update(|cx| visibility_changed(false, cx));
+        // The ticker's next tick finds the window unseen and stops.
+        cx.advance_clock(crate::status_mark::TICK);
+    });
+    assert!(!ticking(&mut cx), "{n}: hidden, the marks stopped");
+    steps.step(
+        &mut cx,
+        window,
+        "the window shown again",
+        Seen::Maybe,
+        |cx| cx.update(|cx| visibility_changed(true, cx)),
+    );
+    // Shown again, it was redrawn (that redraw starts the ticker again).
+    assert!(ticking(&mut cx), "{n}: shown again, the marks move");
+    steps.step(&mut cx, window, "an update found", Seen::Changes, |cx| {
+        let release = super::shot_release();
+        cx.update(|cx| crate::updater::found(CheckOutcome::Newer(release), false, cx));
+    });
+    steps.done();
+}
+
+/// Review Focus 3: the window resized across the width where the open sidebar's band hides the
+/// app's title (`shows_title`), and back (GPUI redraws the whole window on a resize). Full
+/// screen isn't driven here (an off-screen window can't go full screen without taking over a
+/// real screen); going in or out of it resizes the window's view the same way (AppKit sets its
+/// frame size, GPUI's resize callback redraws the whole window), so it takes this path.
+///
+/// Panics unless the title hides and shows again and, after each, the window shows what a full
+/// redraw does.
+pub(super) fn chrome_resize_title() {
+    use crate::title_area::shows_title;
+
+    let n = "chrome-resize-title";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+    });
+    let width = cx.read(|cx| ws.read(cx).sidebar.width);
+    let viewport = |cx: &mut VisualTestAppContext| {
+        cx.update_window(window, |_, window, _| window.viewport_size())
+            .expect("the window's size")
+    };
+    let start = viewport(&mut cx);
+    let shows = |w: f32| shows_title(width, w, false);
+    assert!(
+        shows(f32::from(start.width)),
+        "{n}: the title shows at first"
+    );
+    let narrow = (0..f32::from(start.width) as i32)
+        .rev()
+        .map(|w| w as f32)
+        .find(|w| !shows(*w))
+        .expect("a width that hides the title");
+    println!(
+        "ui-shots: {n}: sidebar {width}, the title hides below {}",
+        narrow + 1.0
+    );
+    // Named, to be found among AppKit's windows (the workspace sets its title only when it
+    // changes, so this one stays).
+    let title = format!("{n}-{}", std::process::id());
+    cx.update_window(window, |_, window, _| window.set_window_title(&title))
+        .expect("name the window");
+    let ns = ns_window(&title);
+    let mut steps = Steps::new(n, &mut cx, window, &ws);
+    for (what, w) in [
+        ("narrowed past it", narrow),
+        ("widened back", f32::from(start.width)),
+    ] {
+        steps.step(&mut cx, window, what, Seen::Changes, |_| {
+            // As a drag of the window's edge does it: AppKit sizes the window, which tells GPUI
+            // (its view's new size), and GPUI redraws the whole window.
+            let height = f64::from(f32::from(start.height));
+            ns.setContentSize(objc2_foundation::NSSize::new(f64::from(w), height));
+        });
+        let now = viewport(&mut cx);
+        assert_eq!(f32::from(now.width), w, "{n}: {what}: resized");
+        assert_eq!(
+            shows(w),
+            w > narrow,
+            "{n}: {what}: the title shows only when wide"
+        );
+    }
+    // The sidebar hidden: the title band's workspace name has its own threshold (`shows_name`).
+    on_ws(&mut cx, window, &ws, |ws, window, cx| {
+        ws.toggle_sidebar(window, cx)
+    });
+    let started = Instant::now();
+    while cx.read(|cx| ws.read(cx).slide.is_some()) {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{n}: the slide ends"
+        );
+        std::thread::sleep(Duration::from_millis(16));
+        settle_frames(&mut cx, window);
+    }
+    let named = |w: f32| crate::title_area::shows_name(w, false);
+    let nameless = (0..f32::from(start.width) as i32)
+        .rev()
+        .map(|w| w as f32)
+        .find(|w| !named(*w))
+        .expect("a width that hides the name");
+    for (what, w) in [
+        ("hidden: narrowed past the name's", nameless),
+        ("hidden: widened back", f32::from(start.width)),
+    ] {
+        steps.step(&mut cx, window, what, Seen::Changes, |_| {
+            let height = f64::from(f32::from(start.height));
+            ns.setContentSize(objc2_foundation::NSSize::new(f64::from(w), height));
+        });
+        assert_eq!(
+            named(w),
+            w > nameless,
+            "{n}: {what}: the name shows only when wide"
+        );
+    }
+    steps.done();
+}
+
+/// Workspace A: api, tests and build as tabs of one pane, web split right of it; B (docs) and
+/// C (notes) below it in the same group. api focused.
+fn drag_window() -> (VisualTestAppContext, AnyWindowHandle, Entity<Workspace>) {
+    super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_tab("tests", api, super::SHELL_TEXT, window, cx);
+        ws.open_shot_tab("build", api, super::SHELL_TEXT, window, cx);
+        ws.open_shot_session("web", api, super::SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_session("docs", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("notes", api, super::SHELL_TEXT, None, window, cx);
+        let first = ws.sessions.position(|s| s.label() == "api").expect("api");
+        ws.select(first, window, cx);
+    })
+}
+
+/// Press on `from`, move past GPUI's drag threshold, then to `to` (still held), and hold still
+/// while what makes way slides (by the real clock).
+fn drag_to(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+) {
+    let left = MouseButton::Left;
+    cx.simulate_mouse_down(window, from, left, Modifiers::none());
+    cx.simulate_mouse_move(
+        window,
+        from + point(px(0.0), px(8.0)),
+        left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(window, to, left, Modifiers::none());
+    std::thread::sleep(crate::drag_gap::SLIDE + Duration::from_millis(30));
+}
+
+/// A point over the right pane's terminal (no bar, no row).
+fn over_terminal(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>) -> Point<Pixels> {
+    let panes = super::shown_panes(cx, ws);
+    let bar = super::tab_bounds(cx, ws, panes[1], 0).expect("web's tab");
+    point(bar.left() + px(40.0), bar.bottom() + px(200.0))
+}
+
+/// Whether anything of a drag is left: its source, landing, gap, or slides.
+fn drag_left(ws: &Workspace) -> bool {
+    ws.tab_drag.get().is_some()
+        || ws.tab_drop.is_some()
+        || ws.sidebar.drag_source.get().is_some()
+        || ws.sidebar.drop_slot.is_some()
+        || ws.sidebar.drop_at.is_some()
+        || !ws.drag_slides.borrow().is_empty()
+}
+
+/// Review Focus 4: a drag's indicators and slides, and their clearing as it ends: a sidebar row
+/// dragged down its run (the rows below slide up), Esc (a row's drag goes on: only a tab's has
+/// Esc), released over a terminal; a tab dragged over the other pane's bar (its tab slides
+/// right), Esc; dragged there again and released over a terminal. Frames only as the app gets
+/// them.
+///
+/// Panics unless the drags show and each end leaves nothing behind, and after each step the
+/// window shows what a full redraw does.
+pub(super) fn chrome_drag_cancel() {
+    let n = "chrome-drag-cancel";
+    let (mut cx, window, ws) = drag_window();
+    let ws = &ws;
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let order = cx.read(|cx| ws.read(cx).model.display_order());
+    // Row 1 is A's (under its group's header), row 3 C's.
+    let (row_a, row_c) = (
+        super::row_point(&mut cx, ws, 1, 0.0),
+        super::row_point(&mut cx, ws, 3, 0.0),
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "a row dragged down its run",
+        Seen::Changes,
+        |cx| drag_to(cx, window, row_a, row_c),
+    );
+    let (slot, at, source) = cx.read(|cx| {
+        let s = &ws.read(cx).sidebar;
+        (s.drop_slot, s.drop_at.clone(), s.drag_source.get())
+    });
+    println!("ui-shots: {n}: the row's drag: slot {slot:?}, at {at:?}, source {source:?}");
+    assert!(source.is_some(), "{n}: a row is dragged");
+    assert!(slot.is_some() || at.is_some(), "{n}: the row's gap is open");
+    steps.step(
+        &mut cx,
+        window,
+        "Esc (the row drag goes on)",
+        Seen::Maybe,
+        |cx| cx.simulate_keystrokes(window, "escape"),
+    );
+    let terminal = over_terminal(&mut cx, ws);
+    steps.step(
+        &mut cx,
+        window,
+        "the row released over a terminal",
+        Seen::Changes,
+        |cx| cx.simulate_mouse_up(window, terminal, MouseButton::Left, Modifiers::none()),
+    );
+    assert!(
+        !cx.read(|cx| cx.has_active_drag()),
+        "{n}: the row's drag ended"
+    );
+    assert!(
+        !cx.read(|cx| drag_left(ws.read(cx))),
+        "{n}: nothing of the row's drag left"
+    );
+    assert_eq!(
+        cx.read(|cx| ws.read(cx).model.display_order()),
+        order,
+        "{n}: released elsewhere, the rows stay"
+    );
+
+    let panes = super::shown_panes(&mut cx, ws);
+    let tests = super::tab_bounds(&mut cx, ws, panes[0], 1).expect("tests's tab");
+    let web = super::tab_bounds(&mut cx, ws, panes[1], 0).expect("web's tab");
+    let over_web = point(web.left() + px(5.0), web.center().y);
+    let dragged = |cx: &mut VisualTestAppContext| {
+        drag_to(cx, window, tests.center(), over_web);
+        let drop = cx.read(|cx| ws.read(cx).tab_drop);
+        assert!(drop.is_some(), "{n}: tests lands in web's bar");
+    };
+    steps.step(
+        &mut cx,
+        window,
+        "a tab dragged over the other bar",
+        Seen::Changes,
+        dragged,
+    );
+    steps.step(&mut cx, window, "Esc", Seen::Changes, |cx| {
+        cx.simulate_keystrokes(window, "escape")
+    });
+    assert!(
+        !cx.read(|cx| cx.has_active_drag()),
+        "{n}: Esc ended the tab's drag"
+    );
+    assert!(
+        !cx.read(|cx| drag_left(ws.read(cx))),
+        "{n}: nothing of it left"
+    );
+    // (The button is still down after Esc: let it go where it is, as a hand would.)
+    cx.simulate_mouse_up(window, over_web, MouseButton::Left, Modifiers::none());
+    steps.step(
+        &mut cx,
+        window,
+        "dragged there again",
+        Seen::Changes,
+        dragged,
+    );
+    let terminal = over_terminal(&mut cx, ws);
+    steps.step(
+        &mut cx,
+        window,
+        "the tab released over a terminal",
+        Seen::Changes,
+        |cx| cx.simulate_mouse_up(window, terminal, MouseButton::Left, Modifiers::none()),
+    );
+    assert!(
+        !cx.read(|cx| drag_left(ws.read(cx))),
+        "{n}: nothing of the tab's drag left"
+    );
+    let tabs = cx.read(|cx| ws.read(cx).model.pane(panes[0]).map(|p| p.tabs.len()));
+    assert_eq!(tabs, Some(3), "{n}: released elsewhere, the tab stays");
+    steps.done();
+}
+
+/// Renaming in place: the rename box opened in a workspace's row (its menu's Rename…), typed
+/// into, confirmed (Enter); then in a tab (Rename Tab…), the same.
+///
+/// Panics unless the names change and after each step the window shows what a full redraw
+/// does, and it changed.
+pub(super) fn chrome_renaming() {
+    let n = "chrome-renaming";
+    let (mut cx, window, ws) = elsewhere_window();
+    let ws = &ws;
+    cx.update(|cx| {
+        cx.bind_keys([gpui::KeyBinding::new(
+            "enter",
+            crate::name_input::Confirm,
+            Some("NameInput"),
+        )])
+    });
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let agent = index_of(&cx, ws, "agent");
+    let row = cx
+        .read(|cx| ws.read(cx).workspace_of(agent))
+        .expect("agent's workspace");
+    steps.step(
+        &mut cx,
+        window,
+        "a row's rename box opened",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.start_rename(row, window, cx)
+            })
+        },
+    );
+    steps.step(&mut cx, window, "typed into", Seen::Changes, |cx| {
+        cx.simulate_input(window, "deploy")
+    });
+    steps.step(&mut cx, window, "confirmed", Seen::Changes, |cx| {
+        cx.simulate_keystrokes(window, "enter")
+    });
+    let label = cx.read(|cx| ws.read(cx).workspace_label(row).to_string());
+    assert_eq!(label, "deploy", "{n}: the workspace's new name");
+    let tests = index_of(&cx, ws, "tests");
+    let id = cx.read(|cx| ws.read(cx).sessions.items()[tests].id);
+    steps.step(
+        &mut cx,
+        window,
+        "a tab's rename box opened",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.start_tab_rename(id, window, cx)
+            })
+        },
+    );
+    steps.step(&mut cx, window, "typed into", Seen::Changes, |cx| {
+        cx.simulate_input(window, "unit")
+    });
+    steps.step(&mut cx, window, "confirmed", Seen::Changes, |cx| {
+        cx.simulate_keystrokes(window, "enter")
+    });
+    let label = cx.read(|cx| ws.read(cx).terminal_label(id).to_string());
+    assert_eq!(label, "unit", "{n}: the terminal's new name");
+    steps.done();
+}
+
+/// A tab bar's first frame: a workspace never shown before, its one pane holding more tabs than
+/// its bar shows, the last one shown. Its new bar isn't laid out on that frame, so it can only
+/// scroll to the shown tab on the next, which the bar asks for itself (`render_chrome`). Frames
+/// only as the app gets them.
+///
+/// Panics unless the shown tab is in its row and the window shows what a full redraw does.
+pub(super) fn chrome_new_bar_reveal() {
+    let n = "chrome-new-bar-reveal";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let web = std::path::Path::new(super::WEB);
+        let api = std::path::Path::new(super::API);
+        ws.open_shot_session("many", web, super::SHELL_TEXT, None, window, cx);
+        for i in 1..16 {
+            ws.open_shot_tab(&format!("tab {i}"), web, super::SHELL_TEXT, window, cx);
+        }
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+    });
+    let ws = &ws;
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    steps.step(
+        &mut cx,
+        window,
+        "a workspace shown the first time",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                let many = ws.workspace_of(0).expect("many's workspace");
+                ws.select_workspace(many, window, cx);
+            })
+        },
+    );
+    let (row, left, width) = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let pane = ws.model.focused_pane().expect("many's pane");
+        let p = ws.model.pane(pane).expect("the pane");
+        let last = p.tabs.len() - 1;
+        assert_eq!(p.tabs[last].id, p.active, "{n}: the last tab is shown");
+        let scroll = ws
+            .tab_scroll
+            .borrow()
+            .get(&pane)
+            .expect("its row")
+            .0
+            .clone();
+        let item = scroll.bounds_for_item(last).expect("laid out");
+        (
+            scroll.bounds(),
+            item.origin.x + scroll.offset().x,
+            item.size.width,
+        )
+    });
+    println!("ui-shots: {n}: the row {row:?}, its shown tab drawn at x {left:?}");
+    assert!(
+        left >= row.left() - px(1.0) && left + width <= row.right() + px(1.0),
+        "{n}: the shown tab (x {left:?}, {width:?} wide) is in its row {row:?}"
+    );
+    steps.done();
+}
+
+/// Session `name`'s terminal emits `event` (as its view does from what the program wrote or the
+/// connection did; the workspace hears it in `on_terminal_event`).
+fn emit(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str, event: TerminalEvent) {
+    let i = index_of(cx, ws, name);
+    let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
+    cx.update(|cx| view.update(cx, |_, cx| cx.emit(event)));
+}
+
+/// The rest of what a session shows in the sidebar and its tab: a script's note and progress
+/// (`session.note`, `session.progress`), the program's title (OSC 0/2), the background
+/// service's connection lost, the sidebar's notice (an SSH session that couldn't start), and
+/// its tips card shown again (Help → Show Tips Card).
+///
+/// Panics unless after each the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_session_facts() {
+    let n = "chrome-session-facts";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        let web = std::path::Path::new(super::WEB);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("agent", web, super::SHELL_TEXT, None, window, cx);
+        // One with no name of yours: its row and tab say its program's title.
+        ws.open_unnamed_shot_session(Some(web), super::SHELL_TEXT, window, cx);
+        let first = ws.sessions.position(|s| s.label() == "api").expect("api");
+        ws.select(first, window, cx);
+        ws.sidebar.hint_dismissed = true;
+    });
+    let ws = &ws;
+    let unnamed = cx.read(|cx| {
+        let ws = ws.read(cx);
+        ws.sessions.items()[ws.sessions.position(|s| s.name.is_none()).expect("unnamed")].id
+    });
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    steps.step(&mut cx, window, "agent's note", Seen::Changes, |cx| {
+        let i = index_of(cx, ws, "agent");
+        cx.update(|cx| {
+            ws.update(cx, |ws, cx| {
+                ws.set_note(i, Some("reviewing the diff".into()), cx)
+            })
+        });
+    });
+    steps.step(&mut cx, window, "agent's progress", Seen::Changes, |cx| {
+        let i = index_of(cx, ws, "agent");
+        cx.update(|cx| {
+            ws.update(cx, |ws, cx| {
+                ws.set_progress(i, Some((40, Some("tests".into()))), cx)
+            })
+        });
+    });
+    steps.step(
+        &mut cx,
+        window,
+        "a program's title (OSC 2)",
+        Seen::Changes,
+        |cx| {
+            let i = cx
+                .read(|cx| ws.read(cx).index_of(unnamed))
+                .expect("its session");
+            let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
+            let title = TerminalEvent::TitleChanged(Some("✳ cargo test".into()));
+            cx.update(|cx| view.update(cx, |_, cx| cx.emit(title)));
+        },
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "agent's connection lost",
+        Seen::Changes,
+        |cx| emit(cx, ws, "agent", TerminalEvent::DaemonLost),
+    );
+    steps.step(&mut cx, window, "a notice", Seen::Changes, |cx| {
+        cx.update(|cx| ws.update(cx, |ws, cx| ws.ssh_failed("host unreachable", cx)))
+    });
+    steps.step(
+        &mut cx,
+        window,
+        "the tips card back (Help)",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.show_welcome_tips(window, cx)
+            })
+        },
+    );
+    steps.done();
+}
+
+/// The sidebar's own state and each pane's bar: the sidebar's edge dragged wider, its + menu
+/// opened and closed (clicks), the other pane focused (a click on its tab), the next tab shown
+/// (⌃Tab), a bar's row scrolled (the wheel), a pane's ⋯ menu opened and closed (Esc), the
+/// right sidebar opened (⌥⌘\), and, with the sidebar hidden, the title band's name after its
+/// terminal is renamed.
+///
+/// Panics unless after each the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_bars_and_edges() {
+    use crate::workspace::{NextTab, ToggleRightSidebar};
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+    let n = "chrome-bars-and-edges";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        for i in 1..12 {
+            ws.open_shot_tab(&format!("tab {i}"), api, super::SHELL_TEXT, window, cx);
+        }
+        // Another folder, so the status bar says which pane has the focus.
+        let web = std::path::Path::new(super::WEB);
+        ws.open_shot_session("web", web, super::SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_tab("docs", web, super::SHELL_TEXT, window, cx);
+    });
+    let ws = &ws;
+    cx.update(|cx| {
+        cx.bind_keys([
+            gpui::KeyBinding::new("ctrl-tab", NextTab, Some("Terminal")),
+            gpui::KeyBinding::new("escape", crate::tab_menu::Dismiss, Some("TabMenu")),
+        ])
+    });
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let none = Modifiers::none();
+    let left = MouseButton::Left;
+    let (width, height) = cx
+        .update_window(window, |_, window, cx| {
+            (
+                ws.read(cx).sidebar.width,
+                f32::from(window.viewport_size().height),
+            )
+        })
+        .expect("the window");
+    steps.step(
+        &mut cx,
+        window,
+        "the sidebar's edge dragged wider (held)",
+        Seen::Changes,
+        |cx| {
+            let edge = point(px(width - 1.0), px(height / 2.0));
+            cx.simulate_mouse_down(window, edge, left, none);
+            cx.simulate_mouse_move(window, edge + point(px(60.0), px(0.0)), left, none);
+        },
+    );
+    // (Released, the edge's line stays lit: the pointer is still on it.)
+    steps.step(&mut cx, window, "released", Seen::Maybe, |cx| {
+        let at = point(px(width + 59.0), px(height / 2.0));
+        cx.simulate_mouse_up(window, at, left, none);
+    });
+    let wider = cx.read(|cx| ws.read(cx).sidebar.width);
+    assert!(
+        wider > width,
+        "{n}: the sidebar is wider ({width} to {wider})"
+    );
+    let plus = point(
+        px(crate::sidebar::ROW_INSET + 20.0),
+        px(height - crate::ui_tokens::size::STATUS_BAR - crate::sidebar::FOOTER / 2.0),
+    );
+    steps.step(&mut cx, window, "the + menu opened", Seen::Changes, |cx| {
+        cx.simulate_mouse_move(window, plus, None, none);
+        cx.simulate_click(window, plus, none)
+    });
+    assert!(
+        cx.read(|cx| ws.read(cx).sidebar.new_menu),
+        "{n}: the + menu is open"
+    );
+    steps.step(&mut cx, window, "the + menu closed", Seen::Changes, |cx| {
+        cx.simulate_click(window, plus, none)
+    });
+    let panes = super::shown_panes(&mut cx, ws);
+    let other = cx.read(|cx| {
+        let focused = ws.read(cx).model.focused_pane();
+        panes.iter().copied().find(|p| Some(*p) != focused)
+    });
+    let other = other.expect("the other pane");
+    // Its shown tab (the row is scrolled to it).
+    let shown = cx.read(|cx| {
+        let p = ws.read(cx).model.pane(other).expect("the pane");
+        p.tabs
+            .iter()
+            .position(|t| t.id == p.active)
+            .expect("its shown tab")
+    });
+    let tab = super::tab_bounds(&mut cx, ws, other, shown).expect("its shown tab");
+    steps.step(
+        &mut cx,
+        window,
+        "the other pane focused",
+        Seen::Changes,
+        |cx| {
+            // (The pointer gets there first, as a hand's does: GPUI moves hovers on moves.)
+            cx.simulate_mouse_move(window, tab.center(), None, none);
+            cx.simulate_click(window, tab.center(), none)
+        },
+    );
+    assert_eq!(
+        cx.read(|cx| ws.read(cx).model.focused_pane()),
+        Some(other),
+        "{n}: focused"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "its next tab (⌃Tab)",
+        Seen::Changes,
+        |cx| cx.simulate_keystrokes(window, "ctrl-tab"),
+    );
+    let many = panes
+        .iter()
+        .copied()
+        .max_by_key(|p| cx.read(|cx| ws.read(cx).model.pane(*p).map_or(0, |p| p.tabs.len())))
+        .expect("api's pane");
+    let shown = cx.read(|cx| {
+        let p = ws.read(cx).model.pane(many).expect("the pane");
+        p.tabs
+            .iter()
+            .position(|t| t.id == p.active)
+            .expect("its shown tab")
+    });
+    let on_row = super::tab_bounds(&mut cx, ws, many, shown).expect("its shown tab");
+    let offset = |cx: &mut VisualTestAppContext| {
+        cx.read(|cx| {
+            let scrolls = ws.read(cx).tab_scroll.borrow();
+            scrolls.get(&many).map(|(s, _)| s.offset().x)
+        })
+    };
+    let before = offset(&mut cx);
+    steps.step(
+        &mut cx,
+        window,
+        "api's bar scrolled (the wheel)",
+        Seen::Changes,
+        |cx| {
+            cx.simulate_mouse_move(window, on_row.center(), None, none);
+            cx.simulate_event(
+                window,
+                ScrollWheelEvent {
+                    position: on_row.center(),
+                    delta: ScrollDelta::Pixels(point(px(200.0), px(0.0))),
+                    modifiers: none,
+                    touch_phase: TouchPhase::Moved,
+                },
+            )
+        },
+    );
+    assert_ne!(offset(&mut cx), before, "{n}: the row scrolled");
+    steps.step(&mut cx, window, "a ⋯ menu opened", Seen::Changes, |cx| {
+        on_ws(cx, window, ws, |ws, window, cx| {
+            ws.open_pane_actions(other, point(px(800.0), px(40.0)), window, cx)
+        })
+    });
+    steps.step(&mut cx, window, "Esc closes it", Seen::Changes, |cx| {
+        cx.simulate_keystrokes(window, "escape")
+    });
+    assert!(
+        cx.read(|cx| ws.read(cx).pane_actions.is_none()),
+        "{n}: closed"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "the right sidebar opened",
+        Seen::Changes,
+        |cx| {
+            cx.dispatch_action(window, ToggleRightSidebar);
+            // Its slide, by the real clock.
+            std::thread::sleep(Duration::from_millis(400));
+        },
+    );
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.toggle_sidebar(window, cx)
+    });
+    let start = Instant::now();
+    while cx.read(|cx| ws.read(cx).slide.is_some()) {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{n}: the slide ends"
+        );
+        std::thread::sleep(Duration::from_millis(16));
+        settle_frames(&mut cx, window);
+    }
+    steps.step(
+        &mut cx,
+        window,
+        "hidden: its terminal renamed",
+        Seen::Changes,
+        |cx| {
+            // (`session.rename`; the workspace has no name of its own, so it takes its terminal's.)
+            let i = cx
+                .read(|cx| {
+                    let ws = ws.read(cx);
+                    ws.focused_terminal().and_then(|id| ws.index_of(id))
+                })
+                .expect("the focused terminal");
+            cx.update(|cx| ws.update(cx, |ws, cx| ws.rename_at(i, "renamed", cx)));
+        },
+    );
+    steps.done();
+}

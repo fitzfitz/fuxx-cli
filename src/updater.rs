@@ -268,7 +268,7 @@ pub fn check(manual: bool, cx: &mut App) {
 }
 
 /// Act on a check's outcome (main thread).
-fn found(outcome: CheckOutcome, manual: bool, cx: &mut App) {
+pub(crate) fn found(outcome: CheckOutcome, manual: bool, cx: &mut App) {
     match &outcome {
         CheckOutcome::Newer(r) => eprintln!("[fuxx] update check: {} is out", r.version),
         CheckOutcome::UpToDate(v) => eprintln!("[fuxx] update check: {v} is the newest"),
