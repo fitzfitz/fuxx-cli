@@ -734,7 +734,7 @@ pub struct Workspace {
     /// The status marks' shared clock (see `status_mark`), advanced by their ticker.
     pub(crate) phase: f32,
     /// Whether the marks' 100 ms ticker is running (only while a mark on screen moves).
-    marks_ticking: bool,
+    pub(crate) marks_ticking: bool,
     /// The last Done pop's number.
     pops: u64,
     /// Persistence asked for at startup (`persistent-sessions = on`).
@@ -3178,6 +3178,12 @@ impl Workspace {
                         if this.marks_ticking {
                             this.phase = status_mark::advance(this.phase);
                             cx.notify();
+                        } else {
+                            // The ages' own timer, which `render` leaves off while the marks
+                            // tick (their redraws turn the ages): stopping draws nothing, so no
+                            // frame would start it (M11p: nothing else redraws a cached sidebar
+                            // or status bar).
+                            this.refresh_ages(false, cx);
                         }
                         this.marks_ticking
                     })
