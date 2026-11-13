@@ -29,6 +29,38 @@ unsafe extern "C" {
 const SIGTERM: c_int = 15;
 const SIGKILL: c_int = 9;
 
+/// Every signal `signal_group` sent (tests assert on it).
+#[cfg(test)]
+static SENT: std::sync::Mutex<Vec<(i32, c_int)>> = std::sync::Mutex::new(Vec::new());
+
+/// Signal process group `pgid`. The one place signals leave this module.
+fn signal_group(pgid: i32, sig: c_int) {
+    #[cfg(test)]
+    SENT.lock().unwrap().push((pgid, sig));
+    // SAFETY: a plain signal to a group we created with setsid, only called while its leader
+    // is unreaped or (for the final sweep) just reaped, so the id can't have been reused.
+    unsafe { kill(-pgid, sig) };
+}
+
+/// SIGTERM the group, then SIGKILL it after `TERM_GRACE` unless the leader is reaped by then.
+fn terminate_group(pgid: i32, done: Arc<AtomicBool>) {
+    signal_group(pgid, SIGTERM);
+    let _ = std::thread::Builder::new()
+        .name("fuxx-agent-killer".into())
+        .spawn(move || {
+            let until = Instant::now() + TERM_GRACE;
+            while Instant::now() < until {
+                if done.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if !done.load(Ordering::SeqCst) {
+                signal_group(pgid, SIGKILL);
+            }
+        });
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessEvent {
     /// One stdout line (without its newline).
@@ -99,29 +131,13 @@ impl AgentProcess {
     /// SIGTERM the process group, SIGKILL it after `TERM_GRACE`; the child is reaped by its
     /// own thread, which then sends `Exited`.
     pub fn kill(&self) {
-        if self.killed.swap(true, Ordering::SeqCst) {
-            return;
+        if self.killed.swap(true, Ordering::SeqCst) || self.done.load(Ordering::SeqCst) {
+            return; // already asked, or reaped: its group id may belong to someone else now
         }
         let pid = self.pid.load(Ordering::SeqCst);
-        if pid <= 0 {
-            return; // not spawned yet: the spawning thread sees `killed`
-        }
-        // SAFETY: plain signal to the group we created with setsid.
-        unsafe { kill(-pid, SIGTERM) };
-        let done = self.done.clone();
-        std::thread::spawn(move || {
-            let until = Instant::now() + TERM_GRACE;
-            while Instant::now() < until {
-                if done.load(Ordering::SeqCst) {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            if !done.load(Ordering::SeqCst) {
-                // SAFETY: as above; `done` unset means the group leader isn't reaped yet.
-                unsafe { kill(-pid, SIGKILL) };
-            }
-        });
+        if pid > 0 {
+            terminate_group(pid, self.done.clone());
+        } // else not spawned yet: the spawning thread sees `killed`
     }
 }
 
@@ -157,6 +173,14 @@ fn run(
     done: Arc<AtomicBool>,
 ) {
     use std::os::unix::process::CommandExt;
+    if killed.load(Ordering::SeqCst) {
+        done.store(true, Ordering::SeqCst);
+        let _ = events.unbounded_send(ProcessEvent::Exited {
+            code: None,
+            stderr_tail: String::new(),
+        });
+        return;
+    }
     let Some((program, args)) = argv.split_first() else {
         let _ = events.unbounded_send(ProcessEvent::SpawnFailed("empty command".into()));
         done.store(true, Ordering::SeqCst);
@@ -189,8 +213,7 @@ fn run(
     };
     pid.store(child.id() as i32, Ordering::SeqCst);
     if killed.load(Ordering::SeqCst) {
-        // SAFETY: signal to the group just created.
-        unsafe { kill(-(child.id() as i32), SIGTERM) };
+        terminate_group(child.id() as i32, done.clone());
     }
     if let Some(mut stdin) = child.stdin.take() {
         let _ = std::thread::Builder::new()
@@ -215,26 +238,15 @@ fn run(
     let err_reader = child.stderr.take().map(|mut stderr| {
         std::thread::Builder::new()
             .name("fuxx-agent-stderr".into())
-            .spawn(move || {
-                let mut tail: Vec<u8> = Vec::new();
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = stderr.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    tail.extend_from_slice(&buf[..n]);
-                    if tail.len() > STDERR_TAIL {
-                        tail.drain(..tail.len() - STDERR_TAIL);
-                    }
-                }
-                String::from_utf8_lossy(&tail).into_owned()
-            })
+            .spawn(move || read_tail(stderr))
     });
     let status = child.wait(); // reaps
-    if killed.load(Ordering::SeqCst) {
+    let was_killed = killed.load(Ordering::SeqCst);
+    // From here `kill` must not signal the group id again.
+    done.store(true, Ordering::SeqCst);
+    if was_killed {
         // Stragglers of the group could hold the pipes open; the leader is gone, not the group.
-        // SAFETY: the group id can't be reused while it has members.
-        unsafe { kill(-(child.id() as i32), SIGKILL) };
+        signal_group(child.id() as i32, SIGKILL);
     }
     if let Some(Ok(reader)) = reader {
         let _ = reader.join();
@@ -243,9 +255,28 @@ fn run(
         .and_then(Result::ok)
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
-    done.store(true, Ordering::SeqCst);
     let code = status.ok().and_then(|status| status.code());
     let _ = events.unbounded_send(ProcessEvent::Exited { code, stderr_tail });
+}
+
+/// The last `STDERR_TAIL` bytes of `stderr`, as text.
+fn read_tail(mut stderr: impl Read) -> String {
+    let mut tail: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stderr.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                tail.extend_from_slice(&buf[..n]);
+                if tail.len() > STDERR_TAIL {
+                    tail.drain(..tail.len() - STDERR_TAIL);
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&tail).into_owned()
 }
 
 /// Send each line of `stdout`; one over `MAX_LINE` is skipped (never buffered past the cap)
@@ -256,7 +287,9 @@ fn read_lines(stdout: impl Read, events: &UnboundedSender<ProcessEvent>) {
     let mut overlong = false;
     loop {
         let (consumed, newline) = match reader.fill_buf() {
-            Ok([]) | Err(_) => break,
+            Ok([]) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
             Ok(buf) => match buf.iter().position(|b| *b == b'\n') {
                 Some(at) => (at + 1, Some(at)),
                 None => (buf.len(), None),
@@ -374,6 +407,101 @@ mod tests {
     fn missing_program_is_spawn_failed() {
         let (_process, mut rx) = start(&["/nonexistent/agent".to_string()]);
         assert!(matches!(next(&mut rx), ProcessEvent::SpawnFailed(_)));
+    }
+
+    /// Reads `data` after failing once with EINTR.
+    struct InterruptedOnce<'a> {
+        data: &'a [u8],
+        interrupted: bool,
+    }
+
+    impl Read for InterruptedOnce<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.data.read(buf)
+        }
+    }
+
+    #[test]
+    fn eintr_does_not_end_reading() {
+        let (tx, mut rx) = unbounded();
+        read_lines(
+            InterruptedOnce {
+                data: b"a\nb\n",
+                interrupted: false,
+            },
+            &tx,
+        );
+        assert_eq!(next(&mut rx), line("a"));
+        assert_eq!(next(&mut rx), line("b"));
+        let tail = read_tail(InterruptedOnce {
+            data: b"oops",
+            interrupted: false,
+        });
+        assert_eq!(tail, "oops");
+    }
+
+    fn group_gone(pgid: i32, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        loop {
+            // SAFETY: signal 0 only probes whether the group exists.
+            if unsafe { kill(-pgid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(3)
+            {
+                return true; // ESRCH
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn sent_to(pgid: i32) -> usize {
+        SENT.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| *p == pgid)
+            .count()
+    }
+
+    #[test]
+    fn kill_after_exit_signals_nothing() {
+        let (process, mut rx) = start(&argv("exit 0"));
+        assert!(matches!(next(&mut rx), ProcessEvent::Exited { .. }));
+        let pgid = process.pid().unwrap();
+        process.kill();
+        drop(process);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(sent_to(pgid), 0, "signalled a reaped group");
+    }
+
+    #[test]
+    fn kill_escalates_when_term_is_ignored() {
+        let (process, mut rx) = start(&argv("trap '' TERM; sleep 100"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.pid().is_none() {
+            assert!(Instant::now() < deadline, "never spawned");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300)); // let the trap be set
+        let pgid = process.pid().unwrap();
+        process.kill();
+        assert!(matches!(next(&mut rx), ProcessEvent::Exited { .. }));
+        assert!(group_gone(pgid, Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn kill_right_after_spawn_escalates() {
+        let (process, mut rx) = start(&argv("trap '' TERM; sleep 100"));
+        process.kill(); // races the child's start
+        assert!(matches!(next(&mut rx), ProcessEvent::Exited { .. }));
+        if let Some(pgid) = process.pid() {
+            assert!(group_gone(pgid, Duration::from_secs(3)));
+        }
     }
 
     #[test]
