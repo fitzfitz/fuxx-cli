@@ -2550,6 +2550,8 @@ impl Workspace {
         self.note_focus();
         // The status bar describes the newly focused terminal in the frame this asks for.
         self.follow_terminal(cx);
+        // M11ac: the Files panel follows the focused file tab (outside any frame).
+        self.follow_active_file(cx);
         self.sidebar.reveal_active = true;
         if let Some(key) = self
             .model

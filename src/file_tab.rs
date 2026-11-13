@@ -56,11 +56,12 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
     DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent,
-    SharedString, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div, fill, point,
-    prelude::*, px, size,
+    ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, ScrollWheelEvent, SharedString, Subscription, TextAlign, TextRun, WeakEntity, Window,
+    canvas, div, fill, list, point, prelude::*, px, size,
 };
 
+use crate::agent_markdown::Md;
 use crate::appearance::Appearance;
 use crate::diff_view::{
     BINARY, DiffRow, NO_CHANGES, NO_REPO, Outcome, Parsed, RowKind, context_for, diff_outcome,
@@ -70,6 +71,9 @@ use crate::git_branch::find_git;
 use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes, repo_root_at};
 use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{FileMode, PaneId, TabId, TabKind};
+use crate::md_preview::{self, LinkTarget, is_markdown, link_target};
+use crate::mermaid::{self, Asked, Key};
+use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
@@ -94,6 +98,9 @@ const TOGGLE_FILE: &str = "File";
 const TOGGLE_DIFF: &str = "Diff";
 const WRAP: &str = "Wrap";
 const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
+const PREVIEW: &str = "Preview";
+const TIP_PREVIEW: &str = "Show the Markdown rendered";
+const TIP_PREVIEW_TOO_LARGE: &str = "Too large to preview";
 const TIP_FILE: &str = "Show the file";
 const TIP_DIFF: &str = "Show the changes since the last commit";
 const SHOW_IN_FINDER: &str = "Show in Finder";
@@ -1084,6 +1091,23 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
     }
 }
 
+/// The largest text Preview draws (M11ac review fix): bigger, the source stays.
+pub const PREVIEW_MAX: usize = 1024 * 1024;
+
+/// How far past the Preview's edges its list lays rows out (smooth scrolling).
+const PREVIEW_OVERDRAW: f32 = 400.0;
+
+/// Whether Preview can draw `state` (M11ac review fix): a coloured text of at most
+/// `PREVIEW_MAX` bytes.
+fn preview_fits(state: &State) -> bool {
+    matches!(state, State::Text(doc) if doc.text.len() <= PREVIEW_MAX)
+}
+
+/// Whether the toolbar shows Preview (M11ac): for a Markdown file, in File mode only.
+pub fn shows_preview(path: &Path, mode: FileMode) -> bool {
+    is_markdown(path) && mode == FileMode::Plain
+}
+
 /// Whether the toolbar shows the File | Diff toggle: for a file in a repo, and always in Diff
 /// mode (so it can go back).
 pub fn shows_toggle(in_repo: bool, mode: FileMode) -> bool {
@@ -1640,6 +1664,10 @@ pub enum FileTabEvent {
     /// The tab now shows its file in this mode (the toolbar's toggle, a change bar's click):
     /// the workspace saves it.
     Mode(FileMode),
+    /// The toolbar's Preview turned on or off (M11ac): the workspace saves it.
+    Preview(bool),
+    /// A link in the Preview to a file (M11ac): the workspace opens it in a tab.
+    OpenFile(PathBuf),
 }
 
 /// The find bar: its box and what it found.
@@ -1815,8 +1843,23 @@ pub struct FileTab {
     close_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The toggle's File and Diff segments, as last drawn.
     toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
+    /// M11ac: a Markdown file shown rendered (`md_preview`; only in File mode), the reader's
+    /// scroll (kept over a reload), the blocks parsed for the version shown, and the Preview
+    /// button as last drawn.
+    preview: bool,
+    preview_list: ListState,
+    parsed: Option<(u64, Rc<Vec<Md>>)>,
+    preview_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// M11ac Part 2: what each block of the parsed version does as a Mermaid diagram, for the
+    /// version and light or dark it was planned for (`mermaid::plan`), and how they were shown
+    /// last frame.
+    mermaid_plan: Option<(u64, bool, MermaidPlan)>,
+    mermaid_shown: Rc<Vec<Option<md_preview::Shown>>>,
     _appearance: Subscription,
 }
+
+/// What each block does as a Mermaid diagram (M11ac Part 2, `mermaid::plan`).
+type MermaidPlan = Rc<Vec<Option<mermaid::Plan>>>;
 
 /// Where a diff scrolls to when its rows are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1850,6 +1893,8 @@ impl FileTab {
             if this.coloured_with.is_some_and(|t| t != theme) {
                 this.colour(cx);
             }
+            // The Preview's rows may change height (another font or size).
+            this.preview_list.remeasure();
             cx.notify();
         });
         let mut tab = Self {
@@ -1887,6 +1932,12 @@ impl FileTab {
             frozen: false,
             close_at: Rc::default(),
             toggle_at: Rc::default(),
+            preview: false,
+            preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
+            parsed: None,
+            preview_at: Rc::default(),
+            mermaid_plan: None,
+            mermaid_shown: Rc::default(),
             _appearance: appearance,
         };
         tab.check_disk(cx);
@@ -2443,6 +2494,165 @@ impl FileTab {
         self.mode
     }
 
+    /// Whether the Markdown is shown rendered now (M11ac): Preview on, a Markdown file, File
+    /// mode.
+    pub fn preview_shown(&self) -> bool {
+        self.preview && shows_preview(&self.path, self.mode) && preview_fits(&self.state)
+    }
+
+    /// Preview on or off by hand (M11ac): the find bar goes with the source, and the workspace
+    /// saves it.
+    fn choose_preview(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preview == on || (on && !preview_fits(&self.state)) {
+            return;
+        }
+        self.preview = on;
+        if on && self.find.is_some() {
+            self.close_find(window, cx);
+        }
+        self.selection = None;
+        cx.emit(FileTabEvent::Preview(on));
+        cx.notify();
+    }
+
+    /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
+    /// opens in the default browser, a file opens in a tab (if it is one); nothing else.
+    fn follow_link(&mut self, url: &str, cx: &mut Context<Self>) {
+        let base = self.path.parent().unwrap_or(Path::new("/"));
+        match link_target(base, url) {
+            LinkTarget::Web(url) => cx.open_url(&url),
+            LinkTarget::File(path) if path.is_file() => cx.emit(FileTabEvent::OpenFile(path)),
+            LinkTarget::File(_) | LinkTarget::Nowhere => {}
+        }
+    }
+
+    /// The Preview's body (M11ac): the file's Markdown drawn as a reader, a GPUI `list` of
+    /// its blocks (only those in sight are drawn). The text is parsed again only for a new
+    /// version; the list then keeps its place by block.
+    fn preview_body(&mut self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(doc) = self.doc() else {
+            return div().flex_1().into_any_element();
+        };
+        let version = doc.version;
+        let blocks = match &self.parsed {
+            Some((v, blocks)) if *v == version => blocks.clone(),
+            _ => {
+                let blocks = Rc::new(crate::agent_markdown::parse(&doc.text));
+                let top = self.preview_list.logical_scroll_top();
+                self.preview_list.reset(blocks.len());
+                self.preview_list.scroll_to(top);
+                self.parsed = Some((version, blocks.clone()));
+                blocks
+            }
+        };
+        let mermaid = self.mermaid_shown(version, &blocks, theme.is_dark(), cx);
+        let view = cx.entity().downgrade();
+        let draw = md_preview::Draw {
+            colours: md_preview::Colours::of(&theme),
+            code_font: cx.global::<Appearance>().font.family.clone(),
+            on_link: Rc::new(move |url, _, cx| {
+                view.update(cx, |this, cx| this.follow_link(&url, cx)).ok();
+            }),
+            links: Cell::new(0),
+            mermaid,
+        };
+        div()
+            .id("file-md-preview")
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .child(
+                list(self.preview_list.clone(), move |ix, _, _| {
+                    md_preview::row(&blocks, ix, &draw)
+                })
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
+    /// How each Mermaid block of `blocks` (version `version`) is shown this frame (M11ac Part
+    /// 2): planned once per version and light or dark; each diagram read from the cache, or
+    /// queued to render (its code shown meanwhile; when it is ready the rows are measured again
+    /// and drawn). A file with none costs nothing past the plan.
+    fn mermaid_shown(
+        &mut self,
+        version: u64,
+        blocks: &Rc<Vec<Md>>,
+        dark: bool,
+        cx: &mut Context<Self>,
+    ) -> Rc<Vec<Option<md_preview::Shown>>> {
+        use md_preview::Shown;
+        use mermaid::Plan;
+        let plan = match &self.mermaid_plan {
+            Some((v, d, plan)) if *v == version && *d == dark => plan.clone(),
+            _ => {
+                let plan = Rc::new(mermaid::plan(blocks, dark));
+                self.mermaid_plan = Some((version, dark, plan.clone()));
+                plan
+            }
+        };
+        if plan.iter().all(Option::is_none) {
+            self.mermaid_shown = Rc::default();
+            return self.mermaid_shown.clone();
+        }
+        let view = cx.entity().downgrade();
+        let who = cx.entity_id().as_u64();
+        let shown: Vec<Option<Shown>> = plan
+            .iter()
+            .zip(blocks.iter())
+            .map(|(plan, md)| {
+                Some(match plan.as_ref()? {
+                    Plan::TooMany => Shown::Code(Some(mermaid::note(mermaid::TOO_MANY))),
+                    Plan::TooLarge => Shown::Code(Some(mermaid::note(mermaid::TOO_LARGE))),
+                    Plan::Diagram(key) => {
+                        let Md::Code { text, .. } = md else {
+                            return None;
+                        };
+                        let (tell_view, wanted_view) = (view.clone(), view.clone());
+                        let waiter = Waiter {
+                            tell: Box::new(move |cx: &mut App| {
+                                tell_view
+                                    .update(cx, |this, cx| {
+                                        this.preview_list.remeasure();
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }),
+                            // Still wanted: the tab is open, shows its Preview, and its plan
+                            // (this file version, the theme's light or dark) has the diagram.
+                            wanted: Box::new(move |cx: &App, key: &Key| {
+                                wanted_view
+                                    .upgrade()
+                                    .is_some_and(|tab| tab.read(cx).wants_mermaid(key, cx))
+                            }),
+                        };
+                        match Mermaids::shown(*key, text, who, waiter, cx) {
+                            Asked::Ready(Drawn { image, w, h }) => Shown::Diagram { image, w, h },
+                            Asked::Failed(e) => Shown::Code(Some(mermaid::note(&e))),
+                            Asked::TooMuch => Shown::Code(Some(mermaid::note(mermaid::TOO_MUCH))),
+                            Asked::Crowded => Shown::Code(Some(mermaid::note(mermaid::CROWDED))),
+                            Asked::Waiting => Shown::Code(None),
+                        }
+                    }
+                })
+            })
+            .collect();
+        self.mermaid_shown = Rc::new(shown);
+        self.mermaid_shown.clone()
+    }
+
+    /// Whether this tab still wants diagram `key` drawn (M11ac Part 2, asked before it
+    /// renders): Preview shows, the plan for the file as read has it, and the theme is still
+    /// light or dark as the key says.
+    fn wants_mermaid(&self, key: &Key, cx: &App) -> bool {
+        let dark = cx.global::<Appearance>().theme.is_dark();
+        key.dark == dark
+            && self.preview_shown()
+            && self.mermaid_plan.as_ref().is_some_and(|(_, d, plan)| {
+                *d == dark && plan.contains(&Some(mermaid::Plan::Diagram(*key)))
+            })
+    }
+
     /// Show the file as it is, or its diff (`reveal`: a change bar's change, shown when the
     /// rows are). Each mode keeps its own scroll; the selection goes, find searches the text
     /// now shown. A mode with nothing yet for the file as read asks git at once.
@@ -2627,6 +2837,10 @@ impl FileTab {
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.shown_doc().is_none() {
             return;
+        }
+        // M11ac: find works on the source, so the Preview turns off first.
+        if self.preview_shown() {
+            self.choose_preview(false, window, cx);
         }
         if let Some(find) = &self.find {
             let input = find.input.clone();
@@ -2968,6 +3182,59 @@ impl FileTab {
             .into_any_element()
     }
 
+    /// Preview (M11ac): beside Wrap and drawn as it, filled when on; a click shows a Markdown
+    /// file rendered, or its source again.
+    /// Over `PREVIEW_MAX` (or too large to colour) it is drawn faint and does nothing, its
+    /// tooltip saying why.
+    fn preview_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let fits = preview_fits(&self.state);
+        let on = self.preview && fits;
+        let tip = if fits {
+            TIP_PREVIEW
+        } else {
+            TIP_PREVIEW_TOO_LARGE
+        };
+        let at = self.preview_at.clone();
+        div()
+            .id("file-preview")
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(BUTTON))
+            .px(px(10.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .text_size(px(text::NAME))
+            .when(on, |b| {
+                b.bg(hsla(ui.card_selected)).text_color(hsla(ui.text))
+            })
+            .when(!on && fits, |b| {
+                b.text_color(hsla(ui.text_dim))
+                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
+                    .cursor_pointer()
+            })
+            .when(!fits, |b| b.text_color(hsla(ui.text_faint)))
+            .when(on, |b| b.cursor_pointer())
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            .child(PREVIEW)
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                if preview_fits(&this.state) {
+                    this.choose_preview(!this.preview, window, cx)
+                }
+            }))
+            // Where it is (the scenes click it).
+            .child(
+                canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+            .into_any_element()
+    }
+
     fn toggle(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
@@ -2992,8 +3259,11 @@ impl FileTab {
         };
         let toggle = shows_toggle(self.git_place.is_some(), self.mode).then(|| self.toggle(ui, cx));
         // Wrap, left of File | Diff (M11x part 2), wherever there's text to wrap.
-        let wrap = matches!(self.state, State::Text(_) | State::PlainTooLarge(_))
-            .then(|| self.wrap_button(ui, cx));
+        let has_text = matches!(self.state, State::Text(_) | State::PlainTooLarge(_));
+        let wrap = has_text.then(|| self.wrap_button(ui, cx));
+        // Preview, right of Wrap (M11ac): a Markdown file in File mode.
+        let preview =
+            (has_text && shows_preview(&self.path, self.mode)).then(|| self.preview_button(ui, cx));
         // A refused file has its button in the middle; a missing one has none.
         let open = matches!(
             self.state,
@@ -3038,6 +3308,7 @@ impl FileTab {
                     .child(note)
             }))
             .children(wrap)
+            .children(preview)
             .children(toggle)
             .children(open)
             .into_any_element()
@@ -3327,6 +3598,33 @@ impl FileTab {
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
 impl FileTab {
+    /// M11ac: the Preview button as last drawn, the reader's scroll, and the version parsed.
+    pub fn preview_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.preview_at.get()
+    }
+
+    pub fn preview_list(&self) -> ListState {
+        self.preview_list.clone()
+    }
+
+    /// M11ac Part 2: how many Mermaid blocks show as diagrams, and the notes under the others,
+    /// as last drawn.
+    pub fn mermaid_drawn(&self) -> (usize, Vec<String>) {
+        let mut diagrams = 0;
+        let mut notes = Vec::new();
+        for shown in self.mermaid_shown.iter().flatten() {
+            match shown {
+                md_preview::Shown::Diagram { .. } => diagrams += 1,
+                md_preview::Shown::Code(note) => notes.extend(note.clone()),
+            }
+        }
+        (diagrams, notes)
+    }
+
+    pub fn parsed_version(&self) -> Option<u64> {
+        self.parsed.as_ref().map(|(v, _)| *v)
+    }
+
     /// The lines of the text shown.
     pub fn line_count(&self) -> usize {
         self.shown_doc().map_or(0, |d| d.lines.len())
@@ -3508,6 +3806,7 @@ impl Render for FileTab {
         let body = match self.body_note() {
             Some(words) if words == MISSING || words == REFUSED => self.notice(ui, cx),
             Some(words) => Self::diff_note(words, ui),
+            None if self.preview_shown() => self.preview_body(theme, cx),
             None => self.body(theme, cx),
         };
         div()
@@ -3659,9 +3958,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let frozen = self.places.frozen;
+        let preview = self.model.md_preview(tab);
         let view = cx.new(|cx| {
             let mut view = FileTab::new(path, mode, window, cx);
             view.frozen = frozen;
+            view.preview = preview;
             view
         });
         // A missing file's Close button closes its tab; a new mode is the model's, saved.
@@ -3676,6 +3977,16 @@ impl Workspace {
                     if this.model.set_file_mode(tab, *mode) {
                         this.save();
                     }
+                }
+                // M11ac: Preview turned on or off by hand: kept as well, and saved.
+                FileTabEvent::Preview(on) => {
+                    this.model.pin(tab);
+                    if this.model.set_md_preview(tab, *on) {
+                        this.save();
+                    }
+                }
+                FileTabEvent::OpenFile(path) => {
+                    this.open_file_tab(path.clone(), FileMode::Plain, window, cx)
                 }
             },
         )
@@ -3714,6 +4025,29 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M11ac: Preview is offered for a Markdown file in File mode only.
+    #[test]
+    fn preview_shows_for_markdown_in_file_mode_only() {
+        assert!(shows_preview(Path::new("/w/README.md"), FileMode::Plain));
+        assert!(shows_preview(Path::new("/w/a.MARKDOWN"), FileMode::Plain));
+        assert!(!shows_preview(Path::new("/w/README.md"), FileMode::Diff));
+        assert!(!shows_preview(Path::new("/w/main.rs"), FileMode::Plain));
+    }
+
+    /// M11ac review fix: Preview draws only a coloured text up to 1 MB; a bigger one (or one
+    /// too large to colour, 2–20 MB) keeps its source, its button off ("Too large to preview").
+    #[test]
+    fn preview_fits_a_text_up_to_a_megabyte() {
+        let text = |len: usize| State::Text(Doc::new("a".repeat(len), 0));
+        assert!(preview_fits(&text(10)));
+        assert!(preview_fits(&text(PREVIEW_MAX)));
+        assert!(!preview_fits(&text(PREVIEW_MAX + 1)));
+        let big = State::PlainTooLarge(Doc::new("a".repeat(10), 0));
+        assert!(!preview_fits(&big));
+        assert!(!preview_fits(&State::Loading));
+        assert!(!preview_fits(&State::Missing));
+    }
 
     /// M11x part 2: each line's width in cells is kept from reading the file (a rewrap on a
     /// resize then costs a pass over the lines, not over the text).

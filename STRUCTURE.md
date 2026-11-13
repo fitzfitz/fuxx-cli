@@ -182,6 +182,8 @@ src/
 ├── activity.rs           M11h · each terminal's activity log: status changes, notes, progress (in memory, last 200; pure)
 ├── activity_panel.rs     M11h · the right sidebar's Activity panel: header, the waiting question, the timeline
 ├── file_tab.rs           M11g · read-only file tabs: colours, line numbers, change bars, live reload, find, selection, Open in Editor
+├── mermaid.rs            M11ac · Mermaid in the Markdown Preview: which blocks, limits, cache key (SHA-256) and LRU, the page and render script (pure)
+├── mermaid_render.rs     M11ac · the hidden WKWebView that renders Mermaid offline and snapshots it to PNG; the `Mermaids` cache global
 ├── cursor_look.rs        M11f · the cursor's rules: shape (the HollowBlock marker = no program has chosen), colour, breathing, glide, trail, sparks, frames (pure)
 └── updater.rs            M11e · the check (curl, at launch + daily + the menu), the Updates state, the install (download, verify, swap, reopen)
 ```
@@ -189,7 +191,7 @@ src/
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
 21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6, 150 after M6b + M7 + M8, 243 after M9, and 399 after M10a.
 
-`assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits. `assets/shell-integration/zsh/` the zsh scripts for command blocks (`.zshenv`, `fuxx-integration.zsh`; M11l), compiled into the binary.
+`assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits. `assets/shell-integration/zsh/` the zsh scripts for command blocks (`.zshenv`, `fuxx-integration.zsh`; M11l), compiled into the binary. `assets/vendor/mermaid/` the bundled mermaid.js (12.2.0, MIT; its LICENSE and a README with the source and SHA-256; M11ac Part 2), compiled into the binary.
 
 Example `~/.config/fuxx/config` (all optional; fuxx never writes it):
 
