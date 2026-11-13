@@ -174,11 +174,15 @@ impl Workspace {
         {
             part.read(cx);
         }
-        // The same for the marks' views (M11p Task 6), which their clock's ticks notify, and
-        // for the clock.
+        // The same for the marks' views on screen (M11p Task 6), which their clock's ticks
+        // notify, and for the clock. A view no longer drawn (its tab gone idle, the status bar
+        // following another terminal) is left out: kept, but its notifies redraw nothing.
         self.clock.read(cx);
-        for mark in self.marks.borrow().values() {
-            mark.read(cx);
+        let marks = self.marks.borrow();
+        for (key, _) in self.marks_on_screen() {
+            if let Some(mark) = marks.get(&key) {
+                mark.read(cx);
+            }
         }
     }
 

@@ -1347,26 +1347,45 @@ impl Workspace {
             .collect()
     }
 
-    /// The marks on screen: each row in the scrolled view (a closed group's header shows its
-    /// sessions' most urgent; none with the sidebar hidden), each terminal tab in the panes'
-    /// tab bars, and the status bar's terminal (the followed one, M11i).
-    pub(crate) fn visible_statuses(&self) -> Vec<Status> {
-        let followed = self
-            .right_sidebar
-            .followed
-            .and_then(|id| self.sessions.items().iter().find(|s| s.id == id));
+    /// The status marks on screen that are their own views (`mark_view`), by their key in
+    /// `Workspace::marks`: a closed group's header in the scrolled view (its sessions' most
+    /// urgent, unless it counts some waiting; none with the sidebar hidden), each terminal tab
+    /// in the panes' tab bars, and the status bar's terminal (the followed one, M11i); none for
+    /// Idle (a glyph or dot is drawn then). A workspace's row draws a still badge (M11r): none.
+    pub(crate) fn marks_on_screen(&self) -> Vec<((&'static str, u64), Status)> {
+        let sessions = self.sessions.items();
+        let headers = self
+            .rows_in_view(Instant::now())
+            .into_iter()
+            .filter_map(|row| match row {
+                SidebarRow::Header(h) if h.waiting == 0 => h
+                    .mark
+                    .map(|status| ((HEADER_MARK, group_hash(&h.key)), status)),
+                _ => None,
+            });
         let tabs = self
             .tab_sessions()
             .into_iter()
-            .map(|i| self.sessions.items()[i].status)
-            .chain(followed.map(|s| s.status));
-        self.rows_in_view(Instant::now())
-            .into_iter()
-            .filter_map(|row| match row {
-                SidebarRow::Header(h) => h.mark,
-                SidebarRow::Workspace(s) => Some(s.status),
-            })
+            .map(|i| &sessions[i])
+            .map(|s| (("tab", s.id), s.status));
+        let followed = self
+            .right_sidebar
+            .followed
+            .and_then(|id| sessions.iter().find(|s| s.id == id))
+            .map(|s| (("status-bar", s.id), s.status));
+        headers
             .chain(tabs)
+            .chain(followed)
+            .filter(|(_, status)| *status != Status::Idle)
+            .collect()
+    }
+
+    /// The statuses of `marks_on_screen`: what the marks' ticker looks at (it runs while one
+    /// of them moves).
+    pub(crate) fn visible_statuses(&self) -> Vec<Status> {
+        self.marks_on_screen()
+            .into_iter()
+            .map(|(_, status)| status)
             .collect()
     }
 

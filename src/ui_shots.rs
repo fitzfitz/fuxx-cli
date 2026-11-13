@@ -1626,12 +1626,15 @@ fn chrome_working_marks() {
         ws.right_sidebar.followed == Some(ws.sessions.items()[0].id)
     });
     assert!(followed, "{n}: the status bar follows api");
-    // Each moving mark's view, and how often it was drawn so far.
+    // Each moving mark's view on screen, and how often it was drawn so far.
     let moving = |cx: &mut VisualTestAppContext| {
         cx.read(|cx| {
-            let mut views: Vec<_> = (ws.read(cx).marks.borrow().iter())
-                .filter(|(_, v)| v.read(cx).moves())
-                .map(|(key, v)| (*key, v.read(cx).renders))
+            let ws = ws.read(cx);
+            let marks = ws.marks.borrow();
+            let mut views: Vec<_> = (ws.marks_on_screen().into_iter())
+                .filter_map(|(key, _)| marks.get(&key).map(|v| (key, v.read(cx))))
+                .filter(|(_, v)| v.moves())
+                .map(|(key, v)| (key, v.renders))
                 .collect();
             views.sort();
             views
@@ -1676,6 +1679,90 @@ fn chrome_working_marks() {
             "{n}: mark {key:?} drawn {count} times in 10 ticks"
         );
     }
+
+    // The status bar follows web (Done) now: api's mark there is no longer drawn. Its view is
+    // kept, parked: not counted as on screen nor read each frame (its notifies redraw nothing).
+    // Only api's tab moves; the status bar isn't drawn by the ticks.
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let id = ws.sessions.items()[1].id;
+            let tab = ws.model.terminal_tab(id).expect("web's tab");
+            let (_, pane) = ws.model.locate(tab).expect("web's pane");
+            ws.select_pane(pane, window, cx);
+        })
+    })
+    .expect("focus web");
+    settle_frames(&mut cx, window);
+    let parked = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let key = ("status-bar", ws.sessions.items()[0].id);
+        let kept = ws.marks.borrow().contains_key(&key);
+        let shown = ws.marks_on_screen().iter().any(|(k, _)| *k == key);
+        (kept, shown)
+    });
+    assert_eq!(parked, (true, false), "{n}: api's status-bar mark parked");
+    let before = moving(&mut cx);
+    chrome_cache::reset();
+    for _ in 0..10 {
+        cx.advance_clock(status_mark::TICK);
+        settle_frames(&mut cx, window);
+    }
+    let parts = PARTS.map(|c| (c, chrome_cache::get(c)));
+    let after = moving(&mut cx);
+    let drawn: Vec<_> = (before.iter().zip(&after))
+        .map(|((key, was), (_, now))| (*key, now - was))
+        .collect();
+    println!("ui-shots: {n}: web followed: parts {parts:?}; moving marks drawn {drawn:?}");
+    assert_eq!(
+        chrome_cache::get(Counted::StatusBar),
+        0,
+        "{n}: web followed: the status bar drawn by the ticks"
+    );
+    let api_id = cx.read(|cx| ws.read(cx).sessions.items()[0].id);
+    assert_eq!(
+        drawn,
+        [(("tab", api_id), 10)],
+        "{n}: web followed: only api's tab mark moves, drawn each tick"
+    );
+
+    // An agent working in another workspace: its row shows a still badge, it isn't followed
+    // and no tab of it is on screen, so nothing on screen moves: the clock stops and the
+    // window draws nothing while time passes.
+    let (mut cx, window, ws) = chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(API);
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session(
+            "agent",
+            std::path::Path::new(WEB),
+            SHELL_TEXT,
+            None,
+            window,
+            cx,
+        );
+        let first = ws.workspace_of(0).expect("api's workspace");
+        ws.select_workspace(first, window, cx);
+    });
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            let s = ws.sessions.get_mut(1).expect("agent");
+            s.status = Status::Working;
+            s.status_since = Instant::now() - Duration::from_secs(5 * 60 + 10);
+            cx.notify();
+        })
+    });
+    settle_frames(&mut cx, window);
+    cx.advance_clock(status_mark::TICK);
+    settle_frames(&mut cx, window);
+    let ticking = cx.read(|cx| ws.read(cx).marks_ticking);
+    chrome_cache::reset();
+    for _ in 0..10 {
+        cx.advance_clock(status_mark::TICK);
+        settle_frames(&mut cx, window);
+    }
+    let frames = chrome_cache::get(Counted::Workspace);
+    println!("ui-shots: {n}: agent elsewhere: ticking {ticking}; {frames} frames in 10 ticks");
+    assert!(!ticking, "{n}: agent elsewhere: the marks' clock stopped");
+    assert_eq!(frames, 0, "{n}: agent elsewhere: frames drawn in 10 ticks");
 }
 
 /// The chrome's cached parts (M11p Task 4), as counted.
@@ -2150,11 +2237,11 @@ fn chrome_pixels_same() {
     cx.run_until_parked();
     draw(&mut cx, window);
     let moving = cx.read(|cx| {
-        let marks = ws.read(cx).marks.borrow();
-        marks
-            .iter()
-            .filter(|(_, v)| v.read(cx).moves())
-            .map(|(key, _)| *key)
+        let ws = ws.read(cx);
+        let marks = ws.marks.borrow();
+        (ws.marks_on_screen().into_iter())
+            .filter(|(key, _)| marks.get(key).is_some_and(|v| v.read(cx).moves()))
+            .map(|(key, _)| key)
             .collect::<Vec<_>>()
     });
     println!("ui-shots: {n}: moving marks {moving:?}");
@@ -18401,10 +18488,13 @@ fn status_bar_scenes() {
                     let ws = slotted(&slot);
                     let claude = cx.read(|cx| ws.read(cx).status_bar_facts());
                     if scene == "status-bar" {
-                        // The marks' ticker counts the bar's mark: the two rows, claude's tab
-                        // and the bar.
-                        let marks = cx.read(|cx| ws.read(cx).visible_statuses().len());
-                        assert_eq!(marks, 4, "{n}: the bar's mark is on screen");
+                        // The marks' ticker counts the bar's mark (M11p: with the tab's; the
+                        // rows' badges are still).
+                        let marks = cx.read(|cx| ws.read(cx).marks_on_screen());
+                        assert!(
+                            marks.iter().any(|((place, _), _)| *place == "status-bar"),
+                            "{n}: the bar's mark is on screen: {marks:?}"
+                        );
                     }
                     if scene == "status-bar-file" {
                         cx.update_window(window, |_, window, cx| {
