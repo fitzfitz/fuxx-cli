@@ -122,6 +122,16 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   plugins** (M11z, a program plus a zsh hook loaded after your `.zshrc`; fuxx-completes is the first). Not in it:
   plugins that show screens (sidebar widgets, panels, plugin tabs), fuxx drawing fuxx-completes' menu, private
   repos, automatic updates, a store, sandboxing, bash and fish hooks. See [[76 - Milestones 11y-11z - Plugins]].
+- **Agent tabs and chat-style shell tabs** (M11aa–M11ab, added 2026-11-13 by you, **after M11z and after M11p**: "M11aa
+  maybe? you tell me best"; designed with you in a browser-mockup brainstorm, you chose direction C, then C1: shell and
+  agent are separate conversations, one kind per tab): **M11aa — Agent tabs and providers** (Part 1): picking
+  **claude** (or **agy**) from the preset menu opens a workspace with a shell tab and an **agent tab** side by side;
+  fuxx starts the agent itself in its machine-readable mode and draws replies, tool calls, diffs and permission
+  prompts as a chat with buttons, each agent's wiring in its own provider file (`src/providers/`; Claude Code and
+  Antigravity first). Typing `claude` in a shell stays the classic TUI. **M11ab — Chat-style shell tabs** (Part 2):
+  each command reads like a message with its output underneath; **design first, on its own** (like M11l), not
+  planned. Not in them: one mixed shell-and-agent timeline, agents on remote hosts, other providers than the first
+  two. See [[Proposal - Chat View and Agent Tabs]] and [[M11aa Plan - Agent Tabs]].
 
 ## Out of scope (for now — resist scope creep)
 
