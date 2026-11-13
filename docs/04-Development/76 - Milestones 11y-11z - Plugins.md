@@ -352,7 +352,7 @@ against a fake network (`example_plugin_installs_and_uninstalls_cleanly`).
 
 On branch `m11z-helper-plugins`. Run fuxx, open Settings → Plugins, and check each:
 
-1. Install the helper repo (the sample in `examples/plugins/hello-helper`, or a copy you push yourself): the
+1. Install `github.com/fitzfitz/fuxx-hello-helper` (the sample in `examples/plugins/hello-helper`, published 2026-11-13): the
    confirmation is the warning, "Runs a program on your Mac in every new terminal. …".
 2. Open a new terminal: `fuxx-hello` prints "hello from a fuxx plugin". Then quit fuxx and open it again: the
    terminals it opens at launch have `fuxx-hello` too (the final review found they didn't; fixed in `59d8013`).
