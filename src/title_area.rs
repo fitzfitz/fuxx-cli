@@ -233,7 +233,7 @@ impl Workspace {
     }
 
     /// Escape or a click outside: the popover goes and the typing returns to the focused tab.
-    fn dismiss_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn dismiss_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.notifications_popover.take().is_some() {
             self.focus_active(window, cx);
             cx.notify();
@@ -558,6 +558,32 @@ impl Workspace {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The title area (M11p's title part): the collapsed band's workspace name and buttons,
+    /// filling a full-width `TOP_BAND` box at the window's top left (its holder places it).
+    /// Empty while the sidebar is shown (its band has them). The box takes no clicks: what is
+    /// under it gets them, except on the buttons.
+    pub(crate) fn render_title(
+        &mut self,
+        ui: UiColors,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        crate::chrome_cache::bump(crate::chrome_cache::Counted::Title);
+        // The name waits for the hide slide to end, so it never paints over the sliding
+        // sidebar's title and rows; it shows at once when the sidebar has left.
+        let name = if self.sidebar.hidden && self.slide.is_none() {
+            self.render_workspace_name(ui, window)
+        } else {
+            None
+        };
+        div()
+            .relative()
+            .size_full()
+            .children(name)
+            .children(self.render_band_buttons(ui, window, cx))
+            .into_any_element()
     }
 
     /// The collapsed band's buttons at the window's far right (M11m): [🔔] [⚙] [sidebar] at

@@ -135,6 +135,11 @@ impl Slides {
             .any(|s| s.from != s.to && now.saturating_duration_since(s.start) < SLIDE)
     }
 
+    /// Whether no slide is kept (none has started since the last `clear`).
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     /// Forget every slide (the drag ended).
     pub fn clear(&mut self) {
         self.items.clear();
