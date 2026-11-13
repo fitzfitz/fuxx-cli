@@ -62,6 +62,10 @@ pub enum Span {
     },
 }
 
+/// The deepest quotes nest (review fix): a deeper `>` is text, so parsing (and drawing) a
+/// crafted file can't recurse without end.
+pub const QUOTE_DEPTH: usize = 16;
+
 /// What a list item is.
 #[derive(Clone, Copy)]
 enum Item {
@@ -74,8 +78,16 @@ enum Item {
 /// tables, rules, setext headings, task items and nested lists; the agent subset parses as
 /// before.)
 pub fn parse(text: &str) -> Vec<Md> {
+    parse_in(text, 0)
+}
+
+/// `parse`, for the text inside `quotes` block quotes.
+fn parse_in(text: &str, quotes: usize) -> Vec<Md> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut p = Parser::default();
+    let mut p = Parser {
+        quotes,
+        ..Parser::default()
+    };
     let mut i = 0;
     while i < lines.len() {
         i = p.line(&lines, i);
@@ -92,6 +104,8 @@ struct Parser<'a> {
     item: Option<(u8, Item, Vec<&'a str>)>,
     /// The open list items' indents, outermost first: an item's depth is its place here.
     indents: Vec<usize>,
+    /// How many quotes this text is in (at `QUOTE_DEPTH`, a `>` is text).
+    quotes: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -124,7 +138,7 @@ impl<'a> Parser<'a> {
             });
             return at;
         }
-        if trimmed.starts_with('>') {
+        if trimmed.starts_with('>') && self.quotes < QUOTE_DEPTH {
             self.block(indent);
             let mut inner: Vec<&str> = Vec::new();
             let mut at = i;
@@ -132,7 +146,8 @@ impl<'a> Parser<'a> {
                 inner.push(rest.strip_prefix(' ').unwrap_or(rest));
                 at += 1;
             }
-            self.out.push(Md::Quote(parse(&inner.join("\n"))));
+            self.out
+                .push(Md::Quote(parse_in(&inner.join("\n"), self.quotes + 1)));
             return at;
         }
         if let Some(align) = lines.get(i + 1).and_then(|next| separator(next))
@@ -352,6 +367,7 @@ fn spans(text: &str) -> Vec<Span> {
     let mut plain = String::new();
     let mut rest = text;
     let mut prev: Option<char> = None;
+    let closers = Closers::of(text);
     while let Some(c) = rest.chars().next() {
         let next = rest[c.len_utf8()..].chars().next();
         if let Some(n) = next.filter(|n| c == '\\' && n.is_ascii_punctuation()) {
@@ -370,7 +386,7 @@ fn spans(text: &str) -> Vec<Span> {
                 .filter(|&e| e > 0)
                 .map(|e| (Span::Bold(inner[..e].to_string()), e + 4))
         } else if c == '*' || c == '_' {
-            italic(rest, c, prev)
+            italic(rest, text.len() - rest.len(), c, prev, &closers)
         } else if c == '[' {
             link(rest)
         } else if c == '!' && next == Some('[') {
@@ -405,9 +421,52 @@ fn spans(text: &str) -> Vec<Span> {
     out
 }
 
-/// `*text*` or `_text_` at the start of `rest` (`prev`: the character before it). Its text
-/// starts and ends with no space; an `_` inside a word (`snake_case`) is a letter.
-fn italic(rest: &str, mark: char, prev: Option<char>) -> Option<(Span, usize)> {
+/// Where `*` and `_` can close italic text in a paragraph (review fix: found once, so finding
+/// an opener's closer is a search, not a scan of the rest): byte offsets, in order, of each
+/// mark with no space or same mark before it and no same mark after it (an `_` also no letter
+/// or digit after it).
+struct Closers {
+    star: Vec<usize>,
+    under: Vec<usize>,
+}
+
+impl Closers {
+    fn of(text: &str) -> Closers {
+        let (mut star, mut under) = (Vec::new(), Vec::new());
+        let mut prev: Option<char> = None;
+        let mut chars = text.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            let next = chars.peek().map(|&(_, n)| n);
+            if c == '*' || c == '_' {
+                let closes = prev.is_some_and(|p| !p.is_whitespace() && p != c)
+                    && next != Some(c)
+                    && !(c == '_' && next.is_some_and(char::is_alphanumeric));
+                if closes {
+                    if c == '*' { &mut star } else { &mut under }.push(i);
+                }
+            }
+            prev = Some(c);
+        }
+        Closers { star, under }
+    }
+
+    /// The first closer for `mark` at or after byte `from`.
+    fn first(&self, mark: char, from: usize) -> Option<usize> {
+        let list = if mark == '*' { &self.star } else { &self.under };
+        list.get(list.partition_point(|&q| q < from)).copied()
+    }
+}
+
+/// `*text*` or `_text_` at the start of `rest`, at byte `at` of the paragraph (`prev`: the
+/// character before it). Its text starts and ends with no space; an `_` inside a word
+/// (`snake_case`) is a letter.
+fn italic(
+    rest: &str,
+    at: usize,
+    mark: char,
+    prev: Option<char>,
+    closers: &Closers,
+) -> Option<(Span, usize)> {
     if mark == '_' && prev.is_some_and(char::is_alphanumeric) {
         return None;
     }
@@ -416,31 +475,22 @@ fn italic(rest: &str, mark: char, prev: Option<char>) -> Option<(Span, usize)> {
     if first.is_whitespace() || first == mark {
         return None;
     }
-    for (i, c) in body.char_indices().skip(1) {
-        if c != mark {
-            continue;
-        }
-        let before = body[..i].chars().last()?;
-        let after = body[i + 1..].chars().next();
-        if before.is_whitespace() || before == mark || after == Some(mark) {
-            continue;
-        }
-        if mark == '_' && after.is_some_and(char::is_alphanumeric) {
-            continue;
-        }
-        return Some((Span::Italic(body[..i].to_string()), i + 2));
-    }
-    None
+    let close = closers.first(mark, at + 1 + first.len_utf8())? - at;
+    Some((Span::Italic(rest[1..close].to_string()), close + 1))
 }
 
-/// `<https://…>`, `<http://…>` or `<mailto:…>`: a link showing its address.
+/// `<https://…>`, `<http://…>` or `<mailto:…>`: a link showing its address. The look for its
+/// `>` stops at a space or another `<` (so it's linear over a paragraph).
 fn autolink(rest: &str) -> Option<(Span, usize)> {
-    let end = rest.find('>')?;
+    let end = 1 + rest[1..].find(|c: char| c == '>' || c == '<' || c.is_whitespace())?;
+    if !rest[end..].starts_with('>') {
+        return None;
+    }
     let url = &rest[1..end];
     let known = ["https://", "http://", "mailto:"]
         .iter()
         .any(|s| url.starts_with(s));
-    if !known || url.contains(char::is_whitespace) || url.contains('<') {
+    if !known {
         return None;
     }
     Some((
@@ -452,16 +502,30 @@ fn autolink(rest: &str) -> Option<(Span, usize)> {
     ))
 }
 
+/// `[text](url)` at the start of `rest`. The look for `](` stops at another `[` or a line
+/// break, and the one for `)` at a space or a `[` (so it's linear over a paragraph).
 fn link(rest: &str) -> Option<(Span, usize)> {
-    let close = rest.find("](")?;
+    let bytes = rest.as_bytes();
+    let mut close = None;
+    for i in 1..bytes.len() {
+        match bytes[i] {
+            b'[' | b'\n' => return None,
+            b']' if bytes.get(i + 1) == Some(&b'(') => {
+                close = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
     let label = &rest[1..close];
-    if label.contains('[') || label.contains('\n') {
+    let after = &rest[close + 2..];
+    let end = after.find(|c: char| c == ')' || c == '[' || c.is_whitespace())?;
+    if !after[end..].starts_with(')') {
         return None;
     }
-    let after = &rest[close + 2..];
-    let end = after.find(')')?;
     let url = &after[..end];
-    if url.is_empty() || url.contains(char::is_whitespace) {
+    if url.is_empty() {
         return None;
     }
     Some((
@@ -669,5 +733,69 @@ mod file_tests {
     #[test]
     fn a_table_header_still_streaming_is_a_paragraph() {
         assert_eq!(parse("| a | b |"), vec![Md::Para(vec![t("| a | b |")])]);
+    }
+
+    /// Review fix: the inline scanners are linear. 1 MB of unclosed openers (`*a `, `_a `,
+    /// `[a`, `<a`, `[a](`, `![a](`) each parse within the budget: 100 ms in a release build,
+    /// 3 s in a debug one (unoptimised code is 10-30x slower; a quadratic scan of 1 MB takes
+    /// minutes either way, so the budget still tells them apart).
+    #[test]
+    fn a_megabyte_of_unclosed_markers_parses_quickly() {
+        let budget = if cfg!(debug_assertions) {
+            std::time::Duration::from_secs(3)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+        for unit in ["*a ", "_a ", "[a", "<a", "[a](", "![a](", "`a"] {
+            let text = unit.repeat(1_000_000 / unit.len());
+            let start = std::time::Instant::now();
+            let blocks = parse(&text);
+            let took = start.elapsed();
+            assert_eq!(blocks.len(), 1, "{unit:?}: one paragraph");
+            assert!(took < budget, "{unit:?}: {took:?}");
+        }
+    }
+
+    /// How deep the quotes in `blocks` go.
+    fn quote_depth(blocks: &[Md]) -> usize {
+        blocks
+            .iter()
+            .map(|b| match b {
+                Md::Quote(inner) => 1 + quote_depth(inner),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Review fix: quotes nest at most `QUOTE_DEPTH` deep; a deeper `>` stays text, so a
+    /// crafted line of 50,000 `>` neither recurses past the cap nor overflows the stack.
+    #[test]
+    fn quotes_nest_at_most_sixteen_deep() {
+        let line = ">".repeat(50_000);
+        // On a small stack, as a release build's main thread has more room than this.
+        let blocks = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || parse(&line))
+            .unwrap()
+            .join()
+            .expect("no stack overflow");
+        assert_eq!(quote_depth(&blocks), QUOTE_DEPTH);
+        let mut inner = &blocks;
+        for _ in 0..QUOTE_DEPTH {
+            match &inner[..] {
+                [Md::Quote(next)] => inner = next,
+                other => panic!("one quote a level: {other:?}"),
+            }
+        }
+        assert_eq!(
+            inner[..],
+            [Md::Para(vec![t(&">".repeat(50_000 - QUOTE_DEPTH))])]
+        );
+        // Two levels as before.
+        assert_eq!(
+            parse("> > a"),
+            vec![Md::Quote(vec![Md::Quote(vec![Md::Para(vec![t("a")])])])]
+        );
     }
 }
