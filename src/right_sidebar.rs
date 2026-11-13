@@ -1070,6 +1070,7 @@ impl Workspace {
             self.focus_active(window, cx);
         }
         self.save();
+        self.follow_terminal(cx);
         self.refresh_right_sidebar(cx);
         cx.notify();
     }
@@ -1134,11 +1135,12 @@ impl Workspace {
         !self.right_sidebar.hidden && seen && !self.places.frozen
     }
 
-    /// Follow the focused terminal (a browser or file tab focused: keep the last one), look its
-    /// folder up where due (`lookup_due`: at once for a newly followed terminal, else every 2 s)
-    /// and bring the shown panel up to date (only that one: Files or Changes; Activity asks
-    /// nothing). `render` calls it on every frame, the 2 s refresh between frames.
-    pub(crate) fn refresh_right_sidebar(&mut self, cx: &mut Context<Self>) {
+    /// Follow the focused terminal (a browser or file tab focused: keep the last one) and
+    /// redraw when that's another one: the status bar describes it. The focus moving calls it
+    /// (`note_active`: a row or tab chosen, a session opened or closed); for any other route,
+    /// so does each frame once drawn (`Workspace::render`'s deferred check), never while drawing
+    /// (a redraw asked for then reaches no one).
+    pub(crate) fn follow_terminal(&mut self, cx: &mut Context<Self>) {
         // None followed yet (relaunched with a file or browser tab focused): the focused
         // workspace's first terminal, else the active one.
         let id = self.focused_terminal().or_else(|| {
@@ -1153,7 +1155,15 @@ impl Workspace {
         {
             // Another terminal: its files or changes at once.
             self.right_sidebar.refresh_now();
+            cx.notify();
         }
+    }
+
+    /// Look the followed terminal's folder up where due (`lookup_due`: at once for a newly
+    /// followed terminal, else every 2 s) and bring the shown panel up to date (only that one:
+    /// Files or Changes; Activity asks nothing). `render` calls it on every frame (the terminal
+    /// followed as last found), the 2 s refresh between frames (following first).
+    pub(crate) fn refresh_right_sidebar(&mut self, cx: &mut Context<Self>) {
         if !self.right_sidebar_wanted(cx) {
             return;
         }
@@ -1228,6 +1238,7 @@ impl Workspace {
                         let wanted = this.right_sidebar_wanted(cx);
                         this.right_sidebar.ticking = wanted;
                         if wanted {
+                            this.follow_terminal(cx);
                             this.refresh_right_sidebar(cx);
                         }
                         wanted

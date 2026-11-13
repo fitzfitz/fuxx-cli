@@ -211,6 +211,9 @@ const SCENES: &[(&str, fn())] = &[
     ("sidebar-marks", sidebar_marks),
     ("cached-panes", cached_panes),
     ("chrome-counts-baseline", chrome_counts_baseline),
+    ("chrome-folder-polled", chrome_folder_polled),
+    ("chrome-followed", chrome_followed),
+    ("chrome-title-once", chrome_title_once),
     ("sidebar", sidebar_scenes),
     ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-selection", sidebar_selection_scenes),
@@ -1361,6 +1364,307 @@ const SIDEBAR_ROWS_PER_FRAME: u64 = 3;
 /// Frames a breath-like tick draws in `draws_of`: the platform's own draw when the notify's
 /// effects flush, plus the explicit one.
 const FRAMES_PER_TICK: u64 = 2;
+
+/// An off-screen 900 x 500 window over `Workspace::for_shots` as `build` sets it up, drawn
+/// twice and settled: the context, the window and the workspace (the chrome scenes of M11p).
+fn chrome_window(
+    build: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> (
+    VisualTestAppContext,
+    AnyWindowHandle,
+    gpui::Entity<Workspace>,
+) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let theme = shot_theme("Catppuccin Mocha");
+    let dims = size(px(900.0), px(500.0));
+    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    let slot = Rc::new(RefCell::new(None));
+    let window = {
+        let slot = slot.clone();
+        cx.open_offscreen_window(dims, move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                build(&mut ws, window, cx);
+                ws
+            });
+            *slot.borrow_mut() = Some(ws.clone());
+            cx.new(|_| Root {
+                theme,
+                scene: ws.into(),
+            })
+        })
+        .expect("open an off-screen window")
+    };
+    cx.run_until_parked();
+    draw(&mut cx, window.into());
+    draw(&mut cx, window.into());
+    cx.run_until_parked();
+    let ws = slot.borrow().clone().expect("the workspace");
+    (cx, window.into(), ws)
+}
+
+/// The focused terminal's view (what a breath tick notifies).
+fn focused_view(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> gpui::Entity<crate::terminal_view::TerminalView> {
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        let id = ws.focused_terminal().expect("a focused terminal");
+        let i = ws.index_of(id).expect("its session");
+        ws.sessions.items()[i].view.clone()
+    })
+}
+
+/// M11p Task 2, Review Focus 1: a plain `cd` with no OSC 7 (a shell that changes folder and
+/// says nothing; only polling finds it) reaches the sidebar row and the status bar on its own:
+/// the 1 s folder check runs on its timer and redraws, with nothing else redrawing (no breath,
+/// no terminal output, no other notify). The 5 s wait for a folder's next lookup is skipped by
+/// dating the last lookup 5 s back (a fixture: the time passing with nothing drawn).
+///
+/// Panics unless an idle second draws nothing (no other redraw source), and the second after
+/// the `cd` draws on its own with the new folder on the row and the bar.
+fn chrome_folder_polled() {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use crate::git_branch::{CHECK, REFRESH, process_cwd};
+    use crate::sidebar::SidebarRow;
+
+    let n = "chrome-folder-polled";
+    let dir = std::env::temp_dir().join(format!("fuxx-{n}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(dir.join(sub)).expect("the fixture's folders");
+    }
+    let dir = dir.canonicalize().expect("the fixture's folder");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    // The shell starts in a, waits for `go`, then `cd`s to b and becomes cat (same pid): no
+    // output, no OSC 7.
+    let script = r#"while [ ! -e "$0/go" ]; do sleep 0.05; done; cd "$0/b" && exec /bin/cat"#;
+    let program = vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        script.to_string(),
+        dir.display().to_string(),
+    ];
+    let start = a.clone();
+    let (mut cx, window, ws) = chrome_window(move |ws, window, cx| {
+        // Looked up for real, this once.
+        ws.places.frozen = false;
+        let at = crate::workspace::At::New;
+        ws.open_shot_program(
+            Some("shell"),
+            None,
+            program,
+            Some(&start),
+            "",
+            at,
+            window,
+            cx,
+        );
+    });
+    let id = cx.read(|cx| ws.read(cx).focused_terminal().expect("the shell"));
+    // What the row and the bar show (as the workspace would draw them now).
+    let shown = |cx: &mut VisualTestAppContext| -> (Option<String>, Option<PathBuf>) {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let row = ws
+                .rows_in_view(Instant::now())
+                .into_iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(w) => Some(w.folder),
+                    SidebarRow::Header(_) => None,
+                })
+                .flatten();
+            let bar = ws.status_bar_facts().and_then(|f| f.folder);
+            (row, bar)
+        })
+    };
+    let as_row = |p: &Path| Some(p.display().to_string());
+    assert_eq!(
+        shown(&mut cx),
+        (as_row(&a), Some(a.clone())),
+        "{n}: the shell's first folder, looked up"
+    );
+
+    // An idle second: the check runs and finds nothing new; nothing draws.
+    chrome_cache::reset();
+    cx.advance_clock(CHECK);
+    cx.run_until_parked();
+    assert_eq!(
+        chrome_cache::get(Counted::Workspace),
+        0,
+        "{n}: an idle second draws nothing (no other redraw source)"
+    );
+
+    // The cd.
+    std::fs::write(dir.join("go"), "").expect("go");
+    let pid = cx
+        .read(|cx| {
+            ws.read(cx).sessions.items()[0]
+                .view
+                .read(cx)
+                .working_folder()
+                .1
+        })
+        .expect("the shell's pid");
+    let moved = Instant::now();
+    while process_cwd(pid).as_deref() != Some(b.as_path()) {
+        assert!(
+            moved.elapsed() < Duration::from_secs(5),
+            "{n}: the shell moved to b"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Its last lookup 5 s back: due at the next check (what 5 s with nothing drawn would do).
+    cx.update(|cx| {
+        ws.update(cx, |ws, _| {
+            let last = Instant::now() - REFRESH;
+            ws.places.set_folder(id, Some(a.clone()), last);
+        })
+    });
+    chrome_cache::reset();
+    cx.advance_clock(CHECK);
+    cx.run_until_parked();
+    let drawn = [Counted::Workspace, Counted::Sidebar, Counted::StatusBar]
+        .map(|c| (c, chrome_cache::get(c)));
+    println!("ui-shots: {n}: drawn on their own after the cd: {drawn:?}");
+    for (c, count) in drawn {
+        assert!(
+            count >= 1,
+            "{n}: {c:?} drew on its own after the cd (the check's redraw)"
+        );
+    }
+    assert_eq!(
+        shown(&mut cx),
+        (as_row(&b), Some(b.clone())),
+        "{n}: the row and the bar show the new folder"
+    );
+    // And an explicit draw changes nothing.
+    draw(&mut cx, window);
+    cx.run_until_parked();
+    assert_eq!(
+        shown(&mut cx),
+        (as_row(&b), Some(b.clone())),
+        "{n}: still b after a draw"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// M11p Task 2: the terminal the status bar follows changes outside drawing. Focusing another
+/// workspace (its row, ⌘N: `select_workspace`) follows its terminal before the frame is drawn;
+/// a focus change by any other route (the model moved, the workspace notified) is followed
+/// after the next frame (`Workspace::render`'s deferred check), which redraws.
+///
+/// Panics unless the bar describes api's terminal before the first frame after its row is
+/// chosen, and, by the other route, describes web's after a second frame drawn on its own.
+fn chrome_followed() {
+    let n = "chrome-followed";
+    let (mut cx, window, ws) = chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new("/Users/me/code/api");
+        let web = std::path::Path::new("/Users/me/code/web");
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("web", web, SHELL_TEXT, None, window, cx);
+    });
+    let (api, web) = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let id = |i: usize| ws.sessions.items()[i].id;
+        (id(0), id(1))
+    });
+    let followed = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).right_sidebar.followed);
+    assert_eq!(
+        followed(&mut cx),
+        Some(web),
+        "{n}: web (opened last) followed"
+    );
+
+    // Its row: followed as the focus moves, before anything is drawn.
+    let before_draw = cx
+        .update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let shown = ws.workspace_of(0).expect("api's workspace");
+                ws.select_workspace(shown, window, cx);
+                ws.right_sidebar.followed
+            })
+        })
+        .expect("choose api's row");
+    assert_eq!(
+        before_draw,
+        Some(api),
+        "{n}: api followed as its row is chosen, before the frame"
+    );
+    cx.run_until_parked();
+    draw(&mut cx, window);
+    assert_eq!(followed(&mut cx), Some(api), "{n}: and after the frame");
+
+    // Any other route: the frame that shows the change follows it after drawing, and redraws.
+    chrome_cache::reset();
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            let shown = ws.workspace_of(1).expect("web's workspace");
+            ws.model.focus_workspace(shown);
+            ws.sync();
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    let bars = chrome_cache::get(Counted::StatusBar);
+    println!("ui-shots: {n}: status bar frames after a bare focus change: {bars}");
+    assert_eq!(followed(&mut cx), Some(web), "{n}: web followed");
+    assert_eq!(
+        bars, 2,
+        "{n}: the frame that showed the change, then the one the deferred follow drew"
+    );
+}
+
+/// M11p Task 2 (Goal 6): the window title is set only when it changes, not on every frame.
+///
+/// Panics unless 10 breath ticks (the focused terminal notifies, then a draw) set it at most
+/// once, and choosing another workspace's row sets it exactly once more.
+fn chrome_title_once() {
+    let n = "chrome-title-once";
+    let (mut cx, window, ws) = chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new("/Users/me/code/api");
+        ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("web", api, SHELL_TEXT, None, window, cx);
+    });
+    let view = focused_view(&mut cx, &ws);
+    chrome_cache::reset();
+    for _ in 0..10 {
+        cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+        draw(&mut cx, window);
+    }
+    let breaths = chrome_cache::get(Counted::WindowTitle);
+    let frames = chrome_cache::get(Counted::Workspace);
+    println!("ui-shots: {n}: title set {breaths} times over {frames} breath frames");
+    assert!(frames >= 10, "{n}: the breaths drew ({frames} frames)");
+    assert!(
+        breaths <= 1,
+        "{n}: the title set {breaths} times in 10 breaths"
+    );
+
+    chrome_cache::reset();
+    cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let other = ws.workspace_of(0).expect("api's workspace");
+            ws.select_workspace(other, window, cx);
+        })
+    })
+    .expect("choose api's row");
+    cx.run_until_parked();
+    draw(&mut cx, window);
+    draw(&mut cx, window);
+    assert_eq!(
+        chrome_cache::get(Counted::WindowTitle),
+        1,
+        "{n}: another workspace's title, set once"
+    );
+}
 
 /// What the waiting session shows: a Claude Code style prompt, drawn in a box 40 columns wide so
 /// it fits a split pane's grid (about 42 columns, M11i's padding) without wrapping mid-word.

@@ -693,7 +693,7 @@ fn card_band(part: CardPart, offset: f32, ui: &UiColors) -> Option<Div> {
     )
 }
 
-/// An item of the sidebar list as last drawn.
+/// An item of the sidebar list (`listed`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Listed {
     Row(WorkspaceId),
@@ -899,8 +899,6 @@ pub(crate) struct SidebarState {
     pub drop_at: Option<(usize, Option<GroupKey>, usize)>,
     /// The row being dragged and where it was taken, noted as its drag starts.
     pub drag_source: Rc<Cell<Option<RowGrab>>>,
-    /// What each item of the list is, as last drawn: a workspace's row or a group's header.
-    listed: Vec<Listed>,
     /// The group last opened or closed, and that toggle's number: its chevron turns.
     pub turned: Option<(GroupKey, u64)>,
     turns: u64,
@@ -922,7 +920,6 @@ impl SidebarState {
             drop_slot: None,
             drop_at: None,
             drag_source: Rc::new(Cell::new(None)),
-            listed: Vec::new(),
             turned: None,
             turns: 0,
             age_refresh: None,
@@ -1340,6 +1337,19 @@ impl Workspace {
             .collect()
     }
 
+    /// What each item of the list is now, in order: a workspace's row or a group's header (a
+    /// row drag lays it over the items' last drawn bounds). Built when asked, not kept by the
+    /// frame: nothing is written while drawing (M11p).
+    fn listed(&self) -> Vec<Listed> {
+        self.sidebar_rows(Instant::now())
+            .iter()
+            .map(|row| match row {
+                SidebarRow::Workspace(s) => Listed::Row(s.workspace),
+                SidebarRow::Header(h) => Listed::Header(h.key.clone()),
+            })
+            .collect()
+    }
+
     /// While the marks' ticker isn't redrawing (nothing moves, or motion is off), redraw once
     /// when an age on screen next changes ("59s" to "1m"), so Done's time stays true. Nothing
     /// while the window can't be seen: showing it again redraws.
@@ -1415,13 +1425,6 @@ impl Workspace {
                 }
             }
         }
-        self.sidebar.listed = rows
-            .iter()
-            .map(|row| match row {
-                SidebarRow::Workspace(s) => Listed::Row(s.workspace),
-                SidebarRow::Header(h) => Listed::Header(h.key.clone()),
-            })
-            .collect();
         let targets = self.row_drag_offsets(&rows, cx);
         let headers: Vec<bool> = rows
             .iter()
@@ -2339,7 +2342,7 @@ impl Workspace {
             // (2026-11-10, your call).
             let next = grab.filter(|_| over || above).and_then(|grab| {
                 let (mut items, mut spans, mut own) = (Vec::new(), Vec::new(), None);
-                for (i, item) in self.sidebar.listed.iter().enumerate() {
+                for (i, item) in self.listed().iter().enumerate() {
                     spans.push(span(i)?);
                     items.push(match item {
                         Listed::Header(key) => ListItem::Header(key.clone()),
@@ -2373,7 +2376,7 @@ impl Workspace {
         // Pinned: within the pinned rows.
         let next = grab.filter(|_| over).and_then(|grab| {
             let (mut own, mut spans) = (None, Vec::new());
-            for (i, item) in self.sidebar.listed.iter().enumerate() {
+            for (i, item) in self.listed().iter().enumerate() {
                 let Listed::Row(w) = *item else { continue };
                 if self.sidebar_run(w) != run {
                     continue;

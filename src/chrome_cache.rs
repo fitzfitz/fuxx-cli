@@ -20,6 +20,8 @@ pub enum Counted {
     Title,
     /// `sidebar_rows`, the sidebar's row model (also called outside `render_sidebar`).
     SidebarRows,
+    /// `Window::set_window_title`, from `Workspace::render`.
+    WindowTitle,
 }
 
 #[cfg(feature = "ui-shots")]
@@ -28,7 +30,7 @@ mod counters {
 
     use super::Counted;
 
-    static COUNTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+    static COUNTS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 
     pub fn bump(c: Counted) {
         COUNTS[c as usize].fetch_add(1, Ordering::Relaxed);
