@@ -12,6 +12,7 @@
 //! (`read_answer`), the snapshot's density (`density`), and the error line (`note`).
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use crate::agent_markdown::Md;
 
@@ -153,17 +154,28 @@ pub fn short_error(raw: &str) -> String {
 }
 
 /// A small least-recently-used map: `get` and `put` make an entry the newest; `put` past
-/// `cap` drops (and returns) the oldest.
+/// `cap` entries, or past `budget` in all (each entry has a weight: a decoded image's bytes),
+/// drops (and returns) the oldest. The newest entry always stays, however heavy.
 pub struct Lru<K, V> {
     cap: usize,
-    /// Oldest first.
-    entries: VecDeque<(K, V)>,
+    budget: usize,
+    /// The weights' sum.
+    weight: usize,
+    /// Oldest first, with their weights.
+    entries: VecDeque<(K, V, usize)>,
 }
 
 impl<K: PartialEq, V> Lru<K, V> {
+    #[cfg(test)]
     pub fn new(cap: usize) -> Self {
+        Self::with_budget(cap, usize::MAX)
+    }
+
+    pub fn with_budget(cap: usize, budget: usize) -> Self {
         Lru {
             cap,
+            budget,
+            weight: 0,
             entries: VecDeque::new(),
         }
     }
@@ -173,26 +185,204 @@ impl<K: PartialEq, V> Lru<K, V> {
         self.entries.len()
     }
 
-    /// The value for `key`, now the newest.
-    pub fn get(&mut self, key: &K) -> Option<&V> {
-        let at = self.entries.iter().position(|(k, _)| k == key)?;
-        let entry = self.entries.remove(at)?;
-        self.entries.push_back(entry);
-        self.entries.back().map(|(_, v)| v)
+    /// The weights' sum.
+    #[cfg(any(test, feature = "ui-shots"))]
+    pub fn weight(&self) -> usize {
+        self.weight
     }
 
-    /// Keep `value` for `key` (replacing any), as the newest; the entries dropped to stay
-    /// within `cap`, oldest first.
+    /// The value for `key`, now the newest.
+    pub fn get(&mut self, key: &K) -> Option<&V> {
+        let at = self.entries.iter().position(|(k, ..)| k == key)?;
+        let entry = self.entries.remove(at)?;
+        self.entries.push_back(entry);
+        self.entries.back().map(|(_, v, _)| v)
+    }
+
+    /// `put_weighted` with no weight.
     pub fn put(&mut self, key: K, value: V) -> Vec<(K, V)> {
-        if let Some(at) = self.entries.iter().position(|(k, _)| *k == key) {
-            self.entries.remove(at);
+        self.put_weighted(key, value, 0)
+    }
+
+    /// Keep `value` (weighing `weight`) for `key`, replacing any, as the newest; the entries
+    /// dropped to stay within `cap` and `budget`, oldest first.
+    pub fn put_weighted(&mut self, key: K, value: V, weight: usize) -> Vec<(K, V)> {
+        if let Some(at) = self.entries.iter().position(|(k, ..)| *k == key)
+            && let Some((_, _, old)) = self.entries.remove(at)
+        {
+            self.weight -= old;
         }
-        self.entries.push_back((key, value));
+        self.entries.push_back((key, value, weight));
+        self.weight += weight;
         let mut dropped = Vec::new();
-        while self.entries.len() > self.cap {
-            dropped.extend(self.entries.pop_front());
+        while self.entries.len() > 1 && (self.entries.len() > self.cap || self.weight > self.budget)
+        {
+            if let Some((k, v, w)) = self.entries.pop_front() {
+                self.weight -= w;
+                dropped.push((k, v));
+            }
         }
         dropped
+    }
+}
+
+/// A diagram's decoded image may use this many bytes of the cache's budget in all (256 MB):
+/// past it the oldest go, as past `CACHE_SIZE`.
+pub const CACHE_BYTES: usize = 256 * 1024 * 1024;
+/// A diagram dropped from the cache isn't drawn again for this long if it's asked for at once
+/// (more on screen than the cache holds): it shows as code with `TOO_MUCH` instead.
+pub const REDRAW_PAUSE: Duration = Duration::from_secs(10);
+pub const TOO_MUCH: &str = "too many large diagrams on screen \u{2014} showing code";
+
+/// How a render ended.
+pub enum Outcome<V> {
+    /// Drawn: the image, and its decoded size in bytes.
+    Drawn(V, usize),
+    /// Mermaid couldn't draw it (kept: it won't draw next time either).
+    Mermaid(String),
+    /// WebKit failed (a timeout, the page's process gone, the page not loading): not kept as
+    /// a diagram's answer; the next time it's asked for it renders once more.
+    WebKit(String),
+}
+
+/// What the cache answers when a Preview asks for a diagram.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Asked<V> {
+    Ready(V),
+    Failed(String),
+    /// Queued (or already): the code shows meanwhile.
+    Waiting,
+    /// Dropped from the cache just now for room: code, with `TOO_MUCH`.
+    TooMuch,
+}
+
+/// The diagrams' bookkeeping, apart from WebKit and GPUI (`mermaid_render` holds one): the
+/// cache (`CACHE_SIZE` entries, `CACHE_BYTES`), the queue (each key once), who waits for each
+/// (once per asker, `who`; `W` is what to tell them), WebKit failures waiting for their one
+/// retry, and when diagrams were dropped for room.
+pub struct Store<V, W> {
+    cache: Lru<Key, Result<V, String>>,
+    waiting: Vec<(Key, Vec<(u64, W)>)>,
+    queue: VecDeque<(Key, String)>,
+    /// WebKit failed once: rendered again the next time it's asked for.
+    soft: Vec<Key>,
+    /// Being rendered again after a WebKit failure: a second one is kept.
+    retrying: Vec<Key>,
+    dropped: VecDeque<(Key, Instant)>,
+}
+
+impl<V: Clone, W> Store<V, W> {
+    pub fn new(cap: usize, budget: usize) -> Self {
+        Store {
+            cache: Lru::with_budget(cap, budget),
+            waiting: Vec::new(),
+            queue: VecDeque::new(),
+            soft: Vec::new(),
+            retrying: Vec::new(),
+            dropped: VecDeque::new(),
+        }
+    }
+
+    /// `who` asks for `key` (drawn from `source`) at `now`; `tell` is how to tell them when
+    /// it's ready (kept once per `who`).
+    pub fn ask(&mut self, key: Key, source: &str, who: u64, tell: W, now: Instant) -> Asked<V> {
+        if let Some(done) = self.cache.get(&key) {
+            return match done {
+                Ok(v) => Asked::Ready(v.clone()),
+                Err(e) => Asked::Failed(e.clone()),
+            };
+        }
+        while self
+            .dropped
+            .front()
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= REDRAW_PAUSE)
+        {
+            self.dropped.pop_front();
+        }
+        if self.dropped.iter().any(|(k, _)| *k == key) {
+            return Asked::TooMuch;
+        }
+        if let Some(at) = self.soft.iter().position(|k| *k == key) {
+            self.soft.remove(at);
+            self.retrying.push(key);
+        }
+        match self.waiting.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, waiters)) if waiters.iter().any(|(w, _)| *w == who) => {}
+            Some((_, waiters)) => waiters.push((who, tell)),
+            None => {
+                self.waiting.push((key, vec![(who, tell)]));
+                self.queue.push_back((key, source.to_string()));
+            }
+        }
+        Asked::Waiting
+    }
+
+    /// The next job someone still wants: each waiter kept only if `wanted` says so; a job
+    /// nobody wants any more is dropped with its waiters.
+    pub fn next_job(&mut self, mut wanted: impl FnMut(&Key, &W) -> bool) -> Option<(Key, String)> {
+        while let Some((key, source)) = self.queue.pop_front() {
+            if let Some(at) = self.waiting.iter().position(|(k, _)| *k == key) {
+                self.waiting[at].1.retain(|(_, tell)| wanted(&key, tell));
+                if !self.waiting[at].1.is_empty() {
+                    return Some((key, source));
+                }
+                self.waiting.remove(at);
+            }
+            self.retrying.retain(|k| *k != key);
+        }
+        None
+    }
+
+    /// `key`'s render ended at `now`: whom to tell, and the images dropped from the cache for
+    /// room (to free).
+    pub fn finish(&mut self, key: Key, outcome: Outcome<V>, now: Instant) -> (Vec<W>, Vec<V>) {
+        let tell = match self.waiting.iter().position(|(k, _)| *k == key) {
+            Some(at) => self
+                .waiting
+                .remove(at)
+                .1
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect(),
+            None => Vec::new(),
+        };
+        let retried = match self.retrying.iter().position(|k| *k == key) {
+            Some(at) => {
+                self.retrying.remove(at);
+                true
+            }
+            None => false,
+        };
+        let dropped = match outcome {
+            Outcome::Drawn(v, bytes) => self.cache.put_weighted(key, Ok(v), bytes),
+            Outcome::Mermaid(e) => self.cache.put(key, Err(e)),
+            Outcome::WebKit(e) if retried => self.cache.put(key, Err(e)),
+            Outcome::WebKit(_) => {
+                // Bounded: a key nobody asks for again is forgotten after a while.
+                if self.soft.len() >= CACHE_SIZE {
+                    self.soft.remove(0);
+                }
+                self.soft.push(key);
+                Vec::new()
+            }
+        };
+        let mut freed = Vec::new();
+        for (k, done) in dropped {
+            if self.dropped.len() >= CACHE_SIZE {
+                self.dropped.pop_front();
+            }
+            self.dropped.push_back((k, now));
+            if let Ok(v) = done {
+                freed.push(v);
+            }
+        }
+        (tell, freed)
+    }
+
+    /// Diagrams (and errors) cached, their images' bytes, and jobs queued.
+    #[cfg(any(test, feature = "ui-shots"))]
+    pub fn counts(&self) -> (usize, usize, usize) {
+        (self.cache.len(), self.cache.weight(), self.queue.len())
     }
 }
 
@@ -207,10 +397,23 @@ pub fn page_background(dark: bool) -> &'static str {
     if dark { "#333333" } else { "#ffffff" }
 }
 
-/// The page the hidden web view loads (with no base URL): a Content-Security-Policy that
-/// allows no request at all (only the inline script and styles, and `data:` images and
-/// fonts), the bundled mermaid.js inline, and Mermaid set up to draw only when asked
+/// The script WebKit injects into the page (a `WKUserScript`, which the page's policy doesn't
+/// govern): the bundled mermaid.js, and Mermaid set up to draw only when asked
 /// (`startOnLoad: false`), in `strict` security, in the theme for `dark`.
+pub fn user_script(dark: bool) -> String {
+    format!("{MERMAID_JS}\n;{}", init_js(dark))
+}
+
+/// Whether the web view may go where a navigation asks: only its own page, loaded from a
+/// string (`about:blank`), in its main frame. Everything else (links, redirects, frames, a
+/// script setting `location`) is cancelled.
+pub fn navigation_allowed(main_frame: bool, url: &str) -> bool {
+    main_frame && url == "about:blank"
+}
+
+/// The page the hidden web view loads (with no base URL): a Content-Security-Policy that
+/// allows no request and no script of the page's own (only its inline styles, and `data:`
+/// images and fonts), its colours, and the box diagrams are drawn in.
 pub fn page_html(dark: bool) -> String {
     format!(
         r#"<!doctype html>
@@ -220,22 +423,22 @@ pub fn page_html(dark: bool) -> String {
 html, body {{ margin: 0; padding: 0; background: {bg}; }}
 #out {{ position: absolute; left: 0; top: 0; display: inline-block; padding: 16px; background: {bg}; }}
 </style>
-<script>{MERMAID_JS}</script>
-<script>{init}</script>
 </head><body><div id="out"></div></body></html>"#,
         bg = page_background(dark),
-        init = init_js(dark),
     )
 }
 
 /// The page's policy: nothing may be fetched (no `connect-src`, no remote script, style,
-/// image, font, frame or media); only the page's own inline script and styles, and `data:`
-/// images and fonts, which Mermaid makes itself.
-const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
+/// image, font, frame or media), and no script of the page's own runs (not even an inline
+/// event handler in a diagram's label); only inline styles, and `data:` images and fonts,
+/// which Mermaid makes itself. mermaid.js comes in as a user script (`user_script`), and
+/// each diagram through `callAsyncJavaScript`: the page's policy doesn't govern either.
+const CSP: &str = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; \
                    img-src data:; font-src data:";
 
-/// Mermaid set up for the theme for `dark`: drawn only when asked, in strict security (no
-/// click handlers or scripts in labels, HTML in them sanitised).
+/// Mermaid set up for the theme for `dark`: drawn only when asked, in strict security (HTML
+/// tags in labels encoded, click handlers off; a `click … href` link survives, sanitised, and
+/// is inert in a snapshot).
 fn init_js(dark: bool) -> String {
     format!(
         "mermaid.initialize({{ startOnLoad: false, securityLevel: 'strict', theme: '{}' }});",
@@ -437,6 +640,10 @@ mod tests {
     fn the_line_under_the_code_says_mermaid_and_why() {
         assert_eq!(note(TOO_LARGE), "Mermaid: too large");
         assert_eq!(
+            note(TOO_MUCH),
+            "Mermaid: too many large diagrams on screen \u{2014} showing code"
+        );
+        assert_eq!(
             note(TOO_MANY),
             "Mermaid: more than 20 diagrams \u{2014} showing code"
         );
@@ -504,24 +711,169 @@ mod tests {
         assert_eq!(lru.len(), 64);
     }
 
+    /// Review fix: the page runs no script of its own (`script-src 'none'`: an inline event
+    /// handler Mermaid's sanitiser missed can't run either); mermaid.js comes in as a user
+    /// script, which the page's policy doesn't govern.
     #[test]
-    fn the_page_has_the_script_strict_security_no_network_and_the_theme() {
-        for (dark, theme) in [(true, "dark"), (false, "default")] {
+    fn the_page_allows_no_script_and_no_request() {
+        for dark in [true, false] {
             let page = page_html(dark);
-            assert!(page.contains(MERMAID_JS), "the bundled script, inline");
-            assert!(page.contains("startOnLoad: false"));
-            assert!(page.contains("securityLevel: 'strict'"));
-            assert!(page.contains(&format!("theme: '{theme}'")), "{theme}");
-            assert_eq!(mermaid_theme(dark), theme);
-            assert!(page.contains(page_background(dark)));
-            // No request leaves the page: only the inline script and styles, data: images.
             assert!(page.contains(
-                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
+                "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; \
                  img-src data:; font-src data:"
             ));
-            assert!(!page.contains("src=\"http"), "no remote script");
+            assert!(!page.contains("<script"), "no script in the page");
+            assert!(page.contains(page_background(dark)));
+            assert!(page.contains("id=\"out\""));
         }
         assert_ne!(page_background(true), page_background(false));
+    }
+
+    #[test]
+    fn the_user_script_is_mermaid_set_up_strict_in_the_theme() {
+        for (dark, theme) in [(true, "dark"), (false, "default")] {
+            let script = user_script(dark);
+            assert!(script.starts_with(MERMAID_JS), "the bundled script");
+            assert!(script.contains("startOnLoad: false"));
+            assert!(script.contains("securityLevel: 'strict'"));
+            assert!(script.contains(&format!("theme: '{theme}'")), "{theme}");
+            assert_eq!(mermaid_theme(dark), theme);
+        }
+    }
+
+    #[test]
+    fn only_the_page_s_own_load_may_navigate() {
+        assert!(navigation_allowed(true, "about:blank"));
+        assert!(!navigation_allowed(false, "about:blank"), "a frame");
+        for url in [
+            "http://127.0.0.1:8080/",
+            "https://example.com",
+            "file:///etc/hosts",
+            "about:srcdoc",
+            "data:text/html,x",
+            "",
+        ] {
+            assert!(!navigation_allowed(true, url), "{url}");
+        }
+    }
+
+    #[test]
+    fn the_cache_also_keeps_within_a_byte_budget() {
+        let mut lru = Lru::with_budget(10, 100);
+        assert!(lru.put_weighted(1, "a", 40).is_empty());
+        assert!(lru.put_weighted(2, "b", 40).is_empty());
+        assert_eq!(lru.weight(), 80);
+        // 50 more: over 100, so the oldest goes.
+        assert_eq!(lru.put_weighted(3, "c", 50), vec![(1, "a")]);
+        assert_eq!(lru.weight(), 90);
+        // One heavier than the budget stays alone (the newest always stays).
+        assert_eq!(lru.put_weighted(4, "d", 500), vec![(2, "b"), (3, "c")]);
+        assert_eq!((lru.len(), lru.weight()), (1, 500));
+        // Replacing frees the old weight.
+        assert!(lru.put_weighted(4, "D", 10).is_empty());
+        assert_eq!(lru.weight(), 10);
+    }
+
+    fn k(n: u8) -> Key {
+        Key {
+            sha: [n; 32],
+            dark: false,
+        }
+    }
+
+    /// Review fix: the store's bookkeeping with a fake render step.
+    #[test]
+    fn a_diagram_is_queued_once_and_each_asker_told_once() {
+        let t = Instant::now();
+        let mut store: Store<&str, &str> = Store::new(64, usize::MAX);
+        assert_eq!(store.ask(k(1), "a", 7, "tab 7", t), Asked::Waiting);
+        // Asked again each frame, and by a second tab: still one job, two to tell.
+        assert_eq!(store.ask(k(1), "a", 7, "tab 7 again", t), Asked::Waiting);
+        assert_eq!(store.ask(k(1), "a", 8, "tab 8", t), Asked::Waiting);
+        assert_eq!(store.counts().2, 1, "queued once");
+        let job = store.next_job(|_, _| true);
+        assert_eq!(job, Some((k(1), "a".to_string())));
+        assert_eq!(store.next_job(|_, _| true), None);
+        let (told, freed) = store.finish(k(1), Outcome::Drawn("img", 10), t);
+        assert_eq!(told, ["tab 7", "tab 8"]);
+        assert!(freed.is_empty());
+        assert_eq!(store.ask(k(1), "a", 7, "x", t), Asked::Ready("img"));
+        assert_eq!(store.counts(), (1, 10, 0));
+    }
+
+    #[test]
+    fn a_job_nobody_wants_any_more_is_dropped() {
+        let t = Instant::now();
+        let mut store: Store<&str, &str> = Store::new(64, usize::MAX);
+        store.ask(k(1), "a", 1, "closed tab", t);
+        store.ask(k(2), "b", 1, "closed tab", t);
+        store.ask(k(2), "b", 2, "open tab", t);
+        store.ask(k(3), "c", 2, "open tab", t);
+        // Tab 1 is gone (or its file and theme no longer have the diagram).
+        let mut wanted = |_: &Key, w: &&str| *w != "closed tab";
+        assert_eq!(store.next_job(&mut wanted), Some((k(2), "b".to_string())));
+        let (told, _) = store.finish(k(2), Outcome::Drawn("img", 1), t);
+        assert_eq!(told, ["open tab"], "only the tab that still wants it");
+        assert_eq!(store.next_job(&mut wanted), Some((k(3), "c".to_string())));
+        assert_eq!(store.next_job(&mut wanted), None);
+        // Dropped, not cached: asked for again, it's queued again.
+        assert_eq!(store.ask(k(1), "a", 3, "new tab", t), Asked::Waiting);
+        assert_eq!(store.counts().2, 1);
+    }
+
+    #[test]
+    fn mermaid_errors_are_kept_and_webkit_errors_retried_once() {
+        let t = Instant::now();
+        let mut store: Store<&str, &str> = Store::new(64, usize::MAX);
+        store.ask(k(1), "bad", 1, "tab", t);
+        store.next_job(|_, _| true);
+        let (told, _) = store.finish(k(1), Outcome::Mermaid("Parse error".into()), t);
+        assert_eq!(told, ["tab"]);
+        assert_eq!(
+            store.ask(k(1), "bad", 1, "tab", t),
+            Asked::Failed("Parse error".into())
+        );
+        assert_eq!(store.counts().2, 0, "not rendered again");
+
+        store.ask(k(2), "slow", 1, "tab", t);
+        store.next_job(|_, _| true);
+        let (told, _) = store.finish(k(2), Outcome::WebKit("timed out".into()), t);
+        assert_eq!(told, ["tab"], "told, so it asks again");
+        // Not kept: asked again, it renders once more.
+        assert_eq!(store.ask(k(2), "slow", 1, "tab", t), Asked::Waiting);
+        assert_eq!(
+            store.next_job(|_, _| true),
+            Some((k(2), "slow".to_string()))
+        );
+        store.finish(k(2), Outcome::WebKit("timed out".into()), t);
+        // A second WebKit failure is kept: no endless retries.
+        assert_eq!(
+            store.ask(k(2), "slow", 1, "tab", t),
+            Asked::Failed("timed out".into())
+        );
+        assert_eq!(store.counts().2, 0);
+    }
+
+    #[test]
+    fn a_diagram_dropped_for_room_isn_t_drawn_again_at_once() {
+        let t = Instant::now();
+        // Room for two images of 10 bytes.
+        let mut store: Store<&str, &str> = Store::new(64, 20);
+        for (n, img) in [(1, "one"), (2, "two")] {
+            store.ask(k(n), "src", 1, "tab", t);
+            store.next_job(|_, _| true);
+            store.finish(k(n), Outcome::Drawn(img, 10), t);
+        }
+        store.ask(k(3), "src", 1, "tab", t);
+        store.next_job(|_, _| true);
+        let (_, freed) = store.finish(k(3), Outcome::Drawn("three", 10), t);
+        assert_eq!(freed, ["one"], "its image freed");
+        // Still on screen, asked for at once: code with a note, not a render loop.
+        assert_eq!(store.ask(k(1), "src", 1, "tab", t), Asked::TooMuch);
+        assert_eq!(store.counts().2, 0);
+        // After the pause it may render again.
+        let later = t + REDRAW_PAUSE + Duration::from_secs(1);
+        assert_eq!(store.ask(k(1), "src", 1, "tab", later), Asked::Waiting);
     }
 
     #[test]

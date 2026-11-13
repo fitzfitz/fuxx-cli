@@ -167,19 +167,30 @@ from master `e278c3f` (which has Part 1).
   other block.
 - A diagram Mermaid can't draw keeps its code, with one line under it in the dim text colour: `Mermaid: <short
   error>` (its first line; for a parse error, what it found instead: `Mermaid: Parse error on line 3: got 'EOF'`).
-  So does one that takes more than 5 s (`Mermaid: the page didn't answer in 5 s`).
+  One that takes more than 5 s (render and snapshot together) shows `Mermaid: the page didn't answer in 5 s` and is
+  tried once more the next time it's shown (a WebKit failure isn't kept; a second one is).
 - At most **20** diagrams are drawn per file; the 21st on stay code with `Mermaid: more than 20 diagrams — showing
   code`. A diagram source over **50 KB** stays code with `Mermaid: too large`.
 - Light or dark follows fuxx's theme (Mermaid's `default` or `dark` theme). Switching between a light and a dark
   theme draws the diagrams again; two dark themes share the dark rendering.
-- Rendered diagrams are cached in memory by (SHA-256 of the source, light/dark), **64** at most, least recently
-  used out first (its decoded image let go too). Scrolling and redrawing only read the cache; the same diagram in two
-  files renders once.
+- Rendered diagrams are cached in memory by (SHA-256 of the source, light/dark), **64** at most and **256 MB** of
+  decoded images at most, least recently used out first (its image taken out of every window's GPU sprite atlas
+  too). Scrolling and redrawing only read the cache; the same diagram in two files renders once. If more is on screen
+  than the cache holds, a diagram dropped for room isn't rendered again for 10 s: it shows as code with `Mermaid:
+  too many large diagrams on screen — showing code` (no render loop).
+- A queued diagram nobody wants any more (its tab closed, its Preview off, its file changed, or the theme flipped
+  between light and dark) is dropped before it renders.
 - **No network, ever**: the page is loaded from a string with no base URL, behind a Content-Security-Policy of
-  `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:`; the
-  navigation delegate allows only the page's own first load and cancels every other navigation; the web view has a
-  fresh non-persistent data store and no UI delegate (no new windows); Mermaid runs with `securityLevel: 'strict'`
-  (no click handlers or scripts in labels). The diagram is a picture: a `click` link in it does nothing.
+  `default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:` (no request,
+  and no script of the page's own, not even an inline event handler: mermaid.js comes in as a WebKit user script and
+  each diagram through `callAsyncJavaScript`, which the page's policy doesn't govern); the navigation delegate allows
+  only `about:blank` in the main frame (the page itself) and cancels everything else; the web view has a fresh
+  non-persistent data store and no UI delegate (no new windows); Mermaid runs with `securityLevel: 'strict'` (HTML
+  tags in labels encoded, click handlers off; a `click … href` link survives, sanitised, but the diagram is a
+  picture, so it does nothing).
+- The hidden window sits at (−20000, −20000), is never shown, can't be screen-captured (sharing none), and is left
+  out of ⌘` cycling and Mission Control (`IgnoresCycle | Transient`). After **60 s** with nothing to render the web
+  view and its WebKit process go; the next diagram makes a fresh one.
 
 ### How it's built
 
@@ -191,19 +202,21 @@ from master `e278c3f` (which has Part 1).
   `a8a6a6f8…3c3b9f`, checked by a test), its MIT `LICENSE`, and a README with the version, source URL, npm integrity
   and SHA-256. Embedded with `include_str!`: **about 5.5 MB** more in the binary (the script verbatim).
 - `src/mermaid.rs` (new, pure, tested): `is_mermaid`, `plan` (which blocks render, the 20 and 50 KB limits), `key`
-  (SHA-256 through macOS's CommonCrypto, in libSystem: no crate), `Lru`, `page_html` (the CSP, the script inline,
-  `mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme })`), `render_script` (the source passed
-  as a JSON string, `mermaid.render(id, source)` into `#out`, its size answered), `read_answer`, `density`,
-  `short_error`, `note`.
+  (SHA-256 through macOS's CommonCrypto, in libSystem: no crate), `Lru` (entries and bytes), `Store` (the cache,
+  queue, waiters, the WebKit retry and the room pause, apart from WebKit and GPUI), `page_html` (the CSP, no script),
+  `user_script` (mermaid.js and `mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme })`),
+  `navigation_allowed`, `render_script` (the source passed as a JSON string, `mermaid.render(id, source)` into
+  `#out`, its size answered), `read_answer`, `density`, `short_error`, `note`.
 - `src/mermaid_render.rs` (new): one hidden `WKWebView` (in a borderless window that's never shown), made lazily on
   the first diagram, on the main thread; each diagram runs with `callAsyncJavaScript` and is snapshotted with
   `WKSnapshotConfiguration` (its rect, and a width giving 2 pixels per point; a huge diagram less, at most 8192
-  pixels a side and 16.7 million in all). Every WebKit answer comes back through a completion block into a channel a
-  GPUI task awaits: the UI thread never waits. One diagram at a time, the rest queued; a WebKit failure or a timeout
-  throws the web view away and the next diagram gets a fresh one. `Mermaids` (a GPUI global) holds the cache, the
-  queue and who's waiting (once per Preview).
+  pixels a side and 16.7 million in all), the PNG decoded off the UI thread into a GPUI `RenderImage`. Every WebKit
+  answer comes back through a completion block into a channel a GPUI task awaits: the UI thread never waits. One
+  diagram at a time, the rest queued, each asker's "still wanted?" checked before a job renders; a WebKit failure or
+  a timeout throws the web view away and the next diagram gets a fresh one. `Mermaids` (a GPUI global) holds the
+  `Store`; an image dropped from it is removed from every window's sprite atlas (`App::drop_image`).
 - `src/md_preview.rs`: `Shown` (a diagram, or the code with an optional note) and `Draw::mermaid`; a Mermaid block's
-  row is the image (`img` in a box of the image's aspect ratio, `max_w` its natural width, centred) or the code with
+  row is the image (`img` of the `RenderImage`, in a box of its aspect ratio, `max_w` its natural width, centred) or the code with
   the dim note. `src/file_tab.rs`: the plan made once per file version and light/dark; each frame asks the cache
   (`Mermaids::shown`), and a finished diagram re-measures the list's rows and redraws the tab.
 - `Cargo.toml`: two more `objc2-web-kit` **features** (no new crate): `WKContentWorld` and `WKFrameInfo`, for
@@ -218,13 +231,20 @@ from master `e278c3f` (which has Part 1).
 3. **Mermaid's `dark` theme for every dark fuxx theme, `default` for every light one**, decided by the theme's
    background (`Theme::is_dark`).
 4. **Counting to 20 is in document order over every Mermaid block**, a too-large one included; only top-level
-   blocks are diagrams (a Mermaid block inside a block quote stays code).
-5. **5 s per diagram** (render and snapshot), and **10 s more for the page's first load** (5.5 MB of script), so the
-   first diagram isn't failed by the load.
-6. **Errors are cached like diagrams** (a broken diagram isn't retried every frame); editing it makes a new key.
+   blocks are diagrams. A Mermaid block inside a block quote stays code; one indented under a list item is drawn
+   (the parser lifts a fenced block out of the list, as Part 1 shows any code block there).
+5. **One 5 s deadline per diagram** (render and snapshot together), and **10 s more for the page's first load**
+   (5.5 MB of script), so the first diagram isn't failed by the load.
+6. **Mermaid's errors are cached like diagrams** (a broken diagram isn't retried every frame; editing it makes a new
+   key). **WebKit's** (a timeout, its process gone, the page not loading) aren't: the diagram renders once more the
+   next time it's shown, and a second WebKit failure is kept (review fix).
 7. **Nothing renders until Preview shows the file**; all of its (first 20) diagrams are queued then, not only those
    in sight, so scrolling down finds them ready.
 8. **A failure is logged** to stderr (`[fuxx] mermaid: …`, the whole message) as well as shown short.
+9. **The cache's byte budget is 256 MB of decoded pixels** (4 bytes a pixel), beside the 64 entries; a diagram
+   dropped for room waits **10 s** before it may render again (review fix: no render loop when more is on screen
+   than fits).
+10. **The web view goes after 60 s idle** (review fix), so a WebKit process isn't kept for a Preview read once.
 
 ### Limits
 
@@ -234,20 +254,24 @@ from master `e278c3f` (which has Part 1).
 - Diagrams are pictures: no hover, no links, no text selection; a very tall diagram (beyond 4096 points a side, or
   16.7 million pixels) is snapshotted less densely and looks softer.
 - Two dark themes show the same dark diagram, on `#333`, not on their own background.
-- Mermaid features that need the network (icon packs, remote images or fonts, `@import`) draw without them.
-- A Mermaid block in a quote stays code. More than 64 diagrams on screen at once (four Previews of 20) would render
-  again in turn as the cache evicts them.
+- Mermaid features that need the network (icon packs, remote images or fonts, `@import`) draw without them; so do
+  any that need a script of the page's own.
+- A Mermaid block in a quote stays code (one under a list item is drawn, lifted out of the list). More than 64
+  diagrams (or 256 MB of them) on screen at once: those dropped for room show as code with a note for 10 s, then
+  may render again, one at a time.
+- After 60 s idle the next diagram waits for the page's load again.
 - The bundle's dependencies (d3, dagre, DOMPurify, lodash-es, cytoscape and others) ship inside it under their own
   licences (MIT, ISC, BSD, Apache-2.0/MPL-2.0 for DOMPurify), their banners kept in the file.
 
 ### Verification
 
-- TDD for the pure parts (`src/mermaid.rs`, 16 tests, each seen failing first against stubs): which info strings are
+- TDD for the pure parts (`src/mermaid.rs`, 16 tests, each seen failing first against stubs; 23 after the review
+  fixes, the 8 new ones also seen failing first): which info strings are
   Mermaid (`mermaid`, `Mermaid`, `` ``` mermaid {…}`` through the parser), SHA-256 against known vectors, the key, the
   vendored file's SHA-256, the plan (20, 50 KB, light/dark), the note text, short errors (first line, parse errors,
   100 characters), the LRU (order, replacement, 64), the page (script inline, strict, the theme, the CSP, no remote
   script), the render script (source as a JSON string, theme), the answer, the snapshot density.
-- Gate: `cargo test --bin fuxx` 1650 passed, 1 ignored (1634 before); `cargo clippy --all-targets` 27 and
+- Gate (before the review fixes): `cargo test --bin fuxx` 1650 passed, 1 ignored (1634 before); `cargo clippy --all-targets` 27 and
   `--features ui-shots` 29 warnings with this toolchain (none in the changed code; one it raised, a complex type, was
   fixed); `cargo fmt --check` clean; ui-shots `file` (every `file*` scene) pass.
 - ui-shots `file-tab-md-mermaid` (`cargo run --features ui-shots -- __ui-shots file-tab-md-mermaid`): **real WebKit
@@ -259,7 +283,12 @@ from master `e278c3f` (which has Part 1).
   second). Also checked, not shot: scrolling the Preview renders nothing again (cache 3, none waiting, before and
   after); switching light ↔ dark renders all three again (cache 6); and **no network**: a diagram with an `<img>` in
   a label, a `themeCSS` `@import` and a `click` link, all to a server on 127.0.0.1, renders and the server gets no
-  connection (with the CSP taken out by hand, the same check does see a connection, so it's a real check).
+  connection (with the CSP taken out by hand, the same check does see a connection, so it's a real check; strict
+  mode encodes HTML tags, so the live vector was most likely the `@import`; both `<img>` and `@import` are covered).
+  Review fixes, also checked there: diagrams still render with mermaid.js as a user script under `script-src 'none'`;
+  an inline `onload`/`onerror` handler and an inserted `<script>` don't run in the live page (with `'unsafe-inline'`
+  put back by hand, both do: a real check); the cache reports its decoded bytes (about 6 MB for the fixture's two
+  diagrams); after 61 s (test clock) with nothing queued, the web view is gone.
 - **Not verified on screen**: the AI can't see the real window. Your check below confirms it.
 
 ### On-screen checklist (for you)
@@ -275,3 +304,6 @@ from master `e278c3f` (which has Part 1).
 6. No network: a diagram with `click A href "https://example.com"` shows, and clicking it does nothing (no browser
    opens). (Optional: with Little Snitch or `nettop`, fuxx makes no connection when a diagram renders.)
 7. A file with more than 20 diagrams: the 21st on stay code with `Mermaid: more than 20 diagrams — showing code`.
+8. Review fixes: open the same diagram-heavy README, close its tab while the diagrams still render, open another
+   one: the new tab's diagrams come without waiting for the closed tab's. In Activity Monitor, fuxx's WebKit
+   process ("…WebContent") goes about a minute after the last diagram renders.
