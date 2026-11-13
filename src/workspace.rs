@@ -2493,6 +2493,8 @@ impl Workspace {
     /// `activate` without moving the focus (an SSH session reconnected by its timer, M10b).
     pub(crate) fn note_active(&mut self, cx: &mut Context<Self>) {
         self.note_focus();
+        // M11ac: the Files panel follows the focused file tab (outside any frame).
+        self.follow_active_file(cx);
         self.sidebar.reveal_active = true;
         if let Some(key) = self
             .model
