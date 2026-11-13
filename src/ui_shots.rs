@@ -19,6 +19,7 @@ use gpui::{
 use gpui_platform::current_platform;
 
 use crate::appearance::Appearance;
+use crate::chrome_cache::{self, Counted};
 use crate::procs::ProgramState;
 use crate::restore::RestoreMode;
 use crate::split_tree::Axis;
@@ -209,6 +210,7 @@ const SCENES: &[(&str, fn())] = &[
     ("marks", marks),
     ("sidebar-marks", sidebar_marks),
     ("cached-panes", cached_panes),
+    ("chrome-counts-baseline", chrome_counts_baseline),
     ("sidebar", sidebar_scenes),
     ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-selection", sidebar_selection_scenes),
@@ -1253,6 +1255,112 @@ fn cached_panes() {
         "cached-panes: the terminal's own notify didn't repaint it"
     );
 }
+
+/// One explicit draw of `window` (what `cached_panes` does per frame).
+fn draw(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+        .expect("draw");
+}
+
+/// How many times `c` rendered over `act` and one explicit draw: reset the counters, `act`,
+/// draw, read. A notify inside `act` already makes the test platform draw a frame when its
+/// effects flush, so a notifying `act` plus the explicit draw is `FRAMES_PER_TICK` frames.
+fn draws_of(
+    c: Counted,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    act: impl FnOnce(&mut VisualTestAppContext),
+) -> u64 {
+    chrome_cache::reset();
+    act(cx);
+    draw(cx, window);
+    chrome_cache::get(c)
+}
+
+/// M11p baseline (today's behaviour): a breath-like tick (the focused terminal notifies, not
+/// the workspace) redraws the whole workspace, so every chrome part renders once per draw and
+/// the sidebar's rows are built several times. Task 4 flips this scene's expectation.
+fn chrome_counts_baseline() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let theme = shot_theme("Catppuccin Mocha");
+    let dims = size(px(900.0), px(500.0));
+    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    let slot = Rc::new(RefCell::new(None));
+    let window = {
+        let slot = slot.clone();
+        cx.open_offscreen_window(dims, move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                let project = std::path::Path::new("/Users/me/code/api");
+                ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                ws.open_shot_session("web", project, SHELL_TEXT, None, window, cx);
+                ws
+            });
+            *slot.borrow_mut() = Some(ws.clone());
+            cx.new(|_| Root {
+                theme,
+                scene: ws.into(),
+            })
+        })
+        .expect("open an off-screen window")
+    };
+    cx.run_until_parked();
+    draw(&mut cx, window.into());
+    draw(&mut cx, window.into());
+    let ws = slot.borrow().clone().expect("the workspace");
+    let view = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let id = ws.focused_terminal().expect("a focused terminal");
+        ws.sessions
+            .items()
+            .iter()
+            .find(|s| s.id == id)
+            .expect("its session")
+            .view
+            .clone()
+    });
+    let tick = |cx: &mut VisualTestAppContext| {
+        cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+    };
+    let mut seen = Vec::new();
+    for c in [
+        Counted::Workspace,
+        Counted::Sidebar,
+        Counted::StatusBar,
+        Counted::TabBar,
+        Counted::Title,
+        Counted::SidebarRows,
+    ] {
+        let n = draws_of(c, &mut cx, window.into(), tick);
+        println!(
+            "ui-shots: chrome-counts-baseline {c:?} = {n} per breath tick ({FRAMES_PER_TICK} frames)"
+        );
+        seen.push((c, n));
+    }
+    for (c, n) in seen {
+        let per_frame = if c == Counted::SidebarRows {
+            SIDEBAR_ROWS_PER_FRAME
+        } else {
+            1
+        };
+        assert_eq!(
+            n,
+            per_frame * FRAMES_PER_TICK,
+            "chrome-counts-baseline: {c:?} per breath tick"
+        );
+    }
+}
+
+/// How many times `sidebar_rows` runs per workspace render today (Task 3 has to beat this).
+const SIDEBAR_ROWS_PER_FRAME: u64 = 3;
+
+/// Frames a breath-like tick draws in `draws_of`: the platform's own draw when the notify's
+/// effects flush, plus the explicit one.
+const FRAMES_PER_TICK: u64 = 2;
 
 /// What the waiting session shows: a Claude Code style prompt, drawn in a box 40 columns wide so
 /// it fits a split pane's grid (about 42 columns, M11i's padding) without wrapping mid-word.

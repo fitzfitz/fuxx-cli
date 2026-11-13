@@ -365,6 +365,7 @@ impl Workspace {
         drags_window: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        crate::chrome_cache::bump(crate::chrome_cache::Counted::TabBar);
         let p = self.model.pane(pane)?;
         let focused = self.model.focused_pane() == Some(pane);
         let now = Instant::now();
