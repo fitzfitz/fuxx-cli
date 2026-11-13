@@ -15,7 +15,7 @@
 //! Working tab, the status bar following one). What it no longer redraws: every other part (the
 //! title area, the other tab bars, the sidebar unless a closed group's header moves), and the
 //! sidebar's rows aren't built again (the `Workspace` isn't notified; its thin `render` still
-//! runs, as every view's ancestor). `Workspace::sync_chrome` reads every mark view and the clock
+//! runs, as every view's ancestor). `Workspace::sync_chrome` reads the mark views on screen and the clock
 //! each frame, so the window keeps them among the entities it shows (see `chrome_cache`).
 
 use alacritty_terminal::vte::ansi::Rgb;
