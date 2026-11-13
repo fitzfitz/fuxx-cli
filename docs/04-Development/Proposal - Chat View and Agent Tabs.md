@@ -154,7 +154,7 @@ deny both work.
     UI must not claim "stopped" until the `control_response` / `result` shows it. One recording only, and the
     ordering of the `control_response` relative to `result` is a single observation (the recorder at that time
     could only capture it because shutdown waited for stragglers); worth a second look in M11aa.
-- **A second user message while a turn runs is accepted and queued** (`claude-queue.jsonl`): sent ~2 s into a
+- **A second user message while a turn runs is accepted and queued** (`claude-queue.jsonl`): sent ≥4 s into a
   20 s Bash tool, it produced no event until the first turn's `result`, then a second `system/init` and a normal
   second turn + `result`. `queued_turn_count` was `0` on the first `result` (and on every result seen), so it
   does **not** reflect this queue in this version; **a non-zero value was not observed**. Each turn emits its own
@@ -272,7 +272,7 @@ The agent tab is a **new view fed by JSON**: no terminal emulation, no change to
 - **`claude.rs`** — starts `claude -p --input-format stream-json --output-format stream-json --verbose
   --include-partial-messages` (+ `--resume <id>` when reopening, + the permission flag from 1.2) in the tab's folder,
   and translates both ways.
-- **`agy.rs`** — starts `agy -p --input-format stream-json --output-format stream-json` (+ `--conversation <id>`,
+- **`agy.rs`** — starts `agy -p= --input-format stream-json --output-format stream-json` (+ `--conversation <id>`,
   `--mode`), and translates both ways.
 - **Unknown events are ignored, not fatal** (agents update often). A provider that can't parse its agent's output
   shows one error row and offers "Open in classic view".
