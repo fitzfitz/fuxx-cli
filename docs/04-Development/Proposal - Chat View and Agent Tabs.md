@@ -101,6 +101,95 @@ SessionStart hooks), `system/init`, `assistant`, `rate_limit_event`, `result/suc
   exchange in "host" mode, and whether typed slash commands work over stream-json input. The builder verifies
   these first (Part 1, step 1).
 
+#### Recorded 2026-11-13 (M11aa Task 0)
+
+Fixtures: `src/providers/fixtures/claude-*.jsonl`, recorded by `scripts/record-agent-fixture.py` (argv and the
+`fuxx-init` initialize request exactly as in the plan's Global Constraints; **no hooks switched off**, so your
+GateGuard hook is in every recording). Claude Code 2.1.323, model `claude-opus-5-5`. **Go/no-go: GO.** Allow and
+deny both work.
+
+- **Allow works.** `can_use_tool` request → `control_response` with `behavior: "allow"` + `updatedInput` → the tool
+  ran (`tool_result` "File created successfully"). `claude-permission-allow.jsonl`.
+- **Deny with a message reaches the model.** `{"behavior":"deny","message":"Not now"}` → the next event is a `user`
+  `tool_result` with `content: "Not now"`, `is_error: true`; the model then said the write "came back with 'Not
+  now'" and did not create the file. `claude-permission-deny.jsonl`.
+- **Prompt shape.** `control_request` / `request.subtype: "can_use_tool"` with `tool_name`, `display_name`, `input`,
+  `description` (short, e.g. `hello.txt`), `permission_suggestions`, `server_policy_ask_only: true`, `tool_use_id`.
+  The tool_use `assistant` event arrives just before it.
+- **"Always allow" = send the request's own `permission_suggestions` back as `updatedPermissions`.** What the
+  suggestion is depends on the tool: **Write and Edit** offer `[{"type":"setMode","mode":"acceptEdits","destination":
+  "session"}]` (a mode switch, not a per-file rule); **Bash** offers `[{"type":"addRules","rules":[{"toolName":
+  "Bash","ruleContent":"<the exact command>"}],"behavior":"allow","destination":"localSettings"}]` (written to the
+  project's local settings file). With the Write suggestion echoed back, the **next Write (a different file) was
+  not prompted**: the whole session has one `control_request`, yet both files were created.
+  `claude-permission-always.jsonl`. The card's button label should come from the suggestion's `type`/`rules`.
+- **Hooks.** A blocking hook is a `user` `tool_result` with `is_error: true` and content starting
+  `PreToolUse:<Tool> hook error: [Fact-Forcing Gate]…`; the model retries the same call. `result.permission_denials`
+  lists the hook-blocked tool_use ids too, so it is **not** a record of the user pressing Deny. `system/hook_started`
+  and `hook_response` ×4 (SessionStart) precede `init`; in the `claude-text` recording these arrive before the
+  initialize `control_response`, which itself is large (the `commands` list, ~220 KB) and also carries `account`
+  (scrubbed in the fixtures).
+- **Partial messages.** With `--include-partial-messages`, `stream_event` wraps the raw API events: `message_start`,
+  `content_block_start`, `content_block_delta` (`delta.type` is `text_delta`, `thinking_delta`, `signature_delta`
+  or `input_json_delta` with `partial_json`), `content_block_stop`, `message_delta`, `message_stop`. The complete
+  block still arrives later as an `assistant` event (one per content block, same `message.id`). Extra `system`
+  subtypes seen: `status` (`requesting`), `thinking_tokens`, `task_started` / `task_notification` /
+  `task_updated` / `background_tasks_changed` (Bash runs), `compact_boundary`; plus `tool_progress` heartbeats
+  (`elapsed_time_seconds`, every 30 s) and `rate_limit_event`.
+- **Tool events.** `assistant` `content[]` `tool_use` (`id`, `name`, `input`, `caller`) ↔ `user` `tool_result`
+  (`tool_use_id`, `content` string or array, `is_error`). A `user` event also carries a top-level
+  `tool_use_result` with structured data (Read: `{type:"text", file:{filePath, content, numLines, startLine,
+  totalLines}}`). Seen tool names: Read, Edit, Write, Bash, ToolSearch. **TodoWrite did not exist** in this
+  session (`init.tools` has no Todo/Task-list tool; `ToolSearch` found none), so the TodoWrite shape is **not
+  observed**. Edit/Write prompt in `default` mode; Read and the hook-cleared Bash `ls` did not.
+- **Interrupt.** `{"type":"control_request","request_id":"fuxx-stop","request":{"subtype":"interrupt"}}`:
+  - *While the model streams text* (`claude-interrupt-text.jsonl`): immediate `control_response` `success`
+    (`response: {"still_queued": []}`), then a `user` event with text `[Request interrupted by user]`, then
+    `result` with `subtype: "error_during_execution"`, `is_error: true`, `terminal_reason: "aborted_streaming"`.
+    The process stays alive for the next message.
+  - *While a foreground Bash tool runs* (`claude-interrupt.jsonl`, one run): **the interrupt did not stop the
+    tool.** The 60 s command ran to completion, the model finished its turn, and the interrupt's `control_response`
+    arrived only at the very end (after `result`). So Esc during a long tool may not act until the tool ends; the
+    UI must not claim "stopped" until the `control_response` / `result` shows it. One recording only; worth a
+    second look in M11aa.
+- **A second user message while a turn runs is accepted and queued** (`claude-queue.jsonl`): sent ~2 s into a
+  20 s Bash tool, it produced no event until the first turn's `result`, then a second `system/init` and a normal
+  second turn + `result`. `queued_turn_count` was `0` on the first `result` (and on every result seen), so it
+  does **not** reflect this queue in this version; **a non-zero value was not observed**. Each turn emits its own
+  `system/init`.
+- **`--resume <id>`** (`claude-resume.jsonl`): **does not replay history on stdout.** The recording begins with
+  the new turn's events only (`assistant` ×2, `result`; the `session_id` is unchanged) and the model knew the
+  earlier turn ("Hello"). The history is on disk: `~/.claude/projects/<cwd with / and . replaced by ->/<session_id>.jsonl`
+  (e.g. `-private-var-folders-…-T-tmp-XXXX/<id>.jsonl`; the cwd is the realpath). Sessions are per working directory.
+- **`/compact`** (`claude-slash.jsonl`): typed over stream-json it **runs**: `system/compact_boundary`
+  (`compact_metadata`: `trigger: "manual"`, `pre_tokens`, `post_tokens`, `duration_ms`), a `user` event with the
+  continuation summary, a `user` event with `<local-command-stdout>Compacted …`, then a second `result`
+  (`success`, `num_turns: 0`). Slash commands work.
+- **`bad-resume`** (`claude-bad-resume.jsonl`): stdout is one line, `result` with `subtype:
+  "error_during_execution"`, `is_error: true`, `num_turns: 0`, `session_id` = the id given, `errors: ["No
+  conversation found with session ID: 0000…"]`; the same sentence on stderr; the process exits with code 1. It
+  prints no `system/init` and no response to the initialize request.
+- **Context window.** `result.modelUsage.<model>.contextWindow` (here `1000000`; also `maxOutputTokens`,
+  `costUSD`, `inputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`). The `context N%` line = the last
+  turn's input + cache tokens ÷ `contextWindow`. `result` also has `total_cost_usd`, `num_turns`, `duration_ms`,
+  `terminal_reason: "completed"`, `credential_expires_at`.
+
+**agy 1.4.3** (`src/providers/fixtures/agy-*.jsonl`; **provider is a later task**). The Global Constraints argv
+**does not work as written**: `agy -p --input-format …` makes `-p` swallow `--input-format` as its prompt (exit 2).
+`-p=` (an empty prompt attached with `=`) works. **agy's input is not Claude's:** each line must be
+`{"event":"user","message":{"content":"<text>"}}` (`"role"` in `message` is rejected; a missing `event` field is an
+error). Its output is its own schema, **not** Claude's stream: `{"event":"init","conversation_id":…,"init":{"cwd",
+"tools":[…],"permission_mode"}}`, `{"event":"step_update","step_update":{"conversation_id","step_index","state":
+"ACTIVE"|"DONE","step_type":"user_input"|"agent_response"|"error_message","text_delta"?,"duration_seconds"?,
+"usage"?}}`, and `{"event":"result","result":{"conversation_id","status":"SUCCESS"|"ERROR","response","error"?,
+"duration_seconds","num_turns","usage","finished_reason"?}}`; errors also print `error: …` / `AGY_ERROR: {…}` lines
+on stderr. A mid-session ad-hoc run (not saved) streamed `text_delta` "Hello" then "\n" and ended `status:
+"SUCCESS"`. **All saved agy recordings are failures: after that run the account answered "Your AI credits balance
+is too low to continue." (429 RESOURCE_EXHAUSTED)**, so `agy-text`, `agy-tools` and `agy-resume` show the
+init → user_input → error_message → result(ERROR) sequence only; **tool events and resume on a real agy turn are
+not observed.** Re-record when credits are available. The conversation id is `init.conversation_id` and every
+`step_update` / `result`.
+
 ### Antigravity CLI (`agy` 1.4.3, `~/.local/bin/agy`, checked from `--help` only)
 
 - `-p/--print`, `--input-format text|stream-json` ("reads one NDJSON message per line from stdin and runs a turn for
