@@ -1724,3 +1724,64 @@ pub(super) fn chrome_row_sources() {
     );
     steps.done();
 }
+
+/// A file tab's own toolbar reaches the tab bar (M11t's preview tab, M11ac's Preview): a
+/// preview tab (its title in italics) is kept by turning its Preview on, another by choosing
+/// Diff on its File | Diff toggle, each by the button's click handler; the tab bar then draws
+/// the title upright. The handlers are called without the mouse: a click's own whole-window
+/// redraws (a tooltip it dismisses, GPUI's input modality) would hide a stale tab bar, and
+/// they don't come with every click.
+///
+/// Panics unless after each the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_file_tab_toolbar() {
+    use crate::layout_model::FileMode;
+
+    let n = "chrome-file-tab-toolbar";
+    let dir = std::env::temp_dir().join(format!("fuxx-ui-shots-{n}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the scene's folder");
+    let (readme, notes) = (dir.join("README.md"), dir.join("notes.md"));
+    std::fs::write(&readme, "# Read me\n\nSome *words*.\n").expect("README.md");
+    std::fs::write(&notes, "# Notes\n\n- one\n- two\n").expect("notes.md");
+    let (mut cx, window, ws) = {
+        let (dir, readme) = (dir.clone(), readme.clone());
+        super::chrome_window(move |ws, window, cx| {
+            ws.open_shot_session("api", &dir, super::SHELL_TEXT, None, window, cx);
+            ws.preview_file_tab(readme, FileMode::Plain, window, cx);
+        })
+    };
+    let ws = &ws;
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let focused = |cx: &mut VisualTestAppContext| {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let tab = ws.model.focused_tab().expect("a tab");
+            let view = ws.focused_file_tab().expect("a file tab").clone();
+            (tab, view, ws.model.is_preview(tab))
+        })
+    };
+    let kept =
+        |cx: &mut VisualTestAppContext, tab| !cx.read(|cx| ws.read(cx).model.is_preview(tab));
+    let (tab, view, preview) = focused(&mut cx);
+    assert!(preview, "{n}: README.md opened as a preview tab");
+    steps.step(&mut cx, window, "Preview turned on", Seen::Changes, |cx| {
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |t, cx| t.choose_preview_for_shots(true, window, cx))
+        })
+        .expect("the window")
+    });
+    assert!(kept(&mut cx, tab), "{n}: kept by Preview");
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.preview_file_tab(notes, FileMode::Plain, window, cx)
+    });
+    settle_frames(&mut cx, window);
+    let (tab, view, preview) = focused(&mut cx);
+    assert!(preview, "{n}: notes.md opened as a preview tab");
+    cx.update(|cx| view.update(cx, |t, cx| t.pretend_in_repo_for_shots(cx)));
+    settle_frames(&mut cx, window);
+    steps.step(&mut cx, window, "Diff chosen", Seen::Changes, |cx| {
+        cx.update(|cx| view.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)))
+    });
+    assert!(kept(&mut cx, tab), "{n}: kept by the toggle");
+    steps.done();
+    std::fs::remove_dir_all(&dir).ok();
+}
