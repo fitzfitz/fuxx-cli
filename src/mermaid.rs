@@ -200,13 +200,24 @@ impl<K: PartialEq, V> Lru<K, V> {
     }
 
     /// `put_weighted` with no weight.
+    #[cfg(test)]
     pub fn put(&mut self, key: K, value: V) -> Vec<(K, V)> {
         self.put_weighted(key, value, 0)
     }
 
     /// Keep `value` (weighing `weight`) for `key`, replacing any, as the newest; the entries
     /// dropped to stay within `cap` and `budget`, oldest first.
+    #[cfg(test)]
     pub fn put_weighted(&mut self, key: K, value: V, weight: usize) -> Vec<(K, V)> {
+        self.put_saying_why(key, value, weight)
+            .into_iter()
+            .map(|(k, v, _)| (k, v))
+            .collect()
+    }
+
+    /// `put_weighted`, each dropped entry with whether it went for the count (`cap`) rather
+    /// than the bytes (`budget`).
+    pub fn put_saying_why(&mut self, key: K, value: V, weight: usize) -> Vec<(K, V, bool)> {
         if let Some(at) = self.entries.iter().position(|(k, ..)| *k == key)
             && let Some((_, _, old)) = self.entries.remove(at)
         {
@@ -217,9 +228,10 @@ impl<K: PartialEq, V> Lru<K, V> {
         let mut dropped = Vec::new();
         while self.entries.len() > 1 && (self.entries.len() > self.cap || self.weight > self.budget)
         {
+            let for_count = self.entries.len() > self.cap;
             if let Some((k, v, w)) = self.entries.pop_front() {
                 self.weight -= w;
-                dropped.push((k, v));
+                dropped.push((k, v, for_count));
             }
         }
         dropped
@@ -233,6 +245,7 @@ pub const CACHE_BYTES: usize = 256 * 1024 * 1024;
 /// (more on screen than the cache holds): it shows as code with `TOO_MUCH` instead.
 pub const REDRAW_PAUSE: Duration = Duration::from_secs(10);
 pub const TOO_MUCH: &str = "too many large diagrams on screen \u{2014} showing code";
+pub const CROWDED: &str = "more than 64 diagrams on screen \u{2014} showing code";
 
 /// How a render ended.
 pub enum Outcome<V> {
@@ -252,8 +265,10 @@ pub enum Asked<V> {
     Failed(String),
     /// Queued (or already): the code shows meanwhile.
     Waiting,
-    /// Dropped from the cache just now for room: code, with `TOO_MUCH`.
+    /// Dropped from the cache just now for its bytes: code, with `TOO_MUCH`.
     TooMuch,
+    /// Dropped from the cache just now for its count (`CACHE_SIZE`): code, with `CROWDED`.
+    Crowded,
 }
 
 /// The diagrams' bookkeeping, apart from WebKit and GPUI (`mermaid_render` holds one): the
@@ -268,7 +283,18 @@ pub struct Store<V, W> {
     soft: Vec<Key>,
     /// Being rendered again after a WebKit failure: a second one is kept.
     retrying: Vec<Key>,
-    dropped: VecDeque<(Key, Instant)>,
+    dropped: VecDeque<(Key, Instant, Dropped)>,
+}
+
+/// Why an entry left the cache (what it shows during its pause).
+#[derive(Clone, Debug, PartialEq)]
+enum Dropped {
+    /// For the bytes (`CACHE_BYTES`): `TOO_MUCH`.
+    Bytes,
+    /// For the count (`CACHE_SIZE`): `CROWDED`.
+    Count,
+    /// It was Mermaid's error: still that error.
+    Error(String),
 }
 
 impl<V: Clone, W> Store<V, W> {
@@ -295,12 +321,16 @@ impl<V: Clone, W> Store<V, W> {
         while self
             .dropped
             .front()
-            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= REDRAW_PAUSE)
+            .is_some_and(|(_, at, _)| now.saturating_duration_since(*at) >= REDRAW_PAUSE)
         {
             self.dropped.pop_front();
         }
-        if self.dropped.iter().any(|(k, _)| *k == key) {
-            return Asked::TooMuch;
+        if let Some((_, _, why)) = self.dropped.iter().rev().find(|(k, ..)| *k == key) {
+            return match why {
+                Dropped::Bytes => Asked::TooMuch,
+                Dropped::Count => Asked::Crowded,
+                Dropped::Error(e) => Asked::Failed(e.clone()),
+            };
         }
         if let Some(at) = self.soft.iter().position(|k| *k == key) {
             self.soft.remove(at);
@@ -354,9 +384,9 @@ impl<V: Clone, W> Store<V, W> {
             None => false,
         };
         let dropped = match outcome {
-            Outcome::Drawn(v, bytes) => self.cache.put_weighted(key, Ok(v), bytes),
-            Outcome::Mermaid(e) => self.cache.put(key, Err(e)),
-            Outcome::WebKit(e) if retried => self.cache.put(key, Err(e)),
+            Outcome::Drawn(v, bytes) => self.cache.put_saying_why(key, Ok(v), bytes),
+            Outcome::Mermaid(e) => self.cache.put_saying_why(key, Err(e), 0),
+            Outcome::WebKit(e) if retried => self.cache.put_saying_why(key, Err(e), 0),
             Outcome::WebKit(_) => {
                 // Bounded: a key nobody asks for again is forgotten after a while.
                 if self.soft.len() >= CACHE_SIZE {
@@ -367,16 +397,30 @@ impl<V: Clone, W> Store<V, W> {
             }
         };
         let mut freed = Vec::new();
-        for (k, done) in dropped {
+        for (k, done, for_count) in dropped {
             if self.dropped.len() >= CACHE_SIZE {
                 self.dropped.pop_front();
             }
-            self.dropped.push_back((k, now));
-            if let Ok(v) = done {
-                freed.push(v);
-            }
+            let why = match done {
+                Ok(v) => {
+                    freed.push(v);
+                    if for_count {
+                        Dropped::Count
+                    } else {
+                        Dropped::Bytes
+                    }
+                }
+                Err(e) => Dropped::Error(e),
+            };
+            self.dropped.push_back((k, now, why));
         }
         (tell, freed)
+    }
+
+    /// When the latest pause for a diagram dropped from the cache ends (the Previews draw
+    /// again then, so a diagram shown as code meanwhile is asked for again).
+    pub fn pause_until(&self) -> Option<Instant> {
+        self.dropped.back().map(|(_, at, _)| *at + REDRAW_PAUSE)
     }
 
     /// Diagrams (and errors) cached, their images' bytes, and jobs queued.
@@ -640,6 +684,10 @@ mod tests {
     fn the_line_under_the_code_says_mermaid_and_why() {
         assert_eq!(note(TOO_LARGE), "Mermaid: too large");
         assert_eq!(
+            note(CROWDED),
+            "Mermaid: more than 64 diagrams on screen \u{2014} showing code"
+        );
+        assert_eq!(
             note(TOO_MUCH),
             "Mermaid: too many large diagrams on screen \u{2014} showing code"
         );
@@ -852,6 +900,44 @@ mod tests {
             Asked::Failed("timed out".into())
         );
         assert_eq!(store.counts().2, 0);
+    }
+
+    /// Re-review fix: each dropped entry says why when asked for during the pause.
+    #[test]
+    fn a_dropped_entry_says_why_during_the_pause() {
+        let t = Instant::now();
+        // Room for two entries, any size.
+        let mut store: Store<&str, &str> = Store::new(2, usize::MAX);
+        store.ask(k(1), "bad", 1, "tab", t);
+        store.next_job(|_, _| true);
+        store.finish(k(1), Outcome::Mermaid("Parse error".into()), t);
+        for (n, img) in [(2, "two"), (3, "three"), (4, "four")] {
+            store.ask(k(n), "src", 1, "tab", t);
+            store.next_job(|_, _| true);
+            store.finish(k(n), Outcome::Drawn(img, 10), t);
+        }
+        // The error keeps its error (not "too many large"); the image dropped for the count
+        // says so; neither renders again during the pause.
+        assert_eq!(
+            store.ask(k(1), "bad", 1, "tab", t),
+            Asked::Failed("Parse error".into())
+        );
+        assert_eq!(store.ask(k(2), "src", 1, "tab", t), Asked::Crowded);
+        assert_eq!(store.counts().2, 0);
+    }
+
+    #[test]
+    fn the_pause_ends_when_the_latest_drop_s_does() {
+        let t = Instant::now();
+        let mut store: Store<&str, &str> = Store::new(1, usize::MAX);
+        assert_eq!(store.pause_until(), None);
+        for (n, at) in [(1, t), (2, t + Duration::from_secs(3))] {
+            store.ask(k(n), "src", 1, "tab", at);
+            store.next_job(|_, _| true);
+            store.finish(k(n), Outcome::Drawn("img", 1), at);
+        }
+        let dropped_at = t + Duration::from_secs(3);
+        assert_eq!(store.pause_until(), Some(dropped_at + REDRAW_PAUSE));
     }
 
     #[test]

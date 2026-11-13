@@ -177,7 +177,11 @@ from master `e278c3f` (which has Part 1).
   decoded images at most, least recently used out first (its image taken out of every window's GPU sprite atlas
   too). Scrolling and redrawing only read the cache; the same diagram in two files renders once. If more is on screen
   than the cache holds, a diagram dropped for room isn't rendered again for 10 s: it shows as code with `Mermaid:
-  too many large diagrams on screen — showing code` (no render loop).
+  too many large diagrams on screen — showing code` (dropped for the bytes) or `Mermaid: more than 64 diagrams on
+  screen — showing code` (for the count); a broken one dropped keeps showing its own error. When the 10 s end, every
+  window draws again and those diagrams are asked for (and rendered) again: no render loop, and no note left behind.
+- Whenever the cache frees images, every window draws again past its views' caches (re-review fix), so no Preview
+  (another pane, another window) paints a freed image's tile.
 - A queued diagram nobody wants any more (its tab closed, its Preview off, its file changed, or the theme flipped
   between light and dark) is dropped before it renders.
 - **No network, ever**: the page is loaded from a string with no base URL, behind a Content-Security-Policy of
@@ -250,7 +254,7 @@ from master `e278c3f` (which has Part 1).
 
 - About **5.5 MB** more binary (mermaid 12.2.0's single-file build). The first diagram after launch waits for the
   page to load its script (the first diagram took under a second in the ui-shots, load included); the page then
-  stays loaded until fuxx quits, holding a WebKit content process's memory (not measured).
+  stays loaded, holding a WebKit content process's memory (not measured), until 60 s pass with nothing to render.
 - Diagrams are pictures: no hover, no links, no text selection; a very tall diagram (beyond 4096 points a side, or
   16.7 million pixels) is snapshotted less densely and looks softer.
 - Two dark themes show the same dark diagram, on `#333`, not on their own background.
@@ -288,7 +292,12 @@ from master `e278c3f` (which has Part 1).
   Review fixes, also checked there: diagrams still render with mermaid.js as a user script under `script-src 'none'`;
   an inline `onload`/`onerror` handler and an inserted `<script>` don't run in the live page (with `'unsafe-inline'`
   put back by hand, both do: a real check); the cache reports its decoded bytes (about 6 MB for the fixture's two
-  diagrams); after 61 s (test clock) with nothing queued, the web view is gone.
+  diagrams); after 61 s (test clock) with nothing queued, the web view is gone. Re-review fix, with the cache cut to two
+  entries: the fixture frees the first diagram's image, the window paints and captures after that, the dropped
+  diagram shows `Mermaid: more than 64 diagrams on screen — showing code` and the broken one its own error; when the
+  pause ends a redraw of every window is asked for, and the dropped diagram is queued again. Unit tests: each dropped
+  entry says why (`a_dropped_entry_says_why_during_the_pause`), and when the pause ends
+  (`the_pause_ends_when_the_latest_drop_s_does`).
 - **Not verified on screen**: the AI can't see the real window. Your check below confirms it.
 
 ### On-screen checklist (for you)

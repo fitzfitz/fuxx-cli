@@ -61,6 +61,8 @@ const IDLE_LIMIT: Duration = Duration::from_secs(60);
 /// The web view's size before a diagram resizes it (points), and where its window sits.
 const VIEW_SIZE: NSSize = NSSize::new(1200.0, 900.0);
 const OFF_SCREEN: NSPoint = NSPoint::new(-20000.0, -20000.0);
+/// A little past a dropped diagram's pause, so the redraw finds it over.
+const PAUSE_SLACK: Duration = Duration::from_millis(100);
 
 /// A drawn diagram: its decoded image and its natural size in points.
 #[derive(Clone, Debug)]
@@ -87,6 +89,9 @@ pub struct Mermaids {
     running: bool,
     turns: u64,
     renderer: Option<Rc<Renderer>>,
+    /// The pause-end redraws asked for (the shots check the timer).
+    #[cfg(feature = "ui-shots")]
+    pause_redraws: usize,
 }
 
 impl Default for Mermaids {
@@ -96,6 +101,8 @@ impl Default for Mermaids {
             running: false,
             turns: 0,
             renderer: None,
+            #[cfg(feature = "ui-shots")]
+            pause_redraws: 0,
         }
     }
 }
@@ -127,6 +134,16 @@ impl PartialEq for Drawn {
 
 #[cfg(feature = "ui-shots")]
 impl Mermaids {
+    /// How many pause-end redraws were asked for.
+    pub fn pause_redraws(cx: &mut App) -> usize {
+        cx.default_global::<Mermaids>().pause_redraws
+    }
+
+    /// A cache of `cap` entries and `budget` bytes instead (to see eviction in the shots).
+    pub fn set_limits(cap: usize, budget: usize, cx: &mut App) {
+        cx.default_global::<Mermaids>().store = Store::new(cap, budget);
+    }
+
     /// In the live page: does a script of the page's own run? An inline event handler (on an
     /// image that loads) and an inserted `<script>`; answers `{"handler", "script"}` (both
     /// should be false under `script-src 'none'`). `None` with no web view.
@@ -220,13 +237,39 @@ async fn pump(cx: &mut AsyncApp) {
         cx.update(|cx| {
             let this = cx.default_global::<Mermaids>();
             this.renderer = keep;
+            let paused = this.store.pause_until();
             let (tell, freed) = this.store.finish(key, outcome, Instant::now());
-            // Out of every window's sprite atlas, not only out of the cache.
-            for drawn in freed {
-                cx.drop_image(drawn.image, None);
+            let pause = this
+                .store
+                .pause_until()
+                .filter(|until| Some(*until) != paused);
+            // Out of every window's sprite atlas, not only out of the cache. A cached view's
+            // last paint may still use the freed tile (another pane's Preview, another window):
+            // every window draws again, past its views' caches, before it paints again.
+            if !freed.is_empty() {
+                for drawn in freed {
+                    cx.drop_image(drawn.image, None);
+                }
+                cx.refresh_windows();
             }
             for waiter in tell {
                 (waiter.tell)(cx);
+            }
+            // Something left the cache: when its pause ends, draw every window again so a
+            // diagram shown as code meanwhile is asked for (and rendered) again.
+            if let Some(until) = pause {
+                let wait = until.saturating_duration_since(Instant::now()) + PAUSE_SLACK;
+                cx.spawn(async move |cx: &mut AsyncApp| {
+                    cx.background_executor().timer(wait).await;
+                    cx.update(|cx| {
+                        #[cfg(feature = "ui-shots")]
+                        {
+                            cx.default_global::<Mermaids>().pause_redraws += 1;
+                        }
+                        cx.refresh_windows()
+                    });
+                })
+                .detach();
             }
         });
     }
