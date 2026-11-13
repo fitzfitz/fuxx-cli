@@ -56,9 +56,9 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
     DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle,
-    ScrollWheelEvent, SharedString, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas,
-    div, fill, point, prelude::*, px, size,
+    ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, ScrollWheelEvent, SharedString, Subscription, TextAlign, TextRun, WeakEntity, Window,
+    canvas, div, fill, list, point, prelude::*, px, size,
 };
 
 use crate::agent_markdown::Md;
@@ -98,6 +98,7 @@ const WRAP: &str = "Wrap";
 const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
 const PREVIEW: &str = "Preview";
 const TIP_PREVIEW: &str = "Show the Markdown rendered";
+const TIP_PREVIEW_TOO_LARGE: &str = "Too large to preview";
 const TIP_FILE: &str = "Show the file";
 const TIP_DIFF: &str = "Show the changes since the last commit";
 const SHOW_IN_FINDER: &str = "Show in Finder";
@@ -1088,6 +1089,18 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
     }
 }
 
+/// The largest text Preview draws (M11ac review fix): bigger, the source stays.
+pub const PREVIEW_MAX: usize = 1024 * 1024;
+
+/// How far past the Preview's edges its list lays rows out (smooth scrolling).
+const PREVIEW_OVERDRAW: f32 = 400.0;
+
+/// Whether Preview can draw `state` (M11ac review fix): a coloured text of at most
+/// `PREVIEW_MAX` bytes.
+fn preview_fits(state: &State) -> bool {
+    matches!(state, State::Text(doc) if doc.text.len() <= PREVIEW_MAX)
+}
+
 /// Whether the toolbar shows Preview (M11ac): for a Markdown file, in File mode only.
 pub fn shows_preview(path: &Path, mode: FileMode) -> bool {
     is_markdown(path) && mode == FileMode::Plain
@@ -1832,7 +1845,7 @@ pub struct FileTab {
     /// scroll (kept over a reload), the blocks parsed for the version shown, and the Preview
     /// button as last drawn.
     preview: bool,
-    preview_scroll: ScrollHandle,
+    preview_list: ListState,
     parsed: Option<(u64, Rc<Vec<Md>>)>,
     preview_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     _appearance: Subscription,
@@ -1870,6 +1883,8 @@ impl FileTab {
             if this.coloured_with.is_some_and(|t| t != theme) {
                 this.colour(cx);
             }
+            // The Preview's rows may change height (another font or size).
+            this.preview_list.remeasure();
             cx.notify();
         });
         let mut tab = Self {
@@ -1908,7 +1923,7 @@ impl FileTab {
             close_at: Rc::default(),
             toggle_at: Rc::default(),
             preview: false,
-            preview_scroll: ScrollHandle::new(),
+            preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
             parsed: None,
             preview_at: Rc::default(),
             _appearance: appearance,
@@ -2470,13 +2485,13 @@ impl FileTab {
     /// Whether the Markdown is shown rendered now (M11ac): Preview on, a Markdown file, File
     /// mode.
     pub fn preview_shown(&self) -> bool {
-        self.preview && shows_preview(&self.path, self.mode)
+        self.preview && shows_preview(&self.path, self.mode) && preview_fits(&self.state)
     }
 
     /// Preview on or off by hand (M11ac): the find bar goes with the source, and the workspace
     /// saves it.
     fn choose_preview(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.preview == on {
+        if self.preview == on || (on && !preview_fits(&self.state)) {
             return;
         }
         self.preview = on;
@@ -2499,8 +2514,9 @@ impl FileTab {
         }
     }
 
-    /// The Preview's body (M11ac): the file's Markdown drawn as a reader, scrolled by GPUI. The
-    /// text is parsed again only for a new version; the scroll stays over it.
+    /// The Preview's body (M11ac): the file's Markdown drawn as a reader, a GPUI `list` of
+    /// its blocks (only those in sight are drawn). The text is parsed again only for a new
+    /// version; the list then keeps its place by block.
     fn preview_body(&mut self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let Some(doc) = self.doc() else {
             return div().flex_1().into_any_element();
@@ -2510,6 +2526,9 @@ impl FileTab {
             Some((v, blocks)) if *v == version => blocks.clone(),
             _ => {
                 let blocks = Rc::new(crate::agent_markdown::parse(&doc.text));
+                let top = self.preview_list.logical_scroll_top();
+                self.preview_list.reset(blocks.len());
+                self.preview_list.scroll_to(top);
                 self.parsed = Some((version, blocks.clone()));
                 blocks
             }
@@ -2528,9 +2547,12 @@ impl FileTab {
             .flex_1()
             .min_h(px(0.0))
             .w_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.preview_scroll)
-            .child(md_preview::column(&blocks, &draw))
+            .child(
+                list(self.preview_list.clone(), move |ix, _, _| {
+                    md_preview::row(&blocks, ix, &draw)
+                })
+                .size_full(),
+            )
             .into_any_element()
     }
 
@@ -3065,8 +3087,16 @@ impl FileTab {
 
     /// Preview (M11ac): beside Wrap and drawn as it, filled when on; a click shows a Markdown
     /// file rendered, or its source again.
+    /// Over `PREVIEW_MAX` (or too large to colour) it is drawn faint and does nothing, its
+    /// tooltip saying why.
     fn preview_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.preview;
+        let fits = preview_fits(&self.state);
+        let on = self.preview && fits;
+        let tip = if fits {
+            TIP_PREVIEW
+        } else {
+            TIP_PREVIEW_TOO_LARGE
+        };
         let at = self.preview_at.clone();
         div()
             .id("file-preview")
@@ -3083,15 +3113,19 @@ impl FileTab {
             .when(on, |b| {
                 b.bg(hsla(ui.card_selected)).text_color(hsla(ui.text))
             })
-            .when(!on, |b| {
+            .when(!on && fits, |b| {
                 b.text_color(hsla(ui.text_dim))
                     .hover(move |s| s.bg(hsla(ui.panel_hover)))
+                    .cursor_pointer()
             })
-            .cursor_pointer()
-            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(TIP_PREVIEW.into())).into() })
+            .when(!fits, |b| b.text_color(hsla(ui.text_faint)))
+            .when(on, |b| b.cursor_pointer())
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
             .child(PREVIEW)
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.choose_preview(!this.preview, window, cx)
+                if preview_fits(&this.state) {
+                    this.choose_preview(!this.preview, window, cx)
+                }
             }))
             // Where it is (the scenes click it).
             .child(
@@ -3472,8 +3506,8 @@ impl FileTab {
         self.preview_at.get()
     }
 
-    pub fn preview_scroll(&self) -> ScrollHandle {
-        self.preview_scroll.clone()
+    pub fn preview_list(&self) -> ListState {
+        self.preview_list.clone()
     }
 
     pub fn parsed_version(&self) -> Option<u64> {
@@ -3881,8 +3915,6 @@ impl Workspace {
 mod tests {
     use super::*;
 
-    /// M11x part 2: each line's width in cells is kept from reading the file (a rewrap on a
-    /// resize then costs a pass over the lines, not over the text).
     /// M11ac: Preview is offered for a Markdown file in File mode only.
     #[test]
     fn preview_shows_for_markdown_in_file_mode_only() {
@@ -3892,6 +3924,22 @@ mod tests {
         assert!(!shows_preview(Path::new("/w/main.rs"), FileMode::Plain));
     }
 
+    /// M11ac review fix: Preview draws only a coloured text up to 1 MB; a bigger one (or one
+    /// too large to colour, 2–20 MB) keeps its source, its button off ("Too large to preview").
+    #[test]
+    fn preview_fits_a_text_up_to_a_megabyte() {
+        let text = |len: usize| State::Text(Doc::new("a".repeat(len), 0));
+        assert!(preview_fits(&text(10)));
+        assert!(preview_fits(&text(PREVIEW_MAX)));
+        assert!(!preview_fits(&text(PREVIEW_MAX + 1)));
+        let big = State::PlainTooLarge(Doc::new("a".repeat(10), 0));
+        assert!(!preview_fits(&big));
+        assert!(!preview_fits(&State::Loading));
+        assert!(!preview_fits(&State::Missing));
+    }
+
+    /// M11x part 2: each line's width in cells is kept from reading the file (a rewrap on a
+    /// resize then costs a pass over the lines, not over the text).
     #[test]
     fn a_doc_keeps_each_line_s_width() {
         let doc = Doc::new("ab\n\tx\n\nhé".to_string(), 0);
