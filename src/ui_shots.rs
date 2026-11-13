@@ -245,6 +245,11 @@ const SCENES: &[(&str, fn())] = &[
         "chrome-bars-and-edges",
         chrome_sources::chrome_bars_and_edges,
     ),
+    (
+        "chrome-sidebar-scroll",
+        chrome_sources::chrome_sidebar_scroll,
+    ),
+    ("chrome-row-sources", chrome_sources::chrome_row_sources),
     ("sidebar", sidebar_scenes),
     ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-selection", sidebar_selection_scenes),
