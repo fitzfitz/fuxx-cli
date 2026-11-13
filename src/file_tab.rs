@@ -3687,6 +3687,21 @@ impl FileTab {
         }
     }
 
+    /// The Preview button's click handler (M11p's chrome scenes call it without the mouse).
+    pub fn choose_preview_for_shots(
+        &mut self,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose_preview(on, window, cx);
+    }
+
+    /// The File | Diff toggle's click handler (as above).
+    pub fn choose_mode_for_shots(&mut self, mode: FileMode, cx: &mut Context<Self>) {
+        self.choose_mode(mode, None, cx);
+    }
+
     /// A frozen tab has no git place (no look-up), so Plain mode shows no toggle: give it a
     /// made-up one, so the scenes can click File and Diff both ways. git is never run on it.
     pub fn pretend_in_repo_for_shots(&mut self, cx: &mut Context<Self>) {
@@ -3972,15 +3987,16 @@ impl Workspace {
             move |this, _, event, window, cx| match event {
                 FileTabEvent::Close => this.close_file_tab(tab, window, cx),
                 FileTabEvent::Mode(mode) => {
-                    // Switched File ↔ Diff by hand: kept, no longer a preview (M11t).
-                    this.model.pin(tab);
+                    // Switched File ↔ Diff by hand: kept, no longer a preview (M11t); its
+                    // title in the (cached, M11p) tab bar is upright now.
+                    this.pin_tab(tab, cx);
                     if this.model.set_file_mode(tab, *mode) {
                         this.save();
                     }
                 }
                 // M11ac: Preview turned on or off by hand: kept as well, and saved.
                 FileTabEvent::Preview(on) => {
-                    this.model.pin(tab);
+                    this.pin_tab(tab, cx);
                     if this.model.set_md_preview(tab, *on) {
                         this.save();
                     }

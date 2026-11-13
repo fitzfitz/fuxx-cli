@@ -251,6 +251,10 @@ const SCENES: &[(&str, fn())] = &[
         chrome_sources::chrome_sidebar_scroll,
     ),
     ("chrome-row-sources", chrome_sources::chrome_row_sources),
+    (
+        "chrome-file-tab-toolbar",
+        chrome_sources::chrome_file_tab_toolbar,
+    ),
     ("sidebar", sidebar_scenes),
     ("sidebar-rows", sidebar_row_scenes),
     ("sidebar-selection", sidebar_selection_scenes),
