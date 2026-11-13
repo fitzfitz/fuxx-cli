@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11aa
-status: planned
+status: safe part built
 updated: 2026-11-13
 ---
 
@@ -14,8 +14,8 @@ updated: 2026-11-13
 | **Design (the spec)** | [[Proposal - Chat View and Agent Tabs]] — Part 1 only (Part 2 is M11ab, not planned) |
 | **Status** | 📝 Planned 2026-11-13. In [[12 - Scope]] and [[40 - Roadmap]] since 2026-11-13 (M11aa; Task 0 Step 1). Safe part (Tasks 0, 2, 3, 4, 6) on branch `m11aa-agent-tabs`. |
 | **Order** | After M11z and after M11p (the proposal's "Where it goes"). |
-| **Tasks done** | 1 / 14 (Task 0 Steps 2–6 done; Step 1 done by the docs change; clippy baseline 30 warnings on the branch base) |
-| **▶ Pick up here** | Task 2 (safe part); UI tasks after M11p. |
+| **Tasks done** | 5 / 14 — Task 0 and Tasks 2, 3, 4, 6 (the safe part, on branch `m11aa-agent-tabs`, not merged; clippy baseline 30 warnings on the branch base, still 30; 1610 tests) |
+| **▶ Pick up here** | M11p next (it comes first), then Task 1 and the UI tasks (5, 7-14). Read the "from the safe-part run" notes in Tasks 7 and 8. |
 | **Decisions used** | Yours (2026-11-13): chat view for agents (C → C1), fuxx launches the agent, Claude + agy first in their own provider files, one kind per tab, menu presets open a new workspace with a shell + the agent side by side, classic = type the command in a shell, M11aa in M11. AI's calls: the proposal's numbered list, plus "Plan-time calls" below. |
 | **Needs your eyes** | 👀 the on-screen checklist written in Task 13 |
 
@@ -126,13 +126,13 @@ reader pattern); `serde_json`. Claude Code ≥ 2.1.323 and `agy` ≥ 1.4.3 on PA
   `agy-resume.jsonl`
 - Create: `scripts/record-agent-fixture.py` (the recorder; stdlib only, run with `python3 -I`)
 
-- [ ] **Step 1:** Only when the user says the `master` agent is between tasks: add M11aa (Part 1) and M11ab (Part 2,
+- [x] **Step 1:** Only when the user says the `master` agent is between tasks: add M11aa (Part 1) and M11ab (Part 2,
   "design first") to Scope and Roadmap after M11p, add a Progress Log entry, and in the proposal flip the warning
   box to "In the plan as M11aa / M11ab", copy in "Plan-time calls", and correct §1.6's "like closing a busy terminal
   today" (call 2) and §1.4's `+` (call 1).
-- [ ] **Step 2:** Record the clippy warning count on the branch base: `cargo clippy --all-targets 2>&1 | grep -c '^warning'`
+- [x] **Step 2:** Record the clippy warning count on the branch base: `cargo clippy --all-targets 2>&1 | grep -c '^warning'`
   → write it in this plan's "At a glance".
-- [ ] **Step 3:** Write `scripts/record-agent-fixture.py <agent> <scenario> <workdir> <out>`: starts the argv from
+- [x] **Step 3:** Write `scripts/record-agent-fixture.py <agent> <scenario> <workdir> <out>`: starts the argv from
   Global Constraints in `<workdir>` (a fresh temp dir), sends the initialize request (Claude only), sends the
   scenario's messages, answers `can_use_tool` requests per scenario (`allow` / `deny` with message
   `"Not now"` / `allow` + `updatedPermissions` = the request's `permission_suggestions`), and writes every stdout
@@ -145,16 +145,16 @@ reader pattern); `serde_json`. Claude Code ≥ 2.1.323 and `agy` ≥ 1.4.3 on PA
   `{"type":"control_response","response":{"subtype":"success","request_id":<id>,"response":{"behavior":"allow","updatedInput":<input>}}}`.
   The user's own hooks run in these sessions (same harness); a hook that blocks a tool is part of what the
   fixtures should show, not something to switch off.
-- [ ] **Step 4:** Run every scenario for Claude, then for agy (skip agy's permission scenarios). Scrub absolute
+- [x] **Step 4:** Run every scenario for Claude, then for agy (skip agy's permission scenarios). Scrub absolute
   temp paths to `/tmp/fx` and the user's home to `~` in the files.
-- [ ] **Step 5: Go/no-go.** Write into the proposal's "Claude Code headless mode" section what each recording
+- [x] **Step 5: Go/no-go.** Write into the proposal's "Claude Code headless mode" section what each recording
   shows, answering: does `deny` with a message reach the model; does `updatedPermissions` make the next identical
   Write skip the prompt; does `interrupt` stop the turn and what arrives after it; can a second user message be
   sent while a turn runs (and what `queued_turn_count` says); does `--resume` replay history on stdout, and if not,
   where the transcript file is; does `/compact` run; what `bad-resume` prints; where context-window size appears
   (`result.modelUsage`?) for the `context N%` line; agy's event names for text, tools, conversation id, turn end.
   **If allow or deny doesn't work, stop and report to the user** (the proposal's gate). Otherwise continue.
-- [ ] **Step 6: Commit** — `git add docs scripts/record-agent-fixture.py src/providers/fixtures && git commit -m "M11aa: plan, scope and agent fixtures"`
+- [x] **Step 6: Commit** — `git add docs scripts/record-agent-fixture.py src/providers/fixtures && git commit -m "M11aa: plan, scope and agent fixtures"`
 
 ### Task 1: Presets know about providers
 
@@ -264,7 +264,7 @@ pub fn provider_for(preset: &Preset) -> Option<&'static dyn crate::providers::Pr
   - Pass-through (`argv`): `extra_args` are appended except `-p`, `--print`, `--input-format`, `--output-format`,
     `--permission-prompt-tool`, `--permission-prompts`, `--resume`, `-r`, `--continue`, `-c` and their values.
 
-- [ ] **Step 1: Failing tests** (in `claude.rs`; `decode_all(p, text)` is a test helper feeding each line):
+- [x] **Step 1: Failing tests** (in `claude.rs`; `decode_all(p, text)` is a test helper feeding each line):
 
 ```rust
 #[test] fn text_fixture_streams_then_finishes() {
@@ -305,8 +305,8 @@ pub fn provider_for(preset: &Preset) -> Option<&'static dyn crate::providers::Pr
 plus in `mod.rs`: `by_name("claude")` is Claude, `by_name("opencode")` is None; in `presets.rs`:
 `provider_for` is Some for claude, None for codex.
 
-- [ ] **Step 2:** `cargo test --bin fuxx providers` → FAIL. **Step 3:** implement. **Step 4:** → PASS.
-- [ ] **Step 5: Commit** `M11aa: providers and the Claude translator`.
+- [x] **Step 2:** `cargo test --bin fuxx providers` → FAIL. **Step 3:** implement. **Step 4:** → PASS.
+- [x] **Step 5: Commit** `M11aa: providers and the Claude translator`.
 
 ### Task 3: The conversation model and message markdown (pure)
 
@@ -357,7 +357,7 @@ Folding rules: `TextDelta` appends to (or creates) the `Agent` item with that `m
 text and marks it done; `ToolFinished` updates the `Tool` with that id; a later `Todo` replaces the earlier `Todo`
 item in place; a `Permission` stays pending until `answered`; `TurnDone` clears `turn_running`.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
 #[test] fn status_follows_the_turn() {
@@ -388,7 +388,7 @@ item in place; a `Permission` stays pending until `answered`; `TurnDone` clears 
 #[test] fn unterminated_fence_is_code_to_the_end() { /* "```\nabc" → [Code{lang:None,text:"abc"}] (streaming) */ }
 ```
 
-- [ ] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS. **Step 5: Commit** `M11aa: conversation model and markdown`.
+- [x] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS. **Step 5: Commit** `M11aa: conversation model and markdown`.
 
 ### Task 4: Running the agent process
 
@@ -413,7 +413,7 @@ which every translator ignores), a stderr thread keeping the last 4 KiB, and a w
 `std::sync::mpsc` of lines (each written with `\n`, then flushed). Spawn errors arrive as `SpawnFailed`. `kill`
 sends SIGTERM to the process group, then SIGKILL after 2 s, and reaps.
 
-- [ ] **Step 1: Failing tests** (each collects events with `futures::executor::block_on` + a 5 s timeout)
+- [x] **Step 1: Failing tests** (each collects events with `futures::executor::block_on` + a 5 s timeout)
 
 ```rust
 #[test] fn echoes_lines_back() { /* argv ["/bin/sh","-c","cat"]; send("a"); send("b") → Line("a"), Line("b") */ }
@@ -424,7 +424,7 @@ sends SIGTERM to the process group, then SIGKILL after 2 s, and reaps.
 #[test] fn kill_ends_process_group() { /* sh -c 'sleep 100 & sleep 100'; kill(); after 3 s `kill(-pgid, 0)` fails with ESRCH */ }
 ```
 
-- [ ] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS. **Step 5: Commit** `M11aa: agent process runner`.
+- [x] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS. **Step 5: Commit** `M11aa: agent process runner`.
 
 ### Task 5: `TabKind::Agent` in the layout model and restore
 
@@ -491,9 +491,9 @@ impl EditBuffer { pub fn insert(&mut self, s: &str); pub fn newline(&mut self); 
 Unlike `NameInput`, blur does **not** cancel. Enter = Send, ⇧Enter = newline, Esc = Stop, ⌘A / ⌘C / ⌘V / ⌘X /
 ⌥← / ⌥→ / ⌘← / ⌘→ as `NameInput`. Grows to 8 rows, then scrolls. Typing `@` at a word start emits `AtTyped`.
 
-- [ ] **Step 1: Failing tests** — `EditBuffer`: `newline_then_up_keeps_column`, `backspace_joins_lines`,
+- [x] **Step 1: Failing tests** — `EditBuffer`: `newline_then_up_keeps_column`, `backspace_joins_lines`,
   `rows_counts_newlines` (`"a\nb\nc"` → 3), `insert_replaces_selection`.
-- [ ] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS. **Step 5: Commit** `M11aa: multi-line composer`.
+- [x] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS. **Step 5: Commit** `M11aa: multi-line composer`.
 
 ### Task 7: The agent tab view
 
@@ -534,8 +534,9 @@ Layout, from the mockup `c1-agent-tab.html` and spec §1.1–1.2, colours from `
 - Composer: mode chip (agy, before the first message, call 6), model chip, cost chip, hints
   "/ commands · @ files"; while Working the right button is **■ Stop (esc)** (sends `Action::Interrupt`); with a
   pending permission the placeholder is "Deny and say why… (optional)", Enter on an empty composer = Allow, Enter
-  with text = Deny with that reason. Messages sent while Working go straight to the process if Task 0 showed
-  Claude queues them, else are held and sent on `TurnDone`.
+  with text = Deny with that reason. Claude queues messages sent mid-turn (Task 0: `claude-queue.jsonl`), so send
+  them to the process immediately (from the safe-part run, 2026-11-13); `Conversation` counts outstanding sends, so
+  the status stays Working until each one's `result`.
 - **Stop is best-effort** (Task 0): an interrupt during a running foreground Bash does not stop the tool (the reply
   comes only after the turn); during streaming it works. The button shows "Stopping…" until `TurnDone`; after 10 s
   it offers **Force stop**, which ends the process and respawns with `--resume`.
@@ -551,6 +552,16 @@ Layout, from the mockup `c1-agent-tab.html` and spec §1.1–1.2, colours from `
   Events go `ProcessEvent::Line` → `translator.decode` → `Conversation::apply`; emit `Status` when
   `conversation.status()` changes, `Title` on the first `You`, `Conversation` on `Started`. A resume that fails
   (Review Focus 4) adds a notice and respawns without `--resume`.
+
+**Carried forward into this task (from the safe-part run, 2026-11-13):**
+- **History:** Claude's `history()` reads the transcript at `~/.claude/projects/<realpath of cwd with / and . turned into ->/<id>.jsonl` (`--resume` does not replay on stdout) (from the safe-part run, 2026-11-13).
+- **Stop is best-effort:** "Stopping…" until `TurnDone`, **Force stop** after 10 s (from the safe-part run, 2026-11-13). A stop arrives as `Notice("Stopped")` then a failed `TurnDone` (no red row).
+- **"Always allow" for Write/Edit** means "Allow all edits this session" (`setMode acceptEdits`); the label must say so (from the safe-part run, 2026-11-13).
+- **Process exit:** use `ProcessEvent::Ended` for "the process is gone"; a straggler holding stdout can delay `Exited` (from the safe-part run, 2026-11-13).
+- **Composer:** soft-wraps long lines; ↑/↓ move by visual row; shape only the on-screen rows; wheel-scroll it (from the safe-part run, 2026-11-13). Deferred Task 6 minors for here: ⌘←/⌘→ with a selection should go to line start/end, not collapse to the selection edge; `point_for` must check the row is below the visible window; add "Composer" key-context tests (from the safe-part run, 2026-11-13).
+- **Expired permissions:** show cards with `Answer::Expired` (the turn ended or the process died before you answered) as expired, not as open (from the safe-part run, 2026-11-13).
+- **Bad resume:** when `start.resume` is set and the process exits before `Started`, discard the rows that produced (the error and the exit), add one notice, and respawn fresh without `--resume` (from the safe-part run, 2026-11-13).
+- **Spawn failure:** `ProcessEvent::SpawnFailed(msg)` has no `Conversation` entry point yet; add `Conversation::failed_to_start(msg)` (or equivalent) that shows one error row and reads Done (from the safe-part run, 2026-11-13).
 
 - [ ] **Step 1:** Add ui-shots scenes driven by fixture events (no process): `agent-tab-empty`, `agent-tab-working`
   (tools fixture mid-way), `agent-tab-permission`, `agent-tab-done`, `agent-tab-failed` (`process_ended(Some(1),
@@ -606,6 +617,8 @@ pub struct Launch { pub saved: SavedSession, pub run_preset: bool, pub then_agen
 - `tab_menu::busy` and the close-others count include agent tabs that are Working or Waiting.
 - Quitting the app (the existing quit path, `quit_after_flush`) calls `AgentProcess::kill` on every agent tab
   before exiting — don't rely on `Drop` running at exit.
+- **Quit must kill synchronously:** an agent that ignores SIGTERM must still die before the app exits: after `kill()`, wait up to the 2 s grace for each `Exited`/`Ended`, then SIGKILL the group synchronously; don't rely on the killer thread or `Drop` (from the safe-part run, 2026-11-13).
+- **Process exit vs `Exited`:** closing a tab whose agent exited on its own while a straggler holds stdout is a no-op for `kill()` (the reaped pgid is not signalled); treat `Ended` as "done" and don't wait for `Exited` (from the safe-part run, 2026-11-13).
 
 - [ ] **Step 1:** Failing pure test `launch_plan_follows_provider_and_ssh` (`claude` local → `ShellThenAgent`,
   `claude` with `ssh: true` → `Classic`, `codex` → `Classic`); add ui-shots scenes `agent-workspace-split`,
