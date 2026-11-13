@@ -20297,6 +20297,77 @@ fn file_tab_md_mermaid_scenes() {
     );
     println!("ui-shots: file-tab-md-mermaid-idle: the web view went after 60 s idle");
     std::mem::forget(cx);
+
+    // Re-review fix: a cache of two entries, so drawing the fixture (two diagrams, then the
+    // broken one) frees the first image. Painted and
+    // captured after that (no stale tile: every window was refreshed), each dropped block says
+    // why, and when the pause ends the windows draw again and ask for it again.
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: TabSlot = Rc::default();
+    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    cx.update(|cx| Mermaids::set_limits(2, crate::mermaid::CACHE_BYTES, cx));
+    let build = build_for(theme, slot.clone());
+    let window = cx
+        .open_offscreen_window(dims, move |window, cx| {
+            let scene = build(window, cx);
+            cx.new(|_| Root { theme, scene })
+        })
+        .expect("open an off-screen window");
+    cx.run_until_parked();
+    let window: AnyWindowHandle = window.into();
+    let tab = slot.borrow().clone().expect("the tab");
+    click_preview(&mut cx, window, &tab);
+    let started = Instant::now();
+    let mut drawn = (0, Vec::new());
+    while started.elapsed() < Duration::from_secs(30) {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+        frame(&mut cx, window);
+        drawn = cx.read(|cx| tab.read(cx).mermaid_drawn());
+        let (_, _, queued, running) = cx.update(Mermaids::counts);
+        if drawn.0 + drawn.1.len() == 3 && queued == 0 && !running {
+            break;
+        }
+    }
+    let _ = cx
+        .capture_screenshot(window)
+        .expect("painted after images were freed");
+    println!("ui-shots: file-tab-md-mermaid-evict: {drawn:?}");
+    let crowded = crate::mermaid::note(crate::mermaid::CROWDED);
+    assert_eq!(drawn.0, 1, "evict: one diagram fits ({drawn:?})");
+    assert!(
+        drawn.1.contains(&crowded),
+        "evict: one says the cache is full ({drawn:?})"
+    );
+    assert!(
+        drawn
+            .1
+            .iter()
+            .any(|n| n.starts_with("Mermaid: Parse error")),
+        "evict: the broken one keeps its own error ({drawn:?})"
+    );
+    // The pause ends: a redraw of every window is asked for (the harness draws only when
+    // told, so the frame is drawn here), and the dropped diagram is asked for and queued.
+    let redraws = cx.update(Mermaids::pause_redraws);
+    // The store's pause is in real time (the timer in the test clock): wait both out.
+    let waited = Instant::now();
+    while waited.elapsed() < crate::mermaid::REDRAW_PAUSE {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.1));
+    }
+    cx.advance_clock(crate::mermaid::REDRAW_PAUSE + Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(
+        cx.update(Mermaids::pause_redraws) > redraws,
+        "evict: the pause's end asks every window to draw again"
+    );
+    frame(&mut cx, window);
+    let (_, _, queued, running) = cx.update(Mermaids::counts);
+    assert!(
+        queued > 0 || running,
+        "evict: after the pause the dropped diagram is asked for again"
+    );
+    println!("ui-shots: file-tab-md-mermaid-evict: after the pause it renders again");
+    std::mem::forget(cx);
 }
 
 /// M11ac: the Files panel follows the focused pane's file tab, on `files_fixture` beside a

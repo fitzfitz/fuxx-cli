@@ -2630,6 +2630,7 @@ impl FileTab {
                             Asked::Ready(Drawn { image, w, h }) => Shown::Diagram { image, w, h },
                             Asked::Failed(e) => Shown::Code(Some(mermaid::note(&e))),
                             Asked::TooMuch => Shown::Code(Some(mermaid::note(mermaid::TOO_MUCH))),
+                            Asked::Crowded => Shown::Code(Some(mermaid::note(mermaid::CROWDED))),
                             Asked::Waiting => Shown::Code(None),
                         }
                     }
