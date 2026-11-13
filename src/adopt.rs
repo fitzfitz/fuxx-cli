@@ -1090,6 +1090,7 @@ mod tests {
             pane.tabs[2] = SavedTab::File {
                 path: "/w/api/README.md".into(),
                 mode: crate::layout_model::FileMode::Plain,
+                preview: false,
             };
             pane.active = 2;
         }

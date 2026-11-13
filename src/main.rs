@@ -60,6 +60,9 @@ mod layout_model;
 mod links;
 mod mark_view;
 mod mcp;
+mod md_preview;
+mod mermaid;
+mod mermaid_render;
 mod mouse;
 #[allow(dead_code)] // used by the daemon and client from M10a Task 3/4
 mod mux_proto;
