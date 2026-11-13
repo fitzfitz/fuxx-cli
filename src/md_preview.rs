@@ -214,7 +214,9 @@ pub struct Colours {
     pub code_text: Rgb,
     /// Table and heading lines, a quote's bar, a rule.
     pub line: Rgb,
+    /// A table header's fill, and its text on it.
     pub header_bg: Rgb,
+    pub header_text: Rgb,
 }
 
 impl Colours {
@@ -232,6 +234,7 @@ impl Colours {
             code_text: ensure_contrast(ui.text, code_bg, TEXT_MIN),
             line: ensure_contrast(ui.panel_border, bg, QUIET_LINE_MIN),
             header_bg: code_bg,
+            header_text: ensure_contrast(ui.text, code_bg, TEXT_MIN),
         }
     }
 }
@@ -385,7 +388,9 @@ fn table(align: &[Align], head: &[Vec<Span>], rows: &[Vec<Vec<Span>>], draw: &Dr
             .when(row > 0, |d| d.border_t_1())
             .border_color(hsla(c.line))
             .when(header, |d| {
-                d.bg(hsla(c.header_bg)).font_weight(FontWeight::SEMIBOLD)
+                d.bg(hsla(c.header_bg))
+                    .text_color(hsla(c.header_text))
+                    .font_weight(FontWeight::SEMIBOLD)
             });
         let d = match align.get(col) {
             Some(Align::Center) => d.text_center(),
@@ -505,6 +510,7 @@ mod tests {
                 ("dim", c.dim, bg),
                 ("link", c.link, bg),
                 ("code", c.code_text, c.code_bg),
+                ("table header", c.header_text, c.header_bg),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got}");
