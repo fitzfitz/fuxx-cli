@@ -19960,7 +19960,8 @@ fn file_tab_md_scenes() {
 
 /// M11ac: the Files panel follows the focused pane's file tab, on `files_fixture` beside a
 /// terminal in its src/ (util closed), 1100 × 560, both themes:
-/// - `files-panel-follows-active-tab`: after opening src/util/a.rs (util opens, a.rs
+/// - `files-panel-follows-active-tab` (each follow run where the focused tab changed, none by
+///   the frame's safety net): after opening src/util/a.rs (util opens, a.rs
 ///   selected), ⌃Tab to the terminal (kept), a file outside the folder (kept), docs/guide.md
 ///   (docs opens), README.md in Diff mode, ⌃⇧Tab back through them by keyboard (each one
 ///   selected in turn): docs/guide.md's file tab shown and its row selected.
@@ -20100,6 +20101,9 @@ fn files_follow_scenes() {
                     Some(PathBuf::from("docs/guide.md")),
                     "{n}: back"
                 );
+                // Review fix: every follow ran where the focused tab changed, none from a frame.
+                let late = cx.read(|cx| ws.read(cx).right_sidebar.files.late_follows.get());
+                assert_eq!(late, 0, "{n}: follows started by the frame's safety net");
                 slot.borrow_mut().take();
             }
         };

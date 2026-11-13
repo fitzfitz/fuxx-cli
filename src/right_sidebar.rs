@@ -638,6 +638,10 @@ pub(crate) struct FilesPanel {
     /// The tree root and file last followed (M11ac: the focused pane's file tab); none while
     /// no file tab has the focus.
     followed_file: Option<(PathBuf, PathBuf)>,
+    /// The UI screenshots: follows the frame's safety net had to start (a route that changes
+    /// the focused tab without `note_active`).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) late_follows: Cell<usize>,
     /// A root lookup, a refresh, and folders being listed, under way.
     rooting: bool,
     refreshing: bool,
@@ -666,6 +670,8 @@ impl FilesPanel {
             scroll: UniformListScrollHandle::new(),
             reveal: None,
             followed_file: None,
+            #[cfg(feature = "ui-shots")]
+            late_follows: Cell::new(0),
             rooting: false,
             refreshing: false,
             listing: HashSet::new(),
@@ -730,6 +736,19 @@ impl FilesPanel {
             .filter(|f| !before.contains(f) && !f.as_os_str().is_empty())
             .collect();
         Some(list)
+    }
+
+    /// Whether `follow(path)` would act (a read, for the frame's safety net): a tree, and a
+    /// file (or none) not followed yet under its root.
+    pub(crate) fn wants_follow(&self, path: Option<&Path>) -> bool {
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        match (path, &self.followed_file) {
+            (None, followed) => followed.is_some(),
+            (Some(path), Some((root, file))) => root != tree.root() || file != path,
+            (Some(_), None) => true,
+        }
     }
 
     /// No tree (an SSH terminal's, or no folder): this one's memory is kept, and nothing under
@@ -1304,7 +1323,21 @@ impl Workspace {
             return (None, None);
         }
         self.ensure_files_panel(window, cx);
-        self.follow_active_file(cx);
+        // The follow runs where the focused tab changes (`note_active`) and where a tree
+        // arrives; nothing visible changes in a frame. A route that missed it is caught here,
+        // after the frame (a read now, the follow deferred).
+        let path = self.focused_file_tab().map(|v| v.read(cx).path.clone());
+        if self.right_sidebar.files.wants_follow(path.as_deref()) {
+            #[cfg(feature = "ui-shots")]
+            self.right_sidebar
+                .files
+                .late_follows
+                .set(self.right_sidebar.files.late_follows.get() + 1);
+            let this = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| this.follow_active_file(cx)).ok();
+            });
+        }
         self.update_file_rows();
         let node = self.render_right_sidebar(ui, width, window, cx);
         match slide {
@@ -1517,13 +1550,15 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The Files panel follows the focused pane's file tab (M11ac, `FilesPanel::follow`),
-    /// checked each frame the sidebar is drawn (so a tab chosen by a click, a key, or a file
-    /// opened all count); the folders a reveal opened are listed off the UI thread.
-    fn follow_active_file(&mut self, cx: &mut Context<Self>) {
+    /// The Files panel follows the focused pane's file tab (M11ac, `FilesPanel::follow`):
+    /// called where the focused tab changes (`note_active`: a click, a key, a file opened, a
+    /// tab closed) and where a new tree arrives, never inside a frame; the folders a reveal
+    /// opened are listed off the UI thread.
+    pub(crate) fn follow_active_file(&mut self, cx: &mut Context<Self>) {
         let path = self.focused_file_tab().map(|v| v.read(cx).path.clone());
         if let Some(list) = self.right_sidebar.files.follow(path.as_deref()) {
             self.files_list(list, cx);
+            cx.notify();
         }
     }
 
@@ -1604,6 +1639,8 @@ impl Workspace {
                     files.rooting = false;
                     files.rooted(root, in_repo, revealed);
                     files.refreshed = None;
+                    // A file tab focused: the new tree shows it (M11ac).
+                    this.follow_active_file(cx);
                     // Not while another panel shows: it refreshes when shown again.
                     if this.right_panel_works(Panel::Files, cx) {
                         this.refresh_files(cx);
@@ -2483,6 +2520,35 @@ mod tests {
         // Outside the root: nothing.
         assert_eq!(files.follow(Some(Path::new("/elsewhere/x.md"))), None);
         assert_eq!(tree(&files), Some(PathBuf::from("docs/guide.md")));
+    }
+
+    /// Review fix: the frame only asks whether a follow is due (`wants_follow`, a read); the
+    /// follow itself runs outside the frame. Due for a file (or none) not yet followed under
+    /// this root; never without a tree.
+    #[test]
+    fn a_follow_is_due_only_for_a_change() {
+        let mut files = FilesPanel::new();
+        let guide = Path::new("/repo/docs/guide.md");
+        assert!(!files.wants_follow(Some(guide)), "no tree yet");
+        files.rooted(PathBuf::from("/repo"), true, None);
+        assert!(
+            !files.wants_follow(None),
+            "nothing followed, nothing focused"
+        );
+        assert!(files.wants_follow(Some(guide)));
+        files.follow(Some(guide));
+        assert!(!files.wants_follow(Some(guide)), "followed");
+        assert!(files.wants_follow(None), "a terminal now");
+        files.follow(Some(Path::new("/elsewhere/x.md")));
+        assert!(
+            !files.wants_follow(Some(Path::new("/elsewhere/x.md"))),
+            "outside: settled"
+        );
+        files.rooted(PathBuf::from("/other"), true, None);
+        assert!(
+            files.wants_follow(Some(Path::new("/elsewhere/x.md"))),
+            "a new root"
+        );
     }
 
     #[test]
