@@ -12,7 +12,7 @@ Run each recording in a fresh temp dir, never in the repo. The user's own hooks 
 is switched off). stdout lines are scrubbed (workdir -> /tmp/fx, $HOME -> ~, thinking
 `signature` -> "") and written to <out>; stderr, if any, goes to <out>.stderr.
 """
-import json, os, queue, signal, subprocess, sys, threading, time
+import json, os, queue, re, signal, subprocess, sys, threading, time
 
 TIMEOUT = 180
 CLAUDE = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
@@ -48,6 +48,16 @@ def trim_event(e):
         for k, v in box.items():
             if isinstance(v, list) and len(v) > KEEP:
                 box[k] = v[:KEEP]
+        if isinstance(box.get("account"), dict):  # who is logged in
+            box["account"] = {k: "user@example.com" if k == "email" else "example"
+                              for k in box["account"]}
+    inner = e.get("event")
+    if isinstance(inner, dict) and inner.get("delta", {}).get("type") == "signature_delta":
+        inner["delta"]["signature"] = ""  # opaque, large
+    if str(e.get("subtype", "")).startswith("hook_"):  # the user's hook output is private
+        for k in ("output", "stdout", "stderr"):
+            if e.get(k):
+                e[k] = "<hook output removed>"
     return e
 
 
@@ -97,6 +107,7 @@ class Run:
         for w in sorted({self.workdir, self.raw_workdir}, key=len, reverse=True):
             s = s.replace(w, "/tmp/fx")
         s = s.replace(os.path.expanduser("~"), "~")
+        s = re.sub(r"-(private-)?(var-folders|tmp)-[A-Za-z0-9-]+", "-tmp-fx", s)  # mangled cwd in ~/.claude/projects names
         return s.replace(os.path.basename(os.path.expanduser("~")), "user")  # e.g. `ls -l` owners
 
     def _clean(self, o):
