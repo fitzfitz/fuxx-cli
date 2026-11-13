@@ -546,6 +546,12 @@ pub(super) fn chrome_places_programs_ports() {
         std::fs::create_dir_all(dir.join(sub)).expect("the fixture's folders");
     }
     let dir = dir.canonicalize().expect("the fixture's folder");
+    // Declared first, so it goes last, also on a failed check: the shell's programs and the
+    // folders go with it.
+    let fixture = Fixture {
+        dir: dir.clone(),
+        shell: std::cell::Cell::new(None),
+    };
     let (a, b) = (dir.join("a"), dir.join("b"));
     let git = |args: &[&str]| {
         let ok = std::process::Command::new("/usr/bin/git")
@@ -603,6 +609,9 @@ pub(super) fn chrome_places_programs_ports() {
             .view
             .clone()
     });
+    fixture
+        .shell
+        .set(cx.read(|cx| view.read(cx).working_folder().1));
     // Run the app's timers and lookups until `found` holds (the shell and its program run on
     // their own time).
     let until = |cx: &mut VisualTestAppContext, what: &str, found: &dyn Fn(&App) -> bool| {
@@ -677,20 +686,28 @@ pub(super) fn chrome_places_programs_ports() {
         facts.text, facts.ports
     );
     assert!(facts.running, "{n}: the bar says a program runs");
-    // The program goes now (it would outlive the terminal by a hang-up it may not get here).
-    let shell = cx
-        .read(|cx| view.read(cx).working_folder().1)
-        .expect("the shell's pid");
-    let table = cx
-        .read(|cx| ws.read(cx).programs.table())
-        .expect("a ps table");
-    for pid in crate::procs::descendants(&table, shell) {
-        let _ = std::process::Command::new("/bin/kill")
-            .arg(pid.to_string())
-            .status();
-    }
-    let _ = std::fs::remove_dir_all(&dir);
     steps.done();
+}
+
+/// `chrome-places-programs-ports`' fixture, cleared when dropped (a failed check too): every
+/// process under its shell (the program would outlive the terminal by a hang-up it may not
+/// get), then its folders.
+struct Fixture {
+    dir: PathBuf,
+    shell: std::cell::Cell<Option<u32>>,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some((shell, table)) = self.shell.get().zip(crate::procs::ps_table()) {
+            for pid in crate::procs::descendants(&table, shell) {
+                let _ = std::process::Command::new("/bin/kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// The globals the chrome reads: the theme switched (the `Appearance` set anew, as a settings
@@ -1442,6 +1459,239 @@ pub(super) fn chrome_bars_and_edges() {
                 .expect("the focused terminal");
             cx.update(|cx| ws.update(cx, |ws, cx| ws.rename_at(i, "renamed", cx)));
         },
+    );
+    steps.done();
+}
+
+/// The sidebar's list scrolled and revealed: 16 workspaces, more than the list shows. A row out
+/// of view starts working (nothing to see yet); the list scrolled to it with the wheel shows it
+/// as it is now; ⌘1 chooses the first workspace, whose row is out of view, and the list scrolls
+/// it into view (`note_active` asks, `render_sidebar` scrolls to it).
+///
+/// Panics unless the list scrolls, the chosen row is in view, and after each step the window
+/// shows what a full redraw does.
+pub(super) fn chrome_sidebar_scroll() {
+    use crate::workspace::SelectSession1;
+    use gpui::{KeyBinding, ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+    let n = "chrome-sidebar-scroll";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        for i in 0..16 {
+            ws.open_shot_session(&format!("w{i}"), api, super::SHELL_TEXT, None, window, cx);
+        }
+        let first = ws.sessions.position(|s| s.label() == "w0").expect("w0");
+        ws.select(first, window, cx);
+    });
+    let ws = &ws;
+    cx.update(|cx| cx.bind_keys([KeyBinding::new("cmd-1", SelectSession1, None)]));
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    // The list's viewport, and whether row `i` (its group's header is row 0) lies inside it.
+    let in_view = |cx: &mut VisualTestAppContext, i: usize| {
+        cx.read(|cx| {
+            let scroll = &ws.read(cx).sidebar.scroll;
+            let view = scroll.bounds();
+            let mut row = scroll.bounds_for_item(i).expect("laid out");
+            row.origin.y += scroll.offset().y;
+            row.top() >= view.top() - px(1.0) && row.bottom() <= view.bottom() + px(1.0)
+        })
+    };
+    let last = cx.read(|cx| ws.read(cx).model.workspaces().len());
+    assert!(in_view(&mut cx, 1), "{n}: the first row shows");
+    assert!(!in_view(&mut cx, last), "{n}: the last row is out of view");
+    steps.step(
+        &mut cx,
+        window,
+        "a row out of view works",
+        Seen::Maybe,
+        |cx| report(cx, ws, "w15", Status::Working),
+    );
+    let list = super::row_point(&mut cx, ws, 1, 0.0);
+    steps.step(
+        &mut cx,
+        window,
+        "the list scrolled to it (the wheel)",
+        Seen::Changes,
+        |cx| {
+            cx.simulate_mouse_move(window, list, None, Modifiers::none());
+            cx.simulate_event(
+                window,
+                ScrollWheelEvent {
+                    position: list,
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(-2000.0))),
+                    modifiers: Modifiers::none(),
+                    touch_phase: TouchPhase::Moved,
+                },
+            )
+        },
+    );
+    assert!(in_view(&mut cx, last), "{n}: the last row is in view");
+    assert!(!in_view(&mut cx, 1), "{n}: the first row is out of view");
+    steps.step(
+        &mut cx,
+        window,
+        "⌘1: its row revealed",
+        Seen::Changes,
+        |cx| cx.simulate_keystrokes(window, "cmd-1"),
+    );
+    assert!(in_view(&mut cx, 1), "{n}: the chosen row is in view");
+    steps.done();
+}
+
+/// A row's other sources: a waiting terminal's question (read off its screen by `set_status`;
+/// without the banner, which would be a real one), the terminal a row is named after and reads
+/// its branch from (`named_terminal` / `branch_terminal`: the workspace's focused pane's,
+/// changed by Focus Pane Right), an SSH session's host, and a terminal's project
+/// (its folder and group).
+///
+/// An SSH session can't connect here: it opens at `open_ssh`'s last step (`open_now` with the
+/// session's `ssh` target), its program a silent `cat` instead of the `ssh` that would reach a
+/// host. A project, the same way as a folder's New Workspace opens one (`open_in`), its
+/// program a `cat` instead of a login shell (whose prompt would come in meanwhile).
+///
+/// Panics unless each shows as said and after each step the window shows what a full redraw
+/// does, and it changed.
+pub(super) fn chrome_row_sources() {
+    use crate::restore::{Launch, SavedSession};
+    use crate::ssh_target::SshTarget;
+    use crate::workspace::{At, FocusPaneRight};
+
+    let n = "chrome-row-sources";
+    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+        let api = std::path::Path::new(super::API);
+        let web = std::path::Path::new(super::WEB);
+        ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        ws.open_shot_session("tests", web, super::SHELL_TEXT, Some(Axis::Row), window, cx);
+        ws.open_shot_session("agent", web, super::CLAUDE_PROMPT, None, window, cx);
+        let first = ws.sessions.position(|s| s.label() == "api").expect("api");
+        ws.select(first, window, cx);
+        // Where each is and the branch there, as the places last found them (the scenes look
+        // nothing up).
+        let now = Instant::now();
+        for (name, folder, branch) in [("api", api, "main"), ("tests", web, "feature")] {
+            let i = ws.sessions.position(|s| s.label() == name).expect("opened");
+            let id = ws.sessions.items()[i].id;
+            ws.places.set_folder(id, Some(folder.to_path_buf()), now);
+            ws.places.set_branch(folder, Some(branch.into()));
+        }
+    });
+    let ws = &ws;
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let question = |cx: &mut VisualTestAppContext| {
+        let i = index_of(cx, ws, "agent");
+        cx.read(|cx| ws.read(cx).sessions.items()[i].question.clone())
+    };
+    steps.step(
+        &mut cx,
+        window,
+        "agent waits: its question",
+        Seen::Changes,
+        |cx| {
+            let i = index_of(cx, ws, "agent");
+            cx.update(|cx| ws.update(cx, |ws, cx| ws.set_status(i, Status::Waiting, false, cx)));
+        },
+    );
+    assert_eq!(
+        question(&mut cx).as_deref(),
+        Some(super::CLAUDE_QUESTION),
+        "{n}: the question read off its screen"
+    );
+    // api's workspace: named after, and its branch read from, its focused pane's terminal.
+    let row = |cx: &mut VisualTestAppContext| {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let i = ws.sessions.position(|s| s.label() == "api").expect("api");
+            let w = ws.workspace_of(i).expect("api's workspace");
+            let named = ws
+                .named_terminal(w)
+                .map(|id| ws.terminal_label(id).to_string());
+            let branch = ws
+                .rows_in_view(Instant::now())
+                .into_iter()
+                .find_map(|r| match r {
+                    crate::sidebar::SidebarRow::Workspace(r) if r.workspace == w => {
+                        Some((r.label.to_string(), r.branch.clone()))
+                    }
+                    _ => None,
+                });
+            (named, branch)
+        })
+    };
+    let before = row(&mut cx);
+    assert_eq!(before.0.as_deref(), Some("api"), "{n}: named after api");
+    steps.step(
+        &mut cx,
+        window,
+        "the right pane focused: the row's name and branch follow",
+        Seen::Changes,
+        |cx| cx.dispatch_action(window, FocusPaneRight),
+    );
+    let after = row(&mut cx);
+    println!("ui-shots: {n}: api's row {before:?} -> {after:?}");
+    assert_eq!(after.0.as_deref(), Some("tests"), "{n}: named after tests");
+    assert_eq!(
+        after.1.as_ref().and_then(|(_, b)| b.as_deref()),
+        Some("feature"),
+        "{n}: tests's branch"
+    );
+    let open = |cx: &mut VisualTestAppContext, saved: SavedSession| {
+        on_ws(cx, window, ws, |ws, window, cx| {
+            let launch = Launch {
+                saved,
+                run_preset: false,
+            };
+            let cat = Some(vec!["/bin/cat".to_string()]);
+            ws.open_now(launch, At::New, cat, None, window, cx)
+        })
+    };
+    steps.step(
+        &mut cx,
+        window,
+        "an SSH session opened",
+        Seen::Changes,
+        |cx| {
+            let target = SshTarget {
+                host: "build.example".into(),
+                tmux: false,
+                tmux_name: None,
+            };
+            open(
+                cx,
+                SavedSession {
+                    ssh: Some(target),
+                    ..Default::default()
+                },
+            )
+        },
+    );
+    let facts = cx.read(|cx| ws.read(cx).status_bar_facts()).expect("facts");
+    assert!(facts.ssh, "{n}: the bar's terminal is an SSH one");
+    assert_eq!(
+        facts.branch.as_deref(),
+        Some("ssh build.example"),
+        "{n}: the bar says its host"
+    );
+    let docs = std::path::PathBuf::from("/Users/me/code/docs");
+    steps.step(
+        &mut cx,
+        window,
+        "a terminal opened in another project",
+        Seen::Changes,
+        |cx| {
+            open(
+                cx,
+                SavedSession {
+                    project: Some(docs.clone()),
+                    ..Default::default()
+                },
+            )
+        },
+    );
+    let facts = cx.read(|cx| ws.read(cx).status_bar_facts()).expect("facts");
+    assert_eq!(
+        facts.folder.as_deref(),
+        Some(docs.as_path()),
+        "{n}: its folder"
     );
     steps.done();
 }
