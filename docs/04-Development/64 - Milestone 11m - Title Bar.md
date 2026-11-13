@@ -282,10 +282,14 @@ Where the build settled something the design left open, or changed it (AI's ruli
 final whole-branch review):
 
 - **`TITLE_ROOM` stays 64 pt.** The title's ink measured 60 pt wide, so the 224 pt threshold holds. **`TITLE_INK_SHIFT`
-  = −1 pt:** the title's ink centre sits 1 pt left of the sidebar's middle, measured; it is GPUI's text-origin
-  snapping, not a centring bug. The shots hold the ink to that baseline (±0.5) and to ±1.5 of the middle as a sanity
-  bound; rebaseline it if the system font or the GPUI rev changes. `TITLE_GAP` (8 pt) never binds at today's
-  widths; it is the safeguard if `TITLE_ROOM` grows past 100.
+  = −0.5 pt** (was −1 pt until 2026-11-13): the title's ink centre, read to a fraction of a device pixel
+  (`ink_span`), sits 0.27 pt left of the sidebar's middle on a 2x screen and 0.72 pt left on a 1x one, the same in
+  both themes. It is GPUI's device-pixel snapping (the text's 60.77 pt width rounded up to a device pixel, the centred
+  box's edge rounded) plus ~0.13 pt of side bearing, not a centring bug. The shots run at the main screen's scale,
+  so the baseline is the middle of the two; they hold the ink to it (±0.5) and to ±1.5 of the middle as a sanity
+  bound; rebaseline it if the system font or the GPUI rev changes. (The old −1 pt was measured at 1x with a
+  half-way threshold, which on a 2x screen read Latte 0.25 pt off Mocha.) `TITLE_GAP` (8 pt) never binds at
+  today's widths; it is the safeguard if `TITLE_ROOM` grows past 100.
 - **The name waits for the hide slide (AI's call):** while the sidebar slides out, the collapsed name is not drawn;
   it appears at once when the slide ends. Before this it painted over the outgoing sidebar for up to 160 ms.
 - **The band 🔔 closes the Welcome card**, as any overlay does (one overlay at a time). You accepted this.
