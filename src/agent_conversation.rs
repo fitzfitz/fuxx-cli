@@ -13,6 +13,8 @@ pub enum Answer {
     Allowed,
     AlwaysAllowed,
     Denied(Option<String>),
+    /// The turn ended (or the process died) before you answered.
+    Expired,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -203,6 +205,7 @@ impl Conversation {
             Event::TurnDone { ok, message } => {
                 self.turn_running = false;
                 self.finished = true;
+                self.settle();
                 if !ok && let Some(text) = message {
                     // The translator reports one failure as `Error` then `TurnDone`.
                     let dup = matches!(self.items.last(), Some(Item::Error(e)) if *e == text);
@@ -219,6 +222,7 @@ impl Conversation {
     pub fn you(&mut self, text: String, attachments: Vec<String>) {
         self.items.push(Item::You { text, attachments });
         self.turn_running = true;
+        self.ended = false;
         self.finished = false;
     }
 
@@ -238,17 +242,32 @@ impl Conversation {
     pub fn process_ended(&mut self, code: Option<i32>, stderr_tail: &str) {
         self.ended = true;
         self.turn_running = false;
+        self.settle();
         let tail = stderr_tail.trim();
         let what = match code {
             Some(c) => format!("The agent exited (code {c})"),
             None => "The agent was terminated".to_string(),
         };
-        if code == Some(0) && tail.is_empty() {
+        if code == Some(0) {
+            // A clean exit is not an error, whatever it wrote to stderr.
             self.items.push(Item::Notice("The agent exited".into()));
         } else if tail.is_empty() {
             self.items.push(Item::Error(what));
         } else {
             self.items.push(Item::Error(format!("{what}: {tail}")));
+        }
+    }
+
+    /// A turn is over: nothing is still running and no question is still open.
+    fn settle(&mut self) {
+        for item in &mut self.items {
+            match item {
+                Item::Tool { running, .. } => *running = false,
+                Item::Permission { answer, .. } if answer.is_none() => {
+                    *answer = Some(Answer::Expired)
+                }
+                _ => {}
+            }
         }
     }
 
@@ -269,7 +288,8 @@ impl Conversation {
             Status::Waiting
         } else if self.turn_running {
             Status::Working
-        } else if self.finished {
+        } else if self.finished || !self.items.is_empty() {
+            // Anything said (even replayed history) with no turn running reads Done.
             Status::Done
         } else {
             Status::Idle
@@ -319,11 +339,20 @@ fn cap_output(output: &str) -> (String, usize) {
     // Drop whole lines from the front until the rest fits in the byte budget.
     let mut bytes: usize = lines[start..].iter().map(|l| l.len() + 1).sum::<usize>();
     bytes = bytes.saturating_sub(1);
-    while start < total && bytes > OUTPUT_KEEP_BYTES {
+    while start + 1 < total && bytes > OUTPUT_KEEP_BYTES {
         bytes = bytes.saturating_sub(lines[start].len() + 1);
         start += 1;
     }
-    (lines[start..].join("\n"), start)
+    let mut kept = lines[start..].join("\n");
+    if kept.len() > OUTPUT_KEEP_BYTES {
+        // One line alone is over budget: keep its tail, cut forward to a char boundary.
+        let mut cut = kept.len() - OUTPUT_KEEP_BYTES;
+        while !kept.is_char_boundary(cut) {
+            cut += 1;
+        }
+        kept.drain(..cut);
+    }
+    (kept, start)
 }
 
 #[cfg(test)]
@@ -468,6 +497,89 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn one_huge_line_keeps_its_tail() {
+        for line in ["x".repeat(1_000_000), "é".repeat(500_000)] {
+            let mut c = Conversation::new();
+            c.apply(tool_started("t1"));
+            c.apply(Event::ToolFinished {
+                id: "t1".into(),
+                ok: true,
+                summary: String::new(),
+                output: Some(line.clone()),
+            });
+            match &c.items()[0] {
+                Item::Tool {
+                    output: Some(o),
+                    dropped_lines,
+                    ..
+                } => {
+                    assert!(!o.is_empty());
+                    assert!(o.len() <= OUTPUT_KEEP_BYTES);
+                    assert!(o.len() > OUTPUT_KEEP_BYTES - 4);
+                    assert!(line.ends_with(o.as_str()));
+                    assert_eq!(*dropped_lines, 0);
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn turn_end_settles_tools_and_questions() {
+        for end in 0..2 {
+            let mut c = Conversation::new();
+            c.you("x".into(), vec![]);
+            c.apply(tool_started("t1"));
+            c.apply(permission("p1"));
+            assert_eq!(c.status(), Status::Waiting);
+            if end == 0 {
+                c.apply(Event::TurnDone {
+                    ok: false,
+                    message: None,
+                });
+            } else {
+                c.process_ended(None, "");
+            }
+            assert_eq!(c.status(), Status::Done);
+            assert!(c.pending_permission().is_none());
+            assert!(c.items().iter().any(|i| matches!(
+                i,
+                Item::Permission {
+                    answer: Some(Answer::Expired),
+                    ..
+                }
+            )));
+            assert!(c.items().iter().any(|i| matches!(
+                i,
+                Item::Tool {
+                    running: false,
+                    ok: None,
+                    ..
+                }
+            )));
+        }
+    }
+
+    #[test]
+    fn replayed_history_reads_done_and_a_new_turn_revives() {
+        let mut c = Conversation::new();
+        assert_eq!(c.status(), Status::Idle);
+        c.apply(delta("m", "old"));
+        assert_eq!(c.status(), Status::Done);
+        c.process_ended(Some(1), "bye");
+        c.you("again".into(), vec![]);
+        assert_eq!(c.status(), Status::Working);
+    }
+
+    #[test]
+    fn clean_exit_is_never_an_error() {
+        let mut c = Conversation::new();
+        c.process_ended(Some(0), "some warning");
+        assert!(!c.items().iter().any(|i| matches!(i, Item::Error(_))));
+        assert_eq!(c.status(), Status::Done);
     }
 
     #[test]
