@@ -22,6 +22,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-13 — M11aa designed and planned; safe part started (branch `m11aa-agent-tabs`)
+- **Did:** Designed the chat view with you in browser mockups (you chose direction C, then C1: shell and agent are separate conversations, one kind per tab), wrote [[Proposal - Chat View and Agent Tabs]] and the plan [[M11aa Plan - Agent Tabs]], put M11aa (agent tabs and providers) and M11ab (chat-style shell tabs, design first) in [[12 - Scope]] and [[40 - Roadmap]] after M11z and after M11p, verified Claude's permission routing, recorded the fixtures (Task 0: **GO**, allow and deny both work), and started the safe part (Tasks 0, 2, 3, 4, 6: new pure modules, no UI) on the branch.
+- **Learned:** Claude needs `--permission-prompt-tool stdio` **and** an `initialize` control request, or it silently denies every prompt. `--resume` does not replay history on stdout (the transcript is at `~/.claude/projects/<cwd with / and . turned into ->/<id>.jsonl`). An interrupt during a running Bash does not stop the tool (the reply comes only after the turn), so Stop is best-effort. `agy` has its own stream format and input shape, not Claude's.
+- **Blocked:** the `agy` recordings hit "credits too low" (429), so they show only the error shape; re-record before the agy provider (Task 12).
+- **Next task:** M11aa Tasks 2, 3, 4 and 6 (the safe part), then M11p; the M11aa UI tasks come after M11p.
+
 ### 2026-11-13 — M11z built (branch `m11z-helper-plugins`)
 - **Did:** Built helper-program plugins in 6 tasks: `bin` and `zsh` in the manifest and record, the `plugins.zsh` generator, plugin mode in fuxx's zsh startup (integration no longer tied to `command-blocks`), install/update/uninstall and the On/Off switch, the page's "Runs a program" line and switch, and in this task a sample plugin (`examples/plugins/hello-helper`), an end-to-end test that installs it from a fake GitHub tarball, loads it in a real zsh, switches it off and uninstalls it (`helper_plugin_loads_and_uninstalls_cleanly`), the README's "Helper programs" part, the Plugins page lede ("Add themes and helper programs from a GitHub link. …"), and note 76's M11z check and three new risks (Terminal.app's `TERM_PROGRAM`, `/etc/zshrc`'s zkbd lookup, `exec zsh` starting without plugins).
 - **Next:** your M11z check (5 items in [[76 - Milestones 11y-11z - Plugins]]), then M11p. No GitHub repo was created for the sample; push a copy yourself or have one made on your word.

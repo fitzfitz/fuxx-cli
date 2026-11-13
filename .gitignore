@@ -4,3 +4,4 @@
 /target-*/
 .playwright-mcp/
 .superpowers/
+__pycache__/
