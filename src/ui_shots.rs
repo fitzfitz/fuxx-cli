@@ -16365,6 +16365,9 @@ fn title_bar_scenes() {
                         ws.right_sidebar.hidden = false;
                     }
                     if scene == "title-bar-sliding" {
+                        // Real time (`Instant`; GPUI's timers run on the test clock): of the
+                        // 160 ms `SLIDE`, the fill at x 30 lasts until 12.5 % shown, 80 ms in,
+                        // so this fails if build to frame takes over ~20 ms (about 1 ms today).
                         ws.slide = Some(Slide {
                             showing: false,
                             since: Instant::now() - Duration::from_millis(60),
