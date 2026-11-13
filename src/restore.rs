@@ -376,6 +376,7 @@ mod tests {
             pane.tabs = vec![SavedTab::File {
                 path: "/w/api/src/main.rs".into(),
                 mode: crate::layout_model::FileMode::Plain,
+                preview: false,
             }];
         }
         state.active_workspace = Some(0);
