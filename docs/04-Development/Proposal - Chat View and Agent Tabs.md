@@ -3,11 +3,12 @@ tags: [development, proposal, design]
 status: proposal
 ---
 
-> [!warning] Proposal — not yet in the plan (2026-11-13)
-> Designed with you in a brainstorm on 2026-11-13. Per AGENTS.md rule 3 it is **not in scope** until
-> [[12 - Scope]] and [[40 - Roadmap]] are changed to include it. That edit (and a Progress Log entry) is left for
-> later on purpose: another agent is building on `master` right now and owns those files. Nothing here has been
-> built. The mockups are in `.superpowers/brainstorm/65655-1794524053/content/` (gitignored).
+> [!info] In the plan as M11aa (Part 1) / M11ab (Part 2), 2026-11-13
+> You approved it on 2026-11-13. **Part 1 is M11aa — Agent tabs and providers** ([[M11aa Plan - Agent Tabs]]) and
+> **Part 2 is M11ab — Chat-style shell tabs** (design first, not planned), both in [[12 - Scope]] and [[40 - Roadmap]],
+> **after M11z and after M11p**. The safe part of M11aa (Tasks 0, 2, 3, 4, 6: new pure modules, no UI) is being built
+> on branch `m11aa-agent-tabs`; its UI tasks wait for M11p. The mockups are in
+> `.superpowers/brainstorm/65655-1794524053/content/` (gitignored).
 
 # Proposal - Chat View and Agent Tabs (design)
 
@@ -286,8 +287,8 @@ The agent tab is a **new view fed by JSON**: no terminal emulation, no change to
   mockup, `tabs-and-threads.html`). The sidebar row keeps reading its branch, folder and ports from that shell, so
   the sidebar, branch bar and Changes panel need no rework. The row's agent label and status come from the agent
   tab.
-- **The tab bar's `+` can also add an agent tab** to any pane (AI's call on how: the same preset list, showing only
-  presets with a provider).
+- **The pane `···` menu (and ⌘K) can add an agent tab** to any pane (AI's call on how: the same preset list, showing
+  only presets with a provider). The tab bar's `+` has no menu and stays "New terminal tab". (Corrected 2026-11-13.)
 - **`agy` becomes a fourth built-in preset** (built-ins: `claude`, `agy`, `opencode`, `codex`; AI's call on the
   order). `opencode` and `codex` keep today's behaviour.
 - In the menu, presets that open a chat view are marked (AI's call: the provider badge before the name).
@@ -328,7 +329,7 @@ The agent tab is a **new view fed by JSON**: no terminal emulation, no change to
 - **Local only (AI's call, after the builder check).** Agent tabs run on this Mac. In an SSH workspace (M10b),
   provider presets behave as classic presets (the command is typed into the remote shell, as today) and the menu
   shows no chat badge there.
-- Closing an agent tab while it's working asks first (like closing a busy terminal today).
+- Closing an agent tab while it's working asks first. (Corrected 2026-11-13: terminals never ask today, `close_tab` "Never asks"; this is new behaviour, for agent tabs only.)
 
 ### 1.7 Handing shell output to an agent
 
@@ -405,6 +406,26 @@ You asked for it to stay in M11 ("M11aa maybe? you tell me best"). Recommended:
 11. Classic sessions restore as terminals; only saved agent tabs restore as chat (1.6).
 12. Agent tabs are local only; SSH workspaces keep classic presets (1.6).
 13. Part 1 step 1 is a go/no-go gate on permission routing (1.8).
+
+## Plan-time calls (AI's, made while reading the code for the M11aa plan, 2026-11-13)
+
+1. **"+ adds an agent tab" becomes the pane `···` menu:** the tab bar's `+` has no menu today
+   (`BarButton::NewTerminal`); `PaneAction` gains one "New ⟨Label⟩ tab" item per provider (and the ⌘K palette lists
+   them). `+` stays "New terminal tab".
+2. **Closing a busy agent tab asks** (Working or Waiting). The spec said "like closing a busy terminal today", but
+   terminals never ask (`close_tab`: "Never asks"); this is new behaviour, for agent tabs only.
+3. **A banner for an agent tab has no click target** (`banner_about(None)`): clicking it brings fuxx forward
+   without focusing the tab. Click-to-tab needs `native_notify::Terminal` widened; left for later.
+4. **The sidebar row's agent label** for a workspace with an agent tab is the provider's label ("Claude"),
+   taken from the agent tab — `agents_now` is never written for it (that would make "agents" restore re-type
+   `claude` into the shell).
+5. **Long conversations** render through `gpui::list` (only visible items are laid out). Tool output kept per row
+   is the **last 2,000 lines / 256 KiB**, with a "… N earlier lines" row.
+6. **agy's mode** is chosen on the composer chip **before the first message** and saved with the tab; after that
+   the chip is read-only (changing it would restart the process).
+7. **Resume history:** if `--resume` doesn't replay earlier messages on stdout (Task 0 checks), `claude.rs` reads
+   the conversation's transcript file (path found in Task 0) for the history; if neither works, the tab shows a
+   "Conversation restored" notice and only new messages.
 
 ## Left to the builder
 

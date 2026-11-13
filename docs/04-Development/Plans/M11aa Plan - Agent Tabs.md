@@ -12,10 +12,10 @@ updated: 2026-11-13
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[Proposal - Chat View and Agent Tabs]] — Part 1 only (Part 2 is M11ab, not planned) |
-| **Status** | 📝 Planned 2026-11-13. **Not in [[12 - Scope]] / [[40 - Roadmap]] yet** — Task 0 puts it there. |
+| **Status** | 📝 Planned 2026-11-13. In [[12 - Scope]] and [[40 - Roadmap]] since 2026-11-13 (M11aa; Task 0 Step 1). Safe part (Tasks 0, 2, 3, 4, 6) on branch `m11aa-agent-tabs`. |
 | **Order** | After M11z and after M11p (the proposal's "Where it goes"). |
-| **Tasks done** | 0 / 14 |
-| **▶ Pick up here** | Task 0, once the agent working on `master` is between tasks. |
+| **Tasks done** | 1 / 14 (Task 0 Steps 2–6 done; Step 1 done by the docs change; clippy baseline 30 warnings on the branch base) |
+| **▶ Pick up here** | Task 2 (safe part); UI tasks after M11p. |
 | **Decisions used** | Yours (2026-11-13): chat view for agents (C → C1), fuxx launches the agent, Claude + agy first in their own provider files, one kind per tab, menu presets open a new workspace with a shell + the agent side by side, classic = type the command in a shell, M11aa in M11. AI's calls: the proposal's numbered list, plus "Plan-time calls" below. |
 | **Needs your eyes** | 👀 the on-screen checklist written in Task 13 |
 
@@ -49,9 +49,15 @@ reader pattern); `serde_json`. Claude Code ≥ 2.1.323 and `agy` ≥ 1.4.3 on PA
   `{"type":"control_request","request_id":"fuxx-init","request":{"subtype":"initialize","hooks":null}}`.
   Verified 2026-11-13: **without** the initialize request (`--permission-prompts host` alone) Claude asks no one
   and denies every prompt (`system/permission_denied`).
-- **agy argv:** `agy -p --input-format stream-json --output-format stream-json --mode <mode>` +
-  `--conversation <id>` when reopening. Modes `accept-edits` (default) | `auto` | `plan`. **Never
-  `--dangerously-skip-permissions`.**
+- **agy argv (Task 0, 2026-11-13):** `agy -p= --input-format stream-json --output-format stream-json --mode <mode>`
+  + `--conversation <id>` when reopening. A bare `-p` swallows the next flag as its prompt (exit 2); `-p=` (an
+  empty prompt) works. Modes `accept-edits` (default) | `auto` | `plan`. **Never `--dangerously-skip-permissions`.**
+- **agy input and output are not Claude's:** each stdin line is `{"event":"user","message":{"content":"<text>"}}`
+  (no `role`; a missing `event` is an error). Output is agy's own schema: `{"event":"init",…}`,
+  `{"event":"step_update","step_update":{…,"state":"ACTIVE"|"DONE","step_type":"user_input"|"agent_response"|
+  "error_message","text_delta"?}}`, `{"event":"result","result":{…,"status":"SUCCESS"|"ERROR"}}`; the conversation id
+  is `init.conversation_id`. So agy gets its **own decoder** (Task 12), not Claude's. Its saved recordings are
+  credit errors (429), so **re-record the agy fixtures first** (Task 12, Step 0).
 - **Agents run on this Mac only**, as children of the app (not the background service). Spawned with the login
   shell's `PATH` (`workspace_ssh::login_env()`, background thread only — it can block 3 s), `setsid`, piped stdio;
   closing the tab, the workspace or the app kills the process group.
@@ -267,7 +273,12 @@ pub fn provider_for(preset: &Preset) -> Option<&'static dyn crate::providers::Pr
     assert!(ev.iter().any(|e| matches!(e, Event::TextDelta { .. })));
     assert!(matches!(ev.last(), Some(Event::TurnDone { ok: true, .. })));
 }
-#[test] fn tools_fixture_pairs_every_start_with_a_finish() { /* each ToolStarted id has one ToolFinished; Edit has Diff; one Todo */ }
+#[test] fn tools_fixture_pairs_every_start_with_a_finish() { /* each ToolStarted id has one ToolFinished; Edit has Diff */ }
+// TodoWrite is not offered in this Claude build, so no fixture shows it (Task 0, Ruling 8): map it when present and
+// add `todo_write_maps_to_a_todo_event`, driven by one hand-written line marked `synthetic` in its comment.
+// `history()`: `--resume` does not replay on stdout (Task 0); the transcript is
+// `~/.claude/projects/<realpath cwd with / and . turned into ->/<id>.jsonl` (plan-time call 7). `history()` may stay
+// at the default here; Task 7 needs the real one (it reads that file).
 #[test] fn permission_request_round_trips() {
     // decode the can_use_tool line from claude-permission-allow.jsonl → Permission{id,..};
     // encode(Allow{id}) → one line whose response.behavior == "allow" and updatedInput == the request's input
@@ -525,6 +536,13 @@ Layout, from the mockup `c1-agent-tab.html` and spec §1.1–1.2, colours from `
   pending permission the placeholder is "Deny and say why… (optional)", Enter on an empty composer = Allow, Enter
   with text = Deny with that reason. Messages sent while Working go straight to the process if Task 0 showed
   Claude queues them, else are held and sent on `TurnDone`.
+- **Stop is best-effort** (Task 0): an interrupt during a running foreground Bash does not stop the tool (the reply
+  comes only after the turn); during streaming it works. The button shows "Stopping…" until `TurnDone`; after 10 s
+  it offers **Force stop**, which ends the process and respawns with `--resume`.
+- **"Always allow" label:** for Write and Edit the suggestion is `setMode acceptEdits` (session-wide), so the button
+  reads **"Allow all edits this session"**; for Bash it is an `addRules` suggestion ("Always allow `<command>`"). The
+  label comes from the suggestion's `type`/`rules`.
+- **Context %** = the last turn's input + cache tokens ÷ `result.modelUsage.<model>.contextWindow`.
 - `@`: a popup listing workspace files filtered with `palette_match` over `palette_files`' list for `start.cwd`;
   Enter inserts the relative path.
 - Empty state: "Ask ⟨Label⟩ to do something in ⟨~/short/cwd⟩", composer focused.
@@ -665,9 +683,11 @@ session JSON), `src/workspace_api.rs` (`session.list`, `.status`, `.question`, `
 **Interfaces:**
 - Produces: `pub static AGY: Agy;` — `ProviderInfo { name: "agy", label: "Antigravity", badge: "AG", badge_rgb:
   0x2d4f8a, routes_permissions: false, modes: &["accept-edits","auto","plan"], default_mode: Some("accept-edits") }`;
-  argv per Global Constraints; `classic_argv(id)` = `["agy","--conversation",id]`. Its translator follows Task 0's
-  agy recordings: if they match Claude's stream format line for line, delegate to Claude's decoder (permissions
-  never arrive); otherwise map agy's own names into the same `Event`s.
+  argv per Global Constraints; `classic_argv(id)` = `["agy","--conversation",id]`. **Its own decoder** (Task 0: agy's
+  output is not Claude's stream): `init` → `Started`, `step_update` (`text_delta`, `step_type`) → text/tool events,
+  `result` → `TurnDone`; `hello()` is empty and `encode(Send)` writes `{"event":"user","message":{"content":…}}`.
+  **Step 0: re-record the agy fixtures** (the saved ones are 429 credit errors; tool events and resume are unseen)
+  once the account has credits.
 - [ ] **Step 1: Failing tests:** `agy_text_fixture_streams_then_finishes`, `agy_tools_fixture_pairs_tools`,
   `agy_argv_has_mode_and_never_skips_permissions` (`--mode accept-edits` by default;
   `--dangerously-skip-permissions` absent even when in `extra_args`), `agy_resume_uses_conversation_flag`.
