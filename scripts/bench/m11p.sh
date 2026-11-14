@@ -2,27 +2,28 @@
 # M11p chrome-cache measurement (the user runs it; ~10-15 min, interleaved).
 #   m11p.sh baseline [--dry-run]   master only
 #   m11p.sh final    [--dry-run]   master, the branch, and the branch with FUXX_CHROME_CACHE=off
+#   --build-only                   build (own target dir per variant) and run the identical-binary guard, then stop
 # Per variant: cpu_base x5 and cpu_working x3, interleaved round by round; plus cpu_noglow x1 on master.
 # Results: scripts/bench/results/m11p-<mode>-<date>.md (gitignored).
 set -euo pipefail
 
 unset FUXX_CHROME_CACHE   # an exported value would leak into every variant; only branchoff sets it
-MODE=""; DRY=0
+MODE=""; DRY=0; BUILD_ONLY=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
+    --build-only) BUILD_ONLY=1 ;;
     baseline|final) MODE="$a" ;;
-    *) echo "usage: $0 baseline|final [--dry-run]"; exit 2 ;;
+    *) echo "usage: $0 baseline|final [--dry-run] [--build-only]"; exit 2 ;;
   esac
 done
-[[ "$MODE" == baseline || "$MODE" == final ]] || { echo "usage: $0 baseline|final [--dry-run]"; exit 2; }
+[[ "$MODE" == baseline || "$MODE" == final ]] || { echo "usage: $0 baseline|final [--dry-run] [--build-only]"; exit 2; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUN="$ROOT/scripts/bench/run.py"
 WORK="$ROOT/target-m11p"                # gitignored (/target-*/)
 BENCH="$WORK/bench"
 SRC="$WORK/master-src"
-export CARGO_TARGET_DIR="$WORK/cargo"
 OUTDIR="$ROOT/scripts/bench/results"
 OUT="$OUTDIR/m11p-$MODE-$(date +%Y-%m-%d).md"
 
@@ -58,17 +59,16 @@ say "== build =="
 run rm -rf "$SRC"
 run mkdir -p "$BENCH" "$OUTDIR" "$SRC"
 run bash -c "git -C '$ROOT' archive master | tar -x -C '$SRC'"
-run cargo build --release --manifest-path "$SRC/Cargo.toml"
-cp_master="$CARGO_TARGET_DIR/release/fuxx"
+# One target dir per variant: with a shared dir cargo sees each package as fresh and does not re-uplift
+# release/fuxx, so the binary would be whichever was linked last.
+runenv CARGO_TARGET_DIR="$WORK/cargo-master" cargo build --release --manifest-path "$SRC/Cargo.toml"
+run cp "$WORK/cargo-master/release/fuxx" "$WORK/fuxx-master"
 if [[ "$MODE" == final ]]; then
-  # Different source, same target dir: the master build is copied aside first.
-  run cp "$cp_master" "$WORK/fuxx-master"
-  run cargo build --release --manifest-path "$ROOT/Cargo.toml"
-  run cp "$cp_master" "$WORK/fuxx-branch"
+  runenv CARGO_TARGET_DIR="$WORK/cargo-branch" cargo build --release --manifest-path "$ROOT/Cargo.toml"
+  run cp "$WORK/cargo-branch/release/fuxx" "$WORK/fuxx-branch"
   ((DRY)) || ! cmp -s "$WORK/fuxx-master" "$WORK/fuxx-branch" || { say "ABORT: branch binary is byte-identical to master"; exit 1; }
-else
-  run cp "$cp_master" "$WORK/fuxx-master"
 fi
+if ((BUILD_ONLY)); then say "(--build-only: stopping after the build)"; exit 0; fi
 
 say "== bundle =="
 run python3 "$RUN" --bench "$BENCH" bundle fuxx-master "$WORK/fuxx-master"
