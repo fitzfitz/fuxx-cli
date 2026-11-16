@@ -5978,6 +5978,258 @@ fn file_tab_scenes() {
         println!("ui-shots: file-tab-close-{slug} ok");
     }
     file_view_scenes();
+    file_header_scenes();
+}
+
+/// M11ae's file bar (option B), on a scratch repo with real git, a tab on its own:
+/// - `file-tab-header` (both themes): `src/a.rs`, committed then edited (+2 −1): its name, the
+///   chip `M · +2 −1`, and `<repo> / src · Rust · 4 lines · edited just now`.
+/// - `file-tab-header-narrow` (both themes): the repo's README.md in a 320 pt window: no chip
+///   (unchanged), File | Diff | Preview, Wrap and Open in Editor all inside the pane.
+///
+/// Not shot: an untracked file (`A · +3`); a file outside any repo (no chip, its folder); a
+/// line appended to a.rs and read again (the line count and the counts follow, the counts
+/// after the look-up's wait).
+fn file_header_scenes() {
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let Some(git) = crate::git_branch::find_git() else {
+        println!("ui-shots: file-tab-header skipped (no git on this Mac)");
+        return;
+    };
+    let base = std::env::temp_dir().join(format!("fuxx-ui-shots-header-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let repo = base.join("header-repo");
+    std::fs::create_dir_all(repo.join("src")).expect("make the repo");
+    let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
+    scratch_git(&git, &repo, &["init", "-q", "-b", "main"]);
+    let a_rs = repo.join("src/a.rs");
+    std::fs::write(&a_rs, "fn a() {}\nfn b() {}\nfn c() {}\n").expect("a.rs");
+    let readme = repo.join("README.md");
+    std::fs::write(&readme, "# Read me\n\nSome *words*.\n").expect("README.md");
+    scratch_git(&git, &repo, &["add", "."]);
+    scratch_git(&git, &repo, &["commit", "-q", "-m", "one"]);
+    // Line 2 changed (−1 +1) and a line added (+1).
+    std::fs::write(&a_rs, "fn a() {}\nfn bee() {}\nfn c() {}\nfn d() {}\n").expect("edit a.rs");
+    let new_rs = repo.join("src/new.rs");
+    std::fs::write(&new_rs, "fn one() {}\nfn two() {}\nfn three() {}\n").expect("new.rs");
+    let loose = base.join("loose");
+    std::fs::create_dir_all(&loose).expect("a folder outside any repo");
+    let notes = loose.join("notes.txt");
+    std::fs::write(&notes, "a note\n").expect("notes.txt");
+    let repo_name = repo
+        .file_name()
+        .expect("the repo's name")
+        .to_string_lossy()
+        .into_owned();
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    type Words = (String, Option<String>, String);
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let build_for = |theme: Theme, path: PathBuf, slot: TabSlot| {
+        move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            // Not frozen: git is asked for real.
+            let tab = cx.new(|cx| FileTab::new(path.clone(), FileMode::Plain, window, cx));
+            *slot.borrow_mut() = Some(tab.clone());
+            tab.into()
+        }
+    };
+    let words = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>| -> Words {
+        cx.read(|cx| tab.read(cx).header_words())
+    };
+    // Frames until the bar says `want`. git and the colouring answer on the background
+    // executor; the harness's clock is moved on with the real one, so a look-up waiting for its
+    // turn (2 s after the last) runs.
+    let wait_for = move |cx: &mut VisualTestAppContext,
+                         window: AnyWindowHandle,
+                         tab: &gpui::Entity<FileTab>,
+                         want: &Words,
+                         n: &str| {
+        let said = settle_until(cx, window, 20, |cx| {
+            cx.advance_clock(std::time::Duration::from_millis(50));
+            words(cx, tab) == *want
+        });
+        assert!(said, "{n}: the bar says {:?}, not {want:?}", words(cx, tab));
+    };
+    let words_of = |name: &str, chip: Option<&str>, meta: String| -> Words {
+        (name.to_string(), chip.map(str::to_string), meta)
+    };
+
+    for (i, (slug, name)) in SHOT_THEMES.into_iter().enumerate() {
+        let theme = shot_theme(name);
+
+        // A changed file in a repo.
+        let n = format!("file-tab-header-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(theme, a_rs.clone(), slot.clone());
+        let want = words_of(
+            "a.rs",
+            Some("M \u{b7} +2 \u{2212}1"),
+            format!("{repo_name} / src \u{b7} Rust \u{b7} 4 lines \u{b7} edited just now"),
+        );
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = tab_of(&slot);
+            wait_for(cx, window, &tab, &want, &n);
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with(
+            "file-tab-header",
+            slug,
+            &theme,
+            size(px(760.0), px(160.0)),
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // Narrow: the controls stay inside the pane.
+        let n = format!("file-tab-header-narrow-{slug}");
+        let width = 320.0;
+        let slot: TabSlot = Rc::default();
+        let build = build_for(theme, readme.clone(), slot.clone());
+        let want = words_of(
+            "README.md",
+            None,
+            format!("{repo_name} \u{b7} Markdown \u{b7} 3 lines \u{b7} edited just now"),
+        );
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = tab_of(&slot);
+            wait_for(cx, window, &tab, &want, &n);
+            let all = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| tab.read(cx).toggle_bounds())
+                    .iter()
+                    .all(Option::is_some)
+            };
+            assert!(
+                settle_until(cx, window, 20, all),
+                "{n}: File, Diff and Preview are drawn"
+            );
+            let (segments, controls) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (
+                    t.toggle_bounds(),
+                    t.controls_bounds().expect("the controls"),
+                )
+            });
+            let inside = |b: gpui::Bounds<Pixels>| {
+                b.left() >= px(0.0) && b.right() <= px(width) && b.size.width > px(0.0)
+            };
+            assert!(
+                inside(controls),
+                "{n}: the controls {controls:?} in the pane"
+            );
+            for b in segments.into_iter().flatten() {
+                assert!(inside(b), "{n}: a segment {b:?} in the pane");
+                assert!(
+                    b.left() >= controls.left() && b.right() <= controls.right(),
+                    "{n}: the segment {b:?} with the controls {controls:?}"
+                );
+            }
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with(
+            "file-tab-header-narrow",
+            slug,
+            &theme,
+            size(px(width), px(160.0)),
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+        if i > 0 {
+            continue;
+        }
+
+        // Untracked: every line added.
+        let n = "file-tab-header-untracked";
+        let slot: TabSlot = Rc::default();
+        let build = build_for(theme, new_rs.clone(), slot.clone());
+        let want = words_of(
+            "new.rs",
+            Some("A \u{b7} +3"),
+            format!("{repo_name} / src \u{b7} Rust \u{b7} 3 lines \u{b7} edited just now"),
+        );
+        render_with(
+            &theme,
+            size(px(760.0), px(160.0)),
+            build,
+            move |cx, window| {
+                let tab = tab_of(&slot);
+                wait_for(cx, window, &tab, &want, n);
+                slot.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {n} ok");
+
+        // Outside any repo: no chip, its folder (under your home, as `~/…`).
+        let n = "file-tab-header-outside";
+        let home = crate::workspace::home_dir();
+        let place = match home.as_deref().and_then(|h| loose.strip_prefix(h).ok()) {
+            Some(rest) => format!("~/{}", rest.display()),
+            None => loose.display().to_string(),
+        };
+        let slot: TabSlot = Rc::default();
+        let build = build_for(theme, notes.clone(), slot.clone());
+        let want = words_of(
+            "notes.txt",
+            None,
+            format!("{place} \u{b7} Plain Text \u{b7} 1 line \u{b7} edited just now"),
+        );
+        render_with(
+            &theme,
+            size(px(760.0), px(160.0)),
+            build,
+            move |cx, window| {
+                let tab = tab_of(&slot);
+                wait_for(cx, window, &tab, &want, n);
+                let drawn = cx.read(|cx| tab.read(cx).toggle_bounds());
+                assert_eq!(drawn, [None; 3], "{n}: one view, no switch");
+                slot.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {n} ok");
+
+        // Read again after a line is appended: the line count at once, the counts after git.
+        let n = "file-tab-header-reload";
+        let slot: TabSlot = Rc::default();
+        let build = build_for(theme, a_rs.clone(), slot.clone());
+        let file = a_rs.clone();
+        let (before, after) = (
+            words_of(
+                "a.rs",
+                Some("M \u{b7} +2 \u{2212}1"),
+                format!("{repo_name} / src \u{b7} Rust \u{b7} 4 lines \u{b7} edited just now"),
+            ),
+            words_of(
+                "a.rs",
+                Some("M \u{b7} +3 \u{2212}1"),
+                format!("{repo_name} / src \u{b7} Rust \u{b7} 5 lines \u{b7} edited just now"),
+            ),
+        );
+        render_with(
+            &theme,
+            size(px(760.0), px(160.0)),
+            build,
+            move |cx, window| {
+                let tab = tab_of(&slot);
+                wait_for(cx, window, &tab, &before, n);
+                let mut text = std::fs::read_to_string(&file).expect("a.rs");
+                text.push_str("fn e() {}\n");
+                std::fs::write(&file, text).expect("append to a.rs");
+                cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+                wait_for(cx, window, &tab, &after, n);
+                slot.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {n} ok");
+        // Back as committed and edited, for the other theme's shots.
+        std::fs::write(&a_rs, "fn a() {}\nfn bee() {}\nfn c() {}\nfn d() {}\n").expect("a.rs");
+    }
+    std::fs::remove_dir_all(&base).ok();
 }
 
 /// The file tab's viewer (M11g Task 6), a tab on its own in a window, in both themes:
@@ -6666,10 +6918,11 @@ fn file_diff_fixture() -> String {
 ///   git repository."), `missing-rows` (a deleted file's removed rows show, not "This file no
 ///   longer exists"), `missing-same` (a deleted file with nothing to show: that note).
 /// - `file-diff-toggle`: a workspace with the Files panel; `open_file_tab(view.rs, Diff)`: the
-///   toolbar's toggle with Diff `card_selected` and File `panel`. Not shot: File and Diff
-///   clicked both ways, each mode keeping its own scroll; a click on File (the tab and the
-///   model Plain, the same tab); a click on line 7's change bar (Diff, its
-///   change scrolled into view, the model Diff); a Files click on view.rs (the same tab, Plain).
+///   bar's view switch with Diff `card_selected` and File `panel` (no Preview: not Markdown).
+///   Not shot: File and Diff clicked both ways, each mode keeping its own scroll; a click on
+///   File (the tab and the model Plain, the same tab); a click on line 7's change bar (Diff,
+///   its change scrolled into view, the model Diff); a Files click on view.rs (the same tab,
+///   Plain).
 fn file_diff_scenes() {
     use crate::diff_view::{BINARY, NO_CHANGES, NO_REPO, RowKind, first_change, reveal_row};
     use crate::file_tab::{FileTab, MISSING};
@@ -7063,7 +7316,7 @@ fn file_diff_scenes() {
             }
         };
         let n = format!("file-diff-toggle-{slug}");
-        let toggle: Rc<Cell<[Option<gpui::Bounds<Pixels>>; 2]>> = Rc::default();
+        let toggle: Rc<Cell<[Option<gpui::Bounds<Pixels>>; 3]>> = Rc::default();
         let slot: Slot = Rc::new(RefCell::new(None));
         let build = build_ws(slot.clone());
         let act = {
@@ -7103,8 +7356,9 @@ fn file_diff_scenes() {
         );
         println!("ui-shots: {}", path.display());
         let shot = render_with(&theme, window_dims, build, act);
-        let [file_seg, diff_seg] = toggle.get();
+        let [file_seg, diff_seg, preview_seg] = toggle.get();
         let (file_seg, diff_seg) = (file_seg.expect("File drawn"), diff_seg.expect("Diff drawn"));
+        assert!(preview_seg.is_none(), "{n}: no Preview for a .rs file");
         // Inside each segment's padding (no words there).
         let fill_of = |b: gpui::Bounds<Pixels>| {
             pixel_at(
@@ -21372,10 +21626,10 @@ fn main() {
 
 /// M11ac's Markdown Preview in a file tab, on `MD_FIXTURE` (README.md), 760 × 600, in both
 /// themes:
-/// - `file-tab-md-source-with-toggle`: the source as before, with Preview beside Wrap,
-///   outlined (off). A `.rs` file has no Preview button.
-/// - `file-tab-md-preview`: after a click on Preview: filled (on), the file drawn as a reader
-///   (headings by level, the paragraph's bold, italic, inline code and link, ☑ / ☐ tasks, a
+/// - `file-tab-md-source-with-toggle`: the source as before, the view switch File | Preview
+///   with File current (M11ae). A `.rs` file has no Preview segment.
+/// - `file-tab-md-preview`: after a click on Preview: the segment current, the file drawn as a
+///   reader (headings by level, the paragraph's bold, italic, inline code and link, ☑ / ☐ tasks, a
 ///   nested bullet and number, the quote's bar, the table's grid, the rule, the code block on
 ///   its fill, the image's alt text in brackets). The tab told its workspace (`Preview(true)`).
 ///
@@ -21445,7 +21699,7 @@ fn file_tab_md_scenes() {
             }
         };
 
-        // The source, with Preview (off) beside Wrap; none for a .rs file.
+        // The source, with Preview (off) in the view switch; none for a .rs file.
         let n = format!("file-tab-md-source-with-toggle-{slug}");
         let slot: TabSlot = Rc::default();
         let build = build_for(readme.clone(), slot.clone(), Rc::default());
@@ -21478,7 +21732,7 @@ fn file_tab_md_scenes() {
             frame(cx, window);
             let tab = tab_of(&slot);
             let drawn = cx.read(|cx| tab.read(cx).preview_bounds());
-            assert!(drawn.is_none(), "a .rs file has no Preview button");
+            assert!(drawn.is_none(), "a .rs file has no Preview segment");
             slot.borrow_mut().take();
         });
 
@@ -21609,7 +21863,7 @@ fn file_tab_md_scenes() {
             slot.borrow_mut().take();
         });
 
-        // Over 1 MB: the button is drawn but does nothing; the source stays.
+        // Over 1 MB: the segment is drawn (faint) but does nothing; the source stays.
         let slot: TabSlot = Rc::default();
         let events: Events = Rc::default();
         let build = build_for(huge.clone(), slot.clone(), events.clone());

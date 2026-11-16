@@ -1837,7 +1837,7 @@ pub(super) fn chrome_row_sources() {
 
 /// A file tab's own toolbar reaches the tab bar (M11t's preview tab, M11ac's Preview): a
 /// preview tab (its title in italics) is kept by turning its Preview on, another by choosing
-/// Diff on its File | Diff toggle, each by the button's click handler; the tab bar then draws
+/// Diff, each by its view switch segment's click handler (M11ae); the tab bar then draws
 /// the title upright. The handlers are called without the mouse: a click's own whole-window
 /// redraws (a tooltip it dismisses, GPUI's input modality) would hide a stale tab bar, and
 /// they don't come with every click.
@@ -1891,7 +1891,7 @@ pub(super) fn chrome_file_tab_toolbar() {
     steps.step(&mut cx, window, "Diff chosen", Seen::Changes, |cx| {
         cx.update(|cx| view.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)))
     });
-    assert!(kept(&mut cx, tab), "{n}: kept by the toggle");
+    assert!(kept(&mut cx, tab), "{n}: kept by the view switch");
     steps.done();
     std::fs::remove_dir_all(&dir).ok();
 }
