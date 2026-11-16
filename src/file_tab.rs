@@ -78,6 +78,7 @@ use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
+use crate::scrollbar::{self, Axis, Bar, Thumb};
 use crate::sidebar_toggle::Tip;
 use crate::tab_bar::{Glyph, glyph_with};
 use crate::terminal_view::{CellMetrics, Copy, hsla};
@@ -1314,6 +1315,77 @@ impl Geom {
     }
 }
 
+/// A scrollbar's track in the text as last drawn (M11ae): its area (the text's height at its
+/// right edge; the text's width right of the numbers, along its bottom), the view's and the
+/// text's length along it, and the thumb.
+#[derive(Clone, Copy, Debug)]
+struct Track {
+    axis: Axis,
+    area: Bounds<Pixels>,
+    viewport: f32,
+    content: f32,
+    thumb: Thumb,
+}
+
+impl Track {
+    /// None when the text fits along `axis` (always sideways with Wrap on: no sideways scroll).
+    fn of(g: &Geom, axis: Axis) -> Option<Track> {
+        let (area, viewport, max, offset) = match axis {
+            Axis::Vertical => (g.bounds, g.bounds.size.height, g.max_scroll.y, g.scroll.y),
+            Axis::Horizontal => {
+                let left = point(g.bounds.left() + g.text_left, g.bounds.top());
+                let area = Bounds::from_corners(left, g.bounds.bottom_right());
+                (area, area.size.width, g.max_scroll.x, g.scroll.x)
+            }
+        };
+        // The text's length along it: its rows × the line height, or (Wrap off) its widest line
+        // × the cell width + `RIGHT_PAD` (`Geom::of`'s `max_scroll` is that less the view).
+        let (viewport, content) = (f32::from(viewport), f32::from(viewport + max));
+        let thumb = scrollbar::thumb(viewport, content, f32::from(offset))?;
+        Some(Track {
+            axis,
+            area,
+            viewport,
+            content,
+            thumb,
+        })
+    }
+
+    /// Window point `p` along the track, from its start.
+    fn along(&self, p: Point<Pixels>) -> f32 {
+        f32::from(match self.axis {
+            Axis::Vertical => p.y - self.area.top(),
+            Axis::Horizontal => p.x - self.area.left(),
+        })
+    }
+
+    /// Whether `p` is within `scrollbar::ZONE` of the text's right (or bottom) edge.
+    fn zone_has(&self, p: Point<Pixels>) -> bool {
+        self.area.contains(&p)
+            && match self.axis {
+                Axis::Vertical => p.x >= self.area.right() - px(scrollbar::ZONE),
+                Axis::Horizontal => p.y >= self.area.bottom() - px(scrollbar::ZONE),
+            }
+    }
+
+    /// Scroll `from` with its part along the track where the thumb starts at `start`.
+    fn scroll_for(&self, start: f32, from: Point<Pixels>) -> Point<Pixels> {
+        let to = px(scrollbar::offset_for(start, self.viewport, self.content));
+        match self.axis {
+            Axis::Vertical => point(from.x, to),
+            Axis::Horizontal => point(to, from.y),
+        }
+    }
+}
+
+/// The track whose edge zone has window point `p` (the right edge's first), as last drawn.
+fn zone_at(g: &Geom, p: Point<Pixels>) -> Option<Track> {
+    [Axis::Vertical, Axis::Horizontal]
+        .into_iter()
+        .filter_map(|axis| Track::of(g, axis))
+        .find(|t| t.zone_has(p))
+}
+
 /// The colours of the change bars (and tints): the theme's green, blue and red, pushed to 3:1 on
 /// the background as the tree's marks are.
 #[derive(Clone, Copy)]
@@ -1963,6 +2035,8 @@ pub struct FileTab {
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
+    /// M11ae: the overlay scrollbar (File and Diff).
+    scrollbar: Bar,
     find: Option<FindBar>,
     /// On screen (the workspace sets it each frame), polling, polls so far.
     shown: bool,
@@ -2062,6 +2136,7 @@ impl FileTab {
             wrapped: Rc::default(),
             selection: None,
             selecting: false,
+            scrollbar: Bar::default(),
             find: None,
             shown: false,
             ticking: false,
@@ -2886,7 +2961,8 @@ impl FileTab {
         }
     }
 
-    /// Scroll to `to`, kept within the text (as last drawn).
+    /// Scroll to `to`, kept within the text (as last drawn). Every scroll of the text shown
+    /// comes here (the wheel, find, a thumb, the auto-scroll), so the scrollbar shows.
     pub fn set_scroll(&mut self, to: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(g) = self.geom.get() else {
             return;
@@ -2896,8 +2972,38 @@ impl FileTab {
         let scroll = self.mode_scroll_mut(mode);
         if to != *scroll {
             *scroll = to;
+            self.scrolled(cx);
             cx.notify();
         }
+    }
+
+    /// The text scrolled, the pointer came to or left its edge, or a thumb drag ended: the
+    /// scrollbar shows, and fades out on its own (M11ae). The fade task runs only after such
+    /// activity, one at a time, and ends once faded out (or while hovered or dragged: held with
+    /// no frames, the next poke starts another). The caller redraws.
+    fn scrolled(&mut self, cx: &mut Context<Self>) {
+        self.scrollbar.poke(Instant::now());
+        if !self.scrollbar.begin_fade() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(scrollbar::STEP).await;
+                let go = this
+                    .update(cx, |this, cx| {
+                        let (redraw, go) = this.scrollbar.fade_step(Instant::now());
+                        if redraw {
+                            cx.notify();
+                        }
+                        go
+                    })
+                    .unwrap_or(false);
+                if !go {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn wheel(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -2960,6 +3066,22 @@ impl FileTab {
 
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
+        // M11ae: a press in the scrollbar's edge zone works the thumb and never selects: on it,
+        // a drag keeping the grab point under the pointer; off it, the thumb first jumps to
+        // centre on the press (then drags on).
+        if let Some(track) = self.geom.get().and_then(|g| zone_at(&g, e.position)) {
+            let (at, t) = (track.along(e.position), track.thumb);
+            let grab = if (t.start..=t.start + t.len).contains(&at) {
+                at - t.start
+            } else {
+                let to = track.scroll_for(at - t.len / 2.0, self.mode_scroll());
+                self.set_scroll(to, cx);
+                t.len / 2.0
+            };
+            self.scrollbar.start_drag(track.axis, grab);
+            cx.notify();
+            return;
+        }
         // A change bar (or a deleted-lines ▸) in a file: its diff, at that change.
         if let Some(change) = self.bar_under(e.position) {
             self.choose_mode(FileMode::Diff, Some(change), cx);
@@ -2988,6 +3110,45 @@ impl FileTab {
             return bar_at_rows(y, f32::from(g.line_height), w, &doc.changes);
         }
         bar_at(y, f32::from(g.line_height), &doc.changes)
+    }
+
+    /// The pointer moved anywhere in the window (`over` the text, not covered): a thumb drag
+    /// follows it; near the text's edge the scrollbar shows (M11ae); a selection grows.
+    fn mouse_move(
+        &mut self,
+        e: &MouseMoveEvent,
+        over: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((axis, grab)) = self.scrollbar.drag() {
+            if e.pressed_button != Some(MouseButton::Left) {
+                self.mouse_up(cx);
+            } else if let Some(track) = self.geom.get().and_then(|g| Track::of(&g, axis)) {
+                let to = track.scroll_for(track.along(e.position) - grab, self.mode_scroll());
+                self.set_scroll(to, cx);
+            }
+            return;
+        }
+        let hot = over
+            && self
+                .geom
+                .get()
+                .is_some_and(|g| zone_at(&g, e.position).is_some());
+        if self.scrollbar.set_hot(hot) {
+            self.scrolled(cx);
+            cx.notify();
+        }
+        self.mouse_drag(e, window, cx);
+    }
+
+    /// The button released anywhere in the window: a selection or a thumb drag ends.
+    fn mouse_up(&mut self, cx: &mut Context<Self>) {
+        self.selecting = false;
+        if self.scrollbar.end_drag(Instant::now()) {
+            self.scrolled(cx);
+            cx.notify();
+        }
     }
 
     fn mouse_drag(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -3791,6 +3952,7 @@ impl FileTab {
         let geom = self.geom.clone();
         let wrapped = self.wrapped.clone();
         let drawn = self.drawn.clone();
+        let bar = self.scrollbar;
         let view = cx.entity();
         let keep = view.clone();
         let laid = frame.clone();
@@ -3859,18 +4021,35 @@ impl FileTab {
                         move |_, (m, g, hitbox, wrap), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
                             paint_body(&frame, &g, &m, wrap.as_ref(), window, cx);
-                            // A drag keeps going outside the text; registered for this frame.
+                            // M11ae: the scrollbar's thumbs over the text (the fade read from
+                            // the clock; its task redraws).
+                            let now = Instant::now();
+                            if bar.is_shown(now) {
+                                let (alpha, ink) = (bar.alpha_at(now), frame.theme.ui().text);
+                                for axis in [Axis::Vertical, Axis::Horizontal] {
+                                    if let Some(t) = Track::of(&g, axis) {
+                                        scrollbar::paint(
+                                            window, t.area, axis, &t.thumb, alpha, ink,
+                                        );
+                                    }
+                                }
+                            }
+                            // A drag (a selection's or a thumb's) keeps going outside the text,
+                            // and the scrollbar shows near its edge; registered for this frame.
                             window.on_mouse_event({
                                 let view = view.clone();
                                 move |e: &MouseMoveEvent, phase, window, cx| {
                                     if phase == DispatchPhase::Bubble {
-                                        view.update(cx, |this, cx| this.mouse_drag(e, window, cx));
+                                        let over = hitbox.is_hovered(window);
+                                        view.update(cx, |this, cx| {
+                                            this.mouse_move(e, over, window, cx)
+                                        });
                                     }
                                 }
                             });
                             window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble {
-                                    view.update(cx, |this, _| this.selecting = false);
+                                    view.update(cx, |this, cx| this.mouse_up(cx));
                                 }
                             });
                         },
@@ -3951,6 +4130,24 @@ impl FileTab {
     /// The scroll of the mode shown.
     pub fn scroll(&self) -> Point<Pixels> {
         self.mode_scroll()
+    }
+
+    /// M11ae: whether a scrollbar thumb is drawn now (the text overflows and the bar shows),
+    /// whether its fade task runs, and the thumb along `axis` as last drawn (none: the text
+    /// fits that way).
+    pub fn scrollbar_shown(&self) -> bool {
+        let overflows = self.thumb_bounds(Axis::Vertical).is_some()
+            || self.thumb_bounds(Axis::Horizontal).is_some();
+        overflows && self.scrollbar.is_shown(Instant::now())
+    }
+
+    pub fn scrollbar_animating(&self) -> bool {
+        self.scrollbar.animating()
+    }
+
+    pub fn thumb_bounds(&self, axis: Axis) -> Option<Bounds<Pixels>> {
+        let t = Track::of(&self.geom.get()?, axis)?;
+        Some(scrollbar::thumb_bounds(t.area, axis, &t.thumb))
     }
 
     /// The note the body shows instead of text (`MISSING`, `REFUSED`, a diff's), if any.
@@ -4092,7 +4289,7 @@ impl FileTab {
 impl FileTab {
     /// Diff mode with rows and a place to show: scroll it `REVEAL_ABOVE` rows from the top
     /// (kept within the rows when drawn).
-    fn reveal_diff(&mut self, window: &mut Window, cx: &App) {
+    fn reveal_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != FileMode::Diff {
             return;
         }
@@ -4115,6 +4312,10 @@ impl FileTab {
             rows_up = Wrapped::of(&d.doc, FileMode::Diff, columns).first_row(rows_up);
         }
         self.diff_scroll = point(px(0.0), m.line_height * rows_up as f32);
+        // M11ae: a reveal scrolls, so the scrollbar shows (this frame draws it). Not through
+        // `set_scroll`: the rows aren't drawn yet, so the last drawing's limits are another
+        // text's.
+        self.scrolled(cx);
     }
 }
 
