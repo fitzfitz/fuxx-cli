@@ -141,6 +141,7 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   bundled mermaid.js in fuxx's own WebKit. Not in it: editing, math, HTML in Markdown, a side-by-side
   source-and-preview, syntax colours in the Preview's code blocks, clickable or interactive diagrams. See
   [[78 - Milestone 11ac - File Tab Polish]].
+- **File tab chores** (M11ae, added 2026-11-16 by you: "let's fix file preview. right now no scrollbar…"; chosen: "B with overlay scrollbar"): a file tab's bar becomes a two-line title (name and git change count; folders, type, lines, when edited) with one File | Diff | Preview switch and icon buttons; an overlay scrollbar in File, Diff and Preview; drag-select past the text's edge scrolls. Not in it: editing, a minimap, scrollbars elsewhere, clickable path segments. See [[80 - Milestone 11ae - File Tab Chores]].
 
 ## Out of scope (for now — resist scope creep)
 
