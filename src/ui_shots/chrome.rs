@@ -1551,7 +1551,17 @@ pub(super) fn chrome_agent_tabs() {
         tabs_before,
         "{n}: no classic view opened while a send's check runs"
     );
-    cx.read(|cx| assert!(!view.read(cx).shot_paused(), "{n}: resumed"));
+    cx.read(|cx| {
+        let t = view.read(cx);
+        assert!(!t.shot_paused(), "{n}: resumed");
+        assert!(
+            t.shot_items()
+                .contains(&crate::agent_conversation::Item::Notice(
+                    crate::workspace_agent::CHECKING_NOTICE.into()
+                )),
+            "{n}: the ignored open says why"
+        );
+    });
     assert_eq!(you(&cx), before + 1, "{n}: that send went once");
     cx.update(|cx| {
         view.update(cx, |t, cx| {
@@ -1565,6 +1575,54 @@ pub(super) fn chrome_agent_tabs() {
         })
     });
     cx.run_until_parked();
+    // A classic view saved from before a restart, in a background-service terminal this run
+    // can't see (the service couldn't be reached at launch), whose id a local terminal of this
+    // run shares (the first classic view's). An npm `claude` there shows as `claude` alone: it
+    // still holds the conversation. Open in classic view opens none beside it, and a send
+    // doesn't resume the tab.
+    cx.update(|cx| {
+        ws.update(cx, |ws, _| {
+            ws.classic_of.remove(&tab);
+            assert!(ws.model.set_agent_classic(tab, Some(classic)));
+            let npm = "  4242     1  4242  4242 S+   claude\n";
+            ws.shot_ps = Some(Some(crate::procs::parse_ps(npm)));
+        })
+    });
+    let tabs_before = classic_tabs(&cx);
+    let before = you(&cx);
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.open_classic(tab, window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        classic_tabs(&cx),
+        tabs_before,
+        "{n}: no second classic view beside a saved one this run can't see"
+    );
+    send_again(&mut cx);
+    let text = held(&cx, "a saved classic view this run can't see");
+    assert!(
+        text.ends_with("in another terminal — quit it there first"),
+        "{n}: {text}"
+    );
+    assert_eq!(you(&cx), before, "{n}: nothing sent");
+    // The local terminal sharing its number closes: the saved one is not forgotten.
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        if let Some(index) = ws.index_of(classic) {
+            ws.close_at(index, window, cx);
+        }
+        ws.select_tab(tab, window, cx);
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        assert_eq!(ws.index_of(classic), None, "{n}: that terminal closed");
+        assert_eq!(
+            ws.model.agent_classic(tab),
+            Some(classic),
+            "{n}: a local terminal never clears a saved service session"
+        );
+    });
     steps.step(
         &mut cx,
         window,

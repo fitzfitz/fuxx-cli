@@ -121,6 +121,14 @@ impl Provider for Claude {
         None
     }
 
+    /// `claude-opus-5-5` → `opus`: the family, the word after the `claude-` prefix.
+    fn model_label(&self, model: &str) -> String {
+        match model.strip_prefix("claude-") {
+            Some(rest) => rest.split('-').next().unwrap_or(rest).to_string(),
+            None => model.to_string(),
+        }
+    }
+
     fn translator(&self) -> Box<dyn Translator> {
         Box::new(ClaudeTranslator::default())
     }
@@ -1399,6 +1407,13 @@ mod tests {
             Some(ID)
         );
         assert_eq!(CLAUDE.program(), "claude");
+    }
+
+    #[test]
+    fn the_model_label_is_its_family() {
+        assert_eq!(CLAUDE.model_label("claude-opus-5-5"), "opus");
+        assert_eq!(CLAUDE.model_label("claude-sonnet-4-5-20250929"), "sonnet");
+        assert_eq!(CLAUDE.model_label("gemini-3"), "gemini-3");
     }
 
     #[test]

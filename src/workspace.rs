@@ -2360,9 +2360,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session_id) = self.sessions.items().get(index).map(|s| s.id) else {
+        let Some((session_id, service)) = self
+            .sessions
+            .items()
+            .get(index)
+            .map(|s| (s.id, s.view.read(cx).daemon_id() == Some(s.id)))
+        else {
             return;
         };
+        // An agent tab's classic view in it: forgotten (R13).
+        self.classic_terminal_closed(session_id, service);
         // While its row number and name still stand.
         self.emit(&Event::Closed, Some(index));
         // Waits get a last look at its screen and status (PASS printed just before the shell
