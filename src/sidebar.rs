@@ -1553,7 +1553,9 @@ impl Workspace {
                 .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
                 .filter(|s| s.status != Status::Idle)
                 .map(|s| s.status_since);
-            let sinces = rows.chain(followed);
+            // And the Activity header's, when it is a focused agent tab's (R9: the status bar's
+            // terminal isn't it).
+            let sinces = rows.chain(followed).chain(self.activity_agent_since());
             // And the palette's workspace rows, while it's open.
             let palette = self
                 .palette_shown(cx)

@@ -72,6 +72,16 @@ impl ActivityLog {
         }
     }
 
+    /// Something that happened, in its own words (an agent tab that couldn't start or ended
+    /// with an error): a note, kept even when it says what an earlier one did (it happened
+    /// again). Blank is nothing.
+    pub fn happened(&mut self, what: &str, at: SystemTime) {
+        let what = what.trim();
+        if !what.is_empty() {
+            self.push(at, Kind::Note(what.to_string()));
+        }
+    }
+
     /// A progress update: cleared is nothing; right after a progress entry it replaces that one.
     pub fn progress(&mut self, progress: Option<(u8, Option<String>)>, at: SystemTime) {
         let Some((percent, label)) = progress else {
@@ -219,6 +229,19 @@ mod tests {
                 question: Some("q?".into())
             }
         );
+    }
+
+    /// Spec §1.5: an agent's error is a note in its own words, each time it happens.
+    #[test]
+    fn what_happened_is_a_note_each_time() {
+        let mut log = ActivityLog::default();
+        log.happened("The agent exited (code 1): boom", t(1));
+        log.happened("The agent exited (code 1): boom", t(2));
+        log.happened("  ", t(3));
+        assert_eq!(log.len(), 2);
+        let e = log.newest_first().next().unwrap();
+        assert_eq!(e.kind, Kind::Note("The agent exited (code 1): boom".into()));
+        assert_eq!(e.at, t(2));
     }
 
     #[test]

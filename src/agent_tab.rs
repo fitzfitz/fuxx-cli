@@ -95,6 +95,10 @@ pub enum AgentTabEvent {
     /// A message sent from a tab paused for "Open in classic view" (R13): the Workspace answers
     /// with `resume_after_classic` (it knows whether the classic terminal still runs it).
     ResumeAsked(String),
+    /// The agent couldn't start, or its process ended with an error (a non-zero exit, a
+    /// signal): its error row's words, for the tab's Activity (spec §1.5). Before the `Status`
+    /// it brings.
+    Failed(String),
 }
 
 /// Reports the process's end exactly once (`Conversation::process_ended` isn't idempotent):
@@ -1051,8 +1055,9 @@ impl AgentTab {
                 self.ending = false;
                 self.process = None;
                 let label = self.label().to_string();
-                self.conversation
-                    .failed_to_start(&format!("Couldn't start {label}: {message}"));
+                let why = format!("Couldn't start {label}: {message}");
+                self.conversation.failed_to_start(&why);
+                cx.emit(AgentTabEvent::Failed(why));
                 self.after_change(true, cx);
             }
         }
@@ -1099,8 +1104,9 @@ impl AgentTab {
                     None => "it was terminated".into(),
                 });
             let label = self.label().to_string();
-            self.conversation
-                .failed_to_start(&format!("Couldn't start {label}: {why}"));
+            let why = format!("Couldn't start {label}: {why}");
+            self.conversation.failed_to_start(&why);
+            cx.emit(AgentTabEvent::Failed(why));
         } else if failed_resume {
             let sends = std::mem::take(&mut self.run.sends);
             // The "restored" notice said there was a conversation; there isn't.
@@ -1121,6 +1127,12 @@ impl AgentTab {
             self.flush_queued();
         } else {
             self.conversation.process_ended(code, &tail);
+            // Not a clean exit: its error row's words.
+            if let Some(Item::Error(why)) = self.conversation.items().last()
+                && code != Some(0)
+            {
+                cx.emit(AgentTabEvent::Failed(why.clone()));
+            }
             if !self.queued.is_empty() {
                 let resume = self.conversation_id();
                 self.spawn_process(resume, cx);

@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use crate::groups::{self, GroupKey};
+use crate::layout_model::TabId;
 use crate::sidebar::{MARK_SLOT, color_dot, mark_size, mark_slot, tabular};
 use crate::status::{self, Status};
 use crate::status_mark;
@@ -99,6 +100,37 @@ pub fn next_needing_you(sessions: &[(Status, Instant)], current: Option<usize>) 
         .and_then(|c| queue.iter().position(|&i| i == c))
         .map_or(0, |at| (at + 1) % queue.len());
     Some(queue[next])
+}
+
+/// Where ⇧⌘U can go: a terminal (its place in the session list) or an agent tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Needing {
+    Terminal(usize),
+    Agent(TabId),
+}
+
+/// `next_needing_you` over the terminals (`terminals`, by place in the session list) and the
+/// agent tabs (`agents`, in reading order) together: a waiting agent tab takes its place among
+/// them as a terminal would (the longest waiting first; a tie: the terminals, then the agent
+/// tabs in reading order). `current`: where you are.
+pub fn next_needing(
+    terminals: &[(Status, Instant)],
+    agents: &[(TabId, Status, Instant)],
+    current: Option<Needing>,
+) -> Option<Needing> {
+    let waiting: Vec<&(TabId, Status, Instant)> = agents
+        .iter()
+        .filter(|(_, status, _)| *status == Status::Waiting)
+        .collect();
+    let facts: Vec<(Status, Instant)> = (terminals.iter().copied())
+        .chain(waiting.iter().map(|(_, status, since)| (*status, *since)))
+        .collect();
+    let target = |i: usize| match i.checked_sub(terminals.len()) {
+        None => Needing::Terminal(i),
+        Some(a) => Needing::Agent(waiting[a].0),
+    };
+    let at = current.and_then(|c| (0..facts.len()).find(|&i| target(i) == c));
+    next_needing_you(&facts, at).map(target)
 }
 
 /// Workspace `number`'s row (`entry`): its mark, `#n`, name (the matched letters, at the byte
@@ -249,9 +281,9 @@ impl Workspace {
             .collect()
     }
 
-    /// ⇧⌘U: go to the terminal that has waited longest for you (its workspace, pane and tab),
-    /// the next one on each press (`next_needing_you`). When nothing needs you, nothing
-    /// happens.
+    /// ⇧⌘U: go to the terminal or agent tab that has waited longest for you (its workspace,
+    /// pane and tab), the next one on each press (`next_needing`). When nothing needs you,
+    /// nothing happens.
     pub(crate) fn jump_to_needing_you(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let facts: Vec<(Status, Instant)> = self
             .sessions
@@ -259,8 +291,23 @@ impl Workspace {
             .iter()
             .map(|s| (s.status, s.status_since))
             .collect();
-        if let Some(index) = next_needing_you(&facts, self.sessions.active_index()) {
-            self.select(index, window, cx);
+        // The agent tabs in reading order: workspaces in the sidebar's, then their layout's.
+        let agents: Vec<(TabId, Status, Instant)> = (self.model.display_order().into_iter())
+            .flat_map(|ws| self.model.agent_tabs(ws))
+            .filter_map(|tab| {
+                let slot = self.agents.get(&tab)?;
+                Some((tab, slot.status, slot.since))
+            })
+            .collect();
+        let current = match self.focused_agent_tab() {
+            Some((tab, _)) => Some(Needing::Agent(tab)),
+            None => self.sessions.active_index().map(Needing::Terminal),
+        };
+        if let Some(to) = next_needing(&facts, &agents, current) {
+            match to {
+                Needing::Terminal(index) => self.select(index, window, cx),
+                Needing::Agent(tab) => self.select_tab(tab, window, cx),
+            }
             // Already the active one: it still takes the keyboard back (from a rename box, say),
             // so the menus and the popover close as on any other move.
             self.close_menus();
@@ -271,7 +318,8 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::next_needing_you;
+    use super::{Needing, next_needing, next_needing_you};
+    use crate::layout_model::TabId;
     use crate::status::Status;
     use std::time::{Duration, Instant};
 
@@ -299,6 +347,55 @@ mod tests {
         let tied = [at(now, Status::Waiting, 9), at(now, Status::Waiting, 9)];
         assert_eq!(super::urgency_order(&tied), [0, 1]);
         assert!(super::urgency_order(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_waiting_agent_tab_is_among_what_needs_you() {
+        let now = Instant::now();
+        let terminals = [
+            at(now, Status::Waiting, 30), // s#1
+            at(now, Status::Idle, 0),     // s#2
+            at(now, Status::Done, 60),    // s#3
+        ];
+        let ago = |secs| now - std::time::Duration::from_secs(secs);
+        let agents = [
+            (TabId(7), Status::Waiting, ago(90)), // waited longest
+            (TabId(8), Status::Done, ago(120)),   // done: not on the way
+            (TabId(9), Status::Waiting, ago(30)), // as long as s#1: after it
+        ];
+        let next = |c| next_needing(&terminals, &agents, c);
+        // From where nothing needs you: the agent tab that waited longest.
+        assert_eq!(
+            next(Some(Needing::Terminal(1))),
+            Some(Needing::Agent(TabId(7)))
+        );
+        // Then the waiting terminal, the other waiting agent tab, the done terminal, round.
+        assert_eq!(
+            next(Some(Needing::Agent(TabId(7)))),
+            Some(Needing::Terminal(0))
+        );
+        assert_eq!(
+            next(Some(Needing::Terminal(0))),
+            Some(Needing::Agent(TabId(9)))
+        );
+        assert_eq!(
+            next(Some(Needing::Agent(TabId(9)))),
+            Some(Needing::Terminal(2))
+        );
+        assert_eq!(
+            next(Some(Needing::Terminal(2))),
+            Some(Needing::Agent(TabId(7)))
+        );
+        // From an agent tab that doesn't need you: the first.
+        assert_eq!(
+            next(Some(Needing::Agent(TabId(8)))),
+            Some(Needing::Agent(TabId(7)))
+        );
+        // No agent tabs: as before.
+        assert_eq!(
+            next_needing(&terminals, &[], Some(Needing::Terminal(0))),
+            Some(Needing::Terminal(2))
+        );
     }
 
     #[test]

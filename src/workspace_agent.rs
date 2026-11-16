@@ -742,6 +742,13 @@ impl Workspace {
             AgentTabEvent::Status { status, live } => {
                 self.set_agent_status(tab, *status, *live, cx)
             }
+            // Spec §1.5: an error or a non-zero exit is an Activity note too.
+            AgentTabEvent::Failed(why) => {
+                if let Some(slot) = self.agents.get_mut(&tab) {
+                    slot.activity.happened(why, SystemTime::now());
+                    cx.notify();
+                }
+            }
         }
     }
 
