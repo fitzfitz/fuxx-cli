@@ -55,6 +55,7 @@ mod naming;
 mod overlays;
 mod palette;
 mod panes;
+mod registry;
 mod right_sidebar;
 mod sidebar;
 mod status_bar;
@@ -64,6 +65,7 @@ mod window;
 
 pub use args::{RunOptions, parse_args};
 pub(super) use harness::*;
+use registry::scenes;
 
 /// How many themes a scene is shot in by default (`--all-themes` shoots every scene in both).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,26 +102,6 @@ pub(super) struct Scene {
     pub(super) sources: &'static [&'static str],
 }
 
-/// Each area's scenes. A UI task adds its scenes to its area's `SCENES` and their names to `ORDER`.
-const AREAS: &[&[Scene]] = &[
-    window::SCENES,
-    sidebar::SCENES,
-    panes::SCENES,
-    chrome_parts::SCENES,
-    chrome::SCENES,
-    file_tab::SCENES,
-    file_tab_md::SCENES,
-    right_sidebar::SCENES,
-    changes::SCENES,
-    branch::SCENES,
-    naming::SCENES,
-    palette::SCENES,
-    welcome::SCENES,
-    overlays::SCENES,
-    status_bar::SCENES,
-    terminal::SCENES,
-];
-
 /// Files a change to which can alter any scene: the harness, the theme and token tables, the
 /// workspace, `main.rs` (the key bindings many scenes press), and the build. `--changed` runs
 /// everything for them.
@@ -138,29 +120,41 @@ pub(super) const SHARED: &[&str] = &[
 /// What a set of changed files means for the run.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Affected {
-    /// Everything: a shared file changed (`unclaimed` empty), or these `src/` or `assets/`
-    /// files are in no scene's `sources`.
-    All { unclaimed: Vec<String> },
+    /// Everything: a `shared` file changed, or these `src/` or `assets/` files are in no scene's
+    /// sources (`unclaimed`). Both are listed, so neither hides the other.
+    All {
+        shared: Vec<String>,
+        unclaimed: Vec<String>,
+    },
     /// Only these scenes (in the scenes' order).
     Some(Vec<&'static str>),
-    /// Nothing under `src/`, `assets/` or `Cargo.*` changed.
+    /// Nothing under `src/`, `assets/` or `Cargo.*` changed (or only runner files did).
     Nothing,
 }
 
 /// The scenes the `changed` files (repo-relative) touch: those whose `sources` claim one of
 /// them. A `shared` file, or a `src/` or `assets/` file no scene claims, means all of them; a
-/// file elsewhere (docs, scripts) means none. A source ending in `/` claims everything under it.
+/// file elsewhere (docs, scripts), or one in `registry::RUNNER_ONLY`, means none. A source
+/// ending in `/` claims everything under it. (`registry::claiming` adds each area's own file to
+/// its scenes' sources.)
 pub(super) fn affected(changed: &[&str], scenes: &[Scene], shared: &[&str]) -> Affected {
-    if changed.iter().any(|f| shared.contains(f)) {
-        return Affected::All { unclaimed: vec![] };
-    }
     let claims = |source: &str, file: &str| {
         source == file || (source.ends_with('/') && file.starts_with(source))
     };
     let mut hit = vec![false; scenes.len()];
+    let mut shared_hit: Vec<String> = Vec::new();
     let mut unclaimed: Vec<String> = Vec::new();
     let mut relevant = false;
     for file in changed {
+        if registry::RUNNER_ONLY.contains(file) {
+            continue;
+        }
+        if shared.contains(file) {
+            if !shared_hit.iter().any(|u| u == file) {
+                shared_hit.push(file.to_string());
+            }
+            continue;
+        }
         if !(file.starts_with("src/") || file.starts_with("assets/") || file.starts_with("Cargo."))
         {
             continue;
@@ -177,8 +171,11 @@ pub(super) fn affected(changed: &[&str], scenes: &[Scene], shared: &[&str]) -> A
             unclaimed.push(file.to_string());
         }
     }
-    if !unclaimed.is_empty() {
-        return Affected::All { unclaimed };
+    if !shared_hit.is_empty() || !unclaimed.is_empty() {
+        return Affected::All {
+            shared: shared_hit,
+            unclaimed,
+        };
     }
     if !relevant {
         return Affected::Nothing;
@@ -191,151 +188,6 @@ pub(super) fn affected(changed: &[&str], scenes: &[Scene], shared: &[&str]) -> A
             .map(|(s, _)| s.name)
             .collect(),
     )
-}
-
-/// Every scene's name, in run order (the order of a plain run, of each shard and of the serial
-/// run).
-const ORDER: &[&str] = &[
-    "smoke",
-    "tokens",
-    "window",
-    "marks",
-    "sidebar-marks",
-    "cached-panes",
-    "chrome-breath-skips-parts",
-    "chrome-notify-redraws-parts",
-    "chrome-pane-churn",
-    "chrome-kill-switch",
-    "chrome-pixels-same",
-    "chrome-ages-current",
-    "chrome-working-marks",
-    "chrome-folder-polled",
-    "chrome-followed",
-    "chrome-title-once",
-    "chrome-rows-once",
-    "chrome-status-elsewhere",
-    "chrome-model-edits",
-    "chrome-notifications",
-    "chrome-places-programs-ports",
-    "chrome-globals",
-    "chrome-resize-title",
-    "chrome-drag-cancel",
-    "chrome-renaming",
-    "chrome-new-bar-reveal",
-    "chrome-session-facts",
-    "chrome-bars-and-edges",
-    "chrome-sidebar-scroll",
-    "chrome-sidebar-header-mark",
-    "chrome-row-sources",
-    "chrome-file-tab-toolbar",
-    "sidebar",
-    "sidebar-rows",
-    "sidebar-selection",
-    "sidebar-button",
-    "title-area",
-    "title-bar",
-    "tabs",
-    "splits",
-    "cards",
-    "cards-split",
-    "cards-corners",
-    "workspaces",
-    "tab-bars",
-    "tab-drag",
-    "browser-tab",
-    "file-tab",
-    "file-diff",
-    "file-tab-md",
-    "file-tab-md-mermaid",
-    "file-tab-scrollbar",
-    "right-sidebar",
-    "files",
-    "files-follow",
-    "right-panels",
-    "changes",
-    "changes-bar",
-    "changes-staging",
-    "changes-graph",
-    "changes-sticky",
-    "activity",
-    "api-background",
-    "banner-click",
-    "default-name",
-    "names",
-    "renames",
-    "rename-box",
-    "palette",
-    "palette-workspaces",
-    "palette-actions",
-    "palette-keys",
-    "palette-run",
-    "palette-refresh",
-    "palette-recent",
-    "palette-files",
-    "palette-relist",
-    "palette-settings",
-    "palette-narrow",
-    "palette-motion",
-    "branch-switcher",
-    "branch-switcher-confirm",
-    "branch-switcher-real",
-    "branch-switcher-open",
-    "welcome",
-    "welcome-checking",
-    "welcome-keys",
-    "welcome-narrow",
-    "welcome-start",
-    "welcome-folder",
-    "welcome-first-run",
-    "welcome-reopen",
-    "overlays",
-    "help",
-    "panels",
-    "preferences",
-    "status-bar",
-    "status-bar-hidden",
-    "status-bar-ports",
-    "status-bar-narrow",
-    "update-button",
-    "cursor",
-    "cursor-flood",
-    "command-blocks",
-    "command-blocks-alt-screen",
-    "command-blocks-narrow",
-    "command-blocks-rprompt",
-    "command-blocks-small-font",
-    "command-blocks-off",
-    "command-blocks-jump",
-    "command-blocks-copy",
-    "command-blocks-rerun",
-];
-
-/// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if
-/// `ORDER` misses or repeats one.
-fn scenes() -> Vec<&'static Scene> {
-    let all: Vec<&'static Scene> = AREAS.iter().flat_map(|area| area.iter()).collect();
-    for scene in &all {
-        let declared = all.iter().filter(|s| s.name == scene.name).count();
-        assert!(
-            declared == 1,
-            "ui-shots: scene {} is declared {declared} times",
-            scene.name
-        );
-        let listed = ORDER.iter().filter(|&&n| n == scene.name).count();
-        assert!(
-            listed == 1,
-            "ui-shots: scene {} is in ORDER {listed} times",
-            scene.name
-        );
-    }
-    ORDER
-        .iter()
-        .map(|&name| {
-            *all.iter()
-                .find(|s| s.name == name)
-                .unwrap_or_else(|| panic!("ui-shots: ORDER names {name}, which no area declares"))
-        })
-        .collect()
 }
 
 /// `names` split into `n` shards of about equal time: longest first, each onto the shard with
@@ -494,8 +346,9 @@ pub fn run(args: &[String]) -> ! {
     if let Some(base) = &opts.changed {
         // Every part works the set out the same way (git is the same for each); one line says
         // what it picked: the direct run's, or `--plan`'s (the script prints that, once).
-        let all: Vec<Scene> = every.iter().map(|s| **s).collect();
+        let all = registry::claiming();
         let (only, line) = changed::decide(changed::changed_files(base), &all);
+        let (only, line) = changed::with_filter(only, line, &all, opts.filter.as_deref());
         let direct = opts.shard.is_none() && !opts.serial_only;
         if direct || opts.plan {
             println!("ui-shots: {line}");
@@ -1082,7 +935,7 @@ mod tests {
         assert_eq!(serial, want, "the serial scenes, in ORDER");
         sharded.extend(serial);
         sharded.sort_unstable();
-        let mut every: Vec<&str> = ORDER.to_vec();
+        let mut every: Vec<&str> = registry::ORDER.to_vec();
         every.sort_unstable();
         assert_eq!(
             sharded, every,
@@ -1101,9 +954,9 @@ mod tests {
 
     #[test]
     fn every_declared_scene_runs_once_in_order() {
-        let declared: usize = AREAS.iter().map(|area| area.len()).sum();
+        let declared: usize = registry::AREAS.iter().map(|(_, area)| area.len()).sum();
         let run: Vec<&str> = scenes().iter().map(|s| s.name).collect();
-        assert_eq!(run, ORDER);
+        assert_eq!(run, registry::ORDER);
         assert_eq!(run.len(), declared);
     }
 
@@ -1155,7 +1008,14 @@ mod tests {
     fn a_shared_file_runs_everything() {
         for &file in SHARED {
             let got = affected(&[file], &some_scenes(), SHARED);
-            assert_eq!(got, Affected::All { unclaimed: vec![] }, "{file}");
+            assert_eq!(
+                got,
+                Affected::All {
+                    shared: vec![file.to_string()],
+                    unclaimed: vec![]
+                },
+                "{file}"
+            );
         }
         assert!(SHARED.contains(&"src/theme.rs") && SHARED.contains(&"src/main.rs"));
     }
@@ -1166,6 +1026,7 @@ mod tests {
         assert_eq!(
             got,
             Affected::All {
+                shared: vec![],
                 unclaimed: vec!["src/foo.rs".to_string()]
             }
         );
@@ -1186,6 +1047,7 @@ mod tests {
         assert_eq!(
             got,
             Affected::All {
+                shared: vec![],
                 unclaimed: vec!["assets/logo/y.png".to_string()]
             }
         );
@@ -1204,5 +1066,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_shared_change_does_not_hide_an_unclaimed_file() {
+        let got = affected(&["src/theme.rs", "src/foo.rs"], &some_scenes(), SHARED);
+        assert_eq!(
+            got,
+            Affected::All {
+                shared: vec!["src/theme.rs".to_string()],
+                unclaimed: vec!["src/foo.rs".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn runner_files_alone_run_nothing_but_do_not_hide_a_real_change() {
+        let files = [
+            "src/ui_shots/registry.rs",
+            "src/ui_shots/args.rs",
+            "src/ui_shots/changed.rs",
+        ];
+        assert_eq!(affected(&files, &some_scenes(), SHARED), Affected::Nothing);
+        let files = ["src/ui_shots/registry.rs", "src/sidebar.rs"];
+        let got = affected(&files, &some_scenes(), SHARED);
+        assert_eq!(got, Affected::Some(vec!["side"]));
+    }
+
+    #[test]
+    fn an_area_file_runs_its_own_scenes_and_a_runner_file_none() {
+        let all = registry::claiming();
+        for (file, area) in registry::AREAS {
+            let own: Vec<&str> = area.iter().map(|s| s.name).collect();
+            assert!(!own.is_empty(), "{file} has scenes");
+            let got = affected(&[*file], &all, SHARED);
+            let Affected::Some(got) = got else {
+                panic!("{file}: {got:?}");
+            };
+            for name in &own {
+                assert!(got.contains(name), "{file} runs {name}");
+            }
+            // Any other scene run claims the file in its own `sources`.
+            for name in got.iter().filter(|n| !own.contains(n)) {
+                let scene = registry::AREAS
+                    .iter()
+                    .flat_map(|(_, a)| a.iter())
+                    .find(|s| s.name == *name)
+                    .unwrap();
+                assert!(scene.sources.contains(file), "{file} runs {name}");
+            }
+        }
+        let got = affected(&["src/ui_shots/registry.rs"], &all, SHARED);
+        assert_eq!(got, Affected::Nothing);
+    }
+
+    #[test]
+    fn a_scene_file_edit_runs_that_areas_scenes_only() {
+        let all = registry::claiming();
+        let Affected::Some(got) = affected(&["src/ui_shots/file_tab.rs"], &all, SHARED) else {
+            panic!("file_tab.rs should pick scenes");
+        };
+        let own: Vec<&str> = file_tab::SCENES.iter().map(|s| s.name).collect();
+        assert_eq!(got, own);
     }
 }

@@ -87,7 +87,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/ui-shots.XXXXXX") || exit 2
 # when nothing under src/, assets/ or Cargo.* changed); every shard and the serial run then work
 # out the same set themselves.
 if [ -n "$changed" ]; then
-    "$bin" __ui-shots --changed "$changed" --plan
+    "$bin" __ui-shots ${pass[@]+"${pass[@]}"} --plan
     code=$?
     if [ "$code" = 3 ]; then
         rm -rf "$tmp"
