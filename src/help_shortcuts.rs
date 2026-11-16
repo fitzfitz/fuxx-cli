@@ -408,6 +408,23 @@ mod tests {
         assert_eq!(ShortcutGroup::WindowAndApp.label(), "Window & app");
     }
 
+    /// The Help panel's real list (was the `help` scene's window-free checks, M11aj Task 10):
+    /// "split" finds Split Right and Split Down, "palette" finds Command Palette… alone.
+    #[test]
+    fn split_and_palette_find_their_rows_in_the_real_list() {
+        let rows = crate::help_panel::shortcut_list(false);
+        let found = |query: &str| -> Vec<&str> {
+            rows.iter()
+                .filter(|r| row_matches(r, query))
+                .map(|r| r.name)
+                .collect()
+        };
+        let split = found("split");
+        assert_eq!(split.len(), 2, "\"split\": {split:?}");
+        assert!(split.contains(&"Split Right") && split.contains(&"Split Down"));
+        assert_eq!(found("palette"), ["Command Palette\u{2026}"]);
+    }
+
     #[test]
     fn block_keys_are_in_the_terminal_group() {
         let rows = shortcut_rows(&binding_pairs(&crate::key_bindings()));
