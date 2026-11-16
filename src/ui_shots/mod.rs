@@ -306,6 +306,9 @@ pub fn run(args: &[String]) -> ! {
             prof::get(prof::CHILD),
         );
         forget_shots(name);
+        // Process-wide test switches back to their defaults, should a failed scene before
+        // have left one set (its unwind skipped the reset).
+        chrome_cache::shots_off::set(false);
         SCENE_THEMES.set(scene.themes);
         let t = Instant::now();
         // A failed check panics (the default hook prints it); the run goes on to the next scene.
@@ -2239,6 +2242,23 @@ fn chrome_kill_switch() {
     }
 }
 
+/// The chrome drawn uncached while this lives (`chrome_cache::shots_off`); back as the
+/// environment says when it drops, a failed check's unwind too.
+struct CacheOff;
+
+impl CacheOff {
+    fn on() -> Self {
+        chrome_cache::shots_off::set(true);
+        CacheOff
+    }
+}
+
+impl Drop for CacheOff {
+    fn drop(&mut self) {
+        chrome_cache::shots_off::set(false);
+    }
+}
+
 /// M11p Task 4: a busy window (six workspaces in two groups, a split, waiting, working and done
 /// terminals, notifications, an unseen one) looks the same drawn from the cached parts as drawn
 /// with the cache off, and drawn afresh; with the sidebar shown and hidden (the title area).
@@ -2317,9 +2337,10 @@ fn chrome_pixels_same() {
         for (c, count) in parts {
             assert_eq!(count, 0, "{n}: {step}: {c:?} rendered for the cached frame");
         }
-        chrome_cache::shots_off::set(true);
-        let off = frame_fresh(&mut cx, window);
-        chrome_cache::shots_off::set(false);
+        let off = {
+            let _off = CacheOff::on();
+            frame_fresh(&mut cx, window)
+        };
         let fresh = frame_fresh(&mut cx, window);
         assert_eq!(
             phase(&mut cx),

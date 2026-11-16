@@ -158,6 +158,9 @@ fn keep_owned(stem: String, shot: Shot) -> PathBuf {
         let started = Instant::now();
         std::fs::write(&path, png(&shot)).expect("write the PNG");
         prof::lap(prof::PNG, started);
+    } else {
+        // No picture from an earlier `--png` run behind the path the scene may print.
+        let _ = std::fs::remove_file(&path);
     }
     KEPT.with_borrow_mut(|kept| kept.push((stem, shot)));
     path
@@ -180,12 +183,19 @@ pub(super) fn failed_dir(scene: &str) -> PathBuf {
 }
 
 /// A scene failed: write its kept shots to `failed_dir(scene)` (as `<stem>.png`); returns it.
+/// A disk error is reported and the run goes on.
 pub(super) fn write_failed(scene: &str) -> PathBuf {
     let dir = failed_dir(scene);
-    std::fs::create_dir_all(&dir).expect("create target/ui-shots/failed/<scene>");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("ui-shots: {scene}: can't create {}: {e}", dir.display());
+        return dir;
+    }
     KEPT.with_borrow(|kept| {
         for (stem, shot) in kept {
-            std::fs::write(dir.join(format!("{stem}.png")), png(shot)).expect("write the PNG");
+            let path = dir.join(format!("{stem}.png"));
+            if let Err(e) = std::fs::write(&path, png(shot)) {
+                eprintln!("ui-shots: {scene}: can't write {}: {e}", path.display());
+            }
         }
     });
     dir
