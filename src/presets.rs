@@ -1,4 +1,4 @@
-//! Agent presets: the built-in three plus `agent-preset` lines from the settings file.
+//! Agent presets: the built-in four plus `agent-preset` lines from the settings file.
 //! Pure and GPUI-free, so the rules are unit-tested.
 
 use crate::settings::Entry;
@@ -29,12 +29,23 @@ pub fn provider_for(preset: &Preset) -> Option<&'static dyn crate::providers::Pr
     crate::providers::by_name(&preset.name)
 }
 
+/// The words of the preset's command after the program, split on whitespace.
+#[allow(dead_code)] // M11aa Task 8
+pub fn extra_args(preset: &Preset) -> Vec<String> {
+    preset
+        .command
+        .split_whitespace()
+        .skip(1)
+        .map(String::from)
+        .collect()
+}
+
 /// The menu holds at most this many presets (one per digit key).
 pub const MAX_PRESETS: usize = 9;
 
 /// The presets that exist before any `agent-preset` line.
 pub fn builtins() -> Vec<Preset> {
-    ["claude", "opencode", "codex"]
+    ["claude", "agy", "opencode", "codex"]
         .into_iter()
         .map(|n| Preset {
             name: n.into(),
@@ -131,10 +142,26 @@ mod tests {
     }
 
     #[test]
-    fn builtins_are_claude_opencode_codex() {
+    fn builtins_are_claude_agy_opencode_codex() {
         let b = builtins();
-        assert_eq!(names(&b), ["claude", "opencode", "codex"]);
+        assert_eq!(names(&b), ["claude", "agy", "opencode", "codex"]);
         assert!(b.iter().all(|p| p.command == p.name));
+    }
+
+    #[test]
+    fn extra_args_are_words_after_the_program() {
+        let p = Preset {
+            name: "claude".into(),
+            command: "claude  --model sonnet".into(),
+        };
+        assert_eq!(extra_args(&p), ["--model", "sonnet"]);
+        assert!(
+            extra_args(&Preset {
+                name: "x".into(),
+                command: "x".into()
+            })
+            .is_empty()
+        );
     }
 
     #[test]
@@ -144,9 +171,9 @@ mod tests {
             e("claude: claude --continue \"fix: it\""),
             e("codex:"),
         ]);
-        assert_eq!(names(&p), ["claude", "opencode", "aider"]);
+        assert_eq!(names(&p), ["claude", "agy", "opencode", "aider"]);
         assert_eq!(p[0].command, "claude --continue \"fix: it\"");
-        assert_eq!(p[2].command, "aider --model sonnet");
+        assert_eq!(p[3].command, "aider --model sonnet");
         assert!(warnings.is_empty());
     }
 
@@ -163,7 +190,7 @@ mod tests {
         }
         let (p, warnings) = from_entries(&entries);
         assert_eq!(p.len(), 9);
-        assert_eq!(p[8].name, "p5");
+        assert_eq!(p[8].name, "p4");
         assert_eq!(warnings.len(), 3);
     }
 
