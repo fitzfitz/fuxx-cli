@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Viewable {
@@ -67,13 +67,8 @@ impl Highlighter {
         }
     }
 
-    /// One `Vec` per line (a line keeps its `\n`, so the ranges cover every byte). The syntax is
-    /// found by file extension, then by the first line; otherwise the text is plain. An empty text
-    /// is one empty line.
-    pub fn highlight(&self, path: &Path, text: &str) -> Vec<Vec<Span>> {
-        if text.is_empty() {
-            return vec![Vec::new()];
-        }
+    /// The syntax for `path` (by extension, then by file name, then by `first_line`), if any.
+    fn find_syntax(&self, path: &Path, first_line: &str) -> Option<&SyntaxReference> {
         let by_ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -84,9 +79,27 @@ impl Highlighter {
                 .and_then(|n| n.to_str())
                 .and_then(|n| self.syntaxes.find_syntax_by_extension(n))
         };
-        let by_ext = by_ext.or_else(by_name);
+        by_ext
+            .or_else(by_name)
+            .or_else(|| self.syntaxes.find_syntax_by_first_line(first_line))
+    }
+
+    /// The name of the syntax `highlight` would use for this file (the same lookup), or
+    /// `"Plain Text"` when there is none.
+    pub fn syntax_name(&self, path: &Path, first_line: &str) -> String {
+        self.find_syntax(path, first_line)
+            .map_or_else(|| "Plain Text".to_string(), |s| s.name.clone())
+    }
+
+    /// One `Vec` per line (a line keeps its `\n`, so the ranges cover every byte). The syntax is
+    /// found by file extension, then by the first line; otherwise the text is plain. An empty text
+    /// is one empty line.
+    pub fn highlight(&self, path: &Path, text: &str) -> Vec<Vec<Span>> {
+        if text.is_empty() {
+            return vec![Vec::new()];
+        }
         let first_line = text.split_inclusive('\n').next().unwrap_or("");
-        let syntax = by_ext.or_else(|| self.syntaxes.find_syntax_by_first_line(first_line));
+        let syntax = self.find_syntax(path, first_line);
         let Some(syntax) = syntax else {
             return text
                 .split_inclusive('\n')
@@ -242,6 +255,18 @@ mod tests {
         let lines = h.highlight(Path::new("a.rs"), "");
         assert_eq!(lines.len(), 1);
         assert!(lines[0].is_empty());
+    }
+
+    #[test]
+    fn syntax_name_follows_the_highlight_lookup() {
+        let h = Highlighter::load(&Theme::default());
+        assert_eq!(h.syntax_name(Path::new("a.rs"), ""), "Rust");
+        assert_eq!(h.syntax_name(Path::new("Makefile"), ""), "Makefile");
+        assert_eq!(
+            h.syntax_name(Path::new("x"), "#!/bin/bash"),
+            "Bourne Again Shell (bash)"
+        );
+        assert_eq!(h.syntax_name(Path::new("x.zzz"), ""), "Plain Text");
     }
 
     fn style_fg(st: &syntect::highlighting::Theme, scope: &str) -> Rgb {
