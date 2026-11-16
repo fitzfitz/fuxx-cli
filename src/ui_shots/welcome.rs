@@ -24,6 +24,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "welcome-checking",
         run: welcome_checking_scene,
         themes: Themes::One,
+        // Serial: (c) nothing moves over 200 ms of real time.
         serial: true,
         kind: Kind::Visual,
         sources: &[

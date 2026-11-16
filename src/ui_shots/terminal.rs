@@ -8,7 +8,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "cursor",
         run: cursor_scenes,
         themes: Themes::Both,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/terminal_view.rs",
@@ -24,7 +24,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "cursor-flood",
         run: cursor_flood_scene,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::State,
         sources: &[
             "src/terminal_view.rs",
@@ -37,6 +37,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "command-blocks",
         run: command_blocks_scene,
         themes: Themes::Both,
+        // Serial: (c) nothing animates over 200 ms of real time.
         serial: true,
         kind: Kind::Visual,
         sources: &[
@@ -151,7 +152,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "command-blocks-copy",
         run: command_blocks_copy_scene,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::State,
         sources: &[
             "src/terminal_view.rs",
@@ -168,7 +169,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "command-blocks-rerun",
         run: command_blocks_rerun_scene,
         themes: Themes::Both,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/terminal_view.rs",
@@ -2125,9 +2126,10 @@ fn rerun_odd_blocks(theme: Theme, n: &str) {
     assert!(!sent.contains(&b'\r'), "{n}: no carriage return");
 }
 
-/// Keeps the clipboard as it was before a scene that copies (the shots run on the real
-/// macOS platform, so they use your clipboard): saved when made, put back when dropped, a
-/// failing scene's unwinding included. Made after its rig, so dropped before it.
+/// Keeps the rig's clipboard as it was before a scene that copies: saved when made, put back
+/// when dropped, a failing scene's unwinding included. Made after its rig, so dropped before it.
+/// That clipboard is the rig's app's own, not the Mac's: GPUI's `VisualTestPlatform` keeps one
+/// per app (`visual_test.rs`), so scenes that copy never touch yours or each other's.
 struct ClipboardKeeper {
     app: std::rc::Rc<gpui::AppCell>,
     saved: Option<gpui::ClipboardItem>,

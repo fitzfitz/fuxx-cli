@@ -23,7 +23,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "branch-switcher-confirm",
         run: branch_switcher_confirm_scene,
         themes: Themes::Both,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/branch_switcher.rs",
@@ -37,7 +37,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "branch-switcher-real",
         run: branch_switcher_real_scene,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::State,
         sources: &[
             "src/branch_switcher.rs",
@@ -50,7 +50,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "branch-switcher-open",
         run: branch_switcher_open_scene,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::State,
         sources: &[
             "src/branch_switcher.rs",

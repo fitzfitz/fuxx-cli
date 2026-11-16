@@ -64,6 +64,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "title-bar",
         run: title_bar_scenes,
         themes: Themes::Both,
+        // Serial: (c) a shot mid-slide, the slide set 60 ms back by the real clock.
         serial: true,
         kind: Kind::Visual,
         sources: &[

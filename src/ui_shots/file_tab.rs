@@ -10,7 +10,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "file-tab",
         run: file_tab_scenes,
         themes: Themes::Both,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/file_tab.rs",
@@ -27,7 +27,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "file-diff",
         run: file_diff_scenes,
         themes: Themes::Both,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/file_tab.rs",
@@ -44,6 +44,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "file-tab-scrollbar",
         run: file_tab_scrollbar_scenes,
         themes: Themes::One,
+        // Serial: (c) the thumb still shown after a scroll (it fades 1 s on, real clock).
         serial: true,
         kind: Kind::State,
         sources: &["src/file_tab.rs", "src/scrollbar.rs"],

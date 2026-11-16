@@ -189,6 +189,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "palette-motion",
         run: palette_motion_scene,
         themes: Themes::One,
+        // Serial: (c) nothing moves over 200 ms of real time.
         serial: true,
         kind: Kind::Visual,
         sources: &[

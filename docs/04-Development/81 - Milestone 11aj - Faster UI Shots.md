@@ -195,54 +195,82 @@ whole 3 s where nothing is copied), the "off: nothing is copied" check drops its
 buttons drop their 3 × 50 ms. `command-blocks-copy` 3.3 → 0.2 s, `command-blocks-rerun` 1.7 → 1.3 s. Every other sleep
 waits on the real clock or a real process and stays.
 
-**Serial (31 scenes, in the serial process after the shards):**
+**What "serial" means (ruling 7, Task 8 follow-up):** a scene runs alone, after the shards, only if (a) it starts a
+child fuxx, (b) it changes shared state other scenes read, or (c) a check's result depends on elapsed real time, so a
+slowed process can fail it ("still shown after X", "slid at most Y", "nothing moved in 200 ms"). A scene that only polls
+until a condition with a deadline (real git, a real shell or pty), or sleeps for *at least* some time (a slide's end, a
+fade's end), runs in the shards: load only makes it take longer. Each serial scene says its reason beside
+`serial: true` in its area file.
 
-| Why | Scenes (seconds alone, run 1) |
-| --- | --- |
-| A child fuxx (Call 2; Mermaid's WebKit child first and alone) | `file-tab-md-mermaid` 17.2, `chrome-kill-switch` 1.0 |
-| A shot mid-slide, the slide set 60 ms back by the real clock (Task 7: one `title-bar` run in 11 drifted) | `title-bar` 2.8, `sidebar-button` 0.5 |
-| Slides by the real clock (`drag_gap::SLIDE`, `sidebar_toggle::SLIDE`, the right sidebar's) | `sidebar` 5.7, `tab-drag` 4.8, `right-sidebar` 3.0, `chrome-bars-and-edges` 2.0, `chrome-notify-redraws-parts` 1.6, `chrome-drag-cancel` 1.5, `chrome-notifications` 0.8, `chrome-resize-title` 0.4 |
-| Age labels by the real clock (400 ms margin before "59s" turns) | `chrome-ages-current` 2.1, `chrome-rows-once` 0.7 |
-| "Nothing moves in 200 ms" by the real clock | `activity` 2.9, `command-blocks` 1.3, `welcome-checking` 1.1, `palette-motion` 1.0 |
-| The scrollbar fade by the real clock | `file-tab-scrollbar` 3.0 (and `file-tab`) |
-| Real git (polls; the file tab's look-up waits 2 s by the real clock) | `file-tab` 33.0, `branch-switcher-real` 5.0, `branch-switcher-confirm` 1.5, `branch-switcher-open` 1.0 |
-| A real shell or pty (its folder, programs, echo, flood) | `chrome-places-programs-ports` 5.9, `cursor` 1.3, `command-blocks-rerun` 1.3, `cursor-flood` 0.8, `chrome-folder-polled` 0.1 |
-| The clipboard (Task 8 ruling; see below) | `file-diff` 7.4, `command-blocks-copy` 0.2 |
-| The shared Files fixture: `files` adds `src/zz.rs` to it for a while (7 other scenes list it) | `files` 3.0 |
+**Serial (13 scenes; seconds alone, guard run 2):**
 
-`files` is new to the list (Task 8), as is `file-diff`. The fixture is also written whole now (to a temp file, then
-renamed in), so no scene reads or lists a half-written file while another process writes it; it keeps its one path
-because the panel draws that path (`…/T/fuxx-ui-shots-files`), so a folder per process would change its pictures.
-**The clipboard isn't shared, as it turns out:** the pinned GPUI's `VisualTestPlatform` keeps a clipboard of its own
-per app (`clipboard: Mutex<Option<ClipboardItem>>`, `visual_test.rs:36`), and the Mac's pasteboard `changeCount` was
-the same before and after `file-diff` and `command-blocks-copy`. `file-diff` (7.4 s) and `command-blocks-copy` could
-run in shards.
-
-| Run (this Mac, debug build, after the build) | Before (Task 7, one process) | After |
+| Reason | Scene | Why |
 | --- | --- | --- |
-| Default: `scripts/ui-shots.sh` (`-j 8`) | 211.6 s | **133.7 s** (median of five: 134.1, 133.7, 133.6, 133.9, 133.5) |
-| `scripts/ui-shots.sh --png --all-themes` | 276.3 s | **161.0 s** |
+| (a) | `file-tab-md-mermaid` 17.0 | Mermaid's WebKit child fuxx, first and alone (Call 2) |
+| (a) | `chrome-kill-switch` 1.9 | a child fuxx with `FUXX_CHROME_CACHE=off` |
+| (b) | `files` 2.9 | adds `src/zz.rs` to the shared Files fixture for a while; 7 other scenes list or open it |
+| (c) | `title-bar` 2.6 | `title-bar-sliding`: a shot mid-slide, the slide set 60 ms back by the real clock (one run in 11 drifted, Task 7) |
+| (c) | `sidebar-button` 0.4 | a shot mid-slide, the slide set 60 ms back by the real clock |
+| (c) | `right-sidebar` 2.8 | checks the slide still runs right after ⌥⌘\ (`sidebar_toggle::SLIDE`, 160 ms, real clock) |
+| (c) | `chrome-ages-current` 2.1 | "59s" set 59.6 s back must still read 59s: a 400 ms margin |
+| (c) | `chrome-rows-once` 0.6 | the same 400 ms margin on api's age |
+| (c) | `activity` 2.8 | "nothing moves" over 200 ms of real time (the panel shows real ages) |
+| (c) | `command-blocks` 1.3 | "nothing animates" over 200 ms of real time, chip open |
+| (c) | `welcome-checking` 1.1 | "nothing moves" over 200 ms of real time |
+| (c) | `palette-motion` 1.0 | "nothing moves" over 200 ms of real time |
+| (c) | `file-tab-scrollbar` 3.0 | the thumb checked *shown* after a scroll: it holds 1 s from the scroll by the real clock (`scrollbar::HOLD`) |
 
-In a default run the 8 shards take 12-18 s (the longest shard is one scene: `file-tab-md`, 13.8 s alone, about 17.7 s
-beside the others), and the serial process **114 s**: the serial scenes alone are more than the 90 s goal, so no
-number of shards can reach it with this serial list. Of the 114 s: real git 40.5 (`file-tab` 33.0), the two child runs
-18.2, slides 19.8, the mid-slide shots 3.3, the clipboard ruling 7.6, real shells and ptys 9.4, stillness and age labels 9.1, the fade 3.0,
-`files` 3.0. **Flake check:** five consecutive full runs at the default `-j 8`, 112 passed and 0 failed each (and a
-sixth before them, 133.9 s); nothing else heavy ran (load average about 2 from the runs themselves; no other process
-above 8 % CPU). The default stays `min(8, cores − 2)`. Each shard pays the first app's GPUI teardown (about 0.5-0.7 s)
-once; it is within the shards' 12-18 s and the shards are not what bounds the run.
+**Moved into the shards (18), each with why it can't fail when slowed:**
 
-**What 90 s would take (estimates, your call):** the serial list here follows the rule "a real-time or real-process wait
-is serial". Most of those waits are deadline polls (3-20 s for an answer that takes milliseconds) or sleeps that only
-need *at least* their time, which load makes longer, not shorter; only a few checks have a margin that load can break
-(the mid-slide shots set 60 ms back, the age labels' 400 ms, the 200 ms "nothing moves" checks). Moving the deadline
-polls and the plain slide waits into the shards (real git, shells and ptys, the clipboard scenes, `SLIDE` settles)
-would leave about 35 s serial (the child runs, the mid-slide shots, labels, stillness, the fade) and put `file-tab`
-(33 s, about 40 s under load) in a shard: about 75-80 s, to be confirmed by the five-run flake check.
+| Scene | Why it is safe beside the others |
+| --- | --- |
+| `file-tab` | Its real-clock waits: the drag-select 300 ms sleep only lets the fade advance (its checks read the auto-scroll, which runs on GPUI timers); "no thumb at the edge" is hover-held (`hot`, no clock); "gone 1.5 s after leaving" is at least 1.2 s (`HOLD` + `FADE`); git polls wait up to 20 s (the look-up gap is 2 s); "a frame in < 1 s" measured 1 ms; "edited just now" holds for 60 s. Its clipboard is its app's own. |
+| `file-diff` | The clipboard is per app (`VisualTestPlatform::clipboard`, `visual_test.rs:36`); the Mac's pasteboard `changeCount` didn't move. No real-time wait. |
+| `command-blocks-copy` | The same clipboard; A5 left it no real-time wait. |
+| `command-blocks-rerun` | Polls the pty's echo (3 s deadline); "nothing more came" waits at least 200 ms for an echo that must never come. |
+| `cursor` | Polls `cat`'s echo through its pty (3 s deadline). |
+| `cursor-flood` | Reads until the flood's END plus 500 ms quiet (60 s deadline); checks only the last frame. |
+| `branch-switcher-real`, `-confirm`, `-open` | Poll real git (`settle_until`, 20 s). |
+| `chrome-places-programs-ports` | Polls a real shell's folder, programs and ports (20 s deadline). |
+| `chrome-folder-polled` | Polls a real shell's working folder (5 s deadline). |
+| `tab-drag` | Its pixel checks follow `settle_slides`: at least `drag_gap::SLIDE` + 30 ms, then a fresh frame. |
+| `sidebar` | The same `settle_slides` before its drop and pixel checks; its ages are minutes from a turn. |
+| `chrome-drag-cancel` | `drag_to` sleeps at least `SLIDE` + 30 ms before its checks. |
+| `chrome-notify-redraws-parts`, `chrome-notifications`, `chrome-resize-title` | Draw frames until the sidebar's slide ends (3.2-5 s deadlines), then check. |
+| `chrome-bars-and-edges` | The right sidebar's step sleeps at least 400 ms (a 160 ms slide); the sidebar's slide is polled to its end. |
+
+**The Files fixture** keeps its one path (the panel and the status bar draw it, so a folder per process would change
+pictures). Its files are written only when missing or different, then whole (to a temp file, renamed in): a file tab open
+on one in another process never sees it change. Their "edited …" age is therefore the fixture's, and `changes-click` and
+`files-panel-follows-active-tab` (both themes) draw it: those 4 pictures now vary with the fixture's age, like the 7
+that vary with real ages.
+
+**Numbers** (this Mac, debug build, after the build, `-j 8`):
+
+| Run | One process (Task 7) | Task 8, 31 serial | **Ruling 7, 13 serial** |
+| --- | --- | --- | --- |
+| Default `scripts/ui-shots.sh` | 211.6 s | 133.7 s (median of five) | **81.4 s** (median of five: 80.9, 81.5, 81.4, 81.3, 82.0) |
+| Serial process | n/a | 114 s | **39.4-39.7 s** |
+| Longest shard | n/a | 17.7 s | 38.8-39.9 s (`file-tab` alone, 33 s unloaded) |
+| `--png --all-themes` | 276.3 s | 161.0 s | **99.2 s** |
+
+The run is now two halves of about 40 s: the shards, bounded by `file-tab` on its own shard, and the serial process,
+of which Mermaid is 17 s. Below about 80 s would need `file-tab` itself faster (or split, which would change its name),
+or Mermaid's WebKit run shorter. **The guard:** five consecutive full runs at the default `-j 8`, 112 passed and
+0 failed each; nothing heavy ran beside them (load average 1.9-2.9 from the runs themselves; at most a VM helper at
+19 % and Docker Desktop at 18 % in one sample each). The default stays `min(8, cores − 2)`. (The first round's guard,
+with 31 serial: five runs 134.1, 133.7, 133.6, 133.9, 133.5 s, all passing.)
 
 **Same results:** the `--png --all-themes` run prints the same 207 `ok` lines (sorted; 204 different) as Task 7 and
-writes the same 451 PNGs, 444 byte-identical; the other 7 are the 7 that vary between runs of an unchanged build
-(`activity`, `activity-waiting` ×2 themes, `branch-switcher-open-mocha`, `welcome-checking` ×2).
+writes the same 451 PNGs. 440 are byte-identical. The other 11 are the 7 that vary between runs of an unchanged build
+(`activity`, `activity-waiting` ×2 themes, `branch-switcher-open-mocha`, `welcome-checking` ×2) and the 4 that show the
+fixture's age (`changes-click` ×2, `files-panel-follows-active-tab` ×2: only the file bar's "edited 27 min ago", pixels
+y 63-74).
+
+**The script** also: finds the binary from `cargo build --message-format=json-render-diagnostics` (so
+`CARGO_TARGET_DIR` is honoured); on Ctrl-C (or `kill -INT`) ends only its own parts and their processes, removes its temp
+folder and exits 130; says when a part wrote no results ("shard 1/2 wrote no results: its scenes are not counted") as
+well as how it exited.
 
 ### Part A — Quick wins
 

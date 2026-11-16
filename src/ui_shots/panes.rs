@@ -64,7 +64,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "tab-drag",
         run: tab_drag_scenes,
         themes: Themes::Both,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/tab_bar.rs",

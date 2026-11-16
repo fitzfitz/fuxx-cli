@@ -63,16 +63,48 @@ case "$jobs" in
     '' | *[!0-9]* | 0) echo "ui-shots.sh: -j needs a whole number of shards, 1 or more" >&2; usage ;;
 esac
 
-cargo build --features ui-shots || exit 1
+# The built binary, from cargo's own report (so `CARGO_TARGET_DIR` is honoured); errors and
+# warnings still print as usual.
+built=$(cargo build --features ui-shots --message-format=json-render-diagnostics) || exit 1
+bin=$(printf '%s\n' "$built" | grep '"reason":"compiler-artifact"' | grep '"kind":\["bin"\]' |
+    grep '"name":"fuxx"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)
+if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+    echo "ui-shots.sh: cargo reported no fuxx binary" >&2
+    exit 1
+fi
 
-bin=target/debug/fuxx
+# Where the binary writes its pictures and timings (next to Cargo.toml, whatever the target dir).
 out=target/ui-shots
 mkdir -p "$out"
 rm -f "$out"/timings.*.tsv
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ui-shots.XXXXXX") || exit 2
 
-# Background jobs of a script ignore Ctrl-C: end them with it.
-trap 'trap - INT TERM; kill 0 2>/dev/null; rm -rf "$tmp"; exit 130' INT TERM
+# The parts started (their subshells' pids), for Ctrl-C.
+pids=""
+
+# `$1` and every process under it, deepest first.
+tree() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        tree "$child"
+    done
+    echo "$1"
+}
+
+# Ctrl-C (or a TERM): end the parts, their binaries and whatever those started, then clean up.
+# Background jobs of a script ignore Ctrl-C, so they are ended here, and only they.
+stop() {
+    trap - INT TERM
+    local all="" pid
+    for pid in $pids; do
+        all="$all $(tree "$pid")"
+    done
+    [ -n "$all" ] && kill $all 2>/dev/null
+    rm -rf "$tmp"
+    echo "ui-shots: stopped" >&2
+    exit 130
+}
+trap stop INT TERM
 
 now() { perl -MTime::HiRes=time -e 'printf "%.1f\n", time'; }
 
@@ -88,10 +120,15 @@ started=$(now)
 i=1
 while [ "$i" -le "$jobs" ]; do
     run_part "$i/$jobs" "$i" "--shard $i/$jobs" ${pass[@]+"${pass[@]}"} &
+    pids="$pids $!"
     i=$((i + 1))
 done
 wait
-run_part serial serial --serial-only ${pass[@]+"${pass[@]}"}
+# In the background too, so a Ctrl-C (or a `kill -INT` of this script) stops it at once: `wait`
+# returns to the trap, where a command in the foreground would be waited out first.
+run_part serial serial --serial-only ${pass[@]+"${pass[@]}"} &
+pids="$pids $!"
+wait
 total=$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$started" "$(now)")
 
 # Each part's exit status and timings (`<scene>\t<seconds>\tok|FAILED`).
@@ -113,7 +150,13 @@ for part in $parts; do
             *) echo "ui-shots: shard $part/$jobs exited $code" ;;
         esac
     fi
-    [ -f "$out/timings.$part.tsv" ] || whole=0
+    if [ ! -f "$out/timings.$part.tsv" ]; then
+        whole=0
+        case "$part" in
+            serial) echo "ui-shots: the serial run wrote no results: its scenes are not counted" ;;
+            *) echo "ui-shots: shard $part/$jobs wrote no results: its scenes are not counted" ;;
+        esac
+    fi
 done
 rm -rf "$tmp"
 

@@ -60,7 +60,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-notifications",
         run: chrome_notifications,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/chrome_cache.rs",
@@ -73,7 +73,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-places-programs-ports",
         run: chrome_places_programs_ports,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/chrome_cache.rs",
@@ -105,7 +105,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-resize-title",
         run: chrome_resize_title,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &["src/chrome_cache.rs", "src/title_area.rs", "src/sidebar.rs"],
     },
@@ -113,7 +113,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-drag-cancel",
         run: chrome_drag_cancel,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/chrome_cache.rs",
@@ -162,7 +162,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-bars-and-edges",
         run: chrome_bars_and_edges,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/chrome_cache.rs",
