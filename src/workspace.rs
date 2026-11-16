@@ -12,7 +12,7 @@
 //! line; Enter (or, with tmux, a timer) reconnects it in place.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -684,6 +684,12 @@ pub struct Workspace {
     /// Each agent tab "Open in classic view" opened a terminal for: that terminal (`sN`) and
     /// when it opened (R13).
     pub(crate) classic_of: HashMap<TabId, (u64, Instant)>,
+    /// The agent tabs whose classic view is opening (from the pause until its terminal is
+    /// noted in `classic_of`, or it doesn't open): a send from one is held (R13).
+    pub(crate) classic_opening: HashSet<TabId>,
+    /// The agent tabs whose send is waiting on its holder check (`ps`): another send from one
+    /// (Enter pressed again) is ignored, so a message goes once.
+    pub(crate) resume_checks: HashSet<TabId>,
     /// The scenes' `ps` table for the conversation-holder check (none: run `ps`; `Some(None)`:
     /// `ps` failed).
     #[cfg(feature = "ui-shots")]
@@ -930,6 +936,8 @@ impl Workspace {
             agents: HashMap::new(),
             next_agent_id: 1,
             classic_of: HashMap::new(),
+            classic_opening: HashSet::new(),
+            resume_checks: HashSet::new(),
             #[cfg(feature = "ui-shots")]
             shot_ps: None,
             #[cfg(feature = "ui-shots")]
@@ -1784,6 +1792,8 @@ impl Workspace {
         };
         self.agents.retain(|tab, _| is_agent(tab));
         self.classic_of.retain(|tab, _| is_agent(tab));
+        self.classic_opening.retain(is_agent);
+        self.resume_checks.retain(is_agent);
         let agents: Vec<u64> = self.agents.values().map(|slot| slot.id).collect();
         self.marks
             .get_mut()

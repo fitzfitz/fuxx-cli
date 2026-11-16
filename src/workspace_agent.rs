@@ -33,8 +33,11 @@ use crate::ui_tokens::text;
 use crate::workspace::{At, Opened, Workspace};
 
 /// Past `TERM_GRACE`, how much longer "Open in classic view" waits for the tab's process to be
-/// reaped before it opens the classic view anyway.
+/// reaped before it gives up (the classic view doesn't open: never two writers).
 const REAP_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Where a send from a tab whose classic view is opening says the conversation runs.
+const OPENING: &str = "its classic view, which is opening";
 
 /// An unknown provider's badge and its colour (a restored tab whose agent fuxx no longer has).
 const UNKNOWN_BADGE: &str = "?";
@@ -120,41 +123,95 @@ pub enum Holder {
 /// `ps` says (the typed `claude --resume` may not have started yet).
 pub const CLASSIC_START: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The tab's classic view, as the holder check knows it (R13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Classic {
+    /// None open (or its terminal has gone).
+    Closed,
+    /// Opening, or opened less than `CLASSIC_START` ago: its `claude` may not run yet, so it
+    /// holds the conversation whatever `ps` says.
+    Starting,
+    /// Open in a terminal of this Mac whose shell (this pid) fuxx knows: it holds the
+    /// conversation while that program is in front of the shell (`claude -c`, `/resume`).
+    Shell(u32),
+    /// Open in a terminal whose shell fuxx can't see (a background-service one). An npm
+    /// `claude` there shows in `ps` as its title alone (`process.title` writes over its
+    /// arguments, `--resume <id>` with them), so any live process of that program may be it,
+    /// except one naming another conversation and fuxx's own agents (the groups they lead).
+    Blind(Vec<u32>),
+}
+
 /// Whether conversation `id` of `provider` is held by another process in `table` (`None`: `ps`
 /// failed → `Unchecked`): a live process of that program with the id among its arguments
 /// (`classic_argv` always puts it there), not of the tab's own process groups (`own`: the
-/// groups of the processes it started, each its own group's leader); or the classic
-/// terminal's shell (`classic_shell`, this Mac's) has that program in front (`claude -c`,
-/// `/resume` typed there); or the classic terminal opened moments ago (`classic_starting`).
+/// groups of the processes it started, each its own group's leader); or the tab's classic view
+/// (`classic`) may run it.
 pub fn conversation_holder(
     table: Option<&[Proc]>,
     provider: &str,
     id: &str,
     own: &[u32],
-    classic_shell: Option<u32>,
-    classic_starting: bool,
+    classic: &Classic,
 ) -> Holder {
     let Some(table) = table else {
         return Holder::Unchecked;
     };
-    let runs_it = |p: &&Proc| {
-        !p.is_zombie()
-            && !own.contains(&p.pgid)
-            && !own.contains(&p.pid)
-            && procs::program_name(&p.args) == provider
-    };
+    let not_in = |p: &Proc, groups: &[u32]| !groups.contains(&p.pgid) && !groups.contains(&p.pid);
+    let runs_it =
+        |p: &&Proc| !p.is_zombie() && not_in(p, own) && procs::program_name(&p.args) == provider;
     let with_id = table
         .iter()
         .filter(runs_it)
         .any(|p| p.args.split_whitespace().any(|word| word == id));
-    let in_classic = classic_shell.is_some_and(|shell| {
-        matches!(procs::foreground(table, shell),
-            Foreground::Program(args) if procs::program_name(&args) == provider)
-    });
-    if with_id || in_classic || classic_starting {
+    let in_classic = match classic {
+        Classic::Closed => false,
+        Classic::Starting => true,
+        Classic::Shell(shell) => matches!(procs::foreground(table, *shell),
+            Foreground::Program(args) if procs::program_name(&args) == provider),
+        Classic::Blind(agents) => table.iter().filter(runs_it).any(|p| {
+            not_in(p, agents) && names_conversation(&p.args).is_none_or(|other| other == id)
+        }),
+    };
+    if with_id || in_classic {
         Holder::Held
     } else {
         Holder::Free
+    }
+}
+
+/// The conversation a command line names (`--resume <id>`, `-r <id>`, `--session-id <id>`, or
+/// with `=`), if it names one.
+fn names_conversation(args: &str) -> Option<&str> {
+    let mut words = args.split_whitespace();
+    while let Some(word) = words.next() {
+        for flag in ["--resume", "-r", "--session-id"] {
+            if word == flag {
+                return words.next().filter(|next| !next.starts_with('-'));
+            }
+            if let Some(id) = word.strip_prefix(flag).and_then(|w| w.strip_prefix('=')) {
+                return Some(id).filter(|id| !id.is_empty());
+            }
+        }
+    }
+    None
+}
+
+/// What "Open in classic view" does after a look at the tab's own processes: open it once all
+/// are reaped; keep waiting while one runs; past `deadline` with one still running, don't open
+/// (the tab stays paused and says so): never two writers of one conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReapWait {
+    Open,
+    Wait,
+    Refuse,
+}
+
+/// `ReapWait` from whether every process of the tab is reaped and whether the deadline passed.
+pub fn reap_wait(reaped: bool, deadline_passed: bool) -> ReapWait {
+    match (reaped, deadline_passed) {
+        (true, _) => ReapWait::Open,
+        (false, false) => ReapWait::Wait,
+        (false, true) => ReapWait::Refuse,
     }
 }
 
@@ -177,6 +234,12 @@ pub fn held_notice(label: &str, holder: &Holder, terminal: Option<&str>) -> Stri
             "{label} is still running this conversation in another terminal — quit it there first"
         ),
     }
+}
+
+/// The notice of a tab whose own process didn't stop in time for its classic view, which
+/// didn't open then (it stays paused).
+pub fn not_stopped_notice(label: &str) -> String {
+    format!("{label} didn't stop in time, so the classic view didn't open — try again")
 }
 
 /// A provider's badge: `size` square, rounded, `rgb` filled, its letters in white.
@@ -551,7 +614,9 @@ impl Workspace {
 
     /// A message from paused agent tab `tab` (R13): one fresh `ps` (on the background
     /// executor, capped at 2 s) says whether another process holds its conversation
-    /// (`conversation_holder`), then the tab sends (resuming) or warns and keeps `text`.
+    /// (`conversation_holder`), then the tab sends (resuming) or warns and keeps `text`. While
+    /// its classic view is opening, it is held without a look; while a check runs, another
+    /// send (Enter again) is ignored.
     fn check_holder_then_resume(
         &mut self,
         tab: TabId,
@@ -570,6 +635,15 @@ impl Workspace {
         let Some(view) = self.agents.get(&tab).map(|slot| slot.view.clone()) else {
             return;
         };
+        if self.classic_opening.contains(&tab) {
+            view.update(cx, |view, cx| {
+                view.resume_after_classic(text, Holder::Held, Some(OPENING.into()), cx)
+            });
+            return;
+        }
+        if !self.resume_checks.insert(tab) {
+            return; // its first send's check still runs
+        }
         let id = conversation.or_else(|| view.read(cx).resume_id());
         // The classic view's terminal, while open: its name, its shell (this Mac's), and
         // whether it opened moments ago.
@@ -578,22 +652,26 @@ impl Workspace {
             let shell = (s.ssh.is_none() && !s.lost)
                 .then(|| s.view.read(cx).working_folder().1)
                 .flatten();
-            Some((
-                self.terminal_label(sid),
-                shell,
-                opened.elapsed() < CLASSIC_START,
-            ))
+            let classic = if opened.elapsed() < CLASSIC_START {
+                Classic::Starting
+            } else {
+                match shell {
+                    Some(shell) => Classic::Shell(shell),
+                    None => Classic::Blind(crate::agent_process::started_pids()),
+                }
+            };
+            Some((self.terminal_label(sid), classic))
         });
         let own = view.read(cx).own_pids();
-        self.with_ps(window, cx, move |_, table, _, cx| {
+        self.with_ps(window, cx, move |this, table, _, cx| {
+            this.resume_checks.remove(&tab);
             let holder = match &id {
                 Some(id) => conversation_holder(
                     table.as_deref(),
                     &provider,
                     id,
                     &own,
-                    classic.as_ref().and_then(|c| c.1),
-                    classic.as_ref().is_some_and(|c| c.2),
+                    classic.as_ref().map_or(&Classic::Closed, |c| &c.1),
                 ),
                 None => Holder::Free, // nothing to resume: nothing to hold
             };
@@ -615,6 +693,10 @@ impl Workspace {
         else {
             return;
         };
+        // Its classic view is opening: never a second one.
+        if self.classic_opening.contains(&tab) {
+            return;
+        }
         // Its classic view is open already: that terminal is shown, never a second one.
         if let Some(index) = self
             .classic_of
@@ -652,7 +734,8 @@ impl Workspace {
     /// `open_classic` once asked (or not busy): the tab pauses, then one fresh `ps` checks that
     /// nothing else holds the conversation (a classic view left from before a restart, a
     /// `claude --resume` typed elsewhere): held (or unchecked), the tab says so and no second
-    /// one opens. Free, the classic view opens once the tab's own process is reaped.
+    /// one opens. Free, the classic view opens once the tab's own process is reaped. From the
+    /// pause until then, the tab's classic view is opening (`classic_opening`).
     fn open_classic_now(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(TabKind::Agent {
             provider,
@@ -662,6 +745,9 @@ impl Workspace {
         else {
             return;
         };
+        if !self.classic_opening.insert(tab) {
+            return; // opening already (a sheet answered twice)
+        }
         let view = self.agents.get(&tab).map(|slot| slot.view.clone());
         if let Some(view) = &view {
             view.update(cx, |view, cx| view.pause_for_classic(cx));
@@ -671,8 +757,10 @@ impl Workspace {
             .map(|v| v.read(cx).own_pids())
             .unwrap_or_default();
         self.with_ps(window, cx, move |this, table, window, cx| {
-            let holder = conversation_holder(table.as_deref(), &provider, &id, &own, None, false);
+            let holder =
+                conversation_holder(table.as_deref(), &provider, &id, &own, &Classic::Closed);
             if holder != Holder::Free {
+                this.classic_opening.remove(&tab);
                 if let Some(view) = &view {
                     view.update(cx, |view, cx| view.held(&holder, None, cx));
                 }
@@ -684,7 +772,8 @@ impl Workspace {
 
     /// The classic view's terminal tab in agent tab `tab`'s pane, running the agent's own UI on
     /// its conversation, once the tab's own process (`view`'s) is reaped (bounded: its SIGKILL
-    /// comes after `TERM_GRACE`), never beside it.
+    /// comes after `TERM_GRACE`), never beside it: one still running past `REAP_WAIT` more,
+    /// none opens and the tab says so. Either way the tab's classic view is no longer opening.
     fn open_classic_view(
         &mut self,
         tab: TabId,
@@ -699,10 +788,12 @@ impl Workspace {
             ..
         }) = self.model.tab(tab).map(|t| t.kind.clone())
         else {
+            self.classic_opening.remove(&tab);
             return;
         };
         let (Some(p), Some((_, pane))) = (providers::by_name(&provider), self.model.locate(tab))
         else {
+            self.classic_opening.remove(&tab);
             return;
         };
         let project = (self.places.home.as_ref() != Some(&cwd)).then_some(cwd);
@@ -718,6 +809,7 @@ impl Workspace {
             run_preset: true,
         };
         let then: Opened = Box::new(move |this, opened, _, _| {
+            this.classic_opening.remove(&tab);
             if let Some(id) = opened {
                 this.classic_of.insert(tab, (id, Instant::now()));
             }
@@ -735,9 +827,22 @@ impl Workspace {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(50))
                     .await;
-                let done = this.update(cx, |_, cx| reaped(&view, cx)).unwrap_or(true);
-                if done || Instant::now() >= until {
-                    break;
+                let Ok(reaped) = this.update(cx, |_, cx| reaped(&view, cx)) else {
+                    return; // the workspace has gone
+                };
+                match reap_wait(reaped, Instant::now() >= until) {
+                    ReapWait::Wait => continue,
+                    ReapWait::Open => break,
+                    ReapWait::Refuse => {
+                        this.update(cx, |this, cx| {
+                            this.classic_opening.remove(&tab);
+                            if let Some(view) = &view {
+                                view.update(cx, |view, cx| view.classic_not_opened(cx));
+                            }
+                        })
+                        .ok();
+                        return;
+                    }
                 }
             }
             this.update_in(cx, |this, window, cx| {
@@ -859,31 +964,90 @@ mod tests {
         procs::parse_ps(text)
     }
 
-    /// `ps` as it would read with a classic terminal's `claude --resume c1`: its shell 500 (a
-    /// local terminal, at no prompt: `claude` has it) and that `claude`; another conversation's
-    /// `claude`; the tab's own `claude -p … --resume c1` (group 900, which it leads).
+    /// `ps` as it would read with a native (`claude` binary) classic terminal's
+    /// `claude --resume c1`: its shell 500 (a local terminal, at no prompt: `claude` has it) and
+    /// that `claude`; another conversation's `claude`; the tab's own `claude -p … --resume c1`
+    /// (group 900, which it leads) and a tool its agent runs (in that group).
     const TABLE: &str = "\
   500     1   500   600 Ss   -zsh
   600   500   600   600 S+   claude --resume c1
   700     1   700   700 S+   claude --resume c2
   900     1   900     0 Ss   claude -p --input-format stream-json --resume c1
-  901   900   900     0 S    node /x/@anthropic-ai/claude-code/cli.js --resume c1
+  901   900   900     0 S    /bin/zsh -c npm test
 ";
+
+    /// The same with npm's `claude` (node): it sets `process.title = "claude"`, which writes
+    /// over its arguments, so `ps` shows each one as `claude` alone, `--resume c1` gone. The
+    /// classic terminal's (600), another conversation's run natively elsewhere (700), the
+    /// tab's own (900, with a tool in its group) and another agent tab's (950).
+    const NPM: &str = "\
+  500     1   500   600 Ss   -zsh
+  600   500   600   600 S+   claude
+  700     1   700   700 S+   claude --resume c2
+  900     1   900     0 Ss   claude
+  901   900   900     0 S    /bin/zsh -c npm test
+  950     1   950     0 Ss   claude
+";
+
+    #[test]
+    fn an_npm_claude_in_a_blind_classic_view_holds_it() {
+        let t = ps(NPM);
+        // A local classic terminal: its shell shows `claude` in front.
+        assert_eq!(
+            conversation_holder(Some(&t), "claude", "c1", &[900], &Classic::Shell(500)),
+            Holder::Held
+        );
+        // A background-service one (no shell pid): its `claude` lost the id; it may be it.
+        let agents = Classic::Blind(vec![900, 950]);
+        assert_eq!(
+            conversation_holder(Some(&t), "claude", "c1", &[900], &agents),
+            Holder::Held
+        );
+        // Quit there: fuxx's own agents and another conversation's `claude` hold nothing.
+        let quit = ps(&NPM.replace("  600   500   600   600 S+   claude\n", ""));
+        assert_eq!(
+            conversation_holder(Some(&quit), "claude", "c1", &[900], &agents),
+            Holder::Free
+        );
+        // `claude -c` or a bare `claude --resume` there may be it too; `-r c2` is not.
+        for (args, holder) in [
+            ("claude -c", Holder::Held),
+            ("claude --resume", Holder::Held),
+            ("claude -r c2", Holder::Free),
+            ("claude --resume=c2", Holder::Free),
+            ("claude --session-id c2", Holder::Free),
+        ] {
+            let t = ps(&format!("  600   500   600   600 S+   {args}\n"));
+            assert_eq!(
+                conversation_holder(Some(&t), "claude", "c1", &[], &agents),
+                holder,
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_classic_view_never_opens_beside_a_live_process() {
+        assert_eq!(reap_wait(true, false), ReapWait::Open);
+        assert_eq!(reap_wait(true, true), ReapWait::Open);
+        assert_eq!(reap_wait(false, false), ReapWait::Wait);
+        assert_eq!(reap_wait(false, true), ReapWait::Refuse);
+    }
 
     #[test]
     fn a_classic_claude_holds_its_conversation() {
         let t = ps(TABLE);
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c1", &[900], Some(500), false),
+            conversation_holder(Some(&t), "claude", "c1", &[900], &Classic::Shell(500)),
             Holder::Held
         );
         // A daemon session's terminal: fuxx has no shell pid; the process itself says it.
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c1", &[900], None, false),
+            conversation_holder(Some(&t), "claude", "c1", &[900], &Classic::Closed),
             Holder::Held
         );
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c2", &[], None, false),
+            conversation_holder(Some(&t), "claude", "c2", &[], &Classic::Closed),
             Holder::Held
         );
     }
@@ -892,18 +1056,18 @@ mod tests {
     fn the_tabs_own_process_group_is_not_a_holder() {
         let t = ps(&TABLE.replace("  600   500   600   600 S+   claude --resume c1\n", ""));
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c1", &[900], None, false),
+            conversation_holder(Some(&t), "claude", "c1", &[900], &Classic::Closed),
             Holder::Free
         );
         // Without excluding it, its own process would hold it.
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c1", &[], None, false),
+            conversation_holder(Some(&t), "claude", "c1", &[], &Classic::Closed),
             Holder::Held
         );
         // A zombie holds nothing; nor does another program naming the id.
         let z = ps("  600   500   600   600 Z+   claude --resume c1\n  610 1 610 0 S vim c1\n");
         assert_eq!(
-            conversation_holder(Some(&z), "claude", "c1", &[], None, false),
+            conversation_holder(Some(&z), "claude", "c1", &[], &Classic::Closed),
             Holder::Free
         );
     }
@@ -913,25 +1077,25 @@ mod tests {
         // `claude -c` (no id in its arguments) in front of the classic terminal's shell.
         let t = ps("  500     1   500   600 Ss   -zsh\n  600   500   600   600 S+   claude -c\n");
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c1", &[], Some(500), false),
+            conversation_holder(Some(&t), "claude", "c1", &[], &Classic::Shell(500)),
             Holder::Held
         );
         // At its prompt: free.
         let t = ps("  500     1   500   500 Ss+  -zsh\n");
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c1", &[], Some(500), false),
+            conversation_holder(Some(&t), "claude", "c1", &[], &Classic::Shell(500)),
             Holder::Free
         );
         // Opened moments ago: its `claude` may not have started yet.
         assert_eq!(
-            conversation_holder(Some(&t), "claude", "c1", &[], Some(500), true),
+            conversation_holder(Some(&t), "claude", "c1", &[], &Classic::Starting),
             Holder::Held
         );
     }
 
     #[test]
     fn a_failed_ps_never_lets_the_tab_respawn() {
-        let holder = conversation_holder(None, "claude", "c1", &[], None, false);
+        let holder = conversation_holder(None, "claude", "c1", &[], &Classic::Closed);
         assert_eq!(holder, Holder::Unchecked);
         assert_eq!(
             after_classic(true, holder != Holder::Free),
