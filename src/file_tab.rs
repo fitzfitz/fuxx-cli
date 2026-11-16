@@ -370,6 +370,78 @@ pub fn find_label(query: &str, current: Option<usize>, count: usize, capped: boo
     }
 }
 
+/// The header chip's text: `M · +3 −1` for a changed file, `A · +12` for a new one; None when
+/// nothing changed or git has not answered.
+#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
+pub fn chip_label(counts: Option<(usize, usize, bool)>) -> Option<String> {
+    let (added, removed, new) = counts?;
+    if added == 0 && removed == 0 {
+        return None;
+    }
+    let mut out = String::from(if new { "A \u{b7}" } else { "M \u{b7}" });
+    if added > 0 {
+        out.push_str(&format!(" +{added}"));
+    }
+    if removed > 0 {
+        out.push_str(&format!(" \u{2212}{removed}"));
+    }
+    Some(out)
+}
+
+/// Where the file lives, for the header: the folders from the repo's name down (`repo / a / b`),
+/// else the folder shortened under `home` (`~/Downloads`), else the folder. `repo` is
+/// `(root, rel)` as in `GitPlace`.
+#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
+pub fn where_label(path: &Path, repo: Option<(&Path, &Path)>, home: Option<&Path>) -> String {
+    if let Some((root, rel)) = repo {
+        let mut parts: Vec<String> = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .into_iter()
+            .collect();
+        if let Some(dir) = rel.parent() {
+            parts.extend(
+                dir.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+            );
+        }
+        return parts.join(" / ");
+    }
+    let dir = path.parent().unwrap_or(path);
+    if let Some(home) = home
+        && let Ok(under) = dir.strip_prefix(home)
+    {
+        return if under.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", under.display())
+        };
+    }
+    dir.display().to_string()
+}
+
+/// `1 line`, `42 lines`, `12,345 lines`.
+#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
+pub fn lines_label(n: usize) -> String {
+    format!("{} line{}", thousands(n), if n == 1 { "" } else { "s" })
+}
+
+/// How long ago the file was modified: `edited just now`, `edited 5 min ago`, `1 h`, `1 d`,
+/// `1 mo` (30 days), `1 y` (365 days). A time ahead of `now` is just now.
+#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
+pub fn age_label(modified: SystemTime, now: SystemTime) -> String {
+    let secs = now.duration_since(modified).map_or(0, |d| d.as_secs());
+    let (n, unit) = match secs {
+        0..60 => return "edited just now".to_string(),
+        60..3_600 => (secs / 60, "min"),
+        3_600..86_400 => (secs / 3_600, "h"),
+        86_400..2_592_000 => (secs / 86_400, "d"),
+        2_592_000..31_536_000 => (secs / 2_592_000, "mo"),
+        _ => (secs / 31_536_000, "y"),
+    };
+    format!("edited {n} {unit} ago")
+}
+
 /// `n` with commas between thousands.
 fn thousands(n: usize) -> String {
     let digits = n.to_string();
@@ -545,6 +617,11 @@ pub struct Doc {
     pub changes: Arc<Changes>,
     /// The version the change bars were made for (an older one's carried over a reload).
     pub changes_version: Option<u64>,
+    /// (added, removed, new) lines against HEAD, from the same answer as the bars (once git
+    /// answered).
+    pub counts: Option<(usize, usize, bool)>,
+    /// The syntax's name, once the colours are made (`Highlighter::syntax_name`).
+    pub syntax: Option<Arc<str>>,
     /// Which read of the file this is (each reload, one more).
     pub version: u64,
     /// The widest line as shown, in cells (characters, tabs as four).
@@ -581,6 +658,8 @@ impl Doc {
             spans_version: None,
             changes: Arc::default(),
             changes_version: None,
+            counts: None,
+            syntax: None,
             version,
             widest,
             widths: Arc::new(widths),
@@ -629,17 +708,24 @@ impl Doc {
         true
     }
 
-    /// Change bars asked for `version`, taken as colours are (`accept_spans`). True when they
-    /// changed.
-    pub fn accept_changes(&mut self, version: u64, changes: &[(usize, LineChange)]) -> bool {
+    /// Change bars and counts asked for `version`, taken as colours are (`accept_spans`). True
+    /// when they changed.
+    pub fn accept_changes(
+        &mut self,
+        version: u64,
+        changes: &[(usize, LineChange)],
+        counts: Option<(usize, usize, bool)>,
+    ) -> bool {
         if !fresher(version, self.version, self.changes_version) {
             return false;
         }
         self.changes_version = Some(version);
         let (by_line, deleted) = bars(changes);
         let changes = Changes { by_line, deleted };
+        let counts_changed = self.counts != counts;
+        self.counts = counts;
         if *self.changes == changes {
-            return false;
+            return counts_changed;
         }
         self.changes = Arc::new(changes);
         true
@@ -2219,14 +2305,19 @@ impl FileTab {
         self.coloured_with = Some(cx.global::<Appearance>().theme);
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
-            let spans = cx
+            let (spans, syntax) = cx
                 .background_executor()
-                .spawn(async move { h.highlight(&path, &text) })
+                .spawn(async move {
+                    let first = text.split_inclusive('\n').next().unwrap_or("");
+                    let syntax: Arc<str> = h.syntax_name(&path, first).into();
+                    (h.highlight(&path, &text), syntax)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 if let State::Text(doc) = &mut this.state
                     && doc.accept_spans(version, spans)
                 {
+                    doc.syntax = Some(syntax);
                     cx.notify();
                 }
                 if this.colouring.finish() {
@@ -2356,7 +2447,11 @@ impl FileTab {
                 if let Some(changes) = changes
                     && let Some(version) = version
                     && let Some(doc) = this.doc_mut()
-                    && doc.accept_changes(version, &changes)
+                    && doc.accept_changes(
+                        version,
+                        &changes.lines,
+                        Some((changes.added, changes.removed, changes.new)),
+                    )
                 {
                     cx.notify();
                 }
@@ -3771,7 +3866,7 @@ impl FileTab {
     pub fn set_changes(&mut self, changes: Vec<(usize, LineChange)>, cx: &mut Context<Self>) {
         if let Some(doc) = self.doc_mut() {
             let version = doc.version;
-            if doc.accept_changes(version, &changes) {
+            if doc.accept_changes(version, &changes, None) {
                 cx.notify();
             }
         }
@@ -4317,6 +4412,92 @@ mod tests {
     }
 
     #[test]
+    fn the_chip_says_modified_or_added_with_its_counts() {
+        assert_eq!(
+            chip_label(Some((3, 1, false))).as_deref(),
+            Some("M \u{b7} +3 \u{2212}1")
+        );
+        assert_eq!(
+            chip_label(Some((3, 0, false))).as_deref(),
+            Some("M \u{b7} +3")
+        );
+        assert_eq!(
+            chip_label(Some((0, 2, false))).as_deref(),
+            Some("M \u{b7} \u{2212}2")
+        );
+        assert_eq!(
+            chip_label(Some((12, 0, true))).as_deref(),
+            Some("A \u{b7} +12")
+        );
+        assert_eq!(chip_label(Some((0, 0, false))), None);
+        assert_eq!(chip_label(None), None);
+    }
+
+    #[test]
+    fn where_starts_at_the_repo_or_home() {
+        let (root, home) = (Path::new("/w/fuxx-cli"), Path::new("/Users/me"));
+        assert_eq!(
+            where_label(
+                Path::new("/w/fuxx-cli/src/ui_shots/README.md"),
+                Some((root, Path::new("src/ui_shots/README.md"))),
+                Some(home)
+            ),
+            "fuxx-cli / src / ui_shots"
+        );
+        assert_eq!(
+            where_label(
+                Path::new("/w/fuxx-cli/a.rs"),
+                Some((root, Path::new("a.rs"))),
+                Some(home)
+            ),
+            "fuxx-cli"
+        );
+        assert_eq!(
+            where_label(Path::new("/Users/me/Downloads/x.txt"), None, Some(home)),
+            "~/Downloads"
+        );
+        assert_eq!(
+            where_label(Path::new("/Users/me/x.txt"), None, Some(home)),
+            "~"
+        );
+        assert_eq!(
+            where_label(Path::new("/etc/hosts"), None, Some(home)),
+            "/etc"
+        );
+    }
+
+    #[test]
+    fn lines_and_ages_read_as_note_80_says() {
+        assert_eq!(lines_label(1), "1 line");
+        assert_eq!(lines_label(42), "42 lines");
+        assert_eq!(lines_label(12345), "12,345 lines");
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let ago = |s| age_label(t - Duration::from_secs(s), t);
+        assert_eq!(ago(59), "edited just now");
+        assert_eq!(ago(60), "edited 1 min ago");
+        assert_eq!(ago(3_599), "edited 59 min ago");
+        assert_eq!(ago(3_600), "edited 1 h ago");
+        assert_eq!(ago(86_400), "edited 1 d ago");
+        assert_eq!(ago(29 * 86_400), "edited 29 d ago");
+        assert_eq!(ago(30 * 86_400), "edited 1 mo ago");
+        assert_eq!(ago(365 * 86_400), "edited 1 y ago");
+        assert_eq!(age_label(t + Duration::from_secs(5), t), "edited just now");
+    }
+
+    #[test]
+    fn counts_for_an_older_version_are_dropped() {
+        let lines = [(1, LineChange::Added)];
+        // Version 4 is shown; counts asked for version 3 arrive after version 4's are taken.
+        let mut doc = Doc::new("a\n".into(), 4);
+        assert!(doc.accept_changes(4, &lines, Some((1, 0, false))));
+        assert!(!doc.accept_changes(3, &lines, Some((9, 9, true))));
+        assert_eq!(doc.counts, Some((1, 0, false)));
+        // For the shown version, a new answer is taken and says it changed (counts only).
+        assert!(doc.accept_changes(4, &lines, Some((2, 1, false))));
+        assert_eq!(doc.counts, Some((2, 1, false)));
+    }
+
+    #[test]
     fn a_highlight_for_an_older_version_is_dropped() {
         let spans = || vec![vec![(0..10, Rgb { r: 1, g: 2, b: 3 })]];
         // Version 3 was asked to be coloured; the text changed on disk, version 4 is loaded and
@@ -4447,7 +4628,7 @@ mod tests {
         assert!(fresh.accept_spans(2, spans()));
         assert_eq!(fresh.spans_version, Some(2));
         let mut bars = Doc::new("x\n".into(), 7);
-        assert!(bars.accept_changes(2, &[(1, LineChange::Added)]));
+        assert!(bars.accept_changes(2, &[(1, LineChange::Added)], None));
     }
 
     #[test]
