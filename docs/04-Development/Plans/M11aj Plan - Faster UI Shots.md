@@ -1,8 +1,8 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11aj
-status: planned
-updated: 2026-11-16
+status: built
+updated: 2026-11-17
 ---
 
 # M11aj Plan — Faster UI shots
@@ -12,9 +12,9 @@ updated: 2026-11-16
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[81 - Milestone 11aj - Faster UI Shots]] |
-| **Status** | 📋 Planned 2026-11-16; starts after M11ae merges |
-| **Tasks done** | 0 / 11 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built 2026-11-17 on branch `m11aj-ui-shots` (not merged); waiting for your on-screen check (note 81) |
+| **Tasks done** | 11 / 11 |
+| **▶ Pick up here** | Your on-screen check in note 81, then merge on your word |
 | **Decisions used** | Yours: "all three, your order is fine", "approved". The calls listed in note 81 ("Calls made after the builder check"). |
 | **Needs your eyes** | 👀 Task 1's numbers if a goal looks out of reach; the on-screen check in note 81 after Task 11 |
 
@@ -71,14 +71,14 @@ functions keep their `fn()` shape and names; the theme choice reaches them throu
 **Interfaces — produces:** per-scene timing lines; `target/ui-shots/timings.tsv` (`<scene>\t<seconds>` per line);
 `UI_SHOTS_PROFILE=1` prints a per-shot breakdown: `new_app`, `fonts`, `open`, `settle`, `act`, `capture`, `png`.
 
-- [ ] Record clippy baselines (both counts) in the report.
-- [ ] Add the timing lines, the summary (wording above) and `timings.tsv`; add the profile breakdown.
-- [ ] Run the full suite twice (cold, warm) and once with `UI_SHOTS_PROFILE=1`; record total, the 15 slowest scenes,
+- [x] Record clippy baselines (both counts) in the report.
+- [x] Add the timing lines, the summary (wording above) and `timings.tsv`; add the profile breakdown.
+- [x] Run the full suite twice (cold, warm) and once with `UI_SHOTS_PROFILE=1`; record total, the 15 slowest scenes,
   the summed breakdown per phase, the time spent in `thread::sleep`, and the child-process scenes' time.
-- [ ] Write the numbers into note 81 ("Part 0 — measured") with the expected gain of each Part A item. **If a goal
+- [x] Write the numbers into note 81 ("Part 0 — measured") with the expected gain of each Part A item. **If a goal
   (90 s full, 30 s per task) looks out of reach, stop and report DONE_WITH_CONCERNS with the expected numbers** — the
   controller tells the user before Task 7.
-- [ ] Gate; commit `M11aj Task 1: measure the suite`.
+- [x] Gate; commit `M11aj Task 1: measure the suite`.
 
 ### Task 2: Move the harness out (no behaviour change)
 
@@ -88,8 +88,8 @@ such as `pixel_at`, `gap`, `diff_count`); move `Steps` and its helpers from `chr
 
 **Interfaces — produces:** `pub(super) use harness::*` so scene code compiles unchanged.
 
-- [ ] Move with `git mv` first (history), then cut the harness out; no logic edits.
-- [ ] Gate; the printed scene set and the PNG file list in `target/ui-shots/` equal Task 1's. Commit
+- [x] Move with `git mv` first (history), then cut the harness out; no logic edits.
+- [x] Gate; the printed scene set and the PNG file list in `target/ui-shots/` equal Task 1's. Commit
   `M11aj Task 2: harness in its own file`.
 
 ### Task 3: Scene registry, run options, PNGs on demand, failure pictures
@@ -109,13 +109,13 @@ such as `pixel_at`, `gap`, `diff_count`); move `Steps` and its helpers from `chr
   `target/ui-shots/failed/<scene>/`, prints the FAILED line, continues; exit 1 if any failed.
 - `smoke`'s file-header checks run on the in-memory PNG bytes (`png(&shot)`), not the file.
 
-- [ ] Tests (`cargo test --bin fuxx --features ui-shots ui_shots::` — confirm this command runs pure tests without
+- [x] Tests (`cargo test --bin fuxx --features ui-shots ui_shots::` — confirm this command runs pure tests without
   opening windows; if it can't, put the pure functions in `src/shot_args.rs` outside the feature and say so):
   `parse_args(["__ui-shots"])` defaults; `["file-tab","--png"]`; `["--shard","3/8"]` → `Some((3,8))`;
   `["--shard","9/8"]` → `Err`; `["--changed","master","--all-themes"]`.
-- [ ] Runner check: `UI_SHOTS_FAIL_DEMO=1` makes `smoke` fail on purpose → FAILED line, `failed/smoke/` has its PNGs,
+- [x] Runner check: `UI_SHOTS_FAIL_DEMO=1` makes `smoke` fail on purpose → FAILED line, `failed/smoke/` has its PNGs,
   other scenes still run, exit 1.
-- [ ] Gate; with `--png --all-themes` the PNG list equals Task 1's; without `--png` no PNG is written. Commit
+- [x] Gate; with `--png --all-themes` the PNG list equals Task 1's; without `--png` no PNG is written. Commit
   `M11aj Task 3: scene registry, run options, PNGs on demand`.
 
 ### Tasks 4, 5, 6: Split the scenes by area and tag each
@@ -149,12 +149,12 @@ Each of 4–6: gate; the printed scene set equals before; `--png --all-themes` P
 
 **Files:** `src/ui_shots/harness.rs`, `src/ui_shots/mod.rs`.
 
-- [ ] From Task 1's breakdown, apply what pays: fonts registered once per process if the platform's text system allows;
+- [x] From Task 1's breakdown, apply what pays: fonts registered once per process if the platform's text system allows;
   one `VisualTestAppContext` per scene run (its shots each in a new off-screen window, closed after capture) if
   `new_app` dominates. A scene's run starts from a fresh app. Mermaid's kept-alive contexts stay as they are.
-- [ ] Leak check: for 10 scenes (5 `Both`, 5 with several shots), the in-memory shots before and after the change are
+- [x] Leak check: for 10 scenes (5 `Both`, 5 with several shots), the in-memory shots before and after the change are
   pixel-identical (`diff_count == 0`); record which 10.
-- [ ] Gate; record the new total and per-phase sums in note 81. Commit `M11aj Task 7: less setup per shot`.
+- [x] Gate; record the new total and per-phase sums in note 81. Commit `M11aj Task 7: less setup per shot`.
 
 ### Task 8: Parallel shards, the script, fewer real-time waits (A4, A5)
 
@@ -164,16 +164,16 @@ Each of 4–6: gate; the printed scene set equals before; `--png --all-themes` P
 (longest first onto the least-loaded shard; scenes without a timing get the median; `serial` scenes never sharded);
 `scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [-j N]`.
 
-- [ ] Tests: `shard_of` balances `[10,9,2,2,1]` over 2 into loads `{12, 12}` or `{13, 11}`; every name lands exactly
+- [x] Tests: `shard_of` balances `[10,9,2,2,1]` over 2 into loads `{12, 12}` or `{13, 11}`; every name lands exactly
   once; an untimed name gets the median; `n = 1` → one shard in order.
-- [ ] The script: `cargo build --features ui-shots` once; start `-j` shards (default `min(8, cores − 2)`, at least 1)
+- [x] The script: `cargo build --features ui-shots` once; start `-j` shards (default `min(8, cores − 2)`, at least 1)
   of the built binary with `--shard i/N`, prefix lines `[i/N]`; then the `serial` scenes in one process; merge
   `timings.tsv`; print the summary (Global Constraints wording); exit 1 if any shard failed. bash 3.2-safe.
-- [ ] A5: replace `thread::sleep`s on GPUI timers with `advance_clock` / `run_until_parked`; the rest stay and their
+- [x] A5: replace `thread::sleep`s on GPUI timers with `advance_clock` / `run_until_parked`; the rest stay and their
   scenes are `serial` (list them in note 81).
-- [ ] Flake check: five consecutive full `scripts/ui-shots.sh` runs pass; if not, lower the default `-j` or mark more
+- [x] Flake check: five consecutive full `scripts/ui-shots.sh` runs pass; if not, lower the default `-j` or mark more
   scenes `serial` until they do; record the default and the five totals.
-- [ ] Gate; commit `M11aj Task 8: parallel shards and the ui-shots script`.
+- [x] Gate; commit `M11aj Task 8: parallel shards and the ui-shots script`.
 
 ### Task 9: Run what a change touches (B3, B4)
 
@@ -185,25 +185,25 @@ uses (`docs/05-Agentic-Workflow/53 - Task Handoff Template.md`).
 (`src/ui_shots/harness.rs`, `src/ui_shots/mod.rs`, `src/theme.rs`, `src/ui_tokens.rs`, `src/workspace.rs`,
 `src/appearance.rs`, `Cargo.toml`, `Cargo.lock`).
 
-- [ ] Tests: a change to `src/file_tab.rs` → only scenes with it in `sources`; to `src/theme.rs` → `All`; to an
+- [x] Tests: a change to `src/file_tab.rs` → only scenes with it in `sources`; to `src/theme.rs` → `All`; to an
   unclaimed `src/foo.rs` → `All { unclaimed: ["src/foo.rs"] }`; to `docs/x.md` only → `Nothing`; an `assets/` change →
   the scenes claiming it, else `All`.
-- [ ] `--changed <base>` runs `git diff --name-only <base>...HEAD` plus uncommitted changes, prints what it chose and
+- [x] `--changed <base>` runs `git diff --name-only <base>...HEAD` plus uncommitted changes, prints what it chose and
   why, and shards as usual.
-- [ ] Docs: the per-task gate is `scripts/ui-shots.sh --changed <task base>` (with `--png` when looking); once per
+- [x] Docs: the per-task gate is `scripts/ui-shots.sh --changed <task base>` (with `--png` when looking); once per
   milestone the full `scripts/ui-shots.sh --all-themes`. C1's rule (window-free logic → `cargo test`) goes in the same
   note.
-- [ ] Gate; commit `M11aj Task 9: run the scenes a change touches`.
+- [x] Gate; commit `M11aj Task 9: run the scenes a change touches`.
 
 ### Task 10: Move state-only checks to `cargo test` (C2)
 
 **Files:** the area files tagged `kind: State`; the app modules whose logic is lifted.
 
-- [ ] For each `State` scene: if its checks can run on pure functions lifted from the view **without changing app
+- [x] For each `State` scene: if its checks can run on pure functions lifted from the view **without changing app
   behaviour** (moving code into a function and calling it from the view is fine; new behaviour is not), move the checks
   to `cargo test` next to the function, delete the scene, and leave a one-line pointer in the area file. Otherwise list
   it ("stays: needs <reason>").
-- [ ] Gate; the list of moved and stayed scenes goes in the report. Commit `M11aj Task 10: state-only checks to cargo
+- [x] Gate; the list of moved and stayed scenes goes in the report. Commit `M11aj Task 10: state-only checks to cargo
   test`.
 
 ### Task 11: Reference fingerprints (C3, trial, droppable) and docs
@@ -214,11 +214,11 @@ uses (`docs/05-Agentic-Workflow/53 - Task Handoff Template.md`).
 point size, one byte per cell) and `pub fn distance(a: &[u8], b: &[u8]) -> f32` (mean absolute difference, 0–255;
 `f32::INFINITY` for a size mismatch).
 
-- [ ] Tests: identical → 0; one cell changed by 80 in 1,000 → 0.08; different sizes → infinity.
-- [ ] For `Visual` scenes, compare each shot's fingerprint with `tests/ui-shots-ref/<scene>-<slug>.fp`; print
+- [x] Tests: identical → 0; one cell changed by 80 in 1,000 → 0.08; different sizes → infinity.
+- [x] For `Visual` scenes, compare each shot's fingerprint with `tests/ui-shots-ref/<scene>-<slug>.fp`; print
   `ui-shots: <scene>-<slug> looks different (<d>)` above a tolerance chosen from five runs of unchanged code (record
   it); **never fail the run**. `--update-refs` writes them. Commit the refs only if their total is under 5 MB; else
   report and drop C3 to a follow-up (the controller asks the user).
-- [ ] Full `scripts/ui-shots.sh --all-themes`; record the final numbers (full run, a `--changed` run on a one-line
+- [x] Full `scripts/ui-shots.sh --all-themes`; record the final numbers (full run, a `--changed` run on a one-line
   `file_tab.rs` change, the build time) in note 81 with the scene table appendix; note 81 status 🟨 built; this plan
   11 / 11; Roadmap; a Progress Log entry. Commit `M11aj: results and docs`.
