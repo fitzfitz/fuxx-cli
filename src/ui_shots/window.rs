@@ -2678,3 +2678,22 @@ fn title_bar_scenes() {
         render_with(&theme, size(px(960.0), px(600.0)), build, act);
     }
 }
+
+struct Panel(theme::UiColors);
+
+impl Render for Panel {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let c = self.0;
+        div()
+            .flex()
+            .size_full()
+            .child(div().w(px(110.0)).h_full().bg(hsla(c.sidebar_background)))
+            .child(
+                div()
+                    .flex_1()
+                    .p(px(12.0))
+                    .child(div().h(px(28.0)).bg(hsla(c.row_active)))
+                    .child(div().mt(px(8.0)).h(px(28.0)).bg(hsla(c.ring_waiting))),
+            )
+    }
+}
