@@ -1019,6 +1019,10 @@ pub(crate) enum Glyph {
     /// M11v part 4: the thin line chevrons that replace the ▸ / ▾ triangles (› closed, ⌄ open).
     ChevronRight,
     ChevronDown,
+    /// The file bar's (M11ae): Wrap, three lines, the last ending in a return arrow (down from
+    /// the right, back to the left); Open in Editor, a box with an arrow leaving its top right.
+    Wrap,
+    OpenExternal,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1396,6 +1400,46 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         shaft.arc_to(r, px(0.0), false, true, p(7.2, 10.4));
                         shaft.line_to(p(4.5, 10.4));
                         paths.push(shaft);
+                    }
+                    Glyph::Wrap => {
+                        for (y, right) in [(2.0, 10.5), (6.0, 7.5), (10.0, 4.0)] {
+                            let mut line = stroke();
+                            line.move_to(p(1.5, y));
+                            line.line_to(p(right, y));
+                            paths.push(line);
+                        }
+                        // The return: down from beside the middle line, back left along the
+                        // last, its head pointing left.
+                        let mut back = stroke();
+                        back.move_to(p(10.5, 6.0));
+                        back.line_to(p(10.5, 10.0));
+                        back.line_to(p(6.5, 10.0));
+                        paths.push(back);
+                        let mut head = stroke();
+                        head.move_to(p(8.3, 8.2));
+                        head.line_to(p(6.5, 10.0));
+                        head.line_to(p(8.3, 11.8));
+                        paths.push(head);
+                    }
+                    Glyph::OpenExternal => {
+                        // The box, open at its top right corner.
+                        let mut frame = stroke();
+                        frame.move_to(p(5.5, 2.0));
+                        frame.line_to(p(2.0, 2.0));
+                        frame.line_to(p(2.0, 10.0));
+                        frame.line_to(p(10.0, 10.0));
+                        frame.line_to(p(10.0, 6.5));
+                        paths.push(frame);
+                        // The arrow, from inside the box out past that corner.
+                        let mut shaft = stroke();
+                        shaft.move_to(p(6.0, 6.0));
+                        shaft.line_to(p(10.5, 1.5));
+                        paths.push(shaft);
+                        let mut head = stroke();
+                        head.move_to(p(7.0, 1.5));
+                        head.line_to(p(10.5, 1.5));
+                        head.line_to(p(10.5, 5.0));
+                        paths.push(head);
                     }
                     Glyph::More => {
                         // Filled dots, as wide as the lines are thick and a little more.

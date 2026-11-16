@@ -36,11 +36,11 @@
 //! against the last commit (`FileMode::Diff`): old and new lines in one column (`DiffDoc`, one
 //! line per row, so find and copy work on it unchanged), removed rows tinted red with a `−`,
 //! added rows green with a `+`, unchanged rows' colours dimmed, both line numbers in the gutter
-//! (`columns`). The toolbar's File | Diff toggle (`shows_toggle`) and a press on a change bar
-//! switch modes; each mode keeps its own scroll. In Diff mode the git look-up asks for the
-//! diff instead of the bars, on the same schedule, off the UI thread (`look_up_diff`); its
-//! answer carries the disk version, as the bars' does (`HeldDiff`). A refused file (over 20 MB
-//! or binary) never asks git.
+//! (`columns`). The bar's view switch (File | Diff | Preview, `view_segments`) and a press on a
+//! change bar switch modes; each mode keeps its own scroll. In Diff mode the git look-up asks
+//! for the diff instead of the bars, on the same schedule, off the UI thread (`look_up_diff`);
+//! its answer carries the disk version, as the bars' does (`HeldDiff`). A refused file (over
+//! 20 MB or binary) never asks git.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -55,10 +55,11 @@ use std::time::{Duration, Instant, SystemTime};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
-    DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior,
-    ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ScrollWheelEvent, SharedString, Subscription, TextAlign, TextRun, WeakEntity, Window,
-    canvas, div, fill, list, point, prelude::*, px, size,
+    DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Global,
+    HighlightStyle, HitboxBehavior, ListAlignment, ListState, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString, StyledText,
+    Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div, fill, list, point,
+    prelude::*, px, size,
 };
 
 use crate::agent_markdown::Md;
@@ -78,7 +79,7 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
 use crate::sidebar_toggle::Tip;
-use crate::tab_bar::{Glyph, glyph, glyph_with};
+use crate::tab_bar::{Glyph, glyph_with};
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors, mix};
 use crate::ui_tokens::size::CARD_RADIUS;
@@ -93,10 +94,10 @@ pub const MISSING: &str = "This file no longer exists";
 pub const REFUSED: &str = "This file is too large or binary to show";
 pub const TOO_LARGE: &str = "Too large to colour";
 const OPEN_IN_EDITOR: &str = "Open in Editor";
-/// The toolbar's File | Diff toggle (M11h): its words and tooltips.
+/// The bar's view switch (M11h's File | Diff toggle; M11ae adds Preview) and Wrap: their words
+/// and tooltips.
 const TOGGLE_FILE: &str = "File";
 const TOGGLE_DIFF: &str = "Diff";
-const WRAP: &str = "Wrap";
 const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
 const PREVIEW: &str = "Preview";
 const TIP_PREVIEW: &str = "Show the Markdown rendered";
@@ -125,6 +126,8 @@ const CHECKPOINT: usize = 256;
 
 // The view's geometry, in points.
 const TOOLBAR: f32 = crate::browser_tab::BAR;
+/// The file bar's height (M11ae: its title on two lines); the find bar keeps `TOOLBAR`.
+const FILE_TOOLBAR: f32 = 42.0;
 const BAR_PAD: f32 = 6.0;
 const BUTTON: f32 = 24.0;
 const BUTTON_STROKE: f32 = 1.75;
@@ -372,7 +375,6 @@ pub fn find_label(query: &str, current: Option<usize>, count: usize, capped: boo
 
 /// The header chip's text: `M · +3 −1` for a changed file, `A · +12` for a new one; None when
 /// nothing changed or git has not answered.
-#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
 pub fn chip_label(counts: Option<(usize, usize, bool)>) -> Option<String> {
     let (added, removed, new) = counts?;
     if added == 0 && removed == 0 {
@@ -391,7 +393,6 @@ pub fn chip_label(counts: Option<(usize, usize, bool)>) -> Option<String> {
 /// Where the file lives, for the header: the folders from the repo's name down (`repo / a / b`),
 /// else the folder shortened under `home` (`~/Downloads`), else the folder. `repo` is
 /// `(root, rel)` as in `GitPlace`.
-#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
 pub fn where_label(path: &Path, repo: Option<(&Path, &Path)>, home: Option<&Path>) -> String {
     if let Some((root, rel)) = repo {
         let mut parts: Vec<String> = root
@@ -421,14 +422,12 @@ pub fn where_label(path: &Path, repo: Option<(&Path, &Path)>, home: Option<&Path
 }
 
 /// `1 line`, `42 lines`, `12,345 lines`.
-#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
 pub fn lines_label(n: usize) -> String {
     format!("{} line{}", thousands(n), if n == 1 { "" } else { "s" })
 }
 
 /// How long ago the file was modified: `edited just now`, `edited 5 min ago`, `1 h`, `1 d`,
 /// `1 mo` (30 days), `1 y` (365 days). A time ahead of `now` is just now.
-#[allow(dead_code)] // shown by the file tab's header (M11ae Task 2)
 pub fn age_label(modified: SystemTime, now: SystemTime) -> String {
     let secs = now.duration_since(modified).map_or(0, |d| d.as_secs());
     let (n, unit) = match secs {
@@ -1202,15 +1201,48 @@ fn preview_fits(state: &State) -> bool {
     matches!(state, State::Text(doc) if doc.text.len() <= PREVIEW_MAX)
 }
 
-/// Whether the toolbar shows Preview (M11ac): for a Markdown file, in File mode only.
-pub fn shows_preview(path: &Path, mode: FileMode) -> bool {
-    is_markdown(path) && mode == FileMode::Plain
-}
-
-/// Whether the toolbar shows the File | Diff toggle: for a file in a repo, and always in Diff
-/// mode (so it can go back).
+/// Whether the view switch offers Diff: for a file in a repo, and always in Diff mode (so it can
+/// go back).
 pub fn shows_toggle(in_repo: bool, mode: FileMode) -> bool {
     in_repo || mode == FileMode::Diff
+}
+
+/// A segment of the bar's view switch (M11ae): the file, its diff, or the Markdown rendered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    File,
+    Diff,
+    Preview,
+}
+
+impl View {
+    /// Its place in `FileTab::toggle_bounds`.
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The switch's segments, in order: File always, Diff where `shows_toggle`, Preview for a
+/// `markdown` file (in either mode). The switch shows when it has two or more.
+pub fn view_segments(in_repo: bool, mode: FileMode, markdown: bool) -> Vec<View> {
+    let mut views = vec![View::File];
+    if shows_toggle(in_repo, mode) {
+        views.push(View::Diff);
+    }
+    if markdown {
+        views.push(View::Preview);
+    }
+    views
+}
+
+/// The switch's current segment: Diff in Diff mode; Preview in File mode with Preview on and
+/// fitting (`preview_on_and_fits`); else File.
+pub fn current_view(mode: FileMode, preview_on_and_fits: bool) -> View {
+    match mode {
+        FileMode::Diff => View::Diff,
+        FileMode::Plain if preview_on_and_fits => View::Preview,
+        FileMode::Plain => View::File,
+    }
 }
 
 /// The change under a press `y` points down the text (scroll included) in the bar column: a
@@ -1940,15 +1972,18 @@ pub struct FileTab {
     pub frozen: bool,
     /// The Close button's bounds (a missing file's), as last drawn.
     close_at: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// The toggle's File and Diff segments, as last drawn.
-    toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
+    /// The view switch's File, Diff and Preview segments (`View::index`), and the bar's
+    /// controls together, as last drawn (none: not drawn).
+    toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
+    controls_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// M11ae: how long ago the file was modified (`age_label`), as the bar says it; worked out
+    /// when a version is read and in each poll (`refresh_age`), never while drawing.
+    age: Option<String>,
     /// M11ac: a Markdown file shown rendered (`md_preview`; only in File mode), the reader's
-    /// scroll (kept over a reload), the blocks parsed for the version shown, and the Preview
-    /// button as last drawn.
+    /// scroll (kept over a reload), and the blocks parsed for the version shown.
     preview: bool,
     preview_list: ListState,
     parsed: Option<(u64, Rc<Vec<Md>>)>,
-    preview_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// M11ac Part 2: what each block of the parsed version does as a Mermaid diagram, for the
     /// version and light or dark it was planned for (`mermaid::plan`), and how they were shown
     /// last frame.
@@ -2031,10 +2066,11 @@ impl FileTab {
             frozen: false,
             close_at: Rc::default(),
             toggle_at: Rc::default(),
+            controls_at: Rc::default(),
+            age: None,
             preview: false,
             preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
             parsed: None,
-            preview_at: Rc::default(),
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
             _appearance: appearance,
@@ -2122,6 +2158,7 @@ impl FileTab {
                         this.ticking = this.wanted(cx);
                         if this.ticking {
                             this.polls = this.polls.wrapping_add(1);
+                            this.refresh_age(SystemTime::now(), cx);
                             this.check_disk(cx);
                             if this.polls.is_multiple_of(CHANGES_EVERY) {
                                 this.look_up_changes(cx);
@@ -2209,9 +2246,23 @@ impl FileTab {
                 self.look_up_changes(cx);
             }
         }
+        self.refresh_age(SystemTime::now(), cx);
         self.keep_selection();
         self.find_again(cx);
         cx.notify();
+    }
+
+    /// The bar's "edited …" (M11ae) at `now`, from the file's time as last read (none without
+    /// one); drawn again only when the words change.
+    fn refresh_age(&mut self, now: SystemTime, cx: &mut Context<Self>) {
+        let age = self
+            .stamp
+            .and_then(|s| s.modified)
+            .map(|modified| age_label(modified, now));
+        if age != self.age {
+            self.age = age;
+            cx.notify();
+        }
     }
 
     /// The file isn't refused any more: its diff (refused without asking git) is to be asked.
@@ -2600,7 +2651,10 @@ impl FileTab {
     /// Whether the Markdown is shown rendered now (M11ac): Preview on, a Markdown file, File
     /// mode.
     pub fn preview_shown(&self) -> bool {
-        self.preview && shows_preview(&self.path, self.mode) && preview_fits(&self.state)
+        self.mode == FileMode::Plain
+            && self.preview
+            && is_markdown(&self.path)
+            && preview_fits(&self.state)
     }
 
     /// Preview on or off by hand (M11ac): the find bar goes with the source, and the workspace
@@ -2616,6 +2670,25 @@ impl FileTab {
         self.selection = None;
         cx.emit(FileTabEvent::Preview(on));
         cx.notify();
+    }
+
+    /// A click on the view switch (M11ae): File turns Preview off and shows the file; Diff
+    /// shows the diff; Preview (when the file fits) shows the file rendered. What is saved per
+    /// tab stays its mode and its Preview.
+    fn choose_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        match view {
+            View::File => {
+                self.choose_preview(false, window, cx);
+                self.choose_mode(FileMode::Plain, None, cx);
+            }
+            View::Diff => self.choose_mode(FileMode::Diff, None, cx),
+            View::Preview => {
+                if preview_fits(&self.state) {
+                    self.choose_mode(FileMode::Plain, None, cx);
+                    self.choose_preview(true, window, cx);
+                }
+            }
+        }
     }
 
     /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
@@ -3135,10 +3208,13 @@ impl FileTab {
             .detach();
     }
 
+    /// A 24 pt icon button with a tooltip; `on` (Wrap on) filled with `card_selected`, else
+    /// `panel_hover` on hover.
     fn icon_button(
         id: &'static str,
         kind: Glyph,
         tip: &'static str,
+        on: bool,
         ui: UiColors,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
@@ -3152,7 +3228,8 @@ impl FileTab {
             .size(px(BUTTON))
             .rounded(px(5.0))
             .cursor_pointer()
-            .hover(move |s| s.bg(hsla(ui.panel_hover)))
+            .when(on, |b| b.bg(hsla(ui.card_selected)))
+            .when(!on, |b| b.hover(move |s| s.bg(hsla(ui.panel_hover))))
             .child(glyph_with(kind, ui.text, BUTTON_STROKE))
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
@@ -3190,21 +3267,30 @@ impl FileTab {
             .child(label)
     }
 
-    /// One of the toggle's two segments (`i`: 0 File, 1 Diff): the current one `card_selected`
-    /// in `text`, the other `panel` in `text_dim` (`panel_hover` on hover); a click shows its
-    /// mode.
-    fn mode_segment(
+    /// One of the view switch's segments (M11ae): the current one `card_selected` in `text`,
+    /// the others `panel` in `text_dim` (`panel_hover` on hover); Preview over its limit faint,
+    /// doing nothing, its tooltip saying why. A click shows its view (`choose_view`).
+    fn view_segment(
         &self,
-        i: usize,
-        mode: FileMode,
+        view: View,
+        (first, last): (bool, bool),
+        current: bool,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (id, label, tip) = match mode {
-            FileMode::Plain => ("file-mode-file", TOGGLE_FILE, TIP_FILE),
-            FileMode::Diff => ("file-mode-diff", TOGGLE_DIFF, TIP_DIFF),
+        let fits = preview_fits(&self.state);
+        let (id, label, tip) = match view {
+            View::File => ("file-view-file", TOGGLE_FILE, TIP_FILE),
+            View::Diff => ("file-view-diff", TOGGLE_DIFF, TIP_DIFF),
+            View::Preview if fits => ("file-view-preview", PREVIEW, TIP_PREVIEW),
+            View::Preview => ("file-view-preview", PREVIEW, TIP_PREVIEW_TOO_LARGE),
         };
-        let current = self.mode == mode;
+        let faint = view == View::Preview && !fits;
+        let ink = match (current, faint) {
+            (true, _) => ui.text,
+            (false, true) => ui.text_faint,
+            (false, false) => ui.text_dim,
+        };
         let at = self.toggle_at.clone();
         // Inside the 1 pt border: its 5 pt corners less the border.
         let inner = px(4.0);
@@ -3216,31 +3302,29 @@ impl FileTab {
             .items_center()
             .h_full()
             .px(px(10.0))
-            .map(|d| match i {
-                0 => d.rounded_l(inner),
-                _ => d
-                    .rounded_r(inner)
-                    .border_l_1()
-                    .border_color(hsla(ui.panel_border)),
+            .when(first, |d| d.rounded_l(inner))
+            .when(last, |d| d.rounded_r(inner))
+            .when(!first, |d| {
+                d.border_l_1().border_color(hsla(ui.panel_border))
             })
             .bg(hsla(if current { ui.card_selected } else { ui.panel }))
-            .text_color(hsla(if current { ui.text } else { ui.text_dim }))
-            .when(!current, |d| {
+            .text_color(hsla(ink))
+            .when(!current && !faint, |d| {
                 d.cursor_pointer()
                     .hover(move |s| s.bg(hsla(ui.panel_hover)))
             })
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.choose_mode(mode, None, cx)),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.choose_view(view, window, cx)
+            }))
             .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
             .child(label)
             // Where it is (the scenes click it).
             .child(
                 canvas(
                     move |b, _, _| {
-                        let mut both = at.get();
-                        both[i] = Some(b);
-                        at.set(both);
+                        let mut all = at.get();
+                        all[view.index()] = Some(b);
+                        at.set(all);
                     },
                     |_, _, _, _| {},
                 )
@@ -3251,94 +3335,15 @@ impl FileTab {
             )
     }
 
-    /// The File | Diff toggle: two joined segments, a 1 pt border, 5 pt corners.
-    /// Wrap (M11x part 2): one button, filled when on, outlined when off; a click turns it the
-    /// other way for every file tab (`file-wrap`, kept in the settings).
-    fn wrap_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let on = cx.global::<Appearance>().file_wrap;
-        div()
-            .id("file-wrap")
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(BUTTON))
-            .px(px(10.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(hsla(ui.panel_border))
-            .text_size(px(text::NAME))
-            .when(on, |b| {
-                b.bg(hsla(ui.card_selected)).text_color(hsla(ui.text))
-            })
-            .when(!on, |b| {
-                b.text_color(hsla(ui.text_dim))
-                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
-            })
-            .cursor_pointer()
-            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(TIP_WRAP.into())).into() })
-            .child(WRAP)
-            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                let on = !cx.global::<Appearance>().file_wrap;
-                let values = if on { vec!["on".to_string()] } else { vec![] };
-                crate::preferences::apply(cx, "file-wrap", &values);
-            }))
-            .into_any_element()
-    }
-
-    /// Preview (M11ac): beside Wrap and drawn as it, filled when on; a click shows a Markdown
-    /// file rendered, or its source again.
-    /// Over `PREVIEW_MAX` (or too large to colour) it is drawn faint and does nothing, its
-    /// tooltip saying why.
-    fn preview_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let fits = preview_fits(&self.state);
-        let on = self.preview && fits;
-        let tip = if fits {
-            TIP_PREVIEW
-        } else {
-            TIP_PREVIEW_TOO_LARGE
-        };
-        let at = self.preview_at.clone();
-        div()
-            .id("file-preview")
-            .relative()
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(BUTTON))
-            .px(px(10.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(hsla(ui.panel_border))
-            .text_size(px(text::NAME))
-            .when(on, |b| {
-                b.bg(hsla(ui.card_selected)).text_color(hsla(ui.text))
-            })
-            .when(!on && fits, |b| {
-                b.text_color(hsla(ui.text_dim))
-                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
-                    .cursor_pointer()
-            })
-            .when(!fits, |b| b.text_color(hsla(ui.text_faint)))
-            .when(on, |b| b.cursor_pointer())
-            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
-            .child(PREVIEW)
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                if preview_fits(&this.state) {
-                    this.choose_preview(!this.preview, window, cx)
-                }
-            }))
-            // Where it is (the scenes click it).
-            .child(
-                canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-            )
-            .into_any_element()
-    }
-
-    fn toggle(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+    /// The view switch (M11ae): `views` as joined segments, a 1 pt border, 5 pt corners.
+    fn view_switch(&self, views: &[View], ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let current = current_view(self.mode, self.preview_shown());
+        let last = views.len() - 1;
+        let segments: Vec<_> = views
+            .iter()
+            .enumerate()
+            .map(|(i, &view)| self.view_segment(view, (i == 0, i == last), view == current, ui, cx))
+            .collect();
         div()
             .flex()
             .flex_none()
@@ -3348,60 +3353,178 @@ impl FileTab {
             .border_1()
             .border_color(hsla(ui.panel_border))
             .text_size(px(text::NAME))
-            .child(self.mode_segment(0, FileMode::Plain, ui, cx))
-            .child(self.mode_segment(1, FileMode::Diff, ui, cx))
+            .children(segments)
             .into_any_element()
     }
 
-    /// The toolbar: the file's path, a note, the File | Diff toggle (in a repo, or in Diff
-    /// mode), Open in Editor.
-    fn toolbar(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+    /// The bar's title (M11ae): the file's name, and its change chip once git answered
+    /// (`chip_label`) with whether the file is new to git.
+    fn title_words(&self) -> (String, Option<(String, bool)>) {
+        let name = self.path.file_name().map_or_else(
+            || self.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let counts = self.doc().and_then(|d| d.counts);
+        let chip = chip_label(counts).zip(counts.map(|(_, _, new)| new));
+        (name, chip)
+    }
+
+    /// The bar's second line (M11ae, note 80), part by part: Where; the Type, once coloured
+    /// (`Doc::syntax`; none too large to colour); the Lines, with a text shown; Edited, with a
+    /// time from the disk.
+    fn meta_parts(&self) -> Vec<String> {
+        let place = self
+            .git_place
+            .as_ref()
+            .map(|p| (p.root.as_path(), p.rel.as_path()));
+        let home = crate::workspace::home_dir();
+        let doc = self.doc();
+        let mut parts = vec![where_label(&self.path, place, home.as_deref())];
+        parts.extend(doc.and_then(|d| d.syntax.as_deref()).map(str::to_string));
+        parts.extend(doc.map(|d| lines_label(d.lines.len())));
+        parts.extend(self.age.clone());
+        parts
+    }
+
+    /// The change chip (M11ae): `M` in the change bars' blue or `A` in their green, the counts
+    /// after it in `text_dim`; `text::META` on `panel`, a 1 pt `panel_border`, fully rounded.
+    fn chip(words: String, new: bool, theme: &Theme, ui: UiColors) -> AnyElement {
+        let change = if new {
+            LineChange::Added
+        } else {
+            LineChange::Changed
+        };
+        let letter = HighlightStyle {
+            color: Some(hsla(BarColours::of(theme).of_change(change))),
+            ..Default::default()
+        };
+        let first = words.chars().next().map_or(0, char::len_utf8);
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .px(px(6.0))
+            .rounded_full()
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .bg(hsla(ui.panel))
+            .text_size(px(text::META))
+            .text_color(hsla(ui.text_dim))
+            .whitespace_nowrap()
+            .child(StyledText::new(words).with_highlights([(0..first, letter)]))
+            .into_any_element()
+    }
+
+    /// The bar (M11ae, option B): on the left the title, the file's name (semibold) and its
+    /// change chip over where it is and what it is (`meta_parts`, Where cut first when narrow);
+    /// a note; on the right the view switch (two segments or more), Wrap and Open in Editor.
+    fn toolbar(&self, theme: &Theme, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let note = match self.state {
             State::PlainTooLarge(_) => Some(TOO_LARGE),
             _ => None,
         };
-        let toggle = shows_toggle(self.git_place.is_some(), self.mode).then(|| self.toggle(ui, cx));
-        // Wrap, left of File | Diff (M11x part 2), wherever there's text to wrap.
         let has_text = matches!(self.state, State::Text(_) | State::PlainTooLarge(_));
-        let wrap = has_text.then(|| self.wrap_button(ui, cx));
-        // Preview, right of Wrap (M11ac): a Markdown file in File mode.
-        let preview =
-            (has_text && shows_preview(&self.path, self.mode)).then(|| self.preview_button(ui, cx));
+        let markdown = has_text && is_markdown(&self.path);
+        let views = view_segments(self.git_place.is_some(), self.mode, markdown);
+        // Only segments drawn this frame have bounds.
+        self.toggle_at.set([None; 3]);
+        let switch = (views.len() >= 2).then(|| self.view_switch(&views, ui, cx));
+        // Wrap (M11x part 2), wherever there's text to wrap: filled when on; a click turns it
+        // the other way for every file tab (`file-wrap`, kept in the settings).
+        let wrap = has_text.then(|| {
+            let on = cx.global::<Appearance>().file_wrap;
+            Self::icon_button(
+                "file-wrap",
+                Glyph::Wrap,
+                TIP_WRAP,
+                on,
+                ui,
+                |_, _, cx| {
+                    let on = !cx.global::<Appearance>().file_wrap;
+                    let values = if on { vec!["on".to_string()] } else { vec![] };
+                    crate::preferences::apply(cx, "file-wrap", &values);
+                },
+                cx,
+            )
+        });
         // A refused file has its button in the middle; a missing one has none.
         let open = matches!(
             self.state,
             State::Loading | State::Text(_) | State::PlainTooLarge(_)
         )
         .then(|| {
-            Self::text_button(
+            Self::icon_button(
                 "file-open-in-editor",
+                Glyph::OpenExternal,
                 OPEN_IN_EDITOR,
+                false,
                 ui,
                 |this, _, cx| this.open_in_editor(cx),
                 cx,
             )
         });
+        let (name, chip) = self.title_words();
+        let mut meta = self.meta_parts().into_iter();
+        let place = meta.next().unwrap_or_default();
+        let at = self.controls_at.clone();
+        let title = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .min_w(px(0.0))
+            .gap(px(6.0))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(text::NAME))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(ui.text))
+                    .child(SharedString::from(name)),
+            )
+            .children(chip.map(|(words, new)| Self::chip(words, new, theme, ui)));
+        let details = div()
+            .flex()
+            .flex_row()
+            .min_w(px(0.0))
+            .text_size(px(text::META))
+            .text_color(hsla(ui.text_dim))
+            .child(
+                div()
+                    .flex_shrink(1.0)
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(SharedString::from(place)),
+            )
+            .children(meta.map(|part| {
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(format!(" \u{b7} {part}")))
+            }));
         div()
             .flex()
             .flex_none()
             .flex_row()
             .items_center()
             .w_full()
-            .h(px(TOOLBAR))
+            .h(px(FILE_TOOLBAR))
             .px(px(BAR_PAD + 4.0))
             .gap(px(8.0))
             .bg(hsla(ui.panel))
             .border_b_1()
             .border_color(hsla(ui.panel_border))
-            .child(glyph(Glyph::File, ui.text_dim))
+            // Too narrow even with Where gone, the parts kept whole are cut at the controls.
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(text::NAME))
-                    .text_color(hsla(ui.text_dim))
-                    .child(SharedString::from(self.path.display().to_string())),
+                    .overflow_hidden()
+                    .gap(px(1.0))
+                    .child(title)
+                    .child(details),
             )
             .children(note.map(|note| {
                 div()
@@ -3410,10 +3533,26 @@ impl FileTab {
                     .text_color(hsla(ui.text_faint))
                     .child(note)
             }))
-            .children(wrap)
-            .children(preview)
-            .children(toggle)
-            .children(open)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_none()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .children(switch)
+                    .children(wrap)
+                    .children(open)
+                    // Where they are (the scenes check they stay in the pane).
+                    .child(
+                        canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -3429,6 +3568,7 @@ impl FileTab {
             "file-find-prev",
             Glyph::Back,
             "Previous match",
+            false,
             ui,
             |this, window, cx| this.find_step(false, window, cx),
             cx,
@@ -3437,6 +3577,7 @@ impl FileTab {
             "file-find-next",
             Glyph::Forward,
             "Next match",
+            false,
             ui,
             |this, window, cx| this.find_step(true, window, cx),
             cx,
@@ -3445,6 +3586,7 @@ impl FileTab {
             "file-find-close",
             Glyph::Stop,
             "Close the find bar",
+            false,
             ui,
             |this, window, cx| this.close_find(window, cx),
             cx,
@@ -3701,9 +3843,10 @@ impl FileTab {
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
 impl FileTab {
-    /// M11ac: the Preview button as last drawn, the reader's scroll, and the version parsed.
+    /// M11ac: the view switch's Preview segment as last drawn (M11ae), the reader's scroll, and
+    /// the version parsed.
     pub fn preview_bounds(&self) -> Option<Bounds<Pixels>> {
-        self.preview_at.get()
+        self.toggle_at.get()[View::Preview.index()]
     }
 
     pub fn preview_list(&self) -> ListState {
@@ -3773,9 +3916,25 @@ impl FileTab {
         self.body_note()
     }
 
-    /// The toggle's File and Diff segments, as last drawn.
-    pub fn toggle_bounds(&self) -> [Option<Bounds<Pixels>>; 2] {
+    /// The view switch's File, Diff and Preview segments, as last drawn (none: not drawn).
+    pub fn toggle_bounds(&self) -> [Option<Bounds<Pixels>>; 3] {
         self.toggle_at.get()
+    }
+
+    /// M11ae: the bar's controls together (the switch, Wrap, Open in Editor), as last drawn.
+    pub fn controls_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.controls_at.get()
+    }
+
+    /// M11ae: the bar's words: the name, the chip, and the second line (its parts joined by
+    /// ` · `).
+    pub fn header_words(&self) -> (String, Option<String>, String) {
+        let (name, chip) = self.title_words();
+        (
+            name,
+            chip.map(|(words, _)| words),
+            self.meta_parts().join(" \u{b7} "),
+        )
     }
 
     /// "waiting", "rows", "same", "binary", "norepo" or "refuse".
@@ -3790,22 +3949,23 @@ impl FileTab {
         }
     }
 
-    /// The Preview button's click handler (M11p's chrome scenes call it without the mouse).
+    /// The Preview segment's click handler, or File's for off (M11p's chrome scenes call it
+    /// without the mouse).
     pub fn choose_preview_for_shots(
         &mut self,
         on: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.choose_preview(on, window, cx);
+        self.choose_view(if on { View::Preview } else { View::File }, window, cx);
     }
 
-    /// The File | Diff toggle's click handler (as above).
+    /// The view switch's Diff handler, or a mode by hand (as above).
     pub fn choose_mode_for_shots(&mut self, mode: FileMode, cx: &mut Context<Self>) {
         self.choose_mode(mode, None, cx);
     }
 
-    /// A frozen tab has no git place (no look-up), so Plain mode shows no toggle: give it a
+    /// A frozen tab has no git place (no look-up), so Plain mode offers no Diff: give it a
     /// made-up one, so the scenes can click File and Diff both ways. git is never run on it.
     pub fn pretend_in_repo_for_shots(&mut self, cx: &mut Context<Self>) {
         let root = self
@@ -3919,7 +4079,7 @@ impl Render for FileTab {
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
         self.reveal_diff(window, cx);
-        let toolbar = self.toolbar(ui, cx);
+        let toolbar = self.toolbar(&theme, ui, cx);
         let find_bar = self.find_bar(ui, cx);
         let body = match self.body_note() {
             Some(words) if words == MISSING || words == REFUSED => self.notice(ui, cx),
@@ -4145,13 +4305,33 @@ impl Workspace {
 mod tests {
     use super::*;
 
-    /// M11ac: Preview is offered for a Markdown file in File mode only.
+    /// M11ae: the view switch offers File always, Diff in a repo (or in Diff mode), Preview for
+    /// Markdown (in either mode); it shows with two segments or more.
     #[test]
-    fn preview_shows_for_markdown_in_file_mode_only() {
-        assert!(shows_preview(Path::new("/w/README.md"), FileMode::Plain));
-        assert!(shows_preview(Path::new("/w/a.MARKDOWN"), FileMode::Plain));
-        assert!(!shows_preview(Path::new("/w/README.md"), FileMode::Diff));
-        assert!(!shows_preview(Path::new("/w/main.rs"), FileMode::Plain));
+    fn the_view_switch_offers_file_diff_and_preview_where_they_apply() {
+        use View::{Diff, File, Preview};
+        assert_eq!(
+            view_segments(true, FileMode::Plain, true),
+            [File, Diff, Preview]
+        );
+        assert_eq!(view_segments(false, FileMode::Plain, true), [File, Preview]);
+        // A file outside a repo that isn't Markdown: one segment, no switch.
+        assert_eq!(view_segments(false, FileMode::Plain, false), [File]);
+        assert_eq!(view_segments(false, FileMode::Diff, false), [File, Diff]);
+        assert_eq!(
+            view_segments(false, FileMode::Diff, true),
+            [File, Diff, Preview]
+        );
+    }
+
+    /// M11ae: the current segment is Diff in Diff mode, Preview in File mode with Preview on
+    /// (and fitting), else File.
+    #[test]
+    fn the_current_view_is_diff_then_preview_then_file() {
+        assert_eq!(current_view(FileMode::Diff, true), View::Diff);
+        assert_eq!(current_view(FileMode::Diff, false), View::Diff);
+        assert_eq!(current_view(FileMode::Plain, true), View::Preview);
+        assert_eq!(current_view(FileMode::Plain, false), View::File);
     }
 
     /// M11ac review fix: Preview draws only a coloured text up to 1 MB; a bigger one (or one
@@ -4724,14 +4904,6 @@ mod tests {
         // The sign column's left, one cell wide, then the text.
         assert_eq!(diff.bar_left, 68.0);
         assert_eq!(diff.text_left, 86.0);
-    }
-
-    #[test]
-    fn the_toggle_shows_in_a_repo_or_in_diff_mode() {
-        assert!(!shows_toggle(false, FileMode::Plain));
-        assert!(shows_toggle(true, FileMode::Plain));
-        assert!(shows_toggle(false, FileMode::Diff));
-        assert!(shows_toggle(true, FileMode::Diff));
     }
 
     #[test]
