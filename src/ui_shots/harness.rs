@@ -2,6 +2,7 @@
 //! pixel helpers, frame helpers, and `Steps` (the chrome scenes' checked steps). Scenes use them
 //! through `ui_shots`, which re-exports this module.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -33,6 +34,7 @@ pub fn shot_theme(name: &str) -> Theme {
 }
 
 /// A rendered scene: size in device pixels and RGBA bytes, row by row.
+#[derive(Clone)]
 pub struct Shot {
     pub width: u32,
     pub height: u32,
@@ -105,7 +107,8 @@ pub fn render_with(
     shot
 }
 
-/// Render and save `target/ui-shots/<name>-<slug>.png`; returns the path.
+/// Render, keep the shot for the scene (`keep_shot`) as `<name>-<slug>`; returns its PNG's path
+/// (written only with `--png`).
 pub fn shoot(
     name: &str,
     slug: &str,
@@ -126,15 +129,66 @@ pub fn shoot_with(
     act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle),
 ) -> PathBuf {
     let shot = render_with(theme, size, build, act);
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    keep_owned(format!("{name}-{slug}"), shot)
+}
+
+thread_local! {
+    /// The running scene's shots, by file stem: written to `target/ui-shots/failed/<scene>/` if
+    /// it fails. Cleared as each scene starts (`forget_shots`).
+    static KEPT: RefCell<Vec<(String, Shot)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `target/ui-shots/`, where the PNGs go.
+pub(super) fn shots_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
-        .join("ui-shots");
-    std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-    let path = dir.join(format!("{name}-{slug}.png"));
-    let started = Instant::now();
-    std::fs::write(&path, png(&shot)).expect("write the PNG");
-    prof::lap(prof::PNG, started);
+        .join("ui-shots")
+}
+
+/// Keep a copy of `shot` for the running scene as `stem` (its failure picture); with `--png`
+/// (or `UI_SHOTS_PNG=1`) also write `target/ui-shots/<stem>.png`. Returns that path.
+pub(super) fn keep_shot(stem: &str, shot: &Shot) -> PathBuf {
+    keep_owned(stem.to_string(), shot.clone())
+}
+
+fn keep_owned(stem: String, shot: Shot) -> PathBuf {
+    let path = shots_dir().join(format!("{stem}.png"));
+    if super::options().png {
+        std::fs::create_dir_all(shots_dir()).expect("create target/ui-shots");
+        let started = Instant::now();
+        std::fs::write(&path, png(&shot)).expect("write the PNG");
+        prof::lap(prof::PNG, started);
+    }
+    KEPT.with_borrow_mut(|kept| kept.push((stem, shot)));
     path
+}
+
+/// The PNG bytes of the running scene's latest kept shot.
+pub(super) fn last_png() -> Vec<u8> {
+    KEPT.with_borrow(|kept| png(&kept.last().expect("a kept shot").1))
+}
+
+/// A scene starts: drop the last one's shots and its old failure pictures.
+pub(super) fn forget_shots(scene: &str) {
+    KEPT.with_borrow_mut(Vec::clear);
+    let _ = std::fs::remove_dir_all(failed_dir(scene));
+}
+
+/// `target/ui-shots/failed/<scene>/`.
+pub(super) fn failed_dir(scene: &str) -> PathBuf {
+    shots_dir().join("failed").join(scene)
+}
+
+/// A scene failed: write its kept shots to `failed_dir(scene)` (as `<stem>.png`); returns it.
+pub(super) fn write_failed(scene: &str) -> PathBuf {
+    let dir = failed_dir(scene);
+    std::fs::create_dir_all(&dir).expect("create target/ui-shots/failed/<scene>");
+    KEPT.with_borrow(|kept| {
+        for (stem, shot) in kept {
+            std::fs::write(dir.join(format!("{stem}.png")), png(shot)).expect("write the PNG");
+        }
+    });
+    dir
 }
 
 /// Timing for `UI_SHOTS_PROFILE=1` (per-phase sums of `render_with`/`shoot_with`) and for the
@@ -583,11 +637,9 @@ impl Steps {
             );
         }
         if stale > 0 {
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
             let k = self.count;
-            std::fs::write(dir.join(format!("{n}-{k}-stale-now.png")), png(&now)).expect("PNG");
-            std::fs::write(dir.join(format!("{n}-{k}-stale-fresh.png")), png(&fresh)).expect("PNG");
+            keep_shot(&format!("{n}-{k}-stale-now"), &now);
+            keep_shot(&format!("{n}-{k}-stale-fresh"), &fresh);
             let what = format!(
                 "{n}: {what}: {stale} bytes differ from a full redraw (stale); ages then {ages:?}"
             );
