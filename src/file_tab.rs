@@ -57,9 +57,9 @@ use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
     DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Global,
     HighlightStyle, HitboxBehavior, ListAlignment, ListOffset, ListState, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString,
-    StyledText, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div, fill, list,
-    point, prelude::*, px, size,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent,
+    SharedString, StyledText, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div,
+    fill, list, point, prelude::*, px, size,
 };
 
 use crate::agent_markdown::Md;
@@ -617,8 +617,8 @@ pub struct Doc {
     pub changes: Arc<Changes>,
     /// The version the change bars were made for (an older one's carried over a reload).
     pub changes_version: Option<u64>,
-    /// (added, removed, new) lines against HEAD, from the same answer as the bars (once git
-    /// answered).
+    /// (added, removed, new) lines against HEAD, from the same answer as the bars, or from
+    /// Diff mode's rows (once git answered).
     pub counts: Option<(usize, usize, bool)>,
     /// The syntax's name, once the colours are made (`Highlighter::syntax_name`).
     pub syntax: Option<Arc<str>>,
@@ -735,13 +735,19 @@ impl Doc {
         self.changes_version = Some(version);
         let (by_line, deleted) = bars(changes);
         let changes = Changes { by_line, deleted };
-        let counts_changed = self.counts != counts;
-        self.counts = counts;
+        let counts_changed = self.set_counts(counts);
         if *self.changes == changes {
             return counts_changed;
         }
         self.changes = Arc::new(changes);
         true
+    }
+
+    /// The header chip's counts (the bars' answer, or Diff mode's rows: `DiffDoc::counts`),
+    /// taken by the caller's version check (`accept_changes`'s, or the held diff's). True when
+    /// they changed.
+    pub fn set_counts(&mut self, counts: Option<(usize, usize, bool)>) -> bool {
+        std::mem::replace(&mut self.counts, counts) != counts
     }
 }
 
@@ -833,6 +839,23 @@ pub struct DiffDoc {
     /// Whether it may be coloured: both its sides at most 2 MB (`PLAIN_ABOVE`) and no line too
     /// long to colour. Decided by the rows, not the file on disk (a deleted file has none).
     pub colourable: bool,
+    /// Untracked, or no commits yet: git said the whole file is added (`FileDiff::AllAdded`).
+    /// For the header chip's `A` (M11ae).
+    pub new: bool,
+}
+
+impl DiffDoc {
+    /// (added, removed, new) for the header chip (M11ae): the Added and Removed rows, exact as
+    /// `git diff --numstat` counts them (not the hunk headers': with `-U<n>` they include the
+    /// context).
+    pub fn counts(&self) -> (usize, usize, bool) {
+        let (added, removed) = self.rows.iter().fold((0, 0), |(a, r), row| match row.kind {
+            RowKind::Added => (a + 1, r),
+            RowKind::Removed => (a, r + 1),
+            RowKind::Same | RowKind::Gap => (a, r),
+        });
+        (added, removed, self.new)
+    }
 }
 
 /// The diff held and the disk version it was asked for: an answer for an older version than
@@ -893,6 +916,7 @@ fn diff_state(
     colour: Option<(&Highlighter, &Path)>,
     held: Option<&ColouredRows>,
 ) -> DiffState {
+    let new = matches!(diff, FileDiff::AllAdded);
     match diff_outcome(diff, disk_text) {
         Outcome::Same => DiffState::Same,
         Outcome::Binary => DiffState::Binary,
@@ -914,6 +938,7 @@ fn diff_state(
                 gutter: Gutter::diff(&parsed.rows),
                 rows: Arc::new(parsed.rows),
                 colourable,
+                new,
             })
         }
     }
@@ -2344,6 +2369,17 @@ impl FileTab {
         if shown && !was && !self.frozen {
             self.check_disk(cx);
         }
+        // M11ae: off screen, its canvas isn't painted, so its release and move listeners are
+        // gone: a drag going on would never end (the auto-scroll stepping to the text's end,
+        // each step redrawing the window). The selection's drag, a thumb's drag and the hover
+        // end here; the auto-scroll task ends at its next step. These draw nothing.
+        if was && !shown {
+            self.selecting = false;
+            self.drag_at = None;
+            if self.scrollbar.hide() {
+                self.preview_list.scrollbar_drag_ended();
+            }
+        }
         self.tick(cx);
     }
 
@@ -2410,7 +2446,11 @@ impl FileTab {
     /// bars until the new ones come), or a note.
     fn loaded(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         match loaded {
-            Loaded::Unchanged => return,
+            // The same file: only its age may read differently (a tab back on screen).
+            Loaded::Unchanged => {
+                self.refresh_age(SystemTime::now(), cx);
+                return;
+            }
             // Each look at the disk that finds something new is a version (a diff asked for an
             // older one is dropped).
             Loaded::Missing => {
@@ -2814,6 +2854,14 @@ impl FileTab {
     /// first rows scroll to their first change; the same rows again keep theirs (and their
     /// colours) as they are.
     fn accept_diff(&mut self, version: u64, state: DiffState, cx: &mut Context<Self>) {
+        // M11ae: the header chip's counts from the rows (none to show when unchanged), so Diff
+        // mode's chip is there and current too; taken when the diff is (the held diff's version
+        // check). Look-ups run one at a time, so the bars' answer and the diff's never cross.
+        let counts = match &state {
+            DiffState::Rows(d) => Some(d.counts()),
+            DiffState::Same => Some((0, 0, false)),
+            _ => None,
+        };
         let unchanged = match (&self.diff.state, &state) {
             (DiffState::Rows(held), DiffState::Rows(new)) => {
                 held.doc.text == new.doc.text
@@ -2826,12 +2874,17 @@ impl FileTab {
         if unchanged {
             if fresher(version, self.versions, self.diff.version) {
                 self.diff.version = Some(version);
+                if self.take_diff_counts(counts) {
+                    cx.notify();
+                }
             }
             return;
         }
         if !self.diff.accept(version, self.versions, state) {
             return;
         }
+        // Redrawn below.
+        self.take_diff_counts(counts);
         match &self.diff.state {
             DiffState::Rows(d) => {
                 if first_rows && self.reveal.is_none() {
@@ -2851,6 +2904,15 @@ impl FileTab {
             self.find_again(cx);
         }
         cx.notify();
+    }
+
+    /// The counts a diff gave (none: it gives none, as binary or refused) for the file's text;
+    /// whether the chip changed.
+    fn take_diff_counts(&mut self, counts: Option<(usize, usize, bool)>) -> bool {
+        match (counts, self.doc_mut()) {
+            (Some(counts), Some(doc)) => doc.set_counts(Some(counts)),
+            _ => false,
+        }
     }
 
     /// The file's mode now (M11h).
@@ -2974,6 +3036,15 @@ impl FileTab {
         }
     }
 
+    /// M11ae: the pointer left the window (GPUI sends no last move): the edge zone isn't hot,
+    /// so the thumb fades as after any activity (a pane at the window's edge is the usual case).
+    fn pointer_left(&mut self, cx: &mut Context<Self>) {
+        if self.scrollbar.set_hot(false) {
+            self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
     /// The button released anywhere in the window: a thumb drag ends.
     fn preview_release(&mut self, cx: &mut Context<Self>) {
         if self.scrollbar.end_drag(Instant::now()) {
@@ -3071,9 +3142,18 @@ impl FileTab {
                                 }
                             }
                         });
-                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |_: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    view.update(cx, |this, cx| this.preview_release(cx)).ok();
+                                }
+                            }
+                        });
+                        // The pointer left the window (no last move comes): not hot.
+                        window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
                             if phase == DispatchPhase::Bubble {
-                                view.update(cx, |this, cx| this.preview_release(cx)).ok();
+                                view.update(cx, |this, cx| this.pointer_left(cx)).ok();
                             }
                         });
                     },
@@ -3351,6 +3431,8 @@ impl FileTab {
         if let Some(pos) = self.pos_at(e.position, window, cx) {
             self.selection = Some((pos, pos));
             self.selecting = true;
+            // The last drag's pointer is not this one's (an old auto-scroll task ends).
+            self.drag_at = None;
             cx.notify();
         }
     }
@@ -3406,7 +3488,11 @@ impl FileTab {
     /// The button released anywhere in the window: a selection or a thumb drag ends.
     fn mouse_up(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
+        // No old auto-scroll task resumes on a quick press again.
+        self.drag_at = None;
         if self.scrollbar.end_drag(Instant::now()) {
+            // Idempotent: a Preview thumb's drag may end here too.
+            self.preview_list.scrollbar_drag_ended();
             self.scrolled(cx);
             cx.notify();
         }
@@ -4393,9 +4479,18 @@ impl FileTab {
                                     }
                                 }
                             });
-                            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            window.on_mouse_event({
+                                let view = view.clone();
+                                move |_: &MouseUpEvent, phase, _, cx| {
+                                    if phase == DispatchPhase::Bubble {
+                                        view.update(cx, |this, cx| this.mouse_up(cx));
+                                    }
+                                }
+                            });
+                            // The pointer left the window (no last move comes): not hot.
+                            window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble {
-                                    view.update(cx, |this, cx| this.mouse_up(cx));
+                                    view.update(cx, |this, cx| this.pointer_left(cx));
                                 }
                             });
                         },
@@ -4473,17 +4568,17 @@ impl FileTab {
         self.geom.get()
     }
 
-    /// The scroll of the mode shown.
-    /// M11ae: whether the drag-select auto-scroll task runs, and the selection (anchor, moving
-    /// end).
+    /// M11ae: whether the drag-select auto-scroll task runs.
     pub fn autoscrolling(&self) -> bool {
         self.autoscrolling
     }
 
+    /// M11ae: the selection (anchor, moving end).
     pub fn selection(&self) -> Option<(Pos, Pos)> {
         self.selection
     }
 
+    /// The scroll of the mode shown.
     pub fn scroll(&self) -> Point<Pixels> {
         self.mode_scroll()
     }
@@ -5295,6 +5390,25 @@ mod tests {
     }
 
     #[test]
+    fn counts_from_the_diff_replace_the_held_ones_and_clear_the_chip_when_unchanged() {
+        let mut doc = Doc::new("a\n".into(), 4);
+        assert!(doc.set_counts(Some((3, 1, false))));
+        assert!(!doc.set_counts(Some((3, 1, false))), "the same again");
+        assert_eq!(
+            chip_label(doc.counts).as_deref(),
+            Some("M \u{b7} +3 \u{2212}1")
+        );
+        // The file reverted: the diff says unchanged, so no chip.
+        assert!(doc.set_counts(Some((0, 0, false))));
+        assert_eq!(chip_label(doc.counts), None);
+        // Carried over a reload until the next answer.
+        doc.set_counts(Some((1, 0, true)));
+        let mut fresh = Doc::new("a\nb\n".into(), 5);
+        fresh.carry_over(&doc, false);
+        assert_eq!(chip_label(fresh.counts).as_deref(), Some("A \u{b7} +1"));
+    }
+
+    #[test]
     fn a_reload_keeps_the_counts_and_the_type_until_new_ones_land() {
         let mut old = Doc::new("a\n".into(), 1);
         old.accept_changes(1, &[(1, LineChange::Added)], Some((1, 0, false)));
@@ -5556,6 +5670,7 @@ mod tests {
         assert_eq!(d.doc.line(2), "");
         assert_eq!(d.doc.version, 4);
         assert!(d.doc.spans.is_none(), "no highlighter: uncoloured");
+        assert_eq!(d.counts(), (1, 0, false), "one row added");
         // Its gutter, worked out once: the largest old number is 2, the largest new 3, so each
         // column is the 2-digit minimum.
         assert_eq!(
@@ -5570,6 +5685,7 @@ mod tests {
             panic!("rows");
         };
         assert_eq!((d.rows.len(), d.doc.lines.len()), (2, 2));
+        assert_eq!(d.counts(), (2, 0, true), "every line added, new to git");
         assert!(matches!(
             diff_state(FileDiff::Unified(String::new()), None, 1, None, None),
             DiffState::Same
@@ -5578,6 +5694,24 @@ mod tests {
             diff_state(FileDiff::Binary, Some("x"), 1, None, None),
             DiffState::Binary
         ));
+    }
+
+    #[test]
+    fn diff_counts_are_the_added_and_removed_rows_not_the_hunk_headers() {
+        // `-U<n>`: the header counts context lines (4 old, 5 new); the rows say +2 −1.
+        let unified = "@@ -1,4 +1,5 @@\n a\n-b\n+bee\n c\n d\n+e\n";
+        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let DiffState::Rows(d) = state else {
+            panic!("rows");
+        };
+        assert_eq!(d.counts(), (2, 1, false));
+        // Two hunks with a gap between them.
+        let unified = "@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -9,2 +9,1 @@\n i\n-j\n";
+        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let DiffState::Rows(d) = state else {
+            panic!("rows");
+        };
+        assert_eq!(d.counts(), (1, 2, false));
     }
 
     #[test]
