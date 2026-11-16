@@ -21961,6 +21961,10 @@ fn main() {
 ///   nested bullet and number, the quote's bar, the table's grid, the rule, the code block on
 ///   its fill, the image's alt text in brackets). The tab told its workspace (`Preview(true)`).
 ///
+/// - `file-tab-md-preview-scrollbar` (M11ae): a 300-paragraph file in Preview: a wheel step shows
+///   the thumb in the list's right 12 pt; the thumb dragged below the list scrolls to the end
+///   (shot: the thumb at the bottom right). A short file never shows one.
+///
 /// Not shot: a long file scrolled down in the Preview, rewritten on disk and read again: parsed
 /// again, the scroll kept; ⌘F then turns Preview off (`Preview(false)`) and opens the find
 /// bar on the source; Diff mode shows no Preview.
@@ -21992,6 +21996,16 @@ fn file_tab_md_scenes() {
     // a coloured line may have, so the file is Preview's), and a file past Preview's 1 MB.
     let deep = dir.join("DEEP.md");
     std::fs::write(&deep, format!("{}\n", ">".repeat(16_000)).repeat(4)).expect("DEEP.md");
+    let scrolly = dir.join("SCROLLY.md");
+    std::fs::write(
+        &scrolly,
+        (0..300)
+            .map(|i| format!("Paragraph {i}, long enough to read as prose.\n\n"))
+            .collect::<String>(),
+    )
+    .expect("SCROLLY.md");
+    let tiny = dir.join("TINY.md");
+    std::fs::write(&tiny, "# Tiny\n\nOne short paragraph.\n").expect("TINY.md");
     let huge = dir.join("HUGE.md");
     std::fs::write(&huge, "word ".repeat(crate::file_tab::PREVIEW_MAX / 5 + 1)).expect("HUGE.md");
 
@@ -22117,6 +22131,119 @@ fn file_tab_md_scenes() {
         };
         assert!(found(colours.code_bg, 2), "{n}: the code's fill");
         assert!(found(colours.link, 40), "{n}: the link's colour");
+
+        // M11ae Task 4: the scrollbar in Preview. A long file: none before a scroll, shown by a
+        // wheel step, a thumb drag to below the list scrolls it to the end; a short file never
+        // shows one.
+        {
+            use crate::scrollbar::Axis;
+            use gpui::{MouseButton, ScrollDelta, ScrollWheelEvent, TouchPhase};
+            let n = format!("file-tab-md-preview-scrollbar-{slug}");
+            let slot: TabSlot = Rc::default();
+            let build = build_for(scrolly.clone(), slot.clone(), Rc::default());
+            let tiny = tiny.clone();
+            let short_slot: TabSlot = Rc::default();
+            let short_build = build_for(tiny, short_slot.clone(), Rc::default());
+            let none = Modifiers::none();
+            let wheel = |cx: &mut VisualTestAppContext, window, at| {
+                cx.simulate_event(
+                    window,
+                    ScrollWheelEvent {
+                        position: at,
+                        delta: ScrollDelta::Lines(point(0.0, -3.0)),
+                        modifiers: none,
+                        touch_phase: TouchPhase::Moved,
+                    },
+                );
+            };
+            let preview = |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
+                frame(cx, window);
+                let button = cx
+                    .read(|cx| tab.read(cx).preview_bounds())
+                    .expect("Preview is drawn");
+                cx.simulate_click(window, button.center(), none);
+                frame(cx, window);
+            };
+            let act = {
+                let n = n.clone();
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let tab = tab_of(&slot);
+                    preview(cx, window, &tab);
+                    let list = cx.read(|cx| tab.read(cx).preview_list());
+                    let area = list.viewport_bounds();
+                    assert!(
+                        !cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                        "{n}: shown before any scroll"
+                    );
+                    wheel(cx, window, area.center());
+                    frame(cx, window);
+                    assert!(
+                        cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                        "{n}: not shown after a wheel step"
+                    );
+                    let thumb = cx
+                        .read(|cx| tab.read(cx).thumb_bounds(Axis::Vertical))
+                        .expect("a thumb");
+                    assert!(
+                        thumb.left() >= area.right() - px(12.0) && thumb.right() <= area.right(),
+                        "{n}: the thumb {thumb:?} is not in the list's right 12 pt ({area:?})"
+                    );
+                    // Drag the thumb to below the list: the end.
+                    let grab = thumb.center();
+                    cx.simulate_mouse_down(window, grab, MouseButton::Left, none);
+                    let below = point(grab.x, area.bottom() + px(40.0));
+                    cx.simulate_mouse_move(window, below, Some(MouseButton::Left), none);
+                    cx.simulate_mouse_up(window, below, MouseButton::Left, none);
+                    frame(cx, window);
+                    assert_eq!(
+                        list.is_scrolled_to_end(),
+                        Some(true),
+                        "{n}: dragged to the end"
+                    );
+                    assert!(!list.is_scrollbar_dragging(), "{n}: the drag is over");
+                    let thumb = cx
+                        .read(|cx| tab.read(cx).thumb_bounds(Axis::Vertical))
+                        .expect("a thumb");
+                    assert!(
+                        (thumb.bottom() - area.bottom()).abs() < px(1.0),
+                        "{n}: the thumb {thumb:?} at the track's end"
+                    );
+                    assert!(
+                        cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                        "{n}: not shown after a drag"
+                    );
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(
+                "file-tab-md-preview-scrollbar",
+                slug,
+                &theme,
+                dims,
+                build,
+                act,
+            );
+            println!("ui-shots: {}", path.display());
+            let n = format!("file-tab-md-preview-scrollbar-short-{slug}");
+            render_with(&theme, dims, short_build, move |cx, window| {
+                let tab = tab_of(&short_slot);
+                preview(cx, window, &tab);
+                let area = cx.read(|cx| tab.read(cx).preview_list().viewport_bounds());
+                wheel(cx, window, area.center());
+                cx.simulate_mouse_move(
+                    window,
+                    point(area.right() - px(4.0), area.center().y),
+                    None,
+                    none,
+                );
+                frame(cx, window);
+                assert!(
+                    !cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                    "{n}: shown for a file that fits"
+                );
+                short_slot.borrow_mut().take();
+            });
+        }
 
         // A long file, scrolled, rewritten: parsed again, the scroll kept; then ⌘F turns
         // Preview off and opens find; Diff mode shows none (not shot).

@@ -1351,6 +1351,20 @@ impl Track {
         })
     }
 
+    /// The Preview's: the list's `area` (its viewport), the reader's `content` height and its
+    /// scroll `offset` down. None when it all fits.
+    fn of_list(area: Bounds<Pixels>, content: f32, offset: f32) -> Option<Track> {
+        let viewport = f32::from(area.size.height);
+        let thumb = scrollbar::thumb(viewport, content, offset)?;
+        Some(Track {
+            axis: Axis::Vertical,
+            area,
+            viewport,
+            content,
+            thumb,
+        })
+    }
+
     /// Window point `p` along the track, from its start.
     fn along(&self, p: Point<Pixels>) -> f32 {
         f32::from(match self.axis {
@@ -1384,6 +1398,16 @@ fn zone_at(g: &Geom, p: Point<Pixels>) -> Option<Track> {
         .into_iter()
         .filter_map(|axis| Track::of(g, axis))
         .find(|t| t.zone_has(p))
+}
+
+/// The Preview's scrollbar track as the list was last laid out (M11ae), read from its state:
+/// `scroll_px_offset_for_scrollbar` has a negative `y`, and the content is the list's own
+/// `max_offset_for_scrollbar` (fixed during a thumb drag) plus the viewport.
+fn preview_track(list: &ListState) -> Option<Track> {
+    let area = list.viewport_bounds();
+    let content = f32::from(list.max_offset_for_scrollbar().y + area.size.height);
+    let offset = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+    Track::of_list(area, content, offset)
 }
 
 /// The colours of the change bars (and tints): the theme's green, blue and red, pushed to 3:1 on
@@ -2035,7 +2059,7 @@ pub struct FileTab {
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
-    /// M11ae: the overlay scrollbar (File and Diff).
+    /// M11ae: the overlay scrollbar (File, Diff and Preview: one shows at a time).
     scrollbar: Bar,
     find: Option<FindBar>,
     /// On screen (the workspace sets it each frame), polling, polls so far.
@@ -2148,12 +2172,24 @@ impl FileTab {
             meta_at: Rc::default(),
             age: None,
             preview: false,
-            preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
+            // Every row measured on the first layout (and again after a reset or remeasure): the
+            // scrollbar's length and a drag to the end are the whole text's, not the drawn rows'.
+            preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)).measure_all(),
             parsed: None,
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
             _appearance: appearance,
         };
+        // M11ae: the list scrolls on the wheel by itself; each such scroll shows the scrollbar.
+        // (Called from the wheel's handler, never from drawing; it only notes it and redraws.)
+        let view = cx.entity().downgrade();
+        tab.preview_list.set_scroll_handler(move |_, _, cx| {
+            view.update(cx, |this, cx| {
+                this.scrolled(cx);
+                cx.notify();
+            })
+            .ok();
+        });
         tab.check_disk(cx);
         tab
     }
@@ -2781,6 +2817,64 @@ impl FileTab {
         }
     }
 
+    /// A press at `p` in the Preview's scrollbar zone (M11ae): the thumb is grabbed, or jumps to
+    /// centre on the press and is dragged on, as in the code view. Whether it was in the zone
+    /// (then the press goes no further: the list's links and diagrams get the rest).
+    fn preview_press(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        let Some(track) = preview_track(&self.preview_list).filter(|t| t.zone_has(p)) else {
+            return false;
+        };
+        let (at, t) = (track.along(p), track.thumb);
+        // Frozen content height for the drag, before the first move of the list.
+        self.preview_list.scrollbar_drag_started();
+        let grab = if (t.start..=t.start + t.len).contains(&at) {
+            at - t.start
+        } else {
+            self.preview_scroll_to(&track, at - t.len / 2.0, cx);
+            t.len / 2.0
+        };
+        self.scrollbar.start_drag(Axis::Vertical, grab);
+        cx.notify();
+        true
+    }
+
+    /// Scroll the list so the thumb starts at `start` along `track` (`set_offset_from_scrollbar`
+    /// takes the offset with a negative `y`).
+    fn preview_scroll_to(&mut self, track: &Track, start: f32, cx: &mut Context<Self>) {
+        let to = scrollbar::offset_for(start, track.viewport, track.content);
+        self.preview_list
+            .set_offset_from_scrollbar(point(px(0.0), px(-to)));
+        self.scrolled(cx);
+        cx.notify();
+    }
+
+    /// The pointer moved anywhere in the window while Preview shows: a thumb drag follows it;
+    /// near the list's right edge the scrollbar shows.
+    fn preview_move(&mut self, e: &MouseMoveEvent, over: bool, cx: &mut Context<Self>) {
+        if let Some((_, grab)) = self.scrollbar.drag() {
+            if e.pressed_button != Some(MouseButton::Left) {
+                self.preview_release(cx);
+            } else if let Some(track) = preview_track(&self.preview_list) {
+                self.preview_scroll_to(&track, track.along(e.position) - grab, cx);
+            }
+            return;
+        }
+        let hot = over && preview_track(&self.preview_list).is_some_and(|t| t.zone_has(e.position));
+        if self.scrollbar.set_hot(hot) {
+            self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
+    /// The button released anywhere in the window: a thumb drag ends.
+    fn preview_release(&mut self, cx: &mut Context<Self>) {
+        if self.scrollbar.end_drag(Instant::now()) {
+            self.preview_list.scrollbar_drag_ended();
+            self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
     /// The Preview's body (M11ac): the file's Markdown drawn as a reader, a GPUI `list` of
     /// its blocks (only those in sight are drawn). The text is parsed again only for a new
     /// version; the list then keeps its place by block.
@@ -2811,8 +2905,11 @@ impl FileTab {
             links: Cell::new(0),
             mermaid,
         };
+        let (bar, ink, state) = (self.scrollbar, theme.ui().text, self.preview_list.clone());
+        let view = cx.entity().downgrade();
         div()
             .id("file-md-preview")
+            .relative()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
@@ -2820,6 +2917,61 @@ impl FileTab {
                 list(self.preview_list.clone(), move |ix, _, _| {
                     md_preview::row(&blocks, ix, &draw)
                 })
+                .size_full(),
+            )
+            // M11ae: the scrollbar over the list: its thumb (the fade read from the clock; the
+            // fade task redraws), and the 12 pt edge zone's presses, taken before the list's
+            // own (bubbling goes last-registered first); presses elsewhere reach the list.
+            .child(
+                canvas(
+                    |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                    move |_, hitbox, window, _| {
+                        let now = Instant::now();
+                        if bar.is_shown(now)
+                            && let Some(t) = preview_track(&state)
+                        {
+                            scrollbar::paint(
+                                window,
+                                t.area,
+                                Axis::Vertical,
+                                &t.thumb,
+                                bar.alpha_at(now),
+                                ink,
+                            );
+                        }
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |e: &MouseDownEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble
+                                    && e.button == MouseButton::Left
+                                    && view
+                                        .update(cx, |this, cx| this.preview_press(e.position, cx))
+                                        .unwrap_or(false)
+                                {
+                                    cx.stop_propagation();
+                                }
+                            }
+                        });
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |e: &MouseMoveEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    let over = hitbox.is_hovered(window);
+                                    view.update(cx, |this, cx| this.preview_move(e, over, cx))
+                                        .ok();
+                                }
+                            }
+                        });
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                view.update(cx, |this, cx| this.preview_release(cx)).ok();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
                 .size_full(),
             )
             .into_any_element()
@@ -4146,6 +4298,10 @@ impl FileTab {
     }
 
     pub fn thumb_bounds(&self, axis: Axis) -> Option<Bounds<Pixels>> {
+        if self.preview_shown() {
+            let t = preview_track(&self.preview_list).filter(|t| t.axis == axis)?;
+            return Some(scrollbar::thumb_bounds(t.area, axis, &t.thumb));
+        }
         let t = Track::of(&self.geom.get()?, axis)?;
         Some(scrollbar::thumb_bounds(t.area, axis, &t.thumb))
     }
