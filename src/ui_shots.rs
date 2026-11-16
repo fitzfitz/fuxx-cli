@@ -362,6 +362,7 @@ const SCENES: &[(&str, fn())] = &[
     ("agent-tab-close", agent_tab_scenes::agent_tab_close),
     ("agent-tab-keys", agent_tab_scenes::agent_tab_keys),
     ("agent-tab-review", agent_tab_scenes::agent_tab_review),
+    ("agent-tab-held", agent_tab_scenes::agent_tab_held),
     (
         "agent-workspace-split",
         agent_tab_scenes::agent_workspace_split,

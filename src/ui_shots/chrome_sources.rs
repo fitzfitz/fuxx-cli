@@ -1341,10 +1341,11 @@ pub(super) fn chrome_agent_tabs() {
             .map(|t| matches!(t.kind, TabKind::Terminal(_)))
             .collect();
         assert_eq!(kinds, [false, true], "{n}: a terminal tab joined its pane");
-        let classic = *ws
+        let classic = ws
             .classic_of
             .get(&tab)
-            .expect("the classic view's terminal noted");
+            .expect("the classic view's terminal noted")
+            .0;
         let s = ws
             .sessions
             .items()
@@ -1371,7 +1372,7 @@ pub(super) fn chrome_agent_tabs() {
     });
     // R13: sending from the paused tab while its classic terminal still runs `claude` warns and
     // keeps the text (never a second writer); once it doesn't, the tab resumes and sends.
-    let classic = cx.read(|cx| ws.read(cx).classic_of[&tab]);
+    let classic = cx.read(|cx| ws.read(cx).classic_of[&tab].0);
     let composer = cx.read(|cx| view.read(cx).shot_composer());
     let send_again = |cx: &mut VisualTestAppContext| {
         cx.update(|cx| {
@@ -1380,15 +1381,9 @@ pub(super) fn chrome_agent_tabs() {
         });
         cx.run_until_parked();
     };
-    // What the classic terminal runs, as the programs' `ps` refresh would find it (that
-    // refresh notifies when it changes: so does this, or the status bar's word is left stale).
-    let running = |cx: &mut VisualTestAppContext, state: crate::procs::ProgramState| {
-        cx.update(|cx| {
-            ws.update(cx, |ws, cx| {
-                ws.programs.set_for_shots(classic, state);
-                cx.notify();
-            })
-        });
+    // What holds the conversation, as one `ps` would say (the scene's tables: `shot_ps`).
+    let set_ps = |cx: &mut VisualTestAppContext, table: Option<Vec<crate::procs::Proc>>| {
+        cx.update(|cx| ws.update(cx, |ws, _| ws.shot_ps = Some(table)));
     };
     let you = |cx: &VisualTestAppContext| {
         cx.read(|cx| {
@@ -1399,32 +1394,59 @@ pub(super) fn chrome_agent_tabs() {
                 .count()
         })
     };
+    let held = |cx: &VisualTestAppContext, why: &str| -> String {
+        cx.read(|cx| {
+            let t = view.read(cx);
+            assert!(t.shot_paused(), "{n}: {why}: still paused");
+            assert_eq!(
+                composer.read(cx).text(),
+                "and the tests",
+                "{n}: {why}: the text stays"
+            );
+            match t.shot_items().last().cloned() {
+                Some(crate::agent_conversation::Item::Notice(text)) => text,
+                last => panic!("{n}: {why}: a notice, not {last:?}"),
+            }
+        })
+    };
     let before = you(&cx);
-    running(
-        &mut cx,
-        crate::procs::ProgramState::Running("claude".into()),
-    );
+    // Sent at once: the classic terminal's `claude` may not have started yet (`ps` finds
+    // nothing): still held.
     send_again(&mut cx);
-    cx.read(|cx| {
-        let t = view.read(cx);
-        assert!(t.shot_paused(), "{n}: still paused");
-        let last = t.shot_items().last().cloned();
-        let Some(crate::agent_conversation::Item::Notice(text)) = last else {
-            panic!("{n}: a notice, not {last:?}");
-        };
-        assert!(
-            text.starts_with("Claude is still running this conversation in ")
-                && text.ends_with(" — quit it there first"),
-            "{n}: {text}"
-        );
-        assert_eq!(
-            composer.read(cx).text(),
-            "and the tests",
-            "{n}: the text stays"
-        );
-    });
+    let text = held(&cx, "the classic view just opened");
+    assert!(
+        text.starts_with("Claude is still running this conversation in ")
+            && text.ends_with(" — quit it there first"),
+        "{n}: {text}"
+    );
     assert_eq!(you(&cx), before, "{n}: nothing sent");
-    running(&mut cx, crate::procs::ProgramState::Prompt);
+    // Past its start: a `claude --resume <id>` in a background-service terminal (no shell pid
+    // of fuxx's) holds it.
+    cx.update(|cx| {
+        ws.update(cx, |ws, _| {
+            if let Some(entry) = ws.classic_of.get_mut(&tab) {
+                entry.1 = Instant::now() - Duration::from_secs(10);
+            }
+        })
+    });
+    let id = conversation.clone().expect("its conversation");
+    let holder = format!("  4242     1  4242  4242 S+   claude --resume {id}\n");
+    set_ps(&mut cx, Some(crate::procs::parse_ps(&holder)));
+    send_again(&mut cx);
+    let text = held(&cx, "a claude --resume holds it");
+    assert!(text.contains("still running"), "{n}: {text}");
+    assert_eq!(you(&cx), before, "{n}: nothing sent");
+    // `ps` failed: unknown, so no second writer either.
+    set_ps(&mut cx, None);
+    send_again(&mut cx);
+    let text = held(&cx, "ps failed");
+    assert!(
+        text.starts_with("Couldn't check whether Claude"),
+        "{n}: {text}"
+    );
+    assert_eq!(you(&cx), before, "{n}: nothing sent");
+    // Nothing holds it: the tab resumes and sends.
+    set_ps(&mut cx, Some(Vec::new()));
     send_again(&mut cx);
     cx.read(|cx| {
         let t = view.read(cx);
@@ -1438,6 +1460,27 @@ pub(super) fn chrome_agent_tabs() {
         assert_eq!(t.status(), Status::Working, "{n}");
     });
     assert_eq!(you(&cx), before + 1, "{n}: sent once");
+    // While its classic view is open, "Open in classic view" shows that terminal: no second.
+    let classic_tabs = |cx: &VisualTestAppContext| {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let (_, pane) = ws.model.locate(tab).expect("placed");
+            ws.model.pane(pane).map_or(0, |p| p.tabs.len())
+        })
+    };
+    let tabs_before = classic_tabs(&cx);
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.select_tab(tab, window, cx);
+        ws.open_classic(tab, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        classic_tabs(&cx),
+        tabs_before,
+        "{n}: no second classic view"
+    );
+    let shown = cx.read(|cx| ws.read(cx).focused_terminal());
+    assert_eq!(shown, Some(classic), "{n}: its classic view is shown");
     // That turn ends: the tab is Done, so closing it asks nothing.
     cx.update(|cx| {
         view.update(cx, |t, cx| {

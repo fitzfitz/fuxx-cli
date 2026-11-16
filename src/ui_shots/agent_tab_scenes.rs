@@ -1420,3 +1420,79 @@ pub(super) fn agent_pane_menu() {
         println!("ui-shots: {n}: {}", path.display());
     }
 }
+
+/// R13 at boot: a restored tab whose conversation another process holds (the boot's `ps`
+/// found it: its classic view left running) starts paused with the warning, and no process is
+/// started (no command line built); what you typed while it booted is back in the box. A
+/// failed `ps` also starts it paused. Nothing held: it starts (`--resume`).
+pub(super) fn agent_tab_held() {
+    use crate::workspace_agent::Holder;
+    let n = "agent-tab-held";
+    let theme = shot_theme("Catppuccin Mocha");
+    for (holder, starts) in [
+        (Holder::Held, false),
+        (Holder::Unchecked, false),
+        (Holder::Free, true),
+    ] {
+        let slot: Slot = Rc::default();
+        let keep = slot.clone();
+        render_with(
+            &theme,
+            size(px(DIMS.0), px(DIMS.1)),
+            move |window, cx| {
+                cx.set_global(shot_appearance(theme, cx));
+                let resume = Start {
+                    resume: Some("c1".into()),
+                    ..start()
+                };
+                let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, resume, window, cx));
+                *keep.borrow_mut() = Some(tab.clone());
+                tab.into()
+            },
+            move |cx, _| {
+                let tab = tab_of(&slot);
+                // Typed while it booted: held for the process.
+                feed(cx, &tab, |t, cx| {
+                    t.shot_boot();
+                    t.send("are you there".into(), cx)
+                });
+                let past = vec![Past::You("earlier".into())];
+                let h = holder;
+                feed(cx, &tab, |t, cx| t.shot_history_held(past, h, cx));
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    let argv = t.shot_last_argv();
+                    let text = t.shot_composer().read(cx).text().to_string();
+                    if starts {
+                        assert!(!t.shot_paused(), "{n}: {holder:?}: started");
+                        assert!(argv.windows(2).any(|w| w == ["--resume", "c1"]), "{n}");
+                        assert_eq!(t.status(), Status::Working, "{n}: the held message sent");
+                    } else {
+                        assert!(t.shot_paused(), "{n}: {holder:?}: starts paused");
+                        assert!(
+                            argv.is_empty(),
+                            "{n}: {holder:?}: nothing started: {argv:?}"
+                        );
+                        assert_eq!(t.status(), Status::Done, "{n}");
+                        assert_eq!(t.shot_pending(), 0, "{n}: nothing left to send later");
+                        assert_eq!(
+                            text, "are you there",
+                            "{n}: the held text is back in the box"
+                        );
+                        let last = t.shot_items().last().cloned();
+                        let Some(Item::Notice(notice)) = last else {
+                            panic!("{n}: {holder:?}: a notice, not {last:?}");
+                        };
+                        let want = match holder {
+                            Holder::Unchecked => "Couldn't check whether Claude",
+                            _ => "Claude is still running this conversation in another terminal",
+                        };
+                        assert!(notice.starts_with(want), "{n}: {notice}");
+                    }
+                });
+                slot.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {n}: {holder:?} ok");
+    }
+}

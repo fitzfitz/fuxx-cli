@@ -87,14 +87,44 @@ pub enum ProcessEvent {
 }
 
 pub struct AgentProcess {
+    ids: Ids,
+    writer: mpsc::Sender<String>,
+}
+
+/// What it takes to end a process: shared by its `AgentProcess`, its own thread and the list
+/// of every process started (`STARTED`), which outlives a closed tab's handle (quitting ends
+/// those still dying: `end_every_started`).
+#[derive(Clone)]
+struct Ids {
     /// The child's pid (also its process group id); 0 until spawned.
     pid: Arc<AtomicI32>,
     /// Set by `kill`, so a child spawned after it is killed at once.
     killed: Arc<AtomicBool>,
     /// Set once the child is reaped (or was never started); `kill` then signals nothing.
     done: Arc<AtomicBool>,
-    writer: mpsc::Sender<String>,
 }
+
+impl Ids {
+    /// Signal its group with `sig` while its child runs (spawned, not reaped yet): the group
+    /// id, if it was signalled. The one check `kill` and `end_all` share.
+    fn signal_running(&self, sig: c_int) -> Option<i32> {
+        if self.done.load(Ordering::SeqCst) {
+            return None;
+        }
+        let pgid = self.pid.load(Ordering::SeqCst);
+        (pgid > 0).then(|| {
+            signal_group(pgid, sig);
+            pgid
+        })
+    }
+
+    fn reaped(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+}
+
+/// Every process this app started and hasn't seen reaped yet (pruned as more start).
+static STARTED: std::sync::Mutex<Vec<Ids>> = std::sync::Mutex::new(Vec::new());
 
 /// Start `argv` in `cwd` (with `PATH` = `path_env` if given); never blocks. Events arrive on
 /// `events`.
@@ -109,11 +139,17 @@ pub fn spawn(
     let done = Arc::new(AtomicBool::new(false));
     let (writer, lines) = mpsc::channel::<String>();
     let process = AgentProcess {
-        pid: pid.clone(),
-        killed: killed.clone(),
-        done: done.clone(),
+        ids: Ids {
+            pid: pid.clone(),
+            killed: killed.clone(),
+            done: done.clone(),
+        },
         writer,
     };
+    if let Ok(mut started) = STARTED.lock() {
+        started.retain(|ids| !ids.reaped());
+        started.push(process.ids.clone());
+    }
     let argv = argv.to_vec();
     let cwd = cwd.to_path_buf();
     let path_env = path_env.map(str::to_string);
@@ -135,54 +171,57 @@ impl AgentProcess {
         let _ = self.writer.send(line);
     }
 
-    /// The child's pid, once it is running.
-    #[cfg(any(test, feature = "ui-shots"))] // the tests' and the scenes'
+    /// The child's pid (its process group's id), once it is running.
     pub fn pid(&self) -> Option<i32> {
-        Some(self.pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0)
+        Some(self.ids.pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0)
+    }
+
+    /// Whether its child has been reaped (or never started): it signals nothing any more.
+    pub fn reaped(&self) -> bool {
+        self.ids.reaped()
     }
 
     /// SIGTERM the process group, SIGKILL it after `TERM_GRACE`; the child is reaped by its
     /// own thread, which then sends `Exited`.
     pub fn kill(&self) {
-        if self.killed.swap(true, Ordering::SeqCst) {
+        if self.ids.killed.swap(true, Ordering::SeqCst) {
             return; // already asked
         }
-        if let Some(pgid) = self.signal_running(SIGTERM) {
-            escalate_later(pgid, self.done.clone());
+        if let Some(pgid) = self.ids.signal_running(SIGTERM) {
+            escalate_later(pgid, self.ids.done.clone());
         } // else reaped (its group id may belong to someone else now), or not spawned yet:
         // the spawning thread sees `killed`
     }
-
-    /// Signal its group with `sig` while its child runs (spawned, not reaped yet): the group
-    /// id, if it was signalled. The one check `kill` and `end_all` share.
-    fn signal_running(&self, sig: c_int) -> Option<i32> {
-        if self.done.load(Ordering::SeqCst) {
-            return None;
-        }
-        let pgid = self.pid.load(Ordering::SeqCst);
-        (pgid > 0).then(|| {
-            signal_group(pgid, sig);
-            pgid
-        })
-    }
-
-    fn reaped(&self) -> bool {
-        self.done.load(Ordering::SeqCst)
-    }
 }
 
-/// End every process in `processes` (quitting): SIGTERM each group, wait up to `grace` for
-/// each child to be reaped, then SIGKILL the groups of those that weren't (and wait a moment
-/// for those to be reaped). Blocking: call it off the UI thread. A process already reaped is
-/// not signalled (its group id may be reused); it waits on the reap, not on `Exited` (a
-/// straggler holding stdout can hold that back).
+/// End every process in `processes`: SIGTERM each group, wait up to `grace` for each child to
+/// be reaped, then SIGKILL the groups of those that weren't (and wait a moment for those to be
+/// reaped). Blocking (quitting calls it on the UI thread on purpose: GPUI gives a quit task
+/// only 200 ms). A process already reaped is not signalled (its group id may be reused); it
+/// waits on the reap, not on `Exited` (a straggler holding stdout can hold that back).
+#[cfg(test)] // quitting uses `end_every_started`, which also ends closed tabs' processes
 pub fn end_all(processes: &[Arc<AgentProcess>], grace: Duration) {
+    let ids: Vec<Ids> = processes.iter().map(|p| p.ids.clone()).collect();
+    end_ids(&ids, grace);
+}
+
+/// `end_all` for every process this app started that isn't reaped yet: the open tabs', and
+/// those of tabs closed or paused moments ago still waiting for their SIGKILL (quitting).
+pub fn end_every_started(grace: Duration) {
+    let ids: Vec<Ids> = STARTED
+        .lock()
+        .map(|started| started.iter().filter(|i| !i.reaped()).cloned().collect())
+        .unwrap_or_default();
+    end_ids(&ids, grace);
+}
+
+fn end_ids(processes: &[Ids], grace: Duration) {
     for p in processes {
         p.killed.store(true, Ordering::SeqCst);
         p.signal_running(SIGTERM);
     }
     let all_reaped = |until: Instant| loop {
-        if processes.iter().all(|p| p.reaped()) {
+        if processes.iter().all(Ids::reaped) {
             return true;
         }
         if Instant::now() >= until {
@@ -645,6 +684,40 @@ mod tests {
         }
         assert!(matches!(next(&mut rx_a), ProcessEvent::Exited { .. }));
         assert!(matches!(next(&mut rx_b), ProcessEvent::Exited { .. }));
+    }
+
+    #[test]
+    fn quitting_ends_a_closed_tabs_agent_still_dying() {
+        let (process, mut rx) = start(&argv("trap '' TERM; sleep 100"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.pid().is_none() {
+            assert!(Instant::now() < deadline, "never spawned");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300)); // let the trap be set
+        let pgid = process.pid().unwrap();
+        // The tab closed: its handle is gone; the killer thread would SIGKILL after 2 s.
+        drop(process);
+        let ids: Vec<Ids> = STARTED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| i.pid.load(Ordering::SeqCst) == pgid)
+            .cloned()
+            .collect();
+        assert_eq!(ids.len(), 1, "still listed as started");
+        let began = Instant::now();
+        end_ids(&ids, Duration::from_millis(200));
+        assert!(
+            began.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(
+            group_gone(pgid, Duration::from_millis(500)),
+            "ended at quit"
+        );
+        assert!(matches!(next(&mut rx), ProcessEvent::Exited { .. }));
     }
 
     #[test]

@@ -320,10 +320,16 @@ impl Conversation {
     /// The tab's process was stopped for "Open in classic view" (R13): nothing runs or waits,
     /// one notice says so, and it reads Done. Not an exit: no error row.
     pub fn paused(&mut self) {
+        self.paused_with(PAUSED_NOTICE);
+    }
+
+    /// `paused` with its own notice (a resumed tab that won't start because another process
+    /// holds its conversation, R13).
+    pub fn paused_with(&mut self, notice: &str) {
         self.ended = true;
         self.outstanding = 0;
         self.settle();
-        self.items.push(Item::Notice(PAUSED_NOTICE.into()));
+        self.items.push(Item::Notice(notice.into()));
     }
 
     /// A turn is over: nothing is still running and no question is still open.
