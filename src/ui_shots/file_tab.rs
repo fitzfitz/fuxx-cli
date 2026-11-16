@@ -20,6 +20,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/git_status.rs",
             "src/git_branch.rs",
             "src/scrollbar.rs",
+            "src/name_input.rs",
         ],
     },
     Scene {
@@ -36,6 +37,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/layout_model.rs",
             "src/right_sidebar.rs",
             "src/file_tree.rs",
+            "src/name_input.rs",
         ],
     },
     Scene {
@@ -1589,7 +1591,8 @@ fn file_view_scenes() {
     );
 }
 
-/// M11ae Task 3: the file tab's overlay scrollbar, a tab on its own in a window, in both themes:
+/// M11ae Task 3: the file tab's overlay scrollbar, a tab on its own in a window, in Mocha (both
+/// themes with `--all-themes`):
 /// - `file-tab-scrollbar`: a 400-line file. No thumb before any scroll; one wheel step shows it
 ///   in the text's right 12 pt, its top as far down its track as the scroll is down the text;
 ///   1.5 s later (real time: the fade reads the clock) it is gone and its fade task has ended.
