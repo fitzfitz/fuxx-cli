@@ -56,10 +56,10 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
     DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Global,
-    HighlightStyle, HitboxBehavior, ListAlignment, ListState, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString, StyledText,
-    Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div, fill, list, point,
-    prelude::*, px, size,
+    HighlightStyle, HitboxBehavior, ListAlignment, ListOffset, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString,
+    StyledText, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div, fill, list,
+    point, prelude::*, px, size,
 };
 
 use crate::agent_markdown::Md;
@@ -1400,11 +1400,54 @@ fn zone_at(g: &Geom, p: Point<Pixels>) -> Option<Track> {
         .find(|t| t.zone_has(p))
 }
 
+/// A Preview of up to this many blocks measures every row at its first layout (and again after a
+/// reset, a remeasure or a width change), so its scrollbar is exact. Measured on a release build
+/// (M11ae fix round 1): a full relayout is ~3 ms for 585 blocks (20 KB) but ~160 ms for 29,115
+/// (1 MB), about 5.5 us a block; 2,000 blocks keeps it near 11 ms, under a frame.
+pub const PREVIEW_MEASURE_ALL: usize = 2_000;
+
+/// A block's height as the scrollbar of a longer Preview reckons it (the mean of a mixed 1 MB
+/// file's blocks: 45 pt). GPUI's list drops its height hints at its first layout and at each
+/// width change, and a list with unmeasured rows reports only the drawn rows' height, so for such
+/// a Preview the track is counted in blocks (`preview_track`), not in the list's pixels.
+const PREVIEW_BLOCK_HINT: f32 = 45.0;
+
+/// The Preview's list for `count` blocks: all measured at once when few (`PREVIEW_MEASURE_ALL`),
+/// else each row measured as it is drawn. Each of its own scrolls (the wheel) shows the
+/// scrollbar: the handler runs from the wheel's event, never from drawing, and only notes it and
+/// redraws.
+fn preview_list_of(count: usize, view: WeakEntity<FileTab>) -> ListState {
+    let state = ListState::new(count, ListAlignment::Top, px(PREVIEW_OVERDRAW));
+    let state = if count <= PREVIEW_MEASURE_ALL {
+        state.measure_all()
+    } else {
+        state
+    };
+    state.set_scroll_handler(move |_, _, cx| {
+        view.update(cx, |this, cx| {
+            this.scrolled(cx);
+            cx.notify();
+        })
+        .ok();
+    });
+    state
+}
+
 /// The Preview's scrollbar track as the list was last laid out (M11ae), read from its state:
 /// `scroll_px_offset_for_scrollbar` has a negative `y`, and the content is the list's own
 /// `max_offset_for_scrollbar` (fixed during a thumb drag) plus the viewport.
+///
+/// A longer Preview (rows not all measured) is counted in blocks of `PREVIEW_BLOCK_HINT`: its
+/// content is the block count, its offset the top block (and the share of it scrolled past).
 fn preview_track(list: &ListState) -> Option<Track> {
     let area = list.viewport_bounds();
+    let count = list.item_count();
+    if count > PREVIEW_MEASURE_ALL {
+        let top = list.logical_scroll_top();
+        let into = (f32::from(top.offset_in_item) / PREVIEW_BLOCK_HINT).min(0.999);
+        let offset = (top.item_ix as f32 + into) * PREVIEW_BLOCK_HINT;
+        return Track::of_list(area, count as f32 * PREVIEW_BLOCK_HINT, offset);
+    }
     let content = f32::from(list.max_offset_for_scrollbar().y + area.size.height);
     let offset = -f32::from(list.scroll_px_offset_for_scrollbar().y);
     Track::of_list(area, content, offset)
@@ -2172,24 +2215,12 @@ impl FileTab {
             meta_at: Rc::default(),
             age: None,
             preview: false,
-            // Every row measured on the first layout (and again after a reset or remeasure): the
-            // scrollbar's length and a drag to the end are the whole text's, not the drawn rows'.
-            preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)).measure_all(),
+            preview_list: preview_list_of(0, cx.entity().downgrade()),
             parsed: None,
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
             _appearance: appearance,
         };
-        // M11ae: the list scrolls on the wheel by itself; each such scroll shows the scrollbar.
-        // (Called from the wheel's handler, never from drawing; it only notes it and redraws.)
-        let view = cx.entity().downgrade();
-        tab.preview_list.set_scroll_handler(move |_, _, cx| {
-            view.update(cx, |this, cx| {
-                this.scrolled(cx);
-                cx.notify();
-            })
-            .ok();
-        });
         tab.check_disk(cx);
         tab
     }
@@ -2842,8 +2873,19 @@ impl FileTab {
     /// takes the offset with a negative `y`).
     fn preview_scroll_to(&mut self, track: &Track, start: f32, cx: &mut Context<Self>) {
         let to = scrollbar::offset_for(start, track.viewport, track.content);
-        self.preview_list
-            .set_offset_from_scrollbar(point(px(0.0), px(-to)));
+        if to >= track.content - track.viewport - 1.0 {
+            // The thumb at its end: the text's true end, whatever rows were not yet measured.
+            self.preview_list.scroll_to_end();
+        } else if self.preview_list.item_count() > PREVIEW_MEASURE_ALL {
+            let item_ix = (to / PREVIEW_BLOCK_HINT) as usize;
+            self.preview_list.scroll_to(ListOffset {
+                item_ix,
+                offset_in_item: px(0.0),
+            });
+        } else {
+            self.preview_list
+                .set_offset_from_scrollbar(point(px(0.0), px(-to)));
+        }
         self.scrolled(cx);
         cx.notify();
     }
@@ -2887,8 +2929,9 @@ impl FileTab {
             Some((v, blocks)) if *v == version => blocks.clone(),
             _ => {
                 let blocks = Rc::new(crate::agent_markdown::parse(&doc.text));
+                // A new list (its measuring is by the block count), at the place kept.
                 let top = self.preview_list.logical_scroll_top();
-                self.preview_list.reset(blocks.len());
+                self.preview_list = preview_list_of(blocks.len(), cx.entity().downgrade());
                 self.preview_list.scroll_to(top);
                 self.parsed = Some((version, blocks.clone()));
                 blocks
