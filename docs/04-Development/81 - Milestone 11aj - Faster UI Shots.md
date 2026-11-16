@@ -276,6 +276,23 @@ y 63-74).
 folder and exits 130; says when a part wrote no results ("shard 1/2 wrote no results: its scenes are not counted") as
 well as how it exited.
 
+### B3 — measured (M11aj Task 9, 2026-11-17)
+
+`scripts/ui-shots.sh --changed HEAD` after a comment edit, on a clean tree:
+
+| Edit | Decision | Result |
+|---|---|---|
+| `src/file_tab.rs` | 13 scenes (file-tab, file-diff, file-tab-md, files, changes, palette, welcome-start, status-bar, ...) | **58.8 s** (65 s with the build) |
+| `src/ui_shots/file_tab.rs` (a scene's own file) | 3 scenes: file-tab, file-diff, file-tab-scrollbar | 36.9 s |
+| `src/ui_shots/registry.rs` | nothing (no src changes) | 5 s |
+| a docs file | nothing (no src changes) | 4 s |
+| `src/theme.rs` | all (shared: src/theme.rs) | a full run, 82.8 s |
+
+Goal 1 (a task's gate near 30 s) is not met for a `file_tab.rs` change. All 13 claims are accurate, so this is
+not over-claiming: the `file-tab` scene alone takes 34.7 s, and the WebKit Mermaid scene (`file-tab-md-mermaid`, serial)
+adds about 17 s after the shards. Narrowing the gate further means splitting `file-tab` or moving its logic into
+`cargo test` (C1/C2).
+
 ### Part A — Quick wins
 
 - **A1 · Less setup per shot.** Reuse what's safe to reuse, chosen from Part 0's numbers: at least the font
