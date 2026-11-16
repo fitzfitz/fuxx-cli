@@ -1,8 +1,7 @@
-#![allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
 //! The conversation model (M11aa): folds a provider's `Event`s into chat items and a status.
 //! Pure and GPUI-free.
 
-use crate::providers::{Event, TodoItem, ToolDetail};
+use crate::providers::{Event, Past, TodoItem, ToolDetail};
 use crate::status::Status;
 
 pub const OUTPUT_KEEP_LINES: usize = 2_000;
@@ -247,6 +246,40 @@ impl Conversation {
         self.outstanding += 1;
         self.ended = false;
         self.finished = false;
+    }
+
+    /// A resumed conversation's history: what you said (shown, but not counted as a send
+    /// waiting for its turn) and the agent's events, then settled (nothing in it runs or waits):
+    /// it reads Done when anything was said.
+    pub fn past(&mut self, past: Vec<Past>) {
+        for piece in past {
+            match piece {
+                Past::You(text) => self.items.push(Item::You {
+                    text,
+                    attachments: Vec::new(),
+                }),
+                Past::Event(event) => self.apply(event),
+            }
+        }
+        self.outstanding = 0;
+        self.settle();
+    }
+
+    /// The agent couldn't be started: one error row, and the conversation is over (Done).
+    pub fn failed_to_start(&mut self, message: &str) {
+        self.ended = true;
+        self.outstanding = 0;
+        self.settle();
+        self.items.push(Item::Error(message.to_string()));
+    }
+
+    /// Keep only the first `len` items (a resume that failed: what that run said goes, and a
+    /// new conversation follows what came before). Nothing is left running or waiting.
+    pub fn keep_first(&mut self, len: usize) {
+        self.items.truncate(len);
+        self.outstanding = 0;
+        self.ended = false;
+        self.settle();
     }
 
     pub fn answered(&mut self, id: &str, answer: Answer) {
@@ -596,6 +629,65 @@ mod tests {
                 }
             )));
         }
+    }
+
+    #[test]
+    fn past_turns_read_done_not_working() {
+        let mut c = Conversation::new();
+        c.past(vec![
+            Past::You("hi".into()),
+            Past::Event(Event::MessageDone {
+                message: "m".into(),
+                text: "Hello".into(),
+                parent: None,
+            }),
+        ]);
+        assert_eq!(c.status(), Status::Done);
+        assert_eq!(c.items().len(), 2);
+        assert!(matches!(&c.items()[0], Item::You { text, .. } if text == "hi"));
+        // A new turn after it is one send: its TurnDone reads Done again.
+        c.you("next".into(), vec![]);
+        assert_eq!(c.status(), Status::Working);
+        c.apply(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        assert_eq!(c.status(), Status::Done);
+    }
+
+    #[test]
+    fn past_with_an_open_tool_settles_it() {
+        let mut c = Conversation::new();
+        c.past(vec![Past::Event(tool_started("t1"))]);
+        assert!(matches!(&c.items()[0], Item::Tool { running: false, .. }));
+        assert_eq!(c.status(), Status::Done);
+        let mut empty = Conversation::new();
+        empty.past(Vec::new());
+        assert_eq!(empty.status(), Status::Idle, "nothing past: nothing said");
+    }
+
+    /// A failed resume drops what its run said; nothing is left running or waiting.
+    #[test]
+    fn keep_first_drops_the_rest_and_settles() {
+        let mut c = Conversation::new();
+        c.apply(Event::Notice("before".into()));
+        c.you("x".into(), vec![]);
+        c.apply(permission("p1"));
+        c.apply(Event::Error("No conversation found".into()));
+        c.keep_first(1);
+        assert!(matches!(c.items(), [Item::Notice(n)] if n == "before"));
+        assert_eq!(c.status(), Status::Done);
+        assert!(c.pending_permission().is_none());
+        c.you("again".into(), vec![]);
+        assert_eq!(c.status(), Status::Working);
+    }
+
+    #[test]
+    fn spawn_failure_is_one_error_and_done() {
+        let mut c = Conversation::new();
+        c.failed_to_start("No such file");
+        assert_eq!(c.status(), Status::Done);
+        assert!(matches!(c.items(), [Item::Error(e)] if e.contains("No such file")));
     }
 
     #[test]

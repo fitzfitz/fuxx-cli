@@ -1211,6 +1211,28 @@ impl BarColours {
     }
 }
 
+/// A diff row's look as the file tab draws it (M11aa: the agent tab's edit diffs share it): the
+/// fill of a removed and an added row (its bar colour at `TINT` over `background`), and their
+/// signs' inks on those fills.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DiffRowColours {
+    pub removed_fill: Rgb,
+    pub added_fill: Rgb,
+    pub removed_ink: Rgb,
+    pub added_ink: Rgb,
+}
+
+pub(crate) fn diff_row_colours(theme: &Theme, background: Rgb) -> DiffRowColours {
+    let bars = BarColours::of(theme);
+    let (removed_ink, added_ink) = sign_inks(&bars, background);
+    DiffRowColours {
+        removed_fill: mix(background, bars.deleted, TINT),
+        added_fill: mix(background, bars.added, TINT),
+        removed_ink,
+        added_ink,
+    }
+}
+
 /// A diff's signs' inks (removed, added): the change bars' red and green, each pushed to 3:1
 /// on its own row's tint as painted (the colour at `TINT` over `background`).
 fn sign_inks(bars: &BarColours, background: Rgb) -> (Rgb, Rgb) {

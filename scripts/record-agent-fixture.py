@@ -300,6 +300,49 @@ def play(r, scenario):
         r.result(90)
 
 
+# The transcript lines `history()` reads, and the fields of them it never needs.
+TRANSCRIPT_KEEP = {"user", "assistant"}
+TRANSCRIPT_DROP = ("requestId", "requestRef", "promptId", "gitBranch", "userType", "entrypoint")
+
+
+def transcript_of(workdir, session_id):
+    """Claude's own record of a session: ~/.claude/projects/<realpath of the workdir with / and .
+    turned into -> /<session id>.jsonl (found in M11aa Task 0)."""
+    mangled = re.sub(r"[/.]", "-", os.path.realpath(workdir))
+    return os.path.join(os.path.expanduser("~"), ".claude", "projects", mangled, session_id + ".jsonl")
+
+
+def copy_transcript(r, dest):
+    """The `text` scenario's transcript, through the same always-on scrub, to `dest` (M11aa Task 7:
+    `history()` reads this file for a resumed conversation)."""
+    sid = next((x.get("session_id") for x in r.lines if isinstance(x, dict)
+                and x.get("type") == "system" and x.get("subtype") == "init"), None)
+    if not sid:
+        print("no session id in the recording: no transcript copied", file=sys.stderr)
+        return
+    src = transcript_of(r.raw_workdir, sid)
+    if not os.path.exists(src):
+        print(f"no transcript at {src}", file=sys.stderr)
+        return
+    with open(src, encoding="utf-8") as f, open(dest, "w", encoding="utf-8") as out:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            # Only the turns: the file also holds the request blobs (system prompt, the user's
+            # CLAUDE.md and hook context), attachments, account ids and costs, none of which
+            # `history()` reads and none of which belong in the repo.
+            if isinstance(e, dict) and e.get("type") in TRANSCRIPT_KEEP:
+                for k in TRANSCRIPT_DROP:
+                    e.pop(k, None)
+                out.write(json.dumps(scrub_event(e, r.scrub), ensure_ascii=False) + "\n")
+    print(f"transcript: {dest}")
+
+
 def main():
     global TRIM, IS_AGY
     if {"-h", "--help"} & set(sys.argv[1:]) or len(sys.argv) < 5:
@@ -339,6 +382,8 @@ def main():
     finally:
         code = r.finish()  # always writes <out>, and always kills the process group
         r.kill()
+    if claude and scenario == "text" and failure is None:
+        copy_transcript(r, os.path.join(os.path.dirname(out) or ".", "claude-transcript.jsonl"))
     print(f"{agent} {scenario}: exit={code} prompts={r.prompts} out={out}")
     if failure is not None:
         raise failure

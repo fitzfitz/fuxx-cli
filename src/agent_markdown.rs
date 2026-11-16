@@ -1,4 +1,3 @@
-#![allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
 //! The small markdown subset agent messages use (M11aa): paragraphs, headings, bullets, numbered
 //! items, fenced code, and inline code / bold / links. Pure and GPUI-free. Anything it does not
 //! understand stays literal text, and an unterminated fence is code to the end (streaming).

@@ -1,9 +1,10 @@
-#![allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
 //! The agent tab's message box: a multi-line text input (M11aa). Modelled on `name_input.rs`
 //! (IME through `EntityInputHandler`, UTF-16 offsets at the edge, UTF-8 inside), but multi-line:
 //! Enter sends, ⇧Enter is a newline, Esc stops the agent, and losing focus does not cancel.
-//! It grows to `MAX_ROWS` rows, then scrolls to keep the caret in view. Lines are not
-//! soft-wrapped: a line wider than the box scrolls sideways with the caret.
+//! Long lines soft-wrap at the box's width (measured in its font's widest cell, `m`); ↑/↓ move
+//! by visual row. It grows to `MAX_ROWS` rows, then scrolls to keep the caret in view (only the
+//! rows on screen are shaped); the wheel scrolls it too. A row still wider than the box (wide
+//! characters) scrolls sideways with the caret.
 //!
 //! The editing itself is `EditBuffer`, pure and unit-tested; `Composer` is a thin layer of
 //! actions, IME and painting over it.
@@ -11,11 +12,11 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementId, ElementInputHandler, Entity,
+    App, AvailableSpace, Bounds, ClipboardItem, Context, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
-    SharedString, Style, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
-    fill, point, prelude::*, px, relative, size,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollWheelEvent, ShapedLine, SharedString, Style, TextAlign, TextRun, UTF16Selection,
+    UnderlineStyle, Window, actions, div, fill, point, prelude::*, px, relative, size,
 };
 
 use crate::appearance::Appearance;
@@ -75,8 +76,11 @@ pub struct EditBuffer {
     text: String,
     cursor: usize,
     anchor: usize,
-    /// The column ↑/↓ keep across lines shorter than it (in chars); reset by any other move.
+    /// The column ↑/↓ keep across rows shorter than it (in chars); reset by any other move.
     goal: Option<usize>,
+    /// Lines wrap at this many characters (the box's width in its font's widest cell); none:
+    /// a row is a whole line.
+    wrap: Option<usize>,
 }
 
 impl EditBuffer {
@@ -87,6 +91,7 @@ impl EditBuffer {
             cursor: text.len(),
             anchor: text.len(),
             goal: None,
+            wrap: None,
         }
     }
 
@@ -96,10 +101,6 @@ impl EditBuffer {
 
     pub fn cursor(&self) -> usize {
         self.cursor
-    }
-
-    pub fn anchor(&self) -> usize {
-        self.anchor
     }
 
     /// The selected bytes; empty with the caret alone.
@@ -122,6 +123,7 @@ impl EditBuffer {
     }
 
     /// The caret alone at `at`.
+    #[cfg(test)]
     pub fn set_cursor(&mut self, at: usize) {
         self.move_to(at, false);
     }
@@ -148,9 +150,12 @@ impl EditBuffer {
         self.goal = None;
     }
 
-    /// Replace everything; the caret goes to the end.
+    /// Replace everything; the caret goes to the end (the wrap stays).
     pub fn set_text(&mut self, text: &str) {
-        *self = Self::new(text);
+        *self = Self {
+            wrap: self.wrap,
+            ..Self::new(text)
+        };
     }
 
     /// `s` in place of byte range `range`, the caret after it.
@@ -228,15 +233,24 @@ impl EditBuffer {
     pub fn word_right(&mut self, extend: bool) {
         self.step(word_end, false, extend);
     }
+    /// ⌘←: to the start of the line (the line the selection starts on, a selection
+    /// collapsing; ⇧ extends from the caret).
     pub fn line_start(&mut self, extend: bool) {
-        self.step(|s, i| s[..i].rfind('\n').map_or(0, |j| j + 1), true, extend);
+        let from = if extend {
+            self.cursor
+        } else {
+            self.selection().start
+        };
+        self.move_to(self.line_start_of(from), extend);
     }
+    /// ⌘→: to the end of the line (the one the selection ends on).
     pub fn line_end(&mut self, extend: bool) {
-        self.step(
-            |s, i| s[i..].find('\n').map_or(s.len(), |j| i + j),
-            false,
-            extend,
-        );
+        let from = if extend {
+            self.cursor
+        } else {
+            self.selection().end
+        };
+        self.move_to(self.line_end_of(from), extend);
     }
 
     /// One row up, to the same column (the wider one remembered over short rows); on the first
@@ -254,37 +268,36 @@ impl EditBuffer {
         self.vertical(false, true);
     }
 
+    /// One visual row up or down (a wrapped line is several), to the goal column.
     fn vertical(&mut self, up: bool, extend: bool) {
-        let here = self.line_start_of(self.cursor);
+        let rows = self.visual_rows();
+        let r = row_at(&rows, self.cursor);
         let goal = self
             .goal
-            .unwrap_or_else(|| self.text[here..self.cursor].chars().count());
-        let at = if up {
-            if here == 0 {
-                0
-            } else {
-                let start = self.line_start_of(here - 1);
-                self.at_column(start, here - 1, goal)
-            }
-        } else {
-            let end = self.line_end_of(self.cursor);
-            if end == self.text.len() {
-                end
-            } else {
-                let start = end + 1;
-                self.at_column(start, self.line_end_of(start), goal)
-            }
+            .unwrap_or_else(|| self.text[rows[r].start..self.cursor].chars().count());
+        let at = match (up, r) {
+            (true, 0) => 0,
+            (true, r) => self.at_column(&rows[r - 1], goal),
+            (false, r) if r + 1 >= rows.len() => self.text.len(),
+            (false, r) => self.at_column(&rows[r + 1], goal),
         };
         self.move_to(at, extend);
         self.goal = Some(goal);
     }
 
-    /// The byte `column` chars into the line `start..end` (its end if it is shorter).
-    fn at_column(&self, start: usize, end: usize, column: usize) -> usize {
-        self.text[start..end]
+    /// The byte `column` chars into visual row `row` (its end if it is shorter; a row that
+    /// wraps on keeps the caret before its last character, so the caret stays on it).
+    fn at_column(&self, row: &Range<usize>, column: usize) -> usize {
+        let at = self.text[row.clone()]
             .char_indices()
             .nth(column)
-            .map_or(end, |(i, _)| start + i)
+            .map_or(row.end, |(i, _)| row.start + i);
+        let wraps_on = row.end < self.text.len() && !self.text[row.end..].starts_with('\n');
+        if wraps_on && at == row.end && row.end > row.start {
+            prev_char(&self.text, row.end)
+        } else {
+            at
+        }
     }
 
     fn line_start_of(&self, i: usize) -> usize {
@@ -295,12 +308,60 @@ impl EditBuffer {
         self.text[i..].find('\n').map_or(self.text.len(), |j| i + j)
     }
 
-    /// How many rows the text takes (an empty text is one).
+    /// Wrap lines at `columns` characters (none, or 0: no wrapping).
+    pub fn set_wrap(&mut self, columns: Option<usize>) {
+        self.wrap = columns.filter(|c| *c > 0);
+    }
+
+    /// Each visual row's byte range: the lines, each wrapped at the wrap width after its last
+    /// space that fits (a word longer than the row breaks inside it). A row that wraps keeps
+    /// its trailing space.
+    pub fn visual_rows(&self) -> Vec<Range<usize>> {
+        let lines = self.row_ranges();
+        let Some(cols) = self.wrap else {
+            return lines;
+        };
+        let mut out = Vec::new();
+        for line in lines {
+            let mut start = line.start;
+            loop {
+                let rest = &self.text[start..line.end];
+                let Some((cut, at_cut)) = rest.char_indices().nth(cols) else {
+                    out.push(start..line.end);
+                    break;
+                };
+                let brk = if at_cut.is_whitespace() {
+                    cut + at_cut.len_utf8()
+                } else {
+                    rest[..cut]
+                        .char_indices()
+                        .rfind(|(_, c)| c.is_whitespace())
+                        .map_or(cut, |(i, c)| i + c.len_utf8())
+                };
+                out.push(start..start + brk);
+                start += brk;
+            }
+        }
+        out
+    }
+
+    pub fn visual_row_count(&self) -> usize {
+        self.visual_rows().len()
+    }
+
+    /// The visual row byte `i` is on (on a wrap, the row it starts).
+    pub fn visual_row_of(&self, i: usize) -> usize {
+        row_at(&self.visual_rows(), self.snap(i))
+    }
+
+    /// How many lines the text has (an empty text is one).
+    #[cfg(test)]
     pub fn rows(&self) -> usize {
         self.text.matches('\n').count() + 1
     }
 
-    /// The row byte `i` is on.
+    /// The line byte `i` is on.
+    #[cfg(test)]
     pub fn row_of(&self, i: usize) -> usize {
         self.text[..self.snap(i)].matches('\n').count()
     }
@@ -328,6 +389,18 @@ impl EditBuffer {
     }
 }
 
+/// The row of `rows` (in order, covering the text) byte `i` is on: the last one starting at or
+/// before it.
+fn row_at(rows: &[Range<usize>], i: usize) -> usize {
+    rows.iter().rposition(|r| r.start <= i).unwrap_or(0)
+}
+
+/// Where row `row` sits in a box showing `shown` rows from `first`: None above or below it.
+fn shown_row(row: usize, first: usize, shown: usize) -> Option<usize> {
+    let n = row.checked_sub(first)?;
+    (n < shown).then_some(n)
+}
+
 /// Typed or pasted text as the box keeps it: newlines are `\n`, other control characters go.
 fn clean(text: &str) -> String {
     text.replace("\r\n", "\n")
@@ -347,8 +420,14 @@ pub struct Composer {
     dragging: bool,
     /// The first row shown (the box scrolls to keep the caret in view).
     first_row: usize,
-    /// From the last paint, for the IME's candidate window and the mouse: every row shaped,
-    /// where the text's left edge and the box's top were, and the row height.
+    /// The caret's row is kept in view; off after a wheel scroll until the caret or the text
+    /// next changes.
+    follow_caret: bool,
+    /// The part of a wheel scroll short of a whole row, carried to the next.
+    wheel_rest: Pixels,
+    /// From the last paint, for the IME's candidate window and the mouse: the rows shown
+    /// (from `first_row`), shaped, where the text's left edge and the box's top were, and the
+    /// row height.
     last_lines: Vec<ShapedLine>,
     last_origin: Option<Point<Pixels>>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -381,6 +460,8 @@ impl Composer {
             marked: None,
             dragging: false,
             first_row: 0,
+            follow_caret: true,
+            wheel_rest: px(0.),
             last_lines: Vec::new(),
             last_origin: None,
             last_bounds: None,
@@ -395,6 +476,7 @@ impl Composer {
     pub fn set_text(&mut self, text: String, cx: &mut Context<Self>) {
         self.buf.set_text(&text);
         self.marked = None;
+        self.follow_caret = true;
         cx.notify();
     }
 
@@ -402,18 +484,75 @@ impl Composer {
     pub fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
         self.buf.insert(&clean(text));
         self.marked = None;
+        self.follow_caret = true;
         cx.notify();
     }
 
-    pub fn set_placeholder(&mut self, p: SharedString, cx: &mut Context<Self>) {
-        self.placeholder = p;
+    /// The caret's byte offset.
+    pub fn cursor(&self) -> usize {
+        self.buf.cursor()
+    }
+
+    /// `text` in place of byte range `range`, the caret after it.
+    pub fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        self.buf.replace(range, &clean(text));
+        self.marked = None;
+        self.follow_caret = true;
         cx.notify();
+    }
+
+    #[cfg(feature = "ui-shots")]
+    pub fn placeholder(&self) -> &SharedString {
+        &self.placeholder
+    }
+
+    /// The rows as wrapped, the first shown, and where the box was drawn.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_rows(&self) -> (usize, usize, Option<Bounds<Pixels>>) {
+        (
+            self.buf.visual_row_count(),
+            self.first_row,
+            self.last_bounds,
+        )
+    }
+
+    /// A new placeholder (redrawn only when it is new).
+    pub fn set_placeholder(&mut self, p: SharedString, cx: &mut Context<Self>) {
+        if self.placeholder != p {
+            self.placeholder = p;
+            cx.notify();
+        }
     }
 
     fn step(&mut self, f: impl FnOnce(&mut EditBuffer), cx: &mut Context<Self>) {
         self.marked = None;
         f(&mut self.buf);
+        self.follow_caret = true;
         cx.notify();
+    }
+
+    /// The wheel scrolls the rows (a whole row at a time; the rest carries over), leaving the
+    /// caret where it is.
+    fn scroll(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let height = self.last_line_height;
+        if height <= px(0.) {
+            return;
+        }
+        let rows = self.buf.visual_row_count();
+        let shown = rows.min(MAX_ROWS);
+        if rows <= shown {
+            return;
+        }
+        cx.stop_propagation();
+        self.wheel_rest += e.delta.pixel_delta(height).y;
+        let whole = (self.wheel_rest / height).trunc();
+        self.wheel_rest -= height * whole;
+        let first = (self.first_row as f32 - whole).clamp(0., (rows - shown) as f32) as usize;
+        if first != self.first_row {
+            self.first_row = first;
+            self.follow_caret = false;
+            cx.notify();
+        }
     }
 
     steps! {
@@ -490,10 +629,12 @@ impl Composer {
         let below = ((at.y - bounds.top()) / self.last_line_height)
             .floor()
             .max(0.) as usize;
-        let row = (self.first_row + below).min(self.last_lines.len().checked_sub(1)?);
-        let range = self.buf.row_ranges().get(row)?.clone();
+        let below = below.min(self.last_lines.len().checked_sub(1)?);
+        let range = self.buf.visual_rows().get(self.first_row + below)?.clone();
         let x = at.x - origin.x;
-        let col = self.last_lines[row].closest_index_for_x(x).min(range.len());
+        let col = self.last_lines[below]
+            .closest_index_for_x(x)
+            .min(range.len());
         Some(range.start + col)
     }
 
@@ -552,10 +693,10 @@ impl Composer {
     fn point_for(&self, index: usize) -> Option<Point<Pixels>> {
         let origin = self.last_origin?;
         let bounds = self.last_bounds?;
-        let row = self.buf.row_of(index);
-        let line = self.last_lines.get(row)?;
-        let start = self.buf.row_ranges().get(row)?.start;
-        let shown = row.checked_sub(self.first_row)?;
+        let row = self.buf.visual_row_of(index);
+        let shown = shown_row(row, self.first_row, self.last_lines.len())?;
+        let line = self.last_lines.get(shown)?;
+        let start = self.buf.visual_rows().get(row)?.start;
         Some(point(
             origin.x + line.x_for_index(index - start),
             bounds.top() + self.last_line_height * shown as f32,
@@ -612,6 +753,7 @@ impl EntityInputHandler for Composer {
         let new_text = clean(new_text);
         self.buf.replace(range, &new_text);
         self.marked = None;
+        self.follow_caret = true;
         if new_text == "@" && self.buf.at_word_start(start) {
             cx.emit(ComposerEvent::AtTyped);
         }
@@ -630,6 +772,7 @@ impl EntityInputHandler for Composer {
         let new_text = clean(new_text);
         let start = range.start;
         self.buf.replace(range, &new_text);
+        self.follow_caret = true;
         let end = start + new_text.len();
         self.marked = (!new_text.is_empty()).then_some(start..end);
         // The IME's caret is relative to the marked text, in UTF-16.
@@ -727,6 +870,7 @@ impl Render for Composer {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_scroll_wheel(cx.listener(Self::scroll))
             .child(
                 div()
                     .relative()
@@ -789,9 +933,16 @@ impl IntoElement for ComposerText {
     }
 }
 
+/// What prepaint hands paint: the visual rows, the first shown, and the shown rows shaped.
+pub struct Shaped {
+    rows: Vec<Range<usize>>,
+    first: usize,
+    lines: Vec<ShapedLine>,
+}
+
 impl Element for ComposerText {
     type RequestLayoutState = ();
-    type PrepaintState = Vec<ShapedLine>;
+    type PrepaintState = Shaped;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -801,20 +952,48 @@ impl Element for ComposerText {
         None
     }
 
+    /// As tall as the wrapped text (at most `MAX_ROWS` rows): the width comes from layout, and
+    /// sets the wrap (in cells of the font's `m`, its widest letter).
     fn request_layout(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         window: &mut Window,
-        cx: &mut App,
+        _: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let rows = self.input.read(cx).buf.rows().min(MAX_ROWS);
+        let text_style = window.text_style();
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&text_style.font());
+        let cell = text_system
+            .advance(font_id, font_size, 'm')
+            .map(|a| a.width)
+            .unwrap_or(font_size * 0.6);
+        let line_height = window.line_height();
+        let input = self.input.clone();
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = (window.line_height() * rows as f32).into();
-        (window.request_layout(style, [], cx), ())
+        let id = window.request_measured_layout(style, move |known, available, _, cx| {
+            let width = known.width.or(match available.width {
+                AvailableSpace::Definite(w) => Some(w),
+                _ => None,
+            });
+            let rows = input.update(cx, |input, _| {
+                if let Some(width) = width {
+                    input.buf.set_wrap(Some(wrap_columns(width, cell)));
+                }
+                input.buf.visual_row_count()
+            });
+            size(
+                width.unwrap_or(px(0.)),
+                line_height * rows.min(MAX_ROWS) as f32,
+            )
+        });
+        (id, ())
     }
 
+    /// The first row shown (the caret's row kept in view unless the wheel moved it), and only
+    /// the shown rows shaped.
     fn prepaint(
         &mut self,
         _: Option<&GlobalElementId>,
@@ -825,6 +1004,17 @@ impl Element for ComposerText {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
+        let rows = input.buf.visual_rows();
+        let shown = rows.len().min(MAX_ROWS);
+        let caret_row = row_at(&rows, input.buf.cursor());
+        let mut first = input.first_row.min(rows.len() - shown);
+        if input.follow_caret {
+            if caret_row < first {
+                first = caret_row;
+            } else if caret_row >= first + shown {
+                first = caret_row + 1 - shown;
+            }
+        }
         let style = window.text_style();
         let base = TextRun {
             len: 0,
@@ -836,9 +1026,7 @@ impl Element for ComposerText {
         };
         let font_size = style.font_size.to_pixels(window.rem_size());
         let text = input.buf.text();
-        input
-            .buf
-            .row_ranges()
+        let lines = rows[first..first + shown]
             .iter()
             .map(|range| {
                 let runs = runs_for(range, input.marked.as_ref(), &base);
@@ -849,7 +1037,8 @@ impl Element for ComposerText {
                     None,
                 )
             })
-            .collect()
+            .collect();
+        Shaped { rows, first, lines }
     }
 
     fn paint(
@@ -858,19 +1047,17 @@ impl Element for ComposerText {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        lines: &mut Self::PrepaintState,
+        shaped: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         let line_height = window.line_height();
-        let (focus_handle, buf_rows, caret, selection, first_row_was) = {
+        let (focus_handle, caret, selection) = {
             let input = self.input.read(cx);
             (
                 input.focus_handle.clone(),
-                input.buf.row_ranges(),
                 input.buf.cursor(),
                 input.buf.selection(),
-                input.first_row,
             )
         };
         window.handle_input(
@@ -878,31 +1065,26 @@ impl Element for ComposerText {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        // Scroll just enough to keep the caret's row in view.
-        let rows = buf_rows.len();
-        let shown = rows.min(MAX_ROWS);
-        let caret_row = buf_rows
-            .iter()
-            .position(|r| caret <= r.end)
-            .unwrap_or(rows - 1);
-        let mut first = first_row_was.min(rows - shown);
-        if caret_row < first {
-            first = caret_row;
-        } else if caret_row >= first + shown {
-            first = caret_row + 1 - shown;
-        }
-        // A caret line wider than the box scrolls left so the caret stays visible.
+        let (rows, first, lines) = (&shaped.rows, shaped.first, &shaped.lines);
+        let caret_row = row_at(rows, caret);
+        let caret_shown = shown_row(caret_row, first, lines.len());
+        // A caret row wider than the box (wide characters) scrolls left so the caret shows.
         let caret_width = px(2.);
-        let caret_col = caret - buf_rows[caret_row].start;
-        let caret_line = &lines[caret_row];
-        let overflow = (caret_line.width() + caret_width - bounds.size.width).max(px(0.));
-        let to_caret = caret_line.x_for_index(caret_col) + caret_width - bounds.size.width;
-        let left = bounds.left() - to_caret.clamp(px(0.), overflow);
+        let left = match caret_shown {
+            Some(n) => {
+                let line = &lines[n];
+                let col = caret - rows[caret_row].start;
+                let overflow = (line.width() + caret_width - bounds.size.width).max(px(0.));
+                let to_caret = line.x_for_index(col) + caret_width - bounds.size.width;
+                bounds.left() - to_caret.clamp(px(0.), overflow)
+            }
+            None => bounds.left(),
+        };
         let shade = cx.global::<Appearance>().theme.ui().selection;
-        for (n, row) in (first..first + shown).enumerate() {
-            let (range, line) = (&buf_rows[row], &lines[row]);
+        for (n, line) in lines.iter().enumerate() {
+            let range = &rows[first + n];
             let top = bounds.top() + line_height * n as f32;
-            // A selection is shaded behind the text; across a newline it runs a little past it.
+            // A selection is shaded behind the text; past a row's end it runs a little on.
             if !selection.is_empty() && selection.start <= range.end && selection.end >= range.start
             {
                 let s = selection.start.max(range.start) - range.start;
@@ -932,16 +1114,18 @@ impl Element for ComposerText {
             )
             .ok();
         }
-        if focus_handle.is_focused(window) {
-            let x = left + caret_line.x_for_index(caret_col);
-            let y = bounds.top() + line_height * (caret_row - first) as f32;
+        if focus_handle.is_focused(window)
+            && let Some(n) = caret_shown
+        {
+            let x = left + lines[n].x_for_index(caret - rows[caret_row].start);
+            let y = bounds.top() + line_height * n as f32;
             let color = window.text_style().color;
             window.paint_quad(fill(
                 Bounds::new(point(x, y), size(caret_width, line_height)),
                 color,
             ));
         }
-        let lines = std::mem::take(lines);
+        let lines = std::mem::take(&mut shaped.lines);
         self.input.update(cx, |input, _| {
             input.first_row = first;
             input.last_lines = lines;
@@ -952,9 +1136,80 @@ impl Element for ComposerText {
     }
 }
 
+/// How many cells of width `cell` fit in `width` (at least one), less room for the caret.
+fn wrap_columns(width: Pixels, cell: Pixels) -> usize {
+    if cell <= px(0.) {
+        return 1;
+    }
+    (((width - px(2.)) / cell).floor() as usize).max(1)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::EditBuffer;
+    use super::{EditBuffer, shown_row};
+
+    #[test]
+    fn up_and_down_move_by_visual_row() {
+        // "aaaa bbbb cccc" wraps in 3 at 5 columns: "aaaa ", "bbbb ", "cccc".
+        let mut b = EditBuffer::new("aaaa bbbb cccc\nzz");
+        b.set_wrap(Some(5));
+        assert_eq!(b.visual_rows(), vec![0..5, 5..10, 10..14, 15..17]);
+        b.set_cursor(1);
+        b.down();
+        assert_eq!(b.cursor(), 6, "the second visual row, same column");
+        b.down();
+        assert_eq!(b.cursor(), 11, "the third, still the first line");
+        b.down();
+        assert_eq!(b.cursor(), 16, "then the next line");
+        b.up();
+        b.up();
+        assert_eq!(b.cursor(), 6);
+        // Unwrapped, down goes straight to the next line.
+        b.set_wrap(None);
+        b.set_cursor(1);
+        b.down();
+        assert_eq!(b.cursor(), 16);
+    }
+
+    #[test]
+    fn a_word_longer_than_the_row_breaks_inside_it() {
+        let mut b = EditBuffer::new("abcdefghij kl");
+        b.set_wrap(Some(4));
+        assert_eq!(b.visual_rows(), vec![0..4, 4..8, 8..11, 11..13]);
+        assert_eq!(b.visual_rows().len(), b.visual_row_count());
+        // A caret on a wrap boundary sits at the start of the next row.
+        assert_eq!(b.visual_row_of(4), 1);
+        assert_eq!(b.visual_row_of(13), 3, "the text's end, on the last row");
+        // Down from the end of a wrapping row stays on the row below, before its wrap.
+        b.set_cursor(3);
+        b.down();
+        assert_eq!(b.cursor(), 7);
+        let empty = EditBuffer::new("");
+        assert_eq!(empty.visual_rows(), vec![0..0]);
+    }
+
+    #[test]
+    fn command_arrows_with_a_selection_go_to_the_line_ends() {
+        let mut b = EditBuffer::new("one two\nthree four");
+        b.set_cursor(9);
+        b.right(true);
+        b.right(true);
+        assert_eq!(b.selection(), 9..11);
+        b.line_start(false);
+        assert_eq!(b.cursor(), 8, "the line's start, not the selection's");
+        b.set_cursor(1);
+        b.right(true);
+        b.line_end(false);
+        assert_eq!(b.cursor(), 7, "the line's end, not the selection's");
+    }
+
+    #[test]
+    fn a_row_below_the_box_has_no_place() {
+        assert_eq!(shown_row(3, 2, 8), Some(1));
+        assert_eq!(shown_row(1, 2, 8), None, "above it");
+        assert_eq!(shown_row(10, 2, 8), None, "below it");
+        assert_eq!(shown_row(9, 2, 8), Some(7));
+    }
 
     #[test]
     fn newline_then_up_keeps_column() {

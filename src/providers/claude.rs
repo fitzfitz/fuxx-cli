@@ -1,11 +1,10 @@
-#![allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
 //! Claude Code's `--output-format stream-json` / `--input-format stream-json` wire format
 //! (recorded fixtures: `fixtures/claude-*.jsonl`, Claude Code 2.1.323) to fuxx events and back.
 
 use super::*;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct Claude;
 pub static CLAUDE: Claude = Claude;
@@ -88,6 +87,62 @@ impl Provider for Claude {
     fn translator(&self) -> Box<dyn Translator> {
         Box::new(ClaudeTranslator::default())
     }
+
+    /// `--resume` doesn't replay on stdout (Task 0): the turns come from Claude's transcript of
+    /// the conversation. None to resume, no home, or a missing or unreadable file: none.
+    fn history(&self, start: &Start) -> Vec<Past> {
+        let (Some(id), Some(home)) = (&start.resume, std::env::var_os("HOME")) else {
+            return Vec::new();
+        };
+        let cwd = std::fs::canonicalize(&start.cwd).unwrap_or_else(|_| start.cwd.clone());
+        std::fs::read_to_string(transcript_path(Path::new(&home), &cwd, id))
+            .map(|text| transcript_events(&text))
+            .unwrap_or_default()
+    }
+}
+
+/// Where Claude keeps conversation `id` begun in folder `cwd` (its realpath: the caller resolves
+/// it): `<home>/.claude/projects/<cwd with / and . turned into ->/<id>.jsonl` (M11aa Task 0).
+pub fn transcript_path(home: &Path, cwd: &Path, id: &str) -> PathBuf {
+    let mangled: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect();
+    home.join(".claude")
+        .join("projects")
+        .join(mangled)
+        .join(format!("{id}.jsonl"))
+}
+
+/// A transcript's turns as history (call 7). Its `assistant` and `user` lines are the stream's
+/// own shapes (checked against `fixtures/claude-transcript.jsonl`), so a fresh translator decodes
+/// them; a `user` line whose content is a string is something you said. Lines Claude adds for
+/// itself (`isMeta`), a sub-agent's own thread (`isSidechain`) and every other kind of line
+/// (attachments, request records, costs) are skipped, as is anything that isn't JSON.
+pub fn transcript_events(text: &str) -> Vec<Past> {
+    let translator = ClaudeTranslator::default();
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v["isMeta"] == true || v["isSidechain"] == true {
+            continue;
+        }
+        match v["type"].as_str() {
+            Some("user") => {
+                if let Some(said) = v["message"]["content"].as_str() {
+                    out.push(Past::You(said.to_string()));
+                } else {
+                    out.extend(translator.user(&v).into_iter().map(Past::Event));
+                }
+            }
+            Some("assistant") => out.extend(translator.assistant(&v).into_iter().map(Past::Event)),
+            _ => {}
+        }
+    }
+    out
 }
 
 #[derive(Default)]
@@ -135,8 +190,14 @@ fn tool_summary(name: &str, input: &Value) -> String {
     name.to_string()
 }
 
+/// One hunk replacing `old` with `new`, with the header `diff_view::parse_diff` reads (the
+/// numbers are counts from 1: an edit's own place in the file isn't known).
 fn diff_body(old: &str, new: &str) -> String {
-    let mut out = String::from("@@\n");
+    let mut out = format!(
+        "@@ -1,{} +1,{} @@\n",
+        old.lines().count(),
+        new.lines().count()
+    );
     for (sign, text) in [('-', old), ('+', new)] {
         for line in text.lines() {
             out.push(sign);
@@ -197,13 +258,14 @@ fn result_text(content: &Value) -> String {
     }
 }
 
-/// A permission suggestion in words, for the "Always allow …" button.
+/// The "always" button's whole label for a permission suggestion: Write and Edit offer a mode
+/// for the whole session (Ruling 10), Bash a rule for that command.
 fn describe_suggestion(sug: &Value) -> String {
     match sug["type"].as_str() {
         Some("setMode") => match sug["mode"].as_str() {
-            Some("acceptEdits") => "accept edits for this session".to_string(),
-            Some(m) => format!("{m} mode for this session"),
-            None => "change the mode".to_string(),
+            Some("acceptEdits") => "Allow all edits this session".to_string(),
+            Some(m) => format!("Switch to {m} mode this session"),
+            None => "Always allow".to_string(),
         },
         Some("addRules") => {
             let rules: Vec<String> = sug["rules"]
@@ -220,10 +282,13 @@ fn describe_suggestion(sug: &Value) -> String {
                         .collect()
                 })
                 .unwrap_or_default();
-            rules.join(", ")
+            if rules.is_empty() {
+                "Always allow".to_string()
+            } else {
+                format!("Always allow {}", rules.join(", "))
+            }
         }
-        Some(other) => other.to_string(),
-        None => "this".to_string(),
+        Some(_) | None => "Always allow".to_string(),
     }
 }
 
@@ -700,7 +765,7 @@ mod tests {
         assert_eq!(tool, "Write");
         assert_eq!(what, "hello.txt");
         assert!(detail.contains("\"file_path\"") && detail.contains('\n'));
-        assert_eq!(always.as_deref(), Some("accept edits for this session"));
+        assert_eq!(always.as_deref(), Some("Allow all edits this session"));
     }
 
     #[test]
@@ -781,8 +846,105 @@ mod tests {
         assert_eq!(what, "python3 -c 'import time; time.sleep(60)'");
         assert_eq!(
             always.as_deref(),
-            Some("Bash(python3 -c 'import time; time.sleep(60)')")
+            Some("Always allow Bash(python3 -c 'import time; time.sleep(60)')")
         );
+    }
+
+    #[test]
+    fn history_reads_the_transcript() {
+        let past = transcript_events(include_str!("fixtures/claude-transcript.jsonl"));
+        assert_eq!(
+            past,
+            vec![
+                Past::You("Say hello in one word".into()),
+                Past::Event(Event::MessageDone {
+                    message: "msg_011Cgz3BeeVjP3aWM4pjPKbD".into(),
+                    text: "Hello!".into(),
+                    parent: None,
+                }),
+                Past::You(
+                    "What single word did I ask you to say earlier? Answer in one word.".into()
+                ),
+                Past::Event(Event::MessageDone {
+                    message: "msg_011Cgz3JJVyRZykwmNZqqJjR".into(),
+                    text: "Hello".into(),
+                    parent: None,
+                }),
+            ]
+        );
+    }
+
+    /// A transcript holds tool calls in the stream's shapes, and lines that are not turns.
+    #[test]
+    fn history_keeps_tools_and_skips_meta_and_sidechain_lines() {
+        let lines = [
+            json!({"type":"user","message":{"role":"user","content":"fix it"}}),
+            json!({"type":"user","isMeta":true,"message":{"role":"user","content":"<caveat>"}}),
+            json!({"type":"assistant","message":{"id":"m1","content":[
+                {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}),
+            json!({"type":"user","message":{"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"t1","content":"a.txt","is_error":false}]}}),
+            json!({"type":"assistant","isSidechain":true,"message":{"id":"m2","content":[
+                {"type":"text","text":"sub-agent"}]}}),
+            json!({"type":"attachment","attachment":{}}),
+        ];
+        let text: String = lines.iter().map(|l| l.to_string() + "\n").collect();
+        let past = transcript_events(&format!("{text}not json\n"));
+        assert_eq!(past.len(), 3, "{past:?}");
+        assert_eq!(past[0], Past::You("fix it".into()));
+        assert!(matches!(&past[1], Past::Event(Event::ToolStarted { id, .. }) if id == "t1"));
+        assert!(
+            matches!(&past[2], Past::Event(Event::ToolFinished { id, ok: true, .. }) if id == "t1")
+        );
+    }
+
+    #[test]
+    fn transcript_path_mangles_the_cwd() {
+        assert_eq!(
+            transcript_path(
+                Path::new("/Users/me"),
+                Path::new("/Users/me/k.p/app"),
+                "id1"
+            ),
+            PathBuf::from("/Users/me/.claude/projects/-Users-me-k-p-app/id1.jsonl")
+        );
+    }
+
+    #[test]
+    fn a_missing_transcript_is_no_history() {
+        let start = Start {
+            cwd: PathBuf::from("/nonexistent/fuxx-test"),
+            resume: Some("no-such-id".into()),
+            mode: None,
+            extra_args: Vec::new(),
+        };
+        assert!(CLAUDE.history(&start).is_empty());
+        let fresh = Start {
+            resume: None,
+            ..start
+        };
+        assert!(CLAUDE.history(&fresh).is_empty());
+    }
+
+    /// An edit's diff is one hunk `diff_view::parse_diff` reads (it needs `@@ -a +c @@`).
+    #[test]
+    fn an_edit_diff_parses_as_a_hunk() {
+        let ev = decode_all(&CLAUDE, include_str!("fixtures/claude-tools.jsonl"));
+        let unified = ev
+            .iter()
+            .find_map(|e| match e {
+                Event::ToolStarted {
+                    detail: Some(ToolDetail::Diff { unified, .. }),
+                    ..
+                } => Some(unified.clone()),
+                _ => None,
+            })
+            .expect("an Edit");
+        let parsed = crate::diff_view::parse_diff(&unified);
+        use crate::diff_view::RowKind;
+        let kinds: Vec<RowKind> = parsed.rows.iter().map(|r| r.kind).collect();
+        assert_eq!(kinds, [RowKind::Removed, RowKind::Added], "{unified}");
+        assert_eq!(parsed.text, "alpha\nbeta");
     }
 
     #[test]

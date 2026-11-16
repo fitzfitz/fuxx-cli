@@ -8,6 +8,7 @@ mod agent_conversation;
 mod agent_detect;
 mod agent_markdown;
 mod agent_process;
+mod agent_tab;
 mod api;
 mod api_client;
 mod api_events;
@@ -444,6 +445,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             composer::ShowCharacterPalette,
             Some("Composer"),
         ),
+        // The agent tab's `@` file list, while it is open over the composer.
+        KeyBinding::new("up", agent_tab::AtUp, Some("AtPopup > Composer")),
+        KeyBinding::new("down", agent_tab::AtDown, Some("AtPopup > Composer")),
     ];
     bindings.extend(browser_tab::page_bindings());
     bindings
@@ -1432,6 +1436,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The agent tab's composer: its own keys, the `@` list's ↑/↓ while it is open, and
+    /// fuxx's keys still reaching fuxx.
+    #[test]
+    fn composer_keys_stay_in_the_composer() {
+        use crate::composer;
+        let keymap = keymap();
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        let at_list: &[&str] = &["Workspace", "AgentTab", "AtPopup", "Composer"];
+        let keys: [(&str, Box<dyn Action>); 9] = [
+            ("enter", Box::new(composer::Send)),
+            ("shift-enter", Box::new(composer::Newline)),
+            ("escape", Box::new(composer::Stop)),
+            ("up", Box::new(composer::MoveUp)),
+            ("down", Box::new(composer::MoveDown)),
+            ("cmd-left", Box::new(composer::LineStart)),
+            ("cmd-v", Box::new(composer::Paste)),
+            ("cmd-c", Box::new(composer::Copy)),
+            ("cmd-a", Box::new(composer::SelectAll)),
+        ];
+        for (key, action) in keys {
+            let got = runs(&keymap, key, composer);
+            assert!(got.partial_eq(&*action), "{key}: {}", got.name());
+        }
+        assert!(runs(&keymap, "up", at_list).partial_eq(&crate::agent_tab::AtUp));
+        assert!(runs(&keymap, "down", at_list).partial_eq(&crate::agent_tab::AtDown));
+        // Enter and Esc stay the composer's: the tab picks the file / closes the list.
+        assert!(runs(&keymap, "enter", at_list).partial_eq(&composer::Send));
+        assert!(runs(&keymap, "escape", at_list).partial_eq(&composer::Stop));
+        // fuxx's own keys still work from the composer.
+        assert!(runs(&keymap, "cmd-k", composer).partial_eq(&OpenPalette));
+        assert!(runs(&keymap, "cmd-t", composer).partial_eq(&NewTab));
+        assert!(runs(&keymap, "cmd-w", composer).partial_eq(&CloseSession));
     }
 
     #[test]

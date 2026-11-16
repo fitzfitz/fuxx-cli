@@ -1,5 +1,3 @@
-#![allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
-
 //! Runs an agent as a piped child process (its own session and process group) and streams its
 //! stdout lines as `ProcessEvent`s. GPUI-free: plain threads and a futures channel.
 
@@ -130,6 +128,7 @@ impl AgentProcess {
     }
 
     /// The child's pid, once it is running.
+    #[allow(dead_code)] // M11aa Task 8 (`end_all`); the tests use it
     pub fn pid(&self) -> Option<i32> {
         Some(self.pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0)
     }

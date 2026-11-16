@@ -31,6 +31,7 @@ use crate::ui_tokens::{self, contrast};
 use crate::workspace::{Overlay, Workspace};
 use crate::{fonts, settings};
 
+mod agent_tab_scenes;
 mod chrome_sources;
 
 /// The two themes every scene is shot in: (file slug, built-in theme name).
@@ -338,6 +339,31 @@ const SCENES: &[(&str, fn())] = &[
     ("command-blocks-jump", command_blocks_jump_scene),
     ("command-blocks-copy", command_blocks_copy_scene),
     ("command-blocks-rerun", command_blocks_rerun_scene),
+    ("agent-tab-empty", agent_tab_scenes::agent_tab_empty),
+    ("agent-tab-working", agent_tab_scenes::agent_tab_working),
+    (
+        "agent-tab-permission",
+        agent_tab_scenes::agent_tab_permission,
+    ),
+    ("agent-tab-done", agent_tab_scenes::agent_tab_done),
+    ("agent-tab-failed", agent_tab_scenes::agent_tab_failed),
+    (
+        "agent-tab-bad-resume",
+        agent_tab_scenes::agent_tab_bad_resume,
+    ),
+    ("agent-tab-long", agent_tab_scenes::agent_tab_long),
+    ("agent-tab-markdown", agent_tab_scenes::agent_tab_markdown),
+    (
+        "agent-tab-cached-current",
+        agent_tab_scenes::agent_tab_cached_current,
+    ),
+    ("agent-tab-at-files", agent_tab_scenes::agent_tab_at_files),
+    ("agent-tab-close", agent_tab_scenes::agent_tab_close),
+    ("agent-tab-keys", agent_tab_scenes::agent_tab_keys),
+    (
+        "agent-tab-composer-wrap",
+        agent_tab_scenes::agent_tab_composer_wrap,
+    ),
 ];
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
@@ -5514,8 +5540,11 @@ fn tab_drag_scenes() {
                             let keys = view.read(cx).focus_handle(cx).is_focused(window);
                             ("file".to_string(), keys)
                         }
-                        // No view until M11aa Task 7.
-                        TabKind::Agent { .. } => ("agent".to_string(), false),
+                        TabKind::Agent { .. } => {
+                            let view = ws.agent_tabs.get(&tab).expect("its view");
+                            let keys = view.read(cx).focus_handle(cx).is_focused(window);
+                            ("agent".to_string(), keys)
+                        }
                     }
                 })
                 .expect("the window")

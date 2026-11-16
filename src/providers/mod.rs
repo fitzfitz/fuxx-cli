@@ -1,4 +1,3 @@
-#![allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
 //! Agent providers (M11aa): fuxx's own event language for an agent conversation, and the
 //! translators that turn one agent's wire format into it. Pure and GPUI-free, and it knows no
 //! agent by name here: each agent lives in its own file.
@@ -16,8 +15,10 @@ pub struct ProviderInfo {
     pub badge: &'static str,
     pub badge_rgb: u32,
     /// Whether the agent asks fuxx (not the user's terminal) before using a tool.
+    #[allow(dead_code)] // M11aa Task 12 (agy: false); nothing reads it yet
     pub routes_permissions: bool,
     pub modes: &'static [&'static str],
+    #[allow(dead_code)] // M11aa Task 8 (`agent_beside` starts with it)
     pub default_mode: Option<&'static str>,
 }
 
@@ -36,8 +37,9 @@ pub trait Provider: Sync {
     fn argv(&self, start: &Start) -> Vec<String>;
     /// The command line that opens a conversation in the agent's own terminal UI.
     fn classic_argv(&self, conversation: &str) -> Vec<String>;
-    /// Past events of a resumed conversation (empty unless the provider can read them).
-    fn history(&self, _start: &Start) -> Vec<Event> {
+    /// What was said before in a resumed conversation (empty unless the provider can read it).
+    /// Reads a file: call it off the UI thread.
+    fn history(&self, _start: &Start) -> Vec<Past> {
         Vec::new()
     }
     fn translator(&self) -> Box<dyn Translator>;
@@ -50,6 +52,13 @@ pub trait Translator: Send {
     fn decode(&mut self, line: &str) -> Vec<Event>;
     /// One action to the lines to write.
     fn encode(&mut self, action: &Action) -> Vec<String>;
+}
+
+/// One piece of a resumed conversation's history: something you said, or an event of the agent's.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Past {
+    You(String),
+    Event(Event),
 }
 
 #[derive(Clone, Debug, PartialEq)]

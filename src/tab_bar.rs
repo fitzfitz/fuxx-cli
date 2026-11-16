@@ -786,8 +786,13 @@ impl Workspace {
                 }
             }
             Some(TabKind::Browser { .. }) => self.close_browser_tab(tab, true, window, cx),
-            // An agent tab closes like a file tab: out of the model, nothing else to tear down.
-            Some(TabKind::File { .. } | TabKind::Agent { .. }) => {
+            Some(TabKind::File { .. }) => self.close_file_tab(tab, window, cx),
+            // An agent tab: its process ends and its view goes (`sync` drops it), then it
+            // closes like a file tab. (Asking first when busy is M11aa Task 8.)
+            Some(TabKind::Agent { .. }) => {
+                if let Some(view) = self.agent_tabs.get(&tab) {
+                    view.update(cx, |view, _| view.end());
+                }
                 self.close_file_tab(tab, window, cx)
             }
             None => {}
