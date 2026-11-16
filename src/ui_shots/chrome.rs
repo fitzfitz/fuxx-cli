@@ -1427,9 +1427,15 @@ pub(super) fn chrome_agent_tabs() {
         "{n}: {text}"
     );
     assert_eq!(you(&cx), before, "{n}: nothing sent");
-    // Nothing holds it: the tab resumes and sends.
+    // Nothing holds it: the tab resumes and sends, once even for Enter pressed twice (the
+    // second comes while the first's check runs; the box still has the text then).
     set_ps(&mut cx, Some(Vec::new()));
-    send_again(&mut cx);
+    cx.update(|cx| {
+        composer.update(cx, |c, cx| c.set_text("and the tests".into(), cx));
+        view.update(cx, |t, cx| t.send("and the tests".into(), cx));
+        view.update(cx, |t, cx| t.send("and the tests".into(), cx));
+    });
+    cx.run_until_parked();
     cx.read(|cx| {
         let t = view.read(cx);
         assert!(!t.shot_paused(), "{n}: resumed");
@@ -1476,6 +1482,46 @@ pub(super) fn chrome_agent_tabs() {
         })
     });
     cx.run_until_parked();
+    // Its classic terminal no longer noted (as after a restart): Open in classic view opens
+    // another. Asked twice, and a send, while it opens (its `ps` and the reap still to come):
+    // one terminal, and the send is held (the tab's `claude -p --resume` would be a second
+    // writer beside the classic view's `claude --resume`).
+    cx.update(|cx| {
+        ws.update(cx, |ws, _| {
+            ws.classic_of.remove(&tab);
+        })
+    });
+    let tabs_before = classic_tabs(&cx);
+    let before = you(&cx);
+    let argv_before = cx.read(|cx| view.read(cx).shot_last_argv());
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.open_classic(tab, window, cx);
+        ws.open_classic(tab, window, cx);
+        composer.update(cx, |c, cx| c.set_text("and the tests".into(), cx));
+        view.update(cx, |t, cx| t.send("and the tests".into(), cx));
+    });
+    cx.run_until_parked();
+    let text = held(&cx, "sent while the classic view opens");
+    assert!(
+        text.starts_with("Claude is still running this conversation in "),
+        "{n}: {text}"
+    );
+    assert_eq!(you(&cx), before, "{n}: nothing sent while it opens");
+    assert_eq!(
+        cx.read(|cx| view.read(cx).shot_last_argv()),
+        argv_before,
+        "{n}: no process started while it opens"
+    );
+    assert_eq!(
+        classic_tabs(&cx),
+        tabs_before + 1,
+        "{n}: one classic view opened"
+    );
+    let reopened = cx.read(|cx| ws.read(cx).classic_of.get(&tab).map(|c| c.0));
+    assert!(
+        reopened.is_some_and(|id| id != classic),
+        "{n}: the new classic view noted"
+    );
     steps.step(
         &mut cx,
         window,

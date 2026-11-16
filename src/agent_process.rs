@@ -205,6 +205,23 @@ pub fn end_all(processes: &[Arc<AgentProcess>], grace: Duration) {
     end_ids(&ids, grace);
 }
 
+/// The pids of every process this app started that isn't reaped yet (each leads its own
+/// process group): fuxx's own agents, never a classic view's (R13).
+pub fn started_pids() -> Vec<u32> {
+    STARTED
+        .lock()
+        .map(|started| {
+            started
+                .iter()
+                .filter(|i| !i.reaped())
+                .map(|i| i.pid.load(Ordering::SeqCst))
+                .filter(|pid| *pid > 0)
+                .map(|pid| pid as u32)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// `end_all` for every process this app started that isn't reaped yet: the open tabs', and
 /// those of tabs closed or paused moments ago still waiting for their SIGKILL (quitting).
 pub fn end_every_started(grace: Duration) {

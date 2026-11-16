@@ -510,8 +510,7 @@ impl AgentTab {
                                     provider.info().name,
                                     id,
                                     &[],
-                                    None,
-                                    false,
+                                    &crate::workspace_agent::Classic::Closed,
                                 ),
                                 None => Holder::Free,
                             };
@@ -813,6 +812,14 @@ impl AgentTab {
     /// (`terminal`: where, when known); the tab stays paused.
     pub fn held(&mut self, holder: &Holder, terminal: Option<&str>, cx: &mut Context<Self>) {
         let notice = crate::workspace_agent::held_notice(self.label(), holder, terminal);
+        self.conversation.apply(Event::Notice(notice));
+        self.after_change(true, cx);
+    }
+
+    /// Its own process didn't stop in time, so its classic view didn't open: one notice says so;
+    /// the tab stays paused.
+    pub fn classic_not_opened(&mut self, cx: &mut Context<Self>) {
+        let notice = crate::workspace_agent::not_stopped_notice(self.label());
         self.conversation.apply(Event::Notice(notice));
         self.after_change(true, cx);
     }

@@ -693,6 +693,8 @@ impl Workspace {
         self.file_tabs.clear();
         self.agents.clear();
         self.classic_of.clear();
+        self.classic_opening.clear();
+        self.resume_checks.clear();
         self.browsers = Browsers::new();
         self.dragging = None;
         self.restoring = false; // even mid-startup, the list saved is the empty one
