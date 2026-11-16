@@ -2737,10 +2737,10 @@ mod tests {
     #[test]
     fn the_root_s_path_is_home_relative_and_cut_at_its_start() {
         let home = Some(Path::new("/Users/me"));
-        let root = Path::new("/Users/me/code/fuxx-cli");
+        let root = Path::new("/Users/me/code/proj/fuxx-cli");
         let all = |_: &str| true;
-        assert_eq!(root_path_line(root, home, all), "~/code/fuxx-cli");
-        // Room for 17 characters: its start cut at a folder boundary (not `…ja/proj/fuxx-cli`,
+        assert_eq!(root_path_line(root, home, all), "~/code/proj/fuxx-cli");
+        // Room for 17 characters: its start cut at a folder boundary (not `…de/proj/fuxx-cli`,
         // which a cut by characters would give).
         let room = |n: usize| move |s: &str| s.chars().count() <= n;
         assert_eq!(root_path_line(root, home, room(17)), "…/proj/fuxx-cli");

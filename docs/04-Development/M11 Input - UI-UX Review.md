@@ -471,4 +471,4 @@ Ranked by value for "many agents, one human":
 
 Unfocused-pane text contrast with the 0.3 veil: Mocha 11.34 → 6.24, default theme 14.0 → 7.67, Latte 7.06 → 3.45.
 The deuteranopia distance is the Machado 2009 simulation (severity 1.0) followed by RGB Euclidean distance; under
-about 40 is hard to tell apart at 10 px. Script: `/tmp/scratch-jobs/1f9e4e3f/tmp/scripts/contrast.py`.
+about 40 is hard to tell apart at 10 px. Script: a scratch script (not kept).
