@@ -120,6 +120,7 @@ fuxx wait s4                              # block until it needs you (or --for d
 fuxx question s4                          # what's it asking?
 fuxx answer s4 "yes"                      # tell it
 fuxx events                               # live stream of everything that happens
+fuxx status a1 · fuxx answer a1 yes       # agent tabs are a1, a2…: status, question, answer, wait
 fuxx note "building" · fuxx progress 40   # show a note / progress bar on your own row
 ```
 

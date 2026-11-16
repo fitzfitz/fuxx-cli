@@ -47,7 +47,7 @@ pub enum DaemonCommand {
 pub(crate) const USAGE: &str = "\
 usage: fuxx [command]   (no command opens the app)
 
-  ls                                   list sessions (#N* focused, #N+ on screen)
+  ls                                   list sessions (#N* focused, #N+ on screen), then agent tabs
   new [--folder DIR] [--preset NAME] [--run CMD] [--name NAME]
       [--split right|down | --tab [--of TARGET]] [--background]
                                        open a session in a workspace of its own (--split: a pane
@@ -63,7 +63,8 @@ usage: fuxx [command]   (no command opens the app)
   read [TARGET] [--lines N] [--all]    print the screen text
   status [TARGET]                      print idle, working, waiting or done
   question [TARGET]                    print what a waiting session is asking
-  answer [TARGET] TEXT [--force]       answer a waiting session
+  answer [TARGET] TEXT [--force]       answer a waiting session (an agent tab: yes, always,
+                                       or anything else to deny with it as the reason)
   wait [TARGET | --any] [--for waiting|done|idle|working|change|exit]
        [--text TEXT] [--timeout SECS]  block until the condition holds
        (at once if it already does; exit: the session closed). --text counts only
@@ -96,6 +97,7 @@ usage: fuxx [command]   (no command opens the app)
   help                                 this text
 
 Every command but daemon takes --json. TARGET is s4, #2 or a session name.
+status, question, answer and wait also take an agent tab: a2 (see ls).
 Exit codes: 0 ok, 1 refused or nothing to show, 2 bad arguments, 3 fuxx not reachable, 124 wait timed out.
 ";
 

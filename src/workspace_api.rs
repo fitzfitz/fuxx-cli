@@ -14,13 +14,13 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{App, Context, EntityId, Task, Window, prelude::*};
 use serde_json::{Value, json};
 
-use crate::api::{self, ApiError, Request, SessionRef, WaitFor};
-use crate::api_events::{Event, EventSession, Wait, Watch, event_json, wait_reply};
+use crate::api::{self, ApiError, Request, SessionRef, Target, WaitFor};
+use crate::api_events::{Event, EventSession, Subject, Wait, Watch, event_json, wait_reply};
 use crate::api_server::{Conn, Incoming};
 use crate::appearance::Appearance;
 use crate::daemon_client::DaemonClient;
 use crate::grid::TextScope;
-use crate::layout_model::TabId;
+use crate::layout_model::{TabId, TabKind};
 use crate::notification_list::Entry;
 use crate::notifier;
 use crate::presets::Preset;
@@ -328,14 +328,25 @@ impl Workspace {
                 Ok(json!({ "text": text }))
             }
             "session.status" => {
+                if let Some(tab) = self.agent_target(p, "target")? {
+                    return Ok(json!({ "status": self.agents[&tab].status.as_str() }));
+                }
                 let i = self.live_target(p, "target")?;
                 Ok(json!({ "status": self.sessions.items()[i].status.as_str() }))
             }
             "session.question" => {
+                if let Some(tab) = self.agent_target(p, "target")? {
+                    let slot = &self.agents[&tab];
+                    if slot.status != Status::Waiting {
+                        return Err(not_waiting(Subject::Agent(slot.id), slot.status));
+                    }
+                    let text = slot.view.read(cx).question().unwrap_or_default();
+                    return Ok(json!({ "text": text }));
+                }
                 let i = self.live_target(p, "target")?;
                 let session = &self.sessions.items()[i];
                 if session.status != Status::Waiting {
-                    return Err(not_waiting(session.id, session.status));
+                    return Err(not_waiting(Subject::Terminal(session.id), session.status));
                 }
                 let text = session.view.read(cx).text(TextScope::Last(QUESTION_LINES));
                 Ok(json!({ "text": text }))
@@ -343,10 +354,24 @@ impl Workspace {
             "session.answer" => {
                 let text = required_str(p, "text")?;
                 let force = bool_param(p, "force")?;
+                // An agent tab's waiting permission (M11aa): allowed or denied in the running
+                // process, as its card's buttons do. Nothing is sent or resumed (a paused tab
+                // has no permission waiting), so R13's holder check isn't needed; `force`
+                // can't make one wait.
+                if let Some(tab) = self.agent_target(p, "target")? {
+                    let slot = &self.agents[&tab];
+                    let (subject, status) = (Subject::Agent(slot.id), slot.status);
+                    let view = slot.view.clone();
+                    let answer = api::answer_action(text);
+                    return view
+                        .update(cx, |view, cx| view.answer(answer, cx))
+                        .map(|()| json!({}))
+                        .map_err(|_| not_waiting(subject, status));
+                }
                 let i = self.input_target(p, "target")?;
                 let session = &self.sessions.items()[i];
                 if session.status != Status::Waiting && !force {
-                    return Err(not_waiting(session.id, session.status));
+                    return Err(not_waiting(Subject::Terminal(session.id), session.status));
                 }
                 let bytes = format!("{text}\r").into_bytes();
                 self.type_into(i, &bytes, cx);
@@ -420,38 +445,89 @@ impl Workspace {
     fn list(&self) -> Value {
         let active = self.sessions.active_index();
         let shown = self.on_screen();
-        let entries: Vec<Value> = self
-            .sessions
-            .items()
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let label = s.label();
-                let (workspace, pane) = self.place_of(i);
-                list_entry(&ListEntry {
-                    id: s.id,
-                    number: i + 1,
-                    workspace,
-                    pane,
-                    name: &label,
-                    title: s.title.as_deref(),
-                    status: s.status,
-                    project: s.project.as_deref(),
-                    preset: s.preset.as_ref().map(|p| p.name.as_str()),
-                    focused: active == Some(i),
-                    on_screen: shown.contains(&s.id),
-                    note: s.note.as_deref(),
-                    progress: s.progress.as_ref(),
-                    live: !s.lost,
-                    ssh: s.ssh.as_ref().map(|t| t.host.as_str()),
-                    color: self
-                        .workspace_of(i)
-                        .and_then(|ws| self.model.workspace(ws))
-                        .and_then(|w| w.color),
-                })
+        let entries = self.sessions.items().iter().enumerate().map(|(i, s)| {
+            let label = s.label();
+            let (workspace, pane) = self.place_of(i);
+            list_entry(&ListEntry {
+                id: s.id,
+                number: i + 1,
+                workspace,
+                pane,
+                name: &label,
+                title: s.title.as_deref(),
+                status: s.status,
+                project: s.project.as_deref(),
+                preset: s.preset.as_ref().map(|p| p.name.as_str()),
+                focused: active == Some(i),
+                on_screen: shown.contains(&s.id),
+                note: s.note.as_deref(),
+                progress: s.progress.as_ref(),
+                live: !s.lost,
+                ssh: s.ssh.as_ref().map(|t| t.host.as_str()),
+                color: self
+                    .workspace_of(i)
+                    .and_then(|ws| self.model.workspace(ws))
+                    .and_then(|w| w.color),
             })
-            .collect();
-        Value::Array(entries)
+        });
+        // Then the agent tabs (M11aa), by workspace in sidebar order.
+        let agents = self.agents_in_order().into_iter().map(|tab| {
+            let slot = &self.agents[&tab];
+            let provider = match self.model.tab(tab).map(|t| &t.kind) {
+                Some(TabKind::Agent { provider, .. }) => provider.as_str(),
+                _ => "",
+            };
+            let (workspace, pane) = self.agent_place(tab);
+            agent_list_entry(&AgentListEntry {
+                id: slot.id,
+                provider,
+                name: &self.agent_title(tab),
+                status: slot.status,
+                workspace,
+                pane,
+            })
+        });
+        Value::Array(entries.chain(agents).collect())
+    }
+
+    /// The agent tabs (M11aa) with a slot: workspaces in sidebar order, each one's panes in
+    /// reading order, tabs in tab-bar order.
+    fn agents_in_order(&self) -> Vec<TabId> {
+        self.model
+            .display_order()
+            .into_iter()
+            .flat_map(|ws| self.model.agent_tabs(ws))
+            .filter(|tab| self.agents.contains_key(tab))
+            .collect()
+    }
+
+    /// Agent tab `tab`'s workspace's place in the sidebar and its pane's place in that
+    /// workspace's reading order, each from 1 (0: not found), as `place_of` for a terminal.
+    fn agent_place(&self, tab: TabId) -> (usize, usize) {
+        let Some((ws, pane)) = self.model.locate(tab) else {
+            return (0, 0);
+        };
+        let pane = self
+            .model
+            .workspace(ws)
+            .and_then(|w| w.layout.leaves().iter().position(|&p| p == pane));
+        (
+            self.workspace_number(ws).unwrap_or(0),
+            pane.map_or(0, |at| at + 1),
+        )
+    }
+
+    /// The agent tab `p[key]` names (`aN`), if it names one; one that doesn't exist is an
+    /// error. Anything else (no target too) is for the terminal paths.
+    fn agent_target(&self, p: &Value, key: &str) -> Result<Option<TabId>, ApiError> {
+        let Some(Target::Agent(n)) = opt_str(p, key)?.map(api::parse_target) else {
+            return Ok(None);
+        };
+        self.agents
+            .iter()
+            .find(|(_, slot)| slot.id == n)
+            .map(|(&tab, _)| Some(tab))
+            .ok_or_else(|| ApiError::not_found(format!("no agent tab a{n}")))
     }
 
     /// Session `index`'s workspace's place in the sidebar and its pane's place in that
@@ -491,6 +567,13 @@ impl Workspace {
     /// focused session.
     pub(crate) fn target_index(&self, p: &Value, key: &str) -> Result<usize, ApiError> {
         let target = opt_str(p, key)?.map(api::parse_target);
+        // An agent tab where a terminal is needed: one that exists says it isn't a terminal
+        // (`api::resolve`).
+        if let Some(Target::Agent(n)) = target
+            && !self.agents.values().any(|slot| slot.id == n)
+        {
+            return Err(ApiError::not_found(format!("no agent tab a{n}")));
+        }
         let refs: Vec<SessionRef> = self
             .sessions
             .items()
@@ -556,9 +639,11 @@ impl Workspace {
                 return Err(ApiError::bad_request("any takes no target"));
             }
             Watch::Any
+        } else if let Some(tab) = self.agent_target(p, "target")? {
+            Watch::One(Subject::Agent(self.agents[&tab].id))
         } else {
             let i = self.live_target(p, "target")?;
-            Watch::One(self.sessions.items()[i].id)
+            Watch::One(Subject::Terminal(self.sessions.items()[i].id))
         };
         let cond = api::parse_wait(opt_str(p, "for")?, opt_str(p, "text")?)?;
         let now = Instant::now();
@@ -566,7 +651,7 @@ impl Workspace {
         let deadline = timeout_param(p)?.and_then(|t| now.checked_add(t));
         let sessions = self.statuses();
         let items = self.sessions.items();
-        let mut screen = |id: u64| screen_text(items, id, cx);
+        let mut screen = |id: Subject| screen_text(items, id, cx);
         let mut wait = Wait::new(
             conn.clone(),
             request.id,
@@ -584,18 +669,25 @@ impl Workspace {
         Ok(None)
     }
 
-    /// Check every pending wait; `closed`: sessions that just closed. Finished waits are
-    /// answered; their connections are returned (so a quit can let the replies out first).
-    pub(crate) fn check_waits(&mut self, closed: &[u64], cx: &App) -> Vec<Conn> {
+    /// Check every pending wait; `closed`: sessions that just closed, and with them the agent
+    /// tabs gone since the last check (`sync` notes them). Finished waits are answered; their
+    /// connections are returned (so a quit can let the replies out first).
+    pub(crate) fn check_waits(&mut self, closed: &[Subject], cx: &App) -> Vec<Conn> {
+        let gone = std::mem::take(&mut self.agents_closed);
         if self.waits.is_empty() {
             return Vec::new();
         }
+        let closed: Vec<Subject> = closed
+            .iter()
+            .copied()
+            .chain(gone.into_iter().map(Subject::Agent))
+            .collect();
         let sessions = self.statuses();
         let items = self.sessions.items();
-        let screen = |id: u64| screen_text(items, id, cx);
-        let finished = self
-            .waits
-            .check(Instant::now(), &sessions, closed, screen, Conn::peer_gone);
+        let screen = |id: Subject| screen_text(items, id, cx);
+        let finished =
+            self.waits
+                .check(Instant::now(), &sessions, &closed, screen, Conn::peer_gone);
         finished
             .into_iter()
             .map(|(wait, outcome)| {
@@ -630,13 +722,19 @@ impl Workspace {
         .detach();
     }
 
-    /// Every session's (id, status), in sidebar order.
-    fn statuses(&self) -> Vec<(u64, Status)> {
-        self.sessions
+    /// Every session's (id, status) in sidebar order, then every agent tab's (M11aa) by
+    /// workspace in sidebar order.
+    fn statuses(&self) -> Vec<(Subject, Status)> {
+        let terminals = self
+            .sessions
             .items()
             .iter()
-            .map(|s| (s.id, s.status))
-            .collect()
+            .map(|s| (Subject::Terminal(s.id), s.status));
+        let agents = self.agents_in_order().into_iter().map(|tab| {
+            let slot = &self.agents[&tab];
+            (Subject::Agent(slot.id), slot.status)
+        });
+        terminals.chain(agents).collect()
     }
 
     /// Send an event about session `index` (or none) to every subscriber; those that are gone
@@ -650,13 +748,37 @@ impl Workspace {
         let about = session
             .zip(label.as_deref())
             .map(|((i, s), name)| EventSession {
-                id: s.id,
+                subject: Subject::Terminal(s.id),
                 number: i + 1,
                 name,
             });
         let line = event_json(event, about.as_ref(), now_ms()).to_string();
+        self.send_event(&line);
+    }
+
+    /// Send an event about agent tab `tab` (M11aa) to every subscriber, as `emit` does for a
+    /// terminal: named by its `aN`, its workspace's row and its title. Nothing while restoring.
+    pub(crate) fn emit_agent(&mut self, event: &Event, tab: TabId) {
+        if self.subscribers.is_empty() || self.restoring {
+            return;
+        }
+        let Some(id) = self.agents.get(&tab).map(|slot| slot.id) else {
+            return;
+        };
+        let name = self.agent_title(tab);
+        let about = EventSession {
+            subject: Subject::Agent(id),
+            number: self.agent_place(tab).0,
+            name: &name,
+        };
+        let line = event_json(event, Some(&about), now_ms()).to_string();
+        self.send_event(&line);
+    }
+
+    /// One event line to every subscriber; those that are gone or can't take it are dropped.
+    fn send_event(&mut self, line: &str) {
         self.subscribers
-            .retain(|c| !c.peer_gone() && c.send_line(&line));
+            .retain(|c| !c.peer_gone() && c.send_line(line));
     }
 
     /// `session.renamed` for session `index`, with its new label.
@@ -843,6 +965,33 @@ impl Workspace {
     }
 }
 
+/// What `session.list` reports for one agent tab (M11aa).
+struct AgentListEntry<'a> {
+    /// Its `aN`.
+    id: u64,
+    /// Its provider's name (`TabKind::Agent`'s).
+    provider: &'a str,
+    /// Its title, else its provider's label.
+    name: &'a str,
+    status: Status,
+    /// Its workspace's place in the sidebar, from 1.
+    workspace: usize,
+    /// Its pane's place in the workspace's reading order, from 1.
+    pane: usize,
+}
+
+fn agent_list_entry(e: &AgentListEntry) -> Value {
+    json!({
+        "id": format!("a{}", e.id),
+        "kind": "agent",
+        "provider": e.provider,
+        "name": e.name,
+        "status": e.status.as_str(),
+        "workspace": e.workspace,
+        "pane": e.pane,
+    })
+}
+
 /// What `session.list` reports for one session.
 struct ListEntry<'a> {
     id: u64,
@@ -920,7 +1069,8 @@ fn list_entry(e: &ListEntry) -> Value {
         "live": e.live,
         "workspace": e.workspace,
         "pane": e.pane,
-        // Every session is a terminal; browser tabs aren't sessions.
+        // Every session is a terminal; agent tabs are listed after them (`agent_list_entry`),
+        // and browser tabs aren't listed.
         "kind": "terminal",
     });
     if let Some(host) = e.ssh {
@@ -1108,12 +1258,23 @@ fn screens_to_wait_for(sessions: &[(u64, bool, bool)], any: bool) -> Result<Vec<
 }
 
 /// The last lines of session `id`'s screen (empty if it's gone), for text waits.
-fn screen_text(sessions: &[crate::workspace::Session], id: u64, cx: &App) -> String {
-    sessions
-        .iter()
-        .find(|s| s.id == id)
-        .map(|s| s.view.read(cx).text(TextScope::Last(WAIT_TEXT_LINES)))
-        .unwrap_or_default()
+fn screen_text(sessions: &[crate::workspace::Session], id: Subject, cx: &App) -> String {
+    subject_screen(id, |id| {
+        sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.view.read(cx).text(TextScope::Last(WAIT_TEXT_LINES)))
+            .unwrap_or_default()
+    })
+}
+
+/// A subject's screen for text waits: a terminal's from `terminal`; an agent tab has none
+/// (empty), so a text wait on one never holds.
+fn subject_screen(id: Subject, terminal: impl FnOnce(u64) -> String) -> String {
+    match id {
+        Subject::Terminal(id) => terminal(id),
+        Subject::Agent(_) => String::new(),
+    }
 }
 
 /// Now, in unix milliseconds (the events' `ts`).
@@ -1145,8 +1306,8 @@ fn refuse_disconnected(id: u64, disconnected: bool) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn not_waiting(id: u64, status: Status) -> ApiError {
-    ApiError::refused(format!("s{id} is not waiting (it is {})", status.as_str()))
+fn not_waiting(id: Subject, status: Status) -> ApiError {
+    ApiError::refused(format!("{id} is not waiting (it is {})", status.as_str()))
 }
 
 #[cfg(test)]
@@ -1300,6 +1461,68 @@ mod tests {
         ] {
             assert_eq!(ssh_param(&odd).unwrap_err().code, "bad_request", "{odd}");
         }
+    }
+
+    #[test]
+    fn list_marks_terminal_rows() {
+        let e = ListEntry {
+            workspace: 1,
+            pane: 1,
+            id: 4,
+            number: 2,
+            name: "api",
+            title: None,
+            status: Status::Idle,
+            project: None,
+            preset: None,
+            focused: false,
+            on_screen: false,
+            note: None,
+            progress: None,
+            live: true,
+            ssh: None,
+            color: None,
+        };
+        assert_eq!(list_entry(&e)["kind"], json!("terminal"));
+    }
+
+    #[test]
+    fn list_rows_for_agent_tabs() {
+        let v = agent_list_entry(&AgentListEntry {
+            id: 3,
+            provider: "claude",
+            name: "Fix the build",
+            status: Status::Waiting,
+            workspace: 2,
+            pane: 1,
+        });
+        assert_eq!(
+            v,
+            json!({
+                "id": "a3", "kind": "agent", "provider": "claude", "name": "Fix the build",
+                "status": "waiting", "workspace": 2, "pane": 1,
+            })
+        );
+        assert_eq!(
+            cli::render("ls", &json!([v]), false),
+            "a3  waiting  Fix the build"
+        );
+    }
+
+    #[test]
+    fn an_agent_tab_has_no_screen() {
+        assert_eq!(subject_screen(Subject::Agent(1), |_| "PASS".into()), "");
+        assert_eq!(
+            subject_screen(Subject::Terminal(1), |_| "PASS".into()),
+            "PASS"
+        );
+    }
+
+    #[test]
+    fn not_waiting_names_the_subject() {
+        let e = not_waiting(Subject::Agent(2), Status::Working);
+        assert_eq!(e.code, "refused");
+        assert_eq!(e.message, "a2 is not waiting (it is working)");
     }
 
     #[test]

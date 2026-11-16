@@ -25,6 +25,7 @@ use gpui::{
 
 use crate::activity::ActivityLog;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
+use crate::api_events::Event;
 use crate::groups;
 use crate::layout_model::{PaneId, TabId, TabKind, WorkspaceId};
 use crate::notification_list;
@@ -665,8 +666,10 @@ impl Workspace {
         }
         self.sync();
         self.save();
+        // Its waits end now (`sync` noted it closed), their replies before a quit.
+        let mut conns = self.check_waits(&[], cx);
         if self.all_gone() {
-            let conns = self.subscribers.clone();
+            conns.extend(self.subscribers.iter().cloned());
             self.quit_after_flush(conns, None, window, cx);
             return;
         }
@@ -798,8 +801,14 @@ impl Workspace {
                 .status(new, lasted, question.clone(), SystemTime::now());
         }
         let agent = slot.label.to_string();
+        // As `set_status` for a terminal: every change is a `status.changed` event (M11aa
+        // Task 10); a notification only when it is news.
+        if old != new {
+            self.emit_agent(&Event::StatusChanged { from: old, to: new }, tab);
+        }
         if live && notifier::should_notify(old, new, looking, window_active) {
             self.notify_agent(
+                tab,
                 ws,
                 &agent,
                 new,
@@ -813,11 +822,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// An agent tab's notification (`set_agent_status`): as a terminal's, in workspace `ws`, by
-    /// `agent` (its provider's label).
+    /// Agent tab `tab`'s notification (`set_agent_status`): as a terminal's, in workspace `ws`,
+    /// by `agent` (its provider's label), and a `notification` event about the tab.
     #[allow(clippy::too_many_arguments)]
     fn notify_agent(
         &mut self,
+        tab: TabId,
         ws: Option<WorkspaceId>,
         agent: &str,
         new: Status,
@@ -839,6 +849,11 @@ impl Workspace {
         let number = ws.and_then(|ws| self.workspace_number(ws)).unwrap_or(0);
         let summary = notifier::banner_title(&name, message);
         let subtitle = notifier::banner_subtitle(number, group.as_deref(), &name, Some(agent));
+        let posted = Event::Notification {
+            title: &summary,
+            body: &body,
+        };
+        self.emit_agent(&posted, tab);
         self.note_notification(notification_list::Entry {
             terminal: None,
             title: name,

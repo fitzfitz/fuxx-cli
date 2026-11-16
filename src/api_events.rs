@@ -5,6 +5,7 @@
 //! rule is unit-tested.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -12,10 +13,28 @@ use serde_json::{Value, json};
 use crate::api::{ApiError, WaitFor, wait_met};
 use crate::status::Status;
 
-/// A session as an event names it.
+/// What an event or a wait is about: a terminal (`sN`) or an agent tab (`aN`, M11aa). The two
+/// id spaces are apart: `s2` and `a2` are different subjects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Subject {
+    Terminal(u64),
+    Agent(u64),
+}
+
+impl fmt::Display for Subject {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Subject::Terminal(id) => write!(f, "s{id}"),
+            Subject::Agent(id) => write!(f, "a{id}"),
+        }
+    }
+}
+
+/// A session (or an agent tab) as an event names it.
 pub struct EventSession<'a> {
-    pub id: u64,
-    /// Its 1-based row in the sidebar.
+    pub subject: Subject,
+    /// A terminal: its 1-based place in the session list (what `#N` targets). An agent tab: its
+    /// workspace's 1-based row in the sidebar.
     pub number: usize,
     pub name: &'a str,
 }
@@ -49,16 +68,17 @@ pub fn event_json(event: &Event, session: Option<&EventSession>, ts: u64) -> Val
     };
     line["event"] = json!(name);
     if let Some(s) = session {
-        line["session"] = json!({ "id": format!("s{}", s.id), "number": s.number, "name": s.name });
+        line["session"] =
+            json!({ "id": s.subject.to_string(), "number": s.number, "name": s.name });
     }
     line["ts"] = json!(ts);
     line
 }
 
-/// Which sessions a wait watches.
+/// Which sessions (terminals and agent tabs) a wait watches.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Watch {
-    One(u64),
+    One(Subject),
     Any,
 }
 
@@ -66,9 +86,9 @@ pub enum Watch {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Outcome {
     /// The condition holds for this session.
-    Met(u64),
+    Met(Subject),
     /// The watched session closed, and the condition can't hold any more.
-    Closed(u64),
+    Closed(Subject),
     TimedOut,
 }
 
@@ -80,26 +100,27 @@ pub struct Wait<C> {
     pub watch: Watch,
     pub cond: WaitFor,
     /// Each watched session's status when the wait began (for `change`).
-    start: Vec<(u64, Status)>,
+    start: Vec<(Subject, Status)>,
     /// Text waits: each watched session's last lines as of the last check (at first, when the
     /// wait began). Only occurrences beyond these count (see `new_occurrences`).
-    seen: Vec<(u64, String)>,
+    seen: Vec<(Subject, String)>,
     pub deadline: Option<Instant>,
 }
 
 impl<C> Wait<C> {
-    /// `sessions`: every open session's (id, status), in sidebar order; `screen`: a session's
-    /// last lines (read only for text waits, as their starting point).
+    /// `sessions`: every open session's (id, status), terminals in sidebar order then agent tabs;
+    /// `screen`: a session's last lines (read only for text waits, as their starting point; an
+    /// agent tab's is empty, so a text wait on one never holds).
     pub fn new(
         conn: C,
         request: Option<u64>,
         watch: Watch,
         cond: WaitFor,
-        sessions: &[(u64, Status)],
+        sessions: &[(Subject, Status)],
         deadline: Option<Instant>,
-        screen: &mut dyn FnMut(u64) -> String,
+        screen: &mut dyn FnMut(Subject) -> String,
     ) -> Self {
-        let start: Vec<(u64, Status)> = sessions
+        let start: Vec<(Subject, Status)> = sessions
             .iter()
             .filter(|(id, _)| watch == Watch::Any || watch == Watch::One(*id))
             .copied()
@@ -126,9 +147,9 @@ impl<C> Wait<C> {
     pub fn outcome(
         &mut self,
         now: Instant,
-        sessions: &[(u64, Status)],
-        closed: &[u64],
-        screen: &mut dyn FnMut(u64) -> String,
+        sessions: &[(Subject, Status)],
+        closed: &[Subject],
+        screen: &mut dyn FnMut(Subject) -> String,
     ) -> Option<Outcome> {
         let ended = self.met(sessions, closed, screen);
         if ended.is_some() {
@@ -142,9 +163,9 @@ impl<C> Wait<C> {
     /// The condition's outcome, deadline aside.
     fn met(
         &mut self,
-        sessions: &[(u64, Status)],
-        closed: &[u64],
-        screen: &mut dyn FnMut(u64) -> String,
+        sessions: &[(Subject, Status)],
+        closed: &[Subject],
+        screen: &mut dyn FnMut(Subject) -> String,
     ) -> Option<Outcome> {
         let exit_counts = matches!(self.cond, WaitFor::Exit | WaitFor::Change);
         match self.watch {
@@ -177,9 +198,15 @@ impl<C> Wait<C> {
     }
 
     /// Whether the condition holds for an open session. One opened after the wait began starts
-    /// from idle (every session opens idle, and ids are never reused) and from a blank screen.
+    /// from idle (every session and agent tab opens idle, and ids are never reused) and from a
+    /// blank screen.
     /// A text wait holds when the text appears anew since the last check.
-    fn holds(&mut self, id: u64, now: Status, screen: &mut dyn FnMut(u64) -> String) -> bool {
+    fn holds(
+        &mut self,
+        id: Subject,
+        now: Status,
+        screen: &mut dyn FnMut(Subject) -> String,
+    ) -> bool {
         if let WaitFor::Text(text) = &self.cond {
             let lines = screen(id);
             let slot = self.seen.iter().position(|(s, _)| *s == id);
@@ -232,9 +259,9 @@ fn new_occurrences(before: &str, now: &str, text: &str) -> usize {
 /// The reply a finished wait sends.
 pub fn wait_reply(outcome: Outcome) -> Result<Value, ApiError> {
     match outcome {
-        Outcome::Met(id) => Ok(json!({ "id": format!("s{id}") })),
+        Outcome::Met(id) => Ok(json!({ "id": id.to_string() })),
         Outcome::Closed(id) => Err(ApiError::not_found(format!(
-            "s{id} closed before the wait was met"
+            "{id} closed before the wait was met"
         ))),
         Outcome::TimedOut => Err(ApiError::timeout("timed out waiting")),
     }
@@ -263,13 +290,13 @@ impl<C> WaitTable<C> {
     pub fn check(
         &mut self,
         now: Instant,
-        sessions: &[(u64, Status)],
-        closed: &[u64],
-        mut screen: impl FnMut(u64) -> String,
+        sessions: &[(Subject, Status)],
+        closed: &[Subject],
+        mut screen: impl FnMut(Subject) -> String,
         is_gone: impl Fn(&C) -> bool,
     ) -> Vec<(Wait<C>, Outcome)> {
-        let mut seen: HashMap<u64, String> = HashMap::new();
-        let mut cached = |id: u64| seen.entry(id).or_insert_with(|| screen(id)).clone();
+        let mut seen: HashMap<Subject, String> = HashMap::new();
+        let mut cached = |id: Subject| seen.entry(id).or_insert_with(|| screen(id)).clone();
         let mut finished = Vec::new();
         let mut i = 0;
         while i < self.waits.len() {
@@ -293,7 +320,7 @@ mod tests {
     use std::time::Duration;
 
     const S4: EventSession = EventSession {
-        id: 4,
+        subject: Subject::Terminal(4),
         number: 2,
         name: "api",
     };
@@ -362,6 +389,73 @@ mod tests {
     }
 
     #[test]
+    fn subjects_print_as_ids() {
+        assert_eq!(Subject::Agent(2).to_string(), "a2");
+        assert_eq!(Subject::Terminal(2).to_string(), "s2");
+    }
+
+    #[test]
+    fn an_event_about_an_agent_tab_names_it_by_its_id() {
+        let about = EventSession {
+            subject: Subject::Agent(1),
+            number: 2,
+            name: "Fix the build",
+        };
+        let line = event_json(
+            &Event::StatusChanged {
+                from: Status::Working,
+                to: Status::Waiting,
+            },
+            Some(&about),
+            7,
+        );
+        assert_eq!(
+            line["session"],
+            json!({"id": "a1", "number": 2, "name": "Fix the build"})
+        );
+    }
+
+    #[test]
+    fn wait_any_sees_agent_waiting() {
+        let now = Instant::now();
+        let mut screen = no_screen();
+        let start = [(s(1), Status::Working)];
+        let mut w = wait(Watch::Any, WaitFor::Status(Status::Waiting), &start);
+        assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
+        let later = [(s(1), Status::Working), (a(1), Status::Waiting)];
+        assert_eq!(
+            w.outcome(now, &later, &[], &mut screen),
+            Some(Outcome::Met(a(1)))
+        );
+        assert_eq!(wait_reply(Outcome::Met(a(1))), Ok(json!({"id": "a1"})));
+    }
+
+    #[test]
+    fn a_closed_agent_tab_meets_exit_and_ends_its_status_wait() {
+        let now = Instant::now();
+        let mut screen = no_screen();
+        let open = [(s(1), Status::Idle), (a(2), Status::Working)];
+        let mut exit = wait(Watch::One(a(2)), WaitFor::Exit, &open);
+        assert_eq!(
+            exit.outcome(now, &[(s(1), Status::Idle)], &[a(2)], &mut screen),
+            Some(Outcome::Met(a(2)))
+        );
+        let mut done = wait(Watch::One(a(2)), WaitFor::Status(Status::Done), &open);
+        assert_eq!(
+            done.outcome(now, &[(s(1), Status::Idle)], &[a(2)], &mut screen),
+            Some(Outcome::Closed(a(2)))
+        );
+        let closed = wait_reply(Outcome::Closed(a(2))).unwrap_err();
+        assert!(closed.message.starts_with("a2 "), "{}", closed.message);
+        // Terminal s2 and agent tab a2 are different subjects.
+        let mut other = wait(Watch::One(s(2)), WaitFor::Exit, &[(s(2), Status::Idle)]);
+        assert_eq!(
+            other.outcome(now, &[(s(2), Status::Idle)], &[a(2)], &mut screen),
+            None
+        );
+    }
+
+    #[test]
     fn events_print_as_the_cli_expects() {
         let line = |e: Event, s: Option<&EventSession>| {
             cli::render("events", &event_json(&e, s, 43_263_000), false)
@@ -389,20 +483,33 @@ mod tests {
         assert!(note.ends_with("  notification build: done"), "{note}");
     }
 
+    fn s(id: u64) -> Subject {
+        Subject::Terminal(id)
+    }
+
+    fn a(id: u64) -> Subject {
+        Subject::Agent(id)
+    }
+
     fn at(base: Instant, ms: u64) -> Instant {
         base + Duration::from_millis(ms)
     }
 
-    fn no_screen() -> impl FnMut(u64) -> String {
-        |id| panic!("screen of s{id} read for a non-text wait")
+    fn no_screen() -> impl FnMut(Subject) -> String {
+        |id| panic!("screen of {id} read for a non-text wait")
     }
 
-    fn wait(watch: Watch, cond: WaitFor, sessions: &[(u64, Status)]) -> Wait<()> {
+    fn wait(watch: Watch, cond: WaitFor, sessions: &[(Subject, Status)]) -> Wait<()> {
         Wait::new((), Some(1), watch, cond, sessions, None, &mut no_screen())
     }
 
     /// A text wait started while every session showed `start`.
-    fn text_wait(watch: Watch, text: &str, sessions: &[(u64, Status)], start: &str) -> Wait<()> {
+    fn text_wait(
+        watch: Watch,
+        text: &str,
+        sessions: &[(Subject, Status)],
+        start: &str,
+    ) -> Wait<()> {
         let mut screen = |_| start.to_string();
         Wait::new(
             (),
@@ -446,9 +553,9 @@ mod tests {
         // `fuxx send s4 "make test && echo ALLDONE" --enter; fuxx wait s4 --text ALLDONE`:
         // the echoed command line already holds the text.
         let now = Instant::now();
-        let open = [(4, Status::Idle)];
+        let open = [(s(4), Status::Idle)];
         let start = "ALLDONE (an earlier run)\n$ make test && echo ALLDONE";
-        let mut w = text_wait(Watch::One(4), "ALLDONE", &open, start);
+        let mut w = text_wait(Watch::One(s(4)), "ALLDONE", &open, start);
         let mut screen = |_| start.to_string();
         assert_eq!(w.outcome(now, &open, &[], &mut screen), None);
         let mut screen = |_| format!("{start}\nrunning 3 tests");
@@ -456,22 +563,26 @@ mod tests {
         let mut screen = |_| format!("{start}\nrunning 3 tests\nALLDONE");
         assert_eq!(
             w.outcome(now, &open, &[], &mut screen),
-            Some(Outcome::Met(4))
+            Some(Outcome::Met(s(4)))
         );
     }
 
     #[test]
     fn any_text_wait_counts_from_each_sessions_start() {
         let now = Instant::now();
-        let start = [(1, Status::Idle), (4, Status::Idle)];
+        let start = [(s(1), Status::Idle), (s(4), Status::Idle)];
         let mut w = text_wait(Watch::Any, "PASS", &start, "old PASS");
         let mut screen = |_| "old PASS".to_string();
         assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
         // s7 opened after the wait began: everything on it is new.
-        let later = [(1, Status::Idle), (4, Status::Idle), (7, Status::Idle)];
+        let later = [
+            (s(1), Status::Idle),
+            (s(4), Status::Idle),
+            (s(7), Status::Idle),
+        ];
         assert_eq!(
             w.outcome(now, &later, &[], &mut screen),
-            Some(Outcome::Met(7))
+            Some(Outcome::Met(s(7)))
         );
     }
 
@@ -479,28 +590,28 @@ mod tests {
     fn one_session_waits_for_its_status() {
         let now = Instant::now();
         let mut w = wait(
-            Watch::One(4),
+            Watch::One(s(4)),
             WaitFor::Status(Status::Waiting),
-            &[(4, Status::Working)],
+            &[(s(4), Status::Working)],
         );
         let mut screen = no_screen();
         assert_eq!(
-            w.outcome(now, &[(4, Status::Working)], &[], &mut screen),
+            w.outcome(now, &[(s(4), Status::Working)], &[], &mut screen),
             None
         );
         // Another session waiting doesn't count.
         assert_eq!(
             w.outcome(
                 now,
-                &[(1, Status::Waiting), (4, Status::Done)],
+                &[(s(1), Status::Waiting), (s(4), Status::Done)],
                 &[],
                 &mut screen
             ),
             None
         );
         assert_eq!(
-            w.outcome(now, &[(4, Status::Waiting)], &[], &mut screen),
-            Some(Outcome::Met(4))
+            w.outcome(now, &[(s(4), Status::Waiting)], &[], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
     }
 
@@ -508,20 +619,28 @@ mod tests {
     fn change_compares_with_the_status_at_the_start() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let mut w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
+        let mut w = wait(
+            Watch::One(s(4)),
+            WaitFor::Change,
+            &[(s(4), Status::Working)],
+        );
         assert_eq!(
-            w.outcome(now, &[(4, Status::Working)], &[], &mut screen),
+            w.outcome(now, &[(s(4), Status::Working)], &[], &mut screen),
             None
         );
         assert_eq!(
-            w.outcome(now, &[(4, Status::Done)], &[], &mut screen),
-            Some(Outcome::Met(4))
+            w.outcome(now, &[(s(4), Status::Done)], &[], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
         // Closing is a change too.
-        let mut w = wait(Watch::One(4), WaitFor::Change, &[(4, Status::Working)]);
+        let mut w = wait(
+            Watch::One(s(4)),
+            WaitFor::Change,
+            &[(s(4), Status::Working)],
+        );
         assert_eq!(
-            w.outcome(now, &[], &[4], &mut screen),
-            Some(Outcome::Met(4))
+            w.outcome(now, &[], &[s(4)], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
     }
 
@@ -529,27 +648,27 @@ mod tests {
     fn a_closed_session_meets_exit_and_ends_other_waits() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let open = [(4, Status::Idle), (5, Status::Idle)];
-        let mut exit = wait(Watch::One(4), WaitFor::Exit, &open);
+        let open = [(s(4), Status::Idle), (s(5), Status::Idle)];
+        let mut exit = wait(Watch::One(s(4)), WaitFor::Exit, &open);
         assert_eq!(exit.outcome(now, &open, &[], &mut screen), None);
         assert_eq!(
-            exit.outcome(now, &[(4, Status::Idle)], &[5], &mut screen),
+            exit.outcome(now, &[(s(4), Status::Idle)], &[s(5)], &mut screen),
             None
         );
         assert_eq!(
-            exit.outcome(now, &[(5, Status::Idle)], &[4], &mut screen),
-            Some(Outcome::Met(4))
+            exit.outcome(now, &[(s(5), Status::Idle)], &[s(4)], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
-        let mut status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut status = wait(Watch::One(s(4)), WaitFor::Status(Status::Done), &open);
         assert_eq!(
-            status.outcome(now, &[(5, Status::Idle)], &[4], &mut screen),
-            Some(Outcome::Closed(4))
+            status.outcome(now, &[(s(5), Status::Idle)], &[s(4)], &mut screen),
+            Some(Outcome::Closed(s(4)))
         );
         // Gone without being reported closed (never, but not forever pending either).
-        let mut status = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut status = wait(Watch::One(s(4)), WaitFor::Status(Status::Done), &open);
         assert_eq!(
-            status.outcome(now, &[(5, Status::Idle)], &[], &mut screen),
-            Some(Outcome::Closed(4))
+            status.outcome(now, &[(s(5), Status::Idle)], &[], &mut screen),
+            Some(Outcome::Closed(s(4)))
         );
     }
 
@@ -557,29 +676,29 @@ mod tests {
     fn any_is_met_by_the_first_session_in_sidebar_order() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let start = [(1, Status::Working), (4, Status::Working)];
+        let start = [(s(1), Status::Working), (s(4), Status::Working)];
         let mut w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
         assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
         assert_eq!(
             w.outcome(
                 now,
-                &[(4, Status::Done), (1, Status::Done)],
+                &[(s(4), Status::Done), (s(1), Status::Done)],
                 &[],
                 &mut screen
             ),
-            Some(Outcome::Met(4))
+            Some(Outcome::Met(s(4)))
         );
         // `exit`: any session closing, named in the reply.
         let mut w = wait(Watch::Any, WaitFor::Exit, &start);
         assert_eq!(w.outcome(now, &start, &[], &mut screen), None);
         assert_eq!(
-            w.outcome(now, &[(1, Status::Working)], &[4], &mut screen),
-            Some(Outcome::Met(4))
+            w.outcome(now, &[(s(1), Status::Working)], &[s(4)], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
         // A status wait isn't met by a session closing.
         let mut w = wait(Watch::Any, WaitFor::Status(Status::Done), &start);
         assert_eq!(
-            w.outcome(now, &[(1, Status::Working)], &[4], &mut screen),
+            w.outcome(now, &[(s(1), Status::Working)], &[s(4)], &mut screen),
             None
         );
     }
@@ -588,29 +707,29 @@ mod tests {
     fn any_change_counts_new_sessions_from_idle() {
         let now = Instant::now();
         let mut screen = no_screen();
-        let mut w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
+        let mut w = wait(Watch::Any, WaitFor::Change, &[(s(1), Status::Working)]);
         // s7 opened after the wait began: every session opens idle, so idle is no change...
-        let later = [(1, Status::Working), (7, Status::Idle)];
+        let later = [(s(1), Status::Working), (s(7), Status::Idle)];
         assert_eq!(w.outcome(now, &later, &[], &mut screen), None);
         assert_eq!(
             w.outcome(
                 now,
-                &[(1, Status::Working), (7, Status::Working)],
+                &[(s(1), Status::Working), (s(7), Status::Working)],
                 &[],
                 &mut screen
             ),
-            Some(Outcome::Met(7))
+            Some(Outcome::Met(s(7)))
         );
         // ...and one first seen already working has changed (from idle), even unseen at idle.
-        let mut w = wait(Watch::Any, WaitFor::Change, &[(1, Status::Working)]);
+        let mut w = wait(Watch::Any, WaitFor::Change, &[(s(1), Status::Working)]);
         assert_eq!(
             w.outcome(
                 now,
-                &[(1, Status::Working), (8, Status::Working)],
+                &[(s(1), Status::Working), (s(8), Status::Working)],
                 &[],
                 &mut screen
             ),
-            Some(Outcome::Met(8))
+            Some(Outcome::Met(s(8)))
         );
     }
 
@@ -619,34 +738,34 @@ mod tests {
         // Checked just before removal: the closing session is still in `sessions`, and in
         // `closed`. PASS printed and the shell exited within one tick still meets the wait.
         let now = Instant::now();
-        let mut screen = |id: u64| {
-            if id == 4 {
+        let mut screen = |id: Subject| {
+            if id == s(4) {
                 "$ make test\ntests PASS".to_string()
             } else {
                 String::new()
             }
         };
-        let open = [(1, Status::Idle), (4, Status::Done)];
-        let mut text = text_wait(Watch::One(4), "PASS", &open, "$ make test");
+        let open = [(s(1), Status::Idle), (s(4), Status::Done)];
+        let mut text = text_wait(Watch::One(s(4)), "PASS", &open, "$ make test");
         assert_eq!(
-            text.outcome(now, &open, &[4], &mut screen),
-            Some(Outcome::Met(4))
+            text.outcome(now, &open, &[s(4)], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
-        let mut done = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut done = wait(Watch::One(s(4)), WaitFor::Status(Status::Done), &open);
         assert_eq!(
-            done.outcome(now, &open, &[4], &mut screen),
-            Some(Outcome::Met(4))
+            done.outcome(now, &open, &[s(4)], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
         let mut any = text_wait(Watch::Any, "PASS", &open, "$ make test");
         assert_eq!(
-            any.outcome(now, &open, &[4], &mut screen),
-            Some(Outcome::Met(4))
+            any.outcome(now, &open, &[s(4)], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
         // Not on its last screen either: closed.
-        let mut fail = text_wait(Watch::One(4), "FAIL", &open, "$ make test");
+        let mut fail = text_wait(Watch::One(s(4)), "FAIL", &open, "$ make test");
         assert_eq!(
-            fail.outcome(now, &open, &[4], &mut screen),
-            Some(Outcome::Closed(4))
+            fail.outcome(now, &open, &[s(4)], &mut screen),
+            Some(Outcome::Closed(s(4)))
         );
     }
 
@@ -654,34 +773,34 @@ mod tests {
     fn text_waits_read_the_screen() {
         let now = Instant::now();
         let mut reads = Vec::new();
-        let mut screen = |id: u64| {
+        let mut screen = |id: Subject| {
             reads.push(id);
-            if id == 4 {
+            if id == s(4) {
                 "tests PASS".to_string()
             } else {
                 String::new()
             }
         };
-        let open = [(1, Status::Idle), (4, Status::Idle)];
-        let mut one = text_wait(Watch::One(1), "PASS", &open, "");
+        let open = [(s(1), Status::Idle), (s(4), Status::Idle)];
+        let mut one = text_wait(Watch::One(s(1)), "PASS", &open, "");
         assert_eq!(one.outcome(now, &open, &[], &mut screen), None);
         let mut any = text_wait(Watch::Any, "PASS", &open, "");
         assert_eq!(
             any.outcome(now, &open, &[], &mut screen),
-            Some(Outcome::Met(4))
+            Some(Outcome::Met(s(4)))
         );
-        assert_eq!(reads, vec![1, 1, 4]);
+        assert_eq!(reads, vec![s(1), s(1), s(4)]);
     }
 
     #[test]
     fn deadlines() {
         let base = Instant::now();
         let mut screen = no_screen();
-        let open = [(4, Status::Working)];
+        let open = [(s(4), Status::Working)];
         let mut w = Wait::new(
             (),
             None,
-            Watch::One(4),
+            Watch::One(s(4)),
             WaitFor::Status(Status::Done),
             &open,
             Some(at(base, 1000)),
@@ -690,15 +809,15 @@ mod tests {
         assert_eq!(w.outcome(at(base, 999), &open, &[], &mut screen), None);
         // Met beats the deadline in the same pass.
         assert_eq!(
-            w.outcome(at(base, 1000), &[(4, Status::Done)], &[], &mut screen),
-            Some(Outcome::Met(4))
+            w.outcome(at(base, 1000), &[(s(4), Status::Done)], &[], &mut screen),
+            Some(Outcome::Met(s(4)))
         );
         assert_eq!(
             w.outcome(at(base, 1000), &open, &[], &mut screen),
             Some(Outcome::TimedOut)
         );
         // No deadline: never times out.
-        let mut w = wait(Watch::One(4), WaitFor::Status(Status::Done), &open);
+        let mut w = wait(Watch::One(s(4)), WaitFor::Status(Status::Done), &open);
         assert_eq!(
             w.outcome(at(base, 86_400_000), &open, &[], &mut screen),
             None
@@ -707,13 +826,13 @@ mod tests {
 
     #[test]
     fn replies() {
-        assert_eq!(wait_reply(Outcome::Met(4)), Ok(json!({"id": "s4"})));
+        assert_eq!(wait_reply(Outcome::Met(s(4))), Ok(json!({"id": "s4"})));
         assert_eq!(
-            cli::render("wait", &wait_reply(Outcome::Met(4)).unwrap(), false),
+            cli::render("wait", &wait_reply(Outcome::Met(s(4))).unwrap(), false),
             "s4"
         );
         assert_eq!(wait_reply(Outcome::TimedOut).unwrap_err().code, "timeout");
-        let closed = wait_reply(Outcome::Closed(4)).unwrap_err();
+        let closed = wait_reply(Outcome::Closed(s(4))).unwrap_err();
         assert_eq!(closed.code, "not_found");
         assert!(closed.message.contains("s4"), "{}", closed.message);
     }
@@ -721,13 +840,13 @@ mod tests {
     #[test]
     fn table_drops_gone_clients_and_takes_out_finished_waits() {
         let now = Instant::now();
-        let open = [(1, Status::Working), (4, Status::Working)];
+        let open = [(s(1), Status::Working), (s(4), Status::Working)];
         let mut table = WaitTable::new();
         // conn = (name, gone)
         for (conn, watch) in [
-            (("done", false), Watch::One(4)),
-            (("pending", false), Watch::One(1)),
-            (("gone", true), Watch::One(4)),
+            (("done", false), Watch::One(s(4))),
+            (("pending", false), Watch::One(s(1))),
+            (("gone", true), Watch::One(s(4))),
         ] {
             table.push(Wait::new(
                 conn,
@@ -741,15 +860,15 @@ mod tests {
         }
         let finished = table.check(
             now,
-            &[(1, Status::Working), (4, Status::Done)],
+            &[(s(1), Status::Working), (s(4), Status::Done)],
             &[],
             no_screen(),
             |c: &(&str, bool)| c.1,
         );
         let names: Vec<_> = finished.iter().map(|(w, o)| (w.conn.0, *o)).collect();
-        assert_eq!(names, vec![("done", Outcome::Met(4))]);
+        assert_eq!(names, vec![("done", Outcome::Met(s(4)))]);
         assert!(!table.is_empty());
-        let finished = table.check(now, &[(1, Status::Done)], &[4], no_screen(), |c| c.1);
+        let finished = table.check(now, &[(s(1), Status::Done)], &[s(4)], no_screen(), |c| c.1);
         assert_eq!(finished.len(), 1);
         assert!(table.is_empty());
     }
@@ -757,10 +876,10 @@ mod tests {
     #[test]
     fn table_reads_each_screen_once_per_pass() {
         let now = Instant::now();
-        let open = [(4, Status::Idle)];
+        let open = [(s(4), Status::Idle)];
         let mut table = WaitTable::new();
         for text in ["PASS", "FAIL"] {
-            table.push(text_wait(Watch::One(4), text, &open, ""));
+            table.push(text_wait(Watch::One(s(4)), text, &open, ""));
         }
         let mut reads = 0;
         let finished = table.check(
