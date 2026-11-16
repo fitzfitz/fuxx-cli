@@ -22,12 +22,17 @@ assistant exactly what it needs.
 
 ## What "done" looks like
 <the success check — and for GUI work, what I should SEE when I build & run>
+- Gate: `cargo test`, then for UI work `scripts/ui-shots.sh --changed <task base>` (add `--png`
+  to look at the pictures). The full `scripts/ui-shots.sh --all-themes` runs once, when the
+  milestone is done.
 
 ## Constraints
 - Stay on this one task; don't build ahead or pull in deferred features ([[12 - Scope]]).
 - GUI behaviour is verified by me (you can't see the window) — tell me exactly what to run and
   what to look for.
 - Explain every non-obvious line so I can learn it.
+- Logic that doesn't need a real window goes in plain functions tested by `cargo test`; add a
+  screenshot scene only for layout, pixels, real events and focus ([[50 - Agentic Workflow]]).
 
 ## After you're done
 - Tell me what to run to verify.

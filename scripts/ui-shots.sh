@@ -6,6 +6,8 @@
 # summary: passed, failed, the wall time after the build, and the 15 slowest scenes. A full run
 # (no filter, no --changed) merges the shards' timings into target/ui-shots/timings.tsv, which
 # the next run's shards are balanced by. Exits 1 if any process failed. bash 3.2-safe.
+# --changed <base> runs only the scenes whose sources changed since <base> (git diff <base>...HEAD
+# plus uncommitted files), says which and why, and runs nothing (exit 0) if no src change.
 # Usage: scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [-j N]
 #   -j N: shards (default: CPU cores - 2, at most 8, at least 1).
 set -uo pipefail
@@ -18,6 +20,7 @@ usage() {
 cd "$(dirname "$0")/.." || exit 2
 
 jobs=""
+changed=""
 full=1
 pass=()
 while [ $# -gt 0 ]; do
@@ -34,6 +37,7 @@ while [ $# -gt 0 ]; do
         --changed)
             [ $# -ge 2 ] || usage
             full=0
+            changed="$2"
             pass+=("$1" "$2")
             shift 2
             ;;
@@ -78,6 +82,21 @@ out=target/ui-shots
 mkdir -p "$out"
 rm -f "$out"/timings.*.tsv
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ui-shots.XXXXXX") || exit 2
+
+# --changed: ask the runner what the change touches (it prints one line saying so, and exits 3
+# when nothing under src/, assets/ or Cargo.* changed); every shard and the serial run then work
+# out the same set themselves.
+if [ -n "$changed" ]; then
+    "$bin" __ui-shots --changed "$changed" --plan
+    code=$?
+    if [ "$code" = 3 ]; then
+        rm -rf "$tmp"
+        exit 0
+    elif [ "$code" != 0 ]; then
+        rm -rf "$tmp"
+        exit 1
+    fi
+fi
 
 # The parts started (their subshells' pids), for Ctrl-C.
 pids=""
