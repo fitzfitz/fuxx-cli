@@ -1,6 +1,7 @@
 # Milestone 11aj — Faster UI Shots
 
-**Status:** 📋 design approved 2026-11-16 ("approved"); plan [[M11aj Plan - Faster UI Shots]]; built after M11ae merges.
+**Status:** 🟨 built 2026-11-17 on branch `m11aj-ui-shots` (from master `4883073`, not merged), all 11 plan tasks;
+waiting for your on-screen check (below). Design approved 2026-11-16 ("approved"); plan [[M11aj Plan - Faster UI Shots]].
 
 **Asked for:** 2026-11-16, by you: "let's talk about ui_shots. right now, the file is very bloated and it takes like
 almost hours to run. GIve me your best suggestions as a senior fullstack developer who crave for best approach on
@@ -293,6 +294,34 @@ not over-claiming: the `file-tab` scene alone takes 34.7 s, and the WebKit Merma
 adds about 17 s after the shards. Narrowing the gate further means splitting `file-tab` or moving its logic into
 `cargo test` (C1/C2).
 
+### C3 — measured (M11aj Task 11, 2026-11-17)
+
+**What C3 does (a trial, report only):** after a `Kind::Visual` scene passes, each shot it kept (the in-memory shot, not
+a PNG) is turned into a fingerprint: greyscale (Rec. 601 luma), 1/8 of the shot's point size, one byte a cell (8 × 8 pt;
+16 × 16 device pixels on this Mac's 2x screen, measured once per process from a small window), each cell the mean of
+its pixels. It is compared with `tests/ui-shots-ref/<scene>/<scene>-<slug>.fp` (the slug is the shot's stem as `shoot`
+names it; the scene's name is not repeated where the stem already starts with it), as the mean absolute difference of
+the cells (0–255; a size change is infinite). Above the tolerance the run prints
+`ui-shots: <scene>-<slug> looks different (<d>)`, and each process ends with
+`ui-shots: fingerprints: <n> same, <n> look different, <n> without a reference`. **It never fails a run.**
+`--update-refs` (also through `scripts/ui-shots.sh`) writes the references instead, replacing each scene's folder.
+Skipped: `State` scenes, the 11 pictures that vary between runs of unchanged code (`VARIES` in `harness.rs`: `activity`,
+`activity-waiting`, `welcome-checking`, `changes-click`, `files-panel-follows-active-tab` in both themes, and
+`branch-switcher-open-mocha`), child runs (cache-off, WebKit) and failed scenes.
+
+**Size:** written with `--all-themes --update-refs`: **393 references, 2,685,502 bytes (2.56 MB)**, under the 5 MB cap,
+so they are committed. The plain per-cell layout was enough; no coarser grid or packing was needed. The largest is
+19,775 bytes (each `preferences` page, 1400 × 900 pt). 58 of the 79 visual scenes have references; the other 21
+(`cached-panes`, `welcome-checking` and 19 chrome scenes) check pixels in memory and keep no shot.
+
+**Tolerance: 0.01.** Five full `scripts/ui-shots.sh --all-themes` runs of unchanged code, each with every distance
+printed (`UI_SHOTS_FP_DISTANCES=1`): 112 passed each, 92.8–93.8 s, and **all 393 distances were exactly 0 in every run**
+(the largest seen: 0). So the tolerance sits just above 0: 0.01 is, in a 1,000-cell shot, one cell 10 grey levels
+off. Checked by hand: one cell of `smoke-mocha`'s reference moved by 80 (of 1,000) printed
+`smoke-mocha looks different (0.080)` with exit 0; a cut-short reference printed `(inf)`.
+
+**Cost:** about 1 s on a full run (83.7 s, against 82.7 s at Task 10).
+
 ### Part A — Quick wins
 
 - **A1 · Less setup per shot.** Reuse what's safe to reuse, chosen from Part 0's numbers: at least the font
@@ -392,6 +421,48 @@ A fresh reviewer read this design as if it had to plan from it; its questions we
 - How shards are balanced beyond "by recorded time".
 - The fingerprint's size and tolerance (C3).
 
+## What was built
+
+All eleven plan tasks, on branch `m11aj-ui-shots` (from master `4883073`). No new crates; the app's code is unchanged
+apart from the test hooks it already had and one pure helper's tests (Task 10).
+
+1. **Measured first (Task 1).** Per-scene times, the 15 slowest, `timings.tsv`, `UI_SHOTS_PROFILE=1`'s per-phase sums
+   ("Part 0 — measured").
+2. **The harness in its own file (Task 2).** `src/ui_shots.rs` became `src/ui_shots/mod.rs` (`git mv`) and the shared
+   harness `harness.rs`; no logic edits.
+3. **A scene registry and run options (Task 3).** `Scene { name, run, themes, serial, kind, sources }`; `[filter]
+   [--png] [--all-themes] [--shard I/N | --serial-only] [--changed <base>] [--update-refs]`; PNGs only with `--png`; a
+   failed scene's shots in `target/ui-shots/failed/<scene>/`.
+4. **Split by area (Tasks 4–6).** 16 area files (`window`, `sidebar`, `panes`, `chrome_parts`, `chrome`, `file_tab`,
+   `file_tab_md`, `right_sidebar`, `changes`, `branch`, `naming`, `palette`, `welcome`, `overlays`, `status_bar`,
+   `terminal`), each scene tagged (the appendix). The largest file is `window.rs`, 2,700 lines; `registry.rs` holds the
+   areas and `ORDER`.
+5. **Less setup per shot (Task 7, A1).** The terminals are hung up together before a shot's app drops (the teardown was
+   portable-pty's 50 ms wait per terminal), and the fonts are registered once per process.
+6. **Parallel shards and the script (Task 8, A4, A5).** `scripts/ui-shots.sh` builds once, runs 8 shards side by side
+   and then the 14 `serial` scenes alone, and prints one summary; three waits moved to the test clock.
+7. **Run what a change touches (Task 9, B3, B4).** `--changed <base>`; each area file claims its own scenes; the
+   per-task and per-milestone gates are in [[50 - Agentic Workflow]].
+8. **State-only checks (Task 10, C1, C2).** The rule is written down; no scene could move whole (each goes through a
+   `Workspace` or real keys, focus or processes); `help`'s window-free checks moved to `help_shortcuts` tests.
+9. **Reference fingerprints (Task 11, C3).** Report only ("C3 — measured").
+
+## Final numbers (this Mac, debug build, 2026-11-17)
+
+| Run | Before (Task 1) | Now |
+| --- | --- | --- |
+| Full `scripts/ui-shots.sh` (after the build) | 507.4 s, one process | **83.7 s** (112 passed; 84.3 s with the 0.5 s no-op build) |
+| `scripts/ui-shots.sh --all-themes` | 511.7 s (`--png --all-themes`, Task 7's before) | **93.1 s** (112 passed, 393 fingerprints the same) |
+| `--changed HEAD`, one-line comment in `src/file_tab.rs` | n/a | 13 scenes, **59.0 s** (61.7 s with the build) |
+| `--changed HEAD`, one-line comment in `src/ui_shots/file_tab.rs` (a scene file only) | n/a | 3 scenes (`file-tab`, `file-diff`, `file-tab-scrollbar`), **37.1 s** (39.9 s with the build) |
+| Build (`cargo build --features ui-shots`) | n/a | **2.7–4.0 s** after a one-line change; 14.8 s for the `fuxx` crate from scratch (dependencies built) |
+
+**Against the goals:** (1) the full suite in ≤ 90 s: **met**, 83.7 s (6x faster). A task's own scenes in ≤ 30 s: **not
+met** for the file tab: `file-tab` alone is 33–40 s and a `src/file_tab.rs` change also runs the WebKit Mermaid scene
+(17 s, serial) and 11 more that read that file; going lower needs `file-tab` split or its logic moved to `cargo test`.
+(2) No file over about 3,000 lines: **met** (largest 2,700). (3) Nothing lost: **met**, the same 112 scenes and names,
+every check kept. (4) Fewer screenshot tests over time: the rule is in place; none moved in this milestone (Task 10).
+
 ## On-screen check (yours, after the build)
 
 1. `scripts/ui-shots.sh` runs the full suite in your Terminal in about 90 s or less (after the build) and prints a clear
@@ -399,8 +470,131 @@ A fresh reviewer read this design as if it had to plan from it; its questions we
 2. `scripts/ui-shots.sh --changed master` after a small file-tab change runs only file-tab scenes.
 3. A deliberately broken check fails with its picture in `target/ui-shots/failed/`.
 4. `--png` writes the pictures for the scenes you ran.
+5. **Your call (C3):** after seeing the fingerprints in use (a run prints `fingerprints: … same, … look different`), say
+   whether "looks different" should stay a report or fail runs.
 
 ## Related
 
 [[40 - Roadmap]] · [[80 - Milestone 11ae - File Tab Chores]] · [[50 - Agentic Workflow]] ·
 [[77 - Milestone 11p - Chrome Caching]] (its render-count scenes live in `chrome_sources.rs`)
+
+## Appendix — every scene
+
+Generated from the registry (`registry.rs`'s `AREAS` and `ORDER`, each area file's `SCENES`, the serial reason from
+the comment beside `serial: true`), in run order. Every scene's area file is also among its sources (for
+`--changed`). 112 scenes: 52 `Both`, 60 `One`; 79 visual, 33 state; 14 serial.
+
+| # | Scene | Area file | Themes | Serial (why) | Kind | Sources (besides its area file) |
+|---|---|---|---|---|---|---|
+| 1 | `smoke` | `window.rs` | One (Mocha) | no | visual | none |
+| 2 | `tokens` | `window.rs` | Both | no | visual | `src/theme.rs`, `src/ui_tokens.rs` |
+| 3 | `window` | `window.rs` | Both | no | visual | `src/workspace.rs`, `src/panes.rs`, `src/terminal_view.rs`, `src/sidebar.rs`, `src/tab_bar.rs`, `src/status_bar.rs` |
+| 4 | `marks` | `window.rs` | One (Mocha) | no | visual | `src/status_mark.rs` |
+| 5 | `sidebar-marks` | `sidebar.rs` | One (Mocha) | no | visual | `src/sidebar.rs`, `src/status_mark.rs`, `src/mark_view.rs`, `src/procs.rs` |
+| 6 | `cached-panes` | `panes.rs` | One (Mocha) | no | visual | `src/terminal_view.rs`, `src/workspace.rs` |
+| 7 | `chrome-breath-skips-parts` | `chrome_parts.rs` | One (Mocha) | no | state | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/tab_bar.rs`, `src/title_area.rs` |
+| 8 | `chrome-notify-redraws-parts` | `chrome_parts.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/tab_bar.rs`, `src/title_area.rs`, `src/sidebar_toggle.rs`, `src/notification_list.rs` |
+| 9 | `chrome-pane-churn` | `chrome_parts.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/panes.rs`, `src/split_tree.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/tab_bar.rs`, `src/title_area.rs` |
+| 10 | `chrome-kill-switch` | `chrome_parts.rs` | One (Mocha) | yes: (a) a child fuxx (FUXX_CHROME_CACHE=off). | state | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/tab_bar.rs`, `src/title_area.rs` |
+| 11 | `chrome-pixels-same` | `chrome_parts.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/tab_bar.rs`, `src/title_area.rs` |
+| 12 | `chrome-ages-current` | `chrome_parts.rs` | One (Mocha) | yes: (c) "59s" read within 400 ms by the real clock. | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/status.rs` |
+| 13 | `chrome-working-marks` | `chrome_parts.rs` | One (Mocha) | no | state | `src/chrome_cache.rs`, `src/mark_view.rs`, `src/status_mark.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/tab_bar.rs`, `src/title_area.rs` |
+| 14 | `chrome-folder-polled` | `chrome_parts.rs` | One (Mocha) | no | state | `src/chrome_cache.rs`, `src/git_branch.rs`, `src/sidebar.rs`, `src/status_bar.rs` |
+| 15 | `chrome-followed` | `chrome_parts.rs` | One (Mocha) | no | state | `src/chrome_cache.rs`, `src/status_bar.rs`, `src/right_sidebar.rs` |
+| 16 | `chrome-title-once` | `chrome_parts.rs` | One (Mocha) | no | state | `src/chrome_cache.rs`, `src/title_area.rs`, `src/workspace.rs` |
+| 17 | `chrome-rows-once` | `chrome_parts.rs` | One (Mocha) | yes: (c) "59s" read within 400 ms by the real clock. | visual | `src/chrome_cache.rs`, `src/sidebar.rs` |
+| 18 | `chrome-status-elsewhere` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/tab_bar.rs`, `src/status_mark.rs`, `src/status.rs` |
+| 19 | `chrome-model-edits` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/layout_model.rs`, `src/sidebar.rs`, `src/tab_bar.rs`, `src/tab_menu.rs`, `src/title_area.rs` |
+| 20 | `chrome-notifications` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/notification_list.rs`, `src/title_area.rs`, `src/sidebar.rs` |
+| 21 | `chrome-places-programs-ports` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/git_branch.rs`, `src/procs.rs`, `src/sidebar.rs`, `src/status_bar.rs` |
+| 22 | `chrome-globals` | `chrome.rs` | Both | no | visual | `src/chrome_cache.rs`, `src/appearance.rs`, `src/reduce_motion.rs`, `src/updater.rs`, `src/update_release.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/tab_bar.rs`, `src/title_area.rs` |
+| 23 | `chrome-resize-title` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/title_area.rs`, `src/sidebar.rs` |
+| 24 | `chrome-drag-cancel` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/drag_gap.rs`, `src/sidebar.rs`, `src/tab_bar.rs` |
+| 25 | `chrome-renaming` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/name_input.rs`, `src/sidebar.rs`, `src/tab_bar.rs`, `src/tab_menu.rs` |
+| 26 | `chrome-new-bar-reveal` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/tab_bar.rs` |
+| 27 | `chrome-session-facts` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/tab_bar.rs`, `src/terminal_view.rs`, `src/ssh_target.rs` |
+| 28 | `chrome-bars-and-edges` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/tab_bar.rs`, `src/sidebar_toggle.rs`, `src/right_sidebar.rs`, `src/title_area.rs` |
+| 29 | `chrome-sidebar-scroll` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs` |
+| 30 | `chrome-sidebar-header-mark` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/groups.rs`, `src/status_mark.rs` |
+| 31 | `chrome-row-sources` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/sidebar.rs`, `src/git_branch.rs`, `src/ssh_target.rs`, `src/restore.rs` |
+| 32 | `chrome-file-tab-toolbar` | `chrome.rs` | One (Mocha) | no | visual | `src/chrome_cache.rs`, `src/file_tab.rs`, `src/tab_bar.rs` |
+| 33 | `sidebar` | `sidebar.rs` | Both | no | visual | `src/sidebar.rs`, `src/drag_gap.rs`, `src/groups.rs`, `src/workspace.rs` |
+| 34 | `sidebar-rows` | `sidebar.rs` | Both | no | visual | `src/sidebar.rs`, `src/groups.rs`, `src/git_branch.rs` |
+| 35 | `sidebar-selection` | `sidebar.rs` | Both | no | visual | `src/sidebar.rs`, `src/status_mark.rs` |
+| 36 | `sidebar-button` | `sidebar.rs` | Both | yes: (c) a shot mid-slide, the slide set 60 ms back by the real clock. | visual | `src/sidebar.rs`, `src/sidebar_toggle.rs`, `src/title_area.rs` |
+| 37 | `title-area` | `window.rs` | Both | no | visual | `src/title_area.rs`, `src/notification_list.rs`, `src/sidebar.rs`, `src/sidebar_toggle.rs`, `src/tab_menu.rs` |
+| 38 | `title-bar` | `window.rs` | Both | yes: (c) a shot mid-slide, the slide set 60 ms back by the real clock. | visual | `src/title_area.rs`, `src/sidebar_toggle.rs`, `src/notification_list.rs`, `src/sidebar.rs`, `src/right_sidebar.rs` |
+| 39 | `tabs` | `panes.rs` | Both | no | visual | `src/sidebar.rs`, `src/tab_color.rs`, `src/tab_menu.rs`, `src/palette.rs` |
+| 40 | `splits` | `panes.rs` | Both | no | visual | `src/panes.rs`, `src/split_tree.rs`, `src/tab_bar.rs`, `src/workspace.rs` |
+| 41 | `cards` | `window.rs` | Both | no | visual | `src/workspace.rs`, `src/panes.rs`, `src/right_sidebar.rs`, `src/sidebar.rs` |
+| 42 | `cards-split` | `window.rs` | Both | no | visual | `src/panes.rs`, `src/split_tree.rs`, `src/workspace.rs` |
+| 43 | `cards-corners` | `window.rs` | Both | no | visual | `src/panes.rs`, `src/terminal_view.rs` |
+| 44 | `workspaces` | `panes.rs` | One (Mocha) | no | state | `src/sidebar.rs`, `src/layout_model.rs`, `src/workspace.rs` |
+| 45 | `tab-bars` | `panes.rs` | Both | no | visual | `src/tab_bar.rs`, `src/pane_tab_menu.rs`, `src/tab_menu.rs`, `src/layout_model.rs` |
+| 46 | `tab-drag` | `panes.rs` | Both | no | visual | `src/tab_bar.rs`, `src/drag_gap.rs`, `src/layout_model.rs`, `src/sidebar.rs`, `src/pane_browser.rs` |
+| 47 | `browser-tab` | `panes.rs` | Both | no | visual | `src/browser_tab.rs`, `src/browser_history.rs`, `src/pane_browser.rs`, `src/browser_url.rs` |
+| 48 | `file-tab` | `file_tab.rs` | Both | no | visual | `src/file_tab.rs`, `src/layout_model.rs`, `src/tab_bar.rs`, `src/highlight.rs`, `src/git_status.rs`, `src/git_branch.rs`, `src/scrollbar.rs`, `src/name_input.rs` |
+| 49 | `file-diff` | `file_tab.rs` | Both | no | visual | `src/file_tab.rs`, `src/diff_view.rs`, `src/git_status.rs`, `src/highlight.rs`, `src/layout_model.rs`, `src/right_sidebar.rs`, `src/file_tree.rs`, `src/name_input.rs` |
+| 50 | `file-tab-md` | `file_tab_md.rs` | Both | no | visual | `src/file_tab.rs`, `src/md_preview.rs`, `src/agent_markdown.rs`, `src/scrollbar.rs`, `src/name_input.rs` |
+| 51 | `file-tab-md-mermaid` | `file_tab_md.rs` | One (Mocha) | yes: (a) a child fuxx: Mermaid's WebKit run, first and alone. | state | `src/file_tab.rs`, `src/md_preview.rs`, `src/mermaid.rs`, `src/mermaid_render.rs`, `src/agent_markdown.rs`, `src/browser.rs` |
+| 52 | `file-tab-scrollbar` | `file_tab.rs` | One (Mocha) | yes: (c) the thumb still shown after a scroll (it fades 1 s on, real clock). | state | `src/file_tab.rs`, `src/scrollbar.rs` |
+| 53 | `right-sidebar` | `right_sidebar.rs` | Both | yes: (c) the slide still running right after the key (160 ms, real clock). | visual | `src/right_sidebar.rs`, `src/sidebar_toggle.rs`, `src/tab_bar.rs`, `src/layout_model.rs`, `src/reduce_motion.rs` |
+| 54 | `files` | `right_sidebar.rs` | Both | yes: (b) adds src/zz.rs to the shared Files fixture for a while. | visual | `src/right_sidebar.rs`, `src/file_tree.rs`, `src/git_status.rs`, `src/file_tab.rs`, `src/layout_model.rs`, `src/tab_bar.rs` |
+| 55 | `files-follow` | `right_sidebar.rs` | One (Mocha) | no | state | `src/right_sidebar.rs`, `src/file_tree.rs`, `src/git_status.rs`, `src/file_tab.rs`, `src/layout_model.rs` |
+| 56 | `right-panels` | `right_sidebar.rs` | Both | no | visual | `src/right_sidebar.rs`, `src/file_tree.rs`, `src/changes_panel.rs`, `src/activity_panel.rs` |
+| 57 | `changes` | `changes.rs` | Both | no | visual | `src/changes_panel.rs`, `src/right_sidebar.rs`, `src/git_status.rs`, `src/git_stage.rs`, `src/ssh_target.rs`, `src/layout_model.rs`, `src/file_tab.rs` |
+| 58 | `changes-bar` | `changes.rs` | Both | no | visual | `src/changes_panel.rs`, `src/right_sidebar.rs`, `src/branch_list.rs`, `src/branch_sync.rs`, `src/git_status.rs` |
+| 59 | `changes-staging` | `changes.rs` | Both | no | visual | `src/changes_panel.rs`, `src/right_sidebar.rs`, `src/git_status.rs`, `src/git_stage.rs` |
+| 60 | `changes-graph` | `changes.rs` | Both | no | visual | `src/changes_panel.rs`, `src/graph_panel.rs`, `src/git_graph.rs`, `src/graph_layout.rs`, `src/git_status.rs`, `src/right_sidebar.rs` |
+| 61 | `changes-sticky` | `changes.rs` | Both | no | visual | `src/changes_panel.rs`, `src/graph_panel.rs`, `src/git_graph.rs`, `src/graph_layout.rs`, `src/git_status.rs`, `src/right_sidebar.rs` |
+| 62 | `activity` | `changes.rs` | Both | yes: (c) nothing moves over 200 ms of real time. | visual | `src/activity.rs`, `src/activity_panel.rs`, `src/right_sidebar.rs`, `src/status.rs`, `src/reduce_motion.rs` |
+| 63 | `api-background` | `naming.rs` | One (Mocha) | no | state | `src/workspace_api.rs`, `src/workspace_browser.rs`, `src/browser_tab.rs`, `src/layout_model.rs` |
+| 64 | `banner-click` | `naming.rs` | One (Mocha) | no | state | `src/native_notify.rs`, `src/daemon_client.rs`, `src/layout_model.rs` |
+| 65 | `default-name` | `naming.rs` | One (Mocha) | no | state | `src/groups.rs`, `src/tab_bar.rs`, `src/sidebar.rs` |
+| 66 | `names` | `naming.rs` | One (Mocha) | no | state | `src/groups.rs`, `src/tab_bar.rs`, `src/sidebar.rs`, `src/name_input.rs`, `src/layout_model.rs`, `src/browser_tab.rs`, `src/workspace_browser.rs`, `src/presets.rs`, `src/ssh_target.rs`, `src/procs.rs` |
+| 67 | `renames` | `naming.rs` | One (Mocha) | no | state | `src/name_input.rs`, `src/tab_bar.rs`, `src/sidebar.rs`, `src/groups.rs`, `src/procs.rs`, `src/terminal_view.rs`, `src/terminal.rs`, `src/layout_model.rs` |
+| 68 | `rename-box` | `naming.rs` | Both | no | visual | `src/name_input.rs`, `src/sidebar.rs` |
+| 69 | `palette` | `palette.rs` | Both | no | visual | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/help_shortcuts.rs`, `src/switcher.rs` |
+| 70 | `palette-workspaces` | `palette.rs` | One (Mocha) | no | state | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/switcher.rs`, `src/layout_model.rs` |
+| 71 | `palette-actions` | `palette.rs` | Both | no | visual | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/pane_actions.rs`, `src/help_shortcuts.rs`, `src/layout_model.rs` |
+| 72 | `palette-keys` | `palette.rs` | One (Mocha) | no | state | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/switcher.rs`, `src/palette_files.rs`, `src/layout_model.rs` |
+| 73 | `palette-run` | `palette.rs` | One (Mocha) | no | state | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/file_tab.rs`, `src/pane_actions.rs`, `src/layout_model.rs` |
+| 74 | `palette-refresh` | `palette.rs` | One (Mocha) | no | state | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/switcher.rs`, `src/status.rs` |
+| 75 | `palette-recent` | `palette.rs` | One (Mocha) | no | state | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/switcher.rs`, `src/palette_files.rs`, `src/pane_actions.rs` |
+| 76 | `palette-files` | `palette.rs` | Both | no | visual | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/palette_files.rs`, `src/file_tab.rs`, `src/right_sidebar.rs`, `src/ssh_target.rs`, `src/layout_model.rs` |
+| 77 | `palette-relist` | `palette.rs` | One (Mocha) | no | state | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/palette_files.rs` |
+| 78 | `palette-settings` | `palette.rs` | Both | no | visual | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/preferences.rs` |
+| 79 | `palette-narrow` | `palette.rs` | Both | no | visual | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/palette_files.rs` |
+| 80 | `palette-motion` | `palette.rs` | One (Mocha) | yes: (c) nothing moves over 200 ms of real time. | visual | `src/palette.rs`, `src/palette_items.rs`, `src/palette_match.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/switcher.rs`, `src/mark_view.rs`, `src/status_mark.rs`, `src/reduce_motion.rs` |
+| 81 | `branch-switcher` | `branch.rs` | Both | no | visual | `src/branch_switcher.rs`, `src/branch_list.rs`, `src/branch_git.rs`, `src/overlay_panel.rs`, `src/palette.rs`, `src/palette_items.rs` |
+| 82 | `branch-switcher-confirm` | `branch.rs` | Both | no | visual | `src/branch_switcher.rs`, `src/branch_list.rs`, `src/branch_git.rs`, `src/overlay_panel.rs`, `src/procs.rs` |
+| 83 | `branch-switcher-real` | `branch.rs` | One (Mocha) | no | state | `src/branch_switcher.rs`, `src/branch_git.rs`, `src/branch_list.rs`, `src/git_branch.rs` |
+| 84 | `branch-switcher-open` | `branch.rs` | One (Mocha) | no | state | `src/branch_switcher.rs`, `src/palette.rs`, `src/palette_items.rs`, `src/sidebar.rs`, `src/status_bar.rs`, `src/git_branch.rs`, `src/procs.rs` |
+| 85 | `welcome` | `welcome.rs` | Both | no | visual | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs`, `src/agent_detect.rs`, `src/overlay_panel.rs`, `src/help_shortcuts.rs` |
+| 86 | `welcome-checking` | `welcome.rs` | One (Mocha) | yes: (c) nothing moves over 200 ms of real time. | visual | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs`, `src/agent_detect.rs`, `src/reduce_motion.rs` |
+| 87 | `welcome-keys` | `welcome.rs` | One (Mocha) | no | state | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs`, `src/palette.rs`, `src/tab_bar.rs`, `src/layout_model.rs`, `src/name_input.rs`, `src/overlay_panel.rs` |
+| 88 | `welcome-narrow` | `welcome.rs` | Both | no | visual | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs`, `src/overlay_panel.rs` |
+| 89 | `welcome-start` | `welcome.rs` | One (Mocha) | no | state | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs`, `src/layout_model.rs`, `src/workspace_daemon.rs`, `src/file_tab.rs` |
+| 90 | `welcome-folder` | `welcome.rs` | One (Mocha) | no | state | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs` |
+| 91 | `welcome-first-run` | `welcome.rs` | One (Mocha) | no | state | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs` |
+| 92 | `welcome-reopen` | `welcome.rs` | One (Mocha) | no | state | `src/welcome.rs`, `src/welcome_items.rs`, `src/presets.rs` |
+| 93 | `overlays` | `overlays.rs` | One (Mocha) | no | state | `src/overlay_panel.rs`, `src/name_input.rs`, `src/palette.rs`, `src/branch_switcher.rs`, `src/help_panel.rs`, `src/host_picker.rs`, `src/workspace_browser.rs`, `src/welcome.rs`, `src/pane_tab_menu.rs`, `src/tab_menu.rs`, `src/pane_actions.rs`, `src/title_area.rs`, `src/preferences.rs` |
+| 94 | `help` | `overlays.rs` | One (Mocha) | no | state | `src/help_panel.rs`, `src/help_shortcuts.rs`, `src/help_commands.rs`, `src/overlay_panel.rs`, `src/name_input.rs`, `src/palette.rs`, `src/sidebar.rs` |
+| 95 | `panels` | `overlays.rs` | One (Mocha) | no | state | `src/host_picker.rs`, `src/ssh_hosts.rs`, `src/ssh_target.rs`, `src/workspace_browser.rs`, `src/overlay_panel.rs`, `src/name_input.rs` |
+| 96 | `preferences` | `overlays.rs` | Both | no | visual | `src/preferences.rs`, `src/preferences_plugins.rs`, `src/plugins.rs`, `src/plugin_store.rs`, `src/plugin_source.rs`, `src/prefs.rs`, `src/name_input.rs` |
+| 97 | `status-bar` | `status_bar.rs` | Both | no | visual | `src/status_bar.rs`, `src/status_mark.rs`, `src/sidebar.rs`, `src/git_branch.rs`, `src/procs.rs`, `src/status.rs`, `src/file_tab.rs`, `src/layout_model.rs`, `src/reduce_motion.rs` |
+| 98 | `status-bar-hidden` | `status_bar.rs` | Both | no | visual | `src/status_bar.rs`, `src/panes.rs`, `src/git_branch.rs` |
+| 99 | `status-bar-ports` | `status_bar.rs` | Both | no | visual | `src/status_bar.rs`, `src/procs.rs`, `src/browser_tab.rs`, `src/workspace_browser.rs`, `src/layout_model.rs`, `src/git_branch.rs` |
+| 100 | `status-bar-narrow` | `status_bar.rs` | Both | no | visual | `src/status_bar.rs`, `src/updater.rs`, `src/procs.rs`, `src/git_branch.rs`, `src/sidebar.rs` |
+| 101 | `update-button` | `status_bar.rs` | One (Mocha) | no | visual | `src/status_bar.rs`, `src/updater.rs`, `src/update_release.rs` |
+| 102 | `cursor` | `terminal.rs` | Both | yes: (c) the glide (90 ms), sparks (350 ms) and the breath's 600 ms hold, read from Instant. | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/cursor_look.rs`, `src/appearance.rs`, `src/status.rs` |
+| 103 | `cursor-flood` | `terminal.rs` | One (Mocha) | no | state | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs` |
+| 104 | `command-blocks` | `terminal.rs` | Both | yes: (c) nothing animates over 200 ms of real time. | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs`, `src/reduce_motion.rs` |
+| 105 | `command-blocks-alt-screen` | `terminal.rs` | Both | no | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs` |
+| 106 | `command-blocks-narrow` | `terminal.rs` | Both | no | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs` |
+| 107 | `command-blocks-rprompt` | `terminal.rs` | One (Mocha) | no | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs` |
+| 108 | `command-blocks-small-font` | `terminal.rs` | Both | no | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs` |
+| 109 | `command-blocks-off` | `terminal.rs` | Both | no | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs`, `src/appearance.rs` |
+| 110 | `command-blocks-jump` | `terminal.rs` | Both | no | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs` |
+| 111 | `command-blocks-copy` | `terminal.rs` | One (Mocha) | no | state | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs`, `src/palette_items.rs` |
+| 112 | `command-blocks-rerun` | `terminal.rs` | Both | no | visual | `src/terminal_view.rs`, `src/terminal.rs`, `src/grid.rs`, `src/pty.rs`, `src/blocks.rs`, `src/block_view.rs`, `src/shell_marks.rs` |
