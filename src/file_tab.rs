@@ -36,11 +36,11 @@
 //! against the last commit (`FileMode::Diff`): old and new lines in one column (`DiffDoc`, one
 //! line per row, so find and copy work on it unchanged), removed rows tinted red with a `−`,
 //! added rows green with a `+`, unchanged rows' colours dimmed, both line numbers in the gutter
-//! (`columns`). The toolbar's File | Diff toggle (`shows_toggle`) and a press on a change bar
-//! switch modes; each mode keeps its own scroll. In Diff mode the git look-up asks for the
-//! diff instead of the bars, on the same schedule, off the UI thread (`look_up_diff`); its
-//! answer carries the disk version, as the bars' does (`HeldDiff`). A refused file (over 20 MB
-//! or binary) never asks git.
+//! (`columns`). The bar's view switch (File | Diff | Preview, `view_segments`) and a press on a
+//! change bar switch modes; each mode keeps its own scroll. In Diff mode the git look-up asks
+//! for the diff instead of the bars, on the same schedule, off the UI thread (`look_up_diff`);
+//! its answer carries the disk version, as the bars' does (`HeldDiff`). A refused file (over
+//! 20 MB or binary) never asks git.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -55,10 +55,11 @@ use std::time::{Duration, Instant, SystemTime};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
-    DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior,
-    ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ScrollWheelEvent, SharedString, Subscription, TextAlign, TextRun, WeakEntity, Window,
-    canvas, div, fill, list, point, prelude::*, px, size,
+    DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Global,
+    HighlightStyle, HitboxBehavior, ListAlignment, ListOffset, ListState, MouseButton,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent,
+    SharedString, StyledText, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div,
+    fill, list, point, prelude::*, px, size,
 };
 
 use crate::agent_markdown::Md;
@@ -77,8 +78,9 @@ use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
+use crate::scrollbar::{self, Axis, Bar, Thumb};
 use crate::sidebar_toggle::Tip;
-use crate::tab_bar::{Glyph, glyph, glyph_with};
+use crate::tab_bar::{Glyph, glyph_with};
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors, mix};
 use crate::ui_tokens::size::CARD_RADIUS;
@@ -93,10 +95,10 @@ pub const MISSING: &str = "This file no longer exists";
 pub const REFUSED: &str = "This file is too large or binary to show";
 pub const TOO_LARGE: &str = "Too large to colour";
 const OPEN_IN_EDITOR: &str = "Open in Editor";
-/// The toolbar's File | Diff toggle (M11h): its words and tooltips.
+/// The bar's view switch (M11h's File | Diff toggle; M11ae adds Preview) and Wrap: their words
+/// and tooltips.
 const TOGGLE_FILE: &str = "File";
 const TOGGLE_DIFF: &str = "Diff";
-const WRAP: &str = "Wrap";
 const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
 const PREVIEW: &str = "Preview";
 const TIP_PREVIEW: &str = "Show the Markdown rendered";
@@ -125,6 +127,8 @@ const CHECKPOINT: usize = 256;
 
 // The view's geometry, in points.
 const TOOLBAR: f32 = crate::browser_tab::BAR;
+/// The file bar's height (M11ae: its title on two lines); the find bar keeps `TOOLBAR`.
+const FILE_TOOLBAR: f32 = 42.0;
 const BAR_PAD: f32 = 6.0;
 const BUTTON: f32 = 24.0;
 const BUTTON_STROKE: f32 = 1.75;
@@ -370,6 +374,74 @@ pub fn find_label(query: &str, current: Option<usize>, count: usize, capped: boo
     }
 }
 
+/// The header chip's text: `M · +3 −1` for a changed file, `A · +12` for a new one; None when
+/// nothing changed or git has not answered.
+pub fn chip_label(counts: Option<(usize, usize, bool)>) -> Option<String> {
+    let (added, removed, new) = counts?;
+    if added == 0 && removed == 0 {
+        return None;
+    }
+    let mut out = String::from(if new { "A \u{b7}" } else { "M \u{b7}" });
+    if added > 0 {
+        out.push_str(&format!(" +{added}"));
+    }
+    if removed > 0 {
+        out.push_str(&format!(" \u{2212}{removed}"));
+    }
+    Some(out)
+}
+
+/// Where the file lives, for the header: the folders from the repo's name down (`repo / a / b`),
+/// else the folder shortened under `home` (`~/Downloads`), else the folder. `repo` is
+/// `(root, rel)` as in `GitPlace`.
+pub fn where_label(path: &Path, repo: Option<(&Path, &Path)>, home: Option<&Path>) -> String {
+    if let Some((root, rel)) = repo {
+        let mut parts: Vec<String> = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .into_iter()
+            .collect();
+        if let Some(dir) = rel.parent() {
+            parts.extend(
+                dir.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+            );
+        }
+        return parts.join(" / ");
+    }
+    let dir = path.parent().unwrap_or(path);
+    if let Some(home) = home
+        && let Ok(under) = dir.strip_prefix(home)
+    {
+        return if under.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", under.display())
+        };
+    }
+    dir.display().to_string()
+}
+
+/// `1 line`, `42 lines`, `12,345 lines`.
+pub fn lines_label(n: usize) -> String {
+    format!("{} line{}", thousands(n), if n == 1 { "" } else { "s" })
+}
+
+/// How long ago the file was modified: `edited just now`, `edited 5 min ago`, `1 h`, `1 d`,
+/// `1 mo` (30 days), `1 y` (365 days). A time ahead of `now` is just now.
+pub fn age_label(modified: SystemTime, now: SystemTime) -> String {
+    let secs = now.duration_since(modified).map_or(0, |d| d.as_secs());
+    let (n, unit) = match secs {
+        0..60 => return "edited just now".to_string(),
+        60..3_600 => (secs / 60, "min"),
+        3_600..86_400 => (secs / 3_600, "h"),
+        86_400..2_592_000 => (secs / 86_400, "d"),
+        2_592_000..31_536_000 => (secs / 2_592_000, "mo"),
+        _ => (secs / 31_536_000, "y"),
+    };
+    format!("edited {n} {unit} ago")
+}
+
 /// `n` with commas between thousands.
 fn thousands(n: usize) -> String {
     let digits = n.to_string();
@@ -545,6 +617,11 @@ pub struct Doc {
     pub changes: Arc<Changes>,
     /// The version the change bars were made for (an older one's carried over a reload).
     pub changes_version: Option<u64>,
+    /// (added, removed, new) lines against HEAD, from the same answer as the bars, or from
+    /// Diff mode's rows (once git answered).
+    pub counts: Option<(usize, usize, bool)>,
+    /// The syntax's name, once the colours are made (`Highlighter::syntax_name`).
+    pub syntax: Option<Arc<str>>,
     /// Which read of the file this is (each reload, one more).
     pub version: u64,
     /// The widest line as shown, in cells (characters, tabs as four).
@@ -581,6 +658,8 @@ impl Doc {
             spans_version: None,
             changes: Arc::default(),
             changes_version: None,
+            counts: None,
+            syntax: None,
             version,
             widest,
             widths: Arc::new(widths),
@@ -629,20 +708,46 @@ impl Doc {
         true
     }
 
-    /// Change bars asked for `version`, taken as colours are (`accept_spans`). True when they
-    /// changed.
-    pub fn accept_changes(&mut self, version: u64, changes: &[(usize, LineChange)]) -> bool {
+    /// Takes what `old` (the text shown before a reload) knew, until the new answers land: the
+    /// colours and the type (not for a `plain` text), the change bars and their counts.
+    fn carry_over(&mut self, old: &Doc, plain: bool) {
+        if !plain {
+            self.spans = old.spans.clone();
+            self.spans_version = old.spans_version;
+            self.syntax = old.syntax.clone();
+        }
+        self.changes = old.changes.clone();
+        self.changes_version = old.changes_version;
+        self.counts = old.counts;
+    }
+
+    /// Change bars and counts asked for `version`, taken as colours are (`accept_spans`). True
+    /// when they changed.
+    pub fn accept_changes(
+        &mut self,
+        version: u64,
+        changes: &[(usize, LineChange)],
+        counts: Option<(usize, usize, bool)>,
+    ) -> bool {
         if !fresher(version, self.version, self.changes_version) {
             return false;
         }
         self.changes_version = Some(version);
         let (by_line, deleted) = bars(changes);
         let changes = Changes { by_line, deleted };
+        let counts_changed = self.set_counts(counts);
         if *self.changes == changes {
-            return false;
+            return counts_changed;
         }
         self.changes = Arc::new(changes);
         true
+    }
+
+    /// The header chip's counts (the bars' answer, or Diff mode's rows: `DiffDoc::counts`),
+    /// taken by the caller's version check (`accept_changes`'s, or the held diff's). True when
+    /// they changed.
+    pub fn set_counts(&mut self, counts: Option<(usize, usize, bool)>) -> bool {
+        std::mem::replace(&mut self.counts, counts) != counts
     }
 }
 
@@ -734,6 +839,23 @@ pub struct DiffDoc {
     /// Whether it may be coloured: both its sides at most 2 MB (`PLAIN_ABOVE`) and no line too
     /// long to colour. Decided by the rows, not the file on disk (a deleted file has none).
     pub colourable: bool,
+    /// Untracked, or no commits yet: git said the whole file is added (`FileDiff::AllAdded`).
+    /// For the header chip's `A` (M11ae).
+    pub new: bool,
+}
+
+impl DiffDoc {
+    /// (added, removed, new) for the header chip (M11ae): the Added and Removed rows, exact as
+    /// `git diff --numstat` counts them (not the hunk headers': with `-U<n>` they include the
+    /// context).
+    pub fn counts(&self) -> (usize, usize, bool) {
+        let (added, removed) = self.rows.iter().fold((0, 0), |(a, r), row| match row.kind {
+            RowKind::Added => (a + 1, r),
+            RowKind::Removed => (a, r + 1),
+            RowKind::Same | RowKind::Gap => (a, r),
+        });
+        (added, removed, self.new)
+    }
 }
 
 /// The diff held and the disk version it was asked for: an answer for an older version than
@@ -794,6 +916,7 @@ fn diff_state(
     colour: Option<(&Highlighter, &Path)>,
     held: Option<&ColouredRows>,
 ) -> DiffState {
+    let new = matches!(diff, FileDiff::AllAdded);
     match diff_outcome(diff, disk_text) {
         Outcome::Same => DiffState::Same,
         Outcome::Binary => DiffState::Binary,
@@ -815,6 +938,7 @@ fn diff_state(
                 gutter: Gutter::diff(&parsed.rows),
                 rows: Arc::new(parsed.rows),
                 colourable,
+                new,
             })
         }
     }
@@ -1103,15 +1227,48 @@ fn preview_fits(state: &State) -> bool {
     matches!(state, State::Text(doc) if doc.text.len() <= PREVIEW_MAX)
 }
 
-/// Whether the toolbar shows Preview (M11ac): for a Markdown file, in File mode only.
-pub fn shows_preview(path: &Path, mode: FileMode) -> bool {
-    is_markdown(path) && mode == FileMode::Plain
-}
-
-/// Whether the toolbar shows the File | Diff toggle: for a file in a repo, and always in Diff
-/// mode (so it can go back).
+/// Whether the view switch offers Diff: for a file in a repo, and always in Diff mode (so it can
+/// go back).
 pub fn shows_toggle(in_repo: bool, mode: FileMode) -> bool {
     in_repo || mode == FileMode::Diff
+}
+
+/// A segment of the bar's view switch (M11ae): the file, its diff, or the Markdown rendered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    File,
+    Diff,
+    Preview,
+}
+
+impl View {
+    /// Its place in `FileTab::toggle_bounds`.
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The switch's segments, in order: File always, Diff where `shows_toggle`, Preview for a
+/// `markdown` file (in either mode). The switch shows when it has two or more.
+pub fn view_segments(in_repo: bool, mode: FileMode, markdown: bool) -> Vec<View> {
+    let mut views = vec![View::File];
+    if shows_toggle(in_repo, mode) {
+        views.push(View::Diff);
+    }
+    if markdown {
+        views.push(View::Preview);
+    }
+    views
+}
+
+/// The switch's current segment: Diff in Diff mode; Preview in File mode with Preview on and
+/// fitting (`preview_on_and_fits`); else File.
+pub fn current_view(mode: FileMode, preview_on_and_fits: bool) -> View {
+    match mode {
+        FileMode::Diff => View::Diff,
+        FileMode::Plain if preview_on_and_fits => View::Preview,
+        FileMode::Plain => View::File,
+    }
 }
 
 /// The change under a press `y` points down the text (scroll included) in the bar column: a
@@ -1181,6 +1338,202 @@ impl Geom {
     fn clamp(p: Point<Pixels>, max: Point<Pixels>) -> Point<Pixels> {
         point(p.x.clamp(px(0.0), max.x), p.y.clamp(px(0.0), max.y))
     }
+}
+
+/// A scrollbar's track in the text as last drawn (M11ae): its area (the text's height at its
+/// right edge; the text's width right of the numbers, along its bottom), the view's and the
+/// text's length along it, and the thumb.
+#[derive(Clone, Copy, Debug)]
+struct Track {
+    axis: Axis,
+    area: Bounds<Pixels>,
+    viewport: f32,
+    content: f32,
+    thumb: Thumb,
+}
+
+impl Track {
+    /// None when the text fits along `axis` (always sideways with Wrap on: no sideways scroll).
+    fn of(g: &Geom, axis: Axis) -> Option<Track> {
+        let (area, viewport, max, offset) = match axis {
+            Axis::Vertical => (g.bounds, g.bounds.size.height, g.max_scroll.y, g.scroll.y),
+            Axis::Horizontal => {
+                let left = point(g.bounds.left() + g.text_left, g.bounds.top());
+                let area = Bounds::from_corners(left, g.bounds.bottom_right());
+                (area, area.size.width, g.max_scroll.x, g.scroll.x)
+            }
+        };
+        // The text's length along it: its rows × the line height, or (Wrap off) its widest line
+        // × the cell width + `RIGHT_PAD` (`Geom::of`'s `max_scroll` is that less the view).
+        let (viewport, content) = (f32::from(viewport), f32::from(viewport + max));
+        let thumb = scrollbar::thumb(viewport, content, f32::from(offset))?;
+        Some(Track {
+            axis,
+            area,
+            viewport,
+            content,
+            thumb,
+        })
+    }
+
+    /// The Preview's: the list's `area` (its viewport), the reader's `content` height and its
+    /// scroll `offset` down. None when it all fits.
+    fn of_list(area: Bounds<Pixels>, content: f32, offset: f32) -> Option<Track> {
+        let viewport = f32::from(area.size.height);
+        let thumb = scrollbar::thumb(viewport, content, offset)?;
+        Some(Track {
+            axis: Axis::Vertical,
+            area,
+            viewport,
+            content,
+            thumb,
+        })
+    }
+
+    /// Window point `p` along the track, from its start.
+    fn along(&self, p: Point<Pixels>) -> f32 {
+        f32::from(match self.axis {
+            Axis::Vertical => p.y - self.area.top(),
+            Axis::Horizontal => p.x - self.area.left(),
+        })
+    }
+
+    /// Whether `p` is within `scrollbar::ZONE` of the text's right (or bottom) edge.
+    fn zone_has(&self, p: Point<Pixels>) -> bool {
+        self.area.contains(&p)
+            && match self.axis {
+                Axis::Vertical => p.x >= self.area.right() - px(scrollbar::ZONE),
+                Axis::Horizontal => p.y >= self.area.bottom() - px(scrollbar::ZONE),
+            }
+    }
+
+    /// Scroll `from` with its part along the track where the thumb starts at `start`.
+    fn scroll_for(&self, start: f32, from: Point<Pixels>) -> Point<Pixels> {
+        let to = px(scrollbar::offset_for(start, self.viewport, self.content));
+        match self.axis {
+            Axis::Vertical => point(from.x, to),
+            Axis::Horizontal => point(to, from.y),
+        }
+    }
+}
+
+/// The track whose edge zone has window point `p` (the right edge's first), as last drawn.
+fn zone_at(g: &Geom, p: Point<Pixels>) -> Option<Track> {
+    [Axis::Vertical, Axis::Horizontal]
+        .into_iter()
+        .filter_map(|axis| Track::of(g, axis))
+        .find(|t| t.zone_has(p))
+}
+
+/// M11ae: while selecting with the pointer out of the text, the text scrolls on its own this often.
+const AUTOSCROLL_STEP: Duration = Duration::from_millis(16);
+
+/// How far point `p` is out of the span `lo..hi`: after it, `p - hi` (positive); before it,
+/// `p - lo` (negative); within it, 0.
+pub fn outside(p: f32, lo: f32, hi: f32) -> f32 {
+    if p > hi {
+        p - hi
+    } else if p < lo {
+        p - lo
+    } else {
+        0.0
+    }
+}
+
+/// How far the text scrolls in one auto-scroll step for a pointer `outside` points out of it
+/// (M11ae): faster the further out, from 1 pt to 3 lines; nothing within it.
+pub fn edge_speed(outside: f32, line_height: f32) -> f32 {
+    if outside <= 0.0 {
+        return 0.0;
+    }
+    (outside / 8.0).clamp(1.0, 3.0 * line_height)
+}
+
+/// The auto-scroll's step for window point `p` (M11ae): per axis, towards the side the pointer
+/// is out of the text, at `edge_speed`. Down the text: its canvas (the scrollbar's edge zones in
+/// it); across it, only with Wrap off (Wrap on has no sideways scroll): from where the text
+/// starts, right of the numbers (over them is left of the text). Zero: the pointer is in the
+/// text.
+fn edge_push(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
+    let lh = f32::from(g.line_height);
+    let push = |o: f32| px(o.signum() * edge_speed(o.abs(), lh));
+    let b = g.bounds;
+    let y = outside(f32::from(p.y), f32::from(b.top()), f32::from(b.bottom()));
+    let x = if wrap {
+        0.0
+    } else {
+        let left = b.left() + g.text_left;
+        outside(f32::from(p.x), f32::from(left), f32::from(b.right()))
+    };
+    point(push(x), push(y))
+}
+
+/// Window point `p` held inside the text (M11ae): its edge row above or below it, and with Wrap
+/// off its edge column left or right of it (the text's, right of the numbers), so a selection's
+/// moving end never goes out of sight.
+fn hold_inside(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
+    let b = g.bounds;
+    let y = p.y.clamp(b.top(), (b.bottom() - px(1.0)).max(b.top()));
+    let x = if wrap {
+        p.x
+    } else {
+        let left = b.left() + g.text_left;
+        p.x.clamp(left, (b.right() - px(1.0)).max(left))
+    };
+    point(x, y)
+}
+
+/// A Preview of up to this many blocks measures every row at its first layout (and again after a
+/// reset, a remeasure or a width change), so its scrollbar is exact. Measured on a release build
+/// (M11ae fix round 1): a full relayout is ~3 ms for 585 blocks (20 KB) but ~160 ms for 29,115
+/// (1 MB), about 5.5 us a block; 2,000 blocks keeps it near 11 ms, under a frame.
+pub const PREVIEW_MEASURE_ALL: usize = 2_000;
+
+/// A block's height as the scrollbar of a longer Preview reckons it (the mean of a mixed 1 MB
+/// file's blocks: 45 pt). GPUI's list drops its height hints at its first layout and at each
+/// width change, and a list with unmeasured rows reports only the drawn rows' height, so for such
+/// a Preview the track is counted in blocks (`preview_track`), not in the list's pixels.
+const PREVIEW_BLOCK_HINT: f32 = 45.0;
+
+/// The Preview's list for `count` blocks: all measured at once when few (`PREVIEW_MEASURE_ALL`),
+/// else each row measured as it is drawn. Each of its own scrolls (the wheel) shows the
+/// scrollbar: the handler runs from the wheel's event, never from drawing, and only notes it and
+/// redraws.
+fn preview_list_of(count: usize, view: WeakEntity<FileTab>) -> ListState {
+    let state = ListState::new(count, ListAlignment::Top, px(PREVIEW_OVERDRAW));
+    let state = if count <= PREVIEW_MEASURE_ALL {
+        state.measure_all()
+    } else {
+        state
+    };
+    state.set_scroll_handler(move |_, _, cx| {
+        view.update(cx, |this, cx| {
+            this.scrolled(cx);
+            cx.notify();
+        })
+        .ok();
+    });
+    state
+}
+
+/// The Preview's scrollbar track as the list was last laid out (M11ae), read from its state:
+/// `scroll_px_offset_for_scrollbar` has a negative `y`, and the content is the list's own
+/// `max_offset_for_scrollbar` (fixed during a thumb drag) plus the viewport.
+///
+/// A longer Preview (rows not all measured) is counted in blocks of `PREVIEW_BLOCK_HINT`: its
+/// content is the block count, its offset the top block (and the share of it scrolled past).
+fn preview_track(list: &ListState) -> Option<Track> {
+    let area = list.viewport_bounds();
+    let count = list.item_count();
+    if count > PREVIEW_MEASURE_ALL {
+        let top = list.logical_scroll_top();
+        let into = (f32::from(top.offset_in_item) / PREVIEW_BLOCK_HINT).min(0.999);
+        let offset = (top.item_ix as f32 + into) * PREVIEW_BLOCK_HINT;
+        return Track::of_list(area, count as f32 * PREVIEW_BLOCK_HINT, offset);
+    }
+    let content = f32::from(list.max_offset_for_scrollbar().y + area.size.height);
+    let offset = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+    Track::of_list(area, content, offset)
 }
 
 /// The colours of the change bars (and tints): the theme's green, blue and red, pushed to 3:1 on
@@ -1854,6 +2207,12 @@ pub struct FileTab {
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
+    /// M11ae: the pointer's last place while selecting, and whether the auto-scroll task runs
+    /// (one at a time; only while the pointer is out of the text).
+    drag_at: Option<Point<Pixels>>,
+    autoscrolling: bool,
+    /// M11ae: the overlay scrollbar (File, Diff and Preview: one shows at a time).
+    scrollbar: Bar,
     find: Option<FindBar>,
     /// On screen (the workspace sets it each frame), polling, polls so far.
     shown: bool,
@@ -1863,15 +2222,21 @@ pub struct FileTab {
     pub frozen: bool,
     /// The Close button's bounds (a missing file's), as last drawn.
     close_at: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// The toggle's File and Diff segments, as last drawn.
-    toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
+    /// The view switch's File, Diff and Preview segments (`View::index`), and the bar's
+    /// controls together, as last drawn (none: not drawn).
+    toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
+    controls_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The second line's Where and the parts after it, as last drawn (the scenes check Where
+    /// is cut first).
+    meta_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
+    /// M11ae: how long ago the file was modified (`age_label`), as the bar says it; worked out
+    /// when a version is read and in each poll (`refresh_age`), never while drawing.
+    age: Option<String>,
     /// M11ac: a Markdown file shown rendered (`md_preview`; only in File mode), the reader's
-    /// scroll (kept over a reload), the blocks parsed for the version shown, and the Preview
-    /// button as last drawn.
+    /// scroll (kept over a reload), and the blocks parsed for the version shown.
     preview: bool,
     preview_list: ListState,
     parsed: Option<(u64, Rc<Vec<Md>>)>,
-    preview_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// M11ac Part 2: what each block of the parsed version does as a Mermaid diagram, for the
     /// version and light or dark it was planned for (`mermaid::plan`), and how they were shown
     /// last frame.
@@ -1947,6 +2312,9 @@ impl FileTab {
             wrapped: Rc::default(),
             selection: None,
             selecting: false,
+            drag_at: None,
+            autoscrolling: false,
+            scrollbar: Bar::default(),
             find: None,
             shown: false,
             ticking: false,
@@ -1954,10 +2322,12 @@ impl FileTab {
             frozen: false,
             close_at: Rc::default(),
             toggle_at: Rc::default(),
+            controls_at: Rc::default(),
+            meta_at: Rc::default(),
+            age: None,
             preview: false,
-            preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
+            preview_list: preview_list_of(0, cx.entity().downgrade()),
             parsed: None,
-            preview_at: Rc::default(),
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
             _appearance: appearance,
@@ -2021,6 +2391,17 @@ impl FileTab {
         if shown && !was && !self.frozen {
             self.check_disk(cx);
         }
+        // M11ae: off screen, its canvas isn't painted, so its release and move listeners are
+        // gone: a drag going on would never end (the auto-scroll stepping to the text's end,
+        // each step redrawing the window). The selection's drag, a thumb's drag and the hover
+        // end here; the auto-scroll task ends at its next step. These draw nothing.
+        if was && !shown {
+            self.selecting = false;
+            self.drag_at = None;
+            if self.scrollbar.hide() {
+                self.preview_list.scrollbar_drag_ended();
+            }
+        }
         self.tick(cx);
     }
 
@@ -2045,6 +2426,7 @@ impl FileTab {
                         this.ticking = this.wanted(cx);
                         if this.ticking {
                             this.polls = this.polls.wrapping_add(1);
+                            this.refresh_age(SystemTime::now(), cx);
                             this.check_disk(cx);
                             if this.polls.is_multiple_of(CHANGES_EVERY) {
                                 this.look_up_changes(cx);
@@ -2086,7 +2468,11 @@ impl FileTab {
     /// bars until the new ones come), or a note.
     fn loaded(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         match loaded {
-            Loaded::Unchanged => return,
+            // The same file: only its age may read differently (a tab back on screen).
+            Loaded::Unchanged => {
+                self.refresh_age(SystemTime::now(), cx);
+                return;
+            }
             // Each look at the disk that finds something new is a version (a diff asked for an
             // older one is dropped).
             Loaded::Missing => {
@@ -2118,12 +2504,7 @@ impl FileTab {
                 self.versions += 1;
                 doc.version = self.versions;
                 if let Some(old) = self.doc() {
-                    if !plain {
-                        doc.spans = old.spans.clone();
-                        doc.spans_version = old.spans_version;
-                    }
-                    doc.changes = old.changes.clone();
-                    doc.changes_version = old.changes_version;
+                    doc.carry_over(old, plain);
                 }
                 self.stamp = Some(stamp);
                 let was_refused = matches!(self.state, State::Refuse);
@@ -2137,9 +2518,23 @@ impl FileTab {
                 self.look_up_changes(cx);
             }
         }
+        self.refresh_age(SystemTime::now(), cx);
         self.keep_selection();
         self.find_again(cx);
         cx.notify();
+    }
+
+    /// The bar's "edited …" (M11ae) at `now`, from the file's time as last read (none without
+    /// one); drawn again only when the words change.
+    fn refresh_age(&mut self, now: SystemTime, cx: &mut Context<Self>) {
+        let age = self
+            .stamp
+            .and_then(|s| s.modified)
+            .map(|modified| age_label(modified, now));
+        if age != self.age {
+            self.age = age;
+            cx.notify();
+        }
     }
 
     /// The file isn't refused any more: its diff (refused without asking git) is to be asked.
@@ -2241,14 +2636,19 @@ impl FileTab {
         self.coloured_with = Some(cx.global::<Appearance>().theme);
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
-            let spans = cx
+            let (spans, syntax) = cx
                 .background_executor()
-                .spawn(async move { h.highlight(&path, &text) })
+                .spawn(async move {
+                    let first = text.split_inclusive('\n').next().unwrap_or("");
+                    let syntax: Arc<str> = h.syntax_name(&path, first).into();
+                    (h.highlight(&path, &text), syntax)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 if let State::Text(doc) = &mut this.state
                     && doc.accept_spans(version, spans)
                 {
+                    doc.syntax = Some(syntax);
                     cx.notify();
                 }
                 if this.colouring.finish() {
@@ -2378,7 +2778,11 @@ impl FileTab {
                 if let Some(changes) = changes
                     && let Some(version) = version
                     && let Some(doc) = this.doc_mut()
-                    && doc.accept_changes(version, &changes)
+                    && doc.accept_changes(
+                        version,
+                        &changes.lines,
+                        Some((changes.added, changes.removed, changes.new)),
+                    )
                 {
                     cx.notify();
                 }
@@ -2472,6 +2876,14 @@ impl FileTab {
     /// first rows scroll to their first change; the same rows again keep theirs (and their
     /// colours) as they are.
     fn accept_diff(&mut self, version: u64, state: DiffState, cx: &mut Context<Self>) {
+        // M11ae: the header chip's counts from the rows (none to show when unchanged), so Diff
+        // mode's chip is there and current too; taken when the diff is (the held diff's version
+        // check). Look-ups run one at a time, so the bars' answer and the diff's never cross.
+        let counts = match &state {
+            DiffState::Rows(d) => Some(d.counts()),
+            DiffState::Same => Some((0, 0, false)),
+            _ => None,
+        };
         let unchanged = match (&self.diff.state, &state) {
             (DiffState::Rows(held), DiffState::Rows(new)) => {
                 held.doc.text == new.doc.text
@@ -2484,12 +2896,17 @@ impl FileTab {
         if unchanged {
             if fresher(version, self.versions, self.diff.version) {
                 self.diff.version = Some(version);
+                if self.take_diff_counts(counts) {
+                    cx.notify();
+                }
             }
             return;
         }
         if !self.diff.accept(version, self.versions, state) {
             return;
         }
+        // Redrawn below.
+        self.take_diff_counts(counts);
         match &self.diff.state {
             DiffState::Rows(d) => {
                 if first_rows && self.reveal.is_none() {
@@ -2511,6 +2928,15 @@ impl FileTab {
         cx.notify();
     }
 
+    /// The counts a diff gave (none: it gives none, as binary or refused) for the file's text;
+    /// whether the chip changed.
+    fn take_diff_counts(&mut self, counts: Option<(usize, usize, bool)>) -> bool {
+        match (counts, self.doc_mut()) {
+            (Some(counts), Some(doc)) => doc.set_counts(Some(counts)),
+            _ => false,
+        }
+    }
+
     /// The file's mode now (M11h).
     pub fn mode(&self) -> FileMode {
         self.mode
@@ -2519,7 +2945,10 @@ impl FileTab {
     /// Whether the Markdown is shown rendered now (M11ac): Preview on, a Markdown file, File
     /// mode.
     pub fn preview_shown(&self) -> bool {
-        self.preview && shows_preview(&self.path, self.mode) && preview_fits(&self.state)
+        self.mode == FileMode::Plain
+            && self.preview
+            && is_markdown(&self.path)
+            && preview_fits(&self.state)
     }
 
     /// Preview on or off by hand (M11ac): the find bar goes with the source, and the workspace
@@ -2532,9 +2961,30 @@ impl FileTab {
         if on && self.find.is_some() {
             self.close_find(window, cx);
         }
+        // The selection ends (and with it a drag's auto-scroll, M11ae), as for a mode switch.
         self.selection = None;
+        self.selecting = false;
         cx.emit(FileTabEvent::Preview(on));
         cx.notify();
+    }
+
+    /// A click on the view switch (M11ae): File turns Preview off and shows the file; Diff
+    /// shows the diff; Preview (when the file fits) shows the file rendered. What is saved per
+    /// tab stays its mode and its Preview.
+    fn choose_view(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
+        match view {
+            View::File => {
+                self.choose_preview(false, window, cx);
+                self.choose_mode(FileMode::Plain, None, cx);
+            }
+            View::Diff => self.choose_mode(FileMode::Diff, None, cx),
+            View::Preview => {
+                if preview_fits(&self.state) {
+                    self.choose_mode(FileMode::Plain, None, cx);
+                    self.choose_preview(true, window, cx);
+                }
+            }
+        }
     }
 
     /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
@@ -2545,6 +2995,84 @@ impl FileTab {
             LinkTarget::Web(url) => cx.open_url(&url),
             LinkTarget::File(path) if path.is_file() => cx.emit(FileTabEvent::OpenFile(path)),
             LinkTarget::File(_) | LinkTarget::Nowhere => {}
+        }
+    }
+
+    /// A press at `p` in the Preview's scrollbar zone (M11ae): the thumb is grabbed, or jumps to
+    /// centre on the press and is dragged on, as in the code view. Whether it was in the zone
+    /// (then the press goes no further: the list's links and diagrams get the rest).
+    fn preview_press(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        let Some(track) = preview_track(&self.preview_list).filter(|t| t.zone_has(p)) else {
+            return false;
+        };
+        let (at, t) = (track.along(p), track.thumb);
+        // Frozen content height for the drag, before the first move of the list.
+        self.preview_list.scrollbar_drag_started();
+        let grab = if (t.start..=t.start + t.len).contains(&at) {
+            at - t.start
+        } else {
+            self.preview_scroll_to(&track, at - t.len / 2.0, cx);
+            t.len / 2.0
+        };
+        self.scrollbar.start_drag(Axis::Vertical, grab);
+        cx.notify();
+        true
+    }
+
+    /// Scroll the list so the thumb starts at `start` along `track` (`set_offset_from_scrollbar`
+    /// takes the offset with a negative `y`).
+    fn preview_scroll_to(&mut self, track: &Track, start: f32, cx: &mut Context<Self>) {
+        let to = scrollbar::offset_for(start, track.viewport, track.content);
+        if to >= track.content - track.viewport - 1.0 {
+            // The thumb at its end: the text's true end, whatever rows were not yet measured.
+            self.preview_list.scroll_to_end();
+        } else if self.preview_list.item_count() > PREVIEW_MEASURE_ALL {
+            let item_ix = (to / PREVIEW_BLOCK_HINT) as usize;
+            self.preview_list.scroll_to(ListOffset {
+                item_ix,
+                offset_in_item: px(0.0),
+            });
+        } else {
+            self.preview_list
+                .set_offset_from_scrollbar(point(px(0.0), px(-to)));
+        }
+        self.scrolled(cx);
+        cx.notify();
+    }
+
+    /// The pointer moved anywhere in the window while Preview shows: a thumb drag follows it;
+    /// near the list's right edge the scrollbar shows.
+    fn preview_move(&mut self, e: &MouseMoveEvent, over: bool, cx: &mut Context<Self>) {
+        if let Some((_, grab)) = self.scrollbar.drag() {
+            if e.pressed_button != Some(MouseButton::Left) {
+                self.preview_release(cx);
+            } else if let Some(track) = preview_track(&self.preview_list) {
+                self.preview_scroll_to(&track, track.along(e.position) - grab, cx);
+            }
+            return;
+        }
+        let hot = over && preview_track(&self.preview_list).is_some_and(|t| t.zone_has(e.position));
+        if self.scrollbar.set_hot(hot) {
+            self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
+    /// M11ae: the pointer left the window (GPUI sends no last move): the edge zone isn't hot,
+    /// so the thumb fades as after any activity (a pane at the window's edge is the usual case).
+    fn pointer_left(&mut self, cx: &mut Context<Self>) {
+        if self.scrollbar.set_hot(false) {
+            self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
+    /// The button released anywhere in the window: a thumb drag ends.
+    fn preview_release(&mut self, cx: &mut Context<Self>) {
+        if self.scrollbar.end_drag(Instant::now()) {
+            self.preview_list.scrollbar_drag_ended();
+            self.scrolled(cx);
+            cx.notify();
         }
     }
 
@@ -2560,8 +3088,9 @@ impl FileTab {
             Some((v, blocks)) if *v == version => blocks.clone(),
             _ => {
                 let blocks = Rc::new(crate::agent_markdown::parse(&doc.text));
+                // A new list (its measuring is by the block count), at the place kept.
                 let top = self.preview_list.logical_scroll_top();
-                self.preview_list.reset(blocks.len());
+                self.preview_list = preview_list_of(blocks.len(), cx.entity().downgrade());
                 self.preview_list.scroll_to(top);
                 self.parsed = Some((version, blocks.clone()));
                 blocks
@@ -2578,8 +3107,11 @@ impl FileTab {
             links: Cell::new(0),
             mermaid,
         };
+        let (bar, ink, state) = (self.scrollbar, theme.ui().text, self.preview_list.clone());
+        let view = cx.entity().downgrade();
         div()
             .id("file-md-preview")
+            .relative()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
@@ -2587,6 +3119,70 @@ impl FileTab {
                 list(self.preview_list.clone(), move |ix, _, _| {
                     md_preview::row(&blocks, ix, &draw)
                 })
+                .size_full(),
+            )
+            // M11ae: the scrollbar over the list: its thumb (the fade read from the clock; the
+            // fade task redraws), and the 12 pt edge zone's presses, taken before the list's
+            // own (bubbling goes last-registered first); presses elsewhere reach the list.
+            .child(
+                canvas(
+                    |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                    move |_, hitbox, window, _| {
+                        let now = Instant::now();
+                        if bar.is_shown(now)
+                            && let Some(t) = preview_track(&state)
+                        {
+                            scrollbar::paint(
+                                window,
+                                t.area,
+                                Axis::Vertical,
+                                &t.thumb,
+                                bar.alpha_at(now),
+                                ink,
+                            );
+                        }
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |e: &MouseDownEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble
+                                    && e.button == MouseButton::Left
+                                    && view
+                                        .update(cx, |this, cx| this.preview_press(e.position, cx))
+                                        .unwrap_or(false)
+                                {
+                                    cx.stop_propagation();
+                                }
+                            }
+                        });
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |e: &MouseMoveEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    let over = hitbox.is_hovered(window);
+                                    view.update(cx, |this, cx| this.preview_move(e, over, cx))
+                                        .ok();
+                                }
+                            }
+                        });
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |_: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    view.update(cx, |this, cx| this.preview_release(cx)).ok();
+                                }
+                            }
+                        });
+                        // The pointer left the window (no last move comes): not hot.
+                        window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                view.update(cx, |this, cx| this.pointer_left(cx)).ok();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
                 .size_full(),
             )
             .into_any_element()
@@ -2728,7 +3324,8 @@ impl FileTab {
         }
     }
 
-    /// Scroll to `to`, kept within the text (as last drawn).
+    /// Scroll to `to`, kept within the text (as last drawn). Every scroll of the text shown
+    /// comes here (the wheel, find, a thumb, the auto-scroll), so the scrollbar shows.
     pub fn set_scroll(&mut self, to: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(g) = self.geom.get() else {
             return;
@@ -2738,8 +3335,38 @@ impl FileTab {
         let scroll = self.mode_scroll_mut(mode);
         if to != *scroll {
             *scroll = to;
+            self.scrolled(cx);
             cx.notify();
         }
+    }
+
+    /// The text scrolled, the pointer came to or left its edge, or a thumb drag ended: the
+    /// scrollbar shows, and fades out on its own (M11ae). The fade task runs only after such
+    /// activity, one at a time, and ends once faded out (or while hovered or dragged: held with
+    /// no frames, the next poke starts another). The caller redraws.
+    fn scrolled(&mut self, cx: &mut Context<Self>) {
+        self.scrollbar.poke(Instant::now());
+        if !self.scrollbar.begin_fade() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(scrollbar::STEP).await;
+                let go = this
+                    .update(cx, |this, cx| {
+                        let (redraw, go) = this.scrollbar.fade_step(Instant::now());
+                        if redraw {
+                            cx.notify();
+                        }
+                        go
+                    })
+                    .unwrap_or(false);
+                if !go {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn wheel(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -2802,6 +3429,22 @@ impl FileTab {
 
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
+        // M11ae: a press in the scrollbar's edge zone works the thumb and never selects: on it,
+        // a drag keeping the grab point under the pointer; off it, the thumb first jumps to
+        // centre on the press (then drags on).
+        if let Some(track) = self.geom.get().and_then(|g| zone_at(&g, e.position)) {
+            let (at, t) = (track.along(e.position), track.thumb);
+            let grab = if (t.start..=t.start + t.len).contains(&at) {
+                at - t.start
+            } else {
+                let to = track.scroll_for(at - t.len / 2.0, self.mode_scroll());
+                self.set_scroll(to, cx);
+                t.len / 2.0
+            };
+            self.scrollbar.start_drag(track.axis, grab);
+            cx.notify();
+            return;
+        }
         // A change bar (or a deleted-lines ▸) in a file: its diff, at that change.
         if let Some(change) = self.bar_under(e.position) {
             self.choose_mode(FileMode::Diff, Some(change), cx);
@@ -2810,6 +3453,8 @@ impl FileTab {
         if let Some(pos) = self.pos_at(e.position, window, cx) {
             self.selection = Some((pos, pos));
             self.selecting = true;
+            // The last drag's pointer is not this one's (an old auto-scroll task ends).
+            self.drag_at = None;
             cx.notify();
         }
     }
@@ -2832,11 +3477,87 @@ impl FileTab {
         bar_at(y, f32::from(g.line_height), &doc.changes)
     }
 
-    fn mouse_drag(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting || e.pressed_button != Some(MouseButton::Left) {
+    /// The pointer moved anywhere in the window (`over` the text, not covered): a thumb drag
+    /// follows it; near the text's edge the scrollbar shows (M11ae); a selection grows.
+    fn mouse_move(
+        &mut self,
+        e: &MouseMoveEvent,
+        over: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((axis, grab)) = self.scrollbar.drag() {
+            if e.pressed_button != Some(MouseButton::Left) {
+                self.mouse_up(cx);
+            } else if let Some(track) = self.geom.get().and_then(|g| Track::of(&g, axis)) {
+                let to = track.scroll_for(track.along(e.position) - grab, self.mode_scroll());
+                self.set_scroll(to, cx);
+            }
             return;
         }
-        let Some(head) = self.pos_at(e.position, window, cx) else {
+        let hot = over
+            && self
+                .geom
+                .get()
+                .is_some_and(|g| zone_at(&g, e.position).is_some());
+        if self.scrollbar.set_hot(hot) {
+            self.scrolled(cx);
+            cx.notify();
+        }
+        self.mouse_drag(e, window, cx);
+    }
+
+    /// The button released anywhere in the window: a selection or a thumb drag ends.
+    fn mouse_up(&mut self, cx: &mut Context<Self>) {
+        self.selecting = false;
+        // No old auto-scroll task resumes on a quick press again.
+        self.drag_at = None;
+        if self.scrollbar.end_drag(Instant::now()) {
+            // Idempotent: a Preview thumb's drag may end here too.
+            self.preview_list.scrollbar_drag_ended();
+            self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
+    /// The selection follows the pointer, held inside the text (M11ae: never into lines out of
+    /// sight); out of the text, the auto-scroll starts (if not running). A move with the button
+    /// up (its release missed) ends the selection, so the auto-scroll ends too.
+    fn mouse_drag(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.selecting = false;
+            return;
+        }
+        self.drag_at = Some(e.position);
+        self.drag_head(e.position, window, cx);
+        let wrap = self.wrapped.borrow().is_some();
+        let out = self
+            .geom
+            .get()
+            .is_some_and(|g| edge_push(e.position, &g, wrap) != Point::default());
+        if out && !self.autoscrolling {
+            self.autoscroll(window, cx);
+        }
+    }
+
+    /// The selection's moving end to window point `p` held inside the text (`hold_inside`), at
+    /// the scroll as it is now (an auto-scroll step's is not drawn yet: `p` moved by the
+    /// difference, which is how `pos_at` reads it).
+    fn drag_head(&mut self, p: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(g) = self.geom.get() else {
+            return;
+        };
+        let wrap = self.wrapped.borrow().is_some();
+        let now = Geom::clamp(self.mode_scroll(), g.max_scroll);
+        let ahead = point(
+            if wrap { px(0.0) } else { now.x - g.scroll.x },
+            now.y - g.scroll.y,
+        );
+        let held = hold_inside(p, &g, wrap);
+        let Some(head) = self.pos_at(point(held.x + ahead.x, held.y + ahead.y), window, cx) else {
             return;
         };
         if let Some((anchor, old)) = self.selection
@@ -2845,6 +3566,58 @@ impl FileTab {
             self.selection = Some((anchor, head));
             cx.notify();
         }
+    }
+
+    /// M11ae: selecting with the pointer out of the text, the text scrolls on its own every
+    /// `AUTOSCROLL_STEP`, and the selection grows with it. One task at a time, which ends itself
+    /// when the selection ends (a release, a mode switch), the pointer is back in the text, or
+    /// the scroll stops (the end of the text): no timer runs otherwise.
+    fn autoscroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.autoscrolling = true;
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTOSCROLL_STEP).await;
+                let go = cx.update(|window, cx| {
+                    this.update(cx, |this, cx| this.autoscroll_step(window, cx))
+                });
+                match go {
+                    Ok(Ok(true)) => {}
+                    Ok(Ok(false)) | Ok(Err(_)) => break,
+                    // The window went: the task ends (the flag with it, if the tab is still there).
+                    Err(_) => {
+                        this.update(cx, |this, _| this.autoscrolling = false).ok();
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// One auto-scroll step: the scroll pushed towards the pointer, the selection's moving end
+    /// to the place under it held inside the text. False (the task ends): not selecting, the
+    /// pointer back in the text, or the scroll didn't move.
+    fn autoscroll_step(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let wrap = self.wrapped.borrow().is_some();
+        let step = match (self.selecting, self.drag_at, self.geom.get()) {
+            (true, Some(p), Some(g)) => Some((p, g)),
+            _ => None,
+        };
+        let go = step.is_some_and(|(p, g)| {
+            let push = edge_push(p, &g, wrap);
+            if push == Point::default() {
+                return false;
+            }
+            let from = Geom::clamp(self.mode_scroll(), g.max_scroll);
+            self.set_scroll(point(from.x + push.x, from.y + push.y), cx);
+            let moved = self.mode_scroll() != from;
+            self.drag_head(p, window, cx);
+            moved
+        });
+        if !go {
+            self.autoscrolling = false;
+        }
+        go
     }
 
     fn copy(&mut self, cx: &mut Context<Self>) {
@@ -3054,10 +3827,13 @@ impl FileTab {
             .detach();
     }
 
+    /// A 24 pt icon button with a tooltip; `on` (Wrap on) filled with `card_selected`, else
+    /// `panel_hover` on hover.
     fn icon_button(
         id: &'static str,
         kind: Glyph,
         tip: &'static str,
+        on: bool,
         ui: UiColors,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
@@ -3071,7 +3847,8 @@ impl FileTab {
             .size(px(BUTTON))
             .rounded(px(5.0))
             .cursor_pointer()
-            .hover(move |s| s.bg(hsla(ui.panel_hover)))
+            .when(on, |b| b.bg(hsla(ui.card_selected)))
+            .when(!on, |b| b.hover(move |s| s.bg(hsla(ui.panel_hover))))
             .child(glyph_with(kind, ui.text, BUTTON_STROKE))
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
@@ -3109,21 +3886,30 @@ impl FileTab {
             .child(label)
     }
 
-    /// One of the toggle's two segments (`i`: 0 File, 1 Diff): the current one `card_selected`
-    /// in `text`, the other `panel` in `text_dim` (`panel_hover` on hover); a click shows its
-    /// mode.
-    fn mode_segment(
+    /// One of the view switch's segments (M11ae): the current one `card_selected` in `text`,
+    /// the others `panel` in `text_dim` (`panel_hover` on hover); Preview over its limit faint,
+    /// doing nothing, its tooltip saying why. A click shows its view (`choose_view`).
+    fn view_segment(
         &self,
-        i: usize,
-        mode: FileMode,
+        view: View,
+        (first, last): (bool, bool),
+        current: bool,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (id, label, tip) = match mode {
-            FileMode::Plain => ("file-mode-file", TOGGLE_FILE, TIP_FILE),
-            FileMode::Diff => ("file-mode-diff", TOGGLE_DIFF, TIP_DIFF),
+        let fits = preview_fits(&self.state);
+        let (id, label, tip) = match view {
+            View::File => ("file-view-file", TOGGLE_FILE, TIP_FILE),
+            View::Diff => ("file-view-diff", TOGGLE_DIFF, TIP_DIFF),
+            View::Preview if fits => ("file-view-preview", PREVIEW, TIP_PREVIEW),
+            View::Preview => ("file-view-preview", PREVIEW, TIP_PREVIEW_TOO_LARGE),
         };
-        let current = self.mode == mode;
+        let faint = view == View::Preview && !fits;
+        let ink = match (current, faint) {
+            (true, _) => ui.text,
+            (false, true) => ui.text_faint,
+            (false, false) => ui.text_dim,
+        };
         let at = self.toggle_at.clone();
         // Inside the 1 pt border: its 5 pt corners less the border.
         let inner = px(4.0);
@@ -3135,31 +3921,29 @@ impl FileTab {
             .items_center()
             .h_full()
             .px(px(10.0))
-            .map(|d| match i {
-                0 => d.rounded_l(inner),
-                _ => d
-                    .rounded_r(inner)
-                    .border_l_1()
-                    .border_color(hsla(ui.panel_border)),
+            .when(first, |d| d.rounded_l(inner))
+            .when(last, |d| d.rounded_r(inner))
+            .when(!first, |d| {
+                d.border_l_1().border_color(hsla(ui.panel_border))
             })
             .bg(hsla(if current { ui.card_selected } else { ui.panel }))
-            .text_color(hsla(if current { ui.text } else { ui.text_dim }))
-            .when(!current, |d| {
+            .text_color(hsla(ink))
+            .when(!current && !faint, |d| {
                 d.cursor_pointer()
                     .hover(move |s| s.bg(hsla(ui.panel_hover)))
             })
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.choose_mode(mode, None, cx)),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.choose_view(view, window, cx)
+            }))
             .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
             .child(label)
             // Where it is (the scenes click it).
             .child(
                 canvas(
                     move |b, _, _| {
-                        let mut both = at.get();
-                        both[i] = Some(b);
-                        at.set(both);
+                        let mut all = at.get();
+                        all[view.index()] = Some(b);
+                        at.set(all);
                     },
                     |_, _, _, _| {},
                 )
@@ -3170,94 +3954,15 @@ impl FileTab {
             )
     }
 
-    /// The File | Diff toggle: two joined segments, a 1 pt border, 5 pt corners.
-    /// Wrap (M11x part 2): one button, filled when on, outlined when off; a click turns it the
-    /// other way for every file tab (`file-wrap`, kept in the settings).
-    fn wrap_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let on = cx.global::<Appearance>().file_wrap;
-        div()
-            .id("file-wrap")
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(BUTTON))
-            .px(px(10.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(hsla(ui.panel_border))
-            .text_size(px(text::NAME))
-            .when(on, |b| {
-                b.bg(hsla(ui.card_selected)).text_color(hsla(ui.text))
-            })
-            .when(!on, |b| {
-                b.text_color(hsla(ui.text_dim))
-                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
-            })
-            .cursor_pointer()
-            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(TIP_WRAP.into())).into() })
-            .child(WRAP)
-            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                let on = !cx.global::<Appearance>().file_wrap;
-                let values = if on { vec!["on".to_string()] } else { vec![] };
-                crate::preferences::apply(cx, "file-wrap", &values);
-            }))
-            .into_any_element()
-    }
-
-    /// Preview (M11ac): beside Wrap and drawn as it, filled when on; a click shows a Markdown
-    /// file rendered, or its source again.
-    /// Over `PREVIEW_MAX` (or too large to colour) it is drawn faint and does nothing, its
-    /// tooltip saying why.
-    fn preview_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let fits = preview_fits(&self.state);
-        let on = self.preview && fits;
-        let tip = if fits {
-            TIP_PREVIEW
-        } else {
-            TIP_PREVIEW_TOO_LARGE
-        };
-        let at = self.preview_at.clone();
-        div()
-            .id("file-preview")
-            .relative()
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(BUTTON))
-            .px(px(10.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(hsla(ui.panel_border))
-            .text_size(px(text::NAME))
-            .when(on, |b| {
-                b.bg(hsla(ui.card_selected)).text_color(hsla(ui.text))
-            })
-            .when(!on && fits, |b| {
-                b.text_color(hsla(ui.text_dim))
-                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
-                    .cursor_pointer()
-            })
-            .when(!fits, |b| b.text_color(hsla(ui.text_faint)))
-            .when(on, |b| b.cursor_pointer())
-            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
-            .child(PREVIEW)
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                if preview_fits(&this.state) {
-                    this.choose_preview(!this.preview, window, cx)
-                }
-            }))
-            // Where it is (the scenes click it).
-            .child(
-                canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-            )
-            .into_any_element()
-    }
-
-    fn toggle(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+    /// The view switch (M11ae): `views` as joined segments, a 1 pt border, 5 pt corners.
+    fn view_switch(&self, views: &[View], ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let current = current_view(self.mode, self.preview_shown());
+        let last = views.len() - 1;
+        let segments: Vec<_> = views
+            .iter()
+            .enumerate()
+            .map(|(i, &view)| self.view_segment(view, (i == 0, i == last), view == current, ui, cx))
+            .collect();
         div()
             .flex()
             .flex_none()
@@ -3267,60 +3972,216 @@ impl FileTab {
             .border_1()
             .border_color(hsla(ui.panel_border))
             .text_size(px(text::NAME))
-            .child(self.mode_segment(0, FileMode::Plain, ui, cx))
-            .child(self.mode_segment(1, FileMode::Diff, ui, cx))
+            .children(segments)
             .into_any_element()
     }
 
-    /// The toolbar: the file's path, a note, the File | Diff toggle (in a repo, or in Diff
-    /// mode), Open in Editor.
-    fn toolbar(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+    /// The bar's title (M11ae): the file's name, and its change chip once git answered
+    /// (`chip_label`) with whether the file is new to git.
+    fn title_words(&self) -> (String, Option<(String, bool)>) {
+        let name = self.path.file_name().map_or_else(
+            || self.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let counts = self.doc().and_then(|d| d.counts);
+        let chip = chip_label(counts).zip(counts.map(|(_, _, new)| new));
+        (name, chip)
+    }
+
+    /// The bar's second line (M11ae, note 80), part by part: Where; the Type, once coloured
+    /// (`Doc::syntax`; none too large to colour); the Lines, with a text shown; Edited, with a
+    /// time from the disk.
+    fn meta_parts(&self) -> Vec<String> {
+        let place = self
+            .git_place
+            .as_ref()
+            .map(|p| (p.root.as_path(), p.rel.as_path()));
+        let home = crate::workspace::home_dir();
+        let doc = self.doc();
+        let mut parts = vec![where_label(&self.path, place, home.as_deref())];
+        parts.extend(doc.and_then(|d| d.syntax.as_deref()).map(str::to_string));
+        parts.extend(doc.map(|d| lines_label(d.lines.len())));
+        parts.extend(self.age.clone());
+        parts
+    }
+
+    /// The change chip (M11ae): `M` in the change bars' blue or `A` in their green, the counts
+    /// after it in `text_dim`; `text::META` on `panel`, a 1 pt `panel_border`, fully rounded.
+    fn chip(words: String, new: bool, theme: &Theme, ui: UiColors) -> AnyElement {
+        let change = if new {
+            LineChange::Added
+        } else {
+            LineChange::Changed
+        };
+        let letter = HighlightStyle {
+            color: Some(hsla(BarColours::of(theme).of_change(change))),
+            ..Default::default()
+        };
+        let first = words.chars().next().map_or(0, char::len_utf8);
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .px(px(6.0))
+            .rounded_full()
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .bg(hsla(ui.panel))
+            .text_size(px(text::META))
+            .text_color(hsla(ui.text_dim))
+            .whitespace_nowrap()
+            .child(StyledText::new(words).with_highlights([(0..first, letter)]))
+            .into_any_element()
+    }
+
+    /// The bar (M11ae, option B): on the left the title, the file's name (semibold) and its
+    /// change chip over where it is and what it is (`meta_parts`, Where cut first when narrow);
+    /// a note; on the right the view switch (two segments or more), Wrap and Open in Editor.
+    fn toolbar(&self, theme: &Theme, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let note = match self.state {
             State::PlainTooLarge(_) => Some(TOO_LARGE),
             _ => None,
         };
-        let toggle = shows_toggle(self.git_place.is_some(), self.mode).then(|| self.toggle(ui, cx));
-        // Wrap, left of File | Diff (M11x part 2), wherever there's text to wrap.
         let has_text = matches!(self.state, State::Text(_) | State::PlainTooLarge(_));
-        let wrap = has_text.then(|| self.wrap_button(ui, cx));
-        // Preview, right of Wrap (M11ac): a Markdown file in File mode.
-        let preview =
-            (has_text && shows_preview(&self.path, self.mode)).then(|| self.preview_button(ui, cx));
+        let markdown = has_text && is_markdown(&self.path);
+        let views = view_segments(self.git_place.is_some(), self.mode, markdown);
+        // Only segments drawn this frame have bounds.
+        self.toggle_at.set([None; 3]);
+        let switch = (views.len() >= 2).then(|| self.view_switch(&views, ui, cx));
+        // Wrap (M11x part 2), wherever there's text to wrap: filled when on; a click turns it
+        // the other way for every file tab (`file-wrap`, kept in the settings).
+        let wrap = has_text.then(|| {
+            let on = cx.global::<Appearance>().file_wrap;
+            Self::icon_button(
+                "file-wrap",
+                Glyph::Wrap,
+                TIP_WRAP,
+                on,
+                ui,
+                |_, _, cx| {
+                    let on = !cx.global::<Appearance>().file_wrap;
+                    let values = if on { vec!["on".to_string()] } else { vec![] };
+                    crate::preferences::apply(cx, "file-wrap", &values);
+                },
+                cx,
+            )
+        });
         // A refused file has its button in the middle; a missing one has none.
         let open = matches!(
             self.state,
             State::Loading | State::Text(_) | State::PlainTooLarge(_)
         )
         .then(|| {
-            Self::text_button(
+            Self::icon_button(
                 "file-open-in-editor",
+                Glyph::OpenExternal,
                 OPEN_IN_EDITOR,
+                false,
                 ui,
                 |this, _, cx| this.open_in_editor(cx),
                 cx,
             )
         });
+        let (name, chip) = self.title_words();
+        let mut meta = self.meta_parts().into_iter();
+        let place = meta.next().unwrap_or_default();
+        // The parts after Where, kept whole: one run, each after its ` · `.
+        let rest: String = meta.map(|part| format!(" \u{b7} {part}")).collect();
+        let at = self.controls_at.clone();
+        let (where_at, rest_at) = (self.meta_at.clone(), self.meta_at.clone());
+        self.meta_at.set([None; 2]);
+        let title = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .min_w(px(0.0))
+            .gap(px(6.0))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(text::NAME))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(ui.text))
+                    .child(SharedString::from(name)),
+            )
+            .children(chip.map(|(words, new)| Self::chip(words, new, theme, ui)));
+        let details = div()
+            .flex()
+            .flex_row()
+            .min_w(px(0.0))
+            .text_size(px(text::META))
+            .text_color(hsla(ui.text_dim))
+            // Where is cut first, down to its `…` (never to nothing, so the ` · ` after it always
+            // follows something): a floor of one em, wider than the ellipsis.
+            .child(
+                div()
+                    .relative()
+                    .flex_shrink(1.0)
+                    .min_w(px(text::META))
+                    .truncate()
+                    .child(SharedString::from(place))
+                    .child(
+                        canvas(
+                            move |b, _, _| {
+                                let mut both = where_at.get();
+                                both[0] = Some(b);
+                                where_at.set(both);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    ),
+            )
+            .when(!rest.is_empty(), |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(SharedString::from(rest))
+                        .child(
+                            canvas(
+                                move |b, _, _| {
+                                    let mut both = rest_at.get();
+                                    both[1] = Some(b);
+                                    rest_at.set(both);
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                        ),
+                )
+            });
         div()
             .flex()
             .flex_none()
             .flex_row()
             .items_center()
             .w_full()
-            .h(px(TOOLBAR))
+            .h(px(FILE_TOOLBAR))
             .px(px(BAR_PAD + 4.0))
             .gap(px(8.0))
             .bg(hsla(ui.panel))
             .border_b_1()
             .border_color(hsla(ui.panel_border))
-            .child(glyph(Glyph::File, ui.text_dim))
+            // Too narrow even with Where gone, the parts kept whole are cut at the controls.
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(text::NAME))
-                    .text_color(hsla(ui.text_dim))
-                    .child(SharedString::from(self.path.display().to_string())),
+                    .overflow_hidden()
+                    .gap(px(1.0))
+                    .child(title)
+                    .child(details),
             )
             .children(note.map(|note| {
                 div()
@@ -3329,10 +4190,26 @@ impl FileTab {
                     .text_color(hsla(ui.text_faint))
                     .child(note)
             }))
-            .children(wrap)
-            .children(preview)
-            .children(toggle)
-            .children(open)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_none()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .children(switch)
+                    .children(wrap)
+                    .children(open)
+                    // Where they are (the scenes check they stay in the pane).
+                    .child(
+                        canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -3348,6 +4225,7 @@ impl FileTab {
             "file-find-prev",
             Glyph::Back,
             "Previous match",
+            false,
             ui,
             |this, window, cx| this.find_step(false, window, cx),
             cx,
@@ -3356,6 +4234,7 @@ impl FileTab {
             "file-find-next",
             Glyph::Forward,
             "Next match",
+            false,
             ui,
             |this, window, cx| this.find_step(true, window, cx),
             cx,
@@ -3364,6 +4243,7 @@ impl FileTab {
             "file-find-close",
             Glyph::Stop,
             "Close the find bar",
+            false,
             ui,
             |this, window, cx| this.close_find(window, cx),
             cx,
@@ -3526,6 +4406,7 @@ impl FileTab {
         let geom = self.geom.clone();
         let wrapped = self.wrapped.clone();
         let drawn = self.drawn.clone();
+        let bar = self.scrollbar;
         let view = cx.entity();
         let keep = view.clone();
         let laid = frame.clone();
@@ -3594,18 +4475,44 @@ impl FileTab {
                         move |_, (m, g, hitbox, wrap), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
                             paint_body(&frame, &g, &m, wrap.as_ref(), window, cx);
-                            // A drag keeps going outside the text; registered for this frame.
+                            // M11ae: the scrollbar's thumbs over the text (the fade read from
+                            // the clock; its task redraws).
+                            let now = Instant::now();
+                            if bar.is_shown(now) {
+                                let (alpha, ink) = (bar.alpha_at(now), frame.theme.ui().text);
+                                for axis in [Axis::Vertical, Axis::Horizontal] {
+                                    if let Some(t) = Track::of(&g, axis) {
+                                        scrollbar::paint(
+                                            window, t.area, axis, &t.thumb, alpha, ink,
+                                        );
+                                    }
+                                }
+                            }
+                            // A drag (a selection's or a thumb's) keeps going outside the text,
+                            // and the scrollbar shows near its edge; registered for this frame.
                             window.on_mouse_event({
                                 let view = view.clone();
                                 move |e: &MouseMoveEvent, phase, window, cx| {
                                     if phase == DispatchPhase::Bubble {
-                                        view.update(cx, |this, cx| this.mouse_drag(e, window, cx));
+                                        let over = hitbox.is_hovered(window);
+                                        view.update(cx, |this, cx| {
+                                            this.mouse_move(e, over, window, cx)
+                                        });
                                     }
                                 }
                             });
-                            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            window.on_mouse_event({
+                                let view = view.clone();
+                                move |_: &MouseUpEvent, phase, _, cx| {
+                                    if phase == DispatchPhase::Bubble {
+                                        view.update(cx, |this, cx| this.mouse_up(cx));
+                                    }
+                                }
+                            });
+                            // The pointer left the window (no last move comes): not hot.
+                            window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble {
-                                    view.update(cx, |this, _| this.selecting = false);
+                                    view.update(cx, |this, cx| this.pointer_left(cx));
                                 }
                             });
                         },
@@ -3620,9 +4527,10 @@ impl FileTab {
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
 impl FileTab {
-    /// M11ac: the Preview button as last drawn, the reader's scroll, and the version parsed.
+    /// M11ac: the view switch's Preview segment as last drawn (M11ae), the reader's scroll, and
+    /// the version parsed.
     pub fn preview_bounds(&self) -> Option<Bounds<Pixels>> {
-        self.preview_at.get()
+        self.toggle_at.get()[View::Preview.index()]
     }
 
     pub fn preview_list(&self) -> ListState {
@@ -3682,9 +4590,41 @@ impl FileTab {
         self.geom.get()
     }
 
+    /// M11ae: whether the drag-select auto-scroll task runs.
+    pub fn autoscrolling(&self) -> bool {
+        self.autoscrolling
+    }
+
+    /// M11ae: the selection (anchor, moving end).
+    pub fn selection(&self) -> Option<(Pos, Pos)> {
+        self.selection
+    }
+
     /// The scroll of the mode shown.
     pub fn scroll(&self) -> Point<Pixels> {
         self.mode_scroll()
+    }
+
+    /// M11ae: whether a scrollbar thumb is drawn now (the text overflows and the bar shows),
+    /// whether its fade task runs, and the thumb along `axis` as last drawn (none: the text
+    /// fits that way).
+    pub fn scrollbar_shown(&self) -> bool {
+        let overflows = self.thumb_bounds(Axis::Vertical).is_some()
+            || self.thumb_bounds(Axis::Horizontal).is_some();
+        overflows && self.scrollbar.is_shown(Instant::now())
+    }
+
+    pub fn scrollbar_animating(&self) -> bool {
+        self.scrollbar.animating()
+    }
+
+    pub fn thumb_bounds(&self, axis: Axis) -> Option<Bounds<Pixels>> {
+        if self.preview_shown() {
+            let t = preview_track(&self.preview_list).filter(|t| t.axis == axis)?;
+            return Some(scrollbar::thumb_bounds(t.area, axis, &t.thumb));
+        }
+        let t = Track::of(&self.geom.get()?, axis)?;
+        Some(scrollbar::thumb_bounds(t.area, axis, &t.thumb))
     }
 
     /// The note the body shows instead of text (`MISSING`, `REFUSED`, a diff's), if any.
@@ -3692,9 +4632,31 @@ impl FileTab {
         self.body_note()
     }
 
-    /// The toggle's File and Diff segments, as last drawn.
-    pub fn toggle_bounds(&self) -> [Option<Bounds<Pixels>>; 2] {
+    /// The view switch's File, Diff and Preview segments, as last drawn (none: not drawn).
+    pub fn toggle_bounds(&self) -> [Option<Bounds<Pixels>>; 3] {
         self.toggle_at.get()
+    }
+
+    /// M11ae: the bar's controls together (the switch, Wrap, Open in Editor), as last drawn.
+    pub fn controls_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.controls_at.get()
+    }
+
+    /// M11ae: the second line's Where and the parts after it (none: no parts after it), as
+    /// last drawn.
+    pub fn meta_bounds(&self) -> [Option<Bounds<Pixels>>; 2] {
+        self.meta_at.get()
+    }
+
+    /// M11ae: the bar's words: the name, the chip, and the second line (its parts joined by
+    /// ` · `).
+    pub fn header_words(&self) -> (String, Option<String>, String) {
+        let (name, chip) = self.title_words();
+        (
+            name,
+            chip.map(|(words, _)| words),
+            self.meta_parts().join(" \u{b7} "),
+        )
     }
 
     /// "waiting", "rows", "same", "binary", "norepo" or "refuse".
@@ -3709,22 +4671,23 @@ impl FileTab {
         }
     }
 
-    /// The Preview button's click handler (M11p's chrome scenes call it without the mouse).
+    /// The Preview segment's click handler, or File's for off (M11p's chrome scenes call it
+    /// without the mouse).
     pub fn choose_preview_for_shots(
         &mut self,
         on: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.choose_preview(on, window, cx);
+        self.choose_view(if on { View::Preview } else { View::File }, window, cx);
     }
 
-    /// The File | Diff toggle's click handler (as above).
+    /// The view switch's Diff handler, or a mode by hand (as above).
     pub fn choose_mode_for_shots(&mut self, mode: FileMode, cx: &mut Context<Self>) {
         self.choose_mode(mode, None, cx);
     }
 
-    /// A frozen tab has no git place (no look-up), so Plain mode shows no toggle: give it a
+    /// A frozen tab has no git place (no look-up), so Plain mode offers no Diff: give it a
     /// made-up one, so the scenes can click File and Diff both ways. git is never run on it.
     pub fn pretend_in_repo_for_shots(&mut self, cx: &mut Context<Self>) {
         let root = self
@@ -3793,7 +4756,7 @@ impl FileTab {
     pub fn set_changes(&mut self, changes: Vec<(usize, LineChange)>, cx: &mut Context<Self>) {
         if let Some(doc) = self.doc_mut() {
             let version = doc.version;
-            if doc.accept_changes(version, &changes) {
+            if doc.accept_changes(version, &changes, None) {
                 cx.notify();
             }
         }
@@ -3803,7 +4766,7 @@ impl FileTab {
 impl FileTab {
     /// Diff mode with rows and a place to show: scroll it `REVEAL_ABOVE` rows from the top
     /// (kept within the rows when drawn).
-    fn reveal_diff(&mut self, window: &mut Window, cx: &App) {
+    fn reveal_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != FileMode::Diff {
             return;
         }
@@ -3826,6 +4789,10 @@ impl FileTab {
             rows_up = Wrapped::of(&d.doc, FileMode::Diff, columns).first_row(rows_up);
         }
         self.diff_scroll = point(px(0.0), m.line_height * rows_up as f32);
+        // M11ae: a reveal scrolls, so the scrollbar shows (this frame draws it). Not through
+        // `set_scroll`: the rows aren't drawn yet, so the last drawing's limits are another
+        // text's.
+        self.scrolled(cx);
     }
 }
 
@@ -3838,7 +4805,7 @@ impl Render for FileTab {
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
         self.reveal_diff(window, cx);
-        let toolbar = self.toolbar(ui, cx);
+        let toolbar = self.toolbar(&theme, ui, cx);
         let find_bar = self.find_bar(ui, cx);
         let body = match self.body_note() {
             Some(words) if words == MISSING || words == REFUSED => self.notice(ui, cx),
@@ -4064,13 +5031,33 @@ impl Workspace {
 mod tests {
     use super::*;
 
-    /// M11ac: Preview is offered for a Markdown file in File mode only.
+    /// M11ae: the view switch offers File always, Diff in a repo (or in Diff mode), Preview for
+    /// Markdown (in either mode); it shows with two segments or more.
     #[test]
-    fn preview_shows_for_markdown_in_file_mode_only() {
-        assert!(shows_preview(Path::new("/w/README.md"), FileMode::Plain));
-        assert!(shows_preview(Path::new("/w/a.MARKDOWN"), FileMode::Plain));
-        assert!(!shows_preview(Path::new("/w/README.md"), FileMode::Diff));
-        assert!(!shows_preview(Path::new("/w/main.rs"), FileMode::Plain));
+    fn the_view_switch_offers_file_diff_and_preview_where_they_apply() {
+        use View::{Diff, File, Preview};
+        assert_eq!(
+            view_segments(true, FileMode::Plain, true),
+            [File, Diff, Preview]
+        );
+        assert_eq!(view_segments(false, FileMode::Plain, true), [File, Preview]);
+        // A file outside a repo that isn't Markdown: one segment, no switch.
+        assert_eq!(view_segments(false, FileMode::Plain, false), [File]);
+        assert_eq!(view_segments(false, FileMode::Diff, false), [File, Diff]);
+        assert_eq!(
+            view_segments(false, FileMode::Diff, true),
+            [File, Diff, Preview]
+        );
+    }
+
+    /// M11ae: the current segment is Diff in Diff mode, Preview in File mode with Preview on
+    /// (and fitting), else File.
+    #[test]
+    fn the_current_view_is_diff_then_preview_then_file() {
+        assert_eq!(current_view(FileMode::Diff, true), View::Diff);
+        assert_eq!(current_view(FileMode::Diff, false), View::Diff);
+        assert_eq!(current_view(FileMode::Plain, true), View::Preview);
+        assert_eq!(current_view(FileMode::Plain, false), View::File);
     }
 
     /// M11ac review fix: Preview draws only a coloured text up to 1 MB; a bigger one (or one
@@ -4339,6 +5326,127 @@ mod tests {
     }
 
     #[test]
+    fn the_chip_says_modified_or_added_with_its_counts() {
+        assert_eq!(
+            chip_label(Some((3, 1, false))).as_deref(),
+            Some("M \u{b7} +3 \u{2212}1")
+        );
+        assert_eq!(
+            chip_label(Some((3, 0, false))).as_deref(),
+            Some("M \u{b7} +3")
+        );
+        assert_eq!(
+            chip_label(Some((0, 2, false))).as_deref(),
+            Some("M \u{b7} \u{2212}2")
+        );
+        assert_eq!(
+            chip_label(Some((12, 0, true))).as_deref(),
+            Some("A \u{b7} +12")
+        );
+        assert_eq!(chip_label(Some((0, 0, false))), None);
+        assert_eq!(chip_label(None), None);
+    }
+
+    #[test]
+    fn where_starts_at_the_repo_or_home() {
+        let (root, home) = (Path::new("/w/fuxx-cli"), Path::new("/Users/me"));
+        assert_eq!(
+            where_label(
+                Path::new("/w/fuxx-cli/src/ui_shots/README.md"),
+                Some((root, Path::new("src/ui_shots/README.md"))),
+                Some(home)
+            ),
+            "fuxx-cli / src / ui_shots"
+        );
+        assert_eq!(
+            where_label(
+                Path::new("/w/fuxx-cli/a.rs"),
+                Some((root, Path::new("a.rs"))),
+                Some(home)
+            ),
+            "fuxx-cli"
+        );
+        assert_eq!(
+            where_label(Path::new("/Users/me/Downloads/x.txt"), None, Some(home)),
+            "~/Downloads"
+        );
+        assert_eq!(
+            where_label(Path::new("/Users/me/x.txt"), None, Some(home)),
+            "~"
+        );
+        assert_eq!(
+            where_label(Path::new("/etc/hosts"), None, Some(home)),
+            "/etc"
+        );
+    }
+
+    #[test]
+    fn lines_and_ages_read_as_note_80_says() {
+        assert_eq!(lines_label(1), "1 line");
+        assert_eq!(lines_label(42), "42 lines");
+        assert_eq!(lines_label(12345), "12,345 lines");
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let ago = |s| age_label(t - Duration::from_secs(s), t);
+        assert_eq!(ago(59), "edited just now");
+        assert_eq!(ago(60), "edited 1 min ago");
+        assert_eq!(ago(3_599), "edited 59 min ago");
+        assert_eq!(ago(3_600), "edited 1 h ago");
+        assert_eq!(ago(86_400), "edited 1 d ago");
+        assert_eq!(ago(29 * 86_400), "edited 29 d ago");
+        assert_eq!(ago(30 * 86_400), "edited 1 mo ago");
+        assert_eq!(ago(365 * 86_400), "edited 1 y ago");
+        assert_eq!(age_label(t + Duration::from_secs(5), t), "edited just now");
+    }
+
+    #[test]
+    fn counts_for_an_older_version_are_dropped() {
+        let lines = [(1, LineChange::Added)];
+        // Version 4 is shown; counts asked for version 3 arrive after version 4's are taken.
+        let mut doc = Doc::new("a\n".into(), 4);
+        assert!(doc.accept_changes(4, &lines, Some((1, 0, false))));
+        assert!(!doc.accept_changes(3, &lines, Some((9, 9, true))));
+        assert_eq!(doc.counts, Some((1, 0, false)));
+        // For the shown version, a new answer is taken and says it changed (counts only).
+        assert!(doc.accept_changes(4, &lines, Some((2, 1, false))));
+        assert_eq!(doc.counts, Some((2, 1, false)));
+    }
+
+    #[test]
+    fn counts_from_the_diff_replace_the_held_ones_and_clear_the_chip_when_unchanged() {
+        let mut doc = Doc::new("a\n".into(), 4);
+        assert!(doc.set_counts(Some((3, 1, false))));
+        assert!(!doc.set_counts(Some((3, 1, false))), "the same again");
+        assert_eq!(
+            chip_label(doc.counts).as_deref(),
+            Some("M \u{b7} +3 \u{2212}1")
+        );
+        // The file reverted: the diff says unchanged, so no chip.
+        assert!(doc.set_counts(Some((0, 0, false))));
+        assert_eq!(chip_label(doc.counts), None);
+        // Carried over a reload until the next answer.
+        doc.set_counts(Some((1, 0, true)));
+        let mut fresh = Doc::new("a\nb\n".into(), 5);
+        fresh.carry_over(&doc, false);
+        assert_eq!(chip_label(fresh.counts).as_deref(), Some("A \u{b7} +1"));
+    }
+
+    #[test]
+    fn a_reload_keeps_the_counts_and_the_type_until_new_ones_land() {
+        let mut old = Doc::new("a\n".into(), 1);
+        old.accept_changes(1, &[(1, LineChange::Added)], Some((1, 0, false)));
+        old.syntax = Some("Rust".into());
+        let mut fresh = Doc::new("a\nb\n".into(), 2);
+        fresh.carry_over(&old, false);
+        assert_eq!(fresh.counts, Some((1, 0, false)));
+        assert_eq!(fresh.syntax.as_deref(), Some("Rust"));
+        // A text too large to colour has no type, but keeps its counts.
+        let mut plain = Doc::new("a\nb\n".into(), 2);
+        plain.carry_over(&old, true);
+        assert_eq!(plain.counts, Some((1, 0, false)));
+        assert_eq!(plain.syntax, None);
+    }
+
+    #[test]
     fn a_highlight_for_an_older_version_is_dropped() {
         let spans = || vec![vec![(0..10, Rgb { r: 1, g: 2, b: 3 })]];
         // Version 3 was asked to be coloured; the text changed on disk, version 4 is loaded and
@@ -4469,7 +5577,7 @@ mod tests {
         assert!(fresh.accept_spans(2, spans()));
         assert_eq!(fresh.spans_version, Some(2));
         let mut bars = Doc::new("x\n".into(), 7);
-        assert!(bars.accept_changes(2, &[(1, LineChange::Added)]));
+        assert!(bars.accept_changes(2, &[(1, LineChange::Added)], None));
     }
 
     #[test]
@@ -4544,14 +5652,6 @@ mod tests {
     }
 
     #[test]
-    fn the_toggle_shows_in_a_repo_or_in_diff_mode() {
-        assert!(!shows_toggle(false, FileMode::Plain));
-        assert!(shows_toggle(true, FileMode::Plain));
-        assert!(shows_toggle(false, FileMode::Diff));
-        assert!(shows_toggle(true, FileMode::Diff));
-    }
-
-    #[test]
     fn a_press_on_a_bar_or_a_mark_finds_its_change() {
         let (by_line, deleted) = bars(&[(3, LineChange::Changed), (6, LineChange::DeletedAfter)]);
         let changes = Changes { by_line, deleted };
@@ -4592,6 +5692,7 @@ mod tests {
         assert_eq!(d.doc.line(2), "");
         assert_eq!(d.doc.version, 4);
         assert!(d.doc.spans.is_none(), "no highlighter: uncoloured");
+        assert_eq!(d.counts(), (1, 0, false), "one row added");
         // Its gutter, worked out once: the largest old number is 2, the largest new 3, so each
         // column is the 2-digit minimum.
         assert_eq!(
@@ -4606,6 +5707,7 @@ mod tests {
             panic!("rows");
         };
         assert_eq!((d.rows.len(), d.doc.lines.len()), (2, 2));
+        assert_eq!(d.counts(), (2, 0, true), "every line added, new to git");
         assert!(matches!(
             diff_state(FileDiff::Unified(String::new()), None, 1, None, None),
             DiffState::Same
@@ -4614,6 +5716,24 @@ mod tests {
             diff_state(FileDiff::Binary, Some("x"), 1, None, None),
             DiffState::Binary
         ));
+    }
+
+    #[test]
+    fn diff_counts_are_the_added_and_removed_rows_not_the_hunk_headers() {
+        // `-U<n>`: the header counts context lines (4 old, 5 new); the rows say +2 −1.
+        let unified = "@@ -1,4 +1,5 @@\n a\n-b\n+bee\n c\n d\n+e\n";
+        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let DiffState::Rows(d) = state else {
+            panic!("rows");
+        };
+        assert_eq!(d.counts(), (2, 1, false));
+        // Two hunks with a gap between them.
+        let unified = "@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -9,2 +9,1 @@\n i\n-j\n";
+        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let DiffState::Rows(d) = state else {
+            panic!("rows");
+        };
+        assert_eq!(d.counts(), (1, 2, false));
     }
 
     #[test]
@@ -4889,5 +6009,24 @@ mod tests {
         ));
         // No answer from git: none (the rows shown stay).
         assert!(diff_answer(None, || None, None, 1, None, None).is_none());
+    }
+
+    /// M11ae: a drag past the text's edge scrolls faster the further out, from 1 pt a step to
+    /// 3 lines; inside, not at all.
+    #[test]
+    fn the_auto_scroll_speeds_up_the_further_out() {
+        assert_eq!(edge_speed(0.0, 18.0), 0.0);
+        assert_eq!(edge_speed(-3.0, 18.0), 0.0);
+        assert_eq!(edge_speed(4.0, 18.0), 1.0);
+        assert_eq!(edge_speed(80.0, 18.0), 10.0);
+        assert_eq!(edge_speed(2000.0, 18.0), 54.0);
+    }
+
+    /// M11ae: how far a point is out of a span: after it, positive; before it, negative.
+    #[test]
+    fn outside_is_signed_by_the_side() {
+        assert_eq!(outside(50.0, 0.0, 100.0), 0.0);
+        assert_eq!(outside(130.0, 0.0, 100.0), 30.0);
+        assert_eq!(outside(-20.0, 0.0, 100.0), -20.0);
     }
 }

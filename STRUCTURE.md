@@ -116,7 +116,7 @@ src/
 │
 │   UI uplift (M11)
 ├── ui_tokens.rs          M11 · sizes, text scale and the WCAG contrast maths behind UiColors (pure)
-├── ui_shots.rs           M11 · off-screen screenshots (feature `ui-shots`): `cargo run --features ui-shots -- __ui-shots`
+├── ui_shots/             M11 · off-screen screenshots (feature `ui-shots`)   M11aj · split by area: `mod.rs` the runner, `harness.rs`, `registry.rs` (areas, `ORDER`), one file per area
 ├── status_mark.rs        M11 · the drawn status marks (ring, arc, pulsing dot, check), pop curve, ticker rule
 ├── reduce_motion.rs      M11 · macOS "Reduce motion": read at start, refreshed by its change notification
 ├── sidebar.rs            M11 · the sidebar: row model, rows, headers, scroll, resize, footer, hint card, drag
@@ -191,6 +191,8 @@ src/
 Unit tests live next to the code, in each file's `#[cfg(test)] mod tests`. The plans target
 21 / 38 / 44 / 50 passing tests at the end of M1 / M2 / M3 / M4. The repo has 85 at the end of M5, 106 at the end of M6, 150 after M6b + M7 + M8, 243 after M9, and 399 after M10a.
 
+`tests/ui-shots-ref/` holds the screenshot scenes' reference fingerprints (M11aj C3, report only; `scripts/ui-shots.sh --update-refs` writes them).
+
 `assets/fonts/` holds the bundled icon font, JetBrains Mono (the default font, M6b) and their licences; `assets/themes/` the six built-in themes and their credits. `assets/shell-integration/zsh/` the zsh scripts for command blocks (`.zshenv`, `fuxx-integration.zsh`; M11l), compiled into the binary. `assets/vendor/mermaid/` the bundled mermaid.js (12.2.0, MIT; its LICENSE and a README with the source and SHA-256; M11ac Part 2), compiled into the binary.
 
 Example `~/.config/fuxx/config` (all optional; fuxx never writes it):
@@ -226,6 +228,7 @@ scripts/
 ├── make_app_icon.py      M11c · the 3D Cyber logo → packaging/macos/fuxx.icns + the browser bar's mark (run by hand)
 ├── check-dmg.sh          M4b · the test: asserts a DMG is installable (both CPUs, macOS 11.0, version, seal)
 ├── check-release-tag.sh  M11e · refuses a release tag that isn't v + Cargo.toml's version
+├── ui-shots.sh           M11aj · the screenshot suite in parallel shards, then its serial scenes; `--changed <base>`
 └── bench/                M11n · the benchmark harness: run.py (isolated fuxx and Ghostty copies; CPU, throughput,
                           launch, memory), make_data.py, wininfo.swift; it backs up and restores Ghostty's prefs
 .github/workflows/
