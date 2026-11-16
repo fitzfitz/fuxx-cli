@@ -164,7 +164,8 @@ Slowest after A1 (default run): file-tab 33.3, file-tab-md-mermaid 17.3, file-ta
 
 **Same pictures:** the `--png --all-themes` run passes the same 207 `ok` lines and writes the same 451 PNGs, 444 of them
 byte-identical. The other 7 (`activity`, `activity-waiting` ×2 themes, `branch-switcher-open-mocha`,
-`welcome-checking` ×2) differ between two runs of the unchanged build too (they show ages and a real scratch repo). The
+`welcome-checking` ×2) differ between two runs of the unchanged build too (they show ages and a real scratch repo); that
+was the list at Task 7, and Task 8 makes it 11 (see "A4, A5 — measured": 4 pictures that show the Files fixture's age). The
 leak check (in-memory shots before and after, `diff_count == 0`): `tabs`, `title-bar`, `changes-bar`, `rename-box`,
 `command-blocks-rerun` (`Both`) and `help`, `update-button`, `command-blocks-rprompt`, `file-tab-scrollbar`, `panels`
 (with `right-panels`) (several shots): 91 shots, all 0. One repeat of `title-bar` once drew `title-bar-sliding-mocha`
@@ -202,7 +203,7 @@ until a condition with a deadline (real git, a real shell or pty), or sleeps for
 fade's end), runs in the shards: load only makes it take longer. Each serial scene says its reason beside
 `serial: true` in its area file.
 
-**Serial (13 scenes; seconds alone, guard run 2):**
+**Serial (14 scenes; seconds alone, guard run 2):**
 
 | Reason | Scene | Why |
 | --- | --- | --- |
@@ -218,9 +219,10 @@ fade's end), runs in the shards: load only makes it take longer. Each serial sce
 | (c) | `command-blocks` 1.3 | "nothing animates" over 200 ms of real time, chip open |
 | (c) | `welcome-checking` 1.1 | "nothing moves" over 200 ms of real time |
 | (c) | `palette-motion` 1.0 | "nothing moves" over 200 ms of real time |
+| (c) | `cursor` 1.4 | the glide (`GLIDE`, 90 ms between its first paint and the last), the sparks (`SPARK_LIFE`, 350 ms) and the breath's 600 ms solid hold, all painted from `Instant::now()` (fix round 2; it also polls `cat`'s echo) |
 | (c) | `file-tab-scrollbar` 3.0 | the thumb checked *shown* after a scroll: it holds 1 s from the scroll by the real clock (`scrollbar::HOLD`) |
 
-**Moved into the shards (18), each with why it can't fail when slowed:**
+**Moved into the shards (17), each with why it can't fail when slowed:**
 
 | Scene | Why it is safe beside the others |
 | --- | --- |
@@ -228,7 +230,6 @@ fade's end), runs in the shards: load only makes it take longer. Each serial sce
 | `file-diff` | The clipboard is per app (`VisualTestPlatform::clipboard`, `visual_test.rs:36`); the Mac's pasteboard `changeCount` didn't move. No real-time wait. |
 | `command-blocks-copy` | The same clipboard; A5 left it no real-time wait. |
 | `command-blocks-rerun` | Polls the pty's echo (3 s deadline); "nothing more came" waits at least 200 ms for an echo that must never come. |
-| `cursor` | Polls `cat`'s echo through its pty (3 s deadline). |
 | `cursor-flood` | Reads until the flood's END plus 500 ms quiet (60 s deadline); checks only the last frame. |
 | `branch-switcher-real`, `-confirm`, `-open` | Poll real git (`settle_until`, 20 s). |
 | `chrome-places-programs-ports` | Polls a real shell's folder, programs and ports (20 s deadline). |
@@ -247,12 +248,15 @@ that vary with real ages.
 
 **Numbers** (this Mac, debug build, after the build, `-j 8`):
 
-| Run | One process (Task 7) | Task 8, 31 serial | **Ruling 7, 13 serial** |
+| Run | One process (Task 7) | Task 8, 31 serial | **Ruling 7, 13 serial** (guard) |
 | --- | --- | --- | --- |
 | Default `scripts/ui-shots.sh` | 211.6 s | 133.7 s (median of five) | **81.4 s** (median of five: 80.9, 81.5, 81.4, 81.3, 82.0) |
 | Serial process | n/a | 114 s | **39.4-39.7 s** |
 | Longest shard | n/a | 17.7 s | 38.8-39.9 s (`file-tab` alone, 33 s unloaded) |
 | `--png --all-themes` | 276.3 s | 161.0 s | **99.2 s** |
+
+**Fix round 2** put `cursor` back in the serial list (14 serial, 17 in the shards; it moves only toward serial, so the
+guard wasn't rerun): one full run **82.5 s**, the serial process **41.0 s**, the longest shard 39.0 s, 112 passed.
 
 The run is now two halves of about 40 s: the shards, bounded by `file-tab` on its own shard, and the serial process,
 of which Mermaid is 17 s. Below about 80 s would need `file-tab` itself faster (or split, which would change its name),
