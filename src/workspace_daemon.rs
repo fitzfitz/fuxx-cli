@@ -471,13 +471,13 @@ impl Workspace {
             .filter_map(|s| s.view.read(cx).pump_queue())
             .collect();
         let client = self.service.client();
-        // The agent tabs' processes end with the app (R10), whether or not the background
-        // service runs. Here, not in the task below: GPUI polls that for at most its
-        // `SHUTDOWN_TIMEOUT` (200 ms at the pinned rev) before the app exits, and an agent that
-        // ignores SIGTERM must still be killed. `end_all` returns as soon as every one is reaped
-        // (at once for an agent that obeys SIGTERM; `TERM_GRACE` at most, then SIGKILL).
-        let agents = crate::workspace_agent::processes(&self.agents, cx);
-        crate::agent_process::end_all(&agents, crate::agent_process::TERM_GRACE);
+        // The agents end with the app (R10), whether or not the background service runs: the
+        // open tabs' and those of tabs closed or paused moments ago, still dying. Here, not in
+        // the task below: GPUI polls that for at most its `SHUTDOWN_TIMEOUT` (200 ms at the
+        // pinned rev) before the app exits, and an agent that ignores SIGTERM must still be
+        // killed. It returns as soon as every one is reaped (at once for an agent that obeys
+        // SIGTERM; `TERM_GRACE` at most, then SIGKILL).
+        crate::agent_process::end_every_started(crate::agent_process::TERM_GRACE);
         cx.background_spawn(async move {
             if client.is_some() {
                 flush_pumps(&queues, client.as_deref(), QUIT_FLUSH);

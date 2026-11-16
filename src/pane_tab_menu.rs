@@ -1,7 +1,9 @@
 //! A pane tab's right-click menu (M11b): Close Tab, Close Other Tabs in Pane, Rename Tab…, for
-//! a browser tab Pop Out, and for an agent tab Open in Classic View (M11aa). Close Tab ends the tab at once (as its × and ⌘W do); Close Other Tabs
-//! is a bulk close, so it asks first in a native sheet; Rename Tab… names the tab's terminal (as
-//! `session.rename` does); Pop Out moves a browser tab's page into a window of its own (M10c's).
+//! a browser tab Pop Out, and for an agent tab Open in Classic View (M11aa; Show Classic View
+//! while that terminal is open). Close Tab ends the tab at once (as its × and ⌘W do); Close
+//! Other Tabs is a bulk close, so it asks first in a native sheet; Rename Tab… names the tab's
+//! terminal (as `session.rename` does), or an agent tab; Pop Out moves a browser tab's page into
+//! a window of its own (M10c's).
 //!
 //! `closes`, `enabled` and `confirm_text` are the pure model; the rest opens, draws and acts on
 //! the menu. Like the row menu, it is one of the overlays (one open at a time): it opens at the
@@ -234,6 +236,10 @@ impl Workspace {
             .tabs
             .iter()
             .any(|t| t.id == menu.tab && matches!(t.kind, TabKind::Agent { .. }));
+        let classic_open = self
+            .classic_of
+            .get(&menu.tab)
+            .is_some_and(|&(id, _)| self.index_of(id).is_some());
         let hover = ui.panel_hover;
         let item = |n: usize, label: &'static str, action: PaneTabAction| {
             let on = enabled(action, pane, menu.tab);
@@ -287,8 +293,14 @@ impl Workspace {
             .when(enabled(PaneTabAction::PopOut, pane, menu.tab), |panel| {
                 panel.child(item(3, "Pop Out", PaneTabAction::PopOut))
             })
+            // Its classic view open already: the item shows that terminal (R13: never a second).
             .when(is_agent, |panel| {
-                panel.child(item(4, "Open in Classic View", PaneTabAction::OpenClassic))
+                let label = if classic_open {
+                    "Show Classic View"
+                } else {
+                    "Open in Classic View"
+                };
+                panel.child(item(4, label, PaneTabAction::OpenClassic))
             });
         Some(
             div()

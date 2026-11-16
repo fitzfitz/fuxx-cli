@@ -48,6 +48,7 @@ use crate::status::Status;
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, mix};
 use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
+use crate::workspace_agent::Holder;
 
 // ↑ / ↓ in the `@` file list (bound in main.rs to "AtPopup > Composer", so they reach the
 // list, not the caret, only while it is open).
@@ -411,6 +412,9 @@ pub struct AgentTab {
     path: Option<String>,
     translator: Option<Box<dyn Translator>>,
     process: Option<Arc<AgentProcess>>,
+    /// Every process this tab started that isn't reaped yet (an ended one dies within
+    /// `TERM_GRACE`): its own, never a holder of its conversation (R13).
+    started: Vec<Arc<AgentProcess>>,
     /// Reads the process's events; dropped to stop listening (a replaced or ended process).
     pump: Option<Task<()>>,
     end: ProcessEnd,
@@ -489,7 +493,7 @@ impl AgentTab {
                 this.booting = true;
                 let start = this.start.clone();
                 this._boot = Some(cx.spawn(async move |this, cx| {
-                    let (path, past) = cx
+                    let (path, past, holder) = cx
                         .background_executor()
                         .spawn(async move {
                             let path = crate::workspace_ssh::login_env().and_then(|env| {
@@ -497,10 +501,25 @@ impl AgentTab {
                                     .find(|(k, _)| k == "PATH")
                                     .map(|(_, v)| v.clone())
                             });
-                            (path, provider.history(&start))
+                            // A conversation to resume that another process holds (its classic
+                            // view, still running after a restart): the tab won't start a second
+                            // writer (R13).
+                            let holder = match &start.resume {
+                                Some(id) => crate::workspace_agent::conversation_holder(
+                                    crate::procs::ps_table().as_deref(),
+                                    provider.info().name,
+                                    id,
+                                    &[],
+                                    None,
+                                    false,
+                                ),
+                                None => Holder::Free,
+                            };
+                            (path, provider.history(&start), holder)
                         })
                         .await;
-                    this.update(cx, |this, cx| this.booted(path, past, cx)).ok();
+                    this.update(cx, |this, cx| this.booted(path, past, holder, cx))
+                        .ok();
                 }));
             }
         }
@@ -537,7 +556,13 @@ impl AgentTab {
     /// History, into the same path the boot task takes.
     #[cfg(feature = "ui-shots")]
     pub fn shot_history(&mut self, past: Vec<Past>, cx: &mut Context<Self>) {
-        self.booted(None, past, cx);
+        self.booted(None, past, Holder::Free, cx);
+    }
+
+    /// History, into the boot path, with what the boot's `ps` check found.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_history_held(&mut self, past: Vec<Past>, holder: Holder, cx: &mut Context<Self>) {
+        self.booted(None, past, holder, cx);
     }
 
     /// The `@` list as if `@` and `query` were typed, over `paths` (from `root`).
@@ -665,6 +690,7 @@ impl AgentTab {
             path: None,
             translator: None,
             process: None,
+            started: Vec::new(),
             pump: None,
             end: ProcessEnd::default(),
             exited: false,
@@ -719,6 +745,7 @@ impl AgentTab {
     }
 
     /// The process, for quitting (`agent_process::end_all`).
+    #[cfg(feature = "ui-shots")] // the scenes' (the app's own use `own_pids` / `all_reaped`)
     pub fn process(&self) -> Option<Arc<AgentProcess>> {
         self.process.clone()
     }
@@ -740,28 +767,78 @@ impl AgentTab {
         self.force_timer = None;
         self.end_process();
         self.paused = true;
+        self.unqueue(cx);
         self.conversation.paused();
         self.after_change(false, cx);
     }
 
-    /// A message from the paused tab (`ResumeAsked`), now that the Workspace knows whether the
-    /// classic terminal still runs the conversation (`classic`: that terminal's name). Sent
-    /// (the process started again with `--resume`, the box cleared), or a notice saying why not
-    /// with `text` left in the box: never a second writer of one conversation.
+    /// Messages held for the process go back into the box (and their attachments onto the
+    /// next message), so none is sent later behind your back; you send them again yourself.
+    fn unqueue(&mut self, cx: &mut Context<Self>) {
+        let queued = std::mem::take(&mut self.queued);
+        if queued.is_empty() {
+            return;
+        }
+        let mut texts: Vec<String> = Vec::new();
+        for (text, attachments) in queued {
+            texts.push(text);
+            self.attachments.extend(attachments);
+        }
+        let typed = self.composer.read(cx).text().to_string();
+        if !typed.trim().is_empty() {
+            texts.push(typed);
+        }
+        let text = texts.join("\n\n");
+        self.composer.update(cx, |c, cx| c.set_text(text, cx));
+    }
+
+    /// The pids of the processes this tab started that may still run (their groups: each is
+    /// its group's leader).
+    pub fn own_pids(&self) -> Vec<u32> {
+        self.started
+            .iter()
+            .chain(&self.process)
+            .filter(|p| !p.reaped())
+            .filter_map(|p| p.pid())
+            .map(|pid| pid as u32)
+            .collect()
+    }
+
+    /// Whether every process this tab started has been reaped (none still writes).
+    pub fn all_reaped(&self) -> bool {
+        self.started.iter().chain(&self.process).all(|p| p.reaped())
+    }
+
+    /// Another process holds the conversation (or that couldn't be checked): one notice says so
+    /// (`terminal`: where, when known); the tab stays paused.
+    pub fn held(&mut self, holder: &Holder, terminal: Option<&str>, cx: &mut Context<Self>) {
+        let notice = crate::workspace_agent::held_notice(self.label(), holder, terminal);
+        self.conversation.apply(Event::Notice(notice));
+        self.after_change(true, cx);
+    }
+
+    /// The conversation it resumes: the one the agent reported, else the one it was opened on.
+    pub fn resume_id(&self) -> Option<String> {
+        self.conversation_id()
+    }
+
+    /// A message from the paused tab (`ResumeAsked`), now that the Workspace knows whether
+    /// another process holds the conversation (`holder`, from a fresh `ps`; `terminal`: the
+    /// classic view's name, while it is open). Sent (the process started again with
+    /// `--resume`, the box cleared), or a notice saying why not with `text` left in the box:
+    /// never a second writer of one conversation, nor a start without an answer.
     pub fn resume_after_classic(
         &mut self,
         text: String,
-        classic: Option<SharedString>,
+        holder: Holder,
+        terminal: Option<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        use crate::workspace_agent::{AfterClassic, after_classic};
-        match after_classic(self.paused, classic.is_some()) {
+        use crate::workspace_agent::{AfterClassic, after_classic, held_notice};
+        match after_classic(self.paused, holder != Holder::Free) {
             AfterClassic::Warn => {
-                let label = self.label().to_string();
-                let terminal = classic.unwrap_or_default();
-                self.conversation.apply(Event::Notice(format!(
-                    "{label} is still running this conversation in {terminal} — quit it there first"
-                )));
+                let notice = held_notice(self.label(), &holder, terminal.as_deref());
+                self.conversation.apply(Event::Notice(notice));
                 self.after_change(true, cx);
                 return;
             }
@@ -798,7 +875,13 @@ impl AgentTab {
 
     /// The history is read and the login `PATH` known: show what came before, start the process,
     /// and send what was typed meanwhile.
-    fn booted(&mut self, path: Option<String>, past: Vec<Past>, cx: &mut Context<Self>) {
+    fn booted(
+        &mut self,
+        path: Option<String>,
+        past: Vec<Past>,
+        holder: Holder,
+        cx: &mut Context<Self>,
+    ) {
         self.path = path;
         let none = past.is_empty();
         self.conversation.past(past);
@@ -807,6 +890,16 @@ impl AgentTab {
                 .apply(Event::Notice(RESTORED_NOTICE.into()));
         }
         self.booting = false;
+        if crate::workspace_agent::starts_paused(self.start.resume.is_some(), &holder) {
+            // Another process holds the conversation (R13): paused, as after "Open in classic
+            // view"; a send checks again.
+            self.paused = true;
+            self.unqueue(cx);
+            let notice = crate::workspace_agent::held_notice(self.label(), &holder, None);
+            self.conversation.paused_with(&notice);
+            self.after_change(false, cx);
+            return;
+        }
         self.after_change(false, cx);
         let resume = self.start.resume.clone();
         self.spawn_process(resume, cx);
@@ -875,6 +968,8 @@ impl AgentTab {
             tx,
         ));
         self.process = Some(process.clone());
+        self.started.retain(|p| !p.reaped());
+        self.started.push(process.clone());
         self.pump = Some(cx.spawn(async move |this, cx| {
             while let Some(event) = rx.next().await {
                 if this

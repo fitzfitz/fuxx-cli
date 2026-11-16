@@ -681,8 +681,13 @@ pub struct Workspace {
     pub(crate) agents: HashMap<TabId, AgentSlot>,
     /// The number the next agent tab gets (`aN`, from 1); never reused.
     pub(crate) next_agent_id: u64,
-    /// Each agent tab "Open in classic view" opened a terminal for: that terminal (`sN`).
-    pub(crate) classic_of: HashMap<TabId, u64>,
+    /// Each agent tab "Open in classic view" opened a terminal for: that terminal (`sN`) and
+    /// when it opened (R13).
+    pub(crate) classic_of: HashMap<TabId, (u64, Instant)>,
+    /// The scenes' `ps` table for the conversation-holder check (none: run `ps`; `Some(None)`:
+    /// `ps` failed).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) shot_ps: Option<Option<Vec<crate::procs::Proc>>>,
     /// The scenes never start an agent: agent tabs are made with no process (R12).
     #[cfg(feature = "ui-shots")]
     pub(crate) agents_offline: bool,
@@ -925,6 +930,8 @@ impl Workspace {
             agents: HashMap::new(),
             next_agent_id: 1,
             classic_of: HashMap::new(),
+            #[cfg(feature = "ui-shots")]
+            shot_ps: None,
             #[cfg(feature = "ui-shots")]
             agents_offline: false,
             #[cfg(feature = "ui-shots")]
@@ -3910,6 +3917,8 @@ impl Workspace {
         this.agents_frozen = true;
         this.agents_offline = true;
         this.quiet_opens = true;
+        // Nothing holds a conversation unless a scene says so (no `ps` of this Mac).
+        this.shot_ps = Some(Some(Vec::new()));
         this
     }
 
