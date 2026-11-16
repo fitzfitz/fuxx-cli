@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use super::{Affected, SHARED, Scene, affected};
+use super::{Affected, SHARED, Scene, affected, registry};
 
 /// `git <args>` in the repo's top folder (`-C`, so a run from a subfolder sees the same files),
 /// paths unquoted and NUL-separated, as the lines of paths it printed.
@@ -81,7 +81,20 @@ pub(super) fn decide(
     };
     let refs: Vec<&str> = files.iter().map(String::as_str).collect();
     match affected(&refs, scenes, SHARED) {
-        Affected::Nothing => (Some(vec![]), "nothing (no src changes)".into()),
+        Affected::Nothing => {
+            // Runner files are under `src/`, so "no src changes" would be wrong for them.
+            let runner: Vec<&str> = refs
+                .iter()
+                .copied()
+                .filter(|f| registry::RUNNER_ONLY.contains(f))
+                .collect();
+            let line = if runner.is_empty() {
+                "nothing (no src changes)".to_string()
+            } else {
+                format!("nothing (only runner files changed: {})", runner.join(", "))
+            };
+            (Some(vec![]), line)
+        }
         Affected::Some(names) => {
             let line = format!("{}: {}", scenes_word(names.len()), names.join(", "));
             (Some(names), line)
@@ -97,6 +110,16 @@ pub(super) fn decide(
             (None, format!("all ({})", why.join("; ")))
         }
     }
+}
+
+/// The `filter`, when one is set and no scene's name contains it (a typo): the run then says
+/// "no scene matches" and exits 1 rather than "nothing to run" (exit 3 for `--plan`), which is
+/// kept for a filter that matches scenes the change doesn't touch.
+pub(super) fn filter_matches_none<'f>(
+    scenes: &[&Scene],
+    filter: Option<&'f str>,
+) -> Option<&'f str> {
+    filter.filter(|f| !scenes.iter().any(|s| s.name.contains(f)))
 }
 
 /// `decide`'s answer narrowed by a name `filter` (the run's own): the scenes left (`None` while
@@ -162,5 +185,41 @@ mod tests {
         assert!(line.contains("filter \"file-tab-md\" keeps"), "{line}");
         let (none, _) = with_filter(Some(vec!["smoke"]), String::new(), &all, Some("zzz"));
         assert_eq!(none, Some(vec![]));
+    }
+
+    #[test]
+    fn a_filter_that_names_no_scene_is_told_apart_from_an_untouched_one() {
+        let every = super::super::registry::scenes();
+        assert_eq!(
+            filter_matches_none(&every, Some("zzz-typo")),
+            Some("zzz-typo")
+        );
+        assert_eq!(filter_matches_none(&every, Some("file-tab")), None);
+        assert_eq!(filter_matches_none(&every, None), None);
+        // "file-tab" matches scenes; a change to sidebar.rs alone touches none of them: that
+        // stays "nothing to run" (exit 3 for `--plan`), not a typo.
+        let all = scenes();
+        let (only, line) = decide(Ok(vec!["src/ui_shots/sidebar.rs".into()]), &all);
+        let (kept, _) = with_filter(only, line, &all, Some("file-tab"));
+        assert_eq!(kept, Some(vec![]));
+    }
+
+    #[test]
+    fn nothing_says_when_only_runner_files_changed() {
+        let all = scenes();
+        let (only, line) = decide(Ok(vec!["docs/x.md".into()]), &all);
+        assert_eq!(
+            (only, line.as_str()),
+            (Some(vec![]), "nothing (no src changes)")
+        );
+        let files = vec!["docs/x.md".into(), "src/ui_shots/registry.rs".into()];
+        let (only, line) = decide(Ok(files), &all);
+        assert_eq!(
+            (only, line.as_str()),
+            (
+                Some(vec![]),
+                "nothing (only runner files changed: src/ui_shots/registry.rs)"
+            )
+        );
     }
 }

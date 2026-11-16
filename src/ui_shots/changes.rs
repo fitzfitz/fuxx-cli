@@ -4,7 +4,11 @@
 use super::right_sidebar::{files_fixture, right_panel_workspace};
 use super::*;
 
-/// This area's scenes (`mod.rs` runs them in its `ORDER`).
+/// This file, as `file!()` gives it (repo-relative under cargo): `registry::AREAS` pairs it with
+/// `SCENES`, so `--changed` runs these scenes when this file changes.
+pub(super) const FILE: &str = file!();
+
+/// This area's scenes (`registry.rs` runs them in its `ORDER`).
 pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "changes",
