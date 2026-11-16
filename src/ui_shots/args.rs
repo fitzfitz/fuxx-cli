@@ -1,5 +1,5 @@
 //! The screenshot run's command line: `fuxx __ui-shots [filter] [--png] [--all-themes]
-//! [--shard I/N] [--changed <base>] [--update-refs]`.
+//! [--shard I/N | --serial-only] [--changed <base>] [--update-refs]`.
 
 /// What one run does, from its command line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -10,12 +10,14 @@ pub struct RunOptions {
     pub png: bool,
     /// Shoot every scene in both themes, `Themes::One` scenes too.
     pub all_themes: bool,
-    /// Run the `I`th of `N` shares of the scenes (1-based).
+    /// Run the `I`th of `N` shares of the scenes that aren't `serial` (1-based).
     pub shard: Option<(usize, usize)>,
     /// Run the scenes whose sources changed since this git base.
     pub changed: Option<String>,
     /// Accept the shots' fingerprints as the new references.
     pub update_refs: bool,
+    /// Run only the `serial` scenes (what `scripts/ui-shots.sh` runs after the shards).
+    pub serial_only: bool,
 }
 
 /// The run's options from the arguments after `__ui-shots` (a leading `__ui-shots` is skipped).
@@ -31,6 +33,7 @@ pub fn parse_args(args: &[String]) -> Result<RunOptions, String> {
             "--png" => o.png = true,
             "--all-themes" => o.all_themes = true,
             "--update-refs" => o.update_refs = true,
+            "--serial-only" => o.serial_only = true,
             "--shard" => {
                 let v = args.next().ok_or("--shard needs I/N")?;
                 o.shard = Some(shard(v)?);
@@ -43,6 +46,9 @@ pub fn parse_args(args: &[String]) -> Result<RunOptions, String> {
             filter if o.filter.is_none() => o.filter = Some(filter.to_string()),
             extra => return Err(format!("one filter only (got a second: {extra})")),
         }
+    }
+    if o.serial_only && o.shard.is_some() {
+        return Err("--serial-only and --shard: a shard never runs the serial scenes".into());
     }
     Ok(o)
 }
@@ -87,6 +93,18 @@ mod tests {
         let o = parse(&["--shard", "3/8"]).unwrap();
         assert_eq!(o.shard, Some((3, 8)));
         assert_eq!(o.filter, None);
+    }
+
+    #[test]
+    fn serial_only_combines_with_a_filter_but_not_a_shard() {
+        let o = parse(&["--serial-only", "file-tab"]).unwrap();
+        assert!(o.serial_only);
+        assert_eq!(o.filter.as_deref(), Some("file-tab"));
+        assert!(!parse(&[]).unwrap().serial_only);
+        assert!(
+            parse(&["--serial-only", "--shard", "1/2"]).is_err(),
+            "a shard never runs the serial scenes"
+        );
     }
 
     #[test]

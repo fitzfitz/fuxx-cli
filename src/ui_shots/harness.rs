@@ -136,16 +136,20 @@ pub(super) fn register_fonts(cx: &VisualTestAppContext) {
 /// own and sees it gone), they cost a few milliseconds together. A child that doesn't end
 /// within `HANG_UP_WAIT` is left to its `Pty`, as before.
 ///
-/// A terminal's child is the one kind of child process that leads a session of its own
-/// (portable-pty calls `setsid`), so commands a scene runs (git, a child fuxx) are not touched.
+/// It hangs up the children that lead a session of their own: the terminals' (portable-pty calls
+/// `setsid`), and also the app's own capped git, `ps` and `lsof` commands and its agent
+/// processes, which run in a session of their own too. Those belong to the app being dropped,
+/// so ending them with it is harmless. A child fuxx run (`child_run`) and the git a scene runs
+/// itself share this process's session and are not touched.
 pub(super) struct HangUp(Vec<i32>);
 
 /// A fresh app (and its bundled fonts) whose terminals are hung up before it drops (`HangUp`),
 /// for a scene that keeps its app past one shot. Used as the `VisualTestAppContext` it holds.
+/// Its drop counts as teardown (`prof::TEARDOWN`), as `render_with`'s does.
 pub(super) struct ShotApp {
-    // Before `cx`: fields drop in order.
-    _hang_up: HangUp,
-    cx: VisualTestAppContext,
+    // Both taken in `drop`: the hang-up first, then the app.
+    hang_up: Option<HangUp>,
+    cx: Option<VisualTestAppContext>,
 }
 
 impl ShotApp {
@@ -154,22 +158,31 @@ impl ShotApp {
         let hang_up = HangUp::new();
         register_fonts(&cx);
         Self {
-            _hang_up: hang_up,
-            cx,
+            hang_up: Some(hang_up),
+            cx: Some(cx),
         }
+    }
+}
+
+impl Drop for ShotApp {
+    fn drop(&mut self) {
+        let started = Instant::now();
+        drop(self.hang_up.take());
+        drop(self.cx.take());
+        prof::lap(prof::TEARDOWN, started);
     }
 }
 
 impl std::ops::Deref for ShotApp {
     type Target = VisualTestAppContext;
     fn deref(&self) -> &VisualTestAppContext {
-        &self.cx
+        self.cx.as_ref().expect("the app, until it drops")
     }
 }
 
 impl std::ops::DerefMut for ShotApp {
     fn deref_mut(&mut self) -> &mut VisualTestAppContext {
-        &mut self.cx
+        self.cx.as_mut().expect("the app, until it drops")
     }
 }
 
@@ -376,7 +389,8 @@ pub(crate) mod prof {
     pub const RENDER_WITH: usize = 7;
     pub const SLEEP: usize = 8;
     pub const CHILD: usize = 9;
-    /// Dropping the app and its window at the end of `render_with` (not in `RENDER_WITH`).
+    /// Dropping the app and its window at the end of `render_with` (not in `RENDER_WITH`), and
+    /// dropping a `ShotApp`.
     pub const TEARDOWN: usize = 10;
     const NAMES: [&str; 7] = [
         "new_app", "fonts", "open", "settle", "act", "capture", "png",

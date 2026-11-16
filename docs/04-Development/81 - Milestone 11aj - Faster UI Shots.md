@@ -134,12 +134,14 @@ have several each: 9.8 s of teardown for 14 shots, at 24 % CPU). GPUI's own tear
 
 **What A1 does** (the harness only; the app's `Pty::drop` is unchanged):
 
-- **Terminals hung up together:** before a shot's app drops, `HangUp` sends a SIGHUP to every terminal child started
-  since the shot began (the children that lead their own session; portable-pty `setsid`s them, so git and child fuxx
-  runs are untouched) and waits up to 500 ms, without reaping, until they have exited; each `Pty` then finds its child
-  gone and doesn't sleep. In `render_with`, and through `ShotApp` (a fresh app with this guard) in the scenes that keep
-  their own app (`chrome_window`, `cached-panes`, the cursor rig, the cursor status block). Mermaid's kept contexts
-  and its WebKit child are unchanged.
+- **Terminals hung up together:** before a shot's app drops, `HangUp` sends a SIGHUP to every child started since the
+  shot began that leads its own session, and waits up to 500 ms, without reaping, until they have exited; each `Pty`
+  then finds its child gone and doesn't sleep. Those children are the terminals' (portable-pty `setsid`s them) and also
+  the app's own capped git, `ps` and `lsof` commands and its agent processes, which run in a session of their own too:
+  hanging them up is harmless, as they belong to the app being dropped. A child fuxx run and the git a scene runs itself
+  share the harness's session and are untouched. In `render_with`, and through `ShotApp` (a fresh app with this guard)
+  in the scenes that keep their own app (`chrome_window`, `cached-panes`, the cursor rig, the cursor status block).
+  Mermaid's kept contexts and its WebKit child are unchanged.
 - **Fonts once per process:** the bundled fonts are registered with CoreText for the whole process (and
   `register_bundled_fonts` already kept its first answer), so only the first app asks CoreText for every installed font
   name (about 40 ms a time); `mono_font` reuses that list too (it was asked again in every shot's `shot_appearance`).
@@ -168,6 +170,79 @@ leak check (in-memory shots before and after, `diff_count == 0`): `tabs`, `title
 (with `right-panels`) (several shots): 91 shots, all 0. One repeat of `title-bar` once drew `title-bar-sliding-mocha`
 2,996 bytes apart (a hide slide set 60 ms back in real time, so it moves with how long build to frame takes; the scene
 still passed); five more runs of it matched, as did four of the unchanged build: a real-time shot for A4's `serial` list.
+
+### A4, A5 — measured (M11aj Task 8, 2026-11-17)
+
+**What A4 does:** `__ui-shots --shard I/N` runs the `I`th of `N` shares of the scenes that aren't `serial`
+(`shard_of`: longest first onto the least-loaded shard, by `target/ui-shots/timings.tsv`; a scene with no time counts
+the median; each shard in `ORDER`); `--serial-only` runs only the `serial` scenes, in `ORDER`. Each writes its own
+`timings.<I>.tsv` / `timings.serial.tsv` (scene, seconds, `ok`/`FAILED`), whatever the filter (a shard is not a child
+run). `scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [-j N]` builds once
+(`cargo build --features ui-shots`), starts `N` shards of `target/debug/fuxx` side by side (default CPU cores − 2, at most
+8, at least 1: **8** on this 10-core Mac; each line prefixed `[I/N]`), then the serial scenes in one process
+(`[serial]`), merges the parts into `timings.tsv` on a full run (no filter, no `--changed`, every part written), and
+prints the summary (`ui-shots: <passed> passed, <failed> failed, <total> s`, the wall time after the build, then the 15
+slowest); exit 1 if any process failed. bash 3.2 (no associative arrays, `wait -n` or `mapfile`); Ctrl-C ends the
+shards too.
+
+**What A5 does:** the GPUI test clock (`advance_clock`) moves only GPUI timers and `executor.now()`; the app reads
+`std::time::Instant::now()` for its slides (`sidebar_toggle`, `drag_gap`), the scrollbar fade, the age labels and the
+file tab's 2 s look-up gate, and the scenes already pair those sleeps with `advance_clock` for the timer half. So a
+sleep moves to the test clock only where it waited on GPUI's own executor. Three did, all in `terminal.rs`: a copy's
+text is read on the background executor, which in `VisualTestAppContext` is the test scheduler that a frame's
+`run_until_parked` runs to the end, so `copied` reads the clipboard after one frame (it polled up to 3 s, and waited the
+whole 3 s where nothing is copied), the "off: nothing is copied" check drops its 100 ms and the disabled chip
+buttons drop their 3 × 50 ms. `command-blocks-copy` 3.3 → 0.2 s, `command-blocks-rerun` 1.7 → 1.3 s. Every other sleep
+waits on the real clock or a real process and stays.
+
+**Serial (31 scenes, in the serial process after the shards):**
+
+| Why | Scenes (seconds alone, run 1) |
+| --- | --- |
+| A child fuxx (Call 2; Mermaid's WebKit child first and alone) | `file-tab-md-mermaid` 17.2, `chrome-kill-switch` 1.0 |
+| A shot mid-slide, the slide set 60 ms back by the real clock (Task 7: one `title-bar` run in 11 drifted) | `title-bar` 2.8, `sidebar-button` 0.5 |
+| Slides by the real clock (`drag_gap::SLIDE`, `sidebar_toggle::SLIDE`, the right sidebar's) | `sidebar` 5.7, `tab-drag` 4.8, `right-sidebar` 3.0, `chrome-bars-and-edges` 2.0, `chrome-notify-redraws-parts` 1.6, `chrome-drag-cancel` 1.5, `chrome-notifications` 0.8, `chrome-resize-title` 0.4 |
+| Age labels by the real clock (400 ms margin before "59s" turns) | `chrome-ages-current` 2.1, `chrome-rows-once` 0.7 |
+| "Nothing moves in 200 ms" by the real clock | `activity` 2.9, `command-blocks` 1.3, `welcome-checking` 1.1, `palette-motion` 1.0 |
+| The scrollbar fade by the real clock | `file-tab-scrollbar` 3.0 (and `file-tab`) |
+| Real git (polls; the file tab's look-up waits 2 s by the real clock) | `file-tab` 33.0, `branch-switcher-real` 5.0, `branch-switcher-confirm` 1.5, `branch-switcher-open` 1.0 |
+| A real shell or pty (its folder, programs, echo, flood) | `chrome-places-programs-ports` 5.9, `cursor` 1.3, `command-blocks-rerun` 1.3, `cursor-flood` 0.8, `chrome-folder-polled` 0.1 |
+| The clipboard (Task 8 ruling; see below) | `file-diff` 7.4, `command-blocks-copy` 0.2 |
+| The shared Files fixture: `files` adds `src/zz.rs` to it for a while (7 other scenes list it) | `files` 3.0 |
+
+`files` is new to the list (Task 8), as is `file-diff`. The fixture is also written whole now (to a temp file, then
+renamed in), so no scene reads or lists a half-written file while another process writes it; it keeps its one path
+because the panel draws that path (`…/T/fuxx-ui-shots-files`), so a folder per process would change its pictures.
+**The clipboard isn't shared, as it turns out:** the pinned GPUI's `VisualTestPlatform` keeps a clipboard of its own
+per app (`clipboard: Mutex<Option<ClipboardItem>>`, `visual_test.rs:36`), and the Mac's pasteboard `changeCount` was
+the same before and after `file-diff` and `command-blocks-copy`. `file-diff` (7.4 s) and `command-blocks-copy` could
+run in shards.
+
+| Run (this Mac, debug build, after the build) | Before (Task 7, one process) | After |
+| --- | --- | --- |
+| Default: `scripts/ui-shots.sh` (`-j 8`) | 211.6 s | **133.7 s** (median of five: 134.1, 133.7, 133.6, 133.9, 133.5) |
+| `scripts/ui-shots.sh --png --all-themes` | 276.3 s | **161.0 s** |
+
+In a default run the 8 shards take 12-18 s (the longest shard is one scene: `file-tab-md`, 13.8 s alone, about 17.7 s
+beside the others), and the serial process **114 s**: the serial scenes alone are more than the 90 s goal, so no
+number of shards can reach it with this serial list. Of the 114 s: real git 40.5 (`file-tab` 33.0), the two child runs
+18.2, slides 19.8, the mid-slide shots 3.3, the clipboard ruling 7.6, real shells and ptys 9.4, stillness and age labels 9.1, the fade 3.0,
+`files` 3.0. **Flake check:** five consecutive full runs at the default `-j 8`, 112 passed and 0 failed each (and a
+sixth before them, 133.9 s); nothing else heavy ran (load average about 2 from the runs themselves; no other process
+above 8 % CPU). The default stays `min(8, cores − 2)`. Each shard pays the first app's GPUI teardown (about 0.5-0.7 s)
+once; it is within the shards' 12-18 s and the shards are not what bounds the run.
+
+**What 90 s would take (estimates, your call):** the serial list here follows the rule "a real-time or real-process wait
+is serial". Most of those waits are deadline polls (3-20 s for an answer that takes milliseconds) or sleeps that only
+need *at least* their time, which load makes longer, not shorter; only a few checks have a margin that load can break
+(the mid-slide shots set 60 ms back, the age labels' 400 ms, the 200 ms "nothing moves" checks). Moving the deadline
+polls and the plain slide waits into the shards (real git, shells and ptys, the clipboard scenes, `SLIDE` settles)
+would leave about 35 s serial (the child runs, the mid-slide shots, labels, stillness, the fade) and put `file-tab`
+(33 s, about 40 s under load) in a shard: about 75-80 s, to be confirmed by the five-run flake check.
+
+**Same results:** the `--png --all-themes` run prints the same 207 `ok` lines (sorted; 204 different) as Task 7 and
+writes the same 451 PNGs, 444 byte-identical; the other 7 are the 7 that vary between runs of an unchanged build
+(`activity`, `activity-waiting` ×2 themes, `branch-switcher-open-mocha`, `welcome-checking` ×2).
 
 ### Part A — Quick wins
 
