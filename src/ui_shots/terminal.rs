@@ -8,7 +8,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "cursor",
         run: cursor_scenes,
         themes: Themes::Both,
-        serial: false,
+        serial: true,
         kind: Kind::Visual,
         sources: &[
             "src/terminal_view.rs",

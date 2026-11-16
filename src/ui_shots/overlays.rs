@@ -71,6 +71,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/plugin_store.rs",
             "src/plugin_source.rs",
             "src/prefs.rs",
+            "src/name_input.rs",
         ],
     },
 ];
