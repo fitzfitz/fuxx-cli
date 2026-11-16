@@ -267,11 +267,17 @@ fn head_and_tracked(git: &Path, root: &Path, rel: &Path) -> Option<(bool, bool)>
 /// file in a repo with no commits, has every line Added (only a plain file, at most
 /// `REFUSE_ABOVE` bytes: else no bars). None outside a repo, or when git fails or takes longer
 /// than the cap: no answer, not "nothing changed" (the caller keeps the bars it has).
-pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, LineChange)>> {
+pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<LineChanges> {
     let (has_head, tracked) = head_and_tracked(git, root, rel)?;
     let path = rel.to_string_lossy();
     if !has_head || !tracked {
-        return Some(all_added(&root.join(rel)));
+        let lines = all_added(&root.join(rel));
+        return Some(LineChanges {
+            added: lines.len(),
+            removed: 0,
+            new: true,
+            lines,
+        });
     }
     let diff = run_git(
         git,
@@ -287,7 +293,45 @@ pub fn line_changes(git: &Path, root: &Path, rel: &Path) -> Option<Vec<(usize, L
             &path,
         ],
     )?;
-    Some(parse_hunks(&diff))
+    let (added, removed) = hunk_counts(&diff);
+    Some(LineChanges {
+        lines: parse_hunks(&diff),
+        added,
+        removed,
+        new: false,
+    })
+}
+
+/// A file's changes against HEAD: the per-line marks and the counts for the header chip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineChanges {
+    pub lines: Vec<(usize, LineChange)>,
+    pub added: usize,
+    pub removed: usize,
+    /// Untracked, or no commits yet: every line is added.
+    pub new: bool,
+}
+
+/// (added, removed) lines of a `-U0` diff: the sum of the new and old counts in its
+/// `@@ -a,b +c,d @@` headers (a count left out is 1).
+pub fn hunk_counts(diff: &str) -> (usize, usize) {
+    let count = |part: &str| -> Option<usize> {
+        match part.get(1..)?.split_once(',') {
+            Some((_, n)) => n.parse().ok(),
+            None => part.get(1..)?.parse::<usize>().ok().map(|_| 1),
+        }
+    };
+    let mut totals = (0, 0);
+    for line in diff.lines().filter(|l| l.starts_with("@@ ")) {
+        let mut parts = line.split(' ').skip(1);
+        if let (Some(old), Some(new)) = (parts.next(), parts.next())
+            && let (Some(b), Some(d)) = (count(old), count(new))
+        {
+            totals.0 += d;
+            totals.1 += b;
+        }
+    }
+    totals
 }
 
 /// What git says about one file's change against the last commit.
@@ -660,6 +704,15 @@ mod tests {
     }
 
     #[test]
+    fn hunk_counts_add_new_and_old_sides() {
+        assert_eq!(
+            hunk_counts("@@ -3,0 +4,2 @@\n@@ -9 +10,0 @@\n@@ -7 +7 @@ x\n"),
+            (3, 2)
+        );
+        assert_eq!(hunk_counts(""), (0, 0));
+    }
+
+    #[test]
     fn list_dir_order_cap_and_git() {
         let dir = temp("list");
         for d in [".git", "zeta", "Alpha"] {
@@ -701,7 +754,7 @@ mod tests {
         let dir = temp("norepo");
         fs::write(dir.join("f.txt"), "x\n").unwrap();
         assert_eq!(repo_root_at(&git, &dir), Some(None));
-        assert_eq!(line_changes(&git, &dir, Path::new("f.txt")), None);
+        assert!(line_changes(&git, &dir, Path::new("f.txt")).is_none());
         // A failed status (exit 128) is no answer, not "nothing changed".
         assert_eq!(status(&git, &dir), None);
         assert_eq!(ignored(&git, &dir, &[p("f.txt")]), None);
@@ -732,14 +785,14 @@ mod tests {
         let huge = vec![b'\n'; REFUSE_ABOVE as usize + 1];
         fs::write(root.join("huge.txt"), huge).unwrap();
         assert_eq!(
-            line_changes(&git, &root, Path::new("huge.txt")),
+            line_changes(&git, &root, Path::new("huge.txt")).map(|c| c.lines),
             Some(Vec::new())
         );
         // Not a plain file (a folder here): no bars, nothing read.
         fs::create_dir(root.join("sub")).unwrap();
         fs::write(root.join("sub/x"), "x\n").unwrap();
         assert_eq!(
-            line_changes(&git, &root, Path::new("sub")),
+            line_changes(&git, &root, Path::new("sub")).map(|c| c.lines),
             Some(Vec::new())
         );
     }
@@ -774,8 +827,9 @@ mod tests {
 
         // No commits yet: every line of a file is Added.
         let none = line_changes(&git, &root, Path::new("a.txt")).unwrap();
-        assert_eq!(none.len(), 3);
-        assert!(none.iter().all(|(_, c)| *c == LineChange::Added));
+        assert_eq!(none.lines.len(), 3);
+        assert!(none.lines.iter().all(|(_, c)| *c == LineChange::Added));
+        assert_eq!((none.added, none.removed, none.new), (3, 0, true));
 
         run(&["add", "-A"]);
         run(&["commit", "-q", "-m", "first"]);
@@ -798,12 +852,16 @@ mod tests {
         // None ignored (git exits 1): an answer, empty.
         assert_eq!(ignored(&git, &root, &[p("a.txt")]), Some(HashSet::new()));
 
-        assert_eq!(
-            line_changes(&git, &root, Path::new("a.txt")),
-            Some(vec![(2, LineChange::Changed)])
-        );
+        let changed = line_changes(&git, &root, Path::new("a.txt")).unwrap();
+        assert_eq!(changed.lines, vec![(2, LineChange::Changed)]);
+        // `git diff --numstat` says 1 added, 1 removed.
+        assert_eq!((changed.added, changed.removed, changed.new), (1, 1, false));
         let new = line_changes(&git, &root, Path::new("new.txt")).unwrap();
-        assert_eq!(new, vec![(1, LineChange::Added), (2, LineChange::Added)]);
+        assert_eq!(
+            new.lines,
+            vec![(1, LineChange::Added), (2, LineChange::Added)]
+        );
+        assert_eq!((new.added, new.removed, new.new), (2, 0, true));
     }
 
     #[test]
@@ -865,7 +923,7 @@ mod tests {
         // Glob characters in a name are literal.
         fs::write(root.join("a[1].txt"), "q\n").unwrap();
         assert_eq!(
-            line_changes(&git, &root, Path::new("a[1].txt")),
+            line_changes(&git, &root, Path::new("a[1].txt")).map(|c| c.lines),
             Some(vec![(1, LineChange::Added)])
         );
         // A tracked one: a glob would also match a1.txt.
@@ -875,7 +933,7 @@ mod tests {
         fs::write(root.join("a[1].txt"), "Q\n").unwrap();
         fs::write(root.join("a1.txt"), "p\nq\nr\ns\n").unwrap();
         assert_eq!(
-            line_changes(&git, &root, Path::new("a[1].txt")),
+            line_changes(&git, &root, Path::new("a[1].txt")).map(|c| c.lines),
             Some(vec![(1, LineChange::Changed)])
         );
     }
@@ -1313,7 +1371,7 @@ mod tests {
         git_in(&git, &root, &["commit", "-q", "-m", "first"]);
         git_in(&git, &root, &["rm", "-q", "--cached", "a.rs"]);
         assert_eq!(
-            line_changes(&git, &root, Path::new("a.rs")),
+            line_changes(&git, &root, Path::new("a.rs")).map(|c| c.lines),
             Some(vec![(1, LineChange::Added), (2, LineChange::Added)])
         );
         assert_eq!(
