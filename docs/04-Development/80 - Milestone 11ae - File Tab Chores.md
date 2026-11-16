@@ -1,7 +1,8 @@
 # Milestone 11ae — File Tab Chores
 
-**Status:** 📋 designed and approved 2026-11-16; plan [[M11ae Plan - File Tab Chores]]; being built on branch
-`m11ae-file-tab` (from master `8d2b16f`).
+**Status:** 🟨 built 2026-11-16 on branch `m11ae-file-tab` (from master `8d2b16f`; not merged, not pushed), waiting for
+your on-screen check (below). Plan [[M11ae Plan - File Tab Chores]], 6 / 6 tasks, each reviewed. At the branch tip:
+1678 tests pass, clippy 30 / 32 (= the baselines), `cargo fmt --check` clean, full `__ui-shots` 203 scenes ok in 8 min 26 s.
 
 **Asked for:** 2026-11-16, by you: "let's do some small chores. Let's fix file preview. right now no scrollbar. and
 when I try hold cursor left click and go below, it doesn't scroll + keep blocking the row/character. we need to adjust
@@ -80,6 +81,41 @@ Two lines, left; the controls right, vertically centred. The bar is **42 pt** ta
 - It stops on release, when the pointer comes back inside, or at the end of the text. The scrollbar shows while it
   runs. Diff mode the same; Preview has no selection (unchanged).
 
+## What was built
+
+All three parts of the design, as written above, in `src/file_tab.rs`, with the scrollbar's geometry, fade state and
+painting in a new `src/scrollbar.rs` (shared by the text canvas and the Preview list). No new crates. Nothing visible
+changes inside `render`, except the one case under "Calls made" (3).
+
+1. **Header facts (Task 1).** Pure helpers, unit-tested: the change counts from the existing `-U0` diff (no extra git
+   call), the chip words, the Where, Type, Lines and Edited words. The age is worked out in the tab's 1 s disk poll and
+   the tab redraws only when the words change. The counts and the Type carry over a reload, so the chip doesn't flash.
+2. **The two-line bar (Task 2).** 42 pt, name and chip on line one, details on line two, one File | Diff | Preview
+   switch, Wrap and Open in Editor as icon buttons (two new glyphs), the file glyph gone.
+3. **The overlay scrollbar in File and Diff (Task 3).** Thumb, hover zone, fade after 1.0 s, drag, click-to-jump, and the
+   bottom thumb for Wrap off. The fade's frames run only after activity and stop at 0.
+4. **The scrollbar in Preview (Task 4).** The same thumb over the rendered list (see "Calls made" 4).
+5. **Drag-select past the edge (Task 5).** The 16 ms auto-scroll, faster the further out, the selection's moving end
+   held at the edge row and column, in File and Diff; it stops on release, on coming back inside, or at the end.
+
+## Calls made while building
+
+Where the plan left a gap, or a task found something while building, these are the calls (all reviewed):
+
+1. **Preview segment.** It shows only for a Markdown file that has text. A missing or refused `.md` gets no Preview
+   segment.
+2. **Narrow panes.** Where the fixed parts don't fit, Where shrinks to `…` (it never vanishes). Below that width, the
+   meta line is clipped at the controls.
+3. **Opening a diff.** It shows the scrollbar in the same frame it scrolls to the first change. This is an accepted
+   M11p exception: that scroll was already set while drawing, and note 77's rules allow starting a timer there.
+4. **The Preview scrollbar has two modes, chosen by block count.**
+   - Up to 2,000 blocks, GPUI lays out every block, so the thumb is exact.
+   - Above that, the thumb is an estimate (45 pt a block). Dragging to the end still lands on the true end.
+   - Measured on a release build: a ~1 MB file (29,115 blocks) relaid out in 160 ms warm and 1.24 s cold; a ~20 KB file
+     (585 blocks) in 3 ms warm. Hence the 2,000 threshold, about 11 ms warm.
+5. **The horizontal auto-scroll edge** starts where the text starts, not at the line numbers.
+6. **Mode switches.** Switching to Preview mid-drag ends the drag. Switching modes also stops the auto-scroll.
+
 ## Not in it
 
 Editing; a minimap; a scrollbar in terminal panes or the browser; making the path segments clickable; copying the path
@@ -91,15 +127,18 @@ from the bar (the tab's menu has it); a track that is always visible; selection 
    outside a repo.
 2. The second line: folders from the repo's name; `~/…` outside a repo; the type; the line count; "edited …" changing
    from "just now" to "1 min ago" while you watch.
-3. A narrow split pane: the folders are cut with `…`, the rest stays whole, the controls stay visible.
+3. A narrow split pane: the folders are cut with `…`, the rest stays whole, the controls stay visible. Narrower still,
+   the second line is clipped where the controls start (the `…` stays).
 4. The switch: File / Diff / Preview on a Markdown file in a repo; File / Diff on a Rust file; no switch on a file
-   outside a repo that isn't Markdown. Wrap and Open in Editor as icons with tooltips.
+   outside a repo that isn't Markdown (a missing or refused `.md` shows no Preview segment). Wrap and Open in Editor as icons with tooltips.
 5. Scroll a long file: the thumb appears, then fades about a second after you stop. Hover the right edge: it shows.
    Drag it: the file follows. Click above or below it: it jumps there.
 6. Wrap off on a file with a very long line: the bottom thumb works the same.
-7. Preview of a long Markdown file: the thumb works.
+7. Preview of a long Markdown file: the thumb works (exact for a normal file; on a huge one the thumb's size is an
+   estimate, but dragging it to the end reaches the real end).
 8. Press in the text and drag below the pane, then hold still: the text keeps scrolling and the highlight follows;
-   further out is faster; release stops it. Above, the same upwards. Wrap off: left and right too.
+   further out is faster; release stops it. Above, the same upwards. Wrap off: left and right too (the left edge is where
+   the text starts, so dragging over the line numbers scrolls left). Switching mode mid-drag stops it.
 9. With the window idle and no scrolling, Activity Monitor shows fuxx's CPU as before.
 
 ## Related
