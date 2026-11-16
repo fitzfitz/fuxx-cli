@@ -12040,7 +12040,7 @@ fn palette_keys_scene() {
             assert_eq!(scope(cx), Scope::All, "{n}: ⌘K opens All");
             assert_eq!(selected(cx), Some(Key::Workspace(ids[0])), "{n}");
             // Over the `… more` row, into Actions; then up past the top, round to the last.
-            press_keys(cx, window, "down down down down");
+            press_keys(cx, window, "down down down down down");
             assert_eq!(
                 selected(cx),
                 Some(Key::More(Kind::Workspace)),
