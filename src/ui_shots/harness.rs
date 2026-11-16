@@ -17,7 +17,7 @@ use crate::chrome_cache::{self, Counted};
 use crate::restore::RestoreMode;
 use crate::status::Status;
 use crate::terminal_view::hsla;
-use crate::theme::{self, Theme};
+use crate::theme::{self, Theme, UiColors};
 use crate::workspace::Workspace;
 use crate::{fonts, settings};
 
@@ -687,5 +687,296 @@ pub(super) fn shown(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> S
         width: image.width(),
         height: image.height(),
         rgba: image.into_raw(),
+    }
+}
+
+/// The box, `(x0, x1, y0, y1)` in points, round every device pixel inside `area` (`x`, `y`,
+/// `w`, `h` in points) that is drawn in ink: at least half-way from `bg` to `ink` (its squared
+/// distance from `bg`, times 4, at least `ink`'s); `None` when there is none. Every device pixel
+/// is read, so a box edge is the same at 1x and 2x (a point-by-point read rounds each side its
+/// own way, by up to a pixel).
+pub(super) fn ink_box(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    area: (f32, f32, f32, f32),
+    bg: [u8; 3],
+    ink: [u8; 3],
+) -> Option<(f32, f32, f32, f32)> {
+    let dist = |p: &[u8], c: [u8; 3]| -> i32 {
+        (0..3)
+            .map(|k| (i32::from(p[k]) - i32::from(c[k])).pow(2))
+            .sum()
+    };
+    let full = dist(&ink, bg);
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let step = 1.0 / scale;
+    let (x, y, w, h) = area;
+    let (left, top) = ((x * scale) as usize, (y * scale) as usize);
+    let (cols, rows) = ((w * scale) as usize, (h * scale) as usize);
+    let mut found: Option<(f32, f32, f32, f32)> = None;
+    for py in top..(top + rows).min(shot.height as usize) {
+        for px_ in left..(left + cols).min(shot.width as usize) {
+            let i = (py * shot.width as usize + px_) * 4;
+            if dist(&shot.rgba[i..i + 3], bg) * 4 >= full {
+                let (x, y) = (px_ as f32 / scale, py as f32 / scale);
+                found = Some(match found {
+                    None => (x, x + step, y, y + step),
+                    Some((x0, x1, y0, y1)) => {
+                        (x0.min(x), x1.max(x + step), y0.min(y), y1.max(y + step))
+                    }
+                });
+            }
+        }
+    }
+    found
+}
+
+/// The box, `(x0, x1, y0, y1)` in points, round the ink inside `area` (`x`, `y`, `w`, `h` in
+/// points), to a fraction of a device pixel: each pixel's coverage is how far it is from `bg`
+/// toward `ink` (0 to 1), and each side of the box sits inside its outermost inked pixel by the
+/// part of that pixel its column's (or row's) most covered pixel leaves bare. `None` when nothing
+/// is inked (no pixel 1/50 of the way). For text, where `ink_box` is not enough: anti-aliased
+/// glyph edges cover a pixel part-way, by different amounts in a dark and a light theme
+/// (CoreGraphics thickens light-on-dark strokes), so a half-way threshold moves a box edge a
+/// whole device pixel when an edge pixel's coverage crosses one half; here it moves smoothly.
+pub(super) fn ink_span(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    area: (f32, f32, f32, f32),
+    bg: [u8; 3],
+    ink: [u8; 3],
+) -> Option<(f32, f32, f32, f32)> {
+    const FAINT: f32 = 0.02;
+    let towards: [f32; 3] = std::array::from_fn(|k| f32::from(ink[k]) - f32::from(bg[k]));
+    let full: f32 = towards.iter().map(|d| d * d).sum();
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (x, y, w, h) = area;
+    let (left, top) = ((x * scale) as usize, (y * scale) as usize);
+    let right = (left + (w * scale) as usize).min(shot.width as usize);
+    let bottom = (top + (h * scale) as usize).min(shot.height as usize);
+    if right <= left || bottom <= top || full == 0.0 {
+        return None;
+    }
+    let (mut cols, mut rows) = (vec![0.0f32; right - left], vec![0.0f32; bottom - top]);
+    for py in top..bottom {
+        for px_ in left..right {
+            let i = (py * shot.width as usize + px_) * 4;
+            let along: f32 = (0..3)
+                .map(|k| (f32::from(shot.rgba[i + k]) - f32::from(bg[k])) * towards[k])
+                .sum();
+            let c = (along / full).clamp(0.0, 1.0);
+            cols[px_ - left] = cols[px_ - left].max(c);
+            rows[py - top] = rows[py - top].max(c);
+        }
+    }
+    // The near and far edges, in device pixels from the area's start, of the inked run.
+    let edges = |cover: &[f32]| -> Option<(f32, f32)> {
+        let first = cover.iter().position(|&c| c >= FAINT)?;
+        let last = cover.iter().rposition(|&c| c >= FAINT)?;
+        Some((first as f32 + 1.0 - cover[first], last as f32 + cover[last]))
+    };
+    let (x0, x1) = edges(&cols)?;
+    let (y0, y1) = edges(&rows)?;
+    Some((
+        (left as f32 + x0) / scale,
+        (left as f32 + x1) / scale,
+        (top as f32 + y0) / scale,
+        (top as f32 + y1) / scale,
+    ))
+}
+
+pub(super) fn count_along(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    y: f32,
+    x0: f32,
+    x1: f32,
+) -> usize {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let near = |p: [u8; 3]| {
+        p.iter()
+            .zip([c.r, c.g, c.b])
+            .all(|(a, b)| a.abs_diff(b) <= 3)
+    };
+    let (a, b) = ((x0 * scale) as usize, (x1 * scale) as usize);
+    (a..b)
+        .filter(|&dx| near(pixel_at(shot, dims, dx as f32 / scale, y)))
+        .count()
+}
+
+/// How far a gap's pixel may be from the canvas: the cards' shadows (`card_shadow_alpha`,
+/// blurred 6 pt) reach into the 6 pt gaps and darken them a little (M11i).
+const SHADOW_SLACK: u8 = 12;
+
+/// Whether pixel `p` shows the canvas (`sidebar_background`) between cards: within the
+/// shadow's reach of it, and nearer it than the card's fill.
+pub(super) fn is_canvas(p: [u8; 3], ui: &UiColors) -> bool {
+    let canvas = gap(p, ui.sidebar_background);
+    canvas <= SHADOW_SLACK && canvas < gap(p, ui.card)
+}
+
+/// Frames, so focus changes (and the boxes' blur events) and scrolls run.
+pub(super) fn settle(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    for _ in 0..3 {
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+            .expect("draw");
+        cx.run_until_parked();
+    }
+}
+
+/// Press `keys` (space-separated keystrokes), a few frames after each.
+pub(super) fn press_keys(cx: &mut VisualTestAppContext, window: AnyWindowHandle, keys: &str) {
+    for key in keys.split(' ') {
+        cx.simulate_keystrokes(window, key);
+        settle(cx, window);
+    }
+}
+
+/// The most inked pixel (the furthest from `bg`) in the row's middle band between `x0` and `x1`.
+pub(super) fn strongest(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    bg: alacritty_terminal::vte::ansi::Rgb,
+    row: gpui::Bounds<Pixels>,
+    x0: f32,
+    x1: f32,
+) -> Option<[u8; 3]> {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (top, bottom) = (f32::from(row.top()) + 4.0, f32::from(row.bottom()) - 4.0);
+    let mut best: Option<[u8; 3]> = None;
+    for dy in (top * scale) as usize..(bottom * scale) as usize {
+        for dx in (x0 * scale) as usize..(x1 * scale) as usize {
+            let p = pixel_at(shot, dims, dx as f32 / scale, dy as f32 / scale);
+            if best.is_none_or(|b| gap(p, bg) > gap(b, bg)) {
+                best = Some(p);
+            }
+        }
+    }
+    best
+}
+
+/// Whether pixel `p` is colour `c`, give or take `tol` a channel.
+pub(super) fn near_by(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, tol: u8) -> bool {
+    p.iter()
+        .zip([c.r, c.g, c.b])
+        .all(|(a, b)| a.abs_diff(b) <= tol)
+}
+
+/// Keep `shot` as `<name>-<slug>` (`keep_shot`: its PNG in `target/ui-shots/` with `--png`).
+pub(super) fn save_shot(name: &str, slug: &str, shot: &Shot) -> PathBuf {
+    let path = keep_shot(&format!("{name}-{slug}"), shot);
+    println!("ui-shots: {}", path.display());
+    path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{px, size};
+
+    /// A `w` × `h` device-pixel shot of `bg`, with column `x` (all rows) mixed `cover` of the
+    /// way from `bg` to `ink`.
+    fn columns(w: u32, h: u32, bg: [u8; 3], ink: [u8; 3], cover: &[(u32, f32)]) -> Shot {
+        let mut rgba = Vec::new();
+        for _ in 0..h {
+            for x in 0..w {
+                let c = cover
+                    .iter()
+                    .find(|(cx, _)| *cx == x)
+                    .map_or(0.0, |(_, c)| *c);
+                for k in 0..3 {
+                    let v = f32::from(bg[k]) + (f32::from(ink[k]) - f32::from(bg[k])) * c;
+                    rgba.push(v.round() as u8);
+                }
+                rgba.push(255);
+            }
+        }
+        Shot {
+            width: w,
+            height: h,
+            rgba,
+        }
+    }
+
+    /// A stem whose left edge column is `left` covered and right edge column `right` covered,
+    /// solid in between (device columns 9 to 20 of 40, 1x).
+    fn stem(bg: [u8; 3], ink: [u8; 3], left: f32, right: f32) -> Shot {
+        let mut cover = vec![(9, left), (20, right)];
+        cover.extend((10..20).map(|x| (x, 1.0)));
+        columns(40, 4, bg, ink, &cover)
+    }
+
+    #[test]
+    fn ink_span_reads_an_edge_pixel_s_coverage_as_a_fraction_of_it() {
+        let (bg, ink) = ([25, 25, 38], [156, 162, 186]);
+        let dims = size(px(40.0), px(4.0));
+        let shot = stem(bg, ink, 0.4, 0.3);
+        let (x0, x1, y0, y1) = ink_span(&shot, dims, (0.0, 0.0, 40.0, 4.0), bg, ink).expect("ink");
+        assert!((x0 - 9.6).abs() < 0.02, "left edge {x0}");
+        assert!((x1 - 20.3).abs() < 0.02, "right edge {x1}");
+        assert_eq!((y0, y1), (0.0, 4.0));
+    }
+
+    #[test]
+    fn ink_span_moves_a_little_where_ink_box_jumps_a_whole_pixel() {
+        // The same edge pixel just under and just over half covered: `ink_box` (a half-way
+        // threshold) moves its left edge by a whole device pixel, `ink_span` by 0.04.
+        let (bg, ink) = ([232, 235, 239], [90, 90, 108]);
+        let dims = size(px(40.0), px(4.0));
+        let area = (0.0, 0.0, 40.0, 4.0);
+        let under = stem(bg, ink, 0.48, 1.0);
+        let over = stem(bg, ink, 0.52, 1.0);
+        let jump = ink_box(&under, dims, area, bg, ink).expect("ink").0
+            - ink_box(&over, dims, area, bg, ink).expect("ink").0;
+        assert_eq!(jump, 1.0);
+        let slide = ink_span(&under, dims, area, bg, ink).expect("ink").0
+            - ink_span(&over, dims, area, bg, ink).expect("ink").0;
+        assert!((slide - 0.04).abs() < 0.02, "moved {slide}");
+    }
+
+    #[test]
+    fn ink_span_is_the_same_on_a_dark_and_a_light_background() {
+        // Light text on dark and dark text on light, the same coverage: the same span.
+        let dims = size(px(40.0), px(4.0));
+        let area = (0.0, 0.0, 40.0, 4.0);
+        let (dark, light) = (
+            ([25, 25, 38], [156, 162, 186]),
+            ([232, 235, 239], [90, 90, 108]),
+        );
+        let a = ink_span(
+            &stem(dark.0, dark.1, 0.45, 0.35),
+            dims,
+            area,
+            dark.0,
+            dark.1,
+        );
+        let b = ink_span(
+            &stem(light.0, light.1, 0.45, 0.35),
+            dims,
+            area,
+            light.0,
+            light.1,
+        );
+        let (a, b) = (a.expect("ink"), b.expect("ink"));
+        assert!(
+            (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02,
+            "{a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn ink_span_works_in_points_at_2x_and_finds_nothing_on_bare_background() {
+        let (bg, ink) = ([25, 25, 38], [156, 162, 186]);
+        // 40 device pixels across a 20 pt window: the edges come back in points.
+        let dims = size(px(20.0), px(2.0));
+        let shot = stem(bg, ink, 0.5, 0.5);
+        let (x0, x1, _, _) = ink_span(&shot, dims, (0.0, 0.0, 20.0, 2.0), bg, ink).expect("ink");
+        assert!(
+            (x0 - 4.75).abs() < 0.02 && (x1 - 10.25).abs() < 0.02,
+            "{x0} {x1}"
+        );
+        // Over the bare background beside the stem: nothing.
+        assert_eq!(ink_span(&shot, dims, (12.0, 0.0, 8.0, 2.0), bg, ink), None);
     }
 }
