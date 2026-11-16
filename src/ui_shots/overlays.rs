@@ -289,6 +289,10 @@ fn help_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    // The rows each text should leave, from the pure modules. Their own checks ("split" 2,
+    // "palette" 1, ⌘K and ⌘P listed, 8+ for "browser") moved to cargo test (M11aj Task 10):
+    // help_shortcuts::tests::{split_and_palette_find_their_rows_in_the_real_list,
+    // command_k_and_p_are_listed}, help_commands::tests::matching_ignores_case_and_looks_at_group.
     let shortcuts = shortcut_list(false);
     let all_shortcuts = shortcuts.len();
     let split = shortcuts.iter().filter(|r| row_matches(r, "split")).count();
@@ -298,25 +302,10 @@ fn help_scenes() {
         .iter()
         .filter(|e| entry_matches(e, "browser"))
         .count();
-    assert_eq!(split, 2, "help: \"split\" finds Split Right and Split Down");
     let palette = shortcuts
         .iter()
         .filter(|r| row_matches(r, "palette"))
         .count();
-    assert_eq!(palette, 1, "help: \"palette\" finds Command Palette…");
-    for (name, keys) in [
-        ("Command Palette\u{2026}", "\u{2318}K"),
-        ("Go to Workspace\u{2026}", "\u{2318}P"),
-    ] {
-        assert!(
-            shortcuts.iter().any(|r| r.name == name && r.keys == keys),
-            "help: {name} {keys} is listed"
-        );
-    }
-    assert!(
-        browser >= 8,
-        "help: every browser command matches \"browser\""
-    );
 
     let dims = size(px(960.0), px(600.0));
     for &(slug, name) in shot_themes() {
