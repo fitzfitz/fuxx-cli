@@ -138,6 +138,8 @@ pub fn describe(action: &str) -> Describe {
         | "file_tab::CloseFind" => Unlisted,
         other if other.starts_with("name_input::") => Unlisted,
         other if other.starts_with("composer::") => Unlisted,
+        // The agent tab's `@` file list's arrows (while it is open only).
+        "agent_tab::AtUp" | "agent_tab::AtDown" => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("palette::") => Unlisted,
         // The branch switcher's arrows (in its panel only).

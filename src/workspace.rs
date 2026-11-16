@@ -30,6 +30,7 @@ use gpui::{
 };
 
 use crate::adopt::{self, Probe};
+use crate::agent_tab::AgentTab;
 use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
@@ -670,6 +671,10 @@ pub struct Workspace {
     /// The file tabs' views (M11g), by tab: one for each file tab of the model (`sync` drops
     /// those whose tab has gone).
     pub(crate) file_tabs: HashMap<TabId, Entity<FileTab>>,
+    /// The agent tabs' views (M11aa), by tab. `sync` drops those whose tab has gone (dropping
+    /// the view ends its process); closing a tab ends it first. M11aa Task 8 makes the views
+    /// (`ensure_agent_tabs`) and keeps the chrome's mirror of each.
+    pub(crate) agent_tabs: HashMap<TabId, Entity<AgentTab>>,
     /// Each browser tab's title as its page last said (for the tab bar and a workspace's name).
     pub(crate) browser_titles: HashMap<TabId, String>,
     /// Browser tabs just closed whose pages still have to leave the window.
@@ -902,6 +907,7 @@ impl Workspace {
             agents_frozen: false,
             browser_tabs: HashMap::new(),
             file_tabs: HashMap::new(),
+            agent_tabs: HashMap::new(),
             browser_titles: HashMap::new(),
             closed_browser_tabs: Vec::new(),
             browser_clock: 0,
@@ -1730,6 +1736,12 @@ impl Workspace {
             model
                 .tab(*tab)
                 .is_some_and(|t| matches!(t.kind, TabKind::File { .. }))
+        });
+        // An agent tab gone: its view goes, and its process with it (`AgentProcess`'s drop).
+        self.agent_tabs.retain(|tab, _| {
+            model
+                .tab(*tab)
+                .is_some_and(|t| matches!(t.kind, TabKind::Agent { .. }))
         });
         // Every op keeps the model's rules; a break is a bug, said where it can be found.
         if let Err(broken) = self.model.check() {
@@ -2874,9 +2886,19 @@ impl Workspace {
         }
     }
 
-    /// The keyboard to the focused tab: its terminal, a file tab, or a browser tab (GPUI's
-    /// focus only: its page takes AppKit's keyboard only on a click in it or a navigation the
-    /// person started). While the Welcome card is open it keeps the keyboard instead: terminals
+    /// The focused tab's agent view, if it is an agent tab with one.
+    pub(crate) fn focused_agent_tab(&self) -> Option<&Entity<AgentTab>> {
+        self.agent_tabs.get(&self.model.focused_tab()?)
+    }
+
+    /// The agent view pane `pane` shows, if it shows one.
+    pub(crate) fn pane_agent_tab(&self, pane: PaneId) -> Option<Entity<AgentTab>> {
+        self.agent_tabs.get(&self.model.pane(pane)?.active).cloned()
+    }
+
+    /// The keyboard to the focused tab: its terminal, a file tab, an agent tab (its composer),
+    /// or a browser tab (GPUI's focus only: its page takes AppKit's keyboard only on a click in
+    /// it or a navigation the person started). While the Welcome card is open it keeps the keyboard instead: terminals
     /// opened or selected meanwhile (⌘N, ⌘T, a click in the top band, a script) show behind it
     /// (M11k). What closes the card clears `welcome` before handing the keyboard on.
     pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2889,6 +2911,10 @@ impl Workspace {
             return;
         }
         if let Some(tab) = self.focused_file_tab() {
+            tab.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        if let Some(tab) = self.focused_agent_tab() {
             tab.read(cx).focus_handle(cx).focus(window, cx);
             return;
         }
@@ -2933,6 +2959,13 @@ impl Workspace {
             if let Some(file) = self.pane_file_tab(id) {
                 return Some(
                     file.cached(StyleRefinement::default().size_full())
+                        .into_any_element(),
+                );
+            }
+            if let Some(agent) = self.pane_agent_tab(id) {
+                return Some(
+                    agent
+                        .cached(StyleRefinement::default().size_full())
                         .into_any_element(),
                 );
             }

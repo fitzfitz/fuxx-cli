@@ -298,6 +298,20 @@ pub fn row(blocks: &[Md], ix: usize, draw: &Draw) -> AnyElement {
         .into_any_element()
 }
 
+/// `blocks` as one column with no page padding (M11aa: an agent's message in a chat row): the
+/// reader's blocks (`blocks_of`) one under another. Its links' element ids start from
+/// `base << 20` (a chat passes its item's index), so they stay the same from frame to frame.
+/// Mermaid blocks show as code (R7).
+pub fn column(blocks: &[Md], base: usize, draw: &Draw) -> AnyElement {
+    draw.links.set(base << 20);
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .children(blocks_of(blocks, draw))
+        .into_any_element()
+}
+
 /// A Mermaid block (M11ac Part 2): its diagram centred, at its natural width or the column's,
 /// whichever is less, its height kept in proportion; or its code, with the reason under it.
 fn mermaid_block(md: &Md, shown: &Shown, draw: &Draw) -> AnyElement {
@@ -570,6 +584,31 @@ mod tests {
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got}");
             }
         }
+    }
+
+    /// A chat row's links get ids from its own base, so two rows' links never share one.
+    #[test]
+    fn column_link_ids_start_at_base() {
+        let theme = crate::theme::every_theme()
+            .into_iter()
+            .next()
+            .expect("a theme")
+            .1;
+        let draw = Draw {
+            colours: Colours::of(&theme),
+            code_font: "Menlo".into(),
+            on_link: Rc::new(|_, _, _| {}),
+            links: Cell::new(0),
+            mermaid: Rc::new(Vec::new()),
+        };
+        let blocks = crate::agent_markdown::parse(
+            "See [the docs](https://e.x) and [more](https://f.x).\n\n- [a](https://g.x)",
+        );
+        let _ = column(&blocks, 3, &draw);
+        assert!(draw.links.get() >= 3 << 20, "{}", draw.links.get());
+        assert!(draw.links.get() < 4 << 20, "{}", draw.links.get());
+        // Two linked blocks: two ids taken past the base.
+        assert_eq!(draw.links.get(), (3 << 20) + 2);
     }
 
     #[test]
