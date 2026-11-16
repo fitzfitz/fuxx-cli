@@ -278,6 +278,7 @@ const SCENES: &[(&str, fn())] = &[
     ("file-diff", file_diff_scenes),
     ("file-tab-md", file_tab_md_scenes),
     ("file-tab-md-mermaid", file_tab_md_mermaid_scenes),
+    ("file-tab-scrollbar", file_tab_scrollbar_scenes),
     ("right-sidebar", right_sidebar_scenes),
     ("files", files_scenes),
     ("files-follow", files_follow_scenes),
@@ -6962,6 +6963,254 @@ fn file_view_scenes() {
     );
 }
 
+/// M11ae Task 3: the file tab's overlay scrollbar, a tab on its own in a window, in both themes:
+/// - `file-tab-scrollbar`: a 400-line file. No thumb before any scroll; one wheel step shows it
+///   in the text's right 12 pt, its top as far down its track as the scroll is down the text;
+///   1.5 s later (real time: the fade reads the clock) it is gone and its fade task has ended.
+///   A press below the thumb centres it on the press and selects nothing; the thumb dragged to
+///   below the text scrolls to the end. Shot then: the thumb at the bottom right.
+/// - `file-tab-scrollbar-wide`: Wrap off, a 3,000-character line, the wheel sideways: a thumb
+///   along the bottom (in the text's bottom 12 pt, right of the numbers), none at the right.
+/// - `file-tab-scrollbar-short`: a 10-line file: the wheel and the pointer at the right edge
+///   show nothing, and a press in that edge's 12 pt starts a selection.
+fn file_tab_scrollbar_scenes() {
+    use crate::file_tab::FileTab;
+    use crate::scrollbar::Axis;
+    use gpui::{Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-tab-scrollbar");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let lines =
+        |n: usize| -> String { (1..=n).map(|i| format!("let line_{i} = {i};\n")).collect() };
+    let long = dir.join("long.rs");
+    std::fs::write(&long, lines(400)).expect("long.rs");
+    let wide = dir.join("wide.rs");
+    let wide_text = format!("// one wide line\nlet wide = \"{}\";\n", "x".repeat(3_000));
+    std::fs::write(&wide, wide_text).expect("wide.rs");
+    let short = dir.join("short.rs");
+    std::fs::write(&short, lines(10)).expect("short.rs");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let dims = size(px(760.0), px(460.0));
+    let none = Modifiers::none();
+    let left = Some(MouseButton::Left);
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    let wheel = |cx: &mut VisualTestAppContext, window, at, delta| {
+        cx.simulate_event(
+            window,
+            ScrollWheelEvent {
+                position: at,
+                delta,
+                modifiers: none,
+                touch_phase: TouchPhase::Moved,
+            },
+        );
+    };
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let build_for = |path: PathBuf, slot: TabSlot| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(
+                        path.clone(),
+                        crate::layout_model::FileMode::Plain,
+                        window,
+                        cx,
+                    );
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        // The 400-line file: shown by a scroll, faded, a press below the thumb, a drag.
+        let n = format!("file-tab-scrollbar-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(long.clone(), slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            frame(cx, window);
+            let look = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    let g = t.geom().expect("drawn");
+                    let thumb = t.thumb_bounds(Axis::Vertical);
+                    (
+                        t.scrollbar_shown(),
+                        t.scrollbar_animating(),
+                        thumb,
+                        t.scroll(),
+                        g,
+                    )
+                })
+            };
+            let (shown, _, thumb, _, g) = look(cx);
+            assert!(!shown, "{n}: shown before any scroll");
+            assert!(thumb.is_some(), "{n}: 400 lines overflow");
+            wheel(
+                cx,
+                window,
+                g.bounds.center(),
+                ScrollDelta::Lines(point(0.0, -3.0)),
+            );
+            frame(cx, window);
+            let (shown, _, thumb, scroll, g) = look(cx);
+            let thumb = thumb.expect("a thumb");
+            assert!(scroll.y > px(0.0), "{n}: one wheel step scrolls");
+            assert!(shown, "{n}: not shown after a scroll");
+            assert!(
+                thumb.left() >= g.bounds.right() - px(12.0) && thumb.right() <= g.bounds.right(),
+                "{n}: the thumb {thumb:?} is not in the text's right 12 pt ({:?})",
+                g.bounds
+            );
+            let down = (thumb.top() - g.bounds.top()) / (g.bounds.size.height - thumb.size.height);
+            let scrolled = scroll.y / g.max_scroll.y;
+            assert!(
+                (down - scrolled).abs() < 0.01,
+                "{n}: the thumb {down} down its track, the text {scrolled} down"
+            );
+            // Real time for the fade (it reads `Instant`), the test clock for its task's steps.
+            std::thread::sleep(Duration::from_millis(1500));
+            cx.advance_clock(Duration::from_millis(1500));
+            frame(cx, window);
+            let (shown, animating, ..) = look(cx);
+            assert!(!shown, "{n}: still shown 1.5 s after the scroll");
+            assert!(!animating, "{n}: the fade task still runs");
+
+            // A press below the thumb, in the right edge's zone: the thumb centres on it.
+            let at = point(
+                g.bounds.right() - px(6.0),
+                g.bounds.top() + g.bounds.size.height * 0.6,
+            );
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+            frame(cx, window);
+            let (shown, _, thumb, _, _) = look(cx);
+            let thumb = thumb.expect("a thumb");
+            assert!(shown, "{n}: not shown after a jump");
+            assert!(
+                (thumb.center().y - at.y).abs() < px(0.5),
+                "{n}: the thumb {thumb:?} is not centred on the press at {at:?}"
+            );
+            let selected = cx.read(|cx| tab.read(cx).selected_text());
+            assert_eq!(selected, "", "{n}: a press in the edge zone selected");
+
+            // The thumb dragged to below the text: the end.
+            let grab = thumb.center();
+            cx.simulate_mouse_down(window, grab, MouseButton::Left, none);
+            let below = point(grab.x, g.bounds.bottom() + px(40.0));
+            cx.simulate_mouse_move(window, below, left, none);
+            cx.simulate_mouse_up(window, below, MouseButton::Left, none);
+            frame(cx, window);
+            let (shown, _, thumb, scroll, g) = look(cx);
+            assert_eq!(scroll.y, g.max_scroll.y, "{n}: dragged to the end");
+            let thumb = thumb.expect("a thumb");
+            assert!(
+                (thumb.bottom() - g.bounds.bottom()).abs() < px(0.5),
+                "{n}: the thumb {thumb:?} at the track's end"
+            );
+            assert!(shown, "{n}: not shown after a drag");
+            let selected = cx.read(|cx| tab.read(cx).selected_text());
+            assert_eq!(selected, "", "{n}: a thumb drag selected");
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with("file-tab-scrollbar", slug, &theme, dims, build, act);
+        println!("ui-shots: {}", path.display());
+
+        // Wrap off, a 3,000-character line, scrolled sideways: the bottom thumb.
+        let n = format!("file-tab-scrollbar-wide-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(wide.clone(), slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let sideways = ScrollDelta::Pixels(point(px(-400.0), px(0.0)));
+            wheel(cx, window, g.bounds.center(), sideways);
+            frame(cx, window);
+            let (shown, thumb, right, scroll, g) = cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                let (h, v) = (
+                    t.thumb_bounds(Axis::Horizontal),
+                    t.thumb_bounds(Axis::Vertical),
+                );
+                (t.scrollbar_shown(), h, v, t.scroll(), g)
+            });
+            assert!(scroll.x > px(0.0), "{n}: scrolled sideways");
+            assert!(shown, "{n}: not shown after a sideways scroll");
+            assert_eq!(right, None, "{n}: a thumb at the right for 2 lines");
+            let thumb = thumb.expect("a bottom thumb");
+            assert!(
+                thumb.top() >= g.bounds.bottom() - px(12.0)
+                    && thumb.bottom() <= g.bounds.bottom()
+                    && thumb.left() > g.bounds.left() + g.text_left,
+                "{n}: the thumb {thumb:?} is not in the text's bottom 12 pt ({:?})",
+                g.bounds
+            );
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with("file-tab-scrollbar-wide", slug, &theme, dims, build, act);
+        println!("ui-shots: {}", path.display());
+
+        // A 10-line file: nothing to scroll, so no bar, and the edge selects as anywhere.
+        let n = format!("file-tab-scrollbar-short-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(short.clone(), slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            wheel(
+                cx,
+                window,
+                g.bounds.center(),
+                ScrollDelta::Lines(point(0.0, -3.0)),
+            );
+            let edge = point(
+                g.bounds.right() - px(4.0),
+                g.bounds.top() + g.line_height * 1.5,
+            );
+            cx.simulate_mouse_move(window, edge, None, none);
+            frame(cx, window);
+            let (shown, thumb) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.scrollbar_shown(), t.thumb_bounds(Axis::Vertical))
+            });
+            assert!(!shown, "{n}: shown for a text that fits");
+            assert_eq!(thumb, None, "{n}: a thumb for a text that fits");
+            cx.simulate_mouse_down(window, edge, MouseButton::Left, none);
+            let to = point(
+                g.bounds.left() + g.text_left + px(2.0),
+                g.bounds.top() + g.line_height * 3.5,
+            );
+            cx.simulate_mouse_move(window, to, left, none);
+            cx.simulate_mouse_up(window, to, MouseButton::Left, none);
+            frame(cx, window);
+            let selected = cx.read(|cx| tab.read(cx).selected_text());
+            assert!(
+                !selected.is_empty(),
+                "{n}: a press at the edge didn't select"
+            );
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with("file-tab-scrollbar-short", slug, &theme, dims, build, act);
+        println!("ui-shots: {}", path.display());
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The diff fixture: `FILE_VIEW_FIXTURE` with line 7 changed (row 6 removed, row 7 added) and
 /// a line added after line 18 (row 19), as git prints it with the whole file as context.
 fn file_diff_fixture() -> String {
@@ -7153,8 +7402,9 @@ fn file_diff_scenes() {
         let g = geom_seen.get().expect("drawn");
         let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
         let row_y = |row: usize| g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y;
-        // The tints, 6 pt inside the right edge.
-        let right = g.bounds.right() - px(6.0);
+        // The tints, 2 pt inside the right edge (right of the scrollbar's thumb, which the
+        // reveal shows, M11ae).
+        let right = g.bounds.right() - px(2.0);
         let red_tint = crate::theme::mix(theme.background, red, 0.12);
         let green_tint = crate::theme::mix(theme.background, green, 0.12);
         for (row, tint, what) in [
