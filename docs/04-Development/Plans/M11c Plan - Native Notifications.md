@@ -46,7 +46,7 @@ reaches the window is decided by Task 0's test.
 - GPUI's own app delegate is left alone; the notification delegate is its own object, set once.
 - Subagents never `cargo run` the app; allowed: `cargo test`, `cargo run --features ui-shots -- __ui-shots [filter]`,
   and building `target/dist/fuxx.app` with `scripts/bundle-mac.sh --app-only`. Each uses its own `CARGO_TARGET_DIR`
-  under `/tmp/scratch-jobs/1f9e4e3f/tmp/`.
+  under a scratch directory (not kept).
 
 ## Review Focus
 
