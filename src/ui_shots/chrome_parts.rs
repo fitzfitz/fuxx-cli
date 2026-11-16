@@ -83,6 +83,11 @@ pub(super) const SCENES: &[Scene] = &[
             "src/status_bar.rs",
             "src/tab_bar.rs",
             "src/title_area.rs",
+            "src/mark_view.rs",
+            "src/workspace_agent.rs",
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/composer.rs",
         ],
     },
     Scene {
@@ -1009,8 +1014,9 @@ impl Drop for CacheOff {
 }
 
 /// M11p Task 4: a busy window (six workspaces in two groups, a split, waiting, working and done
-/// terminals, notifications, an unseen one) looks the same drawn from the cached parts as drawn
-/// with the cache off, and drawn afresh; with the sidebar shown and hidden (the title area).
+/// terminals, notifications, an unseen one; M11aa Task 9: a Working Claude tab beside codex)
+/// looks the same drawn from the cached parts as drawn with the cache off, and drawn afresh;
+/// with the sidebar shown and hidden (the title area).
 ///
 /// Panics unless the frames are identical byte for byte, and the cached frame was drawn with
 /// no part rendering (so it was the parts' reused frame).
@@ -1030,8 +1036,25 @@ fn chrome_pixels_same() {
         let mut ws = sidebar_workspace(&BUSY, Some(3), 1, &[], window, cx);
         ws.sidebar.hint_dismissed = true;
         shot_notifications(&mut ws);
+        // A Claude tab beside codex (its view is made as the window is first drawn), codex
+        // focused again.
+        let codex = ws.sessions.items()[1].id;
+        ws.agent_beside(codex, "claude", window, cx);
+        ws.select(1, window, cx);
         ws
     });
+    // It works (its first message): its mark is a moving view in its tab.
+    let claude = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let tab = ws.model.focused_workspace().map(|w| ws.model.agent_tabs(w));
+        let tab = *tab
+            .and_then(|t| t.first().copied())
+            .as_ref()
+            .expect("its Claude tab");
+        ws.agents[&tab].view.clone()
+    });
+    cx.update(|cx| claude.update(cx, |t, cx| t.send("Fix the date check".into(), cx)));
+    cx.run_until_parked();
     // A Working mark mid-beat (M11p Task 6: it is its own view, turned by the clock): its arc
     // has turned 144°, as the cached frame, the uncached one and a full redraw all draw it.
     let clock = cx.read(|cx| ws.read(cx).clock.clone());
@@ -1053,10 +1076,10 @@ fn chrome_pixels_same() {
     });
     println!("ui-shots: {n}: moving marks {moving:?}");
     assert!(
-        ["tab", "status-bar"]
+        ["tab", "status-bar", crate::sidebar::AGENT_MARK]
             .iter()
             .all(|place| moving.iter().any(|(p, _)| p == place)),
-        "{n}: codex's Working mark is a view in its tab and the status bar"
+        "{n}: codex's Working mark is a view in its tab and the status bar, its Claude's in its tab"
     );
     for hidden in [false, true] {
         let step = if hidden {

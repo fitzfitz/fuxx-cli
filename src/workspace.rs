@@ -701,6 +701,10 @@ pub struct Workspace {
     /// a login shell typing a preset.
     #[cfg(feature = "ui-shots")]
     pub(crate) quiet_opens: bool,
+    /// The scenes' banners about agent tabs (summary, subtitle, body), kept here instead of
+    /// posted (a scene must not post a real one); `None`: posted.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) shot_banners: Option<Vec<(String, String, String)>>,
     /// Each browser tab's title as its page last said (for the tab bar and a workspace's name).
     pub(crate) browser_titles: HashMap<TabId, String>,
     /// Browser tabs just closed whose pages still have to leave the window.
@@ -733,7 +737,7 @@ pub struct Workspace {
     pub(crate) hold_saving: bool,
     /// The id the next session gets (`s1`, `s2`, ...); never reused.
     pub(crate) next_id: u64,
-    window_active: bool,
+    pub(crate) window_active: bool,
     /// Answers scripting requests (see `workspace_api`); none when scripting is off.
     _requests: Option<Task<()>>,
     /// Hears clicks on fuxx's banners (`listen_for_clicks`).
@@ -772,7 +776,7 @@ pub struct Workspace {
     /// Whether the marks' 100 ms ticker is running (only while a mark on screen moves).
     pub(crate) marks_ticking: bool,
     /// The last Done pop's number.
-    pops: u64,
+    pub(crate) pops: u64,
     /// Persistence asked for at startup (`persistent-sessions = on`).
     pub(crate) persistent: bool,
     pub(crate) service: Service,
@@ -944,6 +948,8 @@ impl Workspace {
             agents_offline: false,
             #[cfg(feature = "ui-shots")]
             quiet_opens: false,
+            #[cfg(feature = "ui-shots")]
+            shot_banners: None,
             browser_titles: HashMap::new(),
             closed_browser_tabs: Vec::new(),
             browser_clock: 0,
@@ -1906,18 +1912,29 @@ impl Workspace {
     }
 
     /// A row's tooltip (`sidebar::row_tip`): its name and, under it, the program's own title
-    /// when it says more, then a waiting row's whole question (its most urgent terminal's).
+    /// when it says more, then a waiting row's whole question (what its mark is about: its agent
+    /// tab's, R3, else its most urgent terminal's).
     pub(crate) fn workspace_tip(&self, ws: WorkspaceId) -> Option<String> {
         let label = self.workspace_label(ws);
         let title = self
             .named_terminal(ws)
             .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
             .and_then(|s| s.title.as_deref());
-        let question = self
-            .rollup_session(ws)
-            .map(|i| &self.sessions.items()[i])
-            .filter(|s| s.status == Status::Waiting)
-            .and_then(|s| s.question.as_deref());
+        let agent = self.rows(Instant::now()).iter().find_map(|row| match row {
+            SidebarRow::Workspace(w) if w.workspace == ws => w.agent,
+            _ => None,
+        });
+        let question = match agent.and_then(|tab| self.agents.get(&tab)) {
+            Some(slot) => slot
+                .question
+                .as_deref()
+                .filter(|_| slot.status == Status::Waiting),
+            None => self
+                .rollup_session(ws)
+                .map(|i| &self.sessions.items()[i])
+                .filter(|s| s.status == Status::Waiting)
+                .and_then(|s| s.question.as_deref()),
+        };
         sidebar::row_tip(&label, title, question)
     }
 
@@ -3934,6 +3951,7 @@ impl Workspace {
         this.agents_frozen = true;
         this.agents_offline = true;
         this.quiet_opens = true;
+        this.shot_banners = Some(Vec::new());
         // Nothing holds a conversation unless a scene says so (no `ps` of this Mac).
         this.shot_ps = Some(Some(Vec::new()));
         this

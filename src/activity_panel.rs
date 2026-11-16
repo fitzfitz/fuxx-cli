@@ -28,14 +28,18 @@ use crate::activity::{
     ActivityLog, Kind, clock_hm, day_heading, event_detail, event_title, local_day,
 };
 use crate::cli;
+use crate::layout_model::TabId;
+use crate::procs::ProgramState;
 use crate::right_sidebar::{EDGE, SMALL, TEXT, TITLE, header_row, note};
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::Tip;
 use crate::status::Status;
+use crate::status_bar;
 use crate::terminal_view::hsla;
 use crate::theme::{UiColors, mix, readable};
 use crate::ui_tokens::TEXT_MIN;
 use crate::workspace::{Session, Workspace};
+use crate::workspace_agent::AgentSlot;
 
 pub(crate) const NO_ACTIVITY: &str = "No activity yet.";
 pub(crate) const NO_TERMINAL: &str = "No terminal to follow.";
@@ -357,35 +361,82 @@ fn offset_at(at: SystemTime) -> i64 {
     cli::local_utc_offset(ms as u64)
 }
 
+/// What the Activity list's place is kept by (`RightSidebar::activity_key`): whether its subject
+/// is an agent tab, the tab's or terminal's id, its lines, its newest entry's time.
+pub(crate) type ActivityKey = (bool, u64, usize, Option<SystemTime>);
+
+/// What the Activity panel is about: the focused agent tab (R9), else the followed terminal.
+enum Subject<'a> {
+    Agent(TabId, &'a AgentSlot),
+    Terminal(&'a Session),
+}
+
+impl Subject<'_> {
+    fn log(&self) -> &ActivityLog {
+        match self {
+            Subject::Agent(_, slot) => &slot.activity,
+            Subject::Terminal(session) => &session.activity,
+        }
+    }
+
+    /// What its list's place is kept by: which subject it is (an agent tab or a terminal, by
+    /// id), and its log's length and newest entry.
+    fn key(&self, lines: usize) -> ActivityKey {
+        let newest = self.log().newest_first().next().map(|e| e.at);
+        match self {
+            Subject::Agent(tab, _) => (true, tab.0, lines, newest),
+            Subject::Terminal(session) => (false, session.id, lines, newest),
+        }
+    }
+}
+
 impl Workspace {
-    /// The followed terminal (`right_sidebar.followed`), if there is one: the panel's subject.
-    fn activity_session(&self) -> Option<&Session> {
+    /// The panel's subject: the focused agent tab (its slot's log), else the followed terminal
+    /// (`right_sidebar.followed`), if there is one.
+    fn activity_subject(&self) -> Option<Subject<'_>> {
+        if let Some(tab) = self.model.focused_tab()
+            && let Some(slot) = self.agents.get(&tab)
+        {
+            return Some(Subject::Agent(tab, slot));
+        }
         let id = self.right_sidebar.followed?;
-        self.sessions.items().iter().find(|s| s.id == id)
+        let session = self.sessions.items().iter().find(|s| s.id == id)?;
+        Some(Subject::Terminal(session))
     }
 
-    /// The header's words: the followed terminal's name (`terminal_label`), the status bar's
-    /// words for it, and its status (the pill's colour). None with no terminal followed.
+    /// The header's words: the subject's name (an agent tab's title, a terminal's
+    /// `terminal_label`), the status bar's words for its status, and its status (the pill's
+    /// colour). None with no subject.
     pub(crate) fn activity_header(&self) -> Option<(SharedString, String, Status)> {
-        let session = self.activity_session()?;
-        let facts = self.status_bar_facts()?;
-        Some((self.terminal_label(session.id), facts.text, facts.status))
+        match self.activity_subject()? {
+            Subject::Agent(tab, slot) => {
+                let word = status_bar::status_word(slot.status, &ProgramState::Unknown);
+                let news = slot.status != Status::Idle;
+                let age = news.then(|| slot.since.elapsed());
+                let text = status_bar::word_text(word, age);
+                Some((self.agent_title(tab), text, slot.status))
+            }
+            Subject::Terminal(session) => {
+                let facts = self.status_bar_facts()?;
+                Some((self.terminal_label(session.id), facts.text, facts.status))
+            }
+        }
     }
 
-    /// What the panel shows in place of its timeline, if anything: no terminal followed, or
-    /// one with nothing in its log yet.
+    /// What the panel shows in place of its timeline, if anything: no subject, or one with
+    /// nothing in its log yet.
     pub(crate) fn activity_note(&self) -> Option<&'static str> {
-        match self.activity_session() {
+        match self.activity_subject() {
             None => Some(NO_TERMINAL),
-            Some(s) if s.activity.is_empty() => Some(NO_ACTIVITY),
+            Some(s) if s.log().is_empty() => Some(NO_ACTIVITY),
             Some(_) => None,
         }
     }
 
-    /// The followed terminal's timeline rows, newest first, in this Mac's local time.
+    /// The subject's timeline rows, newest first, in this Mac's local time.
     #[cfg(feature = "ui-shots")]
     pub(crate) fn activity_rows(&self) -> Vec<ActivityRow> {
-        let all = self.activity_session().map_or(0, |s| s.activity.len());
+        let all = self.activity_subject().map_or(0, |s| s.log().len());
         self.activity_rows_in(0..all)
     }
 
@@ -393,14 +444,14 @@ impl Workspace {
     pub(crate) fn activity_timeline(&self) -> Vec<Item> {
         let now = SystemTime::now();
         let today = local_day(secs_of(now), offset_at(now));
-        self.activity_session()
-            .map_or_else(Vec::new, |s| timeline(&s.activity, offset_at, today))
+        self.activity_subject()
+            .map_or_else(Vec::new, |s| timeline(s.log(), offset_at, today))
     }
 
     /// The timeline's rows `range` (newest first), only those built (`rows_in`).
     fn activity_rows_in(&self, range: std::ops::Range<usize>) -> Vec<ActivityRow> {
-        self.activity_session()
-            .map_or_else(Vec::new, |s| rows_in(&s.activity, range, offset_at))
+        self.activity_subject()
+            .map_or_else(Vec::new, |s| rows_in(s.log(), range, offset_at))
     }
 
     /// The Activity panel under the strip: the header, then the timeline (a GPUI `list`: the
@@ -421,11 +472,7 @@ impl Workspace {
             Some(text) => note(&ui, text),
             None => {
                 let items = Rc::new(self.activity_timeline());
-                let session = self.activity_session();
-                let key = session.map(|s| {
-                    let newest = s.activity.newest_first().next().map(|e| e.at);
-                    (s.id, items.len(), newest)
-                });
+                let key = self.activity_subject().map(|s| s.key(items.len()));
                 let state = self.right_sidebar.activity_list.clone();
                 if self.right_sidebar.activity_key.get() != key {
                     state.reset(items.len());

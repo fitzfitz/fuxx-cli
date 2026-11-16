@@ -10,10 +10,14 @@
 //! - What the chrome shows of an agent tab (its title, badge, status) is the model's or the
 //!   slot's; the slot is written only in `on_agent_event` (outside drawing), which notifies.
 //!
-//! `launch_plan_for`, `agent_row_label` and `after_classic` are pure and tested.
+//! Task 9: an agent tab's status reaches the chrome as a terminal's does (`set_agent_status`:
+//! its tab's mark, its row, ages, the 🔔 list, sound and banner, Activity); a row is about the
+//! most urgent of its terminals and agent tabs (`row_winner`, R3).
+//!
+//! `launch_plan_for`, `agent_row_label`, `after_classic` and `row_winner` are pure and tested.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use gpui::{
     App, Context, Div, Entity, FontWeight, PromptLevel, SharedString, Window, div, prelude::*, px,
@@ -21,7 +25,10 @@ use gpui::{
 
 use crate::activity::ActivityLog;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
+use crate::groups;
 use crate::layout_model::{PaneId, TabId, TabKind, WorkspaceId};
+use crate::notification_list;
+use crate::notifier;
 use crate::presets::{self, Preset};
 use crate::procs::{self, Foreground, Proc};
 use crate::providers::{self, Provider, Start};
@@ -56,15 +63,38 @@ pub(crate) struct AgentSlot {
     pub label: SharedString,
     pub badge: &'static str,
     pub badge_rgb: u32,
-    /// Idle / when it was made, until Task 9 writes them.
+    /// Its status as the tab last told it (`set_agent_status`), and since when.
     pub status: Status,
     pub since: Instant,
-    #[allow(dead_code)] // M11aa Task 9 (the Done pop)
+    /// The Done pop on its tab's mark: its number and when (as a session's).
     pub pop: Option<(u64, Instant)>,
-    #[allow(dead_code)] // M11aa Task 9 (the row's question)
+    /// While a permission waits: "⟨Label⟩ wants to run: ⟨what⟩" (its row's line, its banner).
     pub question: Option<String>,
-    #[allow(dead_code)] // M11aa Task 9 (the Activity panel)
+    /// Its status changes, for the Activity panel while it is focused.
     pub activity: ActivityLog,
+}
+
+/// What a workspace's sidebar row is about (R3): its terminal rollup's session (its place in the
+/// session list), or one of its agent tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowWinner {
+    Terminal(usize),
+    Agent(TabId),
+}
+
+/// The most urgent of a workspace's terminal rollup and its agent tabs (`groups::urgency`); a tie
+/// goes to the terminal, then to the first agent tab in reading order. None: neither.
+pub fn row_winner(
+    terminal: Option<(usize, Status)>,
+    agents: &[(TabId, Status)],
+) -> Option<RowWinner> {
+    let mut best = terminal.map(|(i, status)| (RowWinner::Terminal(i), status));
+    for &(tab, status) in agents {
+        if best.is_none_or(|(_, b)| groups::urgency(status) > groups::urgency(b)) {
+            best = Some((RowWinner::Agent(tab), status));
+        }
+    }
+    best.map(|(winner, _)| winner)
 }
 
 /// How a preset is launched.
@@ -699,9 +729,147 @@ impl Workspace {
             AgentTabEvent::ResumeAsked(text) => {
                 self.check_holder_then_resume(tab, text.clone(), window, cx)
             }
-            // M11aa Task 9: the chrome's status and question.
-            AgentTabEvent::Status { .. } | AgentTabEvent::Question(_) => {}
+            // Before a `Status` (which notifies); a new question while it already waits (a
+            // second permission) has no `Status` after it, so it notifies itself.
+            AgentTabEvent::Question(question) => {
+                if let Some(slot) = self.agents.get_mut(&tab) {
+                    slot.question = question.clone();
+                    if slot.status == Status::Waiting {
+                        cx.notify();
+                    }
+                }
+            }
+            AgentTabEvent::Status { status, live } => {
+                self.set_agent_status(tab, *status, *live, cx)
+            }
         }
+    }
+
+    /// For agent tab `tab` what `set_status` does for a terminal: its status and since when;
+    /// Done pops once, as it arrives, if its row is on screen; an Activity entry; and a
+    /// notification by the M4 rules (not while you look at it): a 🔔 list entry (about no
+    /// terminal) and, unless a short run, the sound and a banner (call 3: no click target,
+    /// `banner_about(None)`; its subtitle names the provider, its body says the question or
+    /// what the tab was doing, its title). `live: false` (history replayed, the pause before
+    /// "Open in classic view") is not news: no pop, no Activity entry, no notification.
+    pub(crate) fn set_agent_status(
+        &mut self,
+        tab: TabId,
+        new: Status,
+        live: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let looking = self.model.focused_tab() == Some(tab);
+        let window_active = self.window_active;
+        let ws = self.model.locate(tab).map(|(ws, _)| ws);
+        let pops = live && !self.restoring && ws.is_some_and(|ws| self.workspace_row_on_screen(ws));
+        let doing = match self.model.tab(tab).map(|t| &t.kind) {
+            Some(TabKind::Agent { title, .. }) => title.clone(),
+            _ => None,
+        };
+        let Some(slot) = self.agents.get_mut(&tab) else {
+            return;
+        };
+        let old = slot.status;
+        // How long it worked, when a Working stretch ends here (for a Done notification).
+        let worked = (old == Status::Working && new != old).then(|| slot.since.elapsed());
+        // The log's `lasted` is read before `since` is reset.
+        let lasted = slot.since.elapsed();
+        slot.status = new;
+        if old != new {
+            slot.since = Instant::now();
+        }
+        if new != Status::Done {
+            slot.pop = None;
+        } else if old != Status::Done && pops {
+            self.pops += 1;
+            slot.pop = Some((self.pops, Instant::now()));
+        }
+        let question = slot.question.clone().filter(|_| new == Status::Waiting);
+        if live && old != new {
+            slot.activity
+                .status(new, lasted, question.clone(), SystemTime::now());
+        }
+        let agent = slot.label.to_string();
+        if live && notifier::should_notify(old, new, looking, window_active) {
+            self.notify_agent(
+                ws,
+                &agent,
+                new,
+                question.as_deref(),
+                worked,
+                doing.as_deref(),
+                cx,
+            );
+        }
+        self.check_waits(&[], cx);
+        cx.notify();
+    }
+
+    /// An agent tab's notification (`set_agent_status`): as a terminal's, in workspace `ws`, by
+    /// `agent` (its provider's label).
+    #[allow(clippy::too_many_arguments)]
+    fn notify_agent(
+        &mut self,
+        ws: Option<WorkspaceId>,
+        agent: &str,
+        new: Status,
+        question: Option<&str>,
+        worked: Option<std::time::Duration>,
+        doing: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((message, body)) =
+            notifier::message(new).zip(notifier::body(new, question, worked, doing))
+        else {
+            return;
+        };
+        let name = ws.map_or_else(
+            || agent.to_string(),
+            |ws| self.workspace_label(ws).to_string(),
+        );
+        let group = ws.and_then(|ws| self.group_label(ws));
+        let number = ws.and_then(|ws| self.workspace_number(ws)).unwrap_or(0);
+        let summary = notifier::banner_title(&name, message);
+        let subtitle = notifier::banner_subtitle(number, group.as_deref(), &name, Some(agent));
+        self.note_notification(notification_list::Entry {
+            terminal: None,
+            title: name,
+            message: body.clone(),
+            status: Some(new),
+            at: Instant::now(),
+        });
+        // A short run (an agent's pause) is in the 🔔 list but makes no banner.
+        if !notifier::worth_a_banner(new, worked) {
+            return;
+        }
+        #[cfg(feature = "ui-shots")]
+        if let Some(kept) = &mut self.shot_banners {
+            kept.push((summary, subtitle, body));
+            return;
+        }
+        let about = self.banner_about(None);
+        // M11x: the banner's sound, with the banner (never for the 🔔 list alone).
+        crate::sounds::banner(cx);
+        cx.background_spawn(async move { notifier::fire(&summary, &subtitle, &body, about) })
+            .detach();
+    }
+
+    /// The agent tabs of the shown panes, in layout then bar order: each tab, its `aN` and its
+    /// status (their marks, R2).
+    pub(crate) fn tab_agents(&self) -> Vec<(TabId, u64, Status)> {
+        let Some(tree) = self.shown_layout() else {
+            return Vec::new();
+        };
+        tree.leaves()
+            .into_iter()
+            .filter_map(|pane| self.model.pane(pane))
+            .flat_map(|p| &p.tabs)
+            .filter_map(|t| {
+                let slot = self.agents.get(&t.id)?;
+                Some((t.id, slot.id, slot.status))
+            })
+            .collect()
     }
 
     /// A message from paused agent tab `tab` (R13): one fresh `ps` (on the background
@@ -1073,6 +1241,25 @@ impl Workspace {
     }
 }
 
+/// The scenes' hooks (`ui_shots`).
+#[cfg(feature = "ui-shots")]
+impl Workspace {
+    /// Agent tab `tab`'s status dated `ago` back, so its age label turns soon (as the scenes'
+    /// `minutes_old` dates a terminal's). Nothing in the app dates a status back, so it notifies
+    /// itself.
+    pub(crate) fn shot_agent_since(
+        &mut self,
+        tab: TabId,
+        ago: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(slot) = self.agents.get_mut(&tab) {
+            slot.since = Instant::now() - ago;
+            cx.notify();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1417,6 +1604,47 @@ mod tests {
         assert!(starts_paused(true, &Holder::Unchecked));
         assert!(!starts_paused(true, &Holder::Free));
         assert!(!starts_paused(false, &Holder::Free));
+    }
+
+    #[test]
+    fn waiting_agent_beats_idle_shell() {
+        assert_eq!(
+            row_winner(Some((0, Status::Idle)), &[(TabId(7), Status::Waiting)]),
+            Some(RowWinner::Agent(TabId(7)))
+        );
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_terminal() {
+        assert_eq!(
+            row_winner(Some((0, Status::Done)), &[(TabId(7), Status::Done)]),
+            Some(RowWinner::Terminal(0))
+        );
+        // Between agent tabs, to the first in reading order.
+        assert_eq!(
+            row_winner(
+                Some((0, Status::Idle)),
+                &[(TabId(4), Status::Working), (TabId(2), Status::Working)]
+            ),
+            Some(RowWinner::Agent(TabId(4)))
+        );
+    }
+
+    #[test]
+    fn no_agents_is_the_terminal() {
+        assert_eq!(
+            row_winner(Some((2, Status::Working)), &[]),
+            Some(RowWinner::Terminal(2))
+        );
+        assert_eq!(row_winner(None, &[]), None);
+    }
+
+    #[test]
+    fn an_agent_only_workspace_has_an_agent_subject() {
+        assert_eq!(
+            row_winner(None, &[(TabId(3), Status::Idle)]),
+            Some(RowWinner::Agent(TabId(3)))
+        );
     }
 
     #[test]
