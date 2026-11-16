@@ -1,20 +1,20 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11ae
-status: planned
+status: built
 updated: 2026-11-16
 ---
 
 # M11ae Plan — File tab chores
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[80 - Milestone 11ae - File Tab Chores]] |
-| **Status** | 📋 Planned 2026-11-16 |
-| **Tasks done** | 0 / 6 |
-| **▶ Pick up here** | Task 1 |
+| **Status** | 🟨 Built 2026-11-16 on branch `m11ae-file-tab`, waiting for your check |
+| **Tasks done** | 6 / 6 |
+| **▶ Pick up here** | The on-screen check in note 80, then the merge decision (yours) |
 | **Decisions used** | Yours: option B, overlay scrollbar, "yes, go ahead". The numbers in note 80 are the AI's calls, approved with the design. |
 | **Needs your eyes** | 👀 the on-screen check in note 80, after Task 6 |
 
@@ -94,9 +94,9 @@ Everything visible that changes over time (the age, the fade, the auto-scroll) i
   - `pub fn lines_label(n: usize) -> String` (uses the existing `thousands`)
   - `pub fn age_label(modified: SystemTime, now: SystemTime) -> String`
 
-- [ ] **Step 0: Record the clippy baselines** (`cargo clippy --all-targets 2>&1 | grep -c '^warning'`, and with
+- [x] **Step 0: Record the clippy baselines** (`cargo clippy --all-targets 2>&1 | grep -c '^warning'`, and with
   `--features ui-shots`) in the task report.
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 // git_status
@@ -139,12 +139,12 @@ Everything visible that changes over time (the age, the fade, the auto-scroll) i
 // highlight: syntax_name("a.rs", "") == "Rust"; ("Makefile", "") == "Makefile"; ("x", "#!/bin/bash") == "Bourne Again Shell (bash)"; ("x.zzz", "") == "Plain Text"
 ```
 
-- [ ] **Step 2: Run them to see them fail** — `cargo test --bin fuxx hunk_counts chip_label where_ lines_and_ages syntax_name` → compile errors / FAIL.
-- [ ] **Step 3: Implement.** Months are 30 days, years 365; `where_label` outside a repo shortens a path under `home`
+- [x] **Step 2: Run them to see them fail** — `cargo test --bin fuxx hunk_counts chip_label where_ lines_and_ages syntax_name` → compile errors / FAIL.
+- [x] **Step 3: Implement.** Months are 30 days, years 365; `where_label` outside a repo shortens a path under `home`
   to `~/…` (the home folder itself is `~`). Callers of `line_changes` (`file_tab.rs:2348` and the tests) move to
   `LineChanges`. `colour_text` sets `doc.syntax` from the shared `Highlighter` when it accepts spans.
-- [ ] **Step 4: Run the gate** — all tests pass; clippy counts at the baselines.
-- [ ] **Step 5: Commit** — `M11ae Task 1: header facts (change counts, type, where, lines, age)`.
+- [x] **Step 4: Run the gate** — all tests pass; clippy counts at the baselines.
+- [x] **Step 5: Commit** — `M11ae Task 1: header facts (change counts, type, where, lines, age)`.
 
 ### Task 2: The option-B bar — title, details, one view switch, icon buttons
 
@@ -168,13 +168,13 @@ Everything visible that changes over time (the age, the fade, the auto-scroll) i
     meta line) for scenes.
   - `Glyph::Wrap`, `Glyph::OpenExternal` (12 pt box, drawn as note 80 says).
 
-- [ ] **Step 1: Write the failing tests** — `cargo test`:
+- [x] **Step 1: Write the failing tests** — `cargo test`:
   `view_segments(true, Plain, true) == [File, Diff, Preview]`; `(false, Plain, true) == [File, Preview]`;
   `(false, Plain, false) == [File]` (no switch); `(false, Diff, false) == [File, Diff]`;
   `current_view(Diff, true) == Diff`; `current_view(Plain, true) == Preview`; `current_view(Plain, false) == File`.
   Replace `the_toggle_shows_in_a_repo_or_in_diff_mode` and `preview_shows_for_markdown_in_file_mode_only` with these.
-- [ ] **Step 2: Run them; see them fail.**
-- [ ] **Step 3: Implement** the bar as note 80 §1: `FILE_TOOLBAR: f32 = 42.0` for this bar only (`TOOLBAR` stays for
+- [x] **Step 2: Run them; see them fail.**
+- [x] **Step 3: Implement** the bar as note 80 §1: `FILE_TOOLBAR: f32 = 42.0` for this bar only (`TOOLBAR` stays for
   the find bar); name `text::NAME` semibold; chip `text::META` on `ui.panel` with a 1 pt `ui.panel_border`, full
   rounding, its letter in the change bar's colour (`BarColours::of_change`: `M` Changed, `A` Added); meta line
   `text::META` in `ui.text_dim`, its Where part `flex_shrink` + `truncate`, the rest `flex_none`. Segment clicks:
@@ -182,13 +182,13 @@ Everything visible that changes over time (the age, the fade, the auto-scroll) i
   `choose_mode(Plain)` then `choose_preview(true)`. Wrap and Open in Editor via `icon_button` (Wrap filled with
   `ui.card_selected` when on). The age: in `tick`'s poll and when a version is loaded, from `self.stamp`'s
   `modified`.
-- [ ] **Step 4: Scenes.** Update every scene that clicked the old toggle / Preview button to the 3-segment bounds.
+- [x] **Step 4: Scenes.** Update every scene that clicked the old toggle / Preview button to the 3-segment bounds.
   New `file-tab-header` (`file_tab_scenes`): a temp repo with a committed file then edited (+2 −1) → `header_words()`
   is `("a.rs", Some("M · +2 −1"), "<repo> / src · Rust · N lines · edited just now")`; an untracked file → chip
   `A · +3`; a file outside a repo → no chip, Where `~/…` or the temp folder; at a 320 pt pane width the controls'
   bounds stay inside the pane. A reload (append a line) → the line count and counts follow within the scene's
   look-up wait.
-- [ ] **Step 5: Gate, full `__ui-shots`, commit** — `M11ae Task 2: the option-B file bar`.
+- [x] **Step 5: Gate, full `__ui-shots`, commit** — `M11ae Task 2: the option-B file bar`.
 
 ### Task 3: The overlay scrollbar in File and Diff
 
@@ -215,23 +215,23 @@ Everything visible that changes over time (the age, the fade, the auto-scroll) i
   `cx.spawn` stepping 16 ms while `alpha > 0`, ends itself); ui-shots `scrollbar_shown() -> bool`,
   `scrollbar_animating() -> bool`, `thumb_bounds(Axis) -> Option<Bounds<Pixels>>`.
 
-- [ ] **Step 1: Write the failing tests** (`scrollbar.rs`): `thumb(100, 100, 0) == None`; `thumb(0, 500, 0) == None`;
+- [x] **Step 1: Write the failing tests** (`scrollbar.rs`): `thumb(100, 100, 0) == None`; `thumb(0, 500, 0) == None`;
   `thumb(100, 400, 0) == Thumb{start:0, len:25}`; `thumb(100, 400, 300).start == 75`; `thumb(100, 100_000, 0).len == 24`;
   `offset_for(75, 100, 400) == 300`; `offset_for(-5, …) == 0`; `offset_for(999, …) == 300`;
   `alpha(0.5 s, false) == 0.35`; `alpha(1.1 s, false) ≈ 0.175`; `alpha(1.3 s, false) == 0`; `alpha(5 s, true) == 0.55`.
-- [ ] **Step 2: Run; fail.**
-- [ ] **Step 3: Implement.** Every change of the shown scroll goes through `set_scroll` (wheel, find, reveal, the
+- [x] **Step 2: Run; fail.**
+- [x] **Step 3: Implement.** Every change of the shown scroll goes through `set_scroll` (wheel, find, reveal, the
   auto-scroll) and calls `scrolled`. The canvas paints the thumbs after `paint_body` when `is_shown`; vertical content
   is `rows × line_height`, horizontal (Wrap off, `widest` cells wider than the text) `widest × cell_width + RIGHT_PAD`.
   Mouse moves within 12 pt of the right (or bottom) edge set `hot` and poke; leaving clears `hot`. `mouse_down` in a
   zone: on the thumb, start a drag keeping the grab offset; off it, jump (centre on the press) then drag; no selection.
   The window-wide move / up handlers already registered in the canvas paint drive the drag and end it.
-- [ ] **Step 4: Scene `file-tab-scrollbar`:** a 400-line file; before any scroll `scrollbar_shown()` is false; one wheel
+- [x] **Step 4: Scene `file-tab-scrollbar`:** a 400-line file; before any scroll `scrollbar_shown()` is false; one wheel
   step → shown, `thumb_bounds(Vertical)` inside the text's right 12 pt and its top proportional to the scroll; 1.5 s
   later not shown and `scrollbar_animating()` false; drag the thumb to the bottom → `scroll().y == geom().max_scroll.y`;
   a press below the thumb → it centres there; Wrap off with a 3,000-char line → the horizontal thumb exists; a
   10-line file → never shown, and a press in the zone starts a selection.
-- [ ] **Step 5: Gate, full `__ui-shots`, commit** — `M11ae Task 3: overlay scrollbar in File and Diff`.
+- [x] **Step 5: Gate, full `__ui-shots`, commit** — `M11ae Task 3: overlay scrollbar in File and Diff`.
 
 ### Task 4: The scrollbar in Preview
 
@@ -246,12 +246,12 @@ Everything visible that changes over time (the age, the fade, the auto-scroll) i
   sign against `list.rs:753-783` at the pinned rev), `scrollbar_drag_started/ended`, `set_scroll_handler` (the list's
   own wheel scrolls poke the bar).
 
-- [ ] **Step 1: Scene first, `file-tab-md-preview-scrollbar`:** a 300-paragraph Markdown file in Preview; a wheel step
+- [x] **Step 1: Scene first, `file-tab-md-preview-scrollbar`:** a 300-paragraph Markdown file in Preview; a wheel step
   → `scrollbar_shown()`; drag the thumb to the bottom → `preview_list().is_scrolled_to_end() == Some(true)`; a short
   file → never shown. Run it; it fails.
-- [ ] **Step 2: Implement:** an absolute canvas over the list paints the thumb and takes the 12 pt edge zone's presses
+- [x] **Step 2: Implement:** an absolute canvas over the list paints the thumb and takes the 12 pt edge zone's presses
   (the list's own presses — links — are unchanged elsewhere).
-- [ ] **Step 3: Gate, full `__ui-shots`, commit** — `M11ae Task 4: scrollbar in Preview`.
+- [x] **Step 3: Gate, full `__ui-shots`, commit** — `M11ae Task 4: scrollbar in Preview`.
 
 ### Task 5: Drag-select past the edge scrolls
 
@@ -269,30 +269,30 @@ Everything visible that changes over time (the age, the fade, the auto-scroll) i
   - `FileTab::drag_at: Option<Point<Pixels>>` (the last pointer place while selecting) and `autoscrolling: bool`;
     ui-shots `autoscrolling() -> bool`, `selection() -> Option<(Pos, Pos)>`.
 
-- [ ] **Step 1: Write the failing tests:** `edge_speed(0, 18) == 0`; `edge_speed(-3, 18) == 0`;
+- [x] **Step 1: Write the failing tests:** `edge_speed(0, 18) == 0`; `edge_speed(-3, 18) == 0`;
   `edge_speed(4, 18) == 1`; `edge_speed(80, 18) == 10`; `edge_speed(2000, 18) == 54`; `outside(50, 0, 100) == 0`;
   `outside(130, 0, 100) == 30`; `outside(-20, 0, 100) == -20`.
-- [ ] **Step 2: Run; fail.**
-- [ ] **Step 3: Implement.** `mouse_drag` stores `drag_at` and, when the pointer is outside the text vertically (or
+- [x] **Step 2: Run; fail.**
+- [x] **Step 3: Implement.** `mouse_drag` stores `drag_at` and, when the pointer is outside the text vertically (or
   horizontally with Wrap off) and no task runs, starts one with `cx.spawn_in(window, …)`: every 16 ms, while
   `selecting` and still outside, `set_scroll(scroll + (sign × edge_speed) per axis)`, then the selection head =
   `pos_at(drag_at clamped into the text bounds)` (last row/column inside); it ends itself when not selecting, back
   inside, or the scroll didn't move. `mouse_drag` itself also clamps into the bounds (no more invisible growth).
   `set_mode` and mouse up end it (they clear `selecting`).
-- [ ] **Step 4: Scene `file-tab-drag-select`:** a 400-line file; press on line 3; move the pointer 60 pt below the text;
+- [x] **Step 4: Scene `file-tab-drag-select`:** a 400-line file; press on line 3; move the pointer 60 pt below the text;
   wait 300 ms with no moves → `autoscrolling()`, `scroll().y > 0`, and the selection's head line ≥ the last line in
   sight at the start; move 300 pt below → the scroll per frame is larger; release → `autoscrolling()` false within
   50 ms and the scroll stays. Above the text after scrolling down → scrolls up. Wrap off with a long line, right of
   the text → `scroll().x` grows. A switch to Diff mid-drag → it stops.
-- [ ] **Step 5: Gate, full `__ui-shots`, commit** — `M11ae Task 5: drag-select scrolls past the edge`.
+- [x] **Step 5: Gate, full `__ui-shots`, commit** — `M11ae Task 5: drag-select scrolls past the edge`.
 
 ### Task 6: Docs, verification, hand-off
 
 **Files:** `docs/04-Development/80 - Milestone 11ae - File Tab Chores.md`, this plan, `docs/04-Development/40 - Roadmap.md`,
 `docs/06-Progress-Log/60 - Progress Log.md`.
 
-- [ ] **Step 1:** Full gate and full `__ui-shots` on the branch tip; record test count, clippy counts, scene count.
-- [ ] **Step 2:** Note 80: status 🟨 built, a "What was built" section (any plan-time calls the tasks made), the
+- [x] **Step 1:** Full gate and full `__ui-shots` on the branch tip; record test count, clippy counts, scene count.
+- [x] **Step 2:** Note 80: status 🟨 built, a "What was built" section (any plan-time calls the tasks made), the
   on-screen checklist unchanged unless a task changed behaviour. Roadmap entry → 🟨 built, waiting for your check.
   This plan's table → 6 / 6. A Progress Log entry.
-- [ ] **Step 3: Commit** — `M11ae: docs and results`. Then the whole-branch review, then ask the user to merge.
+- [x] **Step 3: Commit** — `M11ae: docs and results`. Then the whole-branch review, then ask the user to merge.
