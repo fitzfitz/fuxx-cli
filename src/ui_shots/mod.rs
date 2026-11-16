@@ -21,8 +21,8 @@ use gpui_platform::current_platform;
 
 use crate::appearance::Appearance;
 use crate::chrome_cache::{self, Counted};
+use crate::fonts;
 use crate::procs::ProgramState;
-use crate::restore::RestoreMode;
 use crate::split_tree::Axis;
 use crate::status::Status;
 use crate::status_mark::{self, BREATHS_PER_BEAT, TURNS_PER_BEAT};
@@ -30,260 +30,11 @@ use crate::terminal_view::hsla;
 use crate::theme::{self, Theme, UiColors};
 use crate::ui_tokens::{self, contrast};
 use crate::workspace::{Overlay, Workspace};
-use crate::{fonts, settings};
 
 mod chrome_sources;
+mod harness;
 
-/// The two themes every scene is shot in: (file slug, built-in theme name).
-pub const SHOT_THEMES: [(&str, &str); 2] =
-    [("mocha", "Catppuccin Mocha"), ("latte", "Catppuccin Latte")];
-
-/// A built-in theme resolved the way the app resolves `theme = <name>`.
-pub fn shot_theme(name: &str) -> Theme {
-    let text = theme::builtin_theme(name).expect("a built-in theme");
-    let mut t = Theme::default();
-    theme::apply(&mut t, &settings::parse(text));
-    t
-}
-
-/// A rendered scene: size in device pixels and RGBA bytes, row by row.
-pub struct Shot {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
-
-/// The window's root: the theme's background with the scene on top.
-struct Root {
-    theme: Theme,
-    scene: AnyView,
-}
-
-impl Render for Root {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .bg(hsla(self.theme.background))
-            .child(self.scene.clone())
-    }
-}
-
-/// Render `build`'s view at `size` (in points) in a hidden window.
-pub fn render(
-    theme: &Theme,
-    size: Size<Pixels>,
-    build: impl FnOnce(&mut Window, &mut App) -> AnyView,
-) -> Shot {
-    render_with(theme, size, build, |_, _| ())
-}
-
-/// `render`, after `act` has had the window (to move the mouse over it, click, drag, or check
-/// what it drew) and it has settled again.
-pub fn render_with(
-    theme: &Theme,
-    size: Size<Pixels>,
-    build: impl FnOnce(&mut Window, &mut App) -> AnyView,
-    act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle),
-) -> Shot {
-    let started = Instant::now();
-    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
-    let mut t = prof::lap(prof::NEW_APP, started);
-    // As the app does at start (appearance.rs), so the bundled fonts are there to shape text with.
-    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
-    t = prof::lap(prof::FONTS, t);
-    let theme = *theme;
-    let window = cx
-        .open_offscreen_window(size, move |window, cx| {
-            let scene = build(window, cx);
-            cx.new(|_| Root { theme, scene })
-        })
-        .expect("open an off-screen window");
-    t = prof::lap(prof::OPEN, t);
-    cx.run_until_parked();
-    t = prof::lap(prof::SETTLE, t);
-    act(&mut cx, window.into());
-    cx.run_until_parked();
-    t = prof::lap(prof::ACT, t);
-    let image = cx
-        .capture_screenshot(window.into())
-        .expect("capture the window");
-    t = prof::lap(prof::CAPTURE, t);
-    let shot = Shot {
-        width: image.width(),
-        height: image.height(),
-        rgba: image.as_raw().to_vec(),
-    };
-    prof::add(prof::RENDER_WITH, started.elapsed());
-    drop(cx);
-    prof::lap(prof::TEARDOWN, t);
-    shot
-}
-
-/// Render and save `target/ui-shots/<name>-<slug>.png`; returns the path.
-pub fn shoot(
-    name: &str,
-    slug: &str,
-    theme: &Theme,
-    size: Size<Pixels>,
-    build: impl FnOnce(&mut Window, &mut App) -> AnyView,
-) -> PathBuf {
-    shoot_with(name, slug, theme, size, build, |_, _| ())
-}
-
-/// `shoot`, after `act` (see `render_with`).
-pub fn shoot_with(
-    name: &str,
-    slug: &str,
-    theme: &Theme,
-    size: Size<Pixels>,
-    build: impl FnOnce(&mut Window, &mut App) -> AnyView,
-    act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle),
-) -> PathBuf {
-    let shot = render_with(theme, size, build, act);
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("ui-shots");
-    std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-    let path = dir.join(format!("{name}-{slug}.png"));
-    let started = Instant::now();
-    std::fs::write(&path, png(&shot)).expect("write the PNG");
-    prof::lap(prof::PNG, started);
-    path
-}
-
-/// Timing for `UI_SHOTS_PROFILE=1` (per-phase sums of `render_with`/`shoot_with`) and for the
-/// run's summary (time in `thread::sleep` and in child processes). Always accumulated (cheap);
-/// printed only when profiling.
-pub(crate) mod prof {
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-    use std::time::{Duration, Instant};
-
-    pub const NEW_APP: usize = 0;
-    pub const FONTS: usize = 1;
-    pub const OPEN: usize = 2;
-    pub const SETTLE: usize = 3;
-    pub const ACT: usize = 4;
-    pub const CAPTURE: usize = 5;
-    pub const PNG: usize = 6;
-    /// Whole `render_with` calls (the phases above except `PNG`).
-    pub const RENDER_WITH: usize = 7;
-    pub const SLEEP: usize = 8;
-    pub const CHILD: usize = 9;
-    /// Dropping the app and its window at the end of `render_with` (not in `RENDER_WITH`).
-    pub const TEARDOWN: usize = 10;
-    const NAMES: [&str; 7] = [
-        "new_app", "fonts", "open", "settle", "act", "capture", "png",
-    ];
-    static NANOS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
-
-    pub fn enabled() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("UI_SHOTS_PROFILE").is_some())
-    }
-    pub fn add(slot: usize, d: Duration) {
-        NANOS[slot].fetch_add(d.as_nanos() as u64, Relaxed);
-    }
-    pub fn get(slot: usize) -> f64 {
-        NANOS[slot].load(Relaxed) as f64 / 1e9
-    }
-    /// Adds the time since `since` to `slot`; returns now, for the next phase.
-    pub fn lap(slot: usize, since: Instant) -> Instant {
-        let now = Instant::now();
-        add(slot, now - since);
-        now
-    }
-    /// `std::thread::sleep`, counted.
-    pub fn sleep(d: Duration) {
-        add(SLEEP, d);
-        std::thread::sleep(d);
-    }
-    pub fn print_sums() {
-        let total: f64 = (0..NAMES.len()).map(get).sum();
-        let sums: Vec<String> = NAMES
-            .iter()
-            .enumerate()
-            .map(|(i, n)| format!("{n} {:.1}", get(i)))
-            .collect();
-        println!(
-            "ui-shots: profile (s): {} | sum {total:.1}",
-            sums.join(", ")
-        );
-        println!(
-            "ui-shots: profile (s): render_with total {:.1}, teardown (after) {:.1}, thread::sleep {:.1}, child processes {:.1}",
-            get(RENDER_WITH),
-            get(TEARDOWN),
-            get(SLEEP),
-            get(CHILD)
-        );
-    }
-}
-
-/// A minimal PNG: 8-bit RGBA, no filtering, stored (uncompressed) deflate blocks. The `image`
-/// crate that GPUI uses isn't a direct dependency, and screenshots don't need to be small.
-fn png(shot: &Shot) -> Vec<u8> {
-    let row = shot.width as usize * 4;
-    let mut raw = Vec::with_capacity((row + 1) * shot.height as usize);
-    for line in shot.rgba.chunks(row) {
-        raw.push(0); // filter type: none
-        raw.extend_from_slice(line);
-    }
-    let mut z = vec![0x78, 0x01];
-    let mut blocks = raw.chunks(65535).peekable();
-    while let Some(block) = blocks.next() {
-        z.push(blocks.peek().is_none() as u8); // final-block flag, stored type
-        z.extend_from_slice(&(block.len() as u16).to_le_bytes());
-        z.extend_from_slice(&(!(block.len() as u16)).to_le_bytes());
-        z.extend_from_slice(block);
-    }
-    z.extend_from_slice(&adler32(&raw).to_be_bytes());
-
-    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&shot.width.to_be_bytes());
-    ihdr.extend_from_slice(&shot.height.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit, RGBA, deflate, no filter, no interlace
-    chunk(&mut out, b"IHDR", &ihdr);
-    chunk(&mut out, b"IDAT", &z);
-    chunk(&mut out, b"IEND", &[]);
-    out
-}
-
-fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
-    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    let start = out.len();
-    out.extend_from_slice(kind);
-    out.extend_from_slice(data);
-    let crc = crc32(&out[start..]);
-    out.extend_from_slice(&crc.to_be_bytes());
-}
-
-fn adler32(data: &[u8]) -> u32 {
-    let (mut a, mut b) = (1u32, 0u32);
-    for &byte in data {
-        a = (a + byte as u32) % 65521;
-        b = (b + a) % 65521;
-    }
-    (b << 16) | a
-}
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb8_8320 & (!(crc & 1)).wrapping_add(1));
-        }
-    }
-    !crc
-}
-
-/// The terminal's font as the app builds it with no font settings (bundled JetBrains Mono).
-pub fn mono_font(cx: &App) -> Font {
-    fonts::gpui_font(
-        &fonts::from_entries(&[]),
-        &cx.text_system().all_font_names(),
-    )
-}
+pub(super) use harness::*;
 
 /// Every scene: (name, function). A UI task adds its scenes here.
 const SCENES: &[(&str, fn())] = &[
@@ -1107,39 +858,6 @@ mod tests {
     }
 }
 
-/// The appearance a scene's app runs with: `theme`, and the default font and size.
-fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
-    Appearance {
-        theme,
-        font: mono_font(cx),
-        font_size: fonts::DEFAULT_SIZE,
-        theme_name: None,
-        font_settings: fonts::from_entries(&[]),
-        settings_path: None,
-        user_theme_dir: None,
-        plugin_folders: None,
-        plugin_themes: Vec::new(),
-        presets: Vec::new(),
-        restore: RestoreMode::default(),
-        scripting: false,
-        persistent: false,
-        animations: true,
-        browser_address_bar: true,
-        status_bar: true,
-        browser_keep_data: false,
-        check_updates: true,
-        cursor_style: Default::default(),
-        cursor_glide: true,
-        cursor_glow: true,
-        cursor_follows_status: true,
-        cursor_fun: Default::default(),
-        command_blocks: true,
-        file_wrap: false,
-        sound_links: Default::default(),
-        sound_on: [true; crate::sounds::SoundKey::ALL.len()],
-    }
-}
-
 /// What a shell shows in the scenes, the same every time.
 const SHELL_TEXT: &str = "~/code/api $ cargo test\r\n   Compiling api v0.4.2 (/Users/me/code/api)\r\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s\r\n     Running unittests src/main.rs\r\n\r\nrunning 42 tests\r\ntest result: ok. 42 passed; 0 failed; 0 ignored\r\n\r\n~/code/api $ ";
 
@@ -1546,12 +1264,6 @@ fn cached_panes() {
     );
 }
 
-/// One explicit draw of `window` (what `cached_panes` does per frame).
-fn draw(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
-    cx.update_window(window, |_, window, cx| window.draw(cx).clear())
-        .expect("draw");
-}
-
 /// How many times `c` rendered over `act` and one explicit draw: reset the counters, `act`,
 /// draw, read. A notify inside `act` already makes the test platform draw a frame when its
 /// effects flush, so a notifying `act` plus the explicit draw is `FRAMES_PER_TICK` frames.
@@ -1565,19 +1277,6 @@ fn draws_of(
     act(cx);
     draw(cx, window);
     chrome_cache::get(c)
-}
-
-/// Frames as the app gets them, and nothing else: the effects settle (timers due by the
-/// harness's clock run, and a notify draws), then each frame something asked for. No explicit
-/// draw (one would run `Workspace::render`, which restarts timers and hides a missing one).
-fn settle_frames(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
-    cx.run_until_parked();
-    for _ in 0..100 {
-        if !next_frame(cx, window) {
-            break;
-        }
-        cx.run_until_parked();
-    }
 }
 
 /// Panics (`what`) unless the window as it was last drawn (no draw now) is what a full redraw
@@ -2008,14 +1707,6 @@ fn chrome_working_marks() {
     assert_eq!(frames, 0, "{n}: agent elsewhere: frames drawn in 10 ticks");
 }
 
-/// The chrome's cached parts (M11p Task 4), as counted.
-const PARTS: [Counted; 4] = [
-    Counted::Sidebar,
-    Counted::StatusBar,
-    Counted::TabBar,
-    Counted::Title,
-];
-
 /// Two terminals split side by side (two tab bars) in one workspace, and a second workspace:
 /// the chrome scenes' window with every part on screen.
 fn chrome_split_window() -> (
@@ -2204,41 +1895,6 @@ fn chrome_notify_redraws_parts() {
     );
     draw(&mut cx, window);
     assert_fresh(&mut cx, window, &format!("{n}: the other pane focused"));
-}
-
-/// The platform's next frame, as its display link would deliver it: what was asked for the
-/// next frame (`request_animation_frame`, `on_next_frame`) runs, and the window draws if that
-/// notified something (as the app's would: no explicit draw, which would redraw the workspace
-/// whatever was asked). Whether anything was asked.
-fn next_frame(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> bool {
-    cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx) > 0)
-        .expect("the next frame")
-}
-
-/// The window as it is now (a draw, then its pixels).
-fn frame_now(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> Shot {
-    draw(cx, window);
-    let image = cx.capture_screenshot(window).expect("capture the window");
-    Shot {
-        width: image.width(),
-        height: image.height(),
-        rgba: image.into_raw(),
-    }
-}
-
-/// The window drawn afresh: a refresh, which draws every cached part again.
-fn frame_fresh(cx: &mut VisualTestAppContext, window: AnyWindowHandle) -> Shot {
-    cx.update_window(window, |_, window, _| window.refresh())
-        .expect("refresh");
-    frame_now(cx, window)
-}
-
-/// How many bytes of two shots of one window differ (all of them if the sizes do).
-fn bytes_differ(a: &Shot, b: &Shot) -> usize {
-    if (a.width, a.height) != (b.width, b.height) {
-        return a.rgba.len().max(b.rgba.len());
-    }
-    a.rgba.iter().zip(&b.rgba).filter(|(x, y)| x != y).count()
 }
 
 /// Panics (`what`) unless the window as drawn now is what a full redraw draws: no part stale.
@@ -3670,20 +3326,6 @@ fn row_lines(top: f32, height: f32) -> (f32, f32) {
     )
 }
 
-/// How far pixel `p` is from colour `c`: its largest difference in any channel.
-fn gap(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb) -> u8 {
-    p.iter()
-        .zip([c.r, c.g, c.b])
-        .map(|(a, b)| a.abs_diff(b))
-        .max()
-        .unwrap_or(0)
-}
-
-/// Whether pixel `p` is colour `c` (give or take 3 per channel).
-fn near(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb) -> bool {
-    gap(p, c) <= 3
-}
-
 /// The selected row (M11i) at `(left, right, top, height)`: the selection's tint right to its
 /// left edge (the accent bar there was removed 2026-11-10, your call), and its name in `text`,
 /// never `on_accent`.
@@ -4094,14 +3736,6 @@ fn split_workspace(focus: usize, window: &mut Window, cx: &mut Context<Workspace
     ws.select(focus, window, cx);
     ws.sidebar.hint_dismissed = true;
     ws
-}
-
-/// The window pixel at (`x`, `y`) points.
-fn pixel_at(shot: &Shot, dims: Size<Pixels>, x: f32, y: f32) -> [u8; 3] {
-    let scale = shot.width as f32 / f32::from(dims.width);
-    let (x, y) = ((x * scale) as usize, (y * scale) as usize);
-    let i = (y * shot.width as usize + x) * 4;
-    [shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]]
 }
 
 /// The box, `(x0, x1, y0, y1)` in points, round every device pixel inside `area` (`x`, `y`,
