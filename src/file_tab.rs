@@ -1400,6 +1400,61 @@ fn zone_at(g: &Geom, p: Point<Pixels>) -> Option<Track> {
         .find(|t| t.zone_has(p))
 }
 
+/// M11ae: while selecting with the pointer out of the text, the text scrolls on its own this often.
+const AUTOSCROLL_STEP: Duration = Duration::from_millis(16);
+
+/// How far point `p` is out of the span `lo..hi`: after it, `p - hi` (positive); before it,
+/// `p - lo` (negative); within it, 0.
+pub fn outside(p: f32, lo: f32, hi: f32) -> f32 {
+    if p > hi {
+        p - hi
+    } else if p < lo {
+        p - lo
+    } else {
+        0.0
+    }
+}
+
+/// How far the text scrolls in one auto-scroll step for a pointer `outside` points out of it
+/// (M11ae): faster the further out, from 1 pt to 3 lines; nothing within it.
+pub fn edge_speed(outside: f32, line_height: f32) -> f32 {
+    if outside <= 0.0 {
+        return 0.0;
+    }
+    (outside / 8.0).clamp(1.0, 3.0 * line_height)
+}
+
+/// The auto-scroll's step for window point `p` (M11ae): per axis, towards the side the pointer
+/// is out of the text (its canvas, the scrollbar's edge zones in it), at `edge_speed`; sideways
+/// only with Wrap off (Wrap on has no sideways scroll). Zero: the pointer is in the text.
+fn edge_push(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
+    let lh = f32::from(g.line_height);
+    let push = |o: f32| px(o.signum() * edge_speed(o.abs(), lh));
+    let b = g.bounds;
+    let y = outside(f32::from(p.y), f32::from(b.top()), f32::from(b.bottom()));
+    let x = if wrap {
+        0.0
+    } else {
+        outside(f32::from(p.x), f32::from(b.left()), f32::from(b.right()))
+    };
+    point(push(x), push(y))
+}
+
+/// Window point `p` held inside the text (M11ae): its edge row above or below it, and with Wrap
+/// off its edge column left or right of it (the text's, right of the numbers), so a selection's
+/// moving end never goes out of sight.
+fn hold_inside(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
+    let b = g.bounds;
+    let y = p.y.clamp(b.top(), (b.bottom() - px(1.0)).max(b.top()));
+    let x = if wrap {
+        p.x
+    } else {
+        let left = b.left() + g.text_left;
+        p.x.clamp(left, (b.right() - px(1.0)).max(left))
+    };
+    point(x, y)
+}
+
 /// A Preview of up to this many blocks measures every row at its first layout (and again after a
 /// reset, a remeasure or a width change), so its scrollbar is exact. Measured on a release build
 /// (M11ae fix round 1): a full relayout is ~3 ms for 585 blocks (20 KB) but ~160 ms for 29,115
@@ -2102,6 +2157,10 @@ pub struct FileTab {
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
+    /// M11ae: the pointer's last place while selecting, and whether the auto-scroll task runs
+    /// (one at a time; only while the pointer is out of the text).
+    drag_at: Option<Point<Pixels>>,
+    autoscrolling: bool,
     /// M11ae: the overlay scrollbar (File, Diff and Preview: one shows at a time).
     scrollbar: Bar,
     find: Option<FindBar>,
@@ -2203,6 +2262,8 @@ impl FileTab {
             wrapped: Rc::default(),
             selection: None,
             selecting: false,
+            drag_at: None,
+            autoscrolling: false,
             scrollbar: Bar::default(),
             find: None,
             shown: false,
@@ -2813,7 +2874,9 @@ impl FileTab {
         if on && self.find.is_some() {
             self.close_find(window, cx);
         }
+        // The selection ends (and with it a drag's auto-scroll, M11ae), as for a mode switch.
         self.selection = None;
+        self.selecting = false;
         cx.emit(FileTabEvent::Preview(on));
         cx.notify();
     }
@@ -3346,11 +3409,44 @@ impl FileTab {
         }
     }
 
+    /// The selection follows the pointer, held inside the text (M11ae: never into lines out of
+    /// sight); out of the text, the auto-scroll starts (if not running). A move with the button
+    /// up (its release missed) ends the selection, so the auto-scroll ends too.
     fn mouse_drag(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting || e.pressed_button != Some(MouseButton::Left) {
+        if !self.selecting {
             return;
         }
-        let Some(head) = self.pos_at(e.position, window, cx) else {
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.selecting = false;
+            return;
+        }
+        self.drag_at = Some(e.position);
+        self.drag_head(e.position, window, cx);
+        let wrap = self.wrapped.borrow().is_some();
+        let out = self
+            .geom
+            .get()
+            .is_some_and(|g| edge_push(e.position, &g, wrap) != Point::default());
+        if out && !self.autoscrolling {
+            self.autoscroll(window, cx);
+        }
+    }
+
+    /// The selection's moving end to window point `p` held inside the text (`hold_inside`), at
+    /// the scroll as it is now (an auto-scroll step's is not drawn yet: `p` moved by the
+    /// difference, which is how `pos_at` reads it).
+    fn drag_head(&mut self, p: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(g) = self.geom.get() else {
+            return;
+        };
+        let wrap = self.wrapped.borrow().is_some();
+        let now = Geom::clamp(self.mode_scroll(), g.max_scroll);
+        let ahead = point(
+            if wrap { px(0.0) } else { now.x - g.scroll.x },
+            now.y - g.scroll.y,
+        );
+        let held = hold_inside(p, &g, wrap);
+        let Some(head) = self.pos_at(point(held.x + ahead.x, held.y + ahead.y), window, cx) else {
             return;
         };
         if let Some((anchor, old)) = self.selection
@@ -3359,6 +3455,58 @@ impl FileTab {
             self.selection = Some((anchor, head));
             cx.notify();
         }
+    }
+
+    /// M11ae: selecting with the pointer out of the text, the text scrolls on its own every
+    /// `AUTOSCROLL_STEP`, and the selection grows with it. One task at a time, which ends itself
+    /// when the selection ends (a release, a mode switch), the pointer is back in the text, or
+    /// the scroll stops (the end of the text): no timer runs otherwise.
+    fn autoscroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.autoscrolling = true;
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTOSCROLL_STEP).await;
+                let go = cx.update(|window, cx| {
+                    this.update(cx, |this, cx| this.autoscroll_step(window, cx))
+                });
+                match go {
+                    Ok(Ok(true)) => {}
+                    Ok(Ok(false)) | Ok(Err(_)) => break,
+                    // The window went: the task ends (the flag with it, if the tab is still there).
+                    Err(_) => {
+                        this.update(cx, |this, _| this.autoscrolling = false).ok();
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// One auto-scroll step: the scroll pushed towards the pointer, the selection's moving end
+    /// to the place under it held inside the text. False (the task ends): not selecting, the
+    /// pointer back in the text, or the scroll didn't move.
+    fn autoscroll_step(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let wrap = self.wrapped.borrow().is_some();
+        let step = match (self.selecting, self.drag_at, self.geom.get()) {
+            (true, Some(p), Some(g)) => Some((p, g)),
+            _ => None,
+        };
+        let go = step.is_some_and(|(p, g)| {
+            let push = edge_push(p, &g, wrap);
+            if push == Point::default() {
+                return false;
+            }
+            let from = Geom::clamp(self.mode_scroll(), g.max_scroll);
+            self.set_scroll(point(from.x + push.x, from.y + push.y), cx);
+            let moved = self.mode_scroll() != from;
+            self.drag_head(p, window, cx);
+            moved
+        });
+        if !go {
+            self.autoscrolling = false;
+        }
+        go
     }
 
     fn copy(&mut self, cx: &mut Context<Self>) {
@@ -4323,6 +4471,16 @@ impl FileTab {
     }
 
     /// The scroll of the mode shown.
+    /// M11ae: whether the drag-select auto-scroll task runs, and the selection (anchor, moving
+    /// end).
+    pub fn autoscrolling(&self) -> bool {
+        self.autoscrolling
+    }
+
+    pub fn selection(&self) -> Option<(Pos, Pos)> {
+        self.selection
+    }
+
     pub fn scroll(&self) -> Point<Pixels> {
         self.mode_scroll()
     }
@@ -5692,5 +5850,24 @@ mod tests {
         ));
         // No answer from git: none (the rows shown stay).
         assert!(diff_answer(None, || None, None, 1, None, None).is_none());
+    }
+
+    /// M11ae: a drag past the text's edge scrolls faster the further out, from 1 pt a step to
+    /// 3 lines; inside, not at all.
+    #[test]
+    fn the_auto_scroll_speeds_up_the_further_out() {
+        assert_eq!(edge_speed(0.0, 18.0), 0.0);
+        assert_eq!(edge_speed(-3.0, 18.0), 0.0);
+        assert_eq!(edge_speed(4.0, 18.0), 1.0);
+        assert_eq!(edge_speed(80.0, 18.0), 10.0);
+        assert_eq!(edge_speed(2000.0, 18.0), 54.0);
+    }
+
+    /// M11ae: how far a point is out of a span: after it, positive; before it, negative.
+    #[test]
+    fn outside_is_signed_by_the_side() {
+        assert_eq!(outside(50.0, 0.0, 100.0), 0.0);
+        assert_eq!(outside(130.0, 0.0, 100.0), 30.0);
+        assert_eq!(outside(-20.0, 0.0, 100.0), -20.0);
     }
 }
