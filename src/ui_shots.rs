@@ -5995,6 +5995,10 @@ fn file_tab_scenes() {
 ///   the text: it scrolls sideways and the selection grows along the line; then over the line
 ///   numbers (left of the text): it scrolls back left.
 /// - `file-tab-drag-select-mode` (asserts only): a switch to Diff mid-drag ends the task.
+/// - `file-tab-drag-select-hidden` (asserts only): the tab goes off screen mid-drag (`set_shown`,
+///   as the workspace says each frame): the task ends within one step and the scroll stays.
+///   Then the pointer in the right edge's zone (the thumb shows, hovered) leaves the window
+///   (`MouseExitEvent`, no last move): 1.5 s later the thumb is gone.
 fn file_drag_select_scenes() {
     use crate::file_tab::FileTab;
     use crate::layout_model::FileMode;
@@ -6214,6 +6218,81 @@ fn file_drag_select_scenes() {
         };
         render_with(&theme, dims, build, act);
         println!("ui-shots: file-tab-drag-select-mode-{slug} ok");
+
+        // Off screen mid-drag: the task ends; then the pointer leaves the window from the edge.
+        let n = format!("file-tab-drag-select-hidden-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(long.clone(), slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            frame(cx, window);
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_shown(true, cx)));
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let x = g.bounds.left() + g.text_left + px(20.0);
+            let press = point(x, g.bounds.top() + g.line_height * 2.5);
+            cx.simulate_mouse_down(window, press, MouseButton::Left, none);
+            let below = point(x, g.bounds.bottom() + px(60.0));
+            cx.simulate_mouse_move(window, below, left, none);
+            cx.advance_clock(ms(100));
+            assert!(
+                cx.read(|cx| tab.read(cx).autoscrolling()),
+                "{n}: no auto-scroll below the text"
+            );
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_shown(false, cx)));
+            cx.advance_clock(ms(16));
+            let held = cx.read(|cx| {
+                let t = tab.read(cx);
+                assert!(
+                    !t.autoscrolling(),
+                    "{n}: the auto-scroll runs a step after the tab went off screen"
+                );
+                t.scroll()
+            });
+            cx.advance_clock(ms(100));
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).scroll()),
+                held,
+                "{n}: the scroll moved off screen"
+            );
+            // The release never comes (the listeners went with the canvas): shown again, a move
+            // with the button up starts nothing.
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_shown(true, cx)));
+            cx.simulate_mouse_move(window, below, None, none);
+            cx.advance_clock(ms(100));
+            assert!(
+                !cx.read(|cx| tab.read(cx).autoscrolling()),
+                "{n}: the auto-scroll started again"
+            );
+
+            // The pointer in the right edge's zone: the thumb shows, hovered; then it leaves
+            // the window with no last move.
+            let edge = point(g.bounds.right() - px(4.0), g.bounds.center().y);
+            cx.simulate_mouse_move(window, edge, None, none);
+            frame(cx, window);
+            assert!(
+                cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                "{n}: no thumb with the pointer at the edge"
+            );
+            cx.simulate_event(
+                window,
+                gpui::MouseExitEvent {
+                    position: point(g.bounds.right() + px(2.0), g.bounds.center().y),
+                    pressed_button: None,
+                    modifiers: none,
+                },
+            );
+            // Real time for the fade (it reads `Instant`), the test clock for its task's steps.
+            std::thread::sleep(ms(1500));
+            cx.advance_clock(ms(1500));
+            frame(cx, window);
+            assert!(
+                !cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                "{n}: the thumb stays after the pointer left the window"
+            );
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: file-tab-drag-select-hidden-{slug} ok");
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -6226,7 +6305,9 @@ fn file_drag_select_scenes() {
 ///
 /// Not shot: an untracked file (`A · +3`); a file outside any repo (no chip, its folder); a
 /// line appended to a.rs and read again (the line count and the counts follow, the counts
-/// after the look-up's wait).
+/// after the look-up's wait); a.rs opened in Diff mode (`file-tab-header-diff`: the chip
+/// `M · +2 −1` from the diff's rows, with no switch to File; reverted to as committed and read
+/// again: no chip); new.rs in Diff mode (`A · +3`).
 fn file_header_scenes() {
     use crate::file_tab::FileTab;
     use crate::layout_model::FileMode;
@@ -6503,6 +6584,72 @@ fn file_header_scenes() {
                 wait_for(cx, window, &tab, &want, n);
                 let drawn = cx.read(|cx| tab.read(cx).toggle_bounds());
                 assert_eq!(drawn, [None; 3], "{n}: one view, no switch");
+                slot.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {n} ok");
+
+        // Opened in Diff mode (as from a Changes-panel row, or restored): the chip comes from
+        // the diff's rows; reverted, it goes.
+        let n = "file-tab-header-diff";
+        let slot: TabSlot = Rc::default();
+        let diff_build = |path: PathBuf, slot: TabSlot| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| FileTab::new(path.clone(), FileMode::Diff, window, cx));
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+        let build = diff_build(a_rs.clone(), slot.clone());
+        let file = a_rs.clone();
+        let (changed, reverted) = (
+            words_of(
+                "a.rs",
+                Some("M \u{b7} +2 \u{2212}1"),
+                format!("{repo_name} / src \u{b7} Rust \u{b7} 4 lines \u{b7} edited just now"),
+            ),
+            words_of(
+                "a.rs",
+                None,
+                format!("{repo_name} / src \u{b7} Rust \u{b7} 3 lines \u{b7} edited just now"),
+            ),
+        );
+        render_with(
+            &theme,
+            size(px(760.0), px(160.0)),
+            build,
+            move |cx, window| {
+                let tab = tab_of(&slot);
+                wait_for(cx, window, &tab, &changed, n);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).mode()),
+                    FileMode::Diff,
+                    "{n}: still in Diff mode"
+                );
+                std::fs::write(&file, "fn a() {}\nfn b() {}\nfn c() {}\n").expect("revert a.rs");
+                cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+                wait_for(cx, window, &tab, &reverted, n);
+                slot.borrow_mut().take();
+            },
+        );
+        std::fs::write(&a_rs, "fn a() {}\nfn bee() {}\nfn c() {}\nfn d() {}\n").expect("a.rs");
+        println!("ui-shots: {n} ok");
+        let n = "file-tab-header-diff-untracked";
+        let slot: TabSlot = Rc::default();
+        let build = diff_build(new_rs.clone(), slot.clone());
+        let want = words_of(
+            "new.rs",
+            Some("A \u{b7} +3"),
+            format!("{repo_name} / src \u{b7} Rust \u{b7} 3 lines \u{b7} edited just now"),
+        );
+        render_with(
+            &theme,
+            size(px(760.0), px(160.0)),
+            build,
+            move |cx, window| {
+                let tab = tab_of(&slot);
+                wait_for(cx, window, &tab, &want, n);
                 slot.borrow_mut().take();
             },
         );

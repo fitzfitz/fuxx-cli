@@ -135,6 +135,15 @@ impl Bar {
         self.drag
     }
 
+    /// The view went off screen (its listeners with it, so no release or move will come): the
+    /// drag and the hover end and nothing shows, with no poke (a hidden view isn't drawn; shown
+    /// again, the thumb waits for the next activity). Whether a drag was going.
+    pub fn hide(&mut self) -> bool {
+        self.hot = false;
+        self.active_at = None;
+        self.drag.take().is_some()
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn animating(&self) -> bool {
         self.animating
@@ -279,6 +288,23 @@ mod tests {
         // Released: active from then, so it fades as after a scroll.
         assert_eq!(bar.alpha_at(t0 + s(0.5)), 0.35);
         assert!(!bar.is_shown(t0 + s(1.3)));
+    }
+
+    #[test]
+    fn hidden_ends_the_drag_and_the_hover_and_shows_nothing() {
+        let t0 = Instant::now();
+        let mut bar = Bar::default();
+        bar.poke(t0);
+        bar.set_hot(true);
+        bar.start_drag(Axis::Vertical, 4.0);
+        assert!(bar.hide(), "was dragging");
+        assert_eq!(bar.drag(), None);
+        assert!(!bar.is_shown(t0), "nothing shows");
+        assert!(!bar.set_hot(false), "not hot any more");
+        assert!(!bar.hide(), "no drag");
+        // A fade task still running draws once more, then ends.
+        assert!(bar.begin_fade());
+        assert_eq!(bar.fade_step(t0), (true, false));
     }
 
     #[test]

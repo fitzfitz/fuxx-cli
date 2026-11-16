@@ -2,7 +2,8 @@
 
 **Status:** 🟨 built 2026-11-16 on branch `m11ae-file-tab` (from master `8d2b16f`; not merged, not pushed), waiting for
 your on-screen check (below). Plan [[M11ae Plan - File Tab Chores]], 6 / 6 tasks, each reviewed. At the branch tip:
-1678 tests pass, clippy 30 / 32 (= the baselines), `cargo fmt --check` clean, full `__ui-shots` 203 scenes ok in 8 min 26 s.
+1681 tests pass, clippy 30 / 32 (= the baselines), `cargo fmt --check` clean, full `__ui-shots` 207 scenes ok in 8 min 21 s
+(after the whole-branch review's fix wave: see "Calls made" 7).
 
 **Asked for:** 2026-11-16, by you: "let's do some small chores. Let's fix file preview. right now no scrollbar. and
 when I try hold cursor left click and go below, it doesn't scroll + keep blocking the row/character. we need to adjust
@@ -90,6 +91,9 @@ changes inside `render`, except the one case under "Calls made" (3).
 1. **Header facts (Task 1).** Pure helpers, unit-tested: the change counts from the existing `-U0` diff (no extra git
    call), the chip words, the Where, Type, Lines and Edited words. The age is worked out in the tab's 1 s disk poll and
    the tab redraws only when the words change. The counts and the Type carry over a reload, so the chip doesn't flash.
+   In Diff mode the chip's counts come from the diff itself (its added and removed rows, exact as numstat; `A` when
+   git says the whole file is new), so a tab opened in Diff (a Changes-panel row, a restored tab) has its chip at
+   once, it follows each edit, and it goes when the file is reverted.
 2. **The two-line bar (Task 2).** 42 pt, name and chip on line one, details on line two, one File | Diff | Preview
    switch, Wrap and Open in Editor as icon buttons (two new glyphs), the file glyph gone.
 3. **The overlay scrollbar in File and Diff (Task 3).** Thumb, hover zone, fade after 1.0 s, drag, click-to-jump, and the
@@ -115,6 +119,10 @@ Where the plan left a gap, or a task found something while building, these are t
      (585 blocks) in 3 ms warm. Hence the 2,000 threshold, about 11 ms warm.
 5. **The horizontal auto-scroll edge** starts where the text starts, not at the line numbers.
 6. **Mode switches.** Switching to Preview mid-drag ends the drag. Switching modes also stops the auto-scroll.
+7. **Final review fixes.** A tab going off screen mid-drag (its release can't reach it) ends the selection's drag, a
+   thumb's drag and the hover, so its auto-scroll stops at the next step. The pointer leaving the window from the
+   edge zone lets the thumb fade (GPUI sends a `MouseExitEvent`, not a last move). A tab back on screen with an
+   unchanged file updates its "edited …" at once.
 
 ## Not in it
 
@@ -124,7 +132,8 @@ from the bar (the tab's menu has it); a track that is always visible; selection 
 ## On-screen check (yours, after the build)
 
 1. The bar: name and `M · +n −n` on a changed file in a repo; `A · +n` on a new one; no chip on a clean file and
-   outside a repo.
+   outside a repo. The same in Diff mode: open a changed file from the Changes panel (it opens in Diff), and the chip
+   is there; edit the file and it follows; revert it and the chip goes.
 2. The second line: folders from the repo's name; `~/…` outside a repo; the type; the line count; "edited …" changing
    from "just now" to "1 min ago" while you watch.
 3. A narrow split pane: the folders are cut with `…`, the rest stays whole, the controls stay visible. Narrower still,
