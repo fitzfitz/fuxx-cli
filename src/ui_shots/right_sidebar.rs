@@ -8,6 +8,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "right-sidebar",
         run: right_sidebar_scenes,
         themes: Themes::Both,
+        // Serial: (c) the slide still running right after the key (160 ms, real clock).
         serial: true,
         kind: Kind::Visual,
         sources: &[
@@ -22,6 +23,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "files",
         run: files_scenes,
         themes: Themes::Both,
+        // Serial: (b) adds src/zz.rs to the shared Files fixture for a while.
         serial: true,
         kind: Kind::Visual,
         sources: &[
@@ -371,7 +373,13 @@ fn right_sidebar_scenes() {
 /// The Files panel's fixture folder (under the temp folder; written, never read back as the
 /// user's): docs/ (guide.md), src/ (main.rs, new.rs, util/a.rs), Cargo.toml, README.md and
 /// notes.txt. Its real path (the temp folder is a link on macOS).
+///
+/// The scenes that use it may run in shards side by side, so a file is written only when it is
+/// missing or reads differently, and then whole (to a file beside the fixture, moved in): a file
+/// tab open on it in another process never sees it change, nor reads half of it. Its "edited …"
+/// age is then the fixture's (`changes-click` and `files-follow` show it).
 pub(super) fn files_fixture() -> PathBuf {
+    const TEXT: &str = "fn main() {}\n";
     let root = std::env::temp_dir().join("fuxx-ui-shots-files");
     for folder in ["docs", "src/util"] {
         std::fs::create_dir_all(root.join(folder)).expect("the fixture's folders");
@@ -388,12 +396,14 @@ pub(super) fn files_fixture() -> PathBuf {
         "README.md",
         "notes.txt",
     ] {
-        // Written beside the fixture, then moved in whole: the scenes that use it may run in
-        // shards side by side, and one must never read (or list) a file another is writing.
+        let path = root.join(file);
+        if std::fs::read_to_string(&path).is_ok_and(|text| text == TEXT) {
+            continue;
+        }
         let fresh =
             std::env::temp_dir().join(format!("fuxx-ui-shots-files-{}", std::process::id()));
-        std::fs::write(&fresh, "fn main() {}\n").expect("the fixture's files");
-        std::fs::rename(&fresh, root.join(file)).expect("the fixture's files");
+        std::fs::write(&fresh, TEXT).expect("the fixture's files");
+        std::fs::rename(&fresh, &path).expect("the fixture's files");
     }
     std::fs::canonicalize(&root).unwrap_or(root)
 }

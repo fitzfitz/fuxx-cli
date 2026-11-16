@@ -83,6 +83,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "activity",
         run: activity_scenes,
         themes: Themes::Both,
+        // Serial: (c) nothing moves over 200 ms of real time.
         serial: true,
         kind: Kind::Visual,
         sources: &[

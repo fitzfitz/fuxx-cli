@@ -24,7 +24,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-notify-redraws-parts",
         run: chrome_notify_redraws_parts,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::Visual,
         sources: &[
             "src/chrome_cache.rs",
@@ -56,6 +56,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-kill-switch",
         run: chrome_kill_switch,
         themes: Themes::One,
+        // Serial: (a) a child fuxx (FUXX_CHROME_CACHE=off).
         serial: true,
         kind: Kind::State,
         sources: &[
@@ -84,6 +85,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-ages-current",
         run: chrome_ages_current,
         themes: Themes::One,
+        // Serial: (c) "59s" read within 400 ms by the real clock.
         serial: true,
         kind: Kind::Visual,
         sources: &[
@@ -113,7 +115,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-folder-polled",
         run: chrome_folder_polled,
         themes: Themes::One,
-        serial: true,
+        serial: false,
         kind: Kind::State,
         sources: &[
             "src/chrome_cache.rs",
@@ -150,6 +152,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-rows-once",
         run: chrome_rows_once,
         themes: Themes::One,
+        // Serial: (c) "59s" read within 400 ms by the real clock.
         serial: true,
         kind: Kind::Visual,
         sources: &["src/chrome_cache.rs", "src/sidebar.rs"],

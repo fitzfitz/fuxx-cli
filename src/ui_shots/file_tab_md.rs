@@ -23,6 +23,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "file-tab-md-mermaid",
         run: file_tab_md_mermaid_scenes,
         themes: Themes::One,
+        // Serial: (a) a child fuxx: Mermaid's WebKit run, first and alone.
         serial: true,
         kind: Kind::State,
         sources: &[
