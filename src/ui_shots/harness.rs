@@ -498,6 +498,174 @@ pub(super) fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// A fingerprint cell's edge in device pixels: 8 points at the screen's scale (16 at 2x, the
+/// default; `run` sets it from the screen before the first scene that compares fingerprints).
+static CELL_PX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
+
+/// Fingerprints are 1/8 of a shot's size in points: a cell is this many points across.
+pub(super) const CELL_PT: f32 = 8.0;
+
+/// Set the fingerprint cell for a screen of this scale (device pixels per point).
+pub(super) fn set_fingerprint_scale(scale: f32) {
+    let px = (CELL_PT * scale).round().max(1.0) as u32;
+    CELL_PX.store(px, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A shot's compact reference (C3): greyscale (luma) at 1/8 of its point size, one byte a cell,
+/// row by row; each cell is the mean of its pixels (the last column and row may be partial).
+pub fn fingerprint(shot: &Shot) -> Vec<u8> {
+    let cell = CELL_PX.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    let (w, h) = (shot.width as usize, shot.height as usize);
+    let (cols, rows) = (w.div_ceil(cell), h.div_ceil(cell));
+    let mut sums = vec![0u64; cols];
+    let mut out = Vec::with_capacity(cols * rows);
+    for row in 0..rows {
+        sums.fill(0);
+        let (top, bottom) = (row * cell, ((row + 1) * cell).min(h));
+        for y in top..bottom {
+            let line = &shot.rgba[y * w * 4..(y + 1) * w * 4];
+            for (x, p) in line.chunks_exact(4).enumerate() {
+                // Rec. 601 luma, in thousandths.
+                sums[x / cell] += 299 * p[0] as u64 + 587 * p[1] as u64 + 114 * p[2] as u64;
+            }
+        }
+        for (col, sum) in sums.iter().enumerate() {
+            let width = ((col + 1) * cell).min(w) - col * cell;
+            let n = (width * (bottom - top)) as u64 * 1000;
+            out.push(((sum + n / 2) / n) as u8);
+        }
+    }
+    out
+}
+
+/// How far apart two fingerprints are: the mean absolute difference of their cells (0-255);
+/// infinite when their sizes differ.
+pub fn distance(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() {
+        return f32::INFINITY;
+    }
+    if a.is_empty() {
+        return 0.0;
+    }
+    let sum: u64 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u64).sum();
+    sum as f32 / a.len() as f32
+}
+
+/// The pictures that differ between two runs of unchanged code (note 81): they show real ages,
+/// a real scratch repo, or the Files fixture's age. They get no reference.
+pub(super) const VARIES: &[&str] = &[
+    "activity-mocha",
+    "activity-latte",
+    "activity-waiting-mocha",
+    "activity-waiting-latte",
+    "branch-switcher-open-mocha",
+    "welcome-checking-mocha",
+    "welcome-checking-latte",
+    "changes-click-mocha",
+    "changes-click-latte",
+    "files-panel-follows-active-tab-mocha",
+    "files-panel-follows-active-tab-latte",
+];
+
+/// Whether the shot kept as `stem` is one of `VARIES`.
+pub(super) fn varies(stem: &str) -> bool {
+    VARIES.contains(&stem)
+}
+
+/// The largest distance a fingerprint may be from its reference and still count as the same
+/// picture. Five full `--all-themes` runs of unchanged code put every one of the 393 shots at
+/// exactly 0 from its reference (note 81, "C3 — measured"), so it sits just above 0: 0.01 is,
+/// in a 1,000-cell shot, one cell 10 grey levels off.
+pub(super) const TOLERANCE: f32 = 0.01;
+
+/// `tests/ui-shots-ref/`, where the references are kept (in git).
+pub(super) fn refs_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("ui-shots-ref")
+}
+
+/// A kept shot's reference, under `refs_dir()`: `<scene>/<scene>-<slug>.fp`, the slug being the
+/// shot's stem (which most often starts with the scene's name already; it isn't repeated).
+pub(super) fn ref_path(scene: &str, stem: &str) -> PathBuf {
+    let name = match stem.strip_prefix(scene) {
+        Some(rest) if rest.starts_with('-') => stem.to_string(),
+        _ => format!("{scene}-{stem}"),
+    };
+    PathBuf::from(scene).join(format!("{name}.fp"))
+}
+
+/// What one run's fingerprints came to.
+#[derive(Default, Clone, Copy)]
+pub(super) struct RefCounts {
+    pub(super) same: usize,
+    pub(super) different: usize,
+    pub(super) missing: usize,
+    pub(super) written: usize,
+}
+
+/// A visual scene passed: compare each of its kept shots' fingerprints with its reference and
+/// print `ui-shots: <scene>-<slug> looks different (<d>)` above `TOLERANCE` (never a failure);
+/// with `update`, write them as the references instead (the scene's folder is replaced). A shot
+/// kept twice under one stem counts once (its last). `VARIES` are skipped. With
+/// `UI_SHOTS_FP_DISTANCES=1` every distance is printed (for choosing `TOLERANCE`).
+pub(super) fn check_refs(scene: &str, update: bool, counts: &mut RefCounts) {
+    let dir = refs_dir();
+    if update {
+        let _ = std::fs::remove_dir_all(dir.join(scene));
+    }
+    let all_distances = std::env::var("UI_SHOTS_FP_DISTANCES").is_ok_and(|v| v == "1");
+    KEPT.with_borrow(|kept| {
+        for (i, (stem, shot)) in kept.iter().enumerate() {
+            if varies(stem) || kept[i + 1..].iter().any(|(s, _)| s == stem) {
+                continue;
+            }
+            let rel = ref_path(scene, stem);
+            let path = dir.join(&rel);
+            let id = rel
+                .file_stem()
+                .map_or_else(String::new, |s| s.to_string_lossy().into());
+            let print = fingerprint(shot);
+            if update {
+                let written = std::fs::create_dir_all(dir.join(scene))
+                    .and_then(|()| std::fs::write(&path, &print));
+                match written {
+                    Ok(()) => counts.written += 1,
+                    Err(e) => eprintln!("ui-shots: can't write {}: {e}", path.display()),
+                }
+                continue;
+            }
+            let Ok(reference) = std::fs::read(&path) else {
+                counts.missing += 1;
+                continue;
+            };
+            let d = distance(&print, &reference);
+            if all_distances {
+                println!("ui-shots: fingerprint {id} {d:.4}");
+            }
+            if d > TOLERANCE {
+                counts.different += 1;
+                println!("ui-shots: {id} looks different ({d:.3})");
+            } else {
+                counts.same += 1;
+            }
+        }
+    });
+}
+
+/// Set the fingerprint cell from this screen's scale: a small window's shot, its device pixels
+/// over its points.
+pub(super) fn measure_fingerprint_scale() {
+    const SIDE: f32 = 16.0;
+    let theme = shot_theme(SHOT_THEMES[0].1);
+    let shot = render(
+        &theme,
+        gpui::size(gpui::px(SIDE), gpui::px(SIDE)),
+        |_, cx| cx.new(|_| gpui::EmptyView).into(),
+    );
+    set_fingerprint_scale(shot.width as f32 / SIDE);
+}
+
 /// The terminal's font as the app builds it with no font settings (bundled JetBrains Mono).
 pub fn mono_font(cx: &App) -> Font {
     let font = |names: &[String]| fonts::gpui_font(&fonts::from_entries(&[]), names);
@@ -1077,6 +1245,99 @@ mod tests {
         let mut cover = vec![(9, left), (20, right)];
         cover.extend((10..20).map(|x| (x, 1.0)));
         columns(40, 4, bg, ink, &cover)
+    }
+
+    /// A `w` × `h` device-pixel shot, each pixel `paint(x, y)`.
+    fn painted(w: u32, h: u32, paint: impl Fn(u32, u32) -> [u8; 3]) -> Shot {
+        let mut rgba = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                rgba.extend_from_slice(&paint(x, y));
+                rgba.push(255);
+            }
+        }
+        Shot {
+            width: w,
+            height: h,
+            rgba,
+        }
+    }
+
+    #[test]
+    fn a_fingerprint_is_one_grey_byte_a_cell_of_8_points() {
+        // At the default 2x, a cell is 16 device pixels: 40 × 20 px is 3 × 2 cells (the last
+        // column and row partly filled).
+        let grey = painted(40, 20, |_, _| [100, 100, 100]);
+        assert_eq!(fingerprint(&grey), vec![100; 6]);
+        // Greyscale by luma: pure red, green and blue.
+        assert_eq!(fingerprint(&painted(16, 16, |_, _| [255, 0, 0])), vec![76]);
+        assert_eq!(fingerprint(&painted(16, 16, |_, _| [0, 255, 0])), vec![150]);
+        assert_eq!(fingerprint(&painted(16, 16, |_, _| [0, 0, 255])), vec![29]);
+    }
+
+    #[test]
+    fn a_fingerprint_cell_is_the_mean_of_its_pixels() {
+        // Left half white, right half black, in one cell: mid grey. A partial last cell is the
+        // mean of the pixels it has (the 17th column, white, is a cell of its own).
+        let half = painted(16, 16, |x, _| if x < 8 { [255; 3] } else { [0; 3] });
+        assert_eq!(fingerprint(&half), vec![128]);
+        let edge = painted(17, 16, |x, _| if x == 16 { [255; 3] } else { [0; 3] });
+        assert_eq!(fingerprint(&edge), vec![0, 255]);
+    }
+
+    #[test]
+    fn distance_is_zero_for_the_same_fingerprint() {
+        let a: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
+        assert_eq!(distance(&a, &a), 0.0);
+    }
+
+    #[test]
+    fn distance_is_the_mean_absolute_difference() {
+        // One cell in 1,000 changed by 80: 0.08.
+        let a = vec![100u8; 1000];
+        let mut b = a.clone();
+        b[500] = 180;
+        assert!(
+            (distance(&a, &b) - 0.08).abs() < 1e-6,
+            "{}",
+            distance(&a, &b)
+        );
+        assert!((distance(&b, &a) - 0.08).abs() < 1e-6);
+    }
+
+    #[test]
+    fn distance_between_different_sizes_is_infinite() {
+        assert_eq!(distance(&[1, 2, 3], &[1, 2]), f32::INFINITY);
+    }
+
+    #[test]
+    fn a_reference_is_named_scene_then_slug_in_its_scene_s_folder() {
+        // The scene's name leads most stems already; it is added where it doesn't.
+        assert_eq!(
+            ref_path("tabs", "tabs-mocha"),
+            PathBuf::from("tabs/tabs-mocha.fp")
+        );
+        assert_eq!(
+            ref_path("chrome-pixels-same", "stale-now"),
+            PathBuf::from("chrome-pixels-same/chrome-pixels-same-stale-now.fp")
+        );
+        // A stem that only starts with the scene's letters isn't the scene's.
+        assert_eq!(
+            ref_path("files", "files-follow-mocha"),
+            PathBuf::from("files/files-follow-mocha.fp")
+        );
+        assert_eq!(
+            ref_path("tab", "tabs-mocha"),
+            PathBuf::from("tab/tab-tabs-mocha.fp")
+        );
+    }
+
+    #[test]
+    fn the_pictures_that_vary_between_runs_have_no_reference() {
+        assert!(varies("activity-mocha"));
+        assert!(varies("files-panel-follows-active-tab-latte"));
+        assert!(!varies("activity-switch-mocha"));
+        assert_eq!(VARIES.len(), 11);
     }
 
     #[test]
