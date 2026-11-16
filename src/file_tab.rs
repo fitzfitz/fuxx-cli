@@ -1976,6 +1976,9 @@ pub struct FileTab {
     /// controls together, as last drawn (none: not drawn).
     toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
     controls_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The second line's Where and the parts after it, as last drawn (the scenes check Where
+    /// is cut first).
+    meta_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
     /// M11ae: how long ago the file was modified (`age_label`), as the bar says it; worked out
     /// when a version is read and in each poll (`refresh_age`), never while drawing.
     age: Option<String>,
@@ -2067,6 +2070,7 @@ impl FileTab {
             close_at: Rc::default(),
             toggle_at: Rc::default(),
             controls_at: Rc::default(),
+            meta_at: Rc::default(),
             age: None,
             preview: false,
             preview_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
@@ -3466,7 +3470,11 @@ impl FileTab {
         let (name, chip) = self.title_words();
         let mut meta = self.meta_parts().into_iter();
         let place = meta.next().unwrap_or_default();
+        // The parts after Where, kept whole: one run, each after its ` · `.
+        let rest: String = meta.map(|part| format!(" \u{b7} {part}")).collect();
         let at = self.controls_at.clone();
+        let (where_at, rest_at) = (self.meta_at.clone(), self.meta_at.clone());
+        self.meta_at.set([None; 2]);
         let title = div()
             .flex()
             .flex_row()
@@ -3489,19 +3497,53 @@ impl FileTab {
             .min_w(px(0.0))
             .text_size(px(text::META))
             .text_color(hsla(ui.text_dim))
+            // Where is cut first, down to its `…` (never to nothing, so the ` · ` after it always
+            // follows something): a floor of one em, wider than the ellipsis.
             .child(
                 div()
+                    .relative()
                     .flex_shrink(1.0)
-                    .min_w(px(0.0))
+                    .min_w(px(text::META))
                     .truncate()
-                    .child(SharedString::from(place)),
+                    .child(SharedString::from(place))
+                    .child(
+                        canvas(
+                            move |b, _, _| {
+                                let mut both = where_at.get();
+                                both[0] = Some(b);
+                                where_at.set(both);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    ),
             )
-            .children(meta.map(|part| {
-                div()
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .child(SharedString::from(format!(" \u{b7} {part}")))
-            }));
+            .when(!rest.is_empty(), |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(SharedString::from(rest))
+                        .child(
+                            canvas(
+                                move |b, _, _| {
+                                    let mut both = rest_at.get();
+                                    both[1] = Some(b);
+                                    rest_at.set(both);
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                        ),
+                )
+            });
         div()
             .flex()
             .flex_none()
@@ -3924,6 +3966,12 @@ impl FileTab {
     /// M11ae: the bar's controls together (the switch, Wrap, Open in Editor), as last drawn.
     pub fn controls_bounds(&self) -> Option<Bounds<Pixels>> {
         self.controls_at.get()
+    }
+
+    /// M11ae: the second line's Where and the parts after it (none: no parts after it), as
+    /// last drawn.
+    pub fn meta_bounds(&self) -> [Option<Bounds<Pixels>>; 2] {
+        self.meta_at.get()
     }
 
     /// M11ae: the bar's words: the name, the chip, and the second line (its parts joined by

@@ -615,7 +615,7 @@ fn row(
         div()
             .flex_none()
             .font(mono.clone())
-            .text_size(px(text::META))
+            .text_size(px(ui_tokens::text::META))
             .text_color(hsla(ui.text_faint))
             .child(s)
     };
@@ -655,7 +655,7 @@ fn row(
                 .mt(px(-6.0))
                 .pl(px(38.0))
                 .truncate()
-                .text_size(px(text::META))
+                .text_size(px(ui_tokens::text::META))
                 .text_color(hsla(ui.text_faint))
                 .child(q),
         );
@@ -6010,6 +6010,11 @@ fn file_header_scenes() {
     std::fs::write(&a_rs, "fn a() {}\nfn b() {}\nfn c() {}\n").expect("a.rs");
     let readme = repo.join("README.md");
     std::fs::write(&readme, "# Read me\n\nSome *words*.\n").expect("README.md");
+    // Deep enough that its Where is cut in a 480 pt pane while the rest fits.
+    let deep_dir = repo.join("src/some/deeper/folders/for/the/where/part");
+    std::fs::create_dir_all(&deep_dir).expect("the deep folders");
+    let deep_rs = deep_dir.join("b.rs");
+    std::fs::write(&deep_rs, "fn b() {}\n").expect("b.rs");
     scratch_git(&git, &repo, &["add", "."]);
     scratch_git(&git, &repo, &["commit", "-q", "-m", "one"]);
     // Line 2 changed (−1 +1) and a line added (+1).
@@ -6086,7 +6091,75 @@ fn file_header_scenes() {
         );
         println!("ui-shots: {}", path.display());
 
-        // Narrow: the controls stay inside the pane.
+        // A middling pane: Where is cut (narrower than in a wide pane, down to its `…`), the
+        // parts after it whole (as wide as in a wide pane) and short of the controls.
+        let meta_at =
+            |width: f32, act_on: Rc<std::cell::Cell<Option<[gpui::Bounds<Pixels>; 3]>>>| {
+                let slot: TabSlot = Rc::default();
+                let build = build_for(theme, deep_rs.clone(), slot.clone());
+                let want = words_of(
+                    "b.rs",
+                    None,
+                    format!(
+                        "{repo_name} / src / some / deeper / folders / for / the / where / part \
+                     \u{b7} Rust \u{b7} 1 line \u{b7} edited just now"
+                    ),
+                );
+                let n = format!("file-tab-header-mid-{slug} at {width}");
+                let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let tab = tab_of(&slot);
+                    wait_for(cx, window, &tab, &want, &n);
+                    let diff_drawn = |cx: &mut VisualTestAppContext| {
+                        cx.read(|cx| tab.read(cx).toggle_bounds()[1]).is_some()
+                    };
+                    assert!(settle_until(cx, window, 20, diff_drawn), "{n}: File | Diff");
+                    let (meta, controls) = cx.read(|cx| {
+                        let t = tab.read(cx);
+                        (t.meta_bounds(), t.controls_bounds().expect("the controls"))
+                    });
+                    let [Some(place), Some(rest)] = meta else {
+                        panic!("{n}: Where and the rest are drawn: {meta:?}");
+                    };
+                    act_on.set(Some([place, rest, controls]));
+                    slot.borrow_mut().take();
+                };
+                (build, act)
+            };
+        let wide: Rc<std::cell::Cell<Option<[gpui::Bounds<Pixels>; 3]>>> = Rc::default();
+        let (build, act) = meta_at(1100.0, wide.clone());
+        render_with(&theme, size(px(1100.0), px(160.0)), build, act);
+        let mid: Rc<std::cell::Cell<Option<[gpui::Bounds<Pixels>; 3]>>> = Rc::default();
+        let (build, act) = meta_at(480.0, mid.clone());
+        let path = shoot_with(
+            "file-tab-header-mid",
+            slug,
+            &theme,
+            size(px(480.0), px(160.0)),
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+        let n = format!("file-tab-header-mid-{slug}");
+        let [wide_place, wide_rest, _] = wide.get().expect("the wide pane");
+        let [place, rest, controls] = mid.get().expect("the middling pane");
+        assert!(
+            place.size.width < wide_place.size.width,
+            "{n}: Where is cut ({place:?}; whole, {wide_place:?})"
+        );
+        assert!(
+            place.size.width >= px(ui_tokens::text::META),
+            "{n}: Where keeps room for its `…` ({place:?})"
+        );
+        assert!(
+            (rest.size.width - wide_rest.size.width).abs() < px(0.5),
+            "{n}: the rest whole ({rest:?}; wide, {wide_rest:?})"
+        );
+        assert!(
+            rest.left() >= place.right() && rest.right() <= controls.left(),
+            "{n}: the rest {rest:?} after Where {place:?}, short of the controls {controls:?}"
+        );
+
+        // Narrow: the controls stay inside the pane; Where is still its `…`.
         let n = format!("file-tab-header-narrow-{slug}");
         let width = 320.0;
         let slot: TabSlot = Rc::default();
@@ -6121,6 +6194,11 @@ fn file_header_scenes() {
             assert!(
                 inside(controls),
                 "{n}: the controls {controls:?} in the pane"
+            );
+            let place = cx.read(|cx| tab.read(cx).meta_bounds()[0]).expect("Where");
+            assert!(
+                place.size.width >= px(ui_tokens::text::META),
+                "{n}: Where never vanishes, its `…` stays ({place:?})"
             );
             for b in segments.into_iter().flatten() {
                 assert!(inside(b), "{n}: a segment {b:?} in the pane");
