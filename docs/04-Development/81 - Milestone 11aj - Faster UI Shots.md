@@ -62,6 +62,67 @@ drawing, so every UI task runs it — and it has become the slowest, most-edited
   what A1 does; the numbers go in this note.
 - Timings are kept in `target/ui-shots/timings.tsv` (scene, seconds) for sharding (A4).
 
+### Part 0 — measured (M11aj Task 1, 2026-11-16)
+
+Debug build, this Mac, nothing else heavy running (load average about 2, no process above 1 % CPU). 112 scenes
+(105 listed in the design plus M11ae's), all passing.
+
+| Run | Total |
+| --- | --- |
+| First (cold PNG folder) | 493.2 s |
+| Second (warm) | 507.4 s |
+| `UI_SHOTS_PROFILE=1` (two runs) | 507.1 s, 512.9 s |
+
+Run-to-run spread is about 3 %. **The suite is about 8.4 minutes.**
+
+**Slowest 15** (profiled run): preferences 40.5, file-tab 38.2, title-bar 24.6, sidebar 21.7, file-tab-md-mermaid 21.3,
+palette-files 18.1, help 16.7, tabs 15.7, file-tab-md 15.2, title-area 15.1, tab-bars 14.8, tab-drag 11.2, file-diff
+10.4, right-sidebar 9.2, branch-switcher-real 9.0 s. The 15 are 282 s, 55 % of the run; the longest is 40 s.
+
+**Where the 513 s goes** (summed over about 450 shots; `UI_SHOTS_PROFILE=1`):
+
+| Phase | Sum | Share |
+| --- | --- | --- |
+| `teardown` (dropping the app and window at the end of `render_with`) | **158.0 s** | 31 % |
+| `open` (`open_offscreen_window`, includes the scene's own `build` closure) | **92.2 s** | 18 % |
+| `act` (the act closure and second park) | **68.1 s** | 13 % |
+| `settle` (first `run_until_parked`) | 42.5 s | 8 % |
+| `png` (stored-deflate PNG and write) | 30.9 s | 6 % |
+| `fonts` (`register_bundled_fonts`) | 16.5 s | 3 % |
+| `capture` (`capture_screenshot`) | 16.4 s | 3 % |
+| `new_app` (`VisualTestAppContext::new`) | 0.2 s | 0 % |
+| Not in `render_with`: scenes that build their own app, scene bodies, waits, child processes | about 88 s | 17 % |
+
+`teardown` was not in the design's list of phases; it was found because the phases above summed to only 267 s of 507 s.
+It is the single largest cost. Creating the app is free (0.2 s); *dropping* it is not (about 0.35 s a shot).
+
+**Real-time waits:** 33 `thread::sleep` sites, now counted by `prof::sleep`: **28.4 s** (5.5 %) in total, measured, not
+estimated. Biggest: file-tab 5.9 s, command-blocks-copy 3.5, file-tab-scrollbar 3.0, sidebar 2.9,
+chrome-places-programs-ports 2.9, tab-drag 2.2.
+
+**Child-process scenes:** 20.5 s — `file-tab-md-mermaid` (WebKit child) 19.1 s of its 21.3 s;
+`chrome-kill-switch` (cache-off child) about 1.4 s.
+
+**Scenes with their own app** (not through `render_with`; about 40 scenes with no `render_with` time, about 57 s;
+sites: `cached_panes`, `chrome_window_with` (the chrome scenes), the cursor scenes' `spawned`, and three in the Mermaid
+scene).
+
+### Expected gain of each Part A item (estimates from the numbers above)
+
+| Item | Expected saving (serial) | Why |
+| --- | --- | --- |
+| A1 one app per scene, fonts once | **100-170 s** (fonts 16.5 s certain; teardown 158 s if it is per app and not per window; `new_app` nothing) | Part 0 shows creating the app is cheap but tearing it down is the biggest phase. Task 7 must first check whether teardown cost follows the app or the window. |
+| A2 PNGs only when wanted | **about 31 s** (and 770 MB less disk) | `png` phase. |
+| A3 one theme by default | **60-90 s** | roughly half the shots, if about half the scenes are `Themes::One`; scene-split audit decides. |
+| A4 parallel shards | divides what is left by 5-6 (cores minus 2, at most 8) | needs balancing: the longest scene is 40 s, Mermaid (21 s) is serial. |
+| A5 fewer real-time waits | **at most about 10 s**; the animation (`SLIDE`) and WebKit waits stay | 28.4 s of sleeps; many are real-time animation margins. |
+
+**Projection:** 513 s minus A1 (about 130), A2 (31), A3 (about 70), A5 (about 10) leaves about 270 s of serial work;
+over 6 shards that is about 45-55 s plus a serial tail (Mermaid 21 s, kill switch, the `SLIDE` scenes) of about 30 s:
+**roughly 75-90 s.** The 90 s goal looks reachable but tight, and depends on A1's teardown saving. The 30 s per-task goal
+looks comfortable: a task's own scenes are one to a few of the scenes above, and the biggest is 40 s serial (about 15 s
+after A1-A3).
+
 ### Part A — Quick wins
 
 - **A1 · Less setup per shot.** Reuse what's safe to reuse, chosen from Part 0's numbers: at least the font
