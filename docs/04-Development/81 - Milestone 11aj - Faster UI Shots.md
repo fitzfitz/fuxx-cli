@@ -302,9 +302,14 @@ a PNG) is turned into a fingerprint: greyscale (Rec. 601 luma), 1/8 of the shot'
 its pixels. It is compared with `tests/ui-shots-ref/<scene>/<scene>-<slug>.fp` (the slug is the shot's stem as `shoot`
 names it; the scene's name is not repeated where the stem already starts with it), as the mean absolute difference of
 the cells (0–255; a size change is infinite). Above the tolerance the run prints
-`ui-shots: <scene>-<slug> looks different (<d>)`, and each process ends with
-`ui-shots: fingerprints: <n> same, <n> look different, <n> without a reference`. **It never fails a run.**
-`--update-refs` (also through `scripts/ui-shots.sh`) writes the references instead, replacing each scene's folder.
+`ui-shots: <scene>-<slug> looks different (<d>)`; a fingerprint of another size prints `… differs in size from its
+reference` instead. Each process ends with `ui-shots: fingerprints: <n> same, <n> look different, <n> without a
+reference`, adding `<n> differ in size (another screen scale?)` when there are any, so a run on a 1x screen doesn't read
+as a regression. **It never fails a run.** `--update-refs` (also through `scripts/ui-shots.sh`) writes the references
+instead, always in both themes (it implies `--all-themes`). With no filter and no `--changed`, it replaces each
+scene's folder and then, once (the direct or serial run), removes any folder no visual scene claims, printing it; with
+a filter or `--changed` it rewrites only the shots it took. A `cargo test` (`ui-shots` feature) fails if a folder in
+`tests/ui-shots-ref/` belongs to no visual scene, and `.gitattributes` marks the references binary.
 Skipped: `State` scenes, the 11 pictures that vary between runs of unchanged code (`VARIES` in `harness.rs`: `activity`,
 `activity-waiting`, `welcome-checking`, `changes-click`, `files-panel-follows-active-tab` in both themes, and
 `branch-switcher-open-mocha`), child runs (cache-off, WebKit) and failed scenes.
