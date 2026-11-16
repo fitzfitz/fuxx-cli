@@ -88,6 +88,11 @@ impl Provider for Claude {
         Box::new(ClaudeTranslator::default())
     }
 
+    /// "No conversation found with session ID: …" (on stderr and in the `result`'s errors).
+    fn unknown_conversation(&self, said: &str) -> bool {
+        said.contains("No conversation found")
+    }
+
     /// `--resume` doesn't replay on stdout (Task 0): the turns come from Claude's transcript of
     /// the conversation. None to resume, no home, or a missing or unreadable file: none.
     fn history(&self, start: &Start) -> Vec<Past> {
@@ -127,15 +132,19 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if v["isMeta"] == true || v["isSidechain"] == true {
+        if v["isMeta"] == true || v["isSidechain"] == true || v["isCompactSummary"] == true {
             continue;
         }
         match v["type"].as_str() {
             Some("user") => {
-                if let Some(said) = v["message"]["content"].as_str() {
-                    out.push(Past::You(said.to_string()));
-                } else {
+                let content = &v["message"]["content"];
+                let results = content
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|i| i["type"] == "tool_result"));
+                if results {
                     out.extend(translator.user(&v).into_iter().map(Past::Event));
+                } else if let Some(past) = said_text(content).as_deref().and_then(user_said) {
+                    out.push(past);
                 }
             }
             Some("assistant") => out.extend(translator.assistant(&v).into_iter().map(Past::Event)),
@@ -143,6 +152,59 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
         }
     }
     out
+}
+
+/// A `user` line's text: the string, or its text blocks (an image or a pasted block among them
+/// left out) one per line.
+fn said_text(content: &Value) -> Option<String> {
+    match content {
+        Value::String(t) => Some(t.clone()),
+        Value::Array(items) => {
+            let texts: Vec<&str> = items.iter().filter_map(|i| i["text"].as_str()).collect();
+            (!texts.is_empty()).then(|| texts.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+/// The text between `<tag>` and `</tag>` in `text`.
+fn inside<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = start + text[start..].find(&close)?;
+    Some(&text[start..end])
+}
+
+/// What a `user` line's text was in the conversation: you, unless it is one of Claude's own
+/// wrappers — a slash command (shown as you typed it), its output (a notice), an interrupt
+/// ("Stopped"), or another `<…>` wrapper (left out).
+fn user_said(text: &str) -> Option<Past> {
+    let t = text.trim();
+    if t.starts_with("[Request interrupted by user") {
+        return Some(Past::Event(Event::Notice("Stopped".into())));
+    }
+    if t.starts_with("<command-name>") {
+        let name = inside(t, "command-name")?.trim();
+        let args = inside(t, "command-args").unwrap_or("").trim();
+        let typed = if args.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} {args}")
+        };
+        return Some(Past::You(typed));
+    }
+    if t.starts_with("<local-command-stdout>") {
+        let out = inside(t, "local-command-stdout")?.trim();
+        return (!out.is_empty()).then(|| Past::Event(Event::Notice(out.to_string())));
+    }
+    let wrapper = t
+        .strip_prefix('<')
+        .and_then(|rest| rest.split_once('>'))
+        .is_some_and(|(tag, _)| {
+            !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        });
+    (!wrapper && !t.is_empty()).then(|| Past::You(text.to_string()))
 }
 
 #[derive(Default)]
@@ -896,6 +958,53 @@ mod tests {
         assert!(
             matches!(&past[2], Past::Event(Event::ToolFinished { id, ok: true, .. }) if id == "t1")
         );
+    }
+
+    /// Review fix (Minor 5): a `user` line of text blocks is what you said; Claude's own command
+    /// wrappers are not you: a slash command shows as you typed it, its output as a notice, an
+    /// interrupt as "Stopped", the rest of `<…>` wrappers not at all.
+    #[test]
+    fn history_reads_text_blocks_and_command_wrappers() {
+        let user =
+            |content: Value| json!({"type":"user","message":{"role":"user","content":content}});
+        let lines = [
+            user(
+                json!([{"type":"text","text":"look at"},{"type":"image","source":{}},{"type":"text","text":"this"}]),
+            ),
+            user(json!(
+                "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>"
+            )),
+            user(json!(
+                "<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>"
+            )),
+            user(json!(
+                "<local-command-caveat>Caveat: the messages below were generated by the user</local-command-caveat>"
+            )),
+            user(json!([{"type":"text","text":"[Request interrupted by user]"}])),
+            json!({"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}),
+        ];
+        let text: String = lines.iter().map(|l| l.to_string() + "\n").collect();
+        assert_eq!(
+            transcript_events(&text),
+            vec![
+                Past::You("look at\nthis".into()),
+                Past::You("/compact".into()),
+                Past::Event(Event::Notice(
+                    "Compacted (ctrl+o to see full summary)".into()
+                )),
+                Past::Event(Event::Notice("Stopped".into())),
+            ]
+        );
+    }
+
+    /// Review fix (Minor 1): only "no such conversation" makes a failed resume a new one.
+    #[test]
+    fn an_unknown_conversation_is_told_by_what_claude_said() {
+        assert!(
+            CLAUDE.unknown_conversation(include_str!("fixtures/claude-bad-resume.jsonl.stderr"))
+        );
+        assert!(!CLAUDE.unknown_conversation("Invalid API key · Please run /login"));
+        assert!(!CLAUDE.unknown_conversation(""));
     }
 
     #[test]

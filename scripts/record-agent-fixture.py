@@ -336,7 +336,10 @@ def copy_transcript(r, dest):
             # Only the turns: the file also holds the request blobs (system prompt, the user's
             # CLAUDE.md and hook context), attachments, account ids and costs, none of which
             # `history()` reads and none of which belong in the repo.
-            if isinstance(e, dict) and e.get("type") in TRANSCRIPT_KEEP:
+            # Claude's own lines (isMeta: hook output, CLAUDE.md context) and a sub-agent's thread
+            # (isSidechain) are skipped too: `history()` reads neither.
+            if (isinstance(e, dict) and e.get("type") in TRANSCRIPT_KEEP
+                    and not e.get("isMeta") and not e.get("isSidechain")):
                 for k in TRANSCRIPT_DROP:
                     e.pop(k, None)
                 out.write(json.dumps(scrub_event(e, r.scrub), ensure_ascii=False) + "\n")
