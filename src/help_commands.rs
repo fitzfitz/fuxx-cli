@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(r.entries[0].usage, strs(&["ls"]));
         assert_eq!(
             r.entries[0].description,
-            "list sessions (#N* focused, #N+ on screen)"
+            "list sessions (#N* focused, #N+ on screen), then agent tabs"
         );
     }
 
@@ -241,6 +241,7 @@ mod tests {
             strs(&[
                 "Every browser command takes --session TARGET (default: your session).",
                 "Every command but daemon takes --json. TARGET is s4, #2 or a session name.",
+                "status, question, answer and wait also take an agent tab: a2 (see ls).",
                 "Exit codes: 0 ok, 1 refused or nothing to show, 2 bad arguments, 3 fuxx not reachable, 124 wait timed out."
             ])
         );

@@ -68,6 +68,15 @@ Each command takes `--json` for machine-readable output.
 - `#2` for the 2nd row in the sidebar;
 - a name or title, matched exactly and ignoring case.
 
+**Agent tabs (M11aa).** A chat tab running an agent has its own id, `a1`, `a2`, … (a per-run counter, never an
+`sN`). `fuxx ls` lists them after the sessions (`"kind": "agent"`, with `provider`, `name` (its title, else the
+provider's label), `status`, `workspace`, `pane`; session rows say `"kind": "terminal"`). `status`, `question`, `answer`
+and `wait` take an agent tab: `question` prints the permission it asks for; `answer` allows it for `y`, `yes` or
+`allow`, allows it from now on for `always`, and denies it with any other text as the reason (refused unless it is
+waiting). `wait --any` watches agent tabs too; `--text` never matches one (it has no screen). `send`, `key`, `paste`,
+`read` and the other commands refuse an agent tab ("a1 is an agent tab, not a terminal"). Its status changes and
+notifications are events like a session's, naming it `a1` with its workspace's row number and its title.
+
 With no target, the command acts on **the session it's typed in** (`FUXX_SESSION`); outside fuxx, it acts on the
 focused session. If the session it's typed in has closed (e.g. a background job outliving it), that's an error
 (`not_found`, "your session s3 is gone"), never the focused session. A target that matches nothing, or more than

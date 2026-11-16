@@ -30,7 +30,7 @@ use gpui::{
 };
 
 use crate::adopt::{self, Probe};
-use crate::api_events::{Event, WaitTable};
+use crate::api_events::{Event, Subject, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::branch_switcher::BranchSwitcher;
@@ -681,6 +681,9 @@ pub struct Workspace {
     pub(crate) agents: HashMap<TabId, AgentSlot>,
     /// The number the next agent tab gets (`aN`, from 1); never reused.
     pub(crate) next_agent_id: u64,
+    /// The `aN` of agent tabs `sync` dropped since the last `check_waits`, which passes them as
+    /// closed (their exit / change waits are met, the rest end).
+    pub(crate) agents_closed: Vec<u64>,
     /// Each agent tab "Open in classic view" opened a terminal for: that terminal (`sN`) and
     /// when it opened (R13).
     pub(crate) classic_of: HashMap<TabId, (u64, Instant)>,
@@ -939,6 +942,7 @@ impl Workspace {
             file_tabs: HashMap::new(),
             agents: HashMap::new(),
             next_agent_id: 1,
+            agents_closed: Vec::new(),
             classic_of: HashMap::new(),
             classic_opening: HashSet::new(),
             resume_checks: HashSet::new(),
@@ -1796,7 +1800,14 @@ impl Workspace {
                 .tab(*tab)
                 .is_some_and(|t| matches!(t.kind, TabKind::Agent { .. }))
         };
-        self.agents.retain(|tab, _| is_agent(tab));
+        let closed = &mut self.agents_closed;
+        self.agents.retain(|tab, slot| {
+            let open = is_agent(tab);
+            if !open {
+                closed.push(slot.id);
+            }
+            open
+        });
         self.classic_of.retain(|tab, _| is_agent(tab));
         self.classic_opening.retain(is_agent);
         self.resume_checks.retain(is_agent);
@@ -2391,7 +2402,7 @@ impl Workspace {
         self.emit(&Event::Closed, Some(index));
         // Waits get a last look at its screen and status (PASS printed just before the shell
         // exited still counts), then exit / change waits are met.
-        let mut replied = self.check_waits(&[session_id], cx);
+        let mut replied = self.check_waits(&[Subject::Terminal(session_id)], cx);
         self.dragging = None; // the layout changes under a drag
         self.divider_hover = None; // and a divider may be gone, with no leave event
         // Its tab goes: the pane's next tab shows, or the pane's neighbour takes its space (and

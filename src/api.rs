@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent_conversation::Answer;
 use crate::keys::key_to_bytes;
 use crate::status::Status;
 
@@ -109,6 +110,8 @@ pub fn reply(id: Option<u64>, result: Result<serde_json::Value, ApiError>) -> St
 pub enum Target {
     /// `s<digits>`: the session's stable id.
     Id(u64),
+    /// `a<digits>`: an agent tab's id (M11aa), from a per-run counter starting at 1.
+    Agent(u64),
     /// `#<digits>`: its 1-based place in the sidebar.
     Number(usize),
     /// Anything else: its label, case-insensitively.
@@ -123,6 +126,12 @@ pub fn parse_target(s: &str) -> Target {
                 return Target::Id(id);
             }
         }
+    }
+    if let Some(rest) = s.strip_prefix('a')
+        && digits(rest)
+        && let Ok(id) = rest.parse()
+    {
+        return Target::Agent(id);
     }
     if let Some(rest) = s.strip_prefix('#') {
         if digits(rest) {
@@ -166,6 +175,9 @@ pub fn resolve(
                 Err(ApiError::not_found(format!("no session s{id}")))
             }
         }
+        // Only status, question, answer and wait take an agent tab (`Workspace::agent_target`);
+        // everything that resolves here acts on a terminal.
+        Some(Target::Agent(n)) => Err(not_a_terminal(*n)),
         Some(Target::Number(n)) => n
             .checked_sub(1)
             .and_then(|i| sessions.get(i))
@@ -190,6 +202,24 @@ pub fn resolve(
                 }
             }
         }
+    }
+}
+
+/// What a terminal-only request on agent tab `a<n>` says.
+pub fn not_a_terminal(n: u64) -> ApiError {
+    ApiError::bad_request(format!("a{n} is an agent tab, not a terminal"))
+}
+
+/// `session.answer`'s text for an agent tab's permission: `y`, `yes` or `allow` (any case,
+/// trimmed) allow it, `always` allows it from now on, and anything else denies it with the text
+/// as the reason (none when blank).
+pub fn answer_action(text: &str) -> Answer {
+    let text = text.trim();
+    match text.to_lowercase().as_str() {
+        "y" | "yes" | "allow" => Answer::Allowed,
+        "always" => Answer::AlwaysAllowed,
+        "" => Answer::Denied(None),
+        _ => Answer::Denied(Some(text.to_string())),
     }
 }
 
@@ -295,6 +325,34 @@ mod tests {
         assert_eq!(parse_target("#2"), Target::Number(2));
         assert_eq!(parse_target("api"), Target::Name("api".into()));
         assert_eq!(parse_target("s"), Target::Name("s".into()));
+    }
+
+    #[test]
+    fn agent_targets_parse() {
+        assert_eq!(parse_target("a3"), Target::Agent(3));
+        assert_eq!(parse_target("s3"), Target::Id(3));
+        assert_eq!(parse_target("a"), Target::Name("a".into()));
+        assert_eq!(parse_target("api"), Target::Name("api".into()));
+    }
+
+    #[test]
+    fn an_agent_target_is_not_a_terminal() {
+        let e = resolve(Some(&Target::Agent(3)), &refs(), None, None).unwrap_err();
+        assert_eq!(e.code, "bad_request");
+        assert_eq!(e.message, "a3 is an agent tab, not a terminal");
+    }
+
+    #[test]
+    fn answer_words_map_to_actions() {
+        assert_eq!(answer_action(" Yes "), Answer::Allowed);
+        assert_eq!(answer_action("y"), Answer::Allowed);
+        assert_eq!(answer_action("ALLOW"), Answer::Allowed);
+        assert_eq!(answer_action("always"), Answer::AlwaysAllowed);
+        assert_eq!(
+            answer_action("not now"),
+            Answer::Denied(Some("not now".into()))
+        );
+        assert_eq!(answer_action("  "), Answer::Denied(None));
     }
 
     #[test]

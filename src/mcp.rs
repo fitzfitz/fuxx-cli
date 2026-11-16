@@ -40,7 +40,8 @@ shell, often running an AI coding agent, and fuxx knows whether each one is idle
 waiting for input or done. A typical flow: list_sessions to see what's open, new_session with a \
 preset to start an agent, wait (for: waiting) until it needs input, question to read what it's \
 asking, then answer it. A target is a session id like s4, #N for the Nth sidebar row, or a name; \
-leaving it out means the session this server runs in.";
+leaving it out means the session this server runs in. Agent tabs (chat tabs running an agent, \
+listed after the sessions with ids like a2) take status, question, answer and wait.";
 
 /// One tool: the protocol method it calls, and the `fuxx` command whose text it shows.
 struct Tool {
@@ -191,7 +192,8 @@ fn target() -> Value {
     json!({
         "type": "string",
         "description": "Session id like s4, #N for the Nth sidebar row, or a name. Omit for the \
-            session this MCP server runs in (outside fuxx: the focused session).",
+            session this MCP server runs in (outside fuxx: the focused session). status, \
+            question, answer and wait also take an agent tab's id like a2.",
     })
 }
 
@@ -209,7 +211,8 @@ fn schema(name: &str) -> Value {
         "list_sessions" => (
             "List every fuxx session in sidebar order: id, #number, status (idle, working, \
              waiting or done), name, folder, agent preset, and progress and note when set. \
-             A leading * marks the focused session, + another one on screen.",
+             A leading * marks the focused session, + another one on screen. Then every agent \
+             tab (a chat tab running an agent): its id like a2, status and title.",
             json!({}),
             &[],
         ),
@@ -289,15 +292,17 @@ fn schema(name: &str) -> Value {
             &[],
         ),
         "question" => (
-            "What a waiting session is asking: the last lines of its screen. Fails if the \
-             session isn't waiting.",
+            "What a waiting session is asking: the last lines of its screen (an agent tab: \
+             the permission it asks for). Fails if the session isn't waiting.",
             json!({ "target": target() }),
             &[],
         ),
         "answer" => (
             "Answer a waiting session: types the text and presses Enter. Refused unless the \
-             session is waiting, so it never types into a busy agent. Give a target; omit \
-             target only to act on your own session.",
+             session is waiting, so it never types into a busy agent. For an agent tab (a2) \
+             it answers the permission it asks for: y, yes or allow allows it, always allows \
+             it from now on, and any other text denies it with that text as the reason. Give \
+             a target; omit target only to act on your own session.",
             json!({
                 "target": target(),
                 "text": text("The answer, e.g. y, 1, or a sentence."),
@@ -308,7 +313,8 @@ fn schema(name: &str) -> Value {
         "wait" => (
             "Block until a session (or any session) meets a condition: reaches a status \
              (default: waiting, meaning it needs input), changes status, closes, or new text \
-             appears on its screen. Returns the id of the session that met it; fails if the \
+             appears on its screen (never on an agent tab, which has no screen). Returns the \
+             id of the session (or agent tab) that met it; fails if the \
              timeout passes first. Waiting for a status the session already has (or, with any, \
              one that some session already has) returns immediately; use change to wait for \
              the next change. Give a target (another session) or any: true. \
@@ -317,7 +323,7 @@ fn schema(name: &str) -> Value {
              If your MCP client gives up sooner, pass a shorter timeout and call again.",
             json!({
                 "target": target(),
-                "any": switch("Wait on every session instead of one; returns the first to meet \
+                "any": switch("Wait on every session and agent tab instead of one; returns the first to meet \
                     the condition. Give no target with it."),
                 "for": {
                     "type": "string",

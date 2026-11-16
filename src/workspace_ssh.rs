@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{Context, Entity, EntityId, Focusable, Task, Window, prelude::*};
 
-use crate::api_events::Event;
+use crate::api_events::{Event, Subject};
 use crate::host_picker::{HostPicker, HostPickerEvent};
 use crate::layout_model::TabKind;
 use crate::restore::{Launch, SavedSession};
@@ -356,7 +356,7 @@ impl Workspace {
         let take_focus = old_session.disconnected.as_ref().is_none_or(|d| !d.auto)
             || old_session.view.focus_handle(cx).is_focused(window);
         self.emit(&Event::Closed, Some(index));
-        self.check_waits(&[old_id], cx);
+        self.check_waits(&[Subject::Terminal(old_id)], cx);
         let subscription = cx.subscribe_in(&view, window, Self::on_terminal_event);
         if take_focus {
             view.focus_handle(cx).focus(window, cx);
