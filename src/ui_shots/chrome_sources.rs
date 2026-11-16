@@ -1176,6 +1176,305 @@ pub(super) fn chrome_renaming() {
     steps.done();
 }
 
+/// M11aa Task 8: agent tabs' chrome sources, each by the app's own path. An agent tab split
+/// beside api (`agent_beside`, the provider preset launch's `then` hook's body: a new pane with
+/// a CC tab; the row keeps api's name, R11); the ⋯ menu's New Claude Tab (in tests's pane); the
+/// first message titling the tab (`AgentTab::send` → `Title` → `on_agent_event`); its rename box
+/// (as `chrome-renaming`); Open in Classic View (`open_classic`, the tab Done: no sheet; a
+/// terminal tab joins its pane); closing it (`close_tab`, no sheet). No agent runs: the tabs are
+/// made with no process and fed decoded events (R12); the classic view's terminal is a quiet
+/// `cat` (`quiet_opens`).
+///
+/// Panics unless after each step the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_agent_tabs() {
+    use crate::layout_model::TabKind;
+    use crate::pane_actions::PaneAction;
+    let n = "chrome-agent-tabs";
+    let (mut cx, window, ws) = elsewhere_window();
+    let ws = &ws;
+    cx.update(|cx| {
+        cx.bind_keys([gpui::KeyBinding::new(
+            "enter",
+            crate::name_input::Confirm,
+            Some("NameInput"),
+        )])
+    });
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let api = index_of(&cx, ws, "api");
+    let (api_id, row) = cx.read(|cx| {
+        let ws = ws.read(cx);
+        (
+            ws.sessions.items()[api].id,
+            ws.workspace_of(api).expect("api's workspace"),
+        )
+    });
+    steps.step(
+        &mut cx,
+        window,
+        "an agent tab beside api",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.agent_beside(api_id, "claude", window, cx)
+            })
+        },
+    );
+    let (tab, view) = cx
+        .read(|cx| ws.read(cx).focused_agent_tab())
+        .expect("the agent tab, focused, its view made");
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        assert_eq!(
+            ws.workspace_label(row).as_ref(),
+            "api",
+            "{n}: api is named: its row too"
+        );
+        assert_eq!(ws.agents[&tab].id, 1, "{n}: a1");
+        let (_, pane) = ws.model.locate(tab).expect("placed");
+        assert_eq!(
+            ws.model.pane(pane).map(|p| p.tabs.len()),
+            Some(1),
+            "{n}: its own pane"
+        );
+    });
+    let tests = index_of(&cx, ws, "tests");
+    let tests_pane = cx
+        .read(|cx| ws.read(cx).pane_of(tests))
+        .expect("tests's pane");
+    steps.step(
+        &mut cx,
+        window,
+        "the pane menu adds a Claude tab",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.run_pane_action(tests_pane, PaneAction::NewAgent("claude"), window, cx)
+            })
+        },
+    );
+    let tabs = cx.read(|cx| ws.read(cx).model.pane(tests_pane).map(|p| p.tabs.len()));
+    assert_eq!(tabs, Some(2), "{n}: tests's pane has its Claude tab");
+    assert_eq!(
+        cx.read(|cx| ws.read(cx).agents.len()),
+        2,
+        "{n}: two agent tabs"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "the first message titles the tab",
+        Seen::Changes,
+        |cx| cx.update(|cx| view.update(cx, |t, cx| t.send("Fix the date check".into(), cx))),
+    );
+    let title = |cx: &VisualTestAppContext| {
+        cx.read(
+            |cx| match ws.read(cx).model.tab(tab).map(|t| t.kind.clone()) {
+                Some(TabKind::Agent { title, .. }) => title,
+                _ => None,
+            },
+        )
+    };
+    assert_eq!(
+        title(&cx).as_deref(),
+        Some("Fix the date check"),
+        "{n}: titled"
+    );
+    // Its turn ends and it reports its conversation (nothing the chrome shows changes: the
+    // id is saved with the tab).
+    steps.step(&mut cx, window, "its turn ends", Seen::Maybe, |cx| {
+        let mut t = crate::providers::claude::CLAUDE.translator();
+        use crate::providers::Provider as _;
+        let events: Vec<_> = include_str!("../providers/fixtures/claude-text.jsonl")
+            .lines()
+            .flat_map(|l| t.decode(l))
+            .collect();
+        cx.update(|cx| view.update(cx, |t, cx| t.shot_feed(events, cx)));
+    });
+    let conversation = cx.read(
+        |cx| match ws.read(cx).model.tab(tab).map(|t| t.kind.clone()) {
+            Some(TabKind::Agent { conversation, .. }) => conversation,
+            _ => None,
+        },
+    );
+    assert!(
+        conversation.is_some(),
+        "{n}: its conversation is saved with the tab"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "rename the agent tab: its box",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.start_agent_rename(tab, window, cx)
+            })
+        },
+    );
+    steps.step(&mut cx, window, "typed into", Seen::Changes, |cx| {
+        cx.simulate_input(window, "dates")
+    });
+    steps.step(&mut cx, window, "confirmed", Seen::Changes, |cx| {
+        cx.simulate_keystrokes(window, "enter")
+    });
+    assert_eq!(title(&cx).as_deref(), Some("dates"), "{n}: renamed");
+    steps.step(
+        &mut cx,
+        window,
+        "open it in classic view",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.open_classic(tab, window, cx)
+            })
+        },
+    );
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        let (_, pane) = ws.model.locate(tab).expect("still there");
+        let kinds: Vec<bool> = ws
+            .model
+            .pane(pane)
+            .expect("its pane")
+            .tabs
+            .iter()
+            .map(|t| matches!(t.kind, TabKind::Terminal(_)))
+            .collect();
+        assert_eq!(kinds, [false, true], "{n}: a terminal tab joined its pane");
+        let classic = *ws
+            .classic_of
+            .get(&tab)
+            .expect("the classic view's terminal noted");
+        let s = ws
+            .sessions
+            .items()
+            .iter()
+            .find(|s| s.id == classic)
+            .expect("it runs");
+        let preset = s.preset.as_ref().expect("its preset");
+        assert_eq!(preset.name, "claude", "{n}");
+        assert!(
+            preset.command.starts_with("claude --resume "),
+            "{n}: {}",
+            preset.command
+        );
+        let t = view.read(cx);
+        assert!(t.shot_paused(), "{n}: the tab is paused");
+        assert_eq!(t.status(), Status::Done, "{n}");
+        assert_eq!(
+            t.shot_items().last(),
+            Some(&crate::agent_conversation::Item::Notice(
+                crate::agent_conversation::PAUSED_NOTICE.into()
+            )),
+            "{n}"
+        );
+    });
+    // R13: sending from the paused tab while its classic terminal still runs `claude` warns and
+    // keeps the text (never a second writer); once it doesn't, the tab resumes and sends.
+    let classic = cx.read(|cx| ws.read(cx).classic_of[&tab]);
+    let composer = cx.read(|cx| view.read(cx).shot_composer());
+    let send_again = |cx: &mut VisualTestAppContext| {
+        cx.update(|cx| {
+            composer.update(cx, |c, cx| c.set_text("and the tests".into(), cx));
+            view.update(cx, |t, cx| t.send("and the tests".into(), cx));
+        });
+        cx.run_until_parked();
+    };
+    // What the classic terminal runs, as the programs' `ps` refresh would find it (that
+    // refresh notifies when it changes: so does this, or the status bar's word is left stale).
+    let running = |cx: &mut VisualTestAppContext, state: crate::procs::ProgramState| {
+        cx.update(|cx| {
+            ws.update(cx, |ws, cx| {
+                ws.programs.set_for_shots(classic, state);
+                cx.notify();
+            })
+        });
+    };
+    let you = |cx: &VisualTestAppContext| {
+        cx.read(|cx| {
+            view.read(cx)
+                .shot_items()
+                .iter()
+                .filter(|i| matches!(i, crate::agent_conversation::Item::You { .. }))
+                .count()
+        })
+    };
+    let before = you(&cx);
+    running(
+        &mut cx,
+        crate::procs::ProgramState::Running("claude".into()),
+    );
+    send_again(&mut cx);
+    cx.read(|cx| {
+        let t = view.read(cx);
+        assert!(t.shot_paused(), "{n}: still paused");
+        let last = t.shot_items().last().cloned();
+        let Some(crate::agent_conversation::Item::Notice(text)) = last else {
+            panic!("{n}: a notice, not {last:?}");
+        };
+        assert!(
+            text.starts_with("Claude is still running this conversation in ")
+                && text.ends_with(" — quit it there first"),
+            "{n}: {text}"
+        );
+        assert_eq!(
+            composer.read(cx).text(),
+            "and the tests",
+            "{n}: the text stays"
+        );
+    });
+    assert_eq!(you(&cx), before, "{n}: nothing sent");
+    running(&mut cx, crate::procs::ProgramState::Prompt);
+    send_again(&mut cx);
+    cx.read(|cx| {
+        let t = view.read(cx);
+        assert!(!t.shot_paused(), "{n}: resumed");
+        assert!(
+            t.shot_last_argv().windows(2).any(|w| w[0] == "--resume"),
+            "{n}: restarted with --resume: {:?}",
+            t.shot_last_argv()
+        );
+        assert_eq!(composer.read(cx).text(), "", "{n}: sent, the box cleared");
+        assert_eq!(t.status(), Status::Working, "{n}");
+    });
+    assert_eq!(you(&cx), before + 1, "{n}: sent once");
+    // That turn ends: the tab is Done, so closing it asks nothing.
+    cx.update(|cx| {
+        view.update(cx, |t, cx| {
+            t.shot_feed(
+                vec![crate::providers::Event::TurnDone {
+                    ok: true,
+                    message: None,
+                }],
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    steps.step(
+        &mut cx,
+        window,
+        "close the agent tab",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.close_tab(tab, window, cx)
+            })
+        },
+    );
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        assert!(ws.model.tab(tab).is_none(), "{n}: the tab went");
+        assert!(!ws.agents.contains_key(&tab), "{n}: its slot went");
+        assert!(
+            !ws.classic_of.contains_key(&tab),
+            "{n}: its classic note went"
+        );
+    });
+    drop(view);
+    steps.done();
+}
+
 /// A tab bar's first frame: a workspace never shown before, its one pane holding more tabs than
 /// its bar shows, the last one shown. Its new bar isn't laid out on that frame, so it can only
 /// scroll to the shown tab on the next, which the bar asks for itself (`render_chrome`). Frames

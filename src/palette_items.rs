@@ -23,6 +23,9 @@ pub enum Key {
     Workspace(u64),
     Action(&'static str),
     Preset(usize),
+    /// A new agent tab of the provider of this name in the focused pane (M11aa: the ⋯ menu's
+    /// New ⟨Label⟩ Tab).
+    NewAgent(&'static str),
     File(PathBuf),
     Setting(&'static str),
     More(Kind),
@@ -32,7 +35,7 @@ impl Key {
     pub fn kind(&self) -> Kind {
         match self {
             Key::Workspace(_) => Kind::Workspace,
-            Key::Action(_) | Key::Preset(_) => Kind::Action,
+            Key::Action(_) | Key::Preset(_) | Key::NewAgent(_) => Kind::Action,
             Key::File(_) => Kind::File,
             Key::Setting(_) => Kind::Setting,
             Key::More(k) => *k,
@@ -184,6 +187,9 @@ pub enum Focused {
     Terminal,
     Browser,
     File,
+    /// An agent tab (M11aa): only the actions that apply anywhere (none of a terminal's, a
+    /// file's or a browser's).
+    Agent,
     Nothing,
 }
 
@@ -642,6 +648,31 @@ pub const PANE_MENU_AS: &[(&str, &str)] = &[("New Terminal Tab", "New Tab")];
 #[cfg(test)] // the parity test's
 pub const PANE_MENU_LEFT_OUT: &[&str] = &[];
 
+/// The ⋯ menu's New ⟨Label⟩ Tab items (`PaneAction::items`) as palette rows, right after New
+/// Browser Tab; none when the focused pane's workspace is on another host (`local` false: agent
+/// tabs run on this Mac only).
+pub fn add_agent_rows(rows: &mut Vec<ActionRow>, local: bool) {
+    use crate::pane_actions::PaneAction;
+    let at = rows
+        .iter()
+        .position(|r| r.name == "New Browser Tab")
+        .map_or(rows.len(), |i| i + 1);
+    let agents: Vec<ActionRow> = PaneAction::items(local)
+        .into_iter()
+        .filter_map(|a| match a {
+            PaneAction::NewAgent(name) => Some(action_row(
+                Key::NewAgent(name),
+                a.label(),
+                ShortcutGroup::Tabs,
+                "agent chat",
+                None,
+            )),
+            _ => None,
+        })
+        .collect();
+    rows.splice(at..at, agents);
+}
+
 /// One action as the palette lists it: `rest` is what a loose match searches (its keywords, its
 /// group's label and its keys).
 #[derive(Clone, Debug, PartialEq)]
@@ -906,7 +937,9 @@ fn find_files(root: &Path, hits: &[FileHit]) -> Vec<Found> {
 fn recent_shown(s: &Sources, kind: Option<Kind>) -> Vec<Key> {
     let present = |key: &Key| match key {
         Key::Workspace(id) => s.workspaces.iter().any(|e| e.id == *id),
-        Key::Action(_) | Key::Preset(_) => s.actions.iter().any(|r| r.key == *key),
+        Key::Action(_) | Key::Preset(_) | Key::NewAgent(_) => {
+            s.actions.iter().any(|r| r.key == *key)
+        }
         Key::Setting(name) => s.settings.iter().any(|x| x.name == *name),
         Key::File(_) => true,
         Key::More(_) => false,
@@ -1342,23 +1375,49 @@ mod tests {
     #[test]
     fn every_pane_menu_item_is_in_the_palette_or_left_out() {
         use crate::pane_actions::PaneAction;
-        let in_palette = |name: &str| COMMANDS.iter().any(|c| c.name == name);
-        for action in PaneAction::ALL {
+        let pairs = real_pairs();
+        let mut rows = action_rows(Focused::Terminal, false, true, &[], &pairs);
+        add_agent_rows(&mut rows, true);
+        let in_palette = |name: &str| rows.iter().any(|r| r.name == name);
+        for action in PaneAction::items(true) {
             let label = action.label();
-            let decided = in_palette(label)
+            let decided = in_palette(&label)
                 || PANE_MENU_AS
                     .iter()
                     .any(|(item, entry)| *item == label && in_palette(entry))
-                || PANE_MENU_LEFT_OUT.contains(&label);
+                || PANE_MENU_LEFT_OUT.contains(&label.as_str());
             assert!(decided, "⋯ menu {label}");
         }
         // Each alias names an item still in the menu.
         for (item, _) in PANE_MENU_AS {
             assert!(
-                PaneAction::ALL.iter().any(|a| a.label() == *item),
+                PaneAction::items(true).iter().any(|a| a.label() == *item),
                 "{item} is no ⋯ item"
             );
         }
+    }
+
+    #[test]
+    fn the_palette_offers_agent_tabs_after_new_browser_tab_only_locally() {
+        let pairs = real_pairs();
+        for focused in [Focused::Terminal, Focused::Agent] {
+            let mut rows = action_rows(focused, false, true, &[], &pairs);
+            add_agent_rows(&mut rows, true);
+            let at = rows
+                .iter()
+                .position(|r| r.name == "New Browser Tab")
+                .expect("New Browser Tab");
+            assert_eq!(rows[at + 1].name, "New Claude Tab");
+            assert_eq!(rows[at + 1].key, Key::NewAgent("claude"));
+            assert_eq!(rows[at + 1].key.kind(), Kind::Action);
+        }
+        let mut rows = action_rows(Focused::Terminal, false, true, &[], &pairs);
+        add_agent_rows(&mut rows, false);
+        assert!(!rows.iter().any(|r| matches!(r.key, Key::NewAgent(_))));
+        // A focused agent tab gets no terminal's, file's or browser's actions.
+        let agent = action_rows(Focused::Agent, true, true, &[], &pairs);
+        let nothing = action_rows(Focused::Nothing, true, true, &[], &pairs);
+        assert_eq!(names(&agent), names(&nothing));
     }
 
     fn names(rows: &[ActionRow]) -> Vec<&str> {

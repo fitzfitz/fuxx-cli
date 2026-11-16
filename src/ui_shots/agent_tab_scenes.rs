@@ -707,31 +707,21 @@ pub(super) fn agent_tab_close() {
                 let project = std::path::Path::new("/Users/me/code/api");
                 ws.open_shot_session("api", project, super::SHELL_TEXT, None, window, cx);
                 let pane = ws.model.focused_pane().expect("a pane");
-                let opened = ws
-                    .model
+                // A folder that exists: the stand-in process starts in it. Its view is made by
+                // `ensure_agent_tabs` on the first frame (with no agent: the scenes').
+                ws.model
                     .add_tab(
                         pane,
                         TabKind::Agent {
                             provider: "claude".into(),
-                            cwd: cwd(),
+                            cwd: std::env::temp_dir(),
                             conversation: None,
                             mode: None,
                             title: None,
                         },
                     )
                     .expect("an agent tab");
-                // A folder that exists: the stand-in process starts in it.
-                let here = Start {
-                    cwd: std::env::temp_dir(),
-                    ..start()
-                };
-                let view = cx.new(|cx| AgentTab::for_shots(&CLAUDE, here, window, cx));
-                view.update(cx, |t, cx| {
-                    t.shot_spawn(["/bin/sh", "-c", "sleep 30"].map(String::from).to_vec(), cx)
-                });
-                ws.agent_tabs.insert(opened.tab, view);
                 ws.sync();
-                ws.focus_active(window, cx);
                 ws
             });
             *keep.borrow_mut() = Some(ws.clone());
@@ -740,13 +730,31 @@ pub(super) fn agent_tab_close() {
         move |cx, window| {
             let ws = slot.borrow().clone().expect("the workspace");
             cx.run_until_parked();
+            let _ = frame_fresh(cx, window);
+            cx.run_until_parked();
+            let view = cx.read(|cx| {
+                let ws = ws.read(cx);
+                let tab = ws.model.focused_tab().expect("a tab");
+                ws.agents
+                    .get(&tab)
+                    .expect("its slot, made on the first frame")
+                    .view
+                    .clone()
+            });
+            cx.update(|cx| {
+                view.update(cx, |t, cx| {
+                    t.shot_spawn(["/bin/sh", "-c", "sleep 30"].map(String::from).to_vec(), cx)
+                })
+            });
+            drop(view);
             // The process's pid is published by its thread once it has started.
             let until = Instant::now() + Duration::from_secs(4);
             loop {
                 let started = cx.read(|cx| {
                     let ws = ws.read(cx);
                     let tab = ws.model.focused_tab().expect("a tab");
-                    ws.agent_tabs[&tab]
+                    ws.agents[&tab]
+                        .view
                         .read(cx)
                         .process()
                         .and_then(|p| p.pid())
@@ -762,7 +770,7 @@ pub(super) fn agent_tab_close() {
                 .update_window(window, |_, window, cx| {
                     let ws = ws.read(cx);
                     let tab = ws.model.focused_tab().expect("a tab");
-                    let view = ws.agent_tabs.get(&tab).expect("its view").clone();
+                    let view = ws.agents.get(&tab).expect("its view").view.clone();
                     let keys = view.read(cx).focus_handle(cx).is_focused(window);
                     let pid = view
                         .read(cx)
@@ -787,7 +795,7 @@ pub(super) fn agent_tab_close() {
             cx.run_until_parked();
             cx.read(|cx| {
                 let ws = ws.read(cx);
-                assert!(!ws.agent_tabs.contains_key(&tab), "{n}: its map entry went");
+                assert!(!ws.agents.contains_key(&tab), "{n}: its map entry went");
                 assert!(ws.model.tab(tab).is_none(), "{n}: the tab went");
             });
             assert!(view.upgrade().is_none(), "{n}: its view was dropped");
@@ -1225,4 +1233,190 @@ pub(super) fn agent_tab_review() {
     });
 
     println!("ui-shots: {n}: boot send, force stop, failed resume, late send, spawn failure");
+}
+
+/// M11aa Task 8: a Workspace the agent-workspace scenes draw (the sidebar's presets, no hint
+/// card), built by `build`, kept in `slot`.
+fn agent_workspace(
+    theme: crate::theme::Theme,
+    slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>>,
+    build: impl FnOnce(
+        &mut crate::workspace::Workspace,
+        &mut Window,
+        &mut Context<crate::workspace::Workspace>,
+    ) + 'static,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView {
+    move |window, cx| {
+        cx.set_global(super::sidebar_appearance(theme, cx));
+        cx.bind_keys(crate::key_bindings());
+        let ws = cx.new(|cx| {
+            let mut ws = crate::workspace::Workspace::for_shots(window, cx);
+            ws.sidebar.hint_dismissed = true;
+            build(&mut ws, window, cx);
+            ws
+        });
+        *slot.borrow_mut() = Some(ws.clone());
+        ws.into()
+    }
+}
+
+/// A provider preset's launch (spec §1.4, R6): an unnamed shell, then (the launch's `then`
+/// hook's body, `agent_beside`) a Claude tab split to its right in the same folder; the row
+/// reads "Claude" (R11). The tab's first message titles it.
+pub(super) fn agent_workspace_split() {
+    use crate::layout_model::TabKind;
+    let n = "agent-workspace-split";
+    for (slug, theme_name) in SHOT_THEMES {
+        let theme = shot_theme(theme_name);
+        let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
+        let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
+            let my_app = std::path::Path::new("/Users/me/code/my-app");
+            let id = ws.open_unnamed_shot_session(Some(my_app), super::SHELL_TEXT, window, cx);
+            ws.agent_beside(id, "claude", window, cx);
+        });
+        let path = shoot_with(
+            n,
+            slug,
+            &theme,
+            size(px(1100.0), px(640.0)),
+            build,
+            |cx, window| {
+                let ws = slot.borrow_mut().take().expect("the workspace");
+                settle_frames(cx, window);
+                let (tab, view) = cx
+                    .read(|cx| ws.read(cx).focused_agent_tab())
+                    .expect("the agent tab is focused, its view made");
+                let events = decode(include_str!("../providers/fixtures/claude-text.jsonl"));
+                cx.update(|cx| {
+                    view.update(cx, |t, cx| {
+                        t.send("Say hello in one word".into(), cx);
+                        t.shot_feed(events, cx);
+                    })
+                });
+                settle_frames(cx, window);
+                cx.update_window(window, |_, window, cx| {
+                    let ws = ws.read(cx);
+                    let w = ws.model.focused_workspace().expect("a workspace");
+                    assert_eq!(
+                        ws.workspace_label(w).as_ref(),
+                        "Claude",
+                        "{n}: the row's name"
+                    );
+                    let w = ws.model.workspace(w).expect("it");
+                    assert_eq!(
+                        w.panes.len(),
+                        2,
+                        "{n}: a shell and the agent tab side by side"
+                    );
+                    let kinds: Vec<bool> = w
+                        .panes
+                        .iter()
+                        .map(|p| {
+                            matches!(
+                                ws.model.tab(p.active).map(|t| &t.kind),
+                                Some(TabKind::Agent { .. })
+                            )
+                        })
+                        .collect();
+                    assert_eq!(kinds, [false, true], "{n}: the agent tab on the right");
+                    match ws.model.tab(tab).map(|t| &t.kind) {
+                        Some(TabKind::Agent { cwd, title, .. }) => {
+                            assert_eq!(cwd, std::path::Path::new("/Users/me/code/my-app"), "{n}");
+                            assert_eq!(title.as_deref(), Some("Say hello in one word"), "{n}");
+                        }
+                        other => panic!("{n}: {other:?}"),
+                    }
+                    assert_eq!(ws.agents[&tab].id, 1, "{n}: the first agent tab is a1");
+                    let keys = view.read(cx).focus_handle(cx).is_focused(window);
+                    assert!(keys, "{n}: the new agent tab has the keyboard");
+                })
+                .unwrap();
+            },
+        );
+        println!("ui-shots: {n}: {}", path.display());
+    }
+}
+
+/// The sidebar's + menu: each preset fuxx runs as an agent tab (`claude`) has its provider's
+/// badge before its name; the others (agy, opencode, codex) none.
+pub(super) fn agent_preset_menu() {
+    let n = "agent-preset-menu";
+    for (slug, theme_name) in SHOT_THEMES {
+        let theme = shot_theme(theme_name);
+        let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
+        let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
+            let api = std::path::Path::new("/Users/me/code/api");
+            ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+            ws.sidebar.new_menu = true;
+        });
+        let path = shoot_with(
+            n,
+            slug,
+            &theme,
+            size(px(960.0), px(600.0)),
+            build,
+            |cx, window| {
+                let ws = slot.borrow_mut().take().expect("the workspace");
+                settle_frames(cx, window);
+                cx.read(|cx| {
+                    assert!(ws.read(cx).sidebar.new_menu, "{n}: the + menu is open");
+                    let presets = &cx.global::<crate::appearance::Appearance>().presets;
+                    let badged: Vec<&str> = presets
+                        .iter()
+                        .filter(|p| crate::presets::provider_for(p).is_some())
+                        .map(|p| p.name.as_str())
+                        .collect();
+                    assert_eq!(badged, ["claude"], "{n}: the presets drawn with a badge");
+                });
+            },
+        );
+        println!("ui-shots: {n}: {}", path.display());
+    }
+}
+
+/// A pane's ⋯ menu lists New Claude Tab (here, a workspace on this Mac); one of an SSH
+/// workspace wouldn't (`PaneAction::items(false)`, unit-tested).
+pub(super) fn agent_pane_menu() {
+    use crate::pane_actions::PaneAction;
+    let n = "agent-pane-menu";
+    for (slug, theme_name) in SHOT_THEMES {
+        let theme = shot_theme(theme_name);
+        let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
+        let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
+            let api = std::path::Path::new("/Users/me/code/api");
+            ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+        });
+        let path = shoot_with(
+            n,
+            slug,
+            &theme,
+            size(px(960.0), px(600.0)),
+            build,
+            |cx, window| {
+                let ws = slot.borrow_mut().take().expect("the workspace");
+                settle_frames(cx, window);
+                cx.update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        let pane = ws.model.focused_pane().expect("a pane");
+                        ws.open_pane_actions(pane, gpui::point(px(930.0), px(40.0)), window, cx)
+                    })
+                })
+                .unwrap();
+                settle_frames(cx, window);
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let w = ws.model.focused_workspace().expect("a workspace");
+                    assert!(ws.pane_actions.is_some(), "{n}: the menu is open");
+                    assert!(!ws.workspace_is_ssh(w), "{n}");
+                    let labels: Vec<String> =
+                        PaneAction::items(true).iter().map(|a| a.label()).collect();
+                    assert!(
+                        labels.contains(&"New Claude Tab".to_string()),
+                        "{n}: {labels:?}"
+                    );
+                });
+            },
+        );
+        println!("ui-shots: {n}: {}", path.display());
+    }
 }

@@ -59,6 +59,11 @@ pub enum TabIcon {
     File,
     /// A terminal's status mark, while it is anything but Idle.
     Mark(Status),
+    /// An agent tab's (M11aa): its provider's badge, two letters on its colour.
+    Agent {
+        badge: &'static str,
+        rgb: u32,
+    },
 }
 
 /// What the bar knows of a terminal: its name (`Workspace::terminal_label`), the program's own
@@ -66,6 +71,16 @@ pub enum TabIcon {
 pub struct TerminalFacts {
     pub label: SharedString,
     pub title: Option<SharedString>,
+    pub status: Status,
+    pub age: Duration,
+}
+
+/// What the bar knows of an agent tab (the Workspace's `AgentSlot`, R1): its provider's label
+/// and badge, its status and for how long it has had it.
+pub struct AgentFacts {
+    pub label: SharedString,
+    pub badge: &'static str,
+    pub rgb: u32,
     pub status: Status,
     pub age: Duration,
 }
@@ -92,8 +107,11 @@ pub struct BarTab {
 pub fn icon(kind: &TabKind, status: Status) -> TabIcon {
     match kind {
         TabKind::Browser { .. } => TabIcon::Globe,
-        // M11aa Tasks 8-10 give an agent tab its own icon.
-        TabKind::File { .. } | TabKind::Agent { .. } => TabIcon::File,
+        TabKind::File { .. } => TabIcon::File,
+        TabKind::Agent { provider, .. } => {
+            let (_, badge, rgb) = crate::workspace_agent::provider_look(provider);
+            TabIcon::Agent { badge, rgb }
+        }
         TabKind::Terminal(_) if status == Status::Idle => TabIcon::Terminal,
         TabKind::Terminal(_) => TabIcon::Mark(status),
     }
@@ -115,10 +133,13 @@ pub fn tip(title: &str, osc: Option<&str>, status: Status, age: Duration) -> Str
 /// `pane`'s tabs in bar order. `facts` tells about a terminal; one it doesn't know (never, while
 /// tabs and sessions are in step) is drawn as an idle "Terminal". `page` gives a browser tab's
 /// title (none: "New tab"). A file tab's title is its file's name, its tooltip the full path.
+/// `agent` tells about an agent tab: its title is yours or its first message's, else its
+/// provider's label; its icon its provider's badge.
 pub fn bar_tabs(
     pane: &Pane,
     facts: impl Fn(u64) -> Option<TerminalFacts>,
     page: impl Fn(TabId) -> Option<SharedString>,
+    agent: impl Fn(TabId) -> Option<AgentFacts>,
 ) -> Vec<BarTab> {
     pane.tabs
         .iter()
@@ -134,17 +155,35 @@ pub fn bar_tabs(
                     (None, title, None, idle)
                 }
                 TabKind::File { path, .. } => (None, file_title(path), None, idle),
-                // The provider's name, until Tasks 8-10 title it.
-                TabKind::Agent { provider, .. } => (None, provider.clone().into(), None, idle),
+                TabKind::Agent {
+                    provider, title, ..
+                } => {
+                    let facts = agent(t.id);
+                    let label = facts.as_ref().map_or_else(
+                        || crate::workspace_agent::provider_look(provider).0,
+                        |f| f.label.clone(),
+                    );
+                    let title = title.clone().map_or(label, SharedString::from);
+                    let status = facts.as_ref().map_or(idle, |f| (f.status, f.age));
+                    (None, title, None, status)
+                }
             };
             let tip = match &t.kind {
                 TabKind::File { path, .. } => path.display().to_string(),
                 _ => tip(&title, osc.as_deref(), status, age),
             };
+            // An agent tab's badge: its slot's (the provider's).
+            let icon = match (&t.kind, agent(t.id)) {
+                (TabKind::Agent { .. }, Some(f)) => TabIcon::Agent {
+                    badge: f.badge,
+                    rgb: f.rgb,
+                },
+                _ => icon(&t.kind, status),
+            };
             BarTab {
                 tab: t.id,
                 terminal,
-                icon: icon(&t.kind, status),
+                icon,
                 tip,
                 title,
                 status,
@@ -290,6 +329,9 @@ impl Render for TabChip {
             TabIcon::Globe => glyph(Glyph::Globe, ui.text).into_any_element(),
             TabIcon::File => glyph(Glyph::File, ui.text).into_any_element(),
             TabIcon::Terminal => glyph(Glyph::Terminal, ui.text).into_any_element(),
+            TabIcon::Agent { badge, rgb } => {
+                crate::workspace_agent::agent_badge(badge, rgb, AGENT_BADGE).into_any_element()
+            }
         };
         div()
             .flex()
@@ -324,6 +366,8 @@ const TAB_PAD_LEFT: f32 = 8.0;
 const TAB_PAD_RIGHT: f32 = 4.0;
 const TAB_GAP: f32 = 6.0;
 const CLOSE: f32 = 16.0;
+/// An agent tab's badge (M11aa).
+const AGENT_BADGE: f32 = 16.0;
 pub(crate) const TAB_RADIUS: f32 = 6.0;
 /// A button, its icon box, and the gap between buttons and around them.
 pub(crate) const BUTTON: f32 = 20.0;
@@ -359,6 +403,16 @@ impl Workspace {
                 })
             },
             |tab| self.browser_titles.get(&tab).map(|t| t.clone().into()),
+            |tab| {
+                let slot = self.agents.get(&tab)?;
+                Some(AgentFacts {
+                    label: slot.label.clone(),
+                    badge: slot.badge,
+                    rgb: slot.badge_rgb,
+                    status: slot.status,
+                    age: now.saturating_duration_since(slot.since),
+                })
+            },
         )
         .into_iter()
         .map(|mut t| {
@@ -551,11 +605,17 @@ impl Workspace {
             (TabIcon::Globe, _) => glyph(Glyph::Globe, look.text).into_any_element(),
             (TabIcon::File, _) => glyph(Glyph::File, look.text).into_any_element(),
             (TabIcon::Terminal, _) => glyph(Glyph::Terminal, look.text).into_any_element(),
+            (TabIcon::Agent { badge, rgb }, _) => {
+                crate::workspace_agent::agent_badge(badge, rgb, AGENT_BADGE).into_any_element()
+            }
         };
         let rename_box = self
             .renaming
             .as_ref()
-            .filter(|(r, _)| tab.terminal.is_some_and(|t| *r == Renaming::Terminal(t)))
+            .filter(|(r, _)| {
+                tab.terminal.is_some_and(|t| *r == Renaming::Terminal(t))
+                    || *r == Renaming::Agent(tab.tab)
+            })
             .map(|(_, input)| input.clone());
         let title: AnyElement = match rename_box {
             Some(input) => div()
@@ -787,14 +847,8 @@ impl Workspace {
             }
             Some(TabKind::Browser { .. }) => self.close_browser_tab(tab, true, window, cx),
             Some(TabKind::File { .. }) => self.close_file_tab(tab, window, cx),
-            // An agent tab: its process ends and its view goes (`sync` drops it), then it
-            // closes like a file tab. (Asking first when busy is M11aa Task 8.)
-            Some(TabKind::Agent { .. }) => {
-                if let Some(view) = self.agent_tabs.get(&tab) {
-                    view.update(cx, |view, _| view.end());
-                }
-                self.close_file_tab(tab, window, cx)
-            }
+            // An agent tab: asks first while it works or waits for you (M11aa).
+            Some(TabKind::Agent { .. }) => self.close_agent_tab(tab, true, window, cx),
             None => {}
         }
     }
@@ -1537,6 +1591,7 @@ mod tests {
                 _ => None,
             },
             |_| None,
+            |_| None,
         );
         let ids: Vec<TabId> = tabs.iter().map(|t| t.tab).collect();
         assert_eq!(ids, [TabId(10), TabId(11), TabId(12), TabId(13)]);
@@ -1579,7 +1634,7 @@ mod tests {
                 age: Duration::ZERO,
             })
         };
-        let tabs = bar_tabs(&pane, facts, |_| None);
+        let tabs = bar_tabs(&pane, facts, |_| None, |_| None);
         assert_eq!(tabs[0].title.as_ref(), "fuxx-cli");
         assert_eq!(tabs[0].tip, "fuxx-cli\nme@mac:~/fuxx-cli");
     }
@@ -1759,7 +1814,12 @@ mod tests {
             ],
             active: TabId(11),
         };
-        let tabs = bar_tabs(&pane, |_| terminal("shell", Status::Idle, 0), |_| None);
+        let tabs = bar_tabs(
+            &pane,
+            |_| terminal("shell", Status::Idle, 0),
+            |_| None,
+            |_| None,
+        );
         assert_eq!(tabs[1].title.as_ref(), "main.rs");
         assert_eq!(tabs[1].icon, TabIcon::File);
         assert_eq!(tabs[1].tip, "/w/api/src/main.rs");
@@ -1790,9 +1850,73 @@ mod tests {
             &pane,
             |_| None,
             |tab| (tab == TabId(11)).then(|| "Docs.rs".into()),
+            |_| None,
         );
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_ref()).collect();
         assert_eq!(titles, [BROWSER_TITLE, "Docs.rs"]);
         assert_eq!(tabs[1].tip, "Docs.rs");
+    }
+
+    #[test]
+    fn an_agent_tab_shows_its_badge_title_and_tip() {
+        let pane = Pane {
+            id: crate::layout_model::PaneId(1),
+            tabs: vec![
+                crate::layout_model::Tab {
+                    id: TabId(20),
+                    kind: TabKind::Agent {
+                        provider: "claude".into(),
+                        cwd: "/w".into(),
+                        conversation: None,
+                        mode: None,
+                        title: Some("fix tests".into()),
+                    },
+                },
+                crate::layout_model::Tab {
+                    id: TabId(21),
+                    kind: TabKind::Agent {
+                        provider: "claude".into(),
+                        cwd: "/w".into(),
+                        conversation: None,
+                        mode: None,
+                        title: None,
+                    },
+                },
+            ],
+            active: TabId(20),
+        };
+        let facts = |status| AgentFacts {
+            label: "Claude".into(),
+            badge: "CC",
+            rgb: 0x7a4a2a,
+            status,
+            age: Duration::from_secs(4 * 60),
+        };
+        let tabs = bar_tabs(
+            &pane,
+            |_| None,
+            |_| None,
+            |tab| {
+                Some(facts(if tab == TabId(20) {
+                    Status::Waiting
+                } else {
+                    Status::Idle
+                }))
+            },
+        );
+        assert_eq!(
+            tabs[0].icon,
+            TabIcon::Agent {
+                badge: "CC",
+                rgb: 0x7a4a2a
+            }
+        );
+        assert_eq!(tabs[0].title.as_ref(), "fix tests");
+        assert_eq!(tabs[0].tip, "fix tests — waiting 4m");
+        assert_eq!(tabs[0].status, Status::Waiting);
+        assert_eq!(tabs[0].terminal, None);
+        // Untitled: its provider's label.
+        assert_eq!(tabs[1].title.as_ref(), "Claude");
+        assert_eq!(tabs[1].tip, "Claude");
     }
 }

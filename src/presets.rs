@@ -24,13 +24,11 @@ pub fn agent_for<'a>(program: &str, presets: &'a [Preset]) -> Option<&'a Preset>
 }
 
 /// The provider that can run `preset` as an agent tab (M11aa), if fuxx has one by its name.
-#[allow(dead_code)] // consumers arrive in M11aa Tasks 7–11; remove when wired
 pub fn provider_for(preset: &Preset) -> Option<&'static dyn crate::providers::Provider> {
     crate::providers::by_name(&preset.name)
 }
 
 /// The words of the preset's command after the program, split on whitespace.
-#[allow(dead_code)] // M11aa Task 8
 pub fn extra_args(preset: &Preset) -> Vec<String> {
     preset
         .command

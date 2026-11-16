@@ -91,6 +91,9 @@ pub enum AgentTabEvent {
     Close,
     /// "Open in classic view": the command line that resumes it in a terminal.
     OpenClassic(Vec<String>),
+    /// A message sent from a tab paused for "Open in classic view" (R13): the Workspace answers
+    /// with `resume_after_classic` (it knows whether the classic terminal still runs it).
+    ResumeAsked(String),
 }
 
 /// Reports the process's end exactly once (`Conversation::process_ended` isn't idempotent):
@@ -418,6 +421,9 @@ pub struct AgentTab {
     booting: bool,
     /// The process has ended and its end isn't reported yet (≤ `END_WAIT`): messages wait.
     ending: bool,
+    /// Its process was stopped for "Open in classic view" (R13): a send asks the Workspace first
+    /// (`ResumeAsked`).
+    paused: bool,
     queued: Vec<(String, Vec<String>)>,
     run: Run,
     /// Scenes: no process is ever started.
@@ -462,7 +468,6 @@ impl Focusable for AgentTab {
 impl AgentTab {
     /// A tab for `provider` (None: no agent by that name; the tab shows one error row). Starts
     /// reading the history and then the process on a task; emits nothing (R8).
-    #[allow(dead_code)] // M11aa Task 8 (`ensure_agent_tabs` makes the views)
     pub fn new(
         provider: Option<&'static dyn Provider>,
         provider_name: String,
@@ -665,6 +670,7 @@ impl AgentTab {
             exited: false,
             booting: false,
             ending: false,
+            paused: false,
             queued: Vec::new(),
             run: Run::default(),
             no_process: false,
@@ -707,13 +713,12 @@ impl AgentTab {
     }
 
     /// The mode the agent runs in (agy's chip; none for Claude).
-    #[allow(dead_code)] // M11aa Task 8 (saved with the tab)
+    #[allow(dead_code)] // M11aa Task 12 (agy's mode, saved with the tab: call 6)
     pub fn mode(&self) -> Option<&str> {
         self.start.mode.as_deref()
     }
 
-    /// The process, for quitting (Task 8's `end_all`).
-    #[allow(dead_code)] // M11aa Task 8
+    /// The process, for quitting (`agent_process::end_all`).
     pub fn process(&self) -> Option<Arc<AgentProcess>> {
         self.process.clone()
     }
@@ -721,6 +726,61 @@ impl AgentTab {
     /// Stop listening and end the process (closing the tab): no respawn.
     pub fn end(&mut self) {
         self.end_process();
+    }
+
+    /// "Open in classic view" (R13): stop the process (not an exit: no exit row; nothing that
+    /// was booting or waiting goes on), one notice, Done (`live: false`: no banner). It comes
+    /// back only through `resume_after_classic`.
+    pub fn pause_for_classic(&mut self, cx: &mut Context<Self>) {
+        self._boot = None;
+        self.booting = false;
+        self.ending = false;
+        self.stopping = None;
+        self.force = false;
+        self.force_timer = None;
+        self.end_process();
+        self.paused = true;
+        self.conversation.paused();
+        self.after_change(false, cx);
+    }
+
+    /// A message from the paused tab (`ResumeAsked`), now that the Workspace knows whether the
+    /// classic terminal still runs the conversation (`classic`: that terminal's name). Sent
+    /// (the process started again with `--resume`, the box cleared), or a notice saying why not
+    /// with `text` left in the box: never a second writer of one conversation.
+    pub fn resume_after_classic(
+        &mut self,
+        text: String,
+        classic: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::workspace_agent::{AfterClassic, after_classic};
+        match after_classic(self.paused, classic.is_some()) {
+            AfterClassic::Warn => {
+                let label = self.label().to_string();
+                let terminal = classic.unwrap_or_default();
+                self.conversation.apply(Event::Notice(format!(
+                    "{label} is still running this conversation in {terminal} — quit it there first"
+                )));
+                self.after_change(true, cx);
+                return;
+            }
+            AfterClassic::Respawn => {
+                self.paused = false;
+                let resume = self.conversation_id();
+                self.spawn_process(resume, cx);
+                self.send(text, cx);
+            }
+            AfterClassic::Send => self.send(text, cx),
+        }
+        self.composer
+            .update(cx, |c, cx| c.set_text(String::new(), cx));
+    }
+
+    /// Whether the tab is paused for "Open in classic view".
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_paused(&self) -> bool {
+        self.paused
     }
 
     fn label(&self) -> &str {
@@ -1122,6 +1182,12 @@ impl AgentTab {
             self.attachments = attachments;
             return;
         }
+        if self.paused {
+            // The Workspace decides (R13): `resume_after_classic`.
+            self.attachments = attachments;
+            cx.emit(AgentTabEvent::ResumeAsked(text));
+            return;
+        }
         if self.booting || self.ending {
             // Held, shown as waiting under the conversation, until the process is there.
             self.queued.push((text, attachments));
@@ -1239,6 +1305,10 @@ impl AgentTab {
                     };
                     self.answer(answer, cx).ok();
                 } else if text.trim().is_empty() && self.attachments.is_empty() {
+                    return;
+                } else if self.paused {
+                    // The box keeps the text until it is sent (`resume_after_classic`).
+                    self.send(text, cx);
                     return;
                 } else {
                     self.send(text, cx);

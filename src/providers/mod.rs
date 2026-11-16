@@ -18,7 +18,6 @@ pub struct ProviderInfo {
     #[allow(dead_code)] // M11aa Task 12 (agy: false); nothing reads it yet
     pub routes_permissions: bool,
     pub modes: &'static [&'static str],
-    #[allow(dead_code)] // M11aa Task 8 (`agent_beside` starts with it)
     pub default_mode: Option<&'static str>,
 }
 

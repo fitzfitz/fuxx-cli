@@ -910,7 +910,8 @@ impl Workspace {
                 this.close_at(index, window, cx);
             }
         });
-        self.open_session_then(launch, At::New, Some(then), window, cx);
+        // A provider's preset: a shell, then (after the close above) its agent tab beside it.
+        self.open_planned(launch, At::New, Some(then), window, cx);
     }
 
     /// Whether terminal `over` is open and alone in its workspace (no other tab of any kind).

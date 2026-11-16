@@ -460,8 +460,9 @@ impl Workspace {
             .any(|s| s.view.read(cx).attach())
     }
 
-    /// Quitting (⌘Q, the red button, ⌥⌘Q): give each view's queue to the background service
-    /// time to go out (GPUI waits up to its shutdown timeout).
+    /// Quitting (⌘Q, the red button, ⌥⌘Q): end the agent tabs' processes (M11aa), then give
+    /// each view's queue to the background service time to go out (GPUI waits up to its
+    /// shutdown timeout).
     pub(crate) fn flush_on_quit(&mut self, cx: &mut Context<Self>) -> gpui::Task<()> {
         let queues: Vec<PumpQueue> = self
             .sessions
@@ -470,6 +471,13 @@ impl Workspace {
             .filter_map(|s| s.view.read(cx).pump_queue())
             .collect();
         let client = self.service.client();
+        // The agent tabs' processes end with the app (R10), whether or not the background
+        // service runs. Here, not in the task below: GPUI polls that for at most its
+        // `SHUTDOWN_TIMEOUT` (200 ms at the pinned rev) before the app exits, and an agent that
+        // ignores SIGTERM must still be killed. `end_all` returns as soon as every one is reaped
+        // (at once for an agent that obeys SIGTERM; `TERM_GRACE` at most, then SIGKILL).
+        let agents = crate::workspace_agent::processes(&self.agents, cx);
+        crate::agent_process::end_all(&agents, crate::agent_process::TERM_GRACE);
         cx.background_spawn(async move {
             if client.is_some() {
                 flush_pumps(&queues, client.as_deref(), QUIT_FLUSH);
@@ -683,7 +691,8 @@ impl Workspace {
         self.closed_browser_tabs.extend(closed);
         self.browser_titles.clear();
         self.file_tabs.clear();
-        self.agent_tabs.clear();
+        self.agents.clear();
+        self.classic_of.clear();
         self.browsers = Browsers::new();
         self.dragging = None;
         self.restoring = false; // even mid-startup, the list saved is the empty one

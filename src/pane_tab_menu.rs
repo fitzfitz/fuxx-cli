@@ -1,5 +1,5 @@
-//! A pane tab's right-click menu (M11b): Close Tab, Close Other Tabs in Pane, Rename Tab…, and for
-//! a browser tab Pop Out. Close Tab ends the tab at once (as its × and ⌘W do); Close Other Tabs
+//! A pane tab's right-click menu (M11b): Close Tab, Close Other Tabs in Pane, Rename Tab…, for
+//! a browser tab Pop Out, and for an agent tab Open in Classic View (M11aa). Close Tab ends the tab at once (as its × and ⌘W do); Close Other Tabs
 //! is a bulk close, so it asks first in a native sheet; Rename Tab… names the tab's terminal (as
 //! `session.rename` does); Pop Out moves a browser tab's page into a window of its own (M10c's).
 //!
@@ -41,6 +41,8 @@ pub enum PaneTabAction {
     CloseOthers,
     Rename,
     PopOut,
+    /// An agent tab's conversation in the agent's own UI, in a terminal tab (R13).
+    OpenClassic,
 }
 
 /// The tabs `action` from `tab`'s menu closes, in bar order: itself, or every other tab of its
@@ -57,13 +59,13 @@ pub fn closes(action: PaneTabAction, pane: &Pane, tab: TabId) -> Vec<TabId> {
             .map(|t| t.id)
             .filter(|&id| id != tab)
             .collect(),
-        PaneTabAction::Rename | PaneTabAction::PopOut => Vec::new(),
+        PaneTabAction::Rename | PaneTabAction::PopOut | PaneTabAction::OpenClassic => Vec::new(),
     }
 }
 
 /// Whether `action` can be chosen from `tab`'s menu: Close Other Tabs needs another tab in the
-/// pane; Rename Tab… needs a terminal to name; Pop Out, a browser tab (so a file tab has
-/// neither).
+/// pane; Rename Tab… needs a terminal or an agent tab to name; Pop Out, a browser tab (so a
+/// file tab has neither); Open in Classic View, an agent tab with a conversation.
 pub fn enabled(action: PaneTabAction, pane: &Pane, tab: TabId) -> bool {
     match action {
         PaneTabAction::Close => pane.tabs.iter().any(|t| t.id == tab),
@@ -71,11 +73,21 @@ pub fn enabled(action: PaneTabAction, pane: &Pane, tab: TabId) -> bool {
         PaneTabAction::Rename => pane
             .tabs
             .iter()
-            .any(|t| t.id == tab && matches!(t.kind, TabKind::Terminal(_))),
+            .any(|t| t.id == tab && matches!(t.kind, TabKind::Terminal(_) | TabKind::Agent { .. })),
         PaneTabAction::PopOut => pane
             .tabs
             .iter()
             .any(|t| t.id == tab && matches!(t.kind, TabKind::Browser { .. })),
+        PaneTabAction::OpenClassic => pane.tabs.iter().any(|t| {
+            t.id == tab
+                && matches!(
+                    t.kind,
+                    TabKind::Agent {
+                        conversation: Some(_),
+                        ..
+                    }
+                )
+        }),
     }
 }
 
@@ -145,8 +157,13 @@ impl Workspace {
             }
             PaneTabAction::Rename => match self.terminal_of(tab) {
                 Some(id) => self.start_tab_rename(id, window, cx),
+                None if self.agents.contains_key(&tab) => self.start_agent_rename(tab, window, cx),
                 None => self.focus_active(window, cx),
             },
+            PaneTabAction::OpenClassic => {
+                self.focus_active(window, cx);
+                self.open_classic(tab, window, cx);
+            }
             PaneTabAction::PopOut => {
                 self.focus_active(window, cx);
                 self.pop_out(tab, window, cx);
@@ -175,7 +192,8 @@ impl Workspace {
                     Status::Working | Status::Waiting
                 )
             })
-            .count();
+            .count()
+            + tabs.iter().filter(|&&t| self.agent_busy(t, cx)).count();
         let (message, detail) = confirm_text(tabs.len(), busy);
         let answer = window.prompt(
             PromptLevel::Warning,
@@ -189,8 +207,13 @@ impl Workspace {
                 return;
             }
             this.update_in(cx, |this, window, cx| {
+                // Asked already: an agent tab closes without asking again.
                 for tab in tabs {
-                    this.close_tab(tab, window, cx);
+                    if this.agents.contains_key(&tab) {
+                        this.close_agent_tab(tab, false, window, cx);
+                    } else {
+                        this.close_tab(tab, window, cx);
+                    }
                 }
             })
             .ok();
@@ -207,6 +230,10 @@ impl Workspace {
         let menu = self.pane_tab_menu.as_ref()?;
         let (_, pane) = self.model.locate(menu.tab)?;
         let pane = self.model.pane(pane)?;
+        let is_agent = pane
+            .tabs
+            .iter()
+            .any(|t| t.id == menu.tab && matches!(t.kind, TabKind::Agent { .. }));
         let hover = ui.panel_hover;
         let item = |n: usize, label: &'static str, action: PaneTabAction| {
             let on = enabled(action, pane, menu.tab);
@@ -259,6 +286,9 @@ impl Workspace {
             .child(item(2, "Rename Tab\u{2026}", PaneTabAction::Rename))
             .when(enabled(PaneTabAction::PopOut, pane, menu.tab), |panel| {
                 panel.child(item(3, "Pop Out", PaneTabAction::PopOut))
+            })
+            .when(is_agent, |panel| {
+                panel.child(item(4, "Open in Classic View", PaneTabAction::OpenClassic))
             });
         Some(
             div()
@@ -383,5 +413,25 @@ mod tests {
                 Some("2 agents are still working or waiting.".to_string())
             )
         );
+    }
+
+    #[test]
+    fn an_agent_tab_renames_and_opens_classic_only_with_a_conversation() {
+        let agent = |conversation: Option<&str>| TabKind::Agent {
+            provider: "claude".into(),
+            cwd: "/w".into(),
+            conversation: conversation.map(Into::into),
+            mode: None,
+            title: None,
+        };
+        let p = pane(&[agent(Some("c1")), agent(None), TabKind::Terminal(1)]);
+        assert!(enabled(Rename, &p, TabId(1)));
+        assert!(enabled(Rename, &p, TabId(2)));
+        assert!(enabled(OpenClassic, &p, TabId(1)));
+        assert!(!enabled(OpenClassic, &p, TabId(2)));
+        assert!(!enabled(OpenClassic, &p, TabId(3)));
+        assert!(!enabled(PopOut, &p, TabId(1)));
+        assert!(enabled(Close, &p, TabId(1)));
+        assert!(closes(OpenClassic, &p, TabId(1)).is_empty());
     }
 }

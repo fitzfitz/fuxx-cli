@@ -292,7 +292,6 @@ impl Model {
     }
 
     /// A workspace's agent tabs: panes in reading order, tabs in tab-bar order.
-    #[allow(dead_code)] // M11aa Task 8
     pub fn agent_tabs(&self, workspace: WorkspaceId) -> Vec<TabId> {
         let Some(w) = self.workspace(workspace) else {
             return Vec::new();
