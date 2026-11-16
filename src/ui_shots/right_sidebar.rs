@@ -1298,7 +1298,7 @@ fn right_panel_scenes() {
 }
 
 /// M11ac: the Files panel follows the focused pane's file tab, on `files_fixture` beside a
-/// terminal in its src/ (util closed), 1100 × 560, both themes:
+/// terminal in its src/ (util closed), 1100 × 560, in Mocha (both themes with `--all-themes`):
 /// - `files-panel-follows-active-tab` (each follow run where the focused tab changed, none by
 ///   the frame's safety net): after opening src/util/a.rs (util opens, a.rs
 ///   selected), ⌃Tab to the terminal (kept), a file outside the folder (kept), docs/guide.md

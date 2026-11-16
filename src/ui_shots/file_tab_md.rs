@@ -16,6 +16,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/md_preview.rs",
             "src/agent_markdown.rs",
             "src/scrollbar.rs",
+            "src/name_input.rs",
         ],
     },
     Scene {
@@ -29,6 +30,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/md_preview.rs",
             "src/mermaid.rs",
             "src/mermaid_render.rs",
+            "src/agent_markdown.rs",
+            "src/browser.rs",
         ],
     },
 ];
@@ -528,7 +531,7 @@ flowchart TD
 "#;
 
 /// M11ac Part 2: Mermaid diagrams in the Markdown Preview, on `MERMAID_FIXTURE`, 760 × 980,
-/// both themes:
+/// in Mocha (both themes with `--all-themes`):
 /// - `file-tab-md-mermaid-pending`: the first frame after the click on Preview, before WebKit
 ///   answers: every block still code, no notes.
 /// - `file-tab-md-mermaid`: the hidden web view (real WebKit) renders the flowchart and the
