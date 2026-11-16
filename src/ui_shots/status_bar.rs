@@ -80,8 +80,7 @@ pub(super) const SCENES: &[Scene] = &[
 /// The folder the status bar's terminals work in, a deep one, and a 40-character branch.
 const FUXX: &str = "/Users/me/code/fuxx-cli";
 
-const DEEP: &str =
-    "/Users/me/code/clients/acme-corporation/platform/services/payments/api-gateway";
+const DEEP: &str = "/Users/me/code/clients/acme-corporation/platform/services/payments/api-gateway";
 
 const BRANCH_40: &str = "feature/status-bar-ports-and-update-pill";
 
