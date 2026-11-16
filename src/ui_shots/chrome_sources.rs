@@ -312,12 +312,13 @@ fn report(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str, sta
 
 /// Session `name`'s status dated minutes back (M11p Task 6, review): its age label turns once a
 /// minute, not every second, so a step's check never lands on a turn (a turn the step's own
-/// wait drew would repair a stale part before the check). It notifies the workspace: the status
-/// the callers just reported dated its own change now, and without the notify the rows built
-/// after the report show the new date only if the report's own path happens to notify (tried:
-/// chrome-notifications' steps show a part stale without it). So in a step's `act` it can mask
-/// a missing notify of the source; the callers there are `report`s, whose path
-/// (`on_terminal_event`) is what those steps test elsewhere (chrome-status-elsewhere).
+/// wait drew would repair a stale part before the check). It mutates `status_since` outside
+/// the app's own paths (nothing in the app dates a status back), so it must notify the
+/// workspace itself: without the notify the rows built after the report show the new date only
+/// if the report's own path happens to notify (tried: chrome-notifications' steps show a part
+/// stale without it). So in a step's `act` it can mask a missing notify of the source; the
+/// callers there are `report`s, whose path (`on_terminal_event`) is what those steps test
+/// elsewhere (chrome-status-elsewhere).
 fn minutes_old(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str) {
     let i = index_of(cx, ws, name);
     cx.update(|cx| {
