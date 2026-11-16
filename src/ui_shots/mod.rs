@@ -44,6 +44,7 @@ use crate::workspace::{Overlay, Workspace};
 
 mod args;
 mod branch;
+mod changed;
 mod changes;
 mod chrome;
 mod chrome_parts;
@@ -84,6 +85,7 @@ pub(super) enum Kind {
 
 /// A scene, declared: its name (also its filter and file-name prefix), its function, and what
 /// the runner needs to know to schedule it.
+#[derive(Clone, Copy)]
 pub(super) struct Scene {
     pub(super) name: &'static str,
     pub(super) run: fn(),
@@ -93,8 +95,8 @@ pub(super) struct Scene {
     pub(super) serial: bool,
     #[allow(dead_code)]
     pub(super) kind: Kind,
-    /// The app files its views come from; read by `--changed` (Task 9).
-    #[allow(dead_code)]
+    /// The app files its views come from (and the `assets/` paths, a file or a `dir/`); read by
+    /// `--changed`.
     pub(super) sources: &'static [&'static str],
 }
 
@@ -117,6 +119,79 @@ const AREAS: &[&[Scene]] = &[
     status_bar::SCENES,
     terminal::SCENES,
 ];
+
+/// Files a change to which can alter any scene: the harness, the theme and token tables, the
+/// workspace, `main.rs` (the key bindings many scenes press), and the build. `--changed` runs
+/// everything for them.
+pub(super) const SHARED: &[&str] = &[
+    "src/ui_shots/harness.rs",
+    "src/ui_shots/mod.rs",
+    "src/theme.rs",
+    "src/ui_tokens.rs",
+    "src/workspace.rs",
+    "src/appearance.rs",
+    "src/main.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+];
+
+/// What a set of changed files means for the run.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Affected {
+    /// Everything: a shared file changed (`unclaimed` empty), or these `src/` or `assets/`
+    /// files are in no scene's `sources`.
+    All { unclaimed: Vec<String> },
+    /// Only these scenes (in the scenes' order).
+    Some(Vec<&'static str>),
+    /// Nothing under `src/`, `assets/` or `Cargo.*` changed.
+    Nothing,
+}
+
+/// The scenes the `changed` files (repo-relative) touch: those whose `sources` claim one of
+/// them. A `shared` file, or a `src/` or `assets/` file no scene claims, means all of them; a
+/// file elsewhere (docs, scripts) means none. A source ending in `/` claims everything under it.
+pub(super) fn affected(changed: &[&str], scenes: &[Scene], shared: &[&str]) -> Affected {
+    if changed.iter().any(|f| shared.contains(f)) {
+        return Affected::All { unclaimed: vec![] };
+    }
+    let claims = |source: &str, file: &str| {
+        source == file || (source.ends_with('/') && file.starts_with(source))
+    };
+    let mut hit = vec![false; scenes.len()];
+    let mut unclaimed: Vec<String> = Vec::new();
+    let mut relevant = false;
+    for file in changed {
+        if !(file.starts_with("src/") || file.starts_with("assets/") || file.starts_with("Cargo."))
+        {
+            continue;
+        }
+        relevant = true;
+        let mut claimed = false;
+        for (i, scene) in scenes.iter().enumerate() {
+            if scene.sources.iter().any(|s| claims(s, file)) {
+                hit[i] = true;
+                claimed = true;
+            }
+        }
+        if !claimed && !unclaimed.iter().any(|u| u == file) {
+            unclaimed.push(file.to_string());
+        }
+    }
+    if !unclaimed.is_empty() {
+        return Affected::All { unclaimed };
+    }
+    if !relevant {
+        return Affected::Nothing;
+    }
+    Affected::Some(
+        scenes
+            .iter()
+            .zip(hit)
+            .filter(|(_, hit)| *hit)
+            .map(|(s, _)| s.name)
+            .collect(),
+    )
+}
 
 /// Every scene's name, in run order (the order of a plain run, of each shard and of the serial
 /// run).
@@ -394,13 +469,13 @@ pub fn run(args: &[String]) -> ! {
         Err(e) => {
             eprintln!("ui-shots: {e}");
             eprintln!(
-                "usage: fuxx __ui-shots [filter] [--png] [--all-themes] [--shard I/N | --serial-only] [--changed <base>] [--update-refs]"
+                "usage: fuxx __ui-shots [filter] [--png] [--all-themes] [--shard I/N | --serial-only] [--changed <base> [--plan]] [--update-refs]"
             );
             exit(2);
         }
     };
-    if opts.changed.is_some() || opts.update_refs {
-        eprintln!("ui-shots: --changed and --update-refs are not built yet");
+    if opts.update_refs {
+        eprintln!("ui-shots: --update-refs is not built yet");
         exit(2);
     }
     opts.png |= std::env::var("UI_SHOTS_PNG").is_ok_and(|v| v == "1");
@@ -415,7 +490,31 @@ pub fn run(args: &[String]) -> ! {
     let recorded = std::fs::read_to_string(shots_dir().join("timings.tsv")).unwrap_or_default();
     let recorded = parse_timings(&recorded);
     let recorded: Vec<(&str, f64)> = recorded.iter().map(|(n, s)| (n.as_str(), *s)).collect();
-    let picked = selected(&scenes(), &opts, &recorded);
+    let mut every = scenes();
+    if let Some(base) = &opts.changed {
+        // Every part works the set out the same way (git is the same for each); one line says
+        // what it picked: the direct run's, or `--plan`'s (the script prints that, once).
+        let all: Vec<Scene> = every.iter().map(|s| **s).collect();
+        let (only, line) = changed::decide(changed::changed_files(base), &all);
+        let direct = opts.shard.is_none() && !opts.serial_only;
+        if direct || opts.plan {
+            println!("ui-shots: {line}");
+        }
+        if opts.plan {
+            exit(if only.as_ref().is_some_and(|n| n.is_empty()) {
+                3
+            } else {
+                0
+            });
+        }
+        if let Some(only) = only {
+            if only.is_empty() {
+                exit(0);
+            }
+            every.retain(|s| only.contains(&s.name));
+        }
+    }
+    let picked = selected(&every, &opts, &recorded);
     OPTIONS.set(opts).expect("the run's options are set once");
     let started = Instant::now();
     let mut times: Vec<(&str, f64, bool)> = Vec::new();
@@ -482,7 +581,7 @@ pub fn run(args: &[String]) -> ! {
         eprintln!("ui-shots: no scene matches {filter:?}");
         exit(1);
     } else if !child {
-        if filter.is_none() {
+        if filter.is_none() && options().changed.is_none() {
             let tsv: String = times
                 .iter()
                 .map(|(n, s, _)| format!("{n}\t{s:.1}\n"))
@@ -1022,5 +1121,88 @@ mod tests {
         assert_eq!(&bytes[12..16], b"IHDR");
         assert_eq!(&bytes[16..24], &[0, 0, 0, 2, 0, 0, 0, 1]);
         assert!(bytes.ends_with(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]));
+    }
+
+    /// A scene named `name` that covers `sources`.
+    fn covering(name: &'static str, sources: &'static [&'static str]) -> Scene {
+        Scene {
+            name,
+            run: || {},
+            themes: Themes::One,
+            serial: false,
+            kind: Kind::State,
+            sources,
+        }
+    }
+
+    fn some_scenes() -> [Scene; 3] {
+        [
+            covering("tab", &["src/file_tab.rs", "src/file_view.rs"]),
+            covering("tab-md", &["src/file_tab.rs", "assets/themes/x.json"]),
+            covering("side", &["src/sidebar.rs"]),
+        ]
+    }
+
+    #[test]
+    fn a_changed_source_runs_the_scenes_that_claim_it() {
+        let got = affected(&["src/file_tab.rs"], &some_scenes(), SHARED);
+        assert_eq!(got, Affected::Some(vec!["tab", "tab-md"]));
+        let got = affected(&["src/sidebar.rs", "README.md"], &some_scenes(), SHARED);
+        assert_eq!(got, Affected::Some(vec!["side"]));
+    }
+
+    #[test]
+    fn a_shared_file_runs_everything() {
+        for &file in SHARED {
+            let got = affected(&[file], &some_scenes(), SHARED);
+            assert_eq!(got, Affected::All { unclaimed: vec![] }, "{file}");
+        }
+        assert!(SHARED.contains(&"src/theme.rs") && SHARED.contains(&"src/main.rs"));
+    }
+
+    #[test]
+    fn an_unclaimed_source_runs_everything_and_is_named() {
+        let got = affected(&["src/file_tab.rs", "src/foo.rs"], &some_scenes(), SHARED);
+        assert_eq!(
+            got,
+            Affected::All {
+                unclaimed: vec!["src/foo.rs".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn changes_outside_src_assets_and_cargo_run_nothing() {
+        let files = ["docs/x.md", "scripts/ui-shots.sh", ".gitignore"];
+        assert_eq!(affected(&files, &some_scenes(), SHARED), Affected::Nothing);
+        assert_eq!(affected(&[], &some_scenes(), SHARED), Affected::Nothing);
+    }
+
+    #[test]
+    fn an_asset_runs_the_scenes_that_claim_it_else_everything() {
+        let got = affected(&["assets/themes/x.json"], &some_scenes(), SHARED);
+        assert_eq!(got, Affected::Some(vec!["tab-md"]));
+        let got = affected(&["assets/logo/y.png"], &some_scenes(), SHARED);
+        assert_eq!(
+            got,
+            Affected::All {
+                unclaimed: vec!["assets/logo/y.png".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn every_scene_source_is_a_real_file() {
+        for scene in scenes() {
+            for source in scene.sources {
+                assert!(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join(source)
+                        .exists(),
+                    "{}: source {source} is not a file",
+                    scene.name
+                );
+            }
+        }
     }
 }

@@ -54,7 +54,11 @@ pub(super) const SCENES: &[Scene] = &[
         // Serial: (c) a shot mid-slide, the slide set 60 ms back by the real clock.
         serial: true,
         kind: Kind::Visual,
-        sources: &["src/sidebar_toggle.rs", "src/title_area.rs"],
+        sources: &[
+            "src/sidebar.rs",
+            "src/sidebar_toggle.rs",
+            "src/title_area.rs",
+        ],
     },
 ];
 

@@ -1,5 +1,5 @@
 //! The screenshot run's command line: `fuxx __ui-shots [filter] [--png] [--all-themes]
-//! [--shard I/N | --serial-only] [--changed <base>] [--update-refs]`.
+//! [--shard I/N | --serial-only] [--changed <base> [--plan]] [--update-refs]`.
 
 /// What one run does, from its command line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -14,6 +14,9 @@ pub struct RunOptions {
     pub shard: Option<(usize, usize)>,
     /// Run the scenes whose sources changed since this git base.
     pub changed: Option<String>,
+    /// With `--changed`: print what it picked and exit (0, or 3 when nothing changed), without
+    /// running a scene (what `scripts/ui-shots.sh` asks first).
+    pub plan: bool,
     /// Accept the shots' fingerprints as the new references.
     pub update_refs: bool,
     /// Run only the `serial` scenes (what `scripts/ui-shots.sh` runs after the shards).
@@ -34,6 +37,7 @@ pub fn parse_args(args: &[String]) -> Result<RunOptions, String> {
             "--all-themes" => o.all_themes = true,
             "--update-refs" => o.update_refs = true,
             "--serial-only" => o.serial_only = true,
+            "--plan" => o.plan = true,
             "--shard" => {
                 let v = args.next().ok_or("--shard needs I/N")?;
                 o.shard = Some(shard(v)?);
@@ -49,6 +53,9 @@ pub fn parse_args(args: &[String]) -> Result<RunOptions, String> {
     }
     if o.serial_only && o.shard.is_some() {
         return Err("--serial-only and --shard: a shard never runs the serial scenes".into());
+    }
+    if o.plan && o.changed.is_none() {
+        return Err("--plan goes with --changed".into());
     }
     Ok(o)
 }
@@ -122,6 +129,13 @@ mod tests {
         assert!(o.all_themes);
         assert_eq!(o.filter, None);
         assert!(parse(&["--changed"]).is_err(), "--changed with no base");
+    }
+
+    #[test]
+    fn plan_goes_with_changed() {
+        let o = parse(&["--changed", "HEAD", "--plan"]).unwrap();
+        assert!(o.plan);
+        assert!(parse(&["--plan"]).is_err());
     }
 
     #[test]
