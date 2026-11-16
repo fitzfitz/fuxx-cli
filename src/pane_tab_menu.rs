@@ -237,9 +237,9 @@ impl Workspace {
             .iter()
             .any(|t| t.id == menu.tab && matches!(t.kind, TabKind::Agent { .. }));
         let classic_open = self
-            .classic_of
-            .get(&menu.tab)
-            .is_some_and(|&(id, _)| self.index_of(id).is_some());
+            .classic_seen(menu.tab, cx)
+            .1
+            .is_some_and(|id| self.index_of(id).is_some());
         let hover = ui.panel_hover;
         let item = |n: usize, label: &'static str, action: PaneTabAction| {
             let on = enabled(action, pane, menu.tab);

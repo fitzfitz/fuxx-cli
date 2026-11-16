@@ -44,6 +44,11 @@ pub trait Provider: Sync {
     fn conversation_in_args(&self, _args: &str) -> Option<String> {
         None
     }
+    /// The model chip's text for the model the agent reports (`model`): as it is, unless the
+    /// provider knows a shorter name for it.
+    fn model_label(&self, model: &str) -> String {
+        model.to_string()
+    }
     /// What was said before in a resumed conversation (empty unless the provider can read it).
     /// Reads a file: call it off the UI thread.
     fn history(&self, _start: &Start) -> Vec<Past> {
@@ -164,6 +169,53 @@ pub fn by_name(name: &str) -> Option<&'static dyn Provider> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider that overrides nothing it needn't.
+    struct Plain;
+    struct Silent;
+    static PLAIN_INFO: ProviderInfo = ProviderInfo {
+        name: "plain",
+        label: "Plain",
+        badge: "PL",
+        badge_rgb: 0,
+        routes_permissions: false,
+        modes: &[],
+        default_mode: None,
+    };
+    impl Translator for Silent {
+        fn hello(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+        fn decode(&mut self, _line: &str) -> Vec<Event> {
+            Vec::new()
+        }
+        fn encode(&mut self, _action: &Action) -> Vec<String> {
+            Vec::new()
+        }
+    }
+    impl Provider for Plain {
+        fn info(&self) -> &'static ProviderInfo {
+            &PLAIN_INFO
+        }
+        fn argv(&self, _start: &Start) -> Vec<String> {
+            Vec::new()
+        }
+        fn classic_argv(&self, _conversation: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn program(&self) -> &'static str {
+            "plain"
+        }
+        fn translator(&self) -> Box<dyn Translator> {
+            Box::new(Silent)
+        }
+    }
+
+    #[test]
+    fn a_model_is_labelled_as_it_is_unless_the_provider_knows_better() {
+        assert_eq!(Plain.model_label("claude-opus-5-5"), "claude-opus-5-5");
+        assert_eq!(Plain.model_label("gemini-3"), "gemini-3");
+    }
 
     #[test]
     fn by_name_finds_claude_and_nothing_else() {

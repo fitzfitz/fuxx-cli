@@ -39,6 +39,9 @@ const REAP_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// Where a send from a tab whose classic view is opening says the conversation runs.
 const OPENING: &str = "its classic view, which is opening";
 
+/// What "Open in classic view" says when it is ignored because a send's holder check runs.
+pub const CHECKING_NOTICE: &str = "Checking the conversation — try again in a moment.";
+
 /// An unknown provider's badge and its colour (a restored tab whose agent fuxx no longer has).
 const UNKNOWN_BADGE: &str = "?";
 const UNKNOWN_RGB: u32 = 0x6b6b6b;
@@ -120,7 +123,7 @@ pub enum Holder {
 }
 
 /// How long after "Open in classic view" its terminal counts as running the agent whatever
-/// `ps` says (the typed `claude --resume` may not have started yet).
+/// `ps` says (the provider's typed resume command may not have started yet).
 pub const CLASSIC_START: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The tab's classic view, as the holder check knows it (R13).
@@ -143,7 +146,8 @@ pub enum Classic {
 
 /// Whether conversation `id` of `provider` is held by another process in `table` (`None`: `ps`
 /// failed → `Unchecked`): a live process of that program with the id among its arguments
-/// (`classic_argv` always puts it there), not of the tab's own process groups (`own`: the
+/// (`classic_argv` always puts it there; or as the provider reads its arguments,
+/// `conversation_in_args`, e.g. a flag's `=` form), not of the tab's own process groups (`own`: the
 /// groups of the processes it started, each its own group's leader); or the tab's classic view
 /// (`classic`) may run it.
 pub fn conversation_holder(
@@ -160,10 +164,10 @@ pub fn conversation_holder(
     let program = provider.program();
     let runs_it =
         |p: &&Proc| !p.is_zombie() && not_in(p, own) && procs::program_name(&p.args) == program;
-    let with_id = table
-        .iter()
-        .filter(runs_it)
-        .any(|p| p.args.split_whitespace().any(|word| word == id));
+    let with_id = table.iter().filter(runs_it).any(|p| {
+        p.args.split_whitespace().any(|word| word == id)
+            || provider.conversation_in_args(&p.args).as_deref() == Some(id)
+    });
     let in_classic = match classic {
         Classic::Closed => false,
         Classic::Starting => true,
@@ -181,6 +185,56 @@ pub fn conversation_holder(
     } else {
         Holder::Free
     }
+}
+
+/// A terminal of this run, as the classic check sees it: the background-service session it is
+/// (None: a local one) and its shell's pid, when fuxx knows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeenTerminal {
+    pub service: Option<u64>,
+    pub shell: Option<u32>,
+}
+
+/// The tab's classic view as the holder check counts on it (R13), and the terminal of this run
+/// that shows it (to name in a notice, to show again). `entry`: its `classic_of` note (the
+/// terminal's id, and whether it opened moments ago); `saved`: the background-service session
+/// saved with the tab; `seen`: a terminal of this run by id; `agents`: fuxx's own agents.
+/// - Its terminal of this run opened moments ago → `Starting`.
+/// - A saved session this run doesn't see as that service session (not in its list: the service
+///   couldn't be reached, or adopting it failed; or only a local terminal of the same number)
+///   → `Blind`, naming none: it may still run there.
+/// - Else its terminal of this run (a saved id names only the service's session): its shell →
+///   `Shell`; no shell fuxx knows → `Blind`; none (closed) → `Closed`.
+pub fn classic_state(
+    entry: Option<(u64, bool)>,
+    saved: Option<u64>,
+    seen: impl Fn(u64) -> Option<SeenTerminal>,
+    agents: Vec<u32>,
+) -> (Classic, Option<u64>) {
+    // This run's terminal `id`, never a local one that only shares the saved session's number.
+    let found = |id: u64| seen(id).filter(|t| saved != Some(id) || t.service == Some(id));
+    if let Some((id, true)) = entry
+        && found(id).is_some()
+    {
+        return (Classic::Starting, Some(id));
+    }
+    if let Some(session) = saved
+        && found(session).is_none()
+    {
+        return (Classic::Blind(agents), None);
+    }
+    let Some((id, terminal)) = entry
+        .map(|(id, _)| id)
+        .or(saved)
+        .and_then(|id| Some((id, found(id)?)))
+    else {
+        return (Classic::Closed, None);
+    };
+    let classic = match terminal.shell {
+        Some(shell) => Classic::Shell(shell),
+        None => Classic::Blind(agents),
+    };
+    (classic, Some(id))
 }
 
 /// How a restored agent tab learns, off the UI thread, which classic view its first check
@@ -686,23 +740,9 @@ impl Workspace {
             return; // its first send's check still runs
         }
         let id = conversation.or_else(|| view.read(cx).resume_id());
-        // The classic view's terminal, while open: its name, its shell (this Mac's), and
-        // whether it opened moments ago.
-        let classic = self.classic_of.get(&tab).and_then(|&(sid, opened)| {
-            let s = self.sessions.items().iter().find(|s| s.id == sid)?;
-            let shell = (s.ssh.is_none() && !s.lost)
-                .then(|| s.view.read(cx).working_folder().1)
-                .flatten();
-            let classic = if opened.elapsed() < CLASSIC_START {
-                Classic::Starting
-            } else {
-                match shell {
-                    Some(shell) => Classic::Shell(shell),
-                    None => Classic::Blind(crate::agent_process::started_pids()),
-                }
-            };
-            Some((self.terminal_label(sid), classic))
-        });
+        // The classic view as the check counts on it, and its terminal's name.
+        let (classic, terminal) = self.classic_seen(tab, cx);
+        let terminal = terminal.map(|sid| self.terminal_label(sid));
         let own = view.read(cx).own_pids();
         let before = self.classic_of.get(&tab).copied();
         self.with_ps(window, cx, move |this, table, _, cx| {
@@ -719,16 +759,9 @@ impl Workspace {
                 return;
             }
             let holder = match &id {
-                Some(id) => conversation_holder(
-                    table.as_deref(),
-                    provider,
-                    id,
-                    &own,
-                    classic.as_ref().map_or(&Classic::Closed, |c| &c.1),
-                ),
+                Some(id) => conversation_holder(table.as_deref(), provider, id, &own, &classic),
                 None => Holder::Free, // nothing to resume: nothing to hold
             };
-            let terminal = classic.map(|c| c.0);
             view.update(cx, |view, cx| {
                 view.resume_after_classic(text, holder, terminal, cx)
             });
@@ -737,7 +770,8 @@ impl Workspace {
 
     /// "Open in classic view" (R13): while it works or waits for you, a native sheet asks first.
     /// Then the tab's own process stops (it reads Done, no banner) and a terminal tab of the
-    /// same pane runs the agent's own UI on the conversation (`claude --resume <id>`).
+    /// same pane runs the agent's own UI on the conversation (the provider's resume command,
+    /// `classic_argv`).
     pub(crate) fn open_classic(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(TabKind::Agent {
             conversation: Some(_),
@@ -747,15 +781,15 @@ impl Workspace {
             return;
         };
         // Its classic view is opening: never a second one. A send's check runs: it may
-        // resume the tab, so no classic view opens beside it.
-        if self.classic_opening.contains(&tab) || self.resume_checks.contains(&tab) {
+        // resume the tab, so no classic view opens beside it (the tab says so).
+        if self.classic_opening.contains(&tab) || self.still_checking(tab, cx) {
             return;
         }
         // Its classic view is open already: that terminal is shown, never a second one.
         if let Some(index) = self
-            .classic_of
-            .get(&tab)
-            .and_then(|&(sid, _)| self.index_of(sid))
+            .classic_seen(tab, cx)
+            .1
+            .and_then(|sid| self.index_of(sid))
         {
             self.select(index, window, cx);
             return;
@@ -786,9 +820,9 @@ impl Workspace {
     }
 
     /// `open_classic` once asked (or not busy): the tab pauses, then one fresh `ps` checks that
-    /// nothing else holds the conversation (a classic view left from before a restart, a
-    /// `claude --resume` typed elsewhere): held (or unchecked), the tab says so and no second
-    /// one opens. Free, the classic view opens once the tab's own process is reaped. From the
+    /// nothing else holds the conversation (a classic view left from before a restart, the
+    /// provider's resume command typed elsewhere): held (or unchecked), the tab says so and no
+    /// second one opens. Free, the classic view opens once the tab's own process is reaped. From the
     /// pause until then, the tab's classic view is opening (`classic_opening`).
     fn open_classic_now(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(TabKind::Agent {
@@ -802,9 +836,12 @@ impl Workspace {
         let Some(provider) = providers::by_name(&provider) else {
             return;
         };
-        if self.resume_checks.contains(&tab) || !self.classic_opening.insert(tab) {
+        if self.still_checking(tab, cx) || !self.classic_opening.insert(tab) {
             return; // a send's check runs, or opening already (a sheet answered twice)
         }
+        // A classic view that may still run it (from before a restart, in a terminal this run
+        // can't see): counted on, so no second one opens beside it.
+        let (classic, _) = self.classic_seen(tab, cx);
         let view = self.agents.get(&tab).map(|slot| slot.view.clone());
         if let Some(view) = &view {
             view.update(cx, |view, cx| view.pause_for_classic(cx));
@@ -814,8 +851,7 @@ impl Workspace {
             .map(|v| v.read(cx).own_pids())
             .unwrap_or_default();
         self.with_ps(window, cx, move |this, table, window, cx| {
-            let holder =
-                conversation_holder(table.as_deref(), provider, &id, &own, &Classic::Closed);
+            let holder = conversation_holder(table.as_deref(), provider, &id, &own, &classic);
             if holder != Holder::Free {
                 this.classic_opening.remove(&tab);
                 if let Some(view) = &view {
@@ -916,6 +952,45 @@ impl Workspace {
         .detach();
     }
 
+    /// Agent tab `tab`'s classic view as a holder check counts on it, and the terminal of this
+    /// run that shows it (`classic_state` over its `classic_of` note, the session saved with
+    /// the tab, and this run's terminals).
+    pub(crate) fn classic_seen(&self, tab: TabId, cx: &App) -> (Classic, Option<u64>) {
+        let entry = self
+            .classic_of
+            .get(&tab)
+            .map(|&(sid, opened)| (sid, opened.elapsed() < CLASSIC_START));
+        let seen = |id: u64| {
+            let s = self.sessions.items().iter().find(|s| s.id == id)?;
+            let view = s.view.read(cx);
+            Some(SeenTerminal {
+                service: view.daemon_id(),
+                shell: (s.ssh.is_none() && !s.lost)
+                    .then(|| view.working_folder().1)
+                    .flatten(),
+            })
+        };
+        classic_state(
+            entry,
+            self.model.agent_classic(tab),
+            seen,
+            crate::agent_process::started_pids(),
+        )
+    }
+
+    /// Whether a send's holder check runs for agent tab `tab`; if so, the tab says to try again
+    /// (an "Open in classic view" it ignores).
+    fn still_checking(&self, tab: TabId, cx: &mut App) -> bool {
+        if !self.resume_checks.contains(&tab) {
+            return false;
+        }
+        if let Some(slot) = self.agents.get(&tab) {
+            slot.view
+                .update(cx, |view, cx| view.notice(CHECKING_NOTICE.into(), cx));
+        }
+        true
+    }
+
     /// This Mac's process table, read once on the background executor (`ps`, capped at 2 s;
     /// `None`: it failed), then `then` (the scenes give their own table: `shot_ps`).
     fn with_ps(
@@ -941,6 +1016,17 @@ impl Workspace {
                 .ok();
         })
         .detach();
+    }
+
+    /// Session `sN` (`session`, a background-service one when `service`) is closing: an agent
+    /// tab whose classic view it was forgets it (R13), so a later check no longer counts on it
+    /// (a reused id after the service restarts would hold the tab for nothing). Only the
+    /// service's own session clears a saved one (a local terminal may share its number).
+    pub(crate) fn classic_terminal_closed(&mut self, session: u64, service: bool) {
+        self.classic_of.retain(|_, &mut (sid, _)| sid != session);
+        if service && self.model.forget_agent_classics_in(session) {
+            self.save();
+        }
     }
 
     /// Whether workspace `ws` runs on another host (any terminal of it is an SSH session's):
@@ -994,6 +1080,110 @@ mod tests {
 
     /// Another conversation's session id (a UUID, as Claude's are).
     const OTHER: &str = "0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c";
+
+    #[test]
+    fn a_native_claude_resume_with_equals_holds_it() {
+        const ID: &str = "5f1e2d3c-4b5a-4968-8776-655443322110";
+        let row = |args: &str| ps(&format!("  700     1   700   700 S+   {args}\n"));
+        for args in [
+            format!("claude --resume={ID}"),
+            format!("claude --session-id={ID}"),
+        ] {
+            assert_eq!(
+                conversation_holder(Some(&row(&args)), &CLAUDE, ID, &[], &Classic::Closed),
+                Holder::Held,
+                "{args}"
+            );
+        }
+        // Another conversation's, and the tab's own: free.
+        let other = row(&format!("claude --resume={OTHER}"));
+        assert_eq!(
+            conversation_holder(Some(&other), &CLAUDE, ID, &[], &Classic::Closed),
+            Holder::Free
+        );
+        let own = row(&format!("claude --resume={ID}"));
+        assert_eq!(
+            conversation_holder(Some(&own), &CLAUDE, ID, &[700], &Classic::Closed),
+            Holder::Free
+        );
+    }
+
+    #[test]
+    fn a_saved_service_classic_view_this_run_cant_see_stays_blind() {
+        let agents = || vec![900];
+        let blind = Classic::Blind(vec![900]);
+        let nothing = |_: u64| None;
+        let service7 = |id: u64| {
+            (id == 7).then_some(SeenTerminal {
+                service: Some(7),
+                shell: None,
+            })
+        };
+        // A local terminal of this run that only shares the saved session's number.
+        let local7 = |id: u64| {
+            (id == 7).then_some(SeenTerminal {
+                service: None,
+                shell: Some(500),
+            })
+        };
+        let local3 = |id: u64| {
+            (id == 3).then_some(SeenTerminal {
+                service: None,
+                shell: Some(500),
+            })
+        };
+        // Saved, but not in this run's list (the service couldn't be reached, or adopting it
+        // failed): its classic terminal may still run the agent → blind, never closed.
+        assert_eq!(
+            classic_state(Some((7, false)), Some(7), nothing, agents()),
+            (blind.clone(), None)
+        );
+        assert_eq!(
+            classic_state(None, Some(7), nothing, agents()),
+            (blind.clone(), None)
+        );
+        // A local session whose id equals the saved one is not it: blind, not its shell.
+        assert_eq!(
+            classic_state(Some((7, false)), Some(7), local7, agents()),
+            (blind.clone(), None)
+        );
+        assert_eq!(classic_state(None, Some(7), local7, agents()).0, blind);
+        // The service's own session 7: blind (no shell pid), and it's the terminal to name.
+        assert_eq!(
+            classic_state(Some((7, false)), Some(7), service7, agents()),
+            (blind.clone(), Some(7))
+        );
+        // A local classic view of this run (never saved): its shell; gone, closed.
+        assert_eq!(
+            classic_state(Some((3, false)), None, local3, agents()),
+            (Classic::Shell(500), Some(3))
+        );
+        assert_eq!(
+            classic_state(Some((3, false)), None, nothing, agents()),
+            (Classic::Closed, None)
+        );
+        assert_eq!(
+            classic_state(None, None, local3, agents()),
+            (Classic::Closed, None)
+        );
+        // Opened moments ago: starting, whatever `ps` will say; its terminal already gone,
+        // closed.
+        assert_eq!(
+            classic_state(Some((3, true)), None, local3, agents()),
+            (Classic::Starting, Some(3))
+        );
+        assert_eq!(
+            classic_state(Some((3, true)), None, nothing, agents()),
+            (Classic::Closed, None)
+        );
+        // So an npm `claude` left in that unseen service terminal holds the conversation.
+        let t = ps(NPM);
+        let (classic, _) = classic_state(Some((7, false)), Some(7), local7, vec![900, 950]);
+        assert_eq!(
+            conversation_holder(Some(&t), &CLAUDE, "c1", &[900], &classic),
+            Holder::Held
+        );
+    }
 
     #[test]
     fn launch_plan_follows_the_provider() {

@@ -549,6 +549,14 @@ impl Model {
         true
     }
 
+    /// Forget every agent tab's classic view in background-service session `session` (its
+    /// terminal closed). False when none was there.
+    pub fn forget_agent_classics_in(&mut self, session: u64) -> bool {
+        let before = self.agent_classics.len();
+        self.agent_classics.retain(|&(_, s)| s != session);
+        self.agent_classics.len() != before
+    }
+
     /// Turn file tab `tab`'s Markdown Preview on or off (M11ac). False when `tab` is unknown,
     /// not a file tab, or already so.
     pub fn set_md_preview(&mut self, tab: TabId, on: bool) -> bool {
@@ -3265,6 +3273,32 @@ mod tests {
         m.set_agent_classic(g.tab, Some(7));
         m.close_tab(g.tab).unwrap();
         assert_eq!(m.agent_classic(g.tab), None);
+    }
+
+    /// R13: when the background-service terminal an agent tab's classic view opened in closes,
+    /// the tab forgets it (a reused id after a service restart would hold it for nothing), and
+    /// the next save writes no `classic`.
+    #[test]
+    fn an_agent_tab_forgets_its_classic_view_when_that_terminal_closes() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let g = m.split(a.pane, Axis::Row, agent(Some("c1"), None)).unwrap();
+        let h = m.split(g.pane, Axis::Row, agent(Some("c2"), None)).unwrap();
+        m.set_agent_classic(g.tab, Some(7));
+        m.set_agent_classic(h.tab, Some(8));
+        let session = |id: u64| Some((id - 1) as usize);
+        // Another terminal closing: nothing forgotten.
+        assert!(!m.forget_agent_classics_in(9));
+        assert_eq!(m.agent_classic(g.tab), Some(7));
+        // Its terminal closing: forgotten, the other tab's kept.
+        assert!(m.forget_agent_classics_in(7));
+        assert_eq!(m.agent_classic(g.tab), None);
+        assert_eq!(m.agent_classic(h.tab), Some(8));
+        assert!(!m.forget_agent_classics_in(7), "already forgotten");
+        let (saved, _) = m.to_saved(session);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(!json.contains(r#""classic":7"#), "{json}");
+        assert!(json.contains(r#""classic":8"#), "{json}");
     }
 
     /// R5: an agent tab is not a terminal, so two fresh ones in one folder are both kept.

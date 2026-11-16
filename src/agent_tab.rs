@@ -154,12 +154,9 @@ pub fn status_word(status: Status) -> &'static str {
     }
 }
 
-/// The model chip's text: `claude-opus-5-5` → `opus`; another name as it is.
-pub fn model_chip(model: &str) -> String {
-    match model.strip_prefix("claude-") {
-        Some(rest) => rest.split('-').next().unwrap_or(rest).to_string(),
-        None => model.to_string(),
-    }
+/// The model chip's text: as `provider` labels `model` (no provider: as it is).
+pub fn model_chip(provider: Option<&dyn Provider>, model: &str) -> String {
+    provider.map_or_else(|| model.to_string(), |p| p.model_label(model))
 }
 
 /// The cost chip's text.
@@ -823,6 +820,12 @@ impl AgentTab {
     pub fn classic_not_opened(&mut self, cx: &mut Context<Self>) {
         let notice = crate::workspace_agent::not_stopped_notice(self.label());
         self.conversation.apply(Event::Notice(notice));
+        self.after_change(true, cx);
+    }
+
+    /// One notice row (`text`), e.g. why something asked of the tab didn't happen yet.
+    pub fn notice(&mut self, text: String, cx: &mut Context<Self>) {
+        self.conversation.apply(Event::Notice(text));
         self.after_change(true, cx);
     }
 
@@ -2305,7 +2308,10 @@ impl AgentTab {
             .provider
             .filter(|p| !p.info().modes.is_empty())
             .and(self.start.mode.clone());
-        let model = self.conversation.model().map(model_chip);
+        let model = self
+            .conversation
+            .model()
+            .map(|m| model_chip(self.provider, m));
         let cost = self.conversation.cost_usd().map(cost_chip);
         let stop_label = self.stop_label();
         let at = self.at.as_ref().map(|at| {
@@ -2558,8 +2564,8 @@ mod tests {
     fn words_and_chips() {
         assert_eq!(status_word(Status::Waiting), "needs you");
         assert_eq!(status_word(Status::Working), "working");
-        assert_eq!(model_chip("claude-opus-5-5"), "opus");
-        assert_eq!(model_chip("gemini-3"), "gemini-3");
+        // The provider labels its models (`Provider::model_label`); without one, as it is.
+        assert_eq!(model_chip(None, "claude-opus-5-5"), "claude-opus-5-5");
         assert_eq!(cost_chip(0.2116182), "$0.21");
         assert_eq!(elapsed_label(Duration::from_secs(4)), "4s");
         assert_eq!(elapsed_label(Duration::from_secs(65)), "1m 05s");
