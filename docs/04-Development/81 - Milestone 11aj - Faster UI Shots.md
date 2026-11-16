@@ -1,6 +1,6 @@
 # Milestone 11aj — Faster UI Shots
 
-**Status:** 📝 design written 2026-11-16, waiting for your approval; then a plan.
+**Status:** 📋 design approved 2026-11-16 ("approved"); plan [[M11aj Plan - Faster UI Shots]]; built after M11ae merges.
 
 **Asked for:** 2026-11-16, by you: "let's talk about ui_shots. right now, the file is very bloated and it takes like
 almost hours to run. GIve me your best suggestions as a senior fullstack developer who crave for best approach on
