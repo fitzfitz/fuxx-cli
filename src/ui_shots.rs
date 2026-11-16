@@ -5980,6 +5980,228 @@ fn file_tab_scenes() {
     }
     file_view_scenes();
     file_header_scenes();
+    file_drag_select_scenes();
+}
+
+/// M11ae Task 5: drag-select past the text's edge scrolls, a tab on its own in a window, in both
+/// themes (Wrap off, as the scenes' appearance has it):
+/// - `file-tab-drag-select`: a 400-line file; a press on line 3, the pointer 60 pt below the
+///   text, then 300 ms with no moves: the auto-scroll runs, the text has scrolled and the
+///   selection's moving end is at or past the last line in sight at the start (and still in
+///   sight); 300 pt below, each step scrolls further; the release ends the task within 50 ms
+///   and the scroll stays. Then from the middle to above the text: it scrolls back up, the
+///   moving end in sight. Shot at the end: that second selection, the thumb showing.
+/// - `file-tab-drag-select-wide` (asserts only): a 3,000-character line, the pointer right of
+///   the text: it scrolls sideways and the selection grows along the line.
+/// - `file-tab-drag-select-mode` (asserts only): a switch to Diff mid-drag ends the task.
+fn file_drag_select_scenes() {
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use gpui::{Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-tab-drag-select");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let long = dir.join("long.rs");
+    let text: String = (1..=400)
+        .map(|i| format!("let line_{i} = {i};\n"))
+        .collect();
+    std::fs::write(&long, text).expect("long.rs");
+    let wide = dir.join("wide.rs");
+    let wide_text = format!("// one wide line\nlet wide = \"{}\";\n", "x".repeat(3_000));
+    std::fs::write(&wide, wide_text).expect("wide.rs");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let dims = size(px(760.0), px(460.0));
+    let none = Modifiers::none();
+    let left = Some(MouseButton::Left);
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    let ms = Duration::from_millis;
+    for (slug, name) in SHOT_THEMES {
+        let theme = shot_theme(name);
+        let build_for = |path: PathBuf, slot: TabSlot| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        // The 400-line file: below the text, held still, further out, released; then above.
+        let n = format!("file-tab-drag-select-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(long.clone(), slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            frame(cx, window);
+            let look = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.autoscrolling(), t.scroll(), t.selection())
+                })
+            };
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let (lh, height) = (g.line_height, g.bounds.size.height);
+            let x = g.bounds.left() + g.text_left + px(20.0);
+            let last_in_sight = ((height - px(1.0)) / lh).floor() as usize;
+            let line3 = point(x, g.bounds.top() + lh * 2.5);
+            cx.simulate_mouse_down(window, line3, MouseButton::Left, none);
+            let near = point(x, g.bounds.bottom() + px(60.0));
+            cx.simulate_mouse_move(window, near, left, none);
+            // Real time, as the scrollbar's fade reads the clock; the test clock for the steps.
+            std::thread::sleep(ms(300));
+            cx.advance_clock(ms(300));
+            frame(cx, window);
+            let (on, scroll, selection) = look(cx);
+            assert!(on, "{n}: no auto-scroll 300 ms after leaving the text");
+            assert!(scroll.y > px(0.0), "{n}: the text didn't scroll");
+            let (anchor, head) = selection.expect("a selection");
+            assert_eq!(anchor.line, 2, "{n}: the press was on line 3");
+            assert!(
+                head.line >= last_in_sight,
+                "{n}: the moving end {head:?} is above the last line in sight at the start \
+                 ({last_in_sight})"
+            );
+            let bottom_line = ((scroll.y + height - px(1.0)) / lh).floor() as usize;
+            assert!(
+                head.line <= bottom_line,
+                "{n}: the moving end {head:?} went out of sight (last in sight {bottom_line})"
+            );
+            // Each step's scroll, 3 steps at 60 pt out, then 3 at 300 pt.
+            let per_step = |cx: &mut VisualTestAppContext| {
+                let from = look(cx).1.y;
+                cx.advance_clock(ms(48));
+                (look(cx).1.y - from) / 3.0
+            };
+            let slow = per_step(cx);
+            let far = point(x, g.bounds.bottom() + px(300.0));
+            cx.simulate_mouse_move(window, far, left, none);
+            let fast = per_step(cx);
+            assert!(
+                slow > px(0.0) && fast > slow,
+                "{n}: {fast:?} a step 300 pt out, {slow:?} 60 pt out"
+            );
+            // The release: the task ends within 50 ms, the scroll stays.
+            cx.simulate_mouse_up(window, far, MouseButton::Left, none);
+            let held = look(cx).1;
+            cx.advance_clock(ms(50));
+            frame(cx, window);
+            let (on, scroll, _) = look(cx);
+            assert!(!on, "{n}: the auto-scroll runs 50 ms after the release");
+            assert_eq!(scroll, held, "{n}: the scroll moved after the release");
+            assert!(
+                !cx.read(|cx| tab.read(cx).selected_text()).is_empty(),
+                "{n}: nothing selected"
+            );
+
+            // Above the text: it scrolls back up.
+            let middle = point(x, g.bounds.center().y);
+            cx.simulate_mouse_down(window, middle, MouseButton::Left, none);
+            let above = point(x, g.bounds.top() - px(60.0));
+            cx.simulate_mouse_move(window, above, left, none);
+            cx.advance_clock(ms(160));
+            let (on, scroll, selection) = look(cx);
+            assert!(on, "{n}: no auto-scroll above the text");
+            assert!(scroll.y < held.y, "{n}: didn't scroll up ({scroll:?})");
+            let (_, head) = selection.expect("a selection");
+            let top_line = (scroll.y / lh).floor() as usize;
+            assert!(
+                head.line >= top_line,
+                "{n}: the moving end {head:?} went above the text (first in sight {top_line})"
+            );
+            cx.simulate_mouse_up(window, above, MouseButton::Left, none);
+            cx.advance_clock(ms(50));
+            assert!(!look(cx).0, "{n}: the auto-scroll runs after the release");
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with("file-tab-drag-select", slug, &theme, dims, build, act);
+        println!("ui-shots: {}", path.display());
+
+        // A 3,000-character line, the pointer right of the text: it scrolls sideways.
+        let n = format!("file-tab-drag-select-wide-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(wide.clone(), slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let y = g.bounds.top() + g.line_height * 1.5;
+            let start = point(g.bounds.left() + g.text_left + px(20.0), y);
+            cx.simulate_mouse_down(window, start, MouseButton::Left, none);
+            let right = point(g.bounds.right() + px(60.0), y);
+            cx.simulate_mouse_move(window, right, left, none);
+            let edge = cx
+                .read(|cx| tab.read(cx).selection())
+                .expect("a selection")
+                .1;
+            cx.advance_clock(ms(300));
+            frame(cx, window);
+            let (on, scroll, selection) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.autoscrolling(), t.scroll(), t.selection())
+            });
+            assert!(on, "{n}: no auto-scroll right of the text");
+            assert!(scroll.x > px(0.0), "{n}: didn't scroll sideways");
+            assert_eq!(scroll.y, px(0.0), "{n}: scrolled down (2 lines fit)");
+            let (_, head) = selection.expect("a selection");
+            assert!(
+                head.line == 1 && head.col > edge.col,
+                "{n}: the moving end {head:?} didn't follow the scroll from {edge:?}"
+            );
+            cx.simulate_mouse_up(window, right, MouseButton::Left, none);
+            cx.advance_clock(ms(50));
+            assert!(
+                !cx.read(|cx| tab.read(cx).autoscrolling()),
+                "{n}: the auto-scroll runs after the release"
+            );
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: file-tab-drag-select-wide-{slug} ok");
+
+        // A switch to Diff mid-drag: the task ends.
+        let n = format!("file-tab-drag-select-mode-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = build_for(long.clone(), slot.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let x = g.bounds.left() + g.text_left + px(20.0);
+            let press = point(x, g.bounds.top() + g.line_height * 2.5);
+            cx.simulate_mouse_down(window, press, MouseButton::Left, none);
+            let below = point(x, g.bounds.bottom() + px(60.0));
+            cx.simulate_mouse_move(window, below, left, none);
+            cx.advance_clock(ms(100));
+            assert!(
+                cx.read(|cx| tab.read(cx).autoscrolling()),
+                "{n}: no auto-scroll below the text"
+            );
+            cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+            cx.advance_clock(ms(50));
+            assert!(
+                !cx.read(|cx| tab.read(cx).autoscrolling()),
+                "{n}: the auto-scroll runs after the switch to Diff"
+            );
+            cx.simulate_mouse_up(window, below, MouseButton::Left, none);
+            slot.borrow_mut().take();
+        };
+        render_with(&theme, dims, build, act);
+        println!("ui-shots: file-tab-drag-select-mode-{slug} ok");
+    }
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M11ae's file bar (option B), on a scratch repo with real git, a tab on its own:
