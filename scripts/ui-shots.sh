@@ -7,7 +7,8 @@
 # (no filter, no --changed) merges the shards' timings into target/ui-shots/timings.tsv, which
 # the next run's shards are balanced by. Exits 1 if any process failed. bash 3.2-safe.
 # --changed <base> runs only the scenes whose sources changed since <base> (git diff <base>...HEAD
-# plus uncommitted files), says which and why, and runs nothing (exit 0) if no src change.
+# plus uncommitted files), says which and why, and runs nothing (exit 0) if no src change (or
+# none the filter's scenes read); a filter that names no scene at all exits 1, as without it.
 # Usage: scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [--update-refs] [-j N]
 #   -j N: shards (default: CPU cores - 2, at most 8, at least 1).
 #   --update-refs: write the visual scenes' fingerprints to tests/ui-shots-ref/ (C3; a run without
@@ -54,6 +55,10 @@ while [ $# -gt 0 ]; do
             echo "ui-shots.sh: $1 is the script's own (it runs the shards and the serial scenes)" >&2
             usage
             ;;
+        --plan)
+            echo "ui-shots.sh: --plan is the script's own (it asks the runner once, for --changed)" >&2
+            usage
+            ;;
         --*)
             pass+=("$1")
             shift
@@ -90,22 +95,22 @@ fi
 out=target/ui-shots
 mkdir -p "$out"
 rm -f "$out"/timings.*.tsv
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/ui-shots.XXXXXX") || exit 2
 
 # --changed: ask the runner what the change touches (it prints one line saying so, and exits 3
-# when nothing under src/, assets/ or Cargo.* changed); every shard and the serial run then work
-# out the same set themselves.
+# when there is nothing to run: nothing under src/, assets/ or Cargo.* changed, or none of the
+# filter's scenes; 1 when the filter names no scene); every shard and the serial run then work
+# out the same set themselves. Before the temp folder, so a Ctrl-C here leaves nothing behind.
 if [ -n "$changed" ]; then
     "$bin" __ui-shots ${pass[@]+"${pass[@]}"} --plan
     code=$?
     if [ "$code" = 3 ]; then
-        rm -rf "$tmp"
         exit 0
     elif [ "$code" != 0 ]; then
-        rm -rf "$tmp"
         exit 1
     fi
 fi
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/ui-shots.XXXXXX") || exit 2
 
 # The parts started (their subshells' pids), for Ctrl-C.
 pids=""
@@ -136,12 +141,13 @@ trap stop INT TERM
 
 now() { perl -MTime::HiRes=time -e 'printf "%.1f\n", time'; }
 
-# `$1` run as `__ui-shots $2… <the arguments>`, each line of its output prefixed `[$1] `; its
-# exit status in $tmp/exit.<n> (`$3`).
+# `$1` run as `__ui-shots $3… <the arguments>`, each line of its output prefixed `[$1] `; its
+# exit status in $tmp/exit.<part> and its output, unprefixed, in $tmp/out.<part> (`$2`).
 run_part() {
     local label="$1" part="$2" flag="$3"
     shift 3
-    ( "$bin" __ui-shots $flag "$@" 2>&1; echo $? >"$tmp/exit.$part" ) | sed -l "s|^|[$label] |"
+    ( "$bin" __ui-shots $flag "$@" 2>&1; echo $? >"$tmp/exit.$part" ) | tee "$tmp/out.$part" |
+        sed -l "s|^|[$label] |"
 }
 
 started=$(now)
@@ -188,6 +194,29 @@ for part in $parts; do
         esac
     fi
 done
+
+# The parts' fingerprint lines (C3, report only), summed into one: each part prints
+# `fingerprints: <n> same, <n> look different[, <n> differ in size (...)], <n> without a reference`
+# (or `<n> written` with --update-refs).
+fingerprints=$(cat "$tmp"/out.* 2>/dev/null | awk '
+    function count(word,   n) {
+        if (match($0, "[0-9]+ " word)) { n = substr($0, RSTART, RLENGTH); return n + 0 }
+        return 0
+    }
+    /^ui-shots: fingerprints: / {
+        seen = 1
+        same += count("same"); different += count("look different")
+        resized += count("differ in size"); missing += count("without a reference")
+        written += count("written")
+    }
+    END {
+        if (!seen) exit
+        if (written > 0 && same + different + resized + missing == 0) {
+            printf "ui-shots: fingerprints, all parts: %d written\n", written
+        } else {
+            printf "ui-shots: fingerprints, all parts: %d same, %d look different, %d differ in size, %d without a reference\n", same, different, resized, missing
+        }
+    }')
 rm -rf "$tmp"
 
 results=$(cat "$out"/timings.*.tsv 2>/dev/null)
@@ -207,6 +236,7 @@ fi
 printf '%s\n' "$results" | awk -F'\t' -v dir="$out/failed" \
     '$3 == "FAILED" { printf "ui-shots: %s FAILED (%.1f s) \342\200\224 pictures in %s/%s\n", $1, $2, dir, $1 }'
 echo "ui-shots: $passed passed, $failed failed, $total s"
+[ -z "$fingerprints" ] || echo "$fingerprints"
 printf '%s\n' "$results" | awk -F'\t' 'NF >= 2' | sort -t "$(printf '\t')" -k2,2 -rn | head -15 |
     awk -F'\t' '{ printf "ui-shots:   %6.1f s  %s\n", $2, $1 }'
 

@@ -140,7 +140,9 @@ pub(super) fn register_fonts(cx: &VisualTestAppContext) {
 /// `setsid`), and also the app's own capped git, `ps` and `lsof` commands and its agent
 /// processes, which run in a session of their own too. Those belong to the app being dropped,
 /// so ending them with it is harmless. A child fuxx run (`child_run`) and the git a scene runs
-/// itself share this process's session and are not touched.
+/// itself share this process's session and are not touched. Never nest them: a `render()` inside
+/// a live `ShotApp` would, on its own drop, SIGHUP the outer app's session-leader children
+/// started since (its git, `ps` and `lsof` commands too), not only its own.
 pub(super) struct HangUp(Vec<i32>);
 
 /// A fresh app (and its bundled fonts) whose terminals are hung up before it drops (`HangUp`),

@@ -1,6 +1,17 @@
 //! The scene registry: every area's scenes, their run order, and the startup check that they
-//! agree. To add a scene: put it in its area file's `SCENES` and its name in `ORDER` below (an
-//! edit to this file runs no scene by itself; the area file is what `--changed` follows).
+//! agree.
+//!
+//! Adding a scene:
+//! 1. write its function in its area file (`window.rs`, `terminal.rs`, ...);
+//! 2. add a `Scene` row to that file's `SCENES`: its `themes` (`Both` if it checks colours or a
+//!    theme's look), `serial` (`true` only for one of the reasons on `Scene::serial`, named in a
+//!    comment beside it), its `kind` (`Visual` if its checks read pixels) and its `sources` (the
+//!    app files its views come from);
+//! 3. add its name to `ORDER` below.
+//!
+//! A new area file also goes in `AREAS` (with its `FILE`) and as a `mod` in `mod.rs`; a test
+//! fails until it does. An edit to this file runs no scene by itself; the area file is what
+//! `--changed` follows.
 
 use super::{
     Scene, branch, changes, chrome, chrome_parts, file_tab, file_tab_md, naming, overlays, palette,
@@ -16,25 +27,26 @@ pub(super) const RUNNER_ONLY: &[&str] = &[
     "src/ui_shots/changed.rs",
 ];
 
-/// Each area's file and scenes. A new area is added here (and as a `mod` in `mod.rs`); its file
-/// is claimed by its own scenes (`claiming`).
+/// Each area's file (its `FILE`, from `file!()`, so it can't name another area's file) and
+/// scenes. A new area is added here (and as a `mod` in `mod.rs`); its file is claimed by its own
+/// scenes (`claiming`).
 pub(super) const AREAS: &[(&str, &[Scene])] = &[
-    ("src/ui_shots/window.rs", window::SCENES),
-    ("src/ui_shots/sidebar.rs", sidebar::SCENES),
-    ("src/ui_shots/panes.rs", panes::SCENES),
-    ("src/ui_shots/chrome_parts.rs", chrome_parts::SCENES),
-    ("src/ui_shots/chrome.rs", chrome::SCENES),
-    ("src/ui_shots/file_tab.rs", file_tab::SCENES),
-    ("src/ui_shots/file_tab_md.rs", file_tab_md::SCENES),
-    ("src/ui_shots/right_sidebar.rs", right_sidebar::SCENES),
-    ("src/ui_shots/changes.rs", changes::SCENES),
-    ("src/ui_shots/branch.rs", branch::SCENES),
-    ("src/ui_shots/naming.rs", naming::SCENES),
-    ("src/ui_shots/palette.rs", palette::SCENES),
-    ("src/ui_shots/welcome.rs", welcome::SCENES),
-    ("src/ui_shots/overlays.rs", overlays::SCENES),
-    ("src/ui_shots/status_bar.rs", status_bar::SCENES),
-    ("src/ui_shots/terminal.rs", terminal::SCENES),
+    (window::FILE, window::SCENES),
+    (sidebar::FILE, sidebar::SCENES),
+    (panes::FILE, panes::SCENES),
+    (chrome_parts::FILE, chrome_parts::SCENES),
+    (chrome::FILE, chrome::SCENES),
+    (file_tab::FILE, file_tab::SCENES),
+    (file_tab_md::FILE, file_tab_md::SCENES),
+    (right_sidebar::FILE, right_sidebar::SCENES),
+    (changes::FILE, changes::SCENES),
+    (branch::FILE, branch::SCENES),
+    (naming::FILE, naming::SCENES),
+    (palette::FILE, palette::SCENES),
+    (welcome::FILE, welcome::SCENES),
+    (overlays::FILE, overlays::SCENES),
+    (status_bar::FILE, status_bar::SCENES),
+    (terminal::FILE, terminal::SCENES),
 ];
 
 /// The scenes with their own area file added to `sources`, as `--changed` reads them, so an edit
@@ -199,4 +211,60 @@ pub(super) fn scenes() -> Vec<&'static Scene> {
                 .unwrap_or_else(|| panic!("ui-shots: ORDER names {name}, which no area declares"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `src/ui_shots/` files that hold no scenes: the runner and its parts.
+    const NOT_AREAS: &[&str] = &["mod", "harness", "registry", "args", "changed"];
+
+    #[test]
+    fn each_area_file_is_repo_relative_and_declares_its_own_scenes() {
+        // `file!()` is what git's paths are compared with (`--changed`): it must be the
+        // repo-relative path, and the file must be the one that declares these scenes.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (file, area) in AREAS {
+            assert!(
+                file.starts_with("src/ui_shots/") && file.ends_with(".rs"),
+                "{file} is not a repo-relative src/ui_shots/ path"
+            );
+            let text = std::fs::read_to_string(root.join(file))
+                .unwrap_or_else(|e| panic!("{file} does not read: {e}"));
+            for scene in *area {
+                assert!(
+                    text.contains(&format!("name: \"{}\"", scene.name)),
+                    "{file} does not declare scene {}",
+                    scene.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_area_file_in_src_ui_shots_is_in_areas() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui_shots");
+        let mut missing: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("src/ui_shots/ reads") {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).expect("a name");
+            if NOT_AREAS.contains(&stem) {
+                continue;
+            }
+            let file = format!("src/ui_shots/{stem}.rs");
+            if !AREAS.iter().any(|(f, _)| *f == file) {
+                missing.push(file);
+            }
+        }
+        missing.sort();
+        assert_eq!(
+            missing,
+            Vec::<String>::new(),
+            "area files missing from AREAS"
+        );
+    }
 }

@@ -232,8 +232,9 @@ Rust · [GPUI](https://github.com/zed-industries/zed) (the UI framework behind Z
 `portable-pty`. The `docs/` folder is an Obsidian vault with the vision, the roadmap and a note for every milestone.
 [`STRUCTURE.md`](STRUCTURE.md) maps the repo.
 
-Building from source: `cargo run` (Rust stable, macOS). Screenshots of every screen in a dark and a light theme:
-`cargo run --features ui-shots -- __ui-shots` (PNGs land in `target/ui-shots/`).
+Building from source: `cargo run` (Rust stable, macOS). The off-screen screenshot checks of every screen:
+`scripts/ui-shots.sh` (parallel; `--changed <base>` runs only the scenes a change touches, `--png` saves the
+pictures to `target/ui-shots/`).
 
 ## Status
 

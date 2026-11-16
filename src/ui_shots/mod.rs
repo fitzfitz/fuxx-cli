@@ -99,8 +99,13 @@ pub(super) struct Scene {
     pub(super) name: &'static str,
     pub(super) run: fn(),
     pub(super) themes: Themes,
-    /// Must run alone (real-time waits, a child fuxx, the clipboard): never in a `--shard`, run
-    /// by `--serial-only` after the shards.
+    /// Must run alone: never in a `--shard`, run by `--serial-only` after the shards. Only for
+    /// one of three reasons (ruling 7), named in a comment beside `serial: true`:
+    /// (a) it starts a child fuxx (`child_run`);
+    /// (b) it changes shared mutable state other scenes read (the Files fixture);
+    /// (c) a wall-clock animation or margin: a check's result depends on elapsed real time, so a
+    /// slowed process could fail it. Polling a real process until a deadline, or sleeping for
+    /// *at least* some time, is not a reason: load only makes those slower.
     pub(super) serial: bool,
     /// `Visual` scenes' shots are fingerprinted against `tests/ui-shots-ref/` (C3).
     pub(super) kind: Kind,
@@ -349,6 +354,12 @@ pub fn run(args: &[String]) -> ! {
     if let Some(base) = &opts.changed {
         // Every part works the set out the same way (git is the same for each); one line says
         // what it picked: the direct run's, or `--plan`'s (the script prints that, once).
+        // A filter that names no scene at all is a typo, not "the change touches none of them":
+        // it fails here, as it does without `--changed`, so the gate can't pass with nothing run.
+        if let Some(f) = changed::filter_matches_none(&every, opts.filter.as_deref()) {
+            eprintln!("ui-shots: no scene matches {f:?}");
+            exit(1);
+        }
         let all = registry::claiming();
         let (only, line) = changed::decide(changed::changed_files(base), &all);
         let (only, line) = changed::with_filter(only, line, &all, opts.filter.as_deref());
@@ -356,6 +367,7 @@ pub fn run(args: &[String]) -> ! {
         if direct || opts.plan {
             println!("ui-shots: {line}");
         }
+        // Exit 3: nothing to run (no src change, or the filter's scenes aren't touched).
         if opts.plan {
             exit(if only.as_ref().is_some_and(|n| n.is_empty()) {
                 3

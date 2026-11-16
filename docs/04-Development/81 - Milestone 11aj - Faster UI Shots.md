@@ -285,9 +285,13 @@ well as how it exited.
 |---|---|---|
 | `src/file_tab.rs` | 13 scenes (file-tab, file-diff, file-tab-md, files, changes, palette, welcome-start, status-bar, ...) | **58.8 s** (65 s with the build) |
 | `src/ui_shots/file_tab.rs` (a scene's own file) | 3 scenes: file-tab, file-diff, file-tab-scrollbar | 36.9 s |
-| `src/ui_shots/registry.rs` | nothing (no src changes) | 5 s |
+| `src/ui_shots/registry.rs` | nothing (no src changes; since the final review: "only runner files changed: src/ui_shots/registry.rs") | 5 s |
 | a docs file | nothing (no src changes) | 4 s |
 | `src/theme.rs` | all (shared: src/theme.rs) | a full run, 82.8 s |
+
+A filter that names no scene (`scripts/ui-shots.sh zzz-typo --changed HEAD`) prints "no scene matches" and exits 1,
+as it does without `--changed`; "nothing to run" (exit 0 from the script) is only for a filter whose scenes the change
+doesn't touch (final review fix, so a typo can't turn the gate green with nothing run).
 
 Goal 1 (a task's gate near 30 s) is not met for a `file_tab.rs` change. All 13 claims are accurate, so this is
 not over-claiming: the `file-tab` scene alone takes 34.7 s, and the WebKit Mermaid scene (`file-tab-md-mermaid`, serial)
@@ -305,7 +309,7 @@ the cells (0–255; a size change is infinite). Above the tolerance the run prin
 `ui-shots: <scene>-<slug> looks different (<d>)`; a fingerprint of another size prints `… differs in size from its
 reference` instead. Each process ends with `ui-shots: fingerprints: <n> same, <n> look different, <n> without a
 reference`, adding `<n> differ in size (another screen scale?)` when there are any, so a run on a 1x screen doesn't read
-as a regression. **It never fails a run.** `--update-refs` (also through `scripts/ui-shots.sh`) writes the references
+as a regression; `scripts/ui-shots.sh` sums the parts' lines into one `fingerprints, all parts: …` line in its summary. **It never fails a run.** `--update-refs` (also through `scripts/ui-shots.sh`) writes the references
 instead, always in both themes (it implies `--all-themes`). With no filter and no `--changed`, it replaces each
 scene's folder and then, once (the direct or serial run), removes any folder no visual scene claims, printing it; with
 a filter or `--changed` it rewrites only the shots it took. A `cargo test` (`ui-shots` feature) fails if a folder in
@@ -335,6 +339,9 @@ off. Checked by hand: one cell of `smoke-mocha`'s reference moved by 80 (of 1,00
 - **A2 · PNGs only when wanted.** Shots stay in memory for the checks. PNGs are written when:
   - you ask (`--png`, or `UI_SHOTS_PNG=1`) — for a task's look at its own scenes;
   - a scene fails: its most recent shot(s) go to `target/ui-shots/failed/` and the failure message names the file.
+    (As built: only the shots the scene kept, through `shoot` / `shoot_with`, `save_shot` or `keep_shot`. A
+    `render` / `render_with` result never passed to `save_shot`, and a failed assert inside an `act` closure, which
+    fails before the capture, leave no picture.)
 - **A3 · One theme by default.** A scene declares `Themes::One` (Mocha) or `Themes::Both`. **Both** for any scene that
   checks colours, contrast or a theme-specific look (the split audit, B1, decides each). `--all-themes` shoots every
   scene in both; the milestone-end run uses it.
@@ -408,7 +415,9 @@ A fresh reviewer read this design as if it had to plan from it; its questions we
 4. **Parallel runs that flake fall back safely:** fewer shards first, then more scenes marked `serial`. A shard count
    that flakes is never the default.
 5. **Failure pictures:** a scene's shots stay in memory until it passes; when it fails, all of its shots are written to
-   `target/ui-shots/failed/`. Checks that read a PNG from disk today (`smoke` does) keep doing so under `--png`, or are
+   `target/ui-shots/failed/`. (As built, "all of its shots" means the shots it kept, through `shoot`, `save_shot` or
+   `keep_shot`: a `render` / `render_with` result not passed to `save_shot`, and an assert inside `act` that fails
+   before the capture, leave none.) Checks that read a PNG from disk today (`smoke` does) keep doing so under `--png`, or are
    changed to check the in-memory shot.
 6. **Real-time waits:** those that wait on GPUI timers move to the test clock; animations measured with wall-clock time
    (`drag_gap::SLIDE`, `sidebar_toggle::SLIDE`) and WebKit stay real and make their scene `serial`. Part 0 reports how
@@ -465,7 +474,8 @@ apart from the test hooks it already had and one pure helper's tests (Task 10).
 **Against the goals:** (1) the full suite in ≤ 90 s: **met**, 83.7 s (6x faster). A task's own scenes in ≤ 30 s: **not
 met** for the file tab: `file-tab` alone is 33–40 s and a `src/file_tab.rs` change also runs the WebKit Mermaid scene
 (17 s, serial) and 11 more that read that file; going lower needs `file-tab` split or its logic moved to `cargo test`.
-(2) No file over about 3,000 lines: **met** (largest 2,700). (3) Nothing lost: **met**, the same 112 scenes and names,
+(2) No file over about 3,000 lines: **met** (largest 2,700). Adding a scene touches its area file and also
+`ORDER` in `registry.rs` (one line, its run position; a startup check and a test fail if it's missing). (3) Nothing lost: **met**, the same 112 scenes and names,
 every check kept. (4) Fewer screenshot tests over time: the rule is in place; none moved in this milestone (Task 10).
 
 ## On-screen check (yours, after the build)
@@ -481,7 +491,8 @@ every check kept. (4) Fewer screenshot tests over time: the rule is in place; no
 ## Related
 
 [[40 - Roadmap]] · [[80 - Milestone 11ae - File Tab Chores]] · [[50 - Agentic Workflow]] ·
-[[77 - Milestone 11p - Chrome Caching]] (its render-count scenes live in `chrome_sources.rs`)
+[[77 - Milestone 11p - Chrome Caching]] (its render-count scenes live in `src/ui_shots/chrome.rs` and
+`chrome_parts.rs`)
 
 ## Appendix — every scene
 
