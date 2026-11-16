@@ -1015,11 +1015,11 @@ pub struct RightSidebarState {
     /// The Changes panel (M11h).
     pub(crate) changes: ChangesPanel,
     /// The Activity panel's timeline (part 4: a `list`, its events differ in height) and what
-    /// its lines were last made from (the terminal, how many lines, its newest event's time):
-    /// when that changes, or the key is dropped (shown again, another terminal), the list starts
-    /// again at its top, the newest.
+    /// its lines were last made from (whether an agent tab, the terminal's or the tab's id, how
+    /// many lines, its newest event's time): when that changes, or the key is dropped (shown
+    /// again, another subject), the list starts again at its top, the newest.
     pub(crate) activity_list: ListState,
-    pub(crate) activity_key: std::cell::Cell<Option<(u64, usize, Option<std::time::SystemTime>)>>,
+    pub(crate) activity_key: std::cell::Cell<Option<crate::activity_panel::ActivityKey>>,
     /// The panel tabs, as last drawn (the screenshots click them).
     #[cfg(feature = "ui-shots")]
     tabs_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,

@@ -184,6 +184,16 @@ impl Workspace {
                 mark.read(cx);
             }
         }
+        // And the agent tabs the panes show (M11aa): a view `ensure_agent_tabs` made in this
+        // `render` is first drawn (cached) in the frame it is made, which doesn't count it, so
+        // without this its own notifies (a streamed reply) would redraw nothing until a refresh.
+        if let Some(tree) = self.shown_layout() {
+            for pane in tree.leaves() {
+                if let Some(view) = self.pane_agent_tab(pane) {
+                    view.read(cx);
+                }
+            }
+        }
     }
 
     /// The tab-bar parts the screen wants: each pane of the shown layout, and whether its bar

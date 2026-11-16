@@ -923,57 +923,52 @@ impl Steps {
         window: AnyWindowHandle,
         within: Duration,
     ) {
-        let soonest = cx.read(|cx| {
-            let now = Instant::now();
-            let ws = self.ws.read(cx);
-            ws.sessions
-                .items()
-                .iter()
-                .filter(|s| s.status != Status::Idle)
-                .map(|s| {
-                    crate::sidebar::next_age_change(now.saturating_duration_since(s.status_since))
-                })
-                .min()
-        });
+        let now = Instant::now();
+        let soonest = self
+            .busy_sinces(cx)
+            .into_iter()
+            .map(|(_, since)| crate::sidebar::next_age_change(now.saturating_duration_since(since)))
+            .min();
         if let Some(wait) = soonest.filter(|w| *w < within) {
             crate::ui_shots::prof::sleep(wait + LABEL_LATE);
             self.catch_up(cx, window);
         }
     }
 
-    /// Each terminal's age (not idle), now: what a stale step reports, to tell an age label
-    /// caught turning from a part not drawn.
-    fn ages(&self, cx: &VisualTestAppContext) -> Vec<(String, Duration)> {
+    /// What has an age now (not idle), by name, and since when: each terminal, and each agent
+    /// tab (M11aa Task 9: its row's or its tab's age label turns as a terminal's does).
+    fn busy_sinces(&self, cx: &VisualTestAppContext) -> Vec<(String, Instant)> {
         cx.read(|cx| {
             let ws = self.ws.read(cx);
-            let ticking = ws.marks_ticking;
-            ws.sessions
-                .items()
-                .iter()
+            let terminals = (ws.sessions.items().iter())
                 .filter(|s| s.status != Status::Idle)
-                .map(|s| {
-                    (
-                        format!("{} (ticking {ticking})", s.label()),
-                        s.status_since.elapsed(),
-                    )
-                })
-                .collect()
+                .map(|s| (s.label().to_string(), s.status_since));
+            let mut agents: Vec<(String, Instant)> = (ws.agents.values())
+                .filter(|a| a.status != Status::Idle)
+                .map(|a| (format!("a{}", a.id), a.since))
+                .collect();
+            agents.sort();
+            terminals.chain(agents).collect()
         })
     }
 
-    /// Each terminal's age label (not idle), now.
+    /// Each terminal's and agent tab's age (not idle), now: what a stale step reports, to tell
+    /// an age label caught turning from a part not drawn.
+    fn ages(&self, cx: &VisualTestAppContext) -> Vec<(String, Duration)> {
+        let ticking = cx.read(|cx| self.ws.read(cx).marks_ticking);
+        self.busy_sinces(cx)
+            .into_iter()
+            .map(|(name, since)| (format!("{name} (ticking {ticking})"), since.elapsed()))
+            .collect()
+    }
+
+    /// Each terminal's and agent tab's age label (not idle), now.
     fn age_labels(&self, cx: &VisualTestAppContext) -> Vec<String> {
-        cx.read(|cx| {
-            let now = Instant::now();
-            self.ws
-                .read(cx)
-                .sessions
-                .items()
-                .iter()
-                .filter(|s| s.status != Status::Idle)
-                .map(|s| crate::status::age_label(now.saturating_duration_since(s.status_since)))
-                .collect()
-        })
+        let now = Instant::now();
+        self.busy_sinces(cx)
+            .into_iter()
+            .map(|(_, since)| crate::status::age_label(now.saturating_duration_since(since)))
+            .collect()
     }
 
     /// After a step: if an age label (by the real clock) turned just now, within what the app
@@ -982,18 +977,10 @@ impl Steps {
     /// isn't about a label caught mid-turn (`chrome-ages-current` is about those).
     fn past_age_turns(&mut self, cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
         let late = LABEL_LATE;
-        let turned = cx.read(|cx| {
-            let now = Instant::now();
-            self.ws
-                .read(cx)
-                .sessions
-                .items()
-                .iter()
-                .filter(|s| s.status != Status::Idle)
-                .any(|s| {
-                    let age = now.saturating_duration_since(s.status_since);
-                    age >= late && crate::sidebar::next_age_change(age - late) <= late
-                })
+        let now = Instant::now();
+        let turned = self.busy_sinces(cx).into_iter().any(|(_, since)| {
+            let age = now.saturating_duration_since(since);
+            age >= late && crate::sidebar::next_age_change(age - late) <= late
         });
         if turned {
             crate::ui_shots::prof::sleep(late);

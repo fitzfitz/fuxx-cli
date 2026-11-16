@@ -167,6 +167,49 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "chrome-agent-status",
+        run: chrome_agent_status,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/workspace_agent.rs",
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/activity.rs",
+            "src/activity_panel.rs",
+            "src/mark_view.rs",
+            "src/status_mark.rs",
+            "src/notifier.rs",
+            "src/notification_list.rs",
+            "src/title_area.rs",
+            "src/groups.rs",
+            "src/sidebar.rs",
+            "src/tab_bar.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-agent-age",
+        run: chrome_agent_age,
+        themes: Themes::One,
+        // Serial: (c) "59s" read, then turned, by the real clock within 500 ms.
+        serial: true,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/workspace_agent.rs",
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/sidebar.rs",
+            "src/status.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+        ],
+    },
+    Scene {
         name: "chrome-new-bar-reveal",
         run: chrome_new_bar_reveal,
         themes: Themes::One,
@@ -1645,6 +1688,362 @@ pub(super) fn chrome_agent_tabs() {
     });
     drop(view);
     steps.done();
+}
+
+/// An agent tab of the scene's workspace: its id and its view.
+type AgentAt = (
+    crate::layout_model::TabId,
+    Entity<crate::agent_tab::AgentTab>,
+);
+
+/// `elsewhere_window` with a Claude tab split beside api (shown) and one beside agent (not
+/// shown), api's terminal focused again; each titled as a rename would title it (so a first
+/// message's own title, which notifies, can't stand in for its status's notify). No agent runs:
+/// the tabs are fed decoded events (R12). The context, window, workspace, api's Claude, agent's.
+fn claude_beside_api_and_agent() -> (
+    ShotApp,
+    AnyWindowHandle,
+    Entity<Workspace>,
+    AgentAt,
+    AgentAt,
+) {
+    use crate::layout_model::TabKind;
+    let (mut cx, window, ws) = elsewhere_window();
+    let id = |cx: &VisualTestAppContext, name: &str| {
+        let i = index_of(cx, &ws, name);
+        cx.read(|cx| ws.read(cx).sessions.items()[i].id)
+    };
+    let (api, agent) = (id(&cx, "api"), id(&cx, "agent"));
+    on_ws(&mut cx, window, &ws, |ws, window, cx| {
+        ws.agent_beside(api, "claude", window, cx);
+        ws.agent_beside(agent, "claude", window, cx);
+        let first = ws.sessions.position(|s| s.label() == "api").expect("api");
+        ws.select(first, window, cx);
+    });
+    settle_frames(&mut cx, window);
+    let claude = |cx: &mut VisualTestAppContext, name: &str, title: &str| -> AgentAt {
+        let i = index_of(cx, &ws, name);
+        cx.update(|cx| {
+            ws.update(cx, |ws, _| {
+                let row = ws.workspace_of(i).expect("its workspace");
+                let tab = *ws.model.agent_tabs(row).first().expect("its Claude tab");
+                if let Some(TabKind::Agent {
+                    provider,
+                    cwd,
+                    conversation,
+                    mode,
+                    ..
+                }) = ws.model.tab(tab).map(|t| t.kind.clone())
+                {
+                    let title = Some(title.to_string());
+                    let kind = TabKind::Agent {
+                        provider,
+                        cwd,
+                        conversation,
+                        mode,
+                        title,
+                    };
+                    ws.model.set_kind(tab, kind);
+                }
+                (tab, ws.agents[&tab].view.clone())
+            })
+        })
+    };
+    let api_claude = claude(&mut cx, "api", "dates");
+    let agent_claude = claude(&mut cx, "agent", "build");
+    settle_frames(&mut cx, window);
+    (cx, window, ws, api_claude, agent_claude)
+}
+
+/// Send `text` from agent tab `view` (its composer's Send): its turn starts (Working).
+fn agent_sends(
+    cx: &mut VisualTestAppContext,
+    view: &Entity<crate::agent_tab::AgentTab>,
+    text: &str,
+) {
+    cx.update(|cx| view.update(cx, |t, cx| t.send(text.into(), cx)));
+}
+
+/// Agent tab `view` fed `events` as decoded from its process (R12).
+fn agent_hears(
+    cx: &mut VisualTestAppContext,
+    view: &Entity<crate::agent_tab::AgentTab>,
+    events: Vec<crate::providers::Event>,
+) {
+    cx.update(|cx| view.update(cx, |t, cx| t.shot_feed(events, cx)));
+}
+
+/// M11aa Task 9: an agent tab's status reaches the chrome as a terminal's does, each by the
+/// app's own path (`send`, `shot_feed`'s decoded events, `answer`: the tab's `Status` /
+/// `Question` events, heard in `on_agent_event`, `set_agent_status`): agent's Claude (not
+/// shown) works (its row's badge and age), api's Claude works (its tab's mark, a view the
+/// marks' ticker turns), agent's Claude asks (its row red, the question under its name, a 🔔
+/// entry and a banner, kept by the scene), it is allowed (Working), api's Claude is done (its
+/// tab's mark pops, a 🔔 entry, no banner for a short run); then api's group is closed and its
+/// Claude works there (the header's rolled-up mark).
+///
+/// Panics unless after each step the window shows what a full redraw does, and it changed.
+pub(super) fn chrome_agent_status() {
+    use crate::agent_conversation::Answer;
+    use crate::groups::GroupKey;
+    use crate::providers::Event;
+    use crate::sidebar::{SidebarRow, Sub};
+    let n = "chrome-agent-status";
+    let (mut cx, window, ws, (api_tab, api_claude), (agent_tab, agent_claude)) =
+        claude_beside_api_and_agent();
+    let ws = &ws;
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    // The row agent's Claude is in, as the sidebar shows it.
+    let agent_row = |cx: &VisualTestAppContext| {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let (row, _) = ws.model.locate(agent_tab).expect("placed");
+            ws.rows_in_view(Instant::now())
+                .into_iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(w) if w.workspace == row => Some(w),
+                    _ => None,
+                })
+                .expect("agent's row")
+        })
+    };
+    steps.step(
+        &mut cx,
+        window,
+        "agent's Claude works (elsewhere)",
+        Seen::Changes,
+        |cx| agent_sends(cx, &agent_claude, "Check the build"),
+    );
+    let row = agent_row(&cx);
+    assert_eq!(
+        (row.agent, row.status, row.age.is_some()),
+        (Some(agent_tab), Status::Working, true),
+        "{n}: agent's row is about its Claude"
+    );
+    steps.step(&mut cx, window, "api's Claude works", Seen::Changes, |cx| {
+        agent_sends(cx, &api_claude, "Fix the date check")
+    });
+    let on_screen = cx.read(|cx| ws.read(cx).marks_on_screen());
+    let key = cx.read(|cx| ws.read(cx).agents[&api_tab].id);
+    assert!(
+        on_screen.contains(&((crate::sidebar::AGENT_MARK, key), Status::Working)),
+        "{n}: api's Claude's mark is on screen: {on_screen:?}"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "the ticker turns api's Claude mark",
+        Seen::Changes,
+        |cx| {
+            for _ in 0..3 {
+                cx.advance_clock(crate::status_mark::TICK);
+                cx.run_until_parked();
+            }
+        },
+    );
+    let unseen = |cx: &VisualTestAppContext| cx.read(|cx| ws.read(cx).notifications.unseen());
+    let before = unseen(&cx);
+    steps.step(
+        &mut cx,
+        window,
+        "agent's Claude asks",
+        Seen::Changes,
+        |cx| {
+            let ask = Event::Permission {
+                id: "p1".into(),
+                tool: "Bash".into(),
+                what: "ls".into(),
+                detail: "ls".into(),
+                always: None,
+            };
+            agent_hears(cx, &agent_claude, vec![ask]);
+        },
+    );
+    let row = agent_row(&cx);
+    assert_eq!(
+        (row.status, row.sub),
+        (
+            Status::Waiting,
+            Some(Sub::Question("Claude wants to run: ls".into()))
+        ),
+        "{n}: agent's row waits, its question under its name"
+    );
+    let tip = cx.read(|cx| ws.read(cx).workspace_tip(row.workspace));
+    assert!(
+        tip.as_deref()
+            .is_some_and(|t| t.ends_with("\nClaude wants to run: ls")),
+        "{n}: its row's tooltip has the whole question: {tip:?}"
+    );
+    assert_eq!(unseen(&cx), before + 1, "{n}: a 🔔 entry for it");
+    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone().unwrap_or_default());
+    match banners.as_slice() {
+        [(_, subtitle, body)] => {
+            assert_eq!(body, "Claude wants to run: ls", "{n}: the banner's body");
+            assert!(subtitle.ends_with("Claude"), "{n}: who asks: {subtitle}");
+        }
+        other => panic!("{n}: one banner, not {other:?}"),
+    }
+    steps.step(&mut cx, window, "it is allowed", Seen::Changes, |cx| {
+        cx.update(|cx| {
+            agent_claude.update(cx, |t, cx| t.answer(Answer::Allowed, cx).expect("waiting"))
+        })
+    });
+    assert_eq!(
+        agent_row(&cx).status,
+        Status::Working,
+        "{n}: allowed: works"
+    );
+    let before = unseen(&cx);
+    steps.step(
+        &mut cx,
+        window,
+        "api's Claude is done",
+        Seen::Changes,
+        |cx| {
+            let done = Event::TurnDone {
+                ok: true,
+                message: None,
+            };
+            agent_hears(cx, &api_claude, vec![done]);
+        },
+    );
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        let slot = &ws.agents[&api_tab];
+        assert_eq!(slot.status, Status::Done, "{n}");
+        assert!(
+            slot.pop.is_some(),
+            "{n}: its Done pops (its row is on screen)"
+        );
+        assert_eq!(slot.activity.len(), 2, "{n}: its Activity: Working, Done");
+    });
+    assert_eq!(unseen(&cx), before + 1, "{n}: a 🔔 entry for it");
+    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone().unwrap_or_default());
+    assert_eq!(banners.len(), 1, "{n}: a short run makes no banner");
+    let key = GroupKey::Folder(super::API.into());
+    steps.step(&mut cx, window, "api's group closed", Seen::Changes, |cx| {
+        cx.update(|cx| ws.update(cx, |ws, cx| ws.toggle_group(&key, cx)))
+    });
+    steps.step(
+        &mut cx,
+        window,
+        "api's Claude works in its closed group",
+        Seen::Maybe,
+        |cx| agent_sends(cx, &api_claude, "and the tests"),
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "agent's Claude asks again",
+        Seen::Changes,
+        |cx| {
+            let ask = Event::Permission {
+                id: "p2".into(),
+                tool: "Bash".into(),
+                what: "npm test".into(),
+                detail: "npm test".into(),
+                always: None,
+            };
+            agent_hears(cx, &agent_claude, vec![ask]);
+        },
+    );
+    let row = agent_row(&cx);
+    steps.step(
+        &mut cx,
+        window,
+        "its row's Open goes to it",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                ws.open_waiting(&row, window, cx)
+            })
+        },
+    );
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        let focused = ws.focused_agent_tab().map(|(tab, _)| tab);
+        assert_eq!(focused, Some(agent_tab), "{n}: Open focused agent's Claude");
+        // The Activity panel follows the focused agent tab: its title, its status, its log.
+        let (label, _, status) = ws.activity_header().expect("an Activity subject");
+        assert_eq!(
+            (label.as_ref(), status),
+            ("build", Status::Waiting),
+            "{n}: the Activity header"
+        );
+        assert_eq!(
+            ws.activity_rows().len(),
+            4,
+            "{n}: its log: works, waits, works, waits"
+        );
+    });
+    steps.done();
+}
+
+/// M11aa Task 9: an agent tab's age on its row turns on the ages' own timer, as a terminal's
+/// does (`chrome-ages-current`): agent's Claude (not shown) works, dated 59.6 s back by the
+/// scenes' hook (which notifies); then nothing but the timer: its row's "59s" turns "1m", and
+/// the window shows what a full redraw does. Nothing else moves (the marks don't tick: no
+/// moving mark is on screen).
+///
+/// Panics unless all of that holds.
+pub(super) fn chrome_agent_age() {
+    use crate::sidebar::SidebarRow;
+    let n = "chrome-agent-age";
+    let (mut cx, window, ws, _, (agent_tab, agent_claude)) = claude_beside_api_and_agent();
+    let ws = &ws;
+    agent_sends(&mut cx, &agent_claude, "Check the build");
+    settle_frames(&mut cx, window);
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            ws.shot_agent_since(agent_tab, Duration::from_millis(59_600), cx)
+        })
+    });
+    settle_frames(&mut cx, window);
+    let age = |cx: &VisualTestAppContext| {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let (row, _) = ws.model.locate(agent_tab).expect("placed");
+            ws.rows(Instant::now())
+                .iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(w) if w.workspace == row => Some(w.clone()),
+                    _ => None,
+                })
+                .and_then(|w| w.agent.and(w.age))
+        })
+    };
+    assert_eq!(age(&cx).as_deref(), Some("59s"), "{n}: its row's age");
+    assert!(
+        !cx.read(|cx| ws.read(cx).marks_ticking),
+        "{n}: no mark ticks"
+    );
+    let current = |cx: &mut VisualTestAppContext, what: &str| {
+        let now = shown(cx, window);
+        let fresh = frame_fresh(cx, window);
+        let stale = bytes_differ(&now, &fresh);
+        if stale > 0 {
+            keep_shot(&format!("{n}-stale-now"), &now);
+            keep_shot(&format!("{n}-stale-fresh"), &fresh);
+        }
+        assert_eq!(
+            stale, 0,
+            "{n}: {what}: {stale} bytes differ from a full redraw (stale)"
+        );
+    };
+    current(&mut cx, "dated");
+    let before = shown(&mut cx, window);
+    // The age turns ("59s" to "1m") with nothing notified: only its timer redraws it.
+    crate::ui_shots::prof::sleep(Duration::from_millis(500));
+    cx.advance_clock(Duration::from_secs(2));
+    settle_frames(&mut cx, window);
+    assert_eq!(age(&cx).as_deref(), Some("1m"), "{n}: its row's age turned");
+    let after = shown(&mut cx, window);
+    assert!(
+        bytes_differ(&before, &after) > 0,
+        "{n}: the turned age is drawn"
+    );
+    current(&mut cx, "its age turned");
+    println!("ui-shots: {n}: its row's age turned on its own timer, current");
 }
 
 /// A tab bar's first frame: a workspace never shown before, its one pane holding more tabs than

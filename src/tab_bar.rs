@@ -31,7 +31,7 @@ use crate::appearance::Appearance;
 use crate::drag_gap::{self, Slid};
 use crate::layout_model::{Pane, PaneId, TabDrop, TabId, TabKind};
 use crate::restore::{Launch, SavedSession};
-use crate::sidebar::{mark_size, mark_slot};
+use crate::sidebar::{AGENT_MARK, mark_size, mark_slot};
 use crate::sidebar_toggle::Tip;
 use crate::split_tree::Axis;
 use crate::status::{self, Status};
@@ -609,6 +609,26 @@ impl Workspace {
                 crate::workspace_agent::agent_badge(badge, rgb, AGENT_BADGE).into_any_element()
             }
         };
+        // An agent tab's status mark, after its title (its badge is its icon), unless Idle: its
+        // own view (R2: `AGENT_MARK`, its `aN`), which the marks' ticker turns.
+        let agent_mark = self
+            .agents
+            .get(&tab.tab)
+            .filter(|slot| slot.status != Status::Idle)
+            .map(|slot| {
+                let size = mark_size(slot.status);
+                let mark = self.status_mark(
+                    AGENT_MARK,
+                    slot.id,
+                    slot.status,
+                    slot.pop,
+                    ui,
+                    surface,
+                    size,
+                    cx,
+                );
+                mark_slot(mark)
+            });
         let rename_box = self
             .renaming
             .as_ref()
@@ -679,6 +699,7 @@ impl Workspace {
             .when_some(look.hover, |t, hover| t.hover(move |s| s.bg(hsla(hover))))
             .child(mark_slot(icon))
             .child(title)
+            .children(agent_mark)
             .child(close)
             // Its chip is it while it's dragged: its place shows empty.
             .when(lifted, |t| t.opacity(0.0))

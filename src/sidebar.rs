@@ -30,7 +30,7 @@ use gpui::{
 use crate::appearance::Appearance;
 use crate::drag_gap::{self, Slid};
 use crate::groups::{self, GroupKey, Row};
-use crate::layout_model::{Model, TabDrop, TabKind, WorkspaceId};
+use crate::layout_model::{Model, TabDrop, TabId, TabKind, WorkspaceId};
 use crate::mark_view::MarkView;
 use crate::palette_items::Scope;
 use crate::preferences;
@@ -56,19 +56,25 @@ use crate::ui_tokens::size::{
 };
 use crate::ui_tokens::text;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
+use crate::workspace_agent::{RowWinner, row_winner};
 
 /// What the sidebar needs to know of one workspace, in display order: its name, colour and
-/// group, and the rest from the terminal its ring is (its most urgent: `subject`).
+/// group, and the rest from the terminal its ring is (its most urgent: `subject`), or (R3) from
+/// its agent tab more urgent than that (`agent`).
 pub struct WorkspaceFacts<'a> {
     pub workspace: WorkspaceId,
     pub label: &'a str,
-    /// The session (its place in the session list) the row's mark and age are about; none for
-    /// a workspace with no terminal (idle, no age).
+    /// The session (its place in the session list) of its terminal rollup; none for a workspace
+    /// with no terminal. The row's mark and age are about it unless `agent` is set.
     pub subject: Option<usize>,
+    /// The agent tab the row's mark, age and question are about, when one is more urgent than
+    /// the terminal rollup (`workspace_agent::row_winner`).
+    pub agent: Option<TabId>,
+    /// The winner's (the agent tab's, else the terminal's).
     pub status: Status,
     /// When `status` last changed.
     pub since: Instant,
-    /// While Waiting: the screen line that asked.
+    /// While Waiting: the screen line that asked (an agent tab: its permission's question).
     pub question: Option<&'a str>,
     pub group: Option<GroupKey>,
     pub progress: Option<&'a (u8, Option<String>)>,
@@ -121,8 +127,11 @@ pub struct WorkspaceRow {
     pub workspace: WorkspaceId,
     /// Its place in the sidebar (⌘1–⌘9 select the first nine by it).
     pub index: usize,
-    /// The session its mark and age are about (none: a workspace with no terminal).
+    /// Its terminal rollup's session (none: a workspace with no terminal); its mark and age are
+    /// about it unless `agent` is set.
     pub subject: Option<usize>,
+    /// The agent tab its mark, age and question are about (R3), when it wins the row.
+    pub agent: Option<TabId>,
     pub label: String,
     pub status: Status,
     /// How long it has been in its status ("4m"); Idle shows none.
@@ -221,6 +230,7 @@ pub fn rows(
                     workspace: s.workspace,
                     index,
                     subject: s.subject,
+                    agent: s.agent,
                     label: s.label.to_string(),
                     status: s.status,
                     age: (s.status != Status::Idle)
@@ -493,20 +503,29 @@ pub fn row_height(row: &WorkspaceRow) -> f32 {
 /// A workspace with no terminal (only browser tabs) is called this until you name it.
 pub const BROWSER_NAME: &str = "Browser";
 
-/// Each workspace in display order with the session its row is about: its ring, the most
-/// urgent terminal (`Model::rollup`; `index_of` gives a terminal's place in the session list);
-/// none for a workspace with no terminal, which still gets its row.
+/// Each workspace in display order with what its row is about: its terminal rollup, the most
+/// urgent terminal (`Model::rollup`; `index_of` gives a terminal's place in the session list;
+/// none for a workspace with no terminal, which still gets its row), and the agent tab (of
+/// `agents`, its tabs in reading order with their statuses) when one is more urgent (R3,
+/// `row_winner`: a tie goes to the terminal).
 pub fn row_subjects(
     model: &Model,
     index_of: impl Fn(u64) -> Option<usize>,
     status: impl Fn(u64) -> Status,
-) -> Vec<(WorkspaceId, Option<usize>)> {
+    agents: impl Fn(WorkspaceId) -> Vec<(TabId, Status)>,
+) -> Vec<(WorkspaceId, Option<usize>, Option<TabId>)> {
     model
         .display_order()
         .into_iter()
         .map(|ws| {
-            let subject = model.rollup(ws, &status).and_then(|(id, _)| index_of(id));
-            (ws, subject)
+            let rollup = model
+                .rollup(ws, &status)
+                .and_then(|(id, s)| Some((index_of(id)?, s)));
+            let agent = match row_winner(rollup, &agents(ws)) {
+                Some(RowWinner::Agent(tab)) => Some(tab),
+                _ => None,
+            };
+            (ws, rollup.map(|(i, _)| i), agent)
         })
         .collect()
 }
@@ -1230,17 +1249,29 @@ impl Workspace {
                 .find(|s| s.id == id)
                 .map_or(Status::Idle, |s| s.status)
         };
-        let subjects = row_subjects(&self.model, |id| self.index_of(id), status);
+        // Each workspace's agent tabs, in reading order, with their statuses (a tab whose view
+        // isn't made yet: Idle).
+        let agents = |ws: WorkspaceId| {
+            (self.model.agent_tabs(ws).into_iter())
+                .map(|tab| {
+                    (
+                        tab,
+                        self.agents.get(&tab).map_or(Status::Idle, |a| a.status),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let subjects = row_subjects(&self.model, |id| self.index_of(id), status, agents);
         let labels: Vec<SharedString> = subjects
             .iter()
-            .map(|(ws, _)| self.workspace_label(*ws))
+            .map(|(ws, _, _)| self.workspace_label(*ws))
             .collect();
         // Where each is: its first terminal's folder (as last looked up, else the one it started
         // in) and the branch there; an SSH one's host.
         let mut heres: Vec<Option<String>> = Vec::with_capacity(subjects.len());
         let places: Vec<(Option<&str>, Option<String>)> = subjects
             .iter()
-            .map(|&(ws, _)| {
+            .map(|&(ws, _, _)| {
                 // Its focused terminal's (2026-11-10, your report: the branch didn't follow the
                 // terminal you were in), as `branch_terminal`.
                 let first = self.branch_terminal(ws);
@@ -1273,15 +1304,31 @@ impl Workspace {
             .zip(&labels)
             .zip(places)
             .enumerate()
-            .map(|(i, ((&(ws, subject), label), (branch, folder)))| {
+            .map(|(i, ((&(ws, subject, agent), label), (branch, folder)))| {
                 let s = subject.map(|i| &items[i]);
+                // The row's mark, age and question: its agent tab's when it wins (R3), else its
+                // terminal rollup's.
+                let slot = agent.and_then(|tab| self.agents.get(&tab));
+                let (status, since, question) = match (agent, slot) {
+                    (Some(_), slot) => (
+                        slot.map_or(Status::Idle, |a| a.status),
+                        slot.map_or(now, |a| a.since),
+                        slot.and_then(|a| a.question.as_deref()),
+                    ),
+                    (None, _) => (
+                        s.map_or(Status::Idle, |s| s.status),
+                        s.map_or(now, |s| s.status_since),
+                        s.and_then(|s| s.question.as_deref()),
+                    ),
+                };
                 WorkspaceFacts {
                     workspace: ws,
                     label,
                     subject,
-                    status: s.map_or(Status::Idle, |s| s.status),
-                    since: s.map_or(now, |s| s.status_since),
-                    question: s.and_then(|s| s.question.as_deref()),
+                    agent,
+                    status,
+                    since,
+                    question,
                     group: self.workspace_group(ws),
                     progress: s.and_then(|s| s.progress.as_ref()),
                     note: s.and_then(|s| s.note.as_deref()),
@@ -1290,12 +1337,9 @@ impl Workspace {
                     pinned: self.model.workspace(ws).is_some_and(|w| w.pinned),
                     branch,
                     folder,
-                    running: row_running(
-                        s.map_or(Status::Idle, |s| s.status),
-                        s.map(|s| s.id),
-                        self.named_terminal(ws),
-                        |id| matches!(self.programs.state(id), ProgramState::Running(_)),
-                    ),
+                    running: row_running(status, s.map(|s| s.id), self.named_terminal(ws), |id| {
+                        matches!(self.programs.state(id), ProgramState::Running(_))
+                    }),
                     title: self
                         .named_terminal(ws)
                         .and_then(|id| items.iter().find(|s| s.id == id))
@@ -1323,7 +1367,11 @@ impl Workspace {
             .iter()
             .filter(|s| s.status != Status::Idle)
             .map(|s| s.status_since);
-        let bucket = age_bucket(now, sinces);
+        // And the agent tabs' (a row may be about one, R3).
+        let agents = (self.agents.values())
+            .filter(|a| a.status != Status::Idle)
+            .map(|a| a.since);
+        let bucket = age_bucket(now, sinces.chain(agents));
         let generation = self.rows_generation;
         if let Some(cache) = self.rows_cache.borrow().as_ref() {
             let built = Some((cache.generation, cache.age_bucket));
@@ -1355,8 +1403,9 @@ impl Workspace {
     /// The status marks on screen that are their own views (`mark_view`), by their key in
     /// `Workspace::marks`: a closed group's header in the scrolled view (its sessions' most
     /// urgent, unless it counts some waiting; none with the sidebar hidden), each terminal tab
-    /// in the panes' tab bars, and the status bar's terminal (the followed one, M11i); none for
-    /// Idle (a glyph or dot is drawn then). A workspace's row draws a still badge (M11r): none.
+    /// and each agent tab (R2: `AGENT_MARK`, its `aN`) in the panes' tab bars, and the status
+    /// bar's terminal (the followed one, M11i); none for Idle (a glyph or dot is drawn then). A
+    /// workspace's row draws a still badge (M11r): none.
     pub(crate) fn marks_on_screen(&self) -> Vec<((&'static str, u64), Status)> {
         let sessions = self.sessions.items();
         let headers = self
@@ -1378,8 +1427,11 @@ impl Workspace {
             .followed
             .and_then(|id| sessions.iter().find(|s| s.id == id))
             .map(|s| (("status-bar", s.id), s.status));
+        let agents =
+            (self.tab_agents().into_iter()).map(|(_, id, status)| ((AGENT_MARK, id), status));
         headers
             .chain(tabs)
+            .chain(agents)
             .chain(followed)
             .filter(|(_, status)| *status != Status::Idle)
             .collect()
@@ -1411,12 +1463,32 @@ impl Workspace {
             .collect()
     }
 
+    /// A waiting row's Open (M11r): to what its mark is about, its agent tab (R3) or its
+    /// terminal, with the keyboard.
+    pub(crate) fn open_waiting(
+        &mut self,
+        row: &WorkspaceRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match (row.agent, row.subject) {
+            (Some(tab), _) => self.select_tab(tab, window, cx),
+            (None, Some(index)) => self.select(index, window, cx),
+            (None, None) => return,
+        }
+        self.close_menus();
+        self.focus_active(window, cx);
+    }
+
     /// Whether session `index`'s workspace's row is on screen: the sidebar is shown, its
     /// group open, and the row in the scrolled view.
     pub(crate) fn row_on_screen(&self, index: usize) -> bool {
-        let Some(ws) = self.workspace_of(index) else {
-            return false;
-        };
+        self.workspace_of(index)
+            .is_some_and(|ws| self.workspace_row_on_screen(ws))
+    }
+
+    /// Whether workspace `ws`'s row is on screen (as `row_on_screen`).
+    pub(crate) fn workspace_row_on_screen(&self, ws: WorkspaceId) -> bool {
         self.rows_in_view(Instant::now())
             .iter()
             .any(|row| matches!(row, SidebarRow::Workspace(s) if s.workspace == ws))
@@ -1459,11 +1531,18 @@ impl Workspace {
         let next = if !seen {
             None
         } else {
+            // Each row's age: its agent tab's when it is about one (R3), else its terminal's.
             let rows = self
                 .rows_in_view(now)
                 .into_iter()
                 .filter_map(|row| match row {
-                    SidebarRow::Workspace(s) if s.age.is_some() => s.subject,
+                    SidebarRow::Workspace(s) if s.age.is_some() => match s.agent {
+                        Some(tab) => self.agents.get(&tab).map(|a| a.since),
+                        None => s
+                            .subject
+                            .and_then(|i| self.sessions.items().get(i))
+                            .map(|s| s.status_since),
+                    },
                     _ => None,
                 });
             // (A tab shows its age only in its tooltip, read when it opens.) And the status
@@ -1474,10 +1553,7 @@ impl Workspace {
                 .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
                 .filter(|s| s.status != Status::Idle)
                 .map(|s| s.status_since);
-            let sinces = rows
-                .filter_map(|i| self.sessions.items().get(i))
-                .map(|s| s.status_since)
-                .chain(followed);
+            let sinces = rows.chain(followed);
             // And the palette's workspace rows, while it's open.
             let palette = self
                 .palette_shown(cx)
@@ -1895,7 +1971,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ws = row.workspace;
-        let session = row.subject.and_then(|i| self.sessions.items().get(i));
         let waiting = row.status == Status::Waiting;
         // The selected row is a soft tint of the accent (waiting or not); an unselected waiting
         // one keeps its waiting tint. Hover deepens an unselected one a little; the selected
@@ -2043,8 +2118,9 @@ impl Workspace {
                         .unwrap_or_else(|| NEEDS_INPUT.into()),
                     ui.ring_waiting,
                 ))
-                // Open (M11r): to the terminal that waits, as ⇧⌘U would.
-                .when_some(row.subject, |line, index| {
+                // Open (M11r): to the terminal (or agent tab, R3) that waits, as ⇧⌘U would.
+                .when(row.subject.is_some() || row.agent.is_some(), |line| {
+                    let row = row.clone();
                     line.child(
                         div()
                             .id(("row-open", ws.0 as usize))
@@ -2066,9 +2142,7 @@ impl Workspace {
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
-                                this.select(index, window, cx);
-                                this.close_menus();
-                                this.focus_active(window, cx);
+                                this.open_waiting(&row, window, cx);
                             }))
                             .child(OPEN),
                     )
@@ -2222,7 +2296,7 @@ impl Workspace {
                 let here = |at| at == TabDrop::Workspace(ws);
                 this.drop_tab(dragged.tab, here, window, cx);
             }))
-            .child(self.avatar_slot(ws, row, session, ui, surface, cx))
+            .child(self.avatar_slot(ws, row, ui, surface, cx))
             .child(
                 div()
                     .flex_1()
@@ -2342,10 +2416,35 @@ impl Workspace {
         size: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.status_mark(
+            place,
+            session.id,
+            session.status,
+            session.pop,
+            ui,
+            fill,
+            size,
+            cx,
+        )
+    }
+
+    /// The mark drawing of `session_mark_sized`, by parts: `place` and `key` pick its
+    /// `MarkView` (a session's `sN`, an agent tab's `aN`), `pop` its Done pop (it plays once,
+    /// keyed by its number; after it, the mark is drawn plain, in its own view).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn status_mark(
+        &self,
+        place: &'static str,
+        key: u64,
+        status: Status,
+        pop: Option<(u64, Instant)>,
+        ui: UiColors,
+        fill: Rgb,
+        size: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let size = px(size);
-        let popping = session
-            .pop
-            .filter(|(_, at)| session.status == Status::Done && at.elapsed() < POP_SHOWN);
+        let popping = pop.filter(|(_, at)| status == Status::Done && at.elapsed() < POP_SHOWN);
         match popping {
             Some((pop, _)) => {
                 let phase = self.phase(cx);
@@ -2368,7 +2467,7 @@ impl Workspace {
                     )
                     .into_any_element()
             }
-            None => self.mark_view(place, session.id, session.status, size, fill, cx),
+            None => self.mark_view(place, key, status, size, fill, cx),
         }
     }
 
@@ -2405,22 +2504,19 @@ impl Workspace {
         view.into_any_element()
     }
 
-    /// A row's avatar (M11r): its letters on its colour, its session's status mark as a badge on
-    /// the bottom-right corner (idle: a dot while a program runs, else none), and while the row
-    /// is hovered a × over the letters that closes the workspace (asking first when it has 2+
-    /// terminals).
-    #[allow(clippy::too_many_arguments)]
+    /// A row's avatar (M11r): its letters on its colour, its status mark (its terminal's, or its
+    /// agent tab's, R3) as a badge on the bottom-right corner (idle: a dot while a program runs,
+    /// else none), and while the row is hovered a × over the letters that closes the workspace
+    /// (asking first when it has 2+ terminals).
     fn avatar_slot(
         &self,
         ws: WorkspaceId,
         row: &WorkspaceRow,
-        session: Option<&Session>,
         ui: UiColors,
         surface: Rgb,
         cx: &mut Context<Self>,
     ) -> Div {
-        let status = session.map_or(Status::Idle, |s| s.status);
-        let badge = badge(status, row.running, ui, surface);
+        let badge = badge(row.status, row.running, ui, surface);
         let (fill, _, ink) = ui.avatars[avatar_color(row.color, &row.label) as usize];
         let close = div()
             .id(("row-close", ws.0 as usize))
@@ -3008,6 +3104,7 @@ mod tests {
             workspace: WorkspaceId(0),
             label,
             subject: Some(0),
+            agent: None,
             status,
             since,
             question: None,
@@ -3501,13 +3598,13 @@ mod tests {
                 Status::Idle
             }
         };
-        let subjects = row_subjects(&m, index_of, status);
+        let subjects = row_subjects(&m, index_of, status, |_| Vec::new());
         assert_eq!(
             subjects,
             [
-                (a.workspace, Some(0)),
-                (b.workspace, None),
-                (c.workspace, Some(1))
+                (a.workspace, Some(0), None),
+                (b.workspace, None, None),
+                (c.workspace, Some(1), None)
             ]
         );
         // Its row: idle, named after the workspace (else "Browser"); c's row is still c's.
@@ -3519,7 +3616,7 @@ mod tests {
             browser,
             facts("agent", Status::Waiting, now, None),
         ];
-        for (f, (ws, subject)) in list.iter_mut().zip(&subjects) {
+        for (f, (ws, subject, _)) in list.iter_mut().zip(&subjects) {
             f.workspace = *ws;
             f.subject = *subject;
         }
@@ -3539,6 +3636,85 @@ mod tests {
         );
         assert_eq!(session(&rows[1]).label, "Browser");
         assert_eq!(session(&rows[1]).status, Status::Idle);
+    }
+
+    /// R3: a row whose agent tab is more urgent than its terminals is about that agent tab: its
+    /// status, its age and (waiting) its question; its terminal rollup stays its subject.
+    #[test]
+    fn an_agent_winner_row_reads_its_status_age_and_question() {
+        let now = Instant::now();
+        let mut f = facts(
+            "api",
+            Status::Waiting,
+            now - Duration::from_secs(5 * 60),
+            None,
+        );
+        f.agent = Some(TabId(7));
+        f.question = Some("Claude wants to run: ls");
+        let rows = rows(&[f], &[], None, &[], now);
+        let row = session(&rows[0]);
+        assert_eq!(row.agent, Some(TabId(7)));
+        assert_eq!(
+            row.subject,
+            Some(0),
+            "the terminal rollup stays the subject"
+        );
+        assert_eq!(row.status, Status::Waiting);
+        assert_eq!(row.age.as_deref(), Some("5m"));
+        assert_eq!(
+            row.sub,
+            Some(Sub::Question("Claude wants to run: ls".into()))
+        );
+    }
+
+    /// R3: each workspace's row subject is its terminal rollup, and its agent tab when one is
+    /// more urgent (a tie goes to the terminal); a workspace of agent tabs only is about its
+    /// first.
+    #[test]
+    fn row_subjects_take_an_agent_tab_more_urgent_than_the_terminals() {
+        use crate::layout_model::{Model, TabKind};
+        use std::path::PathBuf;
+        let agent = || TabKind::Agent {
+            provider: "claude".into(),
+            cwd: PathBuf::from("/w"),
+            conversation: None,
+            mode: None,
+            title: None,
+        };
+        let mut m = Model::new();
+        let a = m.new_workspace(0, TabKind::Terminal(1)).unwrap();
+        let b = m.new_workspace(1, TabKind::Terminal(2)).unwrap();
+        let c = m.new_workspace(2, agent()).unwrap();
+        let a_tab = m.add_tab(a.pane, agent()).unwrap().tab;
+        m.add_tab(b.pane, agent()).unwrap();
+        let c_tab = c.tab;
+        let index_of = |id: u64| Some(id as usize - 1);
+        // s1 idle, s2 done.
+        let status = |id: u64| if id == 2 { Status::Done } else { Status::Idle };
+        let agents = |ws: WorkspaceId| {
+            m.agent_tabs(ws)
+                .into_iter()
+                .map(|t| {
+                    (
+                        t,
+                        if ws == c.workspace {
+                            Status::Idle
+                        } else {
+                            Status::Done
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let subjects = row_subjects(&m, index_of, status, agents);
+        assert_eq!(
+            subjects,
+            [
+                (a.workspace, Some(0), Some(a_tab)),
+                (b.workspace, Some(1), None),
+                (c.workspace, None, Some(c_tab)),
+            ]
+        );
     }
 
     #[test]

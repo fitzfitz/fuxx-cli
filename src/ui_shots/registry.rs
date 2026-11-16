@@ -98,6 +98,8 @@ pub(super) const ORDER: &[&str] = &[
     "chrome-drag-cancel",
     "chrome-renaming",
     "chrome-agent-tabs",
+    "chrome-agent-status",
+    "chrome-agent-age",
     "chrome-new-bar-reveal",
     "chrome-session-facts",
     "chrome-bars-and-edges",
@@ -202,6 +204,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-workspace-split",
     "agent-preset-menu",
     "agent-pane-menu",
+    "agent-sidebar-waiting",
     "agent-tab-composer-wrap",
 ];
 

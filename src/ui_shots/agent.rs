@@ -313,6 +313,23 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "agent-sidebar-waiting",
+        run: agent_sidebar_waiting,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/sidebar.rs",
+            "src/workspace_agent.rs",
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/notifier.rs",
+            "src/tab_bar.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+        ],
+    },
+    Scene {
         name: "agent-tab-composer-wrap",
         run: agent_tab_composer_wrap,
         themes: Themes::Both,
@@ -1790,5 +1807,81 @@ pub(super) fn agent_tab_held() {
             },
         );
         println!("ui-shots: {n}: {holder:?} ok");
+    }
+}
+
+/// M11aa Task 9: a workspace whose Claude tab (not shown) asks for a permission: its row's badge
+/// is red (as a waiting terminal's), the question under its name with Open. api's workspace is
+/// shown.
+pub(super) fn agent_sidebar_waiting() {
+    use crate::sidebar::{SidebarRow, Sub};
+    let n = "agent-sidebar-waiting";
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
+        let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
+            let api = std::path::Path::new("/Users/me/code/api");
+            let web = std::path::Path::new("/Users/me/code/web");
+            ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+            ws.open_shot_session("web", web, super::SHELL_TEXT, None, window, cx);
+            let web = ws.sessions.position(|s| s.label() == "web").expect("web");
+            let id = ws.sessions.items()[web].id;
+            ws.agent_beside(id, "claude", window, cx);
+            let api = ws.sessions.position(|s| s.label() == "api").expect("api");
+            ws.select(api, window, cx);
+        });
+        let path = shoot_with(
+            n,
+            slug,
+            &theme,
+            size(px(960.0), px(600.0)),
+            build,
+            |cx, window| {
+                let ws = slot.borrow_mut().take().expect("the workspace");
+                settle_frames(cx, window);
+                let (tab, view) = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let (tab, slot) = ws.agents.iter().next().expect("web's Claude tab");
+                    (*tab, slot.view.clone())
+                });
+                cx.update(|cx| {
+                    view.update(cx, |t, cx| {
+                        t.send("Run the tests".into(), cx);
+                        t.shot_feed(
+                            vec![Event::Permission {
+                                id: "p1".into(),
+                                tool: "Bash".into(),
+                                what: "npm test".into(),
+                                detail: "npm test".into(),
+                                always: None,
+                            }],
+                            cx,
+                        );
+                    })
+                });
+                settle_frames(cx, window);
+                let row = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let (w, _) = ws.model.locate(tab).expect("placed");
+                    ws.rows(Instant::now())
+                        .iter()
+                        .find_map(|r| match r {
+                            SidebarRow::Workspace(r) if r.workspace == w => Some(r.clone()),
+                            _ => None,
+                        })
+                        .expect("web's row")
+                });
+                assert_eq!(
+                    (row.agent, row.status, row.sub.clone()),
+                    (
+                        Some(tab),
+                        Status::Waiting,
+                        Some(Sub::Question("Claude wants to run: npm test".into()))
+                    ),
+                    "{n}: web's row waits on its Claude"
+                );
+            },
+        );
+        println!("ui-shots: {n}: {}", path.display());
     }
 }
