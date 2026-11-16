@@ -177,6 +177,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/workspace_agent.rs",
             "src/agent_tab.rs",
             "src/agent_conversation.rs",
+            "src/agent_process.rs",
             "src/activity.rs",
             "src/activity_panel.rs",
             "src/mark_view.rs",
@@ -203,6 +204,9 @@ pub(super) const SCENES: &[Scene] = &[
             "src/workspace_agent.rs",
             "src/agent_tab.rs",
             "src/agent_conversation.rs",
+            "src/activity_panel.rs",
+            "src/right_sidebar.rs",
+            "src/status_bar.rs",
             "src/sidebar.rs",
             "src/status.rs",
             "src/providers/mod.rs",
@@ -1976,6 +1980,70 @@ pub(super) fn chrome_agent_status() {
             "{n}: its log: works, waits, works, waits"
         );
     });
+    // Spec §1.5: an error or a non-zero exit is Done, an error row and an Activity note.
+    let newest_note = |cx: &VisualTestAppContext, tab| {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            match ws.agents[&tab]
+                .activity
+                .newest_first()
+                .nth(1)
+                .map(|e| &e.kind)
+            {
+                Some(crate::activity::Kind::Note(note)) => Some(note.clone()),
+                _ => None,
+            }
+        })
+    };
+    steps.step(
+        &mut cx,
+        window,
+        "agent's Claude exits with an error",
+        Seen::Changes,
+        |cx| {
+            use crate::agent_process::ProcessEvent;
+            cx.update(|cx| {
+                agent_claude.update(cx, |t, cx| {
+                    t.shot_process(ProcessEvent::Ended { code: Some(1) }, cx);
+                    let stderr_tail = "boom".into();
+                    t.shot_process(
+                        ProcessEvent::Exited {
+                            code: Some(1),
+                            stderr_tail,
+                        },
+                        cx,
+                    );
+                })
+            })
+        },
+    );
+    assert_eq!(
+        newest_note(&cx, agent_tab).as_deref(),
+        Some("The agent exited (code 1): boom"),
+        "{n}: a note under its Done"
+    );
+    let rows = cx.read(|cx| ws.read(cx).activity_rows());
+    assert_eq!(rows.len(), 6, "{n}: the note and Done in the panel's log");
+    steps.step(
+        &mut cx,
+        window,
+        "api's Claude can't start",
+        Seen::Changes,
+        |cx| {
+            use crate::agent_process::ProcessEvent;
+            let why = "No such file or directory".into();
+            cx.update(|cx| {
+                api_claude.update(cx, |t, cx| {
+                    t.shot_process(ProcessEvent::SpawnFailed(why), cx)
+                })
+            })
+        },
+    );
+    assert_eq!(
+        newest_note(&cx, api_tab).as_deref(),
+        Some("Couldn't start Claude: No such file or directory"),
+        "{n}: a note under its Done"
+    );
     steps.done();
 }
 
@@ -1983,7 +2051,8 @@ pub(super) fn chrome_agent_status() {
 /// does (`chrome-ages-current`): agent's Claude (not shown) works, dated 59.6 s back by the
 /// scenes' hook (which notifies); then nothing but the timer: its row's "59s" turns "1m", and
 /// the window shows what a full redraw does. Nothing else moves (the marks don't tick: no
-/// moving mark is on screen).
+/// moving mark is on screen). Then the same for the Activity header's age while that Claude
+/// tab, done, is focused (fix round 1).
 ///
 /// Panics unless all of that holds.
 pub(super) fn chrome_agent_age() {
@@ -2043,7 +2112,61 @@ pub(super) fn chrome_agent_age() {
         "{n}: the turned age is drawn"
     );
     current(&mut cx, "its age turned");
-    println!("ui-shots: {n}: its row's age turned on its own timer, current");
+    // The Activity header's age (R9: the status bar keeps its terminal): agent's Claude done,
+    // focused, the Activity panel shown and the sidebar hidden (no row's age times it), dated
+    // 59.6 s back; its "Done · 59s" turns "Done · 1m" on the timer alone.
+    agent_hears(
+        &mut cx,
+        &agent_claude,
+        vec![crate::providers::Event::TurnDone {
+            ok: true,
+            message: None,
+        }],
+    );
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.select_tab(agent_tab, window, cx);
+        ws.sidebar.hidden = true;
+        ws.right_sidebar.hidden = false;
+        ws.right_sidebar.panel = crate::right_sidebar::Panel::Activity;
+        cx.notify();
+    });
+    settle_frames(&mut cx, window);
+    cx.update(|cx| {
+        ws.update(cx, |ws, cx| {
+            ws.shot_agent_since(agent_tab, Duration::from_millis(59_600), cx)
+        })
+    });
+    settle_frames(&mut cx, window);
+    let header = |cx: &VisualTestAppContext| {
+        cx.read(|cx| {
+            ws.read(cx)
+                .activity_header()
+                .map(|(_, words, status)| (words, status))
+        })
+    };
+    let done = |words: &str| Some((words.to_string(), Status::Done));
+    assert_eq!(header(&cx), done("Done · 59s"), "{n}: the header");
+    assert!(
+        !cx.read(|cx| ws.read(cx).marks_ticking),
+        "{n}: no mark ticks"
+    );
+    current(&mut cx, "the header dated");
+    let before = shown(&mut cx, window);
+    crate::ui_shots::prof::sleep(Duration::from_millis(500));
+    cx.advance_clock(Duration::from_secs(2));
+    settle_frames(&mut cx, window);
+    assert_eq!(
+        header(&cx),
+        done("Done · 1m"),
+        "{n}: the header's age turned"
+    );
+    let after = shown(&mut cx, window);
+    assert!(
+        bytes_differ(&before, &after) > 0,
+        "{n}: the header's turned age is drawn"
+    );
+    current(&mut cx, "the header's age turned");
+    println!("ui-shots: {n}: its row's and the Activity header's ages turned on their timer");
 }
 
 /// A tab bar's first frame: a workspace never shown before, its one pane holding more tabs than

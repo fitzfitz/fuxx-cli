@@ -1859,6 +1859,12 @@ pub(super) fn agent_sidebar_waiting() {
                         );
                     })
                 });
+                // Waiting 4 minutes (a live "0s" could read "1s" under load).
+                cx.update(|cx| {
+                    ws.update(cx, |ws, cx| {
+                        ws.shot_agent_since(tab, Duration::from_secs(4 * 60 + 10), cx)
+                    })
+                });
                 settle_frames(cx, window);
                 let row = cx.read(|cx| {
                     let ws = ws.read(cx);
@@ -1880,6 +1886,7 @@ pub(super) fn agent_sidebar_waiting() {
                     ),
                     "{n}: web's row waits on its Claude"
                 );
+                assert_eq!(row.age.as_deref(), Some("4m"), "{n}: its age");
             },
         );
         println!("ui-shots: {n}: {}", path.display());

@@ -16,7 +16,7 @@
 //! `rows_in`, `timeline` and `pill_inks` are pure and tested.
 
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
@@ -30,7 +30,7 @@ use crate::activity::{
 use crate::cli;
 use crate::layout_model::TabId;
 use crate::procs::ProgramState;
-use crate::right_sidebar::{EDGE, SMALL, TEXT, TITLE, header_row, note};
+use crate::right_sidebar::{EDGE, Panel, SMALL, TEXT, TITLE, header_row, note};
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::Tip;
 use crate::status::Status;
@@ -420,6 +420,19 @@ impl Workspace {
                 let facts = self.status_bar_facts()?;
                 Some((self.terminal_label(session.id), facts.text, facts.status))
             }
+        }
+    }
+
+    /// The Activity header's age when it is an agent tab's (the focused one, not idle) and the
+    /// panel is shown: its since, for the ages' timer (`refresh_ages`; a terminal's there is the
+    /// followed one's, timed already).
+    pub(crate) fn activity_agent_since(&self) -> Option<Instant> {
+        if self.right_sidebar.hidden || self.right_sidebar.panel != Panel::Activity {
+            return None;
+        }
+        match self.activity_subject()? {
+            Subject::Agent(_, slot) if slot.status != Status::Idle => Some(slot.since),
+            _ => None,
         }
     }
 
