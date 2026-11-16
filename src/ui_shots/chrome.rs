@@ -25,6 +25,199 @@ use crate::status::Status;
 use crate::terminal_view::TerminalEvent;
 use crate::workspace::Workspace;
 
+/// This area's scenes (`mod.rs` runs them in its `ORDER`).
+pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "chrome-status-elsewhere",
+        run: chrome_status_elsewhere,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/sidebar.rs",
+            "src/tab_bar.rs",
+            "src/status_mark.rs",
+            "src/status.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-model-edits",
+        run: chrome_model_edits,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/layout_model.rs",
+            "src/sidebar.rs",
+            "src/tab_bar.rs",
+            "src/tab_menu.rs",
+            "src/title_area.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-notifications",
+        run: chrome_notifications,
+        themes: Themes::One,
+        serial: true,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/notification_list.rs",
+            "src/title_area.rs",
+            "src/sidebar.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-places-programs-ports",
+        run: chrome_places_programs_ports,
+        themes: Themes::One,
+        serial: true,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/git_branch.rs",
+            "src/procs.rs",
+            "src/sidebar.rs",
+            "src/status_bar.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-globals",
+        run: chrome_globals,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/appearance.rs",
+            "src/reduce_motion.rs",
+            "src/updater.rs",
+            "src/update_release.rs",
+            "src/sidebar.rs",
+            "src/status_bar.rs",
+            "src/tab_bar.rs",
+            "src/title_area.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-resize-title",
+        run: chrome_resize_title,
+        themes: Themes::One,
+        serial: true,
+        kind: Kind::Visual,
+        sources: &["src/chrome_cache.rs", "src/title_area.rs", "src/sidebar.rs"],
+    },
+    Scene {
+        name: "chrome-drag-cancel",
+        run: chrome_drag_cancel,
+        themes: Themes::One,
+        serial: true,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/drag_gap.rs",
+            "src/sidebar.rs",
+            "src/tab_bar.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-renaming",
+        run: chrome_renaming,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/name_input.rs",
+            "src/sidebar.rs",
+            "src/tab_bar.rs",
+            "src/tab_menu.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-new-bar-reveal",
+        run: chrome_new_bar_reveal,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/chrome_cache.rs", "src/tab_bar.rs"],
+    },
+    Scene {
+        name: "chrome-session-facts",
+        run: chrome_session_facts,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/sidebar.rs",
+            "src/tab_bar.rs",
+            "src/terminal_view.rs",
+            "src/ssh_target.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-bars-and-edges",
+        run: chrome_bars_and_edges,
+        themes: Themes::One,
+        serial: true,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/sidebar.rs",
+            "src/tab_bar.rs",
+            "src/sidebar_toggle.rs",
+            "src/right_sidebar.rs",
+            "src/title_area.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-sidebar-scroll",
+        run: chrome_sidebar_scroll,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/chrome_cache.rs", "src/sidebar.rs"],
+    },
+    Scene {
+        name: "chrome-sidebar-header-mark",
+        run: chrome_sidebar_header_mark,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/sidebar.rs",
+            "src/groups.rs",
+            "src/status_mark.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-row-sources",
+        run: chrome_row_sources,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/chrome_cache.rs",
+            "src/sidebar.rs",
+            "src/git_branch.rs",
+            "src/ssh_target.rs",
+            "src/restore.rs",
+        ],
+    },
+    Scene {
+        name: "chrome-file-tab-toolbar",
+        run: chrome_file_tab_toolbar,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/chrome_cache.rs", "src/file_tab.rs", "src/tab_bar.rs"],
+    },
+];
+
 /// Frames as the app gets them, and nothing else (`settle_frames`, with no cap on how many: an
 /// animation asks for one each frame until it ends, by the real clock): the effects settle (a
 /// notify draws), then each frame something asked for. No explicit draw.
@@ -105,7 +298,7 @@ fn on_ws(
 /// api and tests split side by side in one workspace (shown, api focused), and agent in a
 /// workspace of its own (not shown), in another group.
 fn elsewhere_window() -> (VisualTestAppContext, AnyWindowHandle, Entity<Workspace>) {
-    super::chrome_window(|ws, window, cx| {
+    super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         let web = std::path::Path::new(super::WEB);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
@@ -192,7 +385,7 @@ pub(super) fn chrome_model_edits() {
     use crate::workspace::MoveSessionDown;
 
     let n = "chrome-model-edits";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         let web = std::path::Path::new(super::WEB);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
@@ -406,7 +599,7 @@ pub(super) fn chrome_places_programs_ports() {
     .chain([dir.display().to_string()])
     .collect::<Vec<_>>();
     let start = a.clone();
-    let (mut cx, window, ws) = super::chrome_window(move |ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(move |ws, window, cx| {
         // Looked up for real here.
         ws.places.frozen = false;
         ws.programs.frozen = false;
@@ -618,7 +811,7 @@ pub(super) fn chrome_resize_title() {
     use crate::title_area::shows_title;
 
     let n = "chrome-resize-title";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
     });
@@ -706,7 +899,7 @@ pub(super) fn chrome_resize_title() {
 /// Workspace A: api, tests and build as tabs of one pane, web split right of it; B (docs) and
 /// C (notes) below it in the same group. api focused.
 fn drag_window() -> (VisualTestAppContext, AnyWindowHandle, Entity<Workspace>) {
-    super::chrome_window(|ws, window, cx| {
+    super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
         ws.open_shot_tab("tests", api, super::SHELL_TEXT, window, cx);
@@ -772,8 +965,8 @@ pub(super) fn chrome_drag_cancel() {
     let order = cx.read(|cx| ws.read(cx).model.display_order());
     // Row 1 is A's (under its group's header), row 3 C's.
     let (row_a, row_c) = (
-        super::row_point(&mut cx, ws, 1, 0.0),
-        super::row_point(&mut cx, ws, 3, 0.0),
+        super::sidebar::row_point(&mut cx, ws, 1, 0.0),
+        super::sidebar::row_point(&mut cx, ws, 3, 0.0),
     );
     steps.step(
         &mut cx,
@@ -943,7 +1136,7 @@ pub(super) fn chrome_renaming() {
 /// Panics unless the shown tab is in its row and the window shows what a full redraw does.
 pub(super) fn chrome_new_bar_reveal() {
     let n = "chrome-new-bar-reveal";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let web = std::path::Path::new(super::WEB);
         let api = std::path::Path::new(super::API);
         ws.open_shot_session("many", web, super::SHELL_TEXT, None, window, cx);
@@ -1010,7 +1203,7 @@ fn emit(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>, name: &str, event
 /// Panics unless after each the window shows what a full redraw does, and it changed.
 pub(super) fn chrome_session_facts() {
     let n = "chrome-session-facts";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         let web = std::path::Path::new(super::WEB);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
@@ -1093,7 +1286,7 @@ pub(super) fn chrome_bars_and_edges() {
     use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase};
 
     let n = "chrome-bars-and-edges";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
         for i in 1..12 {
@@ -1301,7 +1494,7 @@ pub(super) fn chrome_sidebar_scroll() {
     use gpui::{KeyBinding, ScrollDelta, ScrollWheelEvent, TouchPhase};
 
     let n = "chrome-sidebar-scroll";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         for i in 0..16 {
             ws.open_shot_session(&format!("w{i}"), api, super::SHELL_TEXT, None, window, cx);
@@ -1332,7 +1525,7 @@ pub(super) fn chrome_sidebar_scroll() {
         Seen::Maybe,
         |cx| report(cx, ws, "w15", Status::Working),
     );
-    let list = super::row_point(&mut cx, ws, 1, 0.0);
+    let list = super::sidebar::row_point(&mut cx, ws, 1, 0.0);
     steps.step(
         &mut cx,
         window,
@@ -1377,7 +1570,7 @@ pub(super) fn chrome_sidebar_header_mark() {
     use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase};
 
     let n = "chrome-sidebar-header-mark";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         for i in 0..16 {
             ws.open_shot_session(&format!("w{i}"), api, super::SHELL_TEXT, None, window, cx);
@@ -1410,7 +1603,7 @@ pub(super) fn chrome_sidebar_header_mark() {
     );
     assert_eq!(marks(&mut cx), 0, "{n}: its header's mark is off screen");
     assert!(!ticking(&mut cx), "{n}: nothing on screen moves");
-    let list = super::row_point(&mut cx, ws, 1, 0.0);
+    let list = super::sidebar::row_point(&mut cx, ws, 1, 0.0);
     steps.step(
         &mut cx,
         window,
@@ -1453,7 +1646,7 @@ pub(super) fn chrome_row_sources() {
     use crate::workspace::{At, FocusPaneRight};
 
     let n = "chrome-row-sources";
-    let (mut cx, window, ws) = super::chrome_window(|ws, window, cx| {
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         let web = std::path::Path::new(super::WEB);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
@@ -1489,7 +1682,7 @@ pub(super) fn chrome_row_sources() {
     );
     assert_eq!(
         question(&mut cx).as_deref(),
-        Some(super::CLAUDE_QUESTION),
+        Some(super::sidebar::CLAUDE_QUESTION),
         "{n}: the question read off its screen"
     );
     // Its age turns every second from here; date it minutes back so no turn lands in a check.
@@ -1613,7 +1806,7 @@ pub(super) fn chrome_file_tab_toolbar() {
     std::fs::write(&notes, "# Notes\n\n- one\n- two\n").expect("notes.md");
     let (mut cx, window, ws) = {
         let (dir, readme) = (dir.clone(), readme.clone());
-        super::chrome_window(move |ws, window, cx| {
+        super::chrome_parts::chrome_window(move |ws, window, cx| {
             ws.open_shot_session("api", &dir, super::SHELL_TEXT, None, window, cx);
             ws.preview_file_tab(readme, FileMode::Plain, window, cx);
         })
