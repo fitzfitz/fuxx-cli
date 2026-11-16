@@ -1,11 +1,11 @@
 ---
 tags: [development, milestone, design]
-status: designed
+status: built
 ---
 
 # 77 - Milestone 11p - Chrome Caching (design)
 
-**Status:** 📝 Designed 2026-11-13; plan next. **You skipped the design questions ("go ahead"), so every rule below
+**Status:** 🟨 built, reviewed, on-screen check pending (branch `m11p-chrome-cache`, not merged). Designed 2026-11-13, built and measured 2026-11-13/14. **You skipped the design questions ("go ahead"), so every rule below
 is AI's call** unless it quotes you; the ones you may most want to overrule are listed in "AI's calls".
 **Asked for:** 2026-11-10, by you, after M11o ("oke, masukkan ke rencana setelah M11o. selama sidebar masih mendapatkan
 update terkini, saya lanjut"), following M11n's "Found for later". Ordered before M11aa's UI tasks (your call,
@@ -153,13 +153,134 @@ part. Not a user setting.
 - Timer periods for the moved ticks (keep today's: folders ≤ 1 s, ages as today, programs 3 s, ports as today).
 - How render-count tests are written (a `cfg(test)` counter per part, or ui-shots scenes).
 
+## What was built
+
+Eight plan tasks, each reviewed, then a merge of master (M11ac 1 + 2, the title-bar test fix), a whole-branch review
+and one fix wave. 1661 tests; the full `__ui-shots` run passes 110 / 110 at the merge.
+
+- **Render purity.** Nothing visible changes inside `Workspace::render`: the folder check runs on its own 1 s timer
+  (`check_folders`), the status bar's followed terminal is set by events (`follow_terminal`, with a deferred safety
+  net after every draw), ports clear in that same deferred call, the window title is set only when it changes, and
+  `sidebar.listed` is computed on demand.
+- **Rows cache.** The sidebar rows are built once per change: the cache is keyed on GPUI's `observe_self` (every
+  Workspace notify bumps a generation) plus the age bucket (the granularity the age labels turn at). Per frame the
+  rows went from 3 builds to 0.
+- **Cached `ChromePart` views** (`src/chrome_cache.rs`) for the sidebar, the status bar, each pane's tab bar (keyed
+  by pane and `drags_window`, pruned in `sync`) and the title area, each embedded with `.cached(...)` at a definite
+  size.
+- **Mark views.** The moving status marks are their own `MarkView`s driven by a `MarkClock`; the 100 ms ticker
+  notifies only the clock, and runs only while a mark is on screen (`marks_on_screen`).
+- **Ages on their own timer.** `refresh_ages` always schedules its own timer (earliest deadline), so an age label
+  turns with no other redraw.
+- **Tooltips are built on open**, so every new hover shows the current age.
+- **Kill switch** `FUXX_CHROME_CACHE=off` (read once): the chrome draws uncached, as before.
+- **Tests:** about 27 chrome ui-shots scenes (`__ui-shots chrome`), including at least one per data source in the
+  dependency lists (status elsewhere, model edits, notifications, places / programs / ports, globals, resize,
+  drag cancel, renaming, the age timer, row sources, header marks, file-tab toolbar), each recorded RED first where
+  the source is ours to break.
+- **The post-merge `pin_tab` fix** (`d539b6d`): master's Preview and File | Diff buttons kept a preview tab without
+  notifying, so the cached tab bar kept it italic; `pin_tab` now notifies (scene `chrome-file-tab-toolbar`).
+
+## Results
+
+Measured 2026-11-14 08:19 by you, from Terminal.app, with `scripts/bench/m11p.sh final` (one release build per
+variant; variants interleaved; medians of the runs that were frontmost 15 / 15; the full table is in
+`scripts/bench/results/m11p-final-2026-11-14.md`, gitignored). CPU %:
+
+| Variant | glow on, idle | agent working | glow off |
+|---|---|---|---|
+| master | 5.03 (4 runs) | 4.20 (3 runs) | 1.40 (1 run) |
+| branch, cache on | **3.80** (5 runs) | **3.23** (3 runs) | not measured |
+| branch, `FUXX_CHROME_CACHE=off` | 5.29 (4 runs) | 3.94 (2 runs) | not measured |
+| branch vs master | **−24 %** | **−23 %** | |
+
+Some runs were dropped for not being frontmost 15 / 15 (master idle 1, cache-off idle 1, cache-off working 1), so
+each variant has 2–5 counted runs: directional, not precise. **You did not confirm by eye that the status bar read
+"Working" during `cpu_working`** (the script holds a terminal printing every 0.5 s); the working numbers are
+recorded on that basis. The M11n throughput numbers (`tput`) were not re-run in this session.
+
+**The ≥ 30 % target was narrowly missed** (−24 % idle, −23 % working). Read against the floor: with the glow off
+fuxx idles at 1.40 %, so the glow costs about 3.6 % on master and about 2.4 % on the branch — **caching removes
+about a third of the glow's cost above the floor**. Why not more:
+
+- `Workspace::render` still runs every breath frame (about 70 listeners, the pane band, the uncached tree), and the
+  focused terminal draws.
+- While an agent works, GPUI dirties the **ancestors** of a notified view (Ruling 12): a mark view inside a cached
+  part dirties the part, so the status bar and the Working tab's bar still redraw per tick (the sidebar, the title
+  area and the other bars do not).
+- Per-frame `marks_on_screen` (twice) and `rows_in_view` clones remain.
+
+Follow-ups that could close the gap: an **overlay layer** for the moving marks (the only way to reach +0 while an
+agent works; risks stacking, clipping, slide and drag glitches against your "no visible change" rule), a thinner
+`Workspace::render`, and removing the per-frame row clones.
+
+## Limits
+
+- **GPUI-owned refresh paths** (window resize, full screen, drag release / stop, focus, `set_reduce_motion`) are not
+  RED-provable without editing GPUI; the scenes pass, but their observers can't be broken to show the scene bites.
+- **"Maybe" steps:** Reduce motion, window visible and drag-released steps only prove "equal to a full redraw";
+  their own observers are not isolable (the breath re-renders anyway). Extra frames from catch-up or ticking marks
+  can mask staleness (the RED runs show the scenes still bite).
+- **A tooltip left open keeps its text** (Ruling 10): GPUI builds a tooltip once per hover, so one open across an age
+  change can show "59s" for up to a minute; every new hover is current.
+- **The scene-retry residual** (Ruling 17): a step retries once when an age turned during its check; a real stale in
+  the same view as a turning label that coincides with the turn is repaired by the turn's timer redraw before the
+  retry, and a turn in the microseconds between catch-up and the first label read reads as STALE (a false positive,
+  not a hide).
+- `tick_places` (the 5 s places loop) is now redundant with the 1 s folder timer.
+- Pressing Esc doesn't cancel a sidebar row drag (pre-existing, found by the drag-cancel scene).
+- The `title-bar-sliding` scene runs on real time and has about a 20 ms margin from build to frame; a slow machine
+  can fail it.
+- A plain `cd` with no OSC 7 shows within about 6 s, as on master (Ruling 7, below).
+- Task 5 limits: `TitleChanged` / `DaemonLost` are emitted on the view (skipping the event translation), `report()`
+  uses the `shot_status` hook, and full screen is argued by analogy to resize.
+
+## Plan-time calls (AI's, from reading the code)
+
+1. **Render-count tests live in ui-shots scenes**, not `cargo test`: GPUI's test contexts exist only with
+   `--features ui-shots` here, and AppKit windows abort under `cargo test` threads.
+2. **The `tick_*` restarters may stay in render** (`tick_marks`, `tick_places`, `tick_programs`, `tick_ports`,
+   `tick_right_sidebar`, `refresh_ages`): they only spawn timers whose later notifies happen outside drawing. What
+   leaves render are the synchronous visible writes: the in-render folder check (`refresh_places`),
+   `right_sidebar.followed.replace` (`refresh_right_sidebar`), `ports.clear()` (`refresh_ports`), the per-frame
+   `set_window_title`, and `render_sidebar`'s write to `sidebar.listed`.
+3. **No window-bounds observer**: `bounds_changed` already refreshes (bypassing caches); a scene proves the title
+   hides / shows on resize; an observer is added only if that scene fails.
+4. **Tab-bar parts are keyed by `(PaneId, drags_window)`** and pruned in `Workspace::sync`.
+5. **Measurement is a script you run** from Terminal.app with fuxx quit (`scripts/bench/m11p.sh`), because the
+   agent's own session runs inside your fuxx, which came to the front and broke the spike's runs. One branch build
+   measures cache on vs `FUXX_CHROME_CACHE=off`, alongside a `master` build.
+
+**Rulings that changed the design:**
+
+- **Ruling 7:** the design said a plain `cd` shows "within ~1 s". Wrong: each terminal's folder is looked up every
+  5 s (`folder_due`); the 1 s timer only picks who is due. Behaviour is as on master: **a plain `cd` without OSC 7
+  shows within ~6 s** (with OSC 7, at once). No regression.
+- **Ruling 12:** GPUI's `mark_view_dirty` dirties a notified view **and all its ancestors**, and a dirty cached
+  view re-renders, so a mark view inside a cached part re-renders the part every tick. "Parts +0 while marks tick"
+  is unreachable without an overlay layer or a GPUI patch. Built instead: the ticker notifies only the clock; the
+  Title, the tab bars without a moving mark and the row rebuilds go to 0 per tick; the sidebar, the status bar and
+  the Working tab's bar still redraw per tick (cheaper than before). The overlay layer is the recorded follow-up.
+  This changes Goal 5: marks cost a few views plus the parts that hold them, not nothing.
+- **Ruling 13:** stale `marks` entries kept their last status and re-dirtied the window while ticking; the ticker
+  now stops when nothing on screen moves (agent working only elsewhere: 0 frames over 10 ticks), and the age timer
+  is scheduled by `refresh_ages` itself.
+
 ## On-screen checklist (for you, after the build)
 
-To be written by the plan's last task: at least — `cd` in a terminal updates the sidebar folder and the status bar
-within a second; resize the window across the width where the app title hides/shows; switch theme; toggle Reduce
-motion; an agent goes Working → Waiting → Done in another workspace (ring, mark, age); open a dev server port; drag a
-row and cancel with Esc; drag a tab between panes; rename a workspace; the update pill; idle CPU in Activity Monitor
-with the glow on.
+Run from the branch build. At least:
+
+- `cd` in a terminal updates the sidebar folder and the status bar: **with OSC 7 at once; a plain `cd` within ~6 s**.
+- Resize the window across the width where the app title hides / shows; toggle full screen.
+- Switch theme; toggle Reduce motion.
+- An agent goes Working → Waiting → Done in another workspace (ring, mark, age).
+- **An agent working in another workspace: no mark pulses on screen, and CPU stays low** (Activity Monitor).
+- Open a dev server port (it shows in the sidebar row and the status bar).
+- Drag a row and drop it outside (Esc doesn't cancel a row drag, pre-existing); drag a tab between panes and drop it
+  outside.
+- Rename a workspace and a tab; the update pill.
+- **`FUXX_CHROME_CACHE=off` looks identical** (launch with it set and compare the chrome).
+- Idle CPU in Activity Monitor with the glow on (about 3.8 % measured, against 5.0 % before).
 
 ## Related
 

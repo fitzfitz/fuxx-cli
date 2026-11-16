@@ -1,20 +1,20 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11p
-status: planned
-updated: 2026-11-13
+status: built
+updated: 2026-11-14
 ---
 
 # M11p Plan — Chrome caching
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[77 - Milestone 11p - Chrome Caching]] |
-| **Status** | 📝 Planned 2026-11-13 |
-| **Tasks done** | 0 / 8 |
-| **▶ Pick up here** | Task 0 (needs you for ~10 min at a Terminal.app prompt, fuxx quit) |
+| **Status** | 🟨 Built and reviewed on branch `m11p-chrome-cache` (not merged); on-screen check pending. Results: −24 % idle CPU (glow on), −23 % with an agent working; the 30 % target narrowly missed, see note 77. |
+| **Tasks done** | 8 / 8 (Task 7 Step 1 run by you 2026-11-14) |
+| **▶ Pick up here** | Your on-screen check (note 77), then merge on your word |
 | **Decisions used** | Yours: M11p after M11z, before M11aa's UI; the hard rule "every chrome part always current". Everything else: AI's calls in note 77 (you said "go ahead"), plus "Plan-time calls" below. |
 | **Needs your eyes** | 👀 Task 0 and Task 7 measurements (you run one script); the on-screen checklist from Task 7 |
 
@@ -61,8 +61,8 @@ harness (`VisualTestAppContext`, feature `ui-shots`); `scripts/bench/run.py` (M1
   100 ms, ages as today.
 - **Gate per task:** `cargo test --bin fuxx && cargo clippy --all-targets && cargo clippy --all-targets --features
   ui-shots && cargo fmt --check && cargo run --features ui-shots -- __ui-shots chrome` (no new clippy warnings over the
-  baselines recorded in Task 0; the pre-existing `title-bar-sliding` scene failure is not M11p's). The full
-  `__ui-shots` run once per task before its commit.
+  baselines recorded in Task 0; the pre-existing `title-bar-sliding` scene failure is not M11p's; it was fixed on master). The full
+  `__ui-shots` run once per task before its commit. (`title-bar-sliding` was a test bug, fixed on master in `7894f5e` and merged into this branch.)
 - Work in a git worktree on branch `m11p-chrome-cache` from the then-current `master`. Commit per task; merging is the
   user's call.
 
@@ -86,7 +86,8 @@ harness (`VisualTestAppContext`, feature `ui-shots`); `scripts/bench/run.py` (M1
 ## Review Focus
 
 1. **A plain `cd` with no OSC 7** (folder found only by polling): the sidebar row's folder and the status bar update
-   within ~1 s, with the glow breathing and with it off. → Task 2 scene `chrome-folder-polled`.
+   within ~6 s as on master (each terminal's folder is looked up every 5 s; the 1 s timer only picks who is due;
+   Ruling 7), with the glow breathing and with it off. → Task 2 scene `chrome-folder-polled`.
 2. **An agent in another workspace changes state while fuxx sits idle**: ring, mark, age label and tab mark update.
    → Task 5 scene `chrome-status-elsewhere`.
 3. **Window resized across the app-title threshold, and full screen toggled**: the title shows/hides; band buttons
@@ -112,14 +113,14 @@ harness (`VisualTestAppContext`, feature `ui-shots`); `scripts/bench/run.py` (M1
 - `cpu_working`: like `cpu_base`, but the first terminal runs a loop printing a line every 0.5 s (enough for
   `StatusTracker` to hold `Working`, so the marks tick) — confirm in one run that the status reads Working.
 
-- [ ] **Step 1:** Record clippy baselines on the branch base (`cargo clippy --all-targets 2>&1 | grep -c '^warning'`,
+- [x] **Step 1:** Record clippy baselines on the branch base (`cargo clippy --all-targets 2>&1 | grep -c '^warning'`,
   and the same with `--features ui-shots`); write both into "At a glance".
-- [ ] **Step 2:** Add `cpu_working` to `run.py` and write `m11p.sh`. Dry-run `bash scripts/bench/m11p.sh baseline
+- [x] **Step 2:** Add `cpu_working` to `run.py` and write `m11p.sh`. Dry-run `bash scripts/bench/m11p.sh baseline
   --dry-run` (prints the commands, runs nothing).
-- [ ] **Step 3: The user runs** `bash scripts/bench/m11p.sh baseline` from Terminal.app with every fuxx quit, Chrome
+- [x] **Step 3: The user runs** `bash scripts/bench/m11p.sh baseline` from Terminal.app with every fuxx quit, Chrome
   and Teams quit, Do Not Disturb on, Mac untouched (~10 min). Paste the medians into "At a glance" and note 77. If a
   variant has fewer than 3 counted runs, the user re-runs it.
-- [ ] **Step 4: Commit** `M11p: baseline measurement script and numbers`.
+- [x] **Step 4: Commit** `M11p: baseline measurement script and numbers`.
 
 ### Task 1: Render counters for chrome (ui-shots only)
 
@@ -135,12 +136,12 @@ harness (`VisualTestAppContext`, feature `ui-shots`); `scripts/bench/run.py` (M1
   `window.draw(cx).clear()`, as the `cached_panes` scene does at `ui_shots.rs:1204-1253`) and
   `fn draws_of(c: Counted, cx: &mut VisualTestAppContext, window: AnyWindowHandle, act: impl FnOnce(&mut
   VisualTestAppContext)) -> u64` (reset, act, draw, read).
-- [ ] **Step 1:** Scene `chrome-counts-baseline`: a Workspace from `Workspace::for_shots` with two terminals; notify the
+- [x] **Step 1:** Scene `chrome-counts-baseline`: a Workspace from `Workspace::for_shots` with two terminals; notify the
   focused `TerminalView` (a breath-like tick) and draw → today every counter rises by 1 per draw (documents the
   problem; Task 4 flips this scene's expectation).
-- [ ] **Step 2:** `SidebarRows` is bumped in `sidebar_rows` (`sidebar.rs:1175`); the scene asserts the current count
+- [x] **Step 2:** `SidebarRows` is bumped in `sidebar_rows` (`sidebar.rs:1175`); the scene asserts the current count
   per frame (3–4 today) so Task 3 has a number to beat.
-- [ ] **Step 3:** Gate; **commit** `M11p: chrome render counters for ui-shots`.
+- [x] **Step 3:** Gate; **commit** `M11p: chrome render counters for ui-shots`.
 
 ### Task 2: Nothing visible changes inside `Workspace::render`
 
@@ -162,14 +163,14 @@ harness (`VisualTestAppContext`, feature `ui-shots`); `scripts/bench/run.py` (M1
   - `last_title: Option<String>` on `Workspace`: `set_window_title` only when the title changed.
   - `fn listed(&self) -> Vec<Listed>` (sidebar.rs): computed on demand from the current rows for
     `drag_row_over_list`; the `sidebar.listed` field is removed and `render_sidebar` no longer writes it.
-- [ ] **Step 1: Failing scenes** — `chrome-folder-polled` (Review Focus 1: a terminal's folder changes with no OSC 7,
+- [x] **Step 1: Failing scenes** — `chrome-folder-polled` (Review Focus 1: a terminal's folder changes with no OSC 7,
   via the shot harness's place fixture; after the 1 s timer fires and one draw, the sidebar row and status bar show
   the new folder with no other redraw source); `chrome-followed` (focus another workspace → after one draw the status
   bar describes its terminal); `chrome-title-once` (10 breath draws → `set_window_title` called at most once; count
   it).
-- [ ] **Step 2:** Run `cargo run --features ui-shots -- __ui-shots chrome-` → those scenes fail.
-- [ ] **Step 3:** Implement. **Step 4:** Scenes pass; full gate (all existing tests and scenes unchanged).
-- [ ] **Step 5: Commit** `M11p: no visible state changes inside Workspace::render`.
+- [x] **Step 2:** Run `cargo run --features ui-shots -- __ui-shots chrome-` → those scenes fail.
+- [x] **Step 3:** Implement. **Step 4:** Scenes pass; full gate (all existing tests and scenes unchanged).
+- [x] **Step 5: Commit** `M11p: no visible state changes inside Workspace::render`.
 
 ### Task 3: Sidebar rows built once per change
 
@@ -185,11 +186,11 @@ harness (`VisualTestAppContext`, feature `ui-shots`); `scripts/bench/run.py` (M1
   self-observation if the pinned rev has it (check `crates/gpui/src/app/context.rs` for `observe_self` or observing
   `cx.entity()`); otherwise say so and stop (don't hand-instrument every `cx.notify()` call site). Every row user
   (the callers listed above, `tab_menu.rs:183,327`, `render_sidebar`) reads `rows()`.
-- [ ] **Step 1: Failing scene** `chrome-rows-once`: 10 breath draws with no Workspace change → `SidebarRows` ≤ 1 in
+- [x] **Step 1: Failing scene** `chrome-rows-once`: 10 breath draws with no Workspace change → `SidebarRows` ≤ 1 in
   total. Plus a unit test in `sidebar.rs`: `rows_cache_rebuilds_on_change_and_on_age_bucket` (the cache-key logic as
   a pure function).
-- [ ] **Step 2:** → fails. **Step 3:** Implement. **Step 4:** pass; full gate.
-- [ ] **Step 5: Commit** `M11p: sidebar rows built once per change`.
+- [x] **Step 2:** → fails. **Step 3:** Implement. **Step 4:** pass; full gate.
+- [x] **Step 5: Commit** `M11p: sidebar rows built once per change`.
 
 ### Task 4: Cached chrome parts
 
@@ -211,16 +212,16 @@ harness (`VisualTestAppContext`, feature `ui-shots`); `scripts/bench/run.py` (M1
   The title part renders `render_workspace_name` + `render_band_buttons` (`title_area.rs:529`, `:569`) in one absolute
   full-width `TOP_BAND` container; the notifications popover stays outside. While the sidebar slides
   (`workspace.rs:3212-3217`) the sidebar part keeps its fixed width inside the moving wrapper.
-- [ ] **Step 1: Failing scenes** — `chrome-counts-baseline` becomes `chrome-breath-skips-parts`: 10 breath draws →
+- [x] **Step 1: Failing scenes** — `chrome-counts-baseline` becomes `chrome-breath-skips-parts`: 10 breath draws →
   `Workspace` +10, every part +0. `chrome-notify-redraws-parts`: one Workspace notify → every part +1.
   `chrome-pane-churn` (Review Focus 5): split, close, move a pane → one tab-bar part per live pane;
   `chrome.tab_bars.len()` equals the live (pane, drags_window) keys. `chrome-kill-switch`: with
   `FUXX_CHROME_CACHE=off` every part counts per draw as today. `chrome-pixels-same`: a busy workspace's screenshot is
   identical with the cache on and off.
-- [ ] **Step 2:** → fail. **Step 3:** Implement. Check that clicks and drags in each part still reach the Workspace
+- [x] **Step 2:** → fail. **Step 3:** Implement. Check that clicks and drags in each part still reach the Workspace
   (`cx.listener` targets the Workspace) and that the title part's container doesn't swallow clicks meant for what's
   beneath it (scene step: click a band button and the sidebar toggle).
-- [ ] **Step 4:** pass; full gate. **Step 5: Commit** `M11p: cached chrome parts`.
+- [x] **Step 4:** pass; full gate. **Step 5: Commit** `M11p: cached chrome parts`.
 
 ### Task 5: Every source of change reaches its part (the user's rule)
 
@@ -239,9 +240,9 @@ part's state):
 - `chrome-drag-cancel` (Review Focus 4): start a row drag, Esc → indicators and slides clear; a tab drag dropped
   outside → the same.
 - `chrome-renaming`: start and finish an inline rename in the sidebar and in a tab.
-- [ ] **Step 1:** Write all scenes. **Step 2:** Run; fix each failure at its source (an event that notifies, or
+- [x] **Step 1:** Write all scenes. **Step 2:** Run; fix each failure at its source (an event that notifies, or
   `cx.defer` + notify) — never by leaving a part uncached. Name each fix in the commit message.
-- [ ] **Step 3:** Full gate. **Step 4: Commit** `M11p: a scene for every chrome data source`.
+- [x] **Step 3:** Full gate. **Step 4: Commit** `M11p: a scene for every chrome data source`.
 
 ### Task 6: Moving marks animate on their own
 
@@ -257,21 +258,21 @@ part's state):
   view's status/size/fill when its part renders (notifying the view only when they changed), and prunes it in `sync`.
   `session_mark` / `session_mark_sized` return the `MarkView` as a child element; the Done pop (`with_animation`)
   stays as it is; the palette reads `MarkClock::phase`.
-- [ ] **Step 1: Failing scene** `chrome-working-marks`: one terminal Working; 10 clock ticks → `Sidebar`, `StatusBar`,
+- [x] **Step 1: Failing scene** `chrome-working-marks`: one terminal Working; 10 clock ticks → `Sidebar`, `StatusBar`,
   `TabBar` +0, each visible mark view +10. Re-run `chrome-pixels-same` with a Working mark mid-beat.
-- [ ] **Step 2:** → fail. **Step 3:** Implement. **Step 4:** pass; full gate.
-- [ ] **Step 5: Commit** `M11p: status marks animate in their own views`.
+- [x] **Step 2:** → fail. **Step 3:** Implement. **Step 4:** pass; full gate.
+- [x] **Step 5: Commit** `M11p: status marks animate in their own views`.
 
 ### Task 7: Final measurement, docs, on-screen checklist
 
 **Files:** note 77 (results, "Plan-time calls", limits, the on-screen checklist), `40 - Roadmap.md`,
 `60 - Progress Log.md`, this plan ("At a glance", checkboxes).
 
-- [ ] **Step 1: The user runs** `bash scripts/bench/m11p.sh final` (same conditions as Task 0). Record the medians
+- [x] **Step 1: The user runs** `bash scripts/bench/m11p.sh final` (same conditions as Task 0). Record the medians
   (master / branch / branch with the cache off; glow on, agent working, glow off) against the targets: ≥ 30 % below
   the baseline for glow-on and for agent-working; `tput` unchanged within noise. If a target is missed, record why
   (as M11n did).
-- [ ] **Step 2:** Note 77: what was built, the numbers, limits, the on-screen checklist (note 77's list, plus
+- [x] **Step 2:** Note 77: what was built, the numbers, limits, the on-screen checklist (note 77's list, plus
   "`FUXX_CHROME_CACHE=off` looks identical"). Roadmap → "🟨 built, on-screen check pending"; a Progress Log entry at
   the top with the test count.
-- [ ] **Step 3: Commit** `M11p: results and docs`.
+- [x] **Step 3: Commit** `M11p: results and docs`.
