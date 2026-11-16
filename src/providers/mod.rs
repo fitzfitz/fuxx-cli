@@ -43,6 +43,11 @@ pub trait Provider: Sync {
         Vec::new()
     }
     fn translator(&self) -> Box<dyn Translator>;
+    /// Whether what a resumed run said on its way out (its stderr tail, or an error row) means
+    /// the conversation to resume doesn't exist: only then does the tab start a new one.
+    fn unknown_conversation(&self, _said: &str) -> bool {
+        false
+    }
 }
 
 pub trait Translator: Send {

@@ -360,6 +360,7 @@ const SCENES: &[(&str, fn())] = &[
     ("agent-tab-at-files", agent_tab_scenes::agent_tab_at_files),
     ("agent-tab-close", agent_tab_scenes::agent_tab_close),
     ("agent-tab-keys", agent_tab_scenes::agent_tab_keys),
+    ("agent-tab-review", agent_tab_scenes::agent_tab_review),
     (
         "agent-tab-composer-wrap",
         agent_tab_scenes::agent_tab_composer_wrap,

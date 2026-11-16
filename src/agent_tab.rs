@@ -413,9 +413,11 @@ pub struct AgentTab {
     end: ProcessEnd,
     /// The process has ended (a send starts a new one).
     exited: bool,
-    /// History is being read: messages wait (unshown, so they follow the history) for it and
-    /// the process.
+    /// History is being read: messages wait for it and the process (shown as waiting, under
+    /// the conversation; sent after the history).
     booting: bool,
+    /// The process has ended and its end isn't reported yet (≤ `END_WAIT`): messages wait.
+    ending: bool,
     queued: Vec<(String, Vec<String>)>,
     run: Run,
     /// Scenes: no process is ever started.
@@ -440,6 +442,9 @@ pub struct AgentTab {
     force_timer: Option<Task<()>>,
     _boot: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// The command line of the last start (scenes check a restart resumes).
+    #[cfg(feature = "ui-shots")]
+    last_argv: Vec<String>,
     /// How many item rows the list built (scenes check only the rows in sight are laid out).
     #[cfg(feature = "ui-shots")]
     pub rows_built: Rc<Cell<usize>>,
@@ -588,6 +593,42 @@ impl AgentTab {
         self.stop_label()
     }
 
+    /// The tab as it is while its history and the login `PATH` are read (`new`'s boot task).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_boot(&mut self) {
+        self.booting = true;
+    }
+
+    /// Messages waiting for the process.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_pending(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// The command line the last (re)start used (a scene starts nothing: it is only built).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_last_argv(&self) -> Vec<String> {
+        self.last_argv.clone()
+    }
+
+    /// The conversation the tab resumes when its process starts again.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_resume(&self) -> Option<String> {
+        self.start.resume.clone()
+    }
+
+    /// Whether tool `id`'s row is open.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_open(&self, id: &str) -> bool {
+        self.expanded.contains(id)
+    }
+
+    /// The Stop / Force stop button, as its click.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_press_stop(&mut self, cx: &mut Context<Self>) {
+        self.stop_pressed(cx);
+    }
+
     /// Whether the `@` list has hits (scenes wait for the ranking).
     #[cfg(feature = "ui-shots")]
     pub fn at_hits(&self) -> usize {
@@ -623,6 +664,7 @@ impl AgentTab {
             end: ProcessEnd::default(),
             exited: false,
             booting: false,
+            ending: false,
             queued: Vec::new(),
             run: Run::default(),
             no_process: false,
@@ -643,6 +685,8 @@ impl AgentTab {
             force_timer: None,
             _boot: None,
             _subscriptions: subscriptions,
+            #[cfg(feature = "ui-shots")]
+            last_argv: Vec::new(),
             #[cfg(feature = "ui-shots")]
             rows_built: Rc::new(Cell::new(0)),
         }
@@ -706,12 +750,16 @@ impl AgentTab {
         self.after_change(false, cx);
         let resume = self.start.resume.clone();
         self.spawn_process(resume, cx);
-        let queued = std::mem::take(&mut self.queued);
-        if !queued.is_empty() {
-            for (text, attachments) in queued {
-                self.say(text, attachments);
-            }
+        if !self.queued.is_empty() {
+            self.flush_queued();
             self.after_change(true, cx);
+        }
+    }
+
+    /// Send what waited for the process (booting, or the last one ending).
+    fn flush_queued(&mut self) {
+        for (text, attachments) in std::mem::take(&mut self.queued) {
+            self.say(text, attachments);
         }
     }
 
@@ -737,14 +785,18 @@ impl AgentTab {
         let Some(provider) = self.provider else {
             return;
         };
-        if self.no_process {
-            return;
-        }
         let start = Start {
             resume,
             ..self.start.clone()
         };
         let argv = provider.argv(&start);
+        #[cfg(feature = "ui-shots")]
+        {
+            self.last_argv = argv.clone();
+        }
+        if self.no_process {
+            return;
+        }
         let process = self.listen(&argv, cx);
         let mut translator = provider.translator();
         for line in translator.hello() {
@@ -805,6 +857,10 @@ impl AgentTab {
                 }
             }
             ProcessEvent::Ended { code } => {
+                // The process is gone: nothing more can be written to it; a message sent now
+                // waits for the end to be reported and goes to the restarted process.
+                self.ending = true;
+                self.process = None;
                 if self.end.ended(code) {
                     self.end_timer = Some(cx.spawn(async move |this, cx| {
                         cx.background_executor().timer(END_WAIT).await;
@@ -825,8 +881,11 @@ impl AgentTab {
             }
             ProcessEvent::SpawnFailed(message) => {
                 self.exited = true;
+                self.ending = false;
                 self.process = None;
-                self.conversation.failed_to_start(&message);
+                let label = self.label().to_string();
+                self.conversation
+                    .failed_to_start(&format!("Couldn't start {label}: {message}"));
                 self.after_change(true, cx);
             }
         }
@@ -837,10 +896,45 @@ impl AgentTab {
     /// conversation hears it ended.
     fn finish(&mut self, code: Option<i32>, tail: String, cx: &mut Context<Self>) {
         self.exited = true;
+        self.ending = false;
         self.process = None;
         self.pump = None;
         self.stopping = None;
-        if resume_failed(self.run.started, self.run.resume.is_some()) {
+        // What the run said on its way out: its stderr tail and its error rows.
+        let said: Vec<String> = self.conversation.items()[self.run.first_item..]
+            .iter()
+            .filter_map(|i| match i {
+                Item::Error(e) => Some(e.clone()),
+                _ => None,
+            })
+            .chain(std::iter::once(tail.clone()))
+            .collect();
+        let unknown = self
+            .provider
+            .is_some_and(|p| said.iter().any(|s| p.unknown_conversation(s)));
+        let failed_resume = resume_failed(self.run.started, self.run.resume.is_some());
+        if failed_resume && !unknown {
+            // It couldn't start (login, network, a crash): the conversation is still there, and
+            // the tab keeps its id. One error row says why.
+            let sends = std::mem::take(&mut self.run.sends);
+            self.conversation.keep_first(self.run.first_item);
+            for (text, attachments) in sends {
+                self.conversation.you(text, attachments);
+            }
+            let why = said
+                .iter()
+                .rev()
+                .map(|s| s.trim())
+                .find(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| match code {
+                    Some(c) => format!("it exited (code {c})"),
+                    None => "it was terminated".into(),
+                });
+            let label = self.label().to_string();
+            self.conversation
+                .failed_to_start(&format!("Couldn't start {label}: {why}"));
+        } else if failed_resume {
             let sends = std::mem::take(&mut self.run.sends);
             // The "restored" notice said there was a conversation; there isn't.
             let mut keep = self.run.first_item;
@@ -857,8 +951,14 @@ impl AgentTab {
             for (text, attachments) in sends {
                 self.say(text, attachments);
             }
+            self.flush_queued();
         } else {
             self.conversation.process_ended(code, &tail);
+            if !self.queued.is_empty() {
+                let resume = self.conversation_id();
+                self.spawn_process(resume, cx);
+                self.flush_queued();
+            }
         }
         self.after_change(true, cx);
     }
@@ -1022,14 +1122,17 @@ impl AgentTab {
             self.attachments = attachments;
             return;
         }
-        if self.booting {
+        if self.booting || self.ending {
+            // Held, shown as waiting under the conversation, until the process is there.
             self.queued.push((text, attachments));
+            cx.notify();
             return;
         }
         if self.process.is_none() && !self.no_process {
             let resume = self.conversation_id();
             self.spawn_process(resume, cx);
         }
+        self.flush_queued();
         self.say(text, attachments);
         self.after_change(true, cx);
     }
@@ -1085,6 +1188,15 @@ impl AgentTab {
             .ok();
         }));
         cx.notify();
+    }
+
+    /// The right button: Stop, or Force stop once it is offered.
+    fn stop_pressed(&mut self, cx: &mut Context<Self>) {
+        if self.force {
+            self.force_stop(cx);
+        } else {
+            self.stop(cx);
+        }
     }
 
     /// Force stop: end the process, then start it again resuming the conversation.
@@ -1729,17 +1841,19 @@ impl AgentTab {
             .text_size(px(BODY - 1.))
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .child(head);
-        if openable {
+            .gap(px(6.));
+        // Only the header toggles: a click in the diff or the output (to select it) doesn't.
+        let head = if openable {
             let view = look.view.clone();
-            tool = tool
-                .cursor_pointer()
+            head.cursor_pointer()
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     view.update(cx, |this, cx| this.toggle(ix, cx)).ok();
-                });
-        }
+                })
+        } else {
+            head
+        };
+        tool = tool.child(head);
         if open {
             if let Some(d) = &diff {
                 tool = tool.child(self.diff_block(d, look));
@@ -1957,6 +2071,44 @@ impl AgentTab {
             .into_any_element()
     }
 
+    /// Messages waiting for the process, under the conversation, and why they wait.
+    fn pending(&self, c: &Colors) -> Option<AnyElement> {
+        if self.queued.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .px(px(16.))
+                .pb(px(10.))
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(6.))
+                .text_size(px(BODY))
+                .children(self.queued.iter().map(|(text, _)| {
+                    div()
+                        .max_w(relative(0.8))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(12.))
+                        .bg(hsla(c.card))
+                        .border_1()
+                        .border_color(hsla(c.card_border))
+                        .text_color(hsla(c.card_dim))
+                        .child(SharedString::from(text.clone()))
+                }))
+                .child(
+                    div()
+                        .text_size(px(text::META))
+                        .text_color(hsla(c.dim))
+                        .child(SharedString::from(format!("Starting {}…", self.label()))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn empty_state(&self, c: &Colors) -> AnyElement {
         let home = crate::workspace::home_dir();
         let place = crate::sidebar::home_relative(&self.start.cwd, home.as_deref());
@@ -2082,13 +2234,7 @@ impl AgentTab {
                     .child(match stop_label {
                         Some(label) => button("agent-stop", label, false, c)
                             .text_size(px(text::META))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.force {
-                                    this.force_stop(cx);
-                                } else {
-                                    this.stop(cx);
-                                }
-                            }))
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_pressed(cx)))
                             .into_any_element(),
                         None => div()
                             .px(px(8.))
@@ -2146,8 +2292,11 @@ impl Render for AgentTab {
         });
         #[cfg(feature = "ui-shots")]
         let built = self.rows_built.clone();
-        let stream = if empty {
+        let pending = self.pending(&c);
+        let stream = if empty && self.queued.is_empty() {
             self.empty_state(&c)
+        } else if empty {
+            div().flex_1().into_any_element()
         } else {
             let look = look.clone();
             div()
@@ -2178,6 +2327,7 @@ impl Render for AgentTab {
             .text_color(hsla(c.text))
             .child(self.top_line(&c))
             .child(stream)
+            .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {
                 d.child(self.composer_area(&c, mono, cx))

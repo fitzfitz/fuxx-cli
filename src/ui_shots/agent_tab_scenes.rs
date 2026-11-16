@@ -21,7 +21,7 @@ use crate::agent_conversation::{Answer, Item};
 use crate::agent_process::ProcessEvent;
 use crate::agent_tab::{AgentTab, BAD_RESUME_NOTICE};
 use crate::providers::claude::CLAUDE;
-use crate::providers::{Event, Provider, Start, TodoItem, TodoState};
+use crate::providers::{Event, Past, Provider, Start, TodoItem, TodoState};
 use crate::status::Status;
 
 type Slot = Rc<RefCell<Option<Entity<AgentTab>>>>;
@@ -56,10 +56,19 @@ fn tab_of(slot: &Slot) -> Entity<AgentTab> {
 
 /// The window's view: the tab, made with no process, the keyboard in its composer.
 fn build(theme: crate::theme::Theme, slot: Slot) -> impl FnOnce(&mut Window, &mut App) -> AnyView {
+    build_in(theme, slot, start())
+}
+
+/// `build`, starting as `start` says.
+fn build_in(
+    theme: crate::theme::Theme,
+    slot: Slot,
+    start: Start,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView {
     move |window, cx| {
         cx.set_global(shot_appearance(theme, cx));
         cx.bind_keys(crate::key_bindings());
-        let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, start(), window, cx));
+        let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, start, window, cx));
         let focus = tab.read(cx).focus_handle(cx);
         focus.focus(window, cx);
         *slot.borrow_mut() = Some(tab.clone());
@@ -891,4 +900,329 @@ pub(super) fn agent_tab_keys() {
         },
     );
     println!("ui-shots: {n}: @ pick and Stop");
+}
+
+/// Whether the top `frac` of two shots of one window differ (the stream, not the composer).
+fn top_differs(a: &super::Shot, b: &super::Shot, frac: f32) -> bool {
+    let rows = (a.height as f32 * frac) as usize;
+    let n = rows * a.width as usize * 4;
+    a.rgba[..n] != b.rgba[..n]
+}
+
+/// Review fixes (fix round 1), no shot: a message sent while the tab boots shows at once and is
+/// sent after the history; Force stop ends the process and starts it again resuming the same
+/// conversation; a resume that fails for another reason keeps the conversation; a message sent
+/// between the process's end and its report waits and goes to the restarted process; a spawn
+/// failure says which agent.
+pub(super) fn agent_tab_review() {
+    let n = "agent-tab-review";
+    let theme = shot_theme("Catppuccin Mocha");
+    let dims = size(px(DIMS.0), px(DIMS.1));
+    let errors = |t: &AgentTab| -> Vec<String> {
+        t.shot_items()
+            .iter()
+            .filter_map(|i| match i {
+                Item::Error(e) => Some(e.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Important 1: sent while booting.
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    render_with(&theme, dims, build(theme, slot), move |cx, window| {
+        let tab = tab_of(&keep);
+        cx.update(|cx| tab.update(cx, |t, _| t.shot_boot()));
+        let before = frame_fresh(cx, window);
+        cx.simulate_input(window, "hello there");
+        cx.simulate_keystrokes(window, "enter");
+        cx.run_until_parked();
+        let after = frame_fresh(cx, window);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(t.shot_pending(), 1, "{n}: held for the process");
+            assert!(
+                t.shot_items().is_empty(),
+                "{n}: not in the conversation yet"
+            );
+            assert_eq!(
+                t.shot_composer().read(cx).text(),
+                "",
+                "{n}: the box is cleared"
+            );
+        });
+        assert!(
+            top_differs(&before, &after, 0.7),
+            "{n}: a message sent while booting shows at once"
+        );
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
+        std::fs::write(dir.join("agent-tab-review-boot-mocha.png"), png(&after)).expect("PNG");
+        feed(cx, &tab, |t, cx| {
+            t.shot_history(vec![Past::You("earlier".into())], cx)
+        });
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(t.shot_pending(), 0, "{n}");
+            assert!(
+                matches!(t.shot_items(), [Item::You { text: a, .. }, Item::You { text: b, .. }]
+                    if a == "earlier" && b == "hello there"),
+                "{n}: after the history: {:?}",
+                t.shot_items()
+            );
+            assert_eq!(t.status(), Status::Working, "{n}: sent");
+        });
+        keep.borrow_mut().take();
+    });
+
+    // Important 2: Force stop (a stand-in `sleep` as the process, in a folder that exists).
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    let here = Start {
+        cwd: std::env::temp_dir(),
+        ..start()
+    };
+    render_with(
+        &theme,
+        dims,
+        build_in(theme, slot, here),
+        move |cx, window| {
+            let tab = tab_of(&keep);
+            feed(cx, &tab, |t, cx| {
+                t.shot_spawn(["/bin/sh", "-c", "sleep 30"].map(String::from).to_vec(), cx)
+            });
+            let until = Instant::now() + Duration::from_secs(4);
+            let pid = loop {
+                if let Some(pid) = cx.read(|cx| tab.read(cx).process().and_then(|p| p.pid())) {
+                    break pid;
+                }
+                assert!(Instant::now() < until, "{n}: the stand-in never started");
+                std::thread::sleep(Duration::from_millis(20));
+                cx.run_until_parked();
+            };
+            feed(cx, &tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::Started {
+                        conversation: "c1".into(),
+                        model: None,
+                    }],
+                    cx,
+                )
+            });
+            feed(cx, &tab, |t, cx| t.send("Run the long tests".into(), cx));
+            let _ = frame_fresh(cx, window);
+            cx.simulate_keystrokes(window, "escape");
+            cx.run_until_parked();
+            cx.advance_clock(crate::agent_tab::STOP_FORCE_AFTER + Duration::from_millis(100));
+            cx.run_until_parked();
+            cx.read(|cx| assert_eq!(tab.read(cx).shot_stop_label(), Some("Force stop"), "{n}"));
+            feed(cx, &tab, |t, cx| t.shot_press_stop(cx));
+            let running = |pid: i32| {
+                std::process::Command::new("/bin/kill")
+                    .args(["-0", &pid.to_string()])
+                    .status()
+                    .is_ok_and(|s| s.success())
+            };
+            let until = Instant::now() + Duration::from_secs(4);
+            while running(pid) {
+                assert!(Instant::now() < until, "{n}: force stop left {pid} running");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                assert!(
+                    matches!(t.shot_items().last(), Some(Item::Notice(s)) if s == "Stopped"),
+                    "{n}: {:?}",
+                    t.shot_items()
+                );
+                assert!(errors(t).is_empty(), "{n}: no red row");
+                assert_eq!(t.status(), Status::Done, "{n}");
+                assert_eq!(t.shot_stop_label(), None, "{n}");
+                let argv = t.shot_last_argv();
+                assert!(
+                    argv.windows(2).any(|w| w == ["--resume", "c1"]),
+                    "{n}: restarted resuming c1: {argv:?}"
+                );
+            });
+            keep.borrow_mut().take();
+        },
+    );
+
+    // Minor 1: a resume that fails, but not for an unknown conversation, keeps it.
+    render_with(
+        &theme,
+        dims,
+        move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let resume = Start {
+                resume: Some("c9".into()),
+                ..start()
+            };
+            cx.new(|cx| {
+                let mut t = AgentTab::for_shots(&CLAUDE, resume, window, cx);
+                t.shot_history(Vec::new(), cx);
+                t.shot_process(
+                    ProcessEvent::Exited {
+                        code: Some(1),
+                        stderr_tail: "Invalid API key · Please run /login".into(),
+                    },
+                    cx,
+                );
+                let errs = errors(&t);
+                assert_eq!(
+                    errs,
+                    ["Couldn't start Claude: Invalid API key · Please run /login"],
+                    "{n}: {:?}",
+                    t.shot_items()
+                );
+                assert_eq!(
+                    t.shot_resume().as_deref(),
+                    Some("c9"),
+                    "{n}: the id is kept"
+                );
+                assert!(
+                    !t.shot_items()
+                        .iter()
+                        .any(|i| matches!(i, Item::Notice(x) if x == BAD_RESUME_NOTICE)),
+                    "{n}: not a new conversation"
+                );
+                t
+            })
+            .into()
+        },
+        |_, _| {},
+    );
+
+    // Minor 2: sent between the process's end and its report.
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    render_with(&theme, dims, build(theme, slot), move |cx, _| {
+        let tab = tab_of(&keep);
+        feed(cx, &tab, |t, cx| {
+            t.shot_feed(
+                vec![Event::Started {
+                    conversation: "c1".into(),
+                    model: None,
+                }],
+                cx,
+            )
+        });
+        feed(cx, &tab, |t, cx| t.send("first".into(), cx));
+        feed(cx, &tab, |t, cx| {
+            t.shot_process(ProcessEvent::Ended { code: Some(1) }, cx)
+        });
+        feed(cx, &tab, |t, cx| t.send("second".into(), cx));
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(
+                t.shot_pending(),
+                1,
+                "{n}: held, not written to a dead process"
+            );
+            assert!(
+                !t.shot_items()
+                    .iter()
+                    .any(|i| matches!(i, Item::You { text, .. } if text == "second")),
+                "{n}"
+            );
+        });
+        feed(cx, &tab, |t, cx| {
+            t.shot_process(
+                ProcessEvent::Exited {
+                    code: Some(1),
+                    stderr_tail: "crashed".into(),
+                },
+                cx,
+            )
+        });
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            let items = t.shot_items();
+            let k = items.len();
+            assert!(
+                matches!(&items[k - 2..], [Item::Error(e), Item::You { text, .. }]
+                    if e.contains("crashed") && text == "second"),
+                "{n}: the exit, then the held message: {items:?}"
+            );
+            assert_eq!(t.shot_pending(), 0, "{n}");
+            assert!(
+                t.shot_last_argv()
+                    .windows(2)
+                    .any(|w| w == ["--resume", "c1"]),
+                "{n}: restarted resuming c1"
+            );
+        });
+        keep.borrow_mut().take();
+    });
+
+    // Minor 6: a spawn failure says which agent couldn't start.
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    render_with(&theme, dims, build(theme, slot), move |cx, _| {
+        let tab = tab_of(&keep);
+        feed(cx, &tab, |t, cx| {
+            t.shot_process(
+                ProcessEvent::SpawnFailed("claude: No such file or directory".into()),
+                cx,
+            )
+        });
+        cx.read(|cx| {
+            assert_eq!(
+                errors(tab.read(cx)),
+                ["Couldn't start Claude: claude: No such file or directory"],
+                "{n}"
+            );
+        });
+        keep.borrow_mut().take();
+    });
+    // Minor 4: only the header toggles a tool row; a click in its diff doesn't.
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    render_with(&theme, dims, build(theme, slot), move |cx, window| {
+        use gpui::{Modifiers, point};
+        let tab = tab_of(&keep);
+        feed(cx, &tab, |t, cx| {
+            t.shot_feed(
+                vec![
+                    Event::ToolStarted {
+                        id: "e1".into(),
+                        name: "Edit".into(),
+                        summary: "notes.txt".into(),
+                        parent: None,
+                        detail: Some(crate::providers::ToolDetail::Diff {
+                            path: "/w/notes.txt".into(),
+                            unified: "@@ -1,3 +1,3 @@\n-alpha\n+beta\n-one\n+two\n-three\n+four\n"
+                                .into(),
+                        }),
+                    },
+                    Event::ToolFinished {
+                        id: "e1".into(),
+                        ok: true,
+                        summary: "updated".into(),
+                        output: None,
+                    },
+                ],
+                cx,
+            )
+        });
+        feed(cx, &tab, |t, cx| t.shot_toggle(0, cx));
+        let _ = frame_fresh(cx, window);
+        // The row starts under the top line (26) and its 14 pt gap: the header is ~40–70, the
+        // diff's six lines below it.
+        cx.simulate_click(window, point(px(300.), px(120.)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_open("e1")),
+            "{n}: a click in the diff keeps it open"
+        );
+        cx.simulate_click(window, point(px(300.), px(55.)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            !cx.read(|cx| tab.read(cx).shot_open("e1")),
+            "{n}: the header closes it"
+        );
+        keep.borrow_mut().take();
+    });
+
+    println!("ui-shots: {n}: boot send, force stop, failed resume, late send, spawn failure");
 }
