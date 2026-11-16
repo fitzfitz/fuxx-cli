@@ -104,7 +104,7 @@ impl Steps {
                 .min()
         });
         if let Some(wait) = soonest.filter(|w| *w < within) {
-            std::thread::sleep(wait + LABEL_LATE);
+            crate::ui_shots::prof::sleep(wait + LABEL_LATE);
             self.catch_up(cx, window);
         }
     }
@@ -164,7 +164,7 @@ impl Steps {
                 })
         });
         if turned {
-            std::thread::sleep(late);
+            crate::ui_shots::prof::sleep(late);
             self.catch_up(cx, window);
         }
     }
@@ -208,7 +208,7 @@ impl Steps {
                 "{n}: {what}: an age turned during the check (twice)"
             );
             retried = true;
-            std::thread::sleep(LABEL_LATE);
+            crate::ui_shots::prof::sleep(LABEL_LATE);
             self.catch_up(cx, window);
         };
         let stale = bytes_differ(&now, &fresh);
@@ -575,7 +575,7 @@ pub(super) fn chrome_notifications() {
             start.elapsed() < Duration::from_secs(5),
             "{n}: the slide ends"
         );
-        std::thread::sleep(Duration::from_millis(16));
+        crate::ui_shots::prof::sleep(Duration::from_millis(16));
         settle_frames(&mut cx, window);
     }
     steps.step(
@@ -685,7 +685,7 @@ pub(super) fn chrome_places_programs_ports() {
                 started.elapsed() < Duration::from_secs(20),
                 "{n}: {what} wasn't found"
             );
-            std::thread::sleep(Duration::from_millis(50));
+            crate::ui_shots::prof::sleep(Duration::from_millis(50));
             cx.advance_clock(PROGRAMS_REFRESH);
             cx.run_until_parked();
         }
@@ -918,7 +918,7 @@ pub(super) fn chrome_resize_title() {
             started.elapsed() < Duration::from_secs(5),
             "{n}: the slide ends"
         );
-        std::thread::sleep(Duration::from_millis(16));
+        crate::ui_shots::prof::sleep(Duration::from_millis(16));
         settle_frames(&mut cx, window);
     }
     let named = |w: f32| crate::title_area::shows_name(w, false);
@@ -977,7 +977,7 @@ fn drag_to(
         Modifiers::none(),
     );
     cx.simulate_mouse_move(window, to, left, Modifiers::none());
-    std::thread::sleep(crate::drag_gap::SLIDE + Duration::from_millis(30));
+    crate::ui_shots::prof::sleep(crate::drag_gap::SLIDE + Duration::from_millis(30));
 }
 
 /// A point over the right pane's terminal (no bar, no row).
@@ -1496,7 +1496,7 @@ pub(super) fn chrome_bars_and_edges() {
         |cx| {
             cx.dispatch_action(window, ToggleRightSidebar);
             // Its slide, by the real clock.
-            std::thread::sleep(Duration::from_millis(400));
+            crate::ui_shots::prof::sleep(Duration::from_millis(400));
         },
     );
     on_ws(&mut cx, window, ws, |ws, window, cx| {
@@ -1508,7 +1508,7 @@ pub(super) fn chrome_bars_and_edges() {
             start.elapsed() < Duration::from_secs(5),
             "{n}: the slide ends"
         );
-        std::thread::sleep(Duration::from_millis(16));
+        crate::ui_shots::prof::sleep(Duration::from_millis(16));
         settle_frames(&mut cx, window);
     }
     steps.step(

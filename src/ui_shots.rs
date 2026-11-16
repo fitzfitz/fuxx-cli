@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::process::exit;
+use std::time::Instant;
 
 use gpui::VisualTestAppContext;
 use gpui::{
@@ -84,9 +85,12 @@ pub fn render_with(
     build: impl FnOnce(&mut Window, &mut App) -> AnyView,
     act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle),
 ) -> Shot {
+    let started = Instant::now();
     let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    let mut t = prof::lap(prof::NEW_APP, started);
     // As the app does at start (appearance.rs), so the bundled fonts are there to shape text with.
     fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    t = prof::lap(prof::FONTS, t);
     let theme = *theme;
     let window = cx
         .open_offscreen_window(size, move |window, cx| {
@@ -94,17 +98,25 @@ pub fn render_with(
             cx.new(|_| Root { theme, scene })
         })
         .expect("open an off-screen window");
+    t = prof::lap(prof::OPEN, t);
     cx.run_until_parked();
+    t = prof::lap(prof::SETTLE, t);
     act(&mut cx, window.into());
     cx.run_until_parked();
+    t = prof::lap(prof::ACT, t);
     let image = cx
         .capture_screenshot(window.into())
         .expect("capture the window");
-    Shot {
+    t = prof::lap(prof::CAPTURE, t);
+    let shot = Shot {
         width: image.width(),
         height: image.height(),
         rgba: image.as_raw().to_vec(),
-    }
+    };
+    prof::add(prof::RENDER_WITH, started.elapsed());
+    drop(cx);
+    prof::lap(prof::TEARDOWN, t);
+    shot
 }
 
 /// Render and save `target/ui-shots/<name>-<slug>.png`; returns the path.
@@ -133,8 +145,77 @@ pub fn shoot_with(
         .join("ui-shots");
     std::fs::create_dir_all(&dir).expect("create target/ui-shots");
     let path = dir.join(format!("{name}-{slug}.png"));
+    let started = Instant::now();
     std::fs::write(&path, png(&shot)).expect("write the PNG");
+    prof::lap(prof::PNG, started);
     path
+}
+
+/// Timing for `UI_SHOTS_PROFILE=1` (per-phase sums of `render_with`/`shoot_with`) and for the
+/// run's summary (time in `thread::sleep` and in child processes). Always accumulated (cheap);
+/// printed only when profiling.
+pub(crate) mod prof {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::time::{Duration, Instant};
+
+    pub const NEW_APP: usize = 0;
+    pub const FONTS: usize = 1;
+    pub const OPEN: usize = 2;
+    pub const SETTLE: usize = 3;
+    pub const ACT: usize = 4;
+    pub const CAPTURE: usize = 5;
+    pub const PNG: usize = 6;
+    /// Whole `render_with` calls (the phases above except `PNG`).
+    pub const RENDER_WITH: usize = 7;
+    pub const SLEEP: usize = 8;
+    pub const CHILD: usize = 9;
+    /// Dropping the app and its window at the end of `render_with` (not in `RENDER_WITH`).
+    pub const TEARDOWN: usize = 10;
+    const NAMES: [&str; 7] = [
+        "new_app", "fonts", "open", "settle", "act", "capture", "png",
+    ];
+    static NANOS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+
+    pub fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("UI_SHOTS_PROFILE").is_some())
+    }
+    pub fn add(slot: usize, d: Duration) {
+        NANOS[slot].fetch_add(d.as_nanos() as u64, Relaxed);
+    }
+    pub fn get(slot: usize) -> f64 {
+        NANOS[slot].load(Relaxed) as f64 / 1e9
+    }
+    /// Adds the time since `since` to `slot`; returns now, for the next phase.
+    pub fn lap(slot: usize, since: Instant) -> Instant {
+        let now = Instant::now();
+        add(slot, now - since);
+        now
+    }
+    /// `std::thread::sleep`, counted.
+    pub fn sleep(d: Duration) {
+        add(SLEEP, d);
+        std::thread::sleep(d);
+    }
+    pub fn print_sums() {
+        let total: f64 = (0..NAMES.len()).map(get).sum();
+        let sums: Vec<String> = NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, n)| format!("{n} {:.1}", get(i)))
+            .collect();
+        println!(
+            "ui-shots: profile (s): {} | sum {total:.1}",
+            sums.join(", ")
+        );
+        println!(
+            "ui-shots: profile (s): render_with total {:.1}, teardown (after) {:.1}, thread::sleep {:.1}, child processes {:.1}",
+            get(RENDER_WITH),
+            get(TEARDOWN),
+            get(SLEEP),
+            get(CHILD)
+        );
+    }
 }
 
 /// A minimal PNG: 8-bit RGBA, no filtering, stored (uncompressed) deflate blocks. The `image`
@@ -343,18 +424,63 @@ const SCENES: &[(&str, fn())] = &[
 
 /// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
 pub fn run(filter: Option<&str>) -> ! {
-    let mut ran = 0;
+    let started = Instant::now();
+    let mut times: Vec<(&str, f64)> = Vec::new();
     for (name, scene) in SCENES {
         if filter.is_some_and(|f| !name.contains(f)) {
             continue;
         }
+        let (rw, sleep, child) = (
+            prof::get(prof::RENDER_WITH),
+            prof::get(prof::SLEEP),
+            prof::get(prof::CHILD),
+        );
+        let t = Instant::now();
         scene();
-        println!("ui-shots: {name} ok");
-        ran += 1;
+        let secs = t.elapsed().as_secs_f64();
+        println!("ui-shots: {name} ok ({secs:.1} s)");
+        if prof::enabled() {
+            // Outside `render_with`: scenes that build their own app, waits, probes.
+            println!(
+                "ui-shots: {name} profile: render_with {:.1} s, other {:.1} s, sleep {:.1} s, child {:.1} s",
+                prof::get(prof::RENDER_WITH) - rw,
+                secs - (prof::get(prof::RENDER_WITH) - rw),
+                prof::get(prof::SLEEP) - sleep,
+                prof::get(prof::CHILD) - child,
+            );
+        }
+        times.push((name, secs));
     }
-    if ran == 0 {
+    if times.is_empty() {
         eprintln!("ui-shots: no scene matches {filter:?}");
         exit(1);
+    }
+    let total = started.elapsed().as_secs_f64();
+    // A child process (cache-off, WebKit) is a filtered run of this binary: it leaves the
+    // timings and the summary to its parent.
+    let child = std::env::var_os("FUXX_SHOTS_WEBKIT").is_some()
+        || std::env::var_os("FUXX_CHROME_CACHE").is_some();
+    if !child {
+        if filter.is_none() {
+            let tsv: String = times
+                .iter()
+                .map(|(n, s)| format!("{n}\t{s:.1}\n"))
+                .collect();
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("ui-shots");
+            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+            std::fs::write(dir.join("timings.tsv"), tsv).expect("write timings.tsv");
+        }
+        println!("ui-shots: {} passed, 0 failed, {total:.1} s", times.len());
+        let mut slowest = times.clone();
+        slowest.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (name, secs) in slowest.iter().take(15) {
+            println!("ui-shots:   {secs:6.1} s  {name}");
+        }
+    }
+    if prof::enabled() {
+        prof::print_sums();
     }
     exit(0)
 }
@@ -1553,7 +1679,7 @@ fn chrome_ages_current() {
     assert!(followed, "{n}: the status bar follows S");
     assert_shown_current(&mut cx, window, &format!("{n}: done, before"));
     // O's age turns ("59s" to "1m") with nothing notified.
-    std::thread::sleep(Duration::from_millis(500));
+    prof::sleep(Duration::from_millis(500));
     cx.advance_clock(Duration::from_secs(2));
     settle_frames(&mut cx, window);
     // O's tab's tooltip, opened now (before any full redraw, which would draw its bar anew).
@@ -1624,7 +1750,7 @@ fn chrome_ages_current() {
         "{n}: the ticker stopped"
     );
     // (No check here: a full redraw would run `Workspace::render`, which starts the age timer.)
-    std::thread::sleep(Duration::from_millis(500));
+    prof::sleep(Duration::from_millis(500));
     cx.advance_clock(Duration::from_secs(2));
     settle_frames(&mut cx, window);
     assert_shown_current(&mut cx, window, &format!("{n}: done, its age turned"));
@@ -1672,7 +1798,7 @@ fn chrome_ages_current() {
         ws.right_sidebar.followed == Some(ws.sessions.items()[1].id)
     });
     assert!(followed, "{n}: the status bar follows tests");
-    std::thread::sleep(Duration::from_millis(500));
+    prof::sleep(Duration::from_millis(500));
     cx.advance_clock(Duration::from_secs(2));
     settle_frames(&mut cx, window);
     assert!(ticking(&mut cx), "{n}: the marks still tick");
@@ -1989,7 +2115,7 @@ fn chrome_notify_redraws_parts() {
     let start = std::time::Instant::now();
     while cx.read(|cx| ws.read(cx).slide.is_some()) {
         assert!(start.elapsed() < SLIDE * 20, "{n}: the slide ends");
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        prof::sleep(std::time::Duration::from_millis(16));
         cx.run_until_parked();
         next_frame(&mut cx, window);
     }
@@ -2035,7 +2161,7 @@ fn chrome_notify_redraws_parts() {
     let start = std::time::Instant::now();
     while cx.read(|cx| ws.read(cx).slide.is_some()) {
         assert!(start.elapsed() < SLIDE * 20, "{n}: the slide ends");
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        prof::sleep(std::time::Duration::from_millis(16));
         cx.run_until_parked();
         next_frame(&mut cx, window);
     }
@@ -2297,11 +2423,13 @@ fn chrome_kill_switch() {
             assert_eq!(count, 0, "{n}: cache on: {c:?} rendered {count} times");
         }
         let exe = std::env::current_exe().expect("this program");
+        let spawned = Instant::now();
         let child = std::process::Command::new(exe)
             .args(["__ui-shots", n])
             .env("FUXX_CHROME_CACHE", "off")
             .status()
             .expect("run the scene with the cache off");
+        prof::add(prof::CHILD, spawned.elapsed());
         assert!(child.success(), "{n}: with FUXX_CHROME_CACHE=off: {child}");
     } else {
         println!("ui-shots: {n}: cache off: workspace {frames} frames; parts {parts:?}");
@@ -2596,7 +2724,7 @@ fn chrome_folder_polled() {
             moved.elapsed() < Duration::from_secs(5),
             "{n}: the shell moved to b"
         );
-        std::thread::sleep(Duration::from_millis(20));
+        prof::sleep(Duration::from_millis(20));
     }
     // Its last lookup 5 s back: due at the next check (what 5 s with nothing drawn would do).
     cx.update(|cx| {
@@ -2823,7 +2951,7 @@ fn chrome_rows_once() {
     // moving marks' ticker) builds the rows again ("1m") and the sidebar draws them (M11p
     // Task 4: a frame with no notify reuses the cached sidebar, so the redraw is what turns it).
     // (The labels read the real clock, the timers the harness's.)
-    std::thread::sleep(Duration::from_millis(500));
+    prof::sleep(Duration::from_millis(500));
     chrome_cache::reset();
     cx.advance_clock(Duration::from_millis(500));
     cx.run_until_parked();
@@ -5209,7 +5337,7 @@ struct TabDragGeometry {
 
 /// Wait out a drag's slides (M11b Task 7b), then draw again: everything is where it slides to.
 fn settle_slides(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
-    std::thread::sleep(crate::drag_gap::SLIDE + std::time::Duration::from_millis(30));
+    prof::sleep(crate::drag_gap::SLIDE + std::time::Duration::from_millis(30));
     cx.update_window(window, |_, window, _| window.refresh())
         .expect("refresh");
     cx.run_until_parked();
@@ -6066,7 +6194,7 @@ fn file_drag_select_scenes() {
             let near = point(x, g.bounds.bottom() + px(60.0));
             cx.simulate_mouse_move(window, near, left, none);
             // Real time, as the scrollbar's fade reads the clock; the test clock for the steps.
-            std::thread::sleep(ms(300));
+            prof::sleep(ms(300));
             cx.advance_clock(ms(300));
             frame(cx, window);
             let (on, scroll, selection) = look(cx);
@@ -6282,7 +6410,7 @@ fn file_drag_select_scenes() {
                 },
             );
             // Real time for the fade (it reads `Instant`), the test clock for its task's steps.
-            std::thread::sleep(ms(1500));
+            prof::sleep(ms(1500));
             cx.advance_clock(ms(1500));
             frame(cx, window);
             assert!(
@@ -7464,7 +7592,7 @@ fn file_tab_scrollbar_scenes() {
                 "{n}: the thumb {down} down its track, the text {scrolled} down"
             );
             // Real time for the fade (it reads `Instant`), the test clock for its task's steps.
-            std::thread::sleep(Duration::from_millis(1500));
+            prof::sleep(Duration::from_millis(1500));
             cx.advance_clock(Duration::from_millis(1500));
             frame(cx, window);
             let (shown, animating, ..) = look(cx);
@@ -8507,7 +8635,7 @@ fn right_sidebar_scenes() {
                 assert_eq!(state(cx), (true, slide), "{n}: and closes it");
                 // Once it has slid away, the right pane's icon: that pane takes the focus and
                 // the sidebar opens.
-                std::thread::sleep(crate::sidebar_toggle::SLIDE + Duration::from_millis(30));
+                prof::sleep(crate::sidebar_toggle::SLIDE + Duration::from_millis(30));
                 frame(cx);
                 assert_eq!(state(cx), (true, None), "{n}: slid away");
                 let panes = shown_panes(cx, &ws);
@@ -11152,7 +11280,7 @@ fn activity_scenes() {
                             .collect::<Vec<u8>>()
                     };
                     let before = grab(cx);
-                    std::thread::sleep(Duration::from_millis(200));
+                    prof::sleep(Duration::from_millis(200));
                     // Drawn again for certain (not a cached frame).
                     ws.update(cx, |_, cx| cx.notify());
                     frame(cx, window);
@@ -14301,7 +14429,7 @@ fn palette_motion_scene() {
                         .collect::<Vec<u8>>()
                 };
                 let before = grab(cx);
-                std::thread::sleep(Duration::from_millis(200));
+                prof::sleep(Duration::from_millis(200));
                 cx.advance_clock(Duration::from_millis(200));
                 // The marks' clock on by 200 ms whether or not its ticker runs.
                 let clock = cx.read(|cx| ws.read(cx).clock.clone());
@@ -14931,7 +15059,7 @@ fn settle_until(
         if start.elapsed() > std::time::Duration::from_secs(secs) {
             return false;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        prof::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -16036,7 +16164,7 @@ fn welcome_checking_scene() {
                         .collect::<Vec<u8>>()
                 };
                 let before = grab(cx);
-                std::thread::sleep(Duration::from_millis(200));
+                prof::sleep(Duration::from_millis(200));
                 cx.advance_clock(Duration::from_millis(200));
                 settle(cx, window);
                 let after = grab(cx);
@@ -21199,7 +21327,7 @@ fn cursor_flood_scene() {
             start.elapsed() < Duration::from_secs(60),
             "{n}: the flood never finished"
         );
-        std::thread::sleep(Duration::from_millis(5));
+        prof::sleep(Duration::from_millis(5));
         rig.cx.run_until_parked();
         if asked.get() != drawn {
             drawn = asked.get();
@@ -21228,7 +21356,7 @@ fn chip_of(rig: &CursorRig) -> Option<(String, [&'static str; 3], gpui::Bounds<P
 fn wait_for(rig: &mut CursorRig, done: impl Fn(&crate::terminal_view::TerminalView) -> bool) {
     let start = std::time::Instant::now();
     while !rig.read(&done) && start.elapsed() < std::time::Duration::from_secs(3) {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        prof::sleep(std::time::Duration::from_millis(10));
         let _ = rig.frame();
     }
     let _ = rig.frame();
@@ -21402,7 +21530,7 @@ fn command_blocks_scene() {
             let shown = rig.frame();
             // Nothing animates: 200 ms on (real time for what paints by the clock, the app's
             // clock for its timers), the same pixels.
-            std::thread::sleep(Duration::from_millis(200));
+            prof::sleep(Duration::from_millis(200));
             rig.cx.advance_clock(Duration::from_millis(200));
             let later = rig.frame();
             assert!(
@@ -21865,7 +21993,7 @@ fn copied(rig: &mut CursorRig, was: &str) -> Option<String> {
     while clipboard(rig).as_deref() == Some(was)
         && start.elapsed() < std::time::Duration::from_secs(3)
     {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        prof::sleep(std::time::Duration::from_millis(10));
         let _ = rig.frame();
     }
     clipboard(rig)
@@ -22092,7 +22220,7 @@ fn command_blocks_copy_scene() {
         rig.appearance(|a| a.command_blocks = false);
         set_clipboard(&mut rig, "before");
         press(&mut rig, "cmd-shift-c");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        prof::sleep(std::time::Duration::from_millis(100));
         let _ = rig.frame();
         assert_eq!(clipboard(&mut rig).as_deref(), Some("before"), "{n}: off");
     }
@@ -22136,7 +22264,7 @@ fn command_blocks_rerun_scene() {
             "{n}: typed after the live prompt: {after:?}"
         );
         // No Return: `cat` never gets a line to copy back.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        prof::sleep(std::time::Duration::from_millis(200));
         let _ = rig.frame();
         let settled = screen(&rig);
         assert_eq!(settled, after, "{n}: nothing more came");
@@ -22181,7 +22309,7 @@ fn command_blocks_rerun_scene() {
             "{n}: Rerun's label {strongest:.2} vs enabled {enabled:.2}"
         );
         press_chip_button(&mut rig, 2);
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        prof::sleep(std::time::Duration::from_millis(200));
         let _ = rig.frame();
         assert_eq!(screen(&rig), settled, "{n}: a disabled Rerun types nothing");
         let _ = ids;
@@ -22235,7 +22363,7 @@ fn rerun_odd_blocks(theme: Theme, n: &str) {
     set_clipboard(&mut rig, "before");
     for i in [0, 1, 2] {
         press_chip_button(&mut rig, i);
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        prof::sleep(std::time::Duration::from_millis(50));
         let _ = rig.frame();
         assert!(
             chip_of(&rig).is_some(),
@@ -22885,11 +23013,13 @@ fn file_tab_md_mermaid_scenes() {
             println!("ui-shots: {}", path.display());
         }
         let exe = std::env::current_exe().expect("this program");
+        let spawned = Instant::now();
         let status = std::process::Command::new(exe)
             .args(["__ui-shots", "file-tab-md-mermaid"])
             .env(CHILD, "1")
             .status()
             .expect("run the WebKit half");
+        prof::add(prof::CHILD, spawned.elapsed());
         assert!(status.success(), "file-tab-md-mermaid (WebKit): {status}");
         return;
     }
