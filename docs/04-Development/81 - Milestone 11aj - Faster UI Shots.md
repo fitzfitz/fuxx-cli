@@ -123,6 +123,52 @@ over 6 shards that is about 45-55 s plus a serial tail (Mermaid 21 s, kill switc
 looks comfortable: a task's own scenes are one to a few of the scenes above, and the biggest is 40 s serial (about 15 s
 after A1-A3).
 
+### A1 — measured (M11aj Task 7, 2026-11-17)
+
+**What the teardown was:** neither the app nor the window — the **terminals**. A `sample` of the `tabs` scene put
+1,638 of its 3,057 main-thread samples in `drop(cx)`, and 1,615 of those in `Pty::drop` (`src/pty.rs`) → portable-pty's
+`ChildKiller::kill` for `std::process::Child`, which sends the child a SIGHUP, asks at once whether it has exited (it
+hasn't yet), then sleeps 50 ms before asking again. Every shot's `cat`s paid that one after another (the `tabs` shots
+have several each: 9.8 s of teardown for 14 shots, at 24 % CPU). GPUI's own teardown (the `MacWindow` drop, the
+`LeakDetector`, the app's entities) was a few samples.
+
+**What A1 does** (the harness only; the app's `Pty::drop` is unchanged):
+
+- **Terminals hung up together:** before a shot's app drops, `HangUp` sends a SIGHUP to every terminal child started
+  since the shot began (the children that lead their own session; portable-pty `setsid`s them, so git and child fuxx
+  runs are untouched) and waits up to 500 ms, without reaping, until they have exited; each `Pty` then finds its child
+  gone and doesn't sleep. In `render_with`, and through `ShotApp` (a fresh app with this guard) in the scenes that keep
+  their own app (`chrome_window`, `cached-panes`, the cursor rig, the cursor status block). Mermaid's kept contexts
+  and its WebKit child are unchanged.
+- **Fonts once per process:** the bundled fonts are registered with CoreText for the whole process (and
+  `register_bundled_fonts` already kept its first answer), so only the first app asks CoreText for every installed font
+  name (about 40 ms a time); `mono_font` reuses that list too (it was asked again in every shot's `shot_appearance`).
+- **Not done: one app per scene.** Creating an app costs 0.2 s in a whole run, and the teardown follows the terminals,
+  which a shared app would still drop with each window; so it would gain nothing and risk state leaks.
+
+| Run (this Mac, debug build) | Before | After |
+| --- | --- | --- |
+| Default (`UI_SHOTS_PROFILE=1`) | 433.9 s | **212.9 s** |
+| `--png --all-themes` (`UI_SHOTS_PROFILE=1`) | 511.7 s | **276.3 s** |
+
+Phase sums, default run (s): new_app 0.3 → 0.2, fonts 19.7 → 0.0, open 85.0 → 47.7, settle 39.6 → 38.9, act 57.4 → 54.7,
+capture 15.2 → 15.2, **teardown 146.4 → 1.9**; render_with total 217.4 → 156.7; sleep 24.2 / 24.3; child 17.6 / 17.4.
+With `--png --all-themes`: fonts 16.9 → 0.0, open 89.3 → 54.1, teardown 159.5 → 2.1, png 42.3 → 37.2, the rest within
+5 %. Outside `render_with` and its teardown ("other", now printed apart from teardown per scene): 71 s in the default
+run, of which the Mermaid WebKit child is 16 s.
+
+Slowest after A1 (default run): file-tab 33.3, file-tab-md-mermaid 17.3, file-tab-md 13.8, preferences 13.4, file-diff
+7.6 s; no other scene over 6.2 s.
+
+**Same pictures:** the `--png --all-themes` run passes the same 207 `ok` lines and writes the same 451 PNGs, 444 of them
+byte-identical. The other 7 (`activity`, `activity-waiting` ×2 themes, `branch-switcher-open-mocha`,
+`welcome-checking` ×2) differ between two runs of the unchanged build too (they show ages and a real scratch repo). The
+leak check (in-memory shots before and after, `diff_count == 0`): `tabs`, `title-bar`, `changes-bar`, `rename-box`,
+`command-blocks-rerun` (`Both`) and `help`, `update-button`, `command-blocks-rprompt`, `file-tab-scrollbar`, `panels`
+(with `right-panels`) (several shots): 91 shots, all 0. One repeat of `title-bar` once drew `title-bar-sliding-mocha`
+2,996 bytes apart (a hide slide set 60 ms back in real time, so it moves with how long build to frame takes; the scene
+still passed); five more runs of it matched, as did four of the unchanged build: a real-time shot for A4's `serial` list.
+
 ### Part A — Quick wins
 
 - **A1 · Less setup per shot.** Reuse what's safe to reuse, chosen from Part 0's numbers: at least the font

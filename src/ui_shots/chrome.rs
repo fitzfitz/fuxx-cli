@@ -297,7 +297,7 @@ fn on_ws(
 
 /// api and tests split side by side in one workspace (shown, api focused), and agent in a
 /// workspace of its own (not shown), in another group.
-fn elsewhere_window() -> (VisualTestAppContext, AnyWindowHandle, Entity<Workspace>) {
+fn elsewhere_window() -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
     super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         let web = std::path::Path::new(super::WEB);
@@ -898,7 +898,7 @@ pub(super) fn chrome_resize_title() {
 
 /// Workspace A: api, tests and build as tabs of one pane, web split right of it; B (docs) and
 /// C (notes) below it in the same group. api focused.
-fn drag_window() -> (VisualTestAppContext, AnyWindowHandle, Entity<Workspace>) {
+fn drag_window() -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
     super::chrome_parts::chrome_window(|ws, window, cx| {
         let api = std::path::Path::new(super::API);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);

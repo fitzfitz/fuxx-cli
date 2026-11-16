@@ -188,7 +188,7 @@ pub(super) const SCENES: &[Scene] = &[
 struct CursorRig {
     // Before `cx`: fields drop in order, and a handle must go before its app.
     view: gpui::Entity<crate::terminal_view::TerminalView>,
-    cx: VisualTestAppContext,
+    cx: ShotApp,
     window: AnyWindowHandle,
     dims: Size<Pixels>,
 }
@@ -242,8 +242,7 @@ impl CursorRig {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
-        fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+        let mut cx = ShotApp::new();
         let slot = Rc::new(RefCell::new(None));
         let text = text.to_string();
         let window = {
@@ -430,8 +429,7 @@ fn cursor_scenes() {
             use std::cell::RefCell;
             use std::rc::Rc;
             let dims = size(px(640.0), px(400.0));
-            let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
-            fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+            let mut cx = ShotApp::new();
             let slot: Slot = Rc::new(RefCell::new(None));
             let window = {
                 let slot = slot.clone();
