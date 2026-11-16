@@ -27,7 +27,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "file-diff",
         run: file_diff_scenes,
         themes: Themes::Both,
-        serial: false,
+        serial: true,
         kind: Kind::Visual,
         sources: &[
             "src/file_tab.rs",

@@ -10,6 +10,11 @@
 //! `cargo run --features ui-shots -- __ui-shots [filter] [--png] [--all-themes]`. A scene panics
 //! when its checks fail; the run goes on, writes that scene's shots to
 //! `target/ui-shots/failed/<scene>/`, and exits 1 at the end.
+//!
+//! A process has one window-owning thread, so a run is spread over processes:
+//! `scripts/ui-shots.sh` builds once, runs `__ui-shots --shard I/N` in N processes side by side
+//! (the scenes that aren't `serial`, balanced by `target/ui-shots/timings.tsv`), then
+//! `__ui-shots --serial-only` alone, and prints the run's summary.
 
 use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
@@ -83,8 +88,8 @@ pub(super) struct Scene {
     pub(super) name: &'static str,
     pub(super) run: fn(),
     pub(super) themes: Themes,
-    /// Must run alone (real-time waits, a child fuxx); read by `--shard` (Task 8).
-    #[allow(dead_code)]
+    /// Must run alone (real-time waits, a child fuxx, the clipboard): never in a `--shard`, run
+    /// by `--serial-only` after the shards.
     pub(super) serial: bool,
     #[allow(dead_code)]
     pub(super) kind: Kind,
@@ -113,7 +118,8 @@ const AREAS: &[&[Scene]] = &[
     terminal::SCENES,
 ];
 
-/// Every scene's name, in run order (the order of a plain run and of `timings.tsv`).
+/// Every scene's name, in run order (the order of a plain run, of each shard and of the serial
+/// run).
 const ORDER: &[&str] = &[
     "smoke",
     "tokens",
@@ -257,6 +263,85 @@ fn scenes() -> Vec<&'static Scene> {
         .collect()
 }
 
+/// `names` split into `n` shards of about equal time: longest first, each onto the shard with
+/// the least time so far (the first such on a tie), each shard then in `names`' order. A name
+/// with no time in `timings` counts the median of those that have one (1 s if none has, which
+/// deals the names out round robin).
+pub(super) fn shard_of<'a>(
+    timings: &[(&str, f64)],
+    names: &[&'a str],
+    n: usize,
+) -> Vec<Vec<&'a str>> {
+    let n = n.max(1);
+    let time = |name: &str| timings.iter().find(|(t, _)| *t == name).map(|t| t.1);
+    let mut known: Vec<f64> = names.iter().filter_map(|&name| time(name)).collect();
+    known.sort_by(f64::total_cmp);
+    let median = match known.len() {
+        0 => 1.0,
+        len if len % 2 == 1 => known[len / 2],
+        len => (known[len / 2 - 1] + known[len / 2]) / 2.0,
+    };
+    let mut longest: Vec<(usize, f64)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, &name)| (i, time(name).unwrap_or(median)))
+        .collect();
+    // Stable: equal times keep `names`' order.
+    longest.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut load = vec![0.0f64; n];
+    let mut picked: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, secs) in longest {
+        let least = (0..n)
+            .min_by(|&a, &b| load[a].total_cmp(&load[b]))
+            .expect("n >= 1");
+        load[least] += secs;
+        picked[least].push(i);
+    }
+    picked
+        .into_iter()
+        .map(|mut shard| {
+            shard.sort_unstable();
+            shard.into_iter().map(|i| names[i]).collect()
+        })
+        .collect()
+}
+
+/// The scenes this run runs, in `ORDER`: those matching the filter; of them, with `--shard I/N`
+/// the `I`th share of the scenes that aren't `serial` (`shard_of`, by `timings`), with
+/// `--serial-only` the `serial` ones.
+fn selected<'s>(all: &[&'s Scene], opts: &RunOptions, timings: &[(&str, f64)]) -> Vec<&'s Scene> {
+    let matching = all
+        .iter()
+        .copied()
+        .filter(|s| opts.filter.as_deref().is_none_or(|f| s.name.contains(f)));
+    if opts.serial_only {
+        return matching.filter(|s| s.serial).collect();
+    }
+    let Some((i, n)) = opts.shard else {
+        return matching.collect();
+    };
+    let parallel: Vec<&Scene> = matching.filter(|s| !s.serial).collect();
+    let names: Vec<&str> = parallel.iter().map(|s| s.name).collect();
+    let mine = shard_of(timings, &names, n).swap_remove(i - 1);
+    parallel
+        .into_iter()
+        .filter(|s| mine.contains(&s.name))
+        .collect()
+}
+
+/// `timings.tsv`'s lines (`<scene>\t<seconds>`, and a shard's third column, `ok` or `FAILED`);
+/// a line that doesn't read is skipped.
+fn parse_timings(tsv: &str) -> Vec<(String, f64)> {
+    tsv.lines()
+        .filter_map(|line| {
+            let mut cols = line.split('\t');
+            let name = cols.next()?;
+            let secs = cols.next()?.parse().ok()?;
+            Some((name.to_string(), secs))
+        })
+        .collect()
+}
+
 static OPTIONS: OnceLock<RunOptions> = OnceLock::new();
 
 /// The run's options (the defaults until `run` sets them).
@@ -298,35 +383,44 @@ pub(super) fn child_run(filter: &str) -> std::process::Command {
     command
 }
 
-/// `fuxx __ui-shots [filter] [--png] [--all-themes]` (`args` are those after `__ui-shots`): run
-/// the scenes whose name contains `filter`, each to the end even if one fails, then exit (1 if
-/// any failed). A failed scene's shots are written to `target/ui-shots/failed/<scene>/`.
+/// `fuxx __ui-shots [filter] [--png] [--all-themes] [--shard I/N | --serial-only]` (`args` are
+/// those after `__ui-shots`): run the scenes whose name contains `filter` (`selected`), each to
+/// the end even if one fails, then exit (1 if any failed). A failed scene's shots are written to
+/// `target/ui-shots/failed/<scene>/`. `scripts/ui-shots.sh` runs the shards side by side, then
+/// the serial scenes, and prints the run's summary.
 pub fn run(args: &[String]) -> ! {
     let mut opts = match parse_args(args) {
         Ok(opts) => opts,
         Err(e) => {
             eprintln!("ui-shots: {e}");
             eprintln!(
-                "usage: fuxx __ui-shots [filter] [--png] [--all-themes] [--shard I/N] [--changed <base>] [--update-refs]"
+                "usage: fuxx __ui-shots [filter] [--png] [--all-themes] [--shard I/N | --serial-only] [--changed <base>] [--update-refs]"
             );
             exit(2);
         }
     };
-    if opts.shard.is_some() || opts.changed.is_some() || opts.update_refs {
-        eprintln!("ui-shots: --shard, --changed and --update-refs are not built yet");
+    if opts.changed.is_some() || opts.update_refs {
+        eprintln!("ui-shots: --changed and --update-refs are not built yet");
         exit(2);
     }
     opts.png |= std::env::var("UI_SHOTS_PNG").is_ok_and(|v| v == "1");
     let filter = opts.filter.clone();
+    // A shard's or the serial run's own timings, beside `timings.tsv` (which the script merges
+    // them into): `timings.<I>.tsv` or `timings.serial.tsv`.
+    let part = match (opts.shard, opts.serial_only) {
+        (Some((i, _)), _) => Some(i.to_string()),
+        (None, true) => Some("serial".to_string()),
+        (None, false) => None,
+    };
+    let recorded = std::fs::read_to_string(shots_dir().join("timings.tsv")).unwrap_or_default();
+    let recorded = parse_timings(&recorded);
+    let recorded: Vec<(&str, f64)> = recorded.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+    let picked = selected(&scenes(), &opts, &recorded);
     OPTIONS.set(opts).expect("the run's options are set once");
     let started = Instant::now();
-    let mut times: Vec<(&str, f64)> = Vec::new();
-    let mut failed = 0;
-    for scene in scenes() {
+    let mut times: Vec<(&str, f64, bool)> = Vec::new();
+    for scene in picked {
         let name = scene.name;
-        if filter.as_deref().is_some_and(|f| !name.contains(f)) {
-            continue;
-        }
         let (rw, teardown, sleep, child) = (
             prof::get(prof::RENDER_WITH),
             prof::get(prof::TEARDOWN),
@@ -345,7 +439,6 @@ pub fn run(args: &[String]) -> ! {
         if passed {
             println!("ui-shots: {name} ok ({secs:.1} s)");
         } else {
-            failed += 1;
             let dir = write_failed(name);
             println!(
                 "ui-shots: {name} FAILED ({secs:.1} s) \u{2014} pictures in {}",
@@ -353,32 +446,46 @@ pub fn run(args: &[String]) -> ! {
             );
         }
         if prof::enabled() {
-            // `other`: outside `render_with` and its teardown (scenes that build their own app,
-            // waits, probes).
+            // `other`: outside `render_with` and the apps' teardown (scenes' own work, waits,
+            // probes).
             let rw = prof::get(prof::RENDER_WITH) - rw;
             let teardown = prof::get(prof::TEARDOWN) - teardown;
             println!(
                 "ui-shots: {name} profile: render_with {rw:.1} s, teardown {teardown:.1} s, other {:.1} s, sleep {:.1} s, child {:.1} s",
-                secs - rw - teardown,
+                (secs - rw - teardown).max(0.0),
                 prof::get(prof::SLEEP) - sleep,
                 prof::get(prof::CHILD) - child,
             );
         }
-        times.push((name, secs));
+        times.push((name, secs, passed));
     }
-    if times.is_empty() {
-        eprintln!("ui-shots: no scene matches {filter:?}");
-        exit(1);
-    }
+    let failed = times.iter().filter(|t| !t.2).count();
     let total = started.elapsed().as_secs_f64();
     // A child process (cache-off, WebKit) is a filtered run of this binary: it leaves the
     // timings and the summary to its parent.
     let child = std::env::var(CHILD_ENV).is_ok_and(|v| v == "1");
-    if !child {
+    if let Some(part) = &part {
+        // A shard or the serial run: its share may be empty; the script sums the parts.
+        let tsv: String = times
+            .iter()
+            .map(|(n, s, ok)| format!("{n}\t{s:.1}\t{}\n", if *ok { "ok" } else { "FAILED" }))
+            .collect();
+        let dir = shots_dir();
+        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
+        std::fs::write(dir.join(format!("timings.{part}.tsv")), tsv)
+            .expect("write the part's timings");
+        println!(
+            "ui-shots: {} passed, {failed} failed, {total:.1} s",
+            times.len() - failed
+        );
+    } else if times.is_empty() {
+        eprintln!("ui-shots: no scene matches {filter:?}");
+        exit(1);
+    } else if !child {
         if filter.is_none() {
             let tsv: String = times
                 .iter()
-                .map(|(n, s)| format!("{n}\t{s:.1}\n"))
+                .map(|(n, s, _)| format!("{n}\t{s:.1}\n"))
                 .collect();
             let dir = shots_dir();
             std::fs::create_dir_all(&dir).expect("create target/ui-shots");
@@ -390,7 +497,7 @@ pub fn run(args: &[String]) -> ! {
         );
         let mut slowest = times.clone();
         slowest.sort_by(|a, b| b.1.total_cmp(&a.1));
-        for (name, secs) in slowest.iter().take(15) {
+        for (name, secs, _) in slowest.iter().take(15) {
             println!("ui-shots:   {secs:6.1} s  {name}");
         }
     }
@@ -768,6 +875,130 @@ fn shot_release() -> crate::update_release::Release {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each shard's summed seconds, from `timings` (an untimed name counts `untimed`).
+    fn loads(timings: &[(&str, f64)], shards: &[Vec<&str>], untimed: f64) -> Vec<f64> {
+        shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .iter()
+                    .map(|n| {
+                        timings
+                            .iter()
+                            .find(|(t, _)| t == n)
+                            .map_or(untimed, |t| t.1)
+                    })
+                    .sum()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shards_balance_longest_first_onto_the_least_loaded() {
+        let timings = [("a", 10.0), ("b", 9.0), ("c", 2.0), ("d", 2.0), ("e", 1.0)];
+        let names = ["a", "b", "c", "d", "e"];
+        let shards = shard_of(&timings, &names, 2);
+        assert_eq!(shards.len(), 2);
+        let mut got = loads(&timings, &shards, 0.0);
+        got.sort_by(f64::total_cmp);
+        assert!(
+            got == [12.0, 12.0] || got == [11.0, 13.0],
+            "loads {got:?} from {shards:?}"
+        );
+    }
+
+    #[test]
+    fn every_name_lands_in_exactly_one_shard_in_its_order() {
+        let timings = [("b", 5.0), ("d", 1.0), ("f", 3.0)];
+        let names = ["a", "b", "c", "d", "e", "f", "g"];
+        for n in 1..=9 {
+            let shards = shard_of(&timings, &names, n);
+            assert_eq!(shards.len(), n, "{n} shards");
+            let mut all: Vec<&str> = shards.concat();
+            all.sort_unstable();
+            assert_eq!(all, names, "{n} shards: every name once");
+            for shard in &shards {
+                let at = |s: &&str| names.iter().position(|n| n == s);
+                assert!(
+                    shard.is_sorted_by_key(at),
+                    "{shard:?} keeps the names' order"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_untimed_name_counts_the_median() {
+        // The median of 1, 4 and 10 is 4: x (untimed) gets a shard of its own, as b does, and
+        // c joins b (the first least loaded). Counted as 0 s, x would have joined c instead.
+        let timings = [("a", 10.0), ("b", 4.0), ("c", 1.0)];
+        let names = ["a", "b", "c", "x"];
+        let shards = shard_of(&timings, &names, 3);
+        assert_eq!(
+            loads(&timings, &shards, 4.0),
+            [10.0, 5.0, 4.0],
+            "{shards:?}"
+        );
+        assert_eq!(shards, [vec!["a"], vec!["b", "c"], vec!["x"]]);
+    }
+
+    #[test]
+    fn with_no_timings_the_names_go_round_robin() {
+        let names = ["a", "b", "c", "d", "e"];
+        let shards = shard_of(&[], &names, 2);
+        assert_eq!(shards, [vec!["a", "c", "e"], vec!["b", "d"]]);
+    }
+
+    #[test]
+    fn one_shard_is_every_name_in_order() {
+        let timings = [("c", 9.0), ("a", 1.0)];
+        let names = ["a", "b", "c"];
+        assert_eq!(shard_of(&timings, &names, 1), [vec!["a", "b", "c"]]);
+    }
+
+    #[test]
+    fn a_shard_never_has_a_serial_scene_and_serial_only_has_them_all_in_order() {
+        let all = scenes();
+        let timings: Vec<(&str, f64)> = Vec::new();
+        let opts = |shard, serial_only| RunOptions {
+            shard,
+            serial_only,
+            ..RunOptions::default()
+        };
+        let mut sharded: Vec<&str> = Vec::new();
+        for i in 1..=4 {
+            let picked = selected(&all, &opts(Some((i, 4)), false), &timings);
+            assert!(
+                picked.iter().all(|s| !s.serial),
+                "shard {i}/4 has a serial scene"
+            );
+            sharded.extend(picked.iter().map(|s| s.name));
+        }
+        let serial: Vec<&str> = selected(&all, &opts(None, true), &timings)
+            .iter()
+            .map(|s| s.name)
+            .collect();
+        let want: Vec<&str> = all.iter().filter(|s| s.serial).map(|s| s.name).collect();
+        assert_eq!(serial, want, "the serial scenes, in ORDER");
+        sharded.extend(serial);
+        sharded.sort_unstable();
+        let mut every: Vec<&str> = ORDER.to_vec();
+        every.sort_unstable();
+        assert_eq!(
+            sharded, every,
+            "the shards and the serial run cover every scene once"
+        );
+    }
+
+    #[test]
+    fn timings_tsv_reads_two_or_three_columns_and_skips_bad_lines() {
+        let read = parse_timings("a\t1.5\nb\t2.0\tok\nbad line\nc\tx\n\nd\t0.3\tFAILED\n");
+        assert_eq!(
+            read,
+            [("a".to_string(), 1.5), ("b".into(), 2.0), ("d".into(), 0.3)]
+        );
+    }
 
     #[test]
     fn every_declared_scene_runs_once_in_order() {

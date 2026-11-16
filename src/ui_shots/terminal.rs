@@ -1718,16 +1718,10 @@ fn set_clipboard(rig: &mut CursorRig, text: &str) {
         .update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.into())));
 }
 
-/// Draw frames until the clipboard isn't `was` (a copy's text is read on the background
-/// executor), at most 3 s; then the clipboard.
-fn copied(rig: &mut CursorRig, was: &str) -> Option<String> {
-    let start = std::time::Instant::now();
-    while clipboard(rig).as_deref() == Some(was)
-        && start.elapsed() < std::time::Duration::from_secs(3)
-    {
-        prof::sleep(std::time::Duration::from_millis(10));
-        let _ = rig.frame();
-    }
+/// The clipboard once a copy has run: its text is read on the background executor, which is
+/// the harness's (GPUI's test scheduler), so a frame (`run_until_parked`) runs it to the end.
+fn copied(rig: &mut CursorRig) -> Option<String> {
+    let _ = rig.frame();
     clipboard(rig)
 }
 
@@ -1880,9 +1874,9 @@ fn command_blocks_copy_scene() {
 
         set_clipboard(&mut rig, "before");
         press(&mut rig, "cmd-shift-c");
-        // Waits the full 3 s for a change that never comes: nothing is written.
+        // The copy has run (on the harness's executor) and written nothing.
         assert_eq!(
-            copied(&mut rig, "before").as_deref(),
+            copied(&mut rig).as_deref(),
             Some("before"),
             "{n}: false's output is empty: the clipboard keeps what it had"
         );
@@ -1895,7 +1889,7 @@ fn command_blocks_copy_scene() {
         assert_eq!(chosen(&rig), Some(ids[0].clone()), "{n}: echo hi picked");
         set_clipboard(&mut rig, "before");
         press(&mut rig, "cmd-shift-c");
-        assert_eq!(copied(&mut rig, "before").as_deref(), Some("hi"), "{n}");
+        assert_eq!(copied(&mut rig).as_deref(), Some("hi"), "{n}");
 
         // Its chip: Copy command, then Copy output.
         point_at(&mut rig, point(px(g.bar_x), px(g.mid(0))));
@@ -1909,7 +1903,7 @@ fn command_blocks_copy_scene() {
         assert_eq!(clipboard(&mut rig).as_deref(), Some("echo hi"), "{n}");
         set_clipboard(&mut rig, "before");
         press_chip_button(&mut rig, 1);
-        assert_eq!(copied(&mut rig, "before").as_deref(), Some("hi"), "{n}");
+        assert_eq!(copied(&mut rig).as_deref(), Some("hi"), "{n}");
         assert!(chip_of(&rig).is_some(), "{n}: the chip stays");
         assert_eq!(chosen(&rig), Some(ids[0].clone()), "{n}: the pick is kept");
 
@@ -1920,11 +1914,7 @@ fn command_blocks_copy_scene() {
                 window.dispatch_action(Box::new(CopyCommandAndOutput), cx)
             })
             .expect("dispatch");
-        assert_eq!(
-            copied(&mut rig, "before").as_deref(),
-            Some("$ echo hi\nhi"),
-            "{n}"
-        );
+        assert_eq!(copied(&mut rig).as_deref(), Some("$ echo hi\nhi"), "{n}");
         set_clipboard(&mut rig, "before");
         rig.cx
             .update_window(window, |_, window, cx| {
@@ -1944,7 +1934,7 @@ fn command_blocks_copy_scene() {
         set_clipboard(&mut rig, "before");
         press(&mut rig, "cmd-shift-c");
         assert_eq!(
-            copied(&mut rig, "before").as_deref(),
+            copied(&mut rig).as_deref(),
             Some("one\ntwo"),
             "{n}: a running block's output so far"
         );
@@ -1953,9 +1943,7 @@ fn command_blocks_copy_scene() {
         rig.appearance(|a| a.command_blocks = false);
         set_clipboard(&mut rig, "before");
         press(&mut rig, "cmd-shift-c");
-        prof::sleep(std::time::Duration::from_millis(100));
-        let _ = rig.frame();
-        assert_eq!(clipboard(&mut rig).as_deref(), Some("before"), "{n}: off");
+        assert_eq!(copied(&mut rig).as_deref(), Some("before"), "{n}: off");
     }
 }
 
@@ -2095,9 +2083,9 @@ fn rerun_odd_blocks(theme: Theme, n: &str) {
     assert_eq!(rerun, Err(Refusal::NoCommand), "{n}");
     set_clipboard(&mut rig, "before");
     for i in [0, 1, 2] {
+        // A copy would run on the harness's executor, which the press's frame runs; a rerun
+        // would be in `take_sent` at once.
         press_chip_button(&mut rig, i);
-        prof::sleep(std::time::Duration::from_millis(50));
-        let _ = rig.frame();
         assert!(
             chip_of(&rig).is_some(),
             "{n}: a disabled button keeps the chip"

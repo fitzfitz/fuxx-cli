@@ -22,7 +22,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "files",
         run: files_scenes,
         themes: Themes::Both,
-        serial: false,
+        serial: true,
         kind: Kind::Visual,
         sources: &[
             "src/right_sidebar.rs",
@@ -376,7 +376,8 @@ pub(super) fn files_fixture() -> PathBuf {
     for folder in ["docs", "src/util"] {
         std::fs::create_dir_all(root.join(folder)).expect("the fixture's folders");
     }
-    // Made by the `files-keys` scene, which removes it; gone if a failed run left it.
+    // Made by the `files` scene (serial: no other scene runs then), which removes it; gone if a
+    // failed run left it.
     std::fs::remove_file(root.join("src/zz.rs")).ok();
     for file in [
         "docs/guide.md",
@@ -387,7 +388,12 @@ pub(super) fn files_fixture() -> PathBuf {
         "README.md",
         "notes.txt",
     ] {
-        std::fs::write(root.join(file), "fn main() {}\n").expect("the fixture's files");
+        // Written beside the fixture, then moved in whole: the scenes that use it may run in
+        // shards side by side, and one must never read (or list) a file another is writing.
+        let fresh =
+            std::env::temp_dir().join(format!("fuxx-ui-shots-files-{}", std::process::id()));
+        std::fs::write(&fresh, "fn main() {}\n").expect("the fixture's files");
+        std::fs::rename(&fresh, root.join(file)).expect("the fixture's files");
     }
     std::fs::canonicalize(&root).unwrap_or(root)
 }
