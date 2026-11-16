@@ -8,7 +8,9 @@ pub(super) const SCENES: &[Scene] = &[
         name: "cursor",
         run: cursor_scenes,
         themes: Themes::Both,
-        serial: false,
+        // Serial: (c) the glide (90 ms), sparks (350 ms) and the breath's 600 ms hold, read from
+        // Instant.
+        serial: true,
         kind: Kind::Visual,
         sources: &[
             "src/terminal_view.rs",

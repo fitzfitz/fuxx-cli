@@ -124,6 +124,8 @@ while [ "$i" -le "$jobs" ]; do
     i=$((i + 1))
 done
 wait
+# The shards have ended: their pids may be reused, so Ctrl-C from here signals only the serial run.
+pids=""
 # In the background too, so a Ctrl-C (or a `kill -INT` of this script) stops it at once: `wait`
 # returns to the trap, where a command in the foreground would be waited out first.
 run_part serial serial --serial-only ${pass[@]+"${pass[@]}"} &
