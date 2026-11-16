@@ -1275,7 +1275,7 @@ impl Workspace {
     }
 
     /// Whether the background service runs the sessions (their ids are its).
-    fn daemon_backed(&self) -> bool {
+    pub(crate) fn daemon_backed(&self) -> bool {
         !matches!(self.service, Service::Off)
     }
 
