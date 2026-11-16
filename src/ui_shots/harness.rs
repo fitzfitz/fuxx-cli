@@ -75,9 +75,9 @@ pub fn render_with(
 ) -> Shot {
     let started = Instant::now();
     let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    let hang_up = HangUp::new();
     let mut t = prof::lap(prof::NEW_APP, started);
-    // As the app does at start (appearance.rs), so the bundled fonts are there to shape text with.
-    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    register_fonts(&cx);
     t = prof::lap(prof::FONTS, t);
     let theme = *theme;
     let window = cx
@@ -102,9 +102,166 @@ pub fn render_with(
         rgba: image.as_raw().to_vec(),
     };
     prof::add(prof::RENDER_WITH, started.elapsed());
+    drop(hang_up);
     drop(cx);
     prof::lap(prof::TEARDOWN, t);
     shot
+}
+
+thread_local! {
+    /// The font names a fresh app sees once the bundled fonts are registered (`register_fonts`).
+    static FONT_NAMES: std::cell::OnceCell<Vec<String>> = const { std::cell::OnceCell::new() };
+}
+
+/// The bundled fonts, there to shape text with, as the app does at start (appearance.rs). They
+/// are registered with CoreText for the whole process, so only the first app registers them
+/// (`register_bundled_fonts` keeps its first answer anyway) and keeps the font names a fresh app
+/// then sees (each `all_font_names` asks CoreText for every installed font: about 40 ms).
+pub(super) fn register_fonts(cx: &VisualTestAppContext) {
+    FONT_NAMES.with(|names| {
+        names.get_or_init(|| {
+            fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+            cx.text_system().all_font_names()
+        });
+    });
+}
+
+/// Hangs up the terminals started since it was made, when it drops: before their app does.
+///
+/// Dropping an app drops its terminals, and each `Pty` sends its child a SIGHUP and asks at
+/// once whether it has exited; it hasn't yet, so portable-pty's `kill` sleeps 50 ms before
+/// asking again (`ChildKiller for std::process::Child`). One shot's terminals cost 50 ms or
+/// more each that way, one after another: most of the time spent dropping a shot's app. Sent
+/// here to all of them at once, and waited for (without reaping, so each `Pty` still reaps its
+/// own and sees it gone), they cost a few milliseconds together. A child that doesn't end
+/// within `HANG_UP_WAIT` is left to its `Pty`, as before.
+///
+/// A terminal's child is the one kind of child process that leads a session of its own
+/// (portable-pty calls `setsid`), so commands a scene runs (git, a child fuxx) are not touched.
+pub(super) struct HangUp(Vec<i32>);
+
+/// A fresh app (and its bundled fonts) whose terminals are hung up before it drops (`HangUp`),
+/// for a scene that keeps its app past one shot. Used as the `VisualTestAppContext` it holds.
+pub(super) struct ShotApp {
+    // Before `cx`: fields drop in order.
+    _hang_up: HangUp,
+    cx: VisualTestAppContext,
+}
+
+impl ShotApp {
+    pub(super) fn new() -> Self {
+        let cx = gpui::VisualTestAppContext::new(current_platform(false));
+        let hang_up = HangUp::new();
+        register_fonts(&cx);
+        Self {
+            _hang_up: hang_up,
+            cx,
+        }
+    }
+}
+
+impl std::ops::Deref for ShotApp {
+    type Target = VisualTestAppContext;
+    fn deref(&self) -> &VisualTestAppContext {
+        &self.cx
+    }
+}
+
+impl std::ops::DerefMut for ShotApp {
+    fn deref_mut(&mut self) -> &mut VisualTestAppContext {
+        &mut self.cx
+    }
+}
+
+/// How long `HangUp` waits for the terminals' children to end.
+const HANG_UP_WAIT: Duration = Duration::from_millis(500);
+
+impl HangUp {
+    /// The terminals running now are not its to hang up.
+    pub(super) fn new() -> Self {
+        Self(children::session_leaders())
+    }
+}
+
+impl Drop for HangUp {
+    fn drop(&mut self) {
+        let mut running: Vec<i32> = children::session_leaders()
+            .into_iter()
+            .filter(|pid| !self.0.contains(pid))
+            .collect();
+        for &pid in &running {
+            children::hang_up(pid);
+        }
+        let deadline = Instant::now() + HANG_UP_WAIT;
+        while !running.is_empty() && Instant::now() < deadline {
+            running.retain(|&pid| !children::ended(pid));
+            if !running.is_empty() {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
+    }
+}
+
+/// This process's child processes, through libSystem (no crate: the calls are four).
+mod children {
+    use std::ffi::{c_int, c_void};
+
+    unsafe extern "C" {
+        fn proc_listpids(kind: u32, typeinfo: u32, buffer: *mut c_void, size: c_int) -> c_int;
+        fn getsid(pid: c_int) -> c_int;
+        fn kill(pid: c_int, signal: c_int) -> c_int;
+        fn waitid(idtype: c_int, id: u32, info: *mut c_void, options: c_int) -> c_int;
+    }
+
+    /// `<libproc.h>`: list the children of the pid given.
+    const PROC_PPID_ONLY: u32 = 6;
+    const SIGHUP: c_int = 1;
+    /// `<sys/wait.h>`: one pid; its exit; not reaped; don't block.
+    const P_PID: c_int = 1;
+    const WEXITED: c_int = 0x04;
+    const WNOWAIT: c_int = 0x20;
+    const WNOHANG: c_int = 0x01;
+
+    /// The children that lead their own session (terminals' children), zombies included.
+    pub(super) fn session_leaders() -> Vec<i32> {
+        let mut pids: Vec<c_int> = vec![0; 4096];
+        let size = (pids.len() * size_of::<c_int>()) as c_int;
+        // SAFETY: the buffer is `size` bytes of `c_int`s; the call fills at most that.
+        let bytes = unsafe {
+            proc_listpids(
+                PROC_PPID_ONLY,
+                std::process::id(),
+                pids.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        pids.truncate(bytes.max(0) as usize / size_of::<c_int>());
+        // SAFETY: `getsid` only reads; a pid gone meanwhile gives -1.
+        pids.retain(|&pid| pid > 0 && unsafe { getsid(pid) } == pid);
+        pids
+    }
+
+    /// Send `pid` a SIGHUP (what its `Pty` would send).
+    pub(super) fn hang_up(pid: i32) {
+        // SAFETY: a signal to a child of ours that leads its own session.
+        unsafe { kill(pid, SIGHUP) };
+    }
+
+    /// Whether `pid` has exited (or was reaped already), leaving it to be reaped.
+    pub(super) fn ended(pid: i32) -> bool {
+        // `siginfo_t` is 104 bytes on macOS; `si_pid` is its fourth `int`.
+        let mut info: [c_int; 32] = [0; 32];
+        // SAFETY: `info` is larger than a `siginfo_t`; WNOWAIT leaves the child unreaped.
+        let r = unsafe {
+            waitid(
+                P_PID,
+                pid as u32,
+                info.as_mut_ptr().cast(),
+                WEXITED | WNOWAIT | WNOHANG,
+            )
+        };
+        r != 0 || info[3] == pid
+    }
 }
 
 /// Render, keep the shot for the scene (`keep_shot`) as `<name>-<slug>`; returns its PNG's path
@@ -329,10 +486,11 @@ pub(super) fn crc32(data: &[u8]) -> u32 {
 
 /// The terminal's font as the app builds it with no font settings (bundled JetBrains Mono).
 pub fn mono_font(cx: &App) -> Font {
-    fonts::gpui_font(
-        &fonts::from_entries(&[]),
-        &cx.text_system().all_font_names(),
-    )
+    let font = |names: &[String]| fonts::gpui_font(&fonts::from_entries(&[]), names);
+    FONT_NAMES.with(|names| match names.get() {
+        Some(names) => font(names),
+        None => font(&cx.text_system().all_font_names()),
+    })
 }
 
 /// The appearance a scene's app runs with: `theme`, and the default font and size.

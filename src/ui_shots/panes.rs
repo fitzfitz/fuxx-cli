@@ -99,8 +99,7 @@ fn cached_panes() {
 
     let theme = shot_theme("Catppuccin Mocha");
     let dims = size(px(640.0), px(400.0));
-    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
-    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    let mut cx = ShotApp::new();
     let slot = Rc::new(RefCell::new(None));
     let window = {
         let slot = slot.clone();

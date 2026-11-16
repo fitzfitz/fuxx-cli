@@ -599,11 +599,7 @@ fn chrome_working_marks() {
 
 /// Two terminals split side by side (two tab bars) in one workspace, and a second workspace:
 /// the chrome scenes' window with every part on screen.
-fn chrome_split_window() -> (
-    VisualTestAppContext,
-    AnyWindowHandle,
-    gpui::Entity<Workspace>,
-) {
+fn chrome_split_window() -> (ShotApp, AnyWindowHandle, gpui::Entity<Workspace>) {
     chrome_window(|ws, window, cx| {
         let api = std::path::Path::new("/Users/me/code/api");
         ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
@@ -1121,11 +1117,7 @@ const FRAMES_PER_TICK: u64 = 2;
 /// twice and settled: the context, the window and the workspace (the chrome scenes of M11p).
 pub(super) fn chrome_window(
     build: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
-) -> (
-    VisualTestAppContext,
-    AnyWindowHandle,
-    gpui::Entity<Workspace>,
-) {
+) -> (ShotApp, AnyWindowHandle, gpui::Entity<Workspace>) {
     chrome_window_with(|window, cx| {
         let mut ws = Workspace::for_shots(window, cx);
         build(&mut ws, window, cx);
@@ -1136,18 +1128,13 @@ pub(super) fn chrome_window(
 /// `chrome_window` over the workspace `make` makes.
 fn chrome_window_with(
     make: impl FnOnce(&mut Window, &mut Context<Workspace>) -> Workspace + 'static,
-) -> (
-    VisualTestAppContext,
-    AnyWindowHandle,
-    gpui::Entity<Workspace>,
-) {
+) -> (ShotApp, AnyWindowHandle, gpui::Entity<Workspace>) {
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let theme = shot_theme("Catppuccin Mocha");
     let dims = size(px(900.0), px(500.0));
-    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
-    fonts::register_bundled_fonts(&cx.text_system().all_font_names());
+    let mut cx = ShotApp::new();
     let slot = Rc::new(RefCell::new(None));
     let window = {
         let slot = slot.clone();

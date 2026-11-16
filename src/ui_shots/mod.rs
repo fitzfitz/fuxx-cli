@@ -327,8 +327,9 @@ pub fn run(args: &[String]) -> ! {
         if filter.as_deref().is_some_and(|f| !name.contains(f)) {
             continue;
         }
-        let (rw, sleep, child) = (
+        let (rw, teardown, sleep, child) = (
             prof::get(prof::RENDER_WITH),
+            prof::get(prof::TEARDOWN),
             prof::get(prof::SLEEP),
             prof::get(prof::CHILD),
         );
@@ -352,11 +353,13 @@ pub fn run(args: &[String]) -> ! {
             );
         }
         if prof::enabled() {
-            // Outside `render_with`: scenes that build their own app, waits, probes.
+            // `other`: outside `render_with` and its teardown (scenes that build their own app,
+            // waits, probes).
+            let rw = prof::get(prof::RENDER_WITH) - rw;
+            let teardown = prof::get(prof::TEARDOWN) - teardown;
             println!(
-                "ui-shots: {name} profile: render_with {:.1} s, other {:.1} s, sleep {:.1} s, child {:.1} s",
-                prof::get(prof::RENDER_WITH) - rw,
-                secs - (prof::get(prof::RENDER_WITH) - rw),
+                "ui-shots: {name} profile: render_with {rw:.1} s, teardown {teardown:.1} s, other {:.1} s, sleep {:.1} s, child {:.1} s",
+                secs - rw - teardown,
                 prof::get(prof::SLEEP) - sleep,
                 prof::get(prof::CHILD) - child,
             );
