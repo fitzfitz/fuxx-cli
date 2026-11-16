@@ -851,7 +851,7 @@ fn main() {
     // Dev-only (`ui-shots` feature): render the UI scenes off-screen to PNGs, then exit.
     #[cfg(feature = "ui-shots")]
     if args.first().map(String::as_str) == Some("__ui-shots") {
-        ui_shots::run(args.get(1).map(String::as_str));
+        ui_shots::run(&args[1..]);
     }
     let caller = std::env::var("FUXX_SESSION")
         .ok()

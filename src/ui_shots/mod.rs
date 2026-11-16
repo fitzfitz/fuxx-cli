@@ -1,15 +1,21 @@
 //! Off-screen UI screenshots (M11), compiled only with the `ui-shots` cargo feature.
 //!
-//! `shoot` renders a view in a hidden GPUI window and saves it as `target/ui-shots/<name>-<slug>.png`,
-//! so each UI task can look at its scenes in Catppuccin Mocha and Catppuccin Latte.
+//! `shoot` renders a view in a hidden GPUI window and keeps the shot in memory for the scene's
+//! checks; with `--png` (or `UI_SHOTS_PNG=1`) it also saves `target/ui-shots/<name>-<slug>.png`,
+//! so a UI task can look at its scenes in Catppuccin Mocha and Catppuccin Latte.
 //!
 //! AppKit only makes windows on the main thread and `cargo test` runs every test on a spawned one
 //! (it aborts with "Rust cannot catch foreign exceptions"), so the scenes are not `#[test]`s.
-//! They are plain functions listed in `SCENES` and run from `main` on the main thread:
-//! `cargo run --features ui-shots -- __ui-shots [filter]`. A scene panics when its checks fail.
+//! They are plain functions declared in `SCENES` and run from `main` on the main thread:
+//! `cargo run --features ui-shots -- __ui-shots [filter] [--png] [--all-themes]`. A scene panics
+//! when its checks fail; the run goes on, writes that scene's shots to
+//! `target/ui-shots/failed/<scene>/`, and exits 1 at the end.
 
+use std::cell::Cell;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::process::exit;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use gpui::VisualTestAppContext;
@@ -31,154 +37,267 @@ use crate::theme::{self, Theme, UiColors};
 use crate::ui_tokens::{self, contrast};
 use crate::workspace::{Overlay, Workspace};
 
+mod args;
 mod chrome_sources;
 mod harness;
 
+pub use args::{RunOptions, parse_args};
 pub(super) use harness::*;
 
-/// Every scene: (name, function). A UI task adds its scenes here.
-const SCENES: &[(&str, fn())] = &[
-    ("smoke", smoke),
-    ("tokens", tokens),
-    ("window", window_scenes),
-    ("marks", marks),
-    ("sidebar-marks", sidebar_marks),
-    ("cached-panes", cached_panes),
-    ("chrome-breath-skips-parts", chrome_breath_skips_parts),
-    ("chrome-notify-redraws-parts", chrome_notify_redraws_parts),
-    ("chrome-pane-churn", chrome_pane_churn),
-    ("chrome-kill-switch", chrome_kill_switch),
-    ("chrome-pixels-same", chrome_pixels_same),
-    ("chrome-ages-current", chrome_ages_current),
-    ("chrome-working-marks", chrome_working_marks),
-    ("chrome-folder-polled", chrome_folder_polled),
-    ("chrome-followed", chrome_followed),
-    ("chrome-title-once", chrome_title_once),
-    ("chrome-rows-once", chrome_rows_once),
-    (
+/// How many themes a scene is shot in by default (`--all-themes` shoots every scene in both).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)] // `One` is given to scenes by Tasks 4–6.
+pub(super) enum Themes {
+    /// Catppuccin Mocha only.
+    One,
+    /// Catppuccin Mocha and Catppuccin Latte.
+    Both,
+}
+
+/// What a scene's checks read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)] // Tagged by Tasks 4–6, read by Task 10.
+pub(super) enum Kind {
+    /// Pixels.
+    Visual,
+    /// View state only (bounds, scroll, words, counts).
+    State,
+}
+
+/// A scene, declared: its name (also its filter and file-name prefix), its function, and what
+/// the runner needs to know to schedule it.
+pub(super) struct Scene {
+    pub(super) name: &'static str,
+    pub(super) run: fn(),
+    pub(super) themes: Themes,
+    /// Must run alone (real-time waits, a child fuxx); read by `--shard` (Task 8).
+    #[allow(dead_code)]
+    pub(super) serial: bool,
+    #[allow(dead_code)]
+    pub(super) kind: Kind,
+    /// The app files its views come from; read by `--changed` (Task 9).
+    #[allow(dead_code)]
+    pub(super) sources: &'static [&'static str],
+}
+
+/// A scene as every one is until Tasks 4–6 tag them: both themes, not serial, visual, no
+/// sources.
+const fn scene(name: &'static str, run: fn()) -> Scene {
+    Scene {
+        name,
+        run,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[],
+    }
+}
+
+/// Every scene, in run order. A UI task adds its scenes here.
+const SCENES: &[Scene] = &[
+    scene("smoke", smoke),
+    scene("tokens", tokens),
+    scene("window", window_scenes),
+    scene("marks", marks),
+    scene("sidebar-marks", sidebar_marks),
+    scene("cached-panes", cached_panes),
+    scene("chrome-breath-skips-parts", chrome_breath_skips_parts),
+    scene("chrome-notify-redraws-parts", chrome_notify_redraws_parts),
+    scene("chrome-pane-churn", chrome_pane_churn),
+    scene("chrome-kill-switch", chrome_kill_switch),
+    scene("chrome-pixels-same", chrome_pixels_same),
+    scene("chrome-ages-current", chrome_ages_current),
+    scene("chrome-working-marks", chrome_working_marks),
+    scene("chrome-folder-polled", chrome_folder_polled),
+    scene("chrome-followed", chrome_followed),
+    scene("chrome-title-once", chrome_title_once),
+    scene("chrome-rows-once", chrome_rows_once),
+    scene(
         "chrome-status-elsewhere",
         chrome_sources::chrome_status_elsewhere,
     ),
-    ("chrome-model-edits", chrome_sources::chrome_model_edits),
-    ("chrome-notifications", chrome_sources::chrome_notifications),
-    (
+    scene("chrome-model-edits", chrome_sources::chrome_model_edits),
+    scene("chrome-notifications", chrome_sources::chrome_notifications),
+    scene(
         "chrome-places-programs-ports",
         chrome_sources::chrome_places_programs_ports,
     ),
-    ("chrome-globals", chrome_sources::chrome_globals),
-    ("chrome-resize-title", chrome_sources::chrome_resize_title),
-    ("chrome-drag-cancel", chrome_sources::chrome_drag_cancel),
-    ("chrome-renaming", chrome_sources::chrome_renaming),
-    (
+    scene("chrome-globals", chrome_sources::chrome_globals),
+    scene("chrome-resize-title", chrome_sources::chrome_resize_title),
+    scene("chrome-drag-cancel", chrome_sources::chrome_drag_cancel),
+    scene("chrome-renaming", chrome_sources::chrome_renaming),
+    scene(
         "chrome-new-bar-reveal",
         chrome_sources::chrome_new_bar_reveal,
     ),
-    ("chrome-session-facts", chrome_sources::chrome_session_facts),
-    (
+    scene("chrome-session-facts", chrome_sources::chrome_session_facts),
+    scene(
         "chrome-bars-and-edges",
         chrome_sources::chrome_bars_and_edges,
     ),
-    (
+    scene(
         "chrome-sidebar-scroll",
         chrome_sources::chrome_sidebar_scroll,
     ),
-    (
+    scene(
         "chrome-sidebar-header-mark",
         chrome_sources::chrome_sidebar_header_mark,
     ),
-    ("chrome-row-sources", chrome_sources::chrome_row_sources),
-    (
+    scene("chrome-row-sources", chrome_sources::chrome_row_sources),
+    scene(
         "chrome-file-tab-toolbar",
         chrome_sources::chrome_file_tab_toolbar,
     ),
-    ("sidebar", sidebar_scenes),
-    ("sidebar-rows", sidebar_row_scenes),
-    ("sidebar-selection", sidebar_selection_scenes),
-    ("sidebar-button", sidebar_button_scenes),
-    ("title-area", title_area_scenes),
-    ("title-bar", title_bar_scenes),
-    ("tabs", tab_scenes),
-    ("splits", split_scenes),
-    ("cards", card_scenes),
-    ("cards-split", card_split_scenes),
-    ("cards-corners", card_corner_scenes),
-    ("workspaces", workspace_scenes),
-    ("tab-bars", tab_bar_scenes),
-    ("tab-drag", tab_drag_scenes),
-    ("browser-tab", browser_tab_scenes),
-    ("file-tab", file_tab_scenes),
-    ("file-diff", file_diff_scenes),
-    ("file-tab-md", file_tab_md_scenes),
-    ("file-tab-md-mermaid", file_tab_md_mermaid_scenes),
-    ("file-tab-scrollbar", file_tab_scrollbar_scenes),
-    ("right-sidebar", right_sidebar_scenes),
-    ("files", files_scenes),
-    ("files-follow", files_follow_scenes),
-    ("right-panels", right_panel_scenes),
-    ("changes", changes_scenes),
-    ("changes-bar", changes_bar_scenes),
-    ("changes-staging", changes_staging_scenes),
-    ("changes-graph", changes_graph_scenes),
-    ("changes-sticky", changes_sticky_scenes),
-    ("activity", activity_scenes),
-    ("api-background", api_background),
-    ("banner-click", banner_click),
-    ("default-name", default_name),
-    ("names", names),
-    ("renames", renames),
-    ("rename-box", rename_box_scenes),
-    ("palette", palette_scene),
-    ("palette-workspaces", palette_workspaces_scene),
-    ("palette-actions", palette_actions_scene),
-    ("palette-keys", palette_keys_scene),
-    ("palette-run", palette_run_scene),
-    ("palette-refresh", palette_refresh_scene),
-    ("palette-recent", palette_recent_scene),
-    ("palette-files", palette_files_scene),
-    ("palette-relist", palette_relist_scene),
-    ("palette-settings", palette_settings_scene),
-    ("palette-narrow", palette_narrow_scene),
-    ("palette-motion", palette_motion_scene),
-    ("branch-switcher", branch_switcher_scene),
-    ("branch-switcher-confirm", branch_switcher_confirm_scene),
-    ("branch-switcher-real", branch_switcher_real_scene),
-    ("branch-switcher-open", branch_switcher_open_scene),
-    ("welcome", welcome_scene),
-    ("welcome-checking", welcome_checking_scene),
-    ("welcome-keys", welcome_keys_scene),
-    ("welcome-narrow", welcome_narrow_scene),
-    ("welcome-start", welcome_start_scene),
-    ("welcome-folder", welcome_folder_scene),
-    ("welcome-first-run", welcome_first_run_scene),
-    ("welcome-reopen", welcome_reopen_scene),
-    ("overlays", overlays),
-    ("help", help_scenes),
-    ("panels", panel_scenes),
-    ("preferences", preferences_scenes),
-    ("status-bar", status_bar_scenes),
-    ("status-bar-hidden", status_bar_hidden_scenes),
-    ("status-bar-ports", status_bar_ports_scenes),
-    ("status-bar-narrow", status_bar_narrow_scenes),
-    ("update-button", update_button_scenes),
-    ("cursor", cursor_scenes),
-    ("cursor-flood", cursor_flood_scene),
-    ("command-blocks", command_blocks_scene),
-    ("command-blocks-alt-screen", command_blocks_alt_screen_scene),
-    ("command-blocks-narrow", command_blocks_narrow_scene),
-    ("command-blocks-rprompt", command_blocks_rprompt_scene),
-    ("command-blocks-small-font", command_blocks_small_font_scene),
-    ("command-blocks-off", command_blocks_off_scene),
-    ("command-blocks-jump", command_blocks_jump_scene),
-    ("command-blocks-copy", command_blocks_copy_scene),
-    ("command-blocks-rerun", command_blocks_rerun_scene),
+    scene("sidebar", sidebar_scenes),
+    scene("sidebar-rows", sidebar_row_scenes),
+    scene("sidebar-selection", sidebar_selection_scenes),
+    scene("sidebar-button", sidebar_button_scenes),
+    scene("title-area", title_area_scenes),
+    scene("title-bar", title_bar_scenes),
+    scene("tabs", tab_scenes),
+    scene("splits", split_scenes),
+    scene("cards", card_scenes),
+    scene("cards-split", card_split_scenes),
+    scene("cards-corners", card_corner_scenes),
+    scene("workspaces", workspace_scenes),
+    scene("tab-bars", tab_bar_scenes),
+    scene("tab-drag", tab_drag_scenes),
+    scene("browser-tab", browser_tab_scenes),
+    scene("file-tab", file_tab_scenes),
+    scene("file-diff", file_diff_scenes),
+    scene("file-tab-md", file_tab_md_scenes),
+    scene("file-tab-md-mermaid", file_tab_md_mermaid_scenes),
+    scene("file-tab-scrollbar", file_tab_scrollbar_scenes),
+    scene("right-sidebar", right_sidebar_scenes),
+    scene("files", files_scenes),
+    scene("files-follow", files_follow_scenes),
+    scene("right-panels", right_panel_scenes),
+    scene("changes", changes_scenes),
+    scene("changes-bar", changes_bar_scenes),
+    scene("changes-staging", changes_staging_scenes),
+    scene("changes-graph", changes_graph_scenes),
+    scene("changes-sticky", changes_sticky_scenes),
+    scene("activity", activity_scenes),
+    scene("api-background", api_background),
+    scene("banner-click", banner_click),
+    scene("default-name", default_name),
+    scene("names", names),
+    scene("renames", renames),
+    scene("rename-box", rename_box_scenes),
+    scene("palette", palette_scene),
+    scene("palette-workspaces", palette_workspaces_scene),
+    scene("palette-actions", palette_actions_scene),
+    scene("palette-keys", palette_keys_scene),
+    scene("palette-run", palette_run_scene),
+    scene("palette-refresh", palette_refresh_scene),
+    scene("palette-recent", palette_recent_scene),
+    scene("palette-files", palette_files_scene),
+    scene("palette-relist", palette_relist_scene),
+    scene("palette-settings", palette_settings_scene),
+    scene("palette-narrow", palette_narrow_scene),
+    scene("palette-motion", palette_motion_scene),
+    scene("branch-switcher", branch_switcher_scene),
+    scene("branch-switcher-confirm", branch_switcher_confirm_scene),
+    scene("branch-switcher-real", branch_switcher_real_scene),
+    scene("branch-switcher-open", branch_switcher_open_scene),
+    scene("welcome", welcome_scene),
+    scene("welcome-checking", welcome_checking_scene),
+    scene("welcome-keys", welcome_keys_scene),
+    scene("welcome-narrow", welcome_narrow_scene),
+    scene("welcome-start", welcome_start_scene),
+    scene("welcome-folder", welcome_folder_scene),
+    scene("welcome-first-run", welcome_first_run_scene),
+    scene("welcome-reopen", welcome_reopen_scene),
+    scene("overlays", overlays),
+    scene("help", help_scenes),
+    scene("panels", panel_scenes),
+    scene("preferences", preferences_scenes),
+    scene("status-bar", status_bar_scenes),
+    scene("status-bar-hidden", status_bar_hidden_scenes),
+    scene("status-bar-ports", status_bar_ports_scenes),
+    scene("status-bar-narrow", status_bar_narrow_scenes),
+    scene("update-button", update_button_scenes),
+    scene("cursor", cursor_scenes),
+    scene("cursor-flood", cursor_flood_scene),
+    scene("command-blocks", command_blocks_scene),
+    scene("command-blocks-alt-screen", command_blocks_alt_screen_scene),
+    scene("command-blocks-narrow", command_blocks_narrow_scene),
+    scene("command-blocks-rprompt", command_blocks_rprompt_scene),
+    scene("command-blocks-small-font", command_blocks_small_font_scene),
+    scene("command-blocks-off", command_blocks_off_scene),
+    scene("command-blocks-jump", command_blocks_jump_scene),
+    scene("command-blocks-copy", command_blocks_copy_scene),
+    scene("command-blocks-rerun", command_blocks_rerun_scene),
 ];
 
-/// `fuxx __ui-shots [filter]`: run the scenes whose name contains `filter`, then exit.
-pub fn run(filter: Option<&str>) -> ! {
+static OPTIONS: OnceLock<RunOptions> = OnceLock::new();
+
+/// The run's options (the defaults until `run` sets them).
+pub(super) fn options() -> &'static RunOptions {
+    OPTIONS.get_or_init(RunOptions::default)
+}
+
+thread_local! {
+    /// The running scene's `themes` (set by `run` before each scene).
+    static SCENE_THEMES: Cell<Themes> = const { Cell::new(Themes::Both) };
+}
+
+/// The themes the running scene is shot in: (file slug, built-in theme name). Mocha only for a
+/// `Themes::One` scene, unless `--all-themes`.
+pub(super) fn shot_themes() -> &'static [(&'static str, &'static str)] {
+    const ALL: &[(&str, &str)] = &SHOT_THEMES;
+    match SCENE_THEMES.get() {
+        Themes::One if !options().all_themes => &ALL[..1],
+        _ => ALL,
+    }
+}
+
+/// Set in a child run of this program (`child_run`): it leaves the summary and `timings.tsv`
+/// to its parent.
+const CHILD_ENV: &str = "FUXX_SHOTS_CHILD";
+
+/// This program re-run on the scenes matching `filter`, as a child (`FUXX_SHOTS_CHILD=1`),
+/// with this run's `--png` and `--all-themes`. The caller adds its own environment.
+pub(super) fn child_run(filter: &str) -> std::process::Command {
+    let exe = std::env::current_exe().expect("this program");
+    let mut command = std::process::Command::new(exe);
+    command.args(["__ui-shots", filter]).env(CHILD_ENV, "1");
+    if options().png {
+        command.arg("--png");
+    }
+    if options().all_themes {
+        command.arg("--all-themes");
+    }
+    command
+}
+
+/// `fuxx __ui-shots [filter] [--png] [--all-themes]` (`args` are those after `__ui-shots`): run
+/// the scenes whose name contains `filter`, each to the end even if one fails, then exit (1 if
+/// any failed). A failed scene's shots are written to `target/ui-shots/failed/<scene>/`.
+pub fn run(args: &[String]) -> ! {
+    let mut opts = match parse_args(args) {
+        Ok(opts) => opts,
+        Err(e) => {
+            eprintln!("ui-shots: {e}");
+            eprintln!(
+                "usage: fuxx __ui-shots [filter] [--png] [--all-themes] [--shard I/N] [--changed <base>] [--update-refs]"
+            );
+            exit(2);
+        }
+    };
+    if opts.shard.is_some() || opts.changed.is_some() || opts.update_refs {
+        eprintln!("ui-shots: --shard, --changed and --update-refs are not built yet");
+        exit(2);
+    }
+    opts.png |= std::env::var("UI_SHOTS_PNG").is_ok_and(|v| v == "1");
+    let filter = opts.filter.clone();
+    OPTIONS.set(opts).expect("the run's options are set once");
     let started = Instant::now();
     let mut times: Vec<(&str, f64)> = Vec::new();
-    for (name, scene) in SCENES {
-        if filter.is_some_and(|f| !name.contains(f)) {
+    let mut failed = 0;
+    for scene in SCENES {
+        let name = scene.name;
+        if filter.as_deref().is_some_and(|f| !name.contains(f)) {
             continue;
         }
         let (rw, sleep, child) = (
@@ -186,10 +305,22 @@ pub fn run(filter: Option<&str>) -> ! {
             prof::get(prof::SLEEP),
             prof::get(prof::CHILD),
         );
+        forget_shots(name);
+        SCENE_THEMES.set(scene.themes);
         let t = Instant::now();
-        scene();
+        // A failed check panics (the default hook prints it); the run goes on to the next scene.
+        let passed = std::panic::catch_unwind(AssertUnwindSafe(scene.run)).is_ok();
         let secs = t.elapsed().as_secs_f64();
-        println!("ui-shots: {name} ok ({secs:.1} s)");
+        if passed {
+            println!("ui-shots: {name} ok ({secs:.1} s)");
+        } else {
+            failed += 1;
+            let dir = write_failed(name);
+            println!(
+                "ui-shots: {name} FAILED ({secs:.1} s) \u{2014} pictures in {}",
+                dir.display()
+            );
+        }
         if prof::enabled() {
             // Outside `render_with`: scenes that build their own app, waits, probes.
             println!(
@@ -209,21 +340,21 @@ pub fn run(filter: Option<&str>) -> ! {
     let total = started.elapsed().as_secs_f64();
     // A child process (cache-off, WebKit) is a filtered run of this binary: it leaves the
     // timings and the summary to its parent.
-    let child = std::env::var_os("FUXX_SHOTS_WEBKIT").is_some()
-        || std::env::var_os("FUXX_CHROME_CACHE").is_some();
+    let child = std::env::var(CHILD_ENV).is_ok_and(|v| v == "1");
     if !child {
         if filter.is_none() {
             let tsv: String = times
                 .iter()
                 .map(|(n, s)| format!("{n}\t{s:.1}\n"))
                 .collect();
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join("ui-shots");
+            let dir = shots_dir();
             std::fs::create_dir_all(&dir).expect("create target/ui-shots");
             std::fs::write(dir.join("timings.tsv"), tsv).expect("write timings.tsv");
         }
-        println!("ui-shots: {} passed, 0 failed, {total:.1} s", times.len());
+        println!(
+            "ui-shots: {} passed, {failed} failed, {total:.1} s",
+            times.len() - failed
+        );
         let mut slowest = times.clone();
         slowest.sort_by(|a, b| b.1.total_cmp(&a.1));
         for (name, secs) in slowest.iter().take(15) {
@@ -233,19 +364,26 @@ pub fn run(filter: Option<&str>) -> ! {
     if prof::enabled() {
         prof::print_sums();
     }
-    exit(0)
+    exit(if failed > 0 { 1 } else { 0 })
 }
 
 /// A themed panel standing in for a real scene: proves the harness end to end.
 fn smoke() {
     let dims = size(px(320.0), px(200.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let scene = |_: &mut Window, cx: &mut App| -> AnyView { cx.new(|_| Panel(ui)).into() };
         let path = shoot("smoke", slug, &theme, dims, scene);
         assert!(path.ends_with(format!("smoke-{slug}.png")));
-        let bytes = std::fs::read(&path).expect("the PNG exists");
+        // The shot as kept in memory; with `--png`, the file written from it.
+        let bytes = last_png();
+        if options().png {
+            assert!(
+                std::fs::read(&path).expect("the PNG exists") == bytes,
+                "{slug}: the PNG file"
+            );
+        }
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
         let w = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
         let h = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
@@ -260,6 +398,11 @@ fn smoke() {
             "{slug}: the shot is one flat colour"
         );
     }
+    // The runner's check of a failing scene: `UI_SHOTS_FAIL_DEMO=1` fails this one on purpose.
+    assert!(
+        !std::env::var("UI_SHOTS_FAIL_DEMO").is_ok_and(|v| v == "1"),
+        "smoke: failing on purpose (UI_SHOTS_FAIL_DEMO=1)"
+    );
 }
 
 struct Panel(theme::UiColors);
@@ -872,7 +1015,7 @@ const AGENT_TEXT: &str =
 /// so the band is empty in the shots.
 fn window_scenes() {
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for (scene, split, hidden) in [
             ("window", false, false),
@@ -1030,7 +1173,7 @@ fn marks() {
         px(2.0 * BOARD_MARGIN + BOARD_LABEL + 6.0 * BOARD_CELL),
         px(2.0 * BOARD_MARGIN + BOARD_HEADER + 5.0 * BOARD_CELL),
     );
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for still in [false, true] {
             let scene = if still { "marks-still" } else { "marks" };
@@ -1169,7 +1312,7 @@ impl Render for MarkBoard {
 /// The real sidebar with the new marks: sessions in every status across two groups.
 fn sidebar_marks() {
     let dims = size(px(480.0), px(320.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let build = move |window: &mut Window, cx: &mut App| -> AnyView {
             cx.set_global(shot_appearance(theme, cx));
@@ -1280,7 +1423,7 @@ fn draws_of(
 }
 
 /// Panics (`what`) unless the window as it was last drawn (no draw now) is what a full redraw
-/// draws. On a failure both are saved as `target/ui-shots/stale-{now,fresh}.png`.
+/// draws. On a failure both are kept as `stale-{now,fresh}` (in `target/ui-shots/failed/<scene>/`).
 fn assert_shown_current(cx: &mut VisualTestAppContext, window: AnyWindowHandle, what: &str) {
     let image = cx.capture_screenshot(window).expect("capture the window");
     let shown = Shot {
@@ -1291,10 +1434,8 @@ fn assert_shown_current(cx: &mut VisualTestAppContext, window: AnyWindowHandle, 
     let fresh = frame_fresh(cx, window);
     let differ = bytes_differ(&shown, &fresh);
     if differ > 0 {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-        std::fs::write(dir.join("stale-now.png"), png(&shown)).expect("PNG");
-        std::fs::write(dir.join("stale-fresh.png"), png(&fresh)).expect("PNG");
+        keep_shot("stale-now", &shown);
+        keep_shot("stale-fresh", &fresh);
     }
     assert_eq!(
         differ, 0,
@@ -1898,16 +2039,14 @@ fn chrome_notify_redraws_parts() {
 }
 
 /// Panics (`what`) unless the window as drawn now is what a full redraw draws: no part stale.
-/// On a failure both are saved as `target/ui-shots/stale-{now,fresh}.png`.
+/// On a failure both are kept as `stale-{now,fresh}` (in `target/ui-shots/failed/<scene>/`).
 fn assert_fresh(cx: &mut VisualTestAppContext, window: AnyWindowHandle, what: &str) {
     let now = frame_now(cx, window);
     let fresh = frame_fresh(cx, window);
     let differ = bytes_differ(&now, &fresh);
     if differ > 0 {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-        std::fs::write(dir.join("stale-now.png"), png(&now)).expect("PNG");
-        std::fs::write(dir.join("stale-fresh.png"), png(&fresh)).expect("PNG");
+        keep_shot("stale-now", &now);
+        keep_shot("stale-fresh", &fresh);
     }
     assert_eq!(
         differ, 0,
@@ -2078,10 +2217,8 @@ fn chrome_kill_switch() {
         for (c, count) in parts {
             assert_eq!(count, 0, "{n}: cache on: {c:?} rendered {count} times");
         }
-        let exe = std::env::current_exe().expect("this program");
         let spawned = Instant::now();
-        let child = std::process::Command::new(exe)
-            .args(["__ui-shots", n])
+        let child = child_run(n)
             .env("FUXX_CHROME_CACHE", "off")
             .status()
             .expect("run the scene with the cache off");
@@ -2189,11 +2326,9 @@ fn chrome_pixels_same() {
             at,
             "{n}: {step}: the marks didn't move meanwhile"
         );
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
         let slug = if hidden { "hidden" } else { "shown" };
-        std::fs::write(dir.join(format!("{n}-{slug}-mocha.png")), png(&cached)).expect("PNG");
-        std::fs::write(dir.join(format!("{n}-{slug}-off-mocha.png")), png(&off)).expect("PNG");
+        keep_shot(&format!("{n}-{slug}-mocha"), &cached);
+        keep_shot(&format!("{n}-{slug}-off-mocha"), &off);
         assert_eq!(
             bytes_differ(&cached, &off),
             0,
@@ -2776,7 +2911,7 @@ fn sidebar_scenes() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for (scene, width, dims) in [
             ("sidebar", 240.0, dims),
@@ -3168,7 +3303,7 @@ fn sidebar_row_scenes() {
 
     use crate::sidebar::SidebarRow;
 
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for (scene, width) in [("sidebar-rows", 240.0), ("sidebar-rows-narrow", 180.0)] {
@@ -3392,7 +3527,7 @@ fn sidebar_selection_scenes() {
         shot("docs", API, Status::Idle, 0, SHELL_TEXT),
     ];
     let dims = size(px(540.0), px(440.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for (scene, active) in [("sidebar-selection", 0), ("sidebar-selection-waiting", 3)] {
@@ -3518,7 +3653,7 @@ fn tab_scenes() {
         (4, TabColor::Purple),
     ];
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for scene in [
@@ -3908,7 +4043,7 @@ fn split_scenes() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for scene in ["splits", "splits-waiting", "splits-hover", "splits-drag"] {
@@ -4044,7 +4179,7 @@ fn card_scenes() {
 
     let dims = size(px(1280.0), px(600.0));
     let (left, right) = (240.0_f32, 1280.0_f32);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let slot: Slot = Rc::new(RefCell::new(None));
@@ -4169,7 +4304,7 @@ fn card_split_scenes() {
     let (left_card, right_end) = (240.0 + GAP, 960.0 - GAP);
     let middle = (left_card + right_end) / 2.0;
     let (first_right, second_left) = (middle - GAP / 2.0, middle + GAP / 2.0);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for scene in ["cards-split", "cards-split-hover", "cards-split-refocus"] {
@@ -4260,7 +4395,7 @@ fn card_corner_scenes() {
     // The card ends 6 pt above the status bar (M11i).
     let bar = ui_tokens::size::STATUS_BAR;
     let (left, right, bottom) = (240.0 + GAP, 960.0 - GAP, 600.0 - bar - GAP);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let blue = theme.palette[4];
@@ -4345,7 +4480,7 @@ fn workspace_scenes() {
     use std::time::{Duration, Instant};
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
@@ -4530,7 +4665,7 @@ fn tab_bar_scenes() {
     use std::rc::Rc;
 
     let wide = size(px(1280.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
@@ -5022,7 +5157,7 @@ fn tab_drag_scenes() {
             model.display_order()
         })
     };
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
@@ -5581,7 +5716,7 @@ fn file_tab_scenes() {
 
     let dims = size(px(900.0), px(400.0));
     let file = PathBuf::from(format!("{API}/src/main.rs"));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let tab_at: Rc<Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
@@ -5791,7 +5926,7 @@ fn file_drag_select_scenes() {
         cx.run_until_parked();
     };
     let ms = Duration::from_millis;
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let build_for = |path: PathBuf, slot: TabSlot| {
             move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -6144,7 +6279,7 @@ fn file_header_scenes() {
         (name.to_string(), chip.map(str::to_string), meta)
     };
 
-    for (i, (slug, name)) in SHOT_THEMES.into_iter().enumerate() {
+    for (i, &(slug, name)) in shot_themes().iter().enumerate() {
         let theme = shot_theme(name);
 
         // A changed file in a repo.
@@ -6526,7 +6661,7 @@ fn file_view_scenes() {
         .iter()
         .map(|l| l.to_lowercase().matches("fn").count())
         .sum();
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let near = |p: [u8; 3], c: Rgb, by: u8| {
@@ -7159,7 +7294,7 @@ fn file_tab_scrollbar_scenes() {
             },
         );
     };
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let build_for = |path: PathBuf, slot: TabSlot| {
             move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -7422,7 +7557,7 @@ fn file_diff_scenes() {
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
     let dims = size(px(760.0), px(460.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let near = |p: [u8; 3], c: Rgb, by: u8| {
@@ -8064,7 +8199,7 @@ fn right_sidebar_scenes() {
 
     let dims = size(px(1280.0), px(600.0));
     let (left, window_right) = (240.0_f32, 1280.0_f32);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
@@ -8443,7 +8578,7 @@ fn files_scenes() {
                 .collect::<Vec<_>>()
         })
     };
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, by: u8| {
@@ -9098,7 +9233,7 @@ fn right_panel_scenes() {
             .expect("refresh");
         cx.run_until_parked();
     };
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let near = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
@@ -9337,7 +9472,7 @@ fn changes_graph_scenes() {
             false,
         ),
     ];
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let inks = crate::graph_panel::lane_inks(&theme);
@@ -9480,7 +9615,7 @@ fn changes_sticky_scenes() {
             head: i == 0,
         })
         .collect();
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("changes-sticky-{slug}");
@@ -9624,7 +9759,7 @@ fn changes_staging_scenes() {
     };
     // Rows: 0 STAGED, 1–2 staged, 3 CHANGES, 4–7 the rest; Scope.md is row 5 (entry 3).
     let row_top = |r: usize| list_top + r as f32 * ROW;
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let (green, _) = crate::changes_panel::count_inks(&theme);
@@ -9927,7 +10062,7 @@ fn changes_bar_scenes() {
             true,
         ),
     ];
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for (state, sync, busy, error, tip, accent) in states.clone() {
@@ -10097,7 +10232,7 @@ fn changes_scenes() {
         cx.run_until_parked();
     };
     let row_mid = |i: usize| rows_top + (i as f32 + 0.5) * ROW;
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let (added, removed) = crate::changes_panel::count_inks(&theme);
@@ -10462,7 +10597,7 @@ fn activity_scenes() {
         cx.run_until_parked();
     };
     let ago = |secs: u64| Instant::now() - Duration::from_secs(secs);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let near = |p: [u8; 3], c: Rgb, by: u8| {
@@ -11027,7 +11162,7 @@ fn default_name() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
@@ -11232,7 +11367,7 @@ fn names() {
     use crate::sidebar::SidebarRow;
     use crate::workspace::window_title;
 
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
@@ -11488,7 +11623,7 @@ fn renames() {
     use crate::sidebar::SidebarRow;
     use crate::workspace::{At, RenameSession, Renaming, window_title};
 
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
@@ -12010,7 +12145,7 @@ fn browser_tab_scenes() {
     use std::rc::Rc;
 
     let dims = size(px(1100.0), px(560.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for scene in [
             "browser-tab",
@@ -12278,7 +12413,7 @@ fn rename_box_scenes() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for scene in ["rename", "rename-typed"] {
@@ -12469,7 +12604,7 @@ fn palette_scene() {
         [gpui::Bounds<Pixels>; 2],
     );
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let slot: Slot = Rc::new(RefCell::new(None));
@@ -12590,7 +12725,7 @@ fn palette_workspaces_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for enter in [false, true] {
             let slot: Slot = Rc::new(RefCell::new(None));
@@ -12652,7 +12787,7 @@ fn palette_actions_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for stage in ["shot", "enter", "prefix"] {
@@ -12753,7 +12888,7 @@ fn palette_keys_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let build = palette_build(theme, slot.clone());
@@ -12910,7 +13045,7 @@ fn palette_run_scene() {
     std::fs::write(&file, "fn main() {\n    let found = 1;\n}\n").expect("write the file");
     let is_find =
         |l: &Line| matches!(l, Line::Item { key: Key::Action(a), .. } if a.starts_with("Find"));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
 
         // A file tab focused.
@@ -13033,7 +13168,7 @@ fn palette_refresh_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let build = palette_build(theme, slot.clone());
@@ -13112,7 +13247,7 @@ fn palette_recent_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let build = palette_build(theme, slot.clone());
@@ -13349,7 +13484,7 @@ fn palette_files_scene() {
 
     let dims = size(px(960.0), px(600.0));
     let view = PathBuf::from(PALETTE_ROOT).join("src/view.rs");
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for stage in [
@@ -13741,7 +13876,7 @@ fn palette_settings_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for enter in [false, true] {
@@ -13848,7 +13983,7 @@ fn palette_narrow_scene() {
     let dims = size(px(width), px(600.0));
     // 60 capitals: well past what the row can hold (lower case nearly fits).
     let long = format!("src/{}.rs", "ABCDEFGHIJ".repeat(6));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         // One terminal with nothing on its screen, so only the palette draws text there.
@@ -14029,7 +14164,7 @@ fn palette_motion_scene() {
     use std::time::Duration;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for still in [true, false] {
             let slot: Slot = Rc::new(RefCell::new(None));
@@ -14199,7 +14334,7 @@ fn branch_switcher_scene() {
         "ORIGIN",
         "fix-login",
     ];
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for shot_pass in [true, false] {
@@ -14489,7 +14624,7 @@ fn branch_switcher_open_scene() {
     scratch_git(&git, &other, &["commit", "-q", "-m", "one"]);
 
     let n = "branch-switcher-open";
-    let (slug, name) = SHOT_THEMES[0];
+    let (slug, name) = shot_themes()[0];
     let theme = shot_theme(name);
     let dims = size(px(960.0), px(600.0));
     let slot: Slot = Rc::new(RefCell::new(None));
@@ -14731,7 +14866,7 @@ fn branch_switcher_confirm_scene() {
         "Claude Code is running in this folder",
         "2 uncommitted file(s) come along",
     ];
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for pass in ["confirm", "refused", "checks"] {
@@ -15118,7 +15253,7 @@ fn branch_switcher_real_scene() {
     scratch_git(&git, &clone, &["switch", "-q", "trunk"]);
     let current = |git: &std::path::Path| scratch_git(git, &clone, &["branch", "--show-current"]);
 
-    let theme = shot_theme(SHOT_THEMES[0].1);
+    let theme = shot_theme(shot_themes()[0].1);
     let dims = size(px(960.0), px(600.0));
     let slot: Slot = Rc::new(RefCell::new(None));
     let build = palette_build(theme, slot.clone());
@@ -15545,7 +15680,7 @@ fn welcome_scene() {
         gpui::Bounds<Pixels>,
     );
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("welcome-{slug}");
@@ -15726,7 +15861,7 @@ fn welcome_checking_scene() {
     use std::time::Duration;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for still in [false, true] {
             let slot: Slot = Rc::new(RefCell::new(None));
@@ -15828,7 +15963,7 @@ fn welcome_keys_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let over = Rc::new(Cell::new(0));
@@ -16045,7 +16180,7 @@ fn welcome_narrow_scene() {
     let wide_end = format!("/{}/{}", ".".repeat(78), "W".repeat(40));
     let thin_end = format!("/{}/{}", "W".repeat(40), ".".repeat(78));
     assert_eq!(wide_end.chars().count(), 120);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("welcome-narrow-{slug}");
@@ -16198,7 +16333,7 @@ fn welcome_start_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let run = |stage: &'static str, act: WelcomeStage| {
             let slot: Slot = Rc::new(RefCell::new(None));
@@ -16430,7 +16565,7 @@ fn welcome_folder_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let over = Rc::new(Cell::new(0));
@@ -16564,7 +16699,7 @@ fn welcome_reopen_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
@@ -16619,7 +16754,7 @@ fn welcome_first_run_scene() {
     use std::rc::Rc;
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for welcomed in [false, true] {
             let slot: Slot = Rc::new(RefCell::new(None));
@@ -16924,7 +17059,7 @@ fn help_scenes() {
     );
 
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for scene in [
             "help-shortcuts",
@@ -17167,7 +17302,7 @@ fn panel_scenes() {
         used_at,
     };
     let dims = size(px(960.0), px(600.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for scene in ["host-picker", "address-box"] {
             let slot: Slot = Rc::new(RefCell::new(None));
@@ -17265,7 +17400,7 @@ fn preferences_scenes() {
             .zip([c.r, c.g, c.b])
             .all(|(a, b)| a.abs_diff(b) <= by)
     };
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         // The window without the panel: what the scrim dims.
@@ -17355,7 +17490,7 @@ fn preferences_scenes() {
     }
 
     // A window smaller than the panel: 24 pt in, and the page scrolls.
-    let theme = shot_theme(SHOT_THEMES[0].1);
+    let theme = shot_theme(shot_themes()[0].1);
     let ui = theme.ui();
     let (sw, sh) = (760.0, 520.0);
     let small = size(px(sw), px(sh));
@@ -17527,7 +17662,7 @@ fn preferences_plugins_scene() {
     use std::rc::Rc;
 
     let dims = size(px(1400.0), px(900.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let mut shots = Vec::new();
         // (a newer version waiting, the second helper on)
@@ -17640,7 +17775,7 @@ fn sidebar_button_scenes() {
     // The hit area's left margin (inside it, outside the icon), and the icon's left edge.
     let (margin, edge) = (point(bx + 1.5, by + 12.0), point(bx + 4.75, by + 12.0));
     let hidden_edge = point(hx + 4.75, by + 12.0);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let mut shots = Vec::new();
@@ -17669,10 +17804,7 @@ fn sidebar_button_scenes() {
                 }
             };
             let shot = render_with(&theme, dims, build, act);
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-            let path = dir.join(format!("sidebar-button-{scene}-{slug}.png"));
-            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            let path = keep_shot(&format!("sidebar-button-{scene}-{slug}"), &shot);
             println!("ui-shots: {}", path.display());
             shots.push((scene, shot));
         }
@@ -17807,7 +17939,7 @@ fn title_area_scenes() {
     // they moved. With the sidebar shown the title is there now; hidden, the band is bare there.
     let (sx, sy) = (lights_clear(false), BUTTON_Y);
     let old_buttons = (sx + HIT + 2.0, sx + HIT + 2.0 + 2.0 * HIT + 2.0);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
@@ -17888,10 +18020,7 @@ fn title_area_scenes() {
                 slot.borrow_mut().take();
             };
             let shot = render_with(&theme, dims, build, act);
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-            let path = dir.join(format!("{scene}-{slug}.png"));
-            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            let path = keep_shot(&format!("{scene}-{slug}"), &shot);
             println!("ui-shots: {}", path.display());
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let n = format!("{scene}-{slug}");
@@ -18348,7 +18477,7 @@ fn title_bar_scenes() {
     let threshold = (2.0 * (lights_clear(false) + TITLE_ROOM / 2.0) * 2.0).ceil() / 2.0;
     let dims = size(px(760.0), px(200.0));
     let height = f32::from(dims.height);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
@@ -18368,10 +18497,7 @@ fn title_bar_scenes() {
                 ws.into()
             };
             let shot = render_with(&theme, dims, build, |_, _| ());
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-            let path = dir.join(format!("{scene}-{slug}.png"));
-            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            let path = keep_shot(&format!("{scene}-{slug}"), &shot);
             println!("ui-shots: {}", path.display());
             let n = format!("{scene}-{slug}");
             let button_x = open_button_x(sidebar_width);
@@ -18458,7 +18584,7 @@ fn title_bar_scenes() {
     // A window narrower than the sidebar (200 pt, the default 240 pt sidebar): the open button
     // comes in to the window's edge (`open_button_at`), wholly inside it, and the title keeps
     // `TITLE_GAP` short of it.
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
@@ -18475,10 +18601,7 @@ fn title_bar_scenes() {
             ws.into()
         };
         let shot = render_with(&theme, dims, build, |_, _| ());
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-        let path = dir.join(format!("{scene}-{slug}.png"));
-        std::fs::write(&path, png(&shot)).expect("write the PNG");
+        let path = keep_shot(&format!("{scene}-{slug}"), &shot);
         println!("ui-shots: {}", path.display());
         let n = format!("{scene}-{slug}");
         let x = open_button_at(SIDEBAR_DEFAULT_WIDTH, 200.0);
@@ -18534,7 +18657,7 @@ fn title_bar_scenes() {
 
     // Collapsed (M11m Task 2): the workspace's name centred on the window, [🔔] [⚙] [sidebar] at
     // the band's far right.
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
@@ -18602,10 +18725,7 @@ fn title_bar_scenes() {
                 }
             };
             let shot = render_with(&theme, dims, build, act);
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-            let path = dir.join(format!("{scene}-{slug}.png"));
-            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            let path = keep_shot(&format!("{scene}-{slug}"), &shot);
             println!("ui-shots: {}", path.display());
             let n = format!("{scene}-{slug}");
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
@@ -18758,7 +18878,7 @@ fn title_bar_scenes() {
 
     // The popover from the band's 🔔 (M11m Task 3): it drops down from under the band, its right
     // edge the band's, inside the window however narrow.
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
@@ -18799,10 +18919,7 @@ fn title_bar_scenes() {
                 slot.borrow_mut().take();
             };
             let shot = render_with(&theme, dims, build, act);
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-shots");
-            std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-            let path = dir.join(format!("{scene}-{slug}.png"));
-            std::fs::write(&path, png(&shot)).expect("write the PNG");
+            let path = keep_shot(&format!("{scene}-{slug}"), &shot);
             println!("ui-shots: {}", path.display());
             let n = format!("{scene}-{slug}");
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
@@ -19304,7 +19421,7 @@ fn status_bar_hidden_scenes() {
 
     let dims = size(px(1000.0), px(480.0));
     let (w, h) = (f32::from(dims.width), f32::from(dims.height));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for shown in [true, false] {
@@ -19374,7 +19491,7 @@ fn status_bar_scenes() {
     let (w, h) = (f32::from(dims.width), f32::from(dims.height));
     let (top, mid) = (h - STATUS_BAR, h - STATUS_BAR / 2.0);
     let file = PathBuf::from(format!("{FUXX}/src/main.rs"));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         for scene in [
@@ -19605,7 +19722,7 @@ fn status_bar_ports_scenes() {
     let line = mid - CHIP / 2.0 + 1.5;
     let inset = chip_corner_inset();
     let ports = [3000, 5173, 8080, 9000, 9229];
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         // Where the chips are, from a first shot with the pointer away.
@@ -19718,7 +19835,7 @@ fn status_bar_narrow_scenes() {
     let dims = size(px(720.0), px(480.0));
     let (w, h) = (f32::from(dims.width), f32::from(dims.height));
     let (top, mid) = (h - STATUS_BAR, h - STATUS_BAR / 2.0);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("status-bar-narrow-{slug}");
@@ -19844,7 +19961,7 @@ fn update_button_scenes() {
 
     let version = Version(0, 3, 2);
     let near = |p: [u8; 3], c| near_by(p, c, 3);
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         // The ink's width, per scene, to compare.
         let mut ink = Vec::new();
@@ -20217,14 +20334,9 @@ impl CursorRig {
     }
 }
 
-/// Write `shot` to `target/ui-shots/<name>-<slug>.png`.
+/// Keep `shot` as `<name>-<slug>` (`keep_shot`: its PNG in `target/ui-shots/` with `--png`).
 fn save_shot(name: &str, slug: &str, shot: &Shot) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("ui-shots");
-    std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-    let path = dir.join(format!("{name}-{slug}.png"));
-    std::fs::write(&path, png(shot)).expect("write the PNG");
+    let path = keep_shot(&format!("{name}-{slug}"), shot);
     println!("ui-shots: {}", path.display());
     path
 }
@@ -20264,7 +20376,7 @@ fn cursor_scenes() {
     use crate::cursor_look::Frames;
 
     let text = "\r\n$ ";
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let own = theme.cursor.unwrap_or(theme.foreground);
@@ -20918,7 +21030,7 @@ fn cursor_flood_scene() {
         }
     }
 
-    let (slug, name) = SHOT_THEMES[0];
+    let (slug, name) = shot_themes()[0];
     let n = format!("cursor-flood-{slug}");
     // The flood waits for `go` to exist, so it starts only once the scene is watching. The
     // child stays alive after `END`, so no exit repaints the screen either.
@@ -21018,7 +21130,7 @@ fn command_blocks_scene() {
     use crate::block_view::{CHIP_GAP, CHIP_HIDE_MS};
     use std::time::Duration;
     let dims = size(px(480.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = theme.background;
@@ -21299,7 +21411,7 @@ fn command_blocks_scene() {
 /// hairline and no chip; back on the main screen (`ESC [?1049l`) the blocks are as they were.
 fn command_blocks_alt_screen_scene() {
     let dims = size(px(480.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = theme.background;
@@ -21341,7 +21453,7 @@ fn command_blocks_alt_screen_scene() {
 fn command_blocks_narrow_scene() {
     // 12 pt of split padding each side: a 200 pt grid area.
     let dims = size(px(224.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("command-blocks-narrow-{slug}");
@@ -21379,7 +21491,7 @@ fn command_blocks_narrow_scene() {
 /// as they were before it opened.
 fn command_blocks_small_font_scene() {
     let dims = size(px(480.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("command-blocks-small-font-{slug}");
@@ -21443,7 +21555,7 @@ fn command_blocks_small_font_scene() {
 fn command_blocks_rprompt_scene() {
     use crate::block_view::{CHIP_GAP, CHIP_MIN_WIDTH, CHIP_PAD};
     let dims = size(px(480.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for (case, run, long) in [
             ("room", "ok / 15:05:41", true),
@@ -21558,7 +21670,7 @@ fn command_blocks_rprompt_scene() {
 /// hairline, and hovering the gutter opens nothing.
 fn command_blocks_off_scene() {
     let dims = size(px(480.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = theme.background;
@@ -21651,7 +21763,7 @@ fn press_chip_button(rig: &mut CursorRig, i: usize) {
 /// to the bottom with nothing picked; ⌘↑ still scrolls a page; a typed key drops the pick.
 fn command_blocks_jump_scene() {
     let dims = size(px(480.0), px(120.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("command-blocks-jump-{slug}");
@@ -21767,7 +21879,7 @@ fn command_blocks_jump_scene() {
 fn command_blocks_copy_scene() {
     use crate::terminal_view::{CopyCommand, CopyCommandAndOutput};
     let dims = size(px(480.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let n = format!("command-blocks-copy-{slug}");
         let mut rig = blocks_rig(theme, dims, false, false, |_| ());
@@ -21869,7 +21981,7 @@ fn command_blocks_rerun_scene() {
     use crate::block_view::Refusal;
     use crate::grid::TextScope;
     let dims = size(px(480.0), px(240.0));
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("command-blocks-rerun-{slug}");
@@ -22172,7 +22284,7 @@ fn file_tab_md_scenes() {
             .expect("refresh");
         cx.run_until_parked();
     };
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let build_for = |path: PathBuf, slot: TabSlot, events: Events| {
             move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -22622,7 +22734,7 @@ fn file_tab_md_mermaid_scenes() {
 
     if !child {
         // Before WebKit answers: code, no notes.
-        for (slug, name) in SHOT_THEMES {
+        for &(slug, name) in shot_themes() {
             let theme = shot_theme(name);
             let n = format!("file-tab-md-mermaid-pending-{slug}");
             let slot: TabSlot = Rc::default();
@@ -22646,10 +22758,8 @@ fn file_tab_md_mermaid_scenes() {
             );
             println!("ui-shots: {}", path.display());
         }
-        let exe = std::env::current_exe().expect("this program");
         let spawned = Instant::now();
-        let status = std::process::Command::new(exe)
-            .args(["__ui-shots", "file-tab-md-mermaid"])
+        let status = child_run("file-tab-md-mermaid")
             .env(CHILD, "1")
             .status()
             .expect("run the WebKit half");
@@ -22659,7 +22769,7 @@ fn file_tab_md_mermaid_scenes() {
     }
 
     // The child: rendered, the run loop turned by hand until both diagrams and the error are in.
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let n = format!("file-tab-md-mermaid-{slug}");
         let slot: TabSlot = Rc::default();
@@ -22707,12 +22817,7 @@ fn file_tab_md_mermaid_scenes() {
             height: image.height(),
             rgba: image.as_raw().to_vec(),
         };
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("ui-shots");
-        std::fs::create_dir_all(&dir).expect("create target/ui-shots");
-        let path = dir.join(format!("file-tab-md-mermaid-{slug}.png"));
-        std::fs::write(&path, png(&shot)).expect("write the PNG");
+        let path = keep_shot(&format!("file-tab-md-mermaid-{slug}"), &shot);
         println!("ui-shots: {}", path.display());
         let turn = |cx: &mut VisualTestAppContext| {
             NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
@@ -22960,7 +23065,7 @@ fn files_follow_scenes() {
     let root = files_fixture();
     let outside = std::env::temp_dir().join("fuxx-ui-shots-outside.md");
     std::fs::write(&outside, "# elsewhere\n").expect("the outside file");
-    for (slug, name) in SHOT_THEMES {
+    for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let slot: Slot = Rc::new(RefCell::new(None));
         let build = {
