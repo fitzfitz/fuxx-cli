@@ -471,11 +471,13 @@ impl Focusable for AgentTab {
 
 impl AgentTab {
     /// A tab for `provider` (None: no agent by that name; the tab shows one error row). Starts
-    /// reading the history and then the process on a task; emits nothing (R8).
+    /// reading the history and then the process on a task; emits nothing (R8). A conversation
+    /// to resume is checked first against `classic` (its classic view, from before a restart).
     pub fn new(
         provider: Option<&'static dyn Provider>,
         provider_name: String,
         start: Start,
+        classic: crate::workspace_agent::ClassicProbe,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -507,10 +509,10 @@ impl AgentTab {
                             let holder = match &start.resume {
                                 Some(id) => crate::workspace_agent::conversation_holder(
                                     crate::procs::ps_table().as_deref(),
-                                    provider.info().name,
+                                    provider,
                                     id,
                                     &[],
-                                    &crate::workspace_agent::Classic::Closed,
+                                    &classic(),
                                 ),
                                 None => Holder::Free,
                             };

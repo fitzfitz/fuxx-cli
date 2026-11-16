@@ -51,6 +51,19 @@ fn pass_through(extra: &[String]) -> Vec<String> {
     out
 }
 
+/// The flags that name the conversation a `claude` works on.
+const CONVERSATION_FLAGS: &[&str] = &["--resume", "-r", "--session-id"];
+
+/// Whether `word` has a Claude session id's shape: a UUID (8-4-4-4-12 hex digits).
+fn session_id(word: &str) -> bool {
+    let groups: Vec<&str> = word.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, n)| g.len() == n && g.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 impl Provider for Claude {
     fn info(&self) -> &'static ProviderInfo {
         &INFO
@@ -82,6 +95,30 @@ impl Provider for Claude {
         ["claude", "--resume", conversation]
             .map(String::from)
             .to_vec()
+    }
+
+    fn program(&self) -> &'static str {
+        "claude"
+    }
+
+    /// `--resume <id>`, `-r <id>` or `--session-id <id>` (or `=<id>`), the id a session id
+    /// (`session_id`'s shape); any other word after one of those (a word of a prompt `ps`
+    /// joined in, the `--resume` picker's search) names nothing, and the search goes on.
+    /// An npm install's `claude` (node) sets `process.title = "claude"`, which writes over its
+    /// arguments: `ps` then shows `claude` alone, and this says None.
+    fn conversation_in_args(&self, args: &str) -> Option<String> {
+        let mut words = args.split_whitespace().peekable();
+        while let Some(word) = words.next() {
+            let value = match word.split_once('=') {
+                Some((flag, value)) if CONVERSATION_FLAGS.contains(&flag) => Some(value),
+                _ if CONVERSATION_FLAGS.contains(&word) => words.peek().copied(),
+                _ => None,
+            };
+            if let Some(id) = value.filter(|v| session_id(v)) {
+                return Some(id.to_string());
+            }
+        }
+        None
     }
 
     fn translator(&self) -> Box<dyn Translator> {
@@ -1334,6 +1371,34 @@ mod tests {
             1
         );
         assert!(a.ends_with(&["--verbose-ish".to_string(), "keep".to_string()]));
+    }
+
+    #[test]
+    fn a_process_names_its_conversation_only_by_a_session_id() {
+        const ID: &str = "0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c";
+        let named = |args: &str| CLAUDE.conversation_in_args(args);
+        assert_eq!(named(&format!("claude --resume {ID}")).as_deref(), Some(ID));
+        assert_eq!(named(&format!("claude -r {ID}")).as_deref(), Some(ID));
+        assert_eq!(named(&format!("claude --resume={ID}")).as_deref(), Some(ID));
+        assert_eq!(
+            named(&format!(
+                "claude -p --input-format stream-json --session-id {ID}"
+            ))
+            .as_deref(),
+            Some(ID)
+        );
+        // A prompt's words, the picker's search, a bare picker, npm's title alone: none.
+        assert_eq!(named("claude -c fix the grep -r foo call"), None);
+        assert_eq!(named("claude --resume searchterm"), None);
+        assert_eq!(named("claude --resume=searchterm"), None);
+        assert_eq!(named("claude --resume"), None);
+        assert_eq!(named("claude"), None);
+        // A prompt word first, the id after it.
+        assert_eq!(
+            named(&format!("claude -r foo --resume {ID}")).as_deref(),
+            Some(ID)
+        );
+        assert_eq!(CLAUDE.program(), "claude");
     }
 
     #[test]

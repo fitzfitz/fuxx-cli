@@ -651,7 +651,16 @@ pub(super) fn agent_tab_failed() {
             move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(shot_appearance(theme, cx));
                 // No provider: no process is started.
-                let tab = cx.new(|cx| AgentTab::new(None, "gone".into(), start(), window, cx));
+                let tab = cx.new(|cx| {
+                    AgentTab::new(
+                        None,
+                        "gone".into(),
+                        start(),
+                        Box::new(|| crate::workspace_agent::Classic::Closed),
+                        window,
+                        cx,
+                    )
+                });
                 assert_eq!(tab.read(cx).status(), Status::Done);
                 tab.into()
             },

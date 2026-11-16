@@ -36,6 +36,14 @@ pub trait Provider: Sync {
     fn argv(&self, start: &Start) -> Vec<String>;
     /// The command line that opens a conversation in the agent's own terminal UI.
     fn classic_argv(&self, conversation: &str) -> Vec<String>;
+    /// The name its processes run as (`procs::program_name` of their command line).
+    fn program(&self) -> &'static str;
+    /// The conversation a running process of this agent works on, as `ps` shows its command
+    /// line (`args`): Some only when its arguments name one by an id of this agent's shape.
+    /// None is not "another conversation": the arguments may not say (or may be hidden).
+    fn conversation_in_args(&self, _args: &str) -> Option<String> {
+        None
+    }
     /// What was said before in a resumed conversation (empty unless the provider can read it).
     /// Reads a file: call it off the UI thread.
     fn history(&self, _start: &Start) -> Vec<Past> {

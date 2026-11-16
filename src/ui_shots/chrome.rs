@@ -1328,6 +1328,11 @@ pub(super) fn chrome_agent_tabs() {
             .get(&tab)
             .expect("the classic view's terminal noted")
             .0;
+        assert_eq!(
+            ws.model.agent_classic(tab),
+            None,
+            "{n}: a local classic view ends with fuxx: not saved with the tab"
+        );
         let s = ws
             .sessions
             .items()
@@ -1522,6 +1527,44 @@ pub(super) fn chrome_agent_tabs() {
         reopened.is_some_and(|id| id != classic),
         "{n}: the new classic view noted"
     );
+    // Its classic terminal no longer noted again, and nothing holds it: a send starts its
+    // check, then Open in classic view while that check runs does nothing (the check could
+    // answer Free and resume the tab beside a classic view opened meanwhile).
+    cx.update(|cx| {
+        ws.update(cx, |ws, _| {
+            ws.classic_of.remove(&tab);
+            ws.shot_ps = Some(Some(Vec::new()));
+        })
+    });
+    let tabs_before = classic_tabs(&cx);
+    let before = you(&cx);
+    cx.update(|cx| {
+        composer.update(cx, |c, cx| c.set_text("and the tests".into(), cx));
+        view.update(cx, |t, cx| t.send("and the tests".into(), cx));
+    });
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        ws.open_classic(tab, window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        classic_tabs(&cx),
+        tabs_before,
+        "{n}: no classic view opened while a send's check runs"
+    );
+    cx.read(|cx| assert!(!view.read(cx).shot_paused(), "{n}: resumed"));
+    assert_eq!(you(&cx), before + 1, "{n}: that send went once");
+    cx.update(|cx| {
+        view.update(cx, |t, cx| {
+            t.shot_feed(
+                vec![crate::providers::Event::TurnDone {
+                    ok: true,
+                    message: None,
+                }],
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
     steps.step(
         &mut cx,
         window,

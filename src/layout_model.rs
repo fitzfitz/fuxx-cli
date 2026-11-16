@@ -165,6 +165,9 @@ pub struct Model {
     previews: Vec<TabId>,
     /// The file tabs showing their Markdown rendered (M11ac: Preview on). Saved with each tab.
     md_previews: Vec<TabId>,
+    /// The agent tabs whose classic view runs in a background-service terminal: that
+    /// session's id (R13). Saved with each tab.
+    agent_classics: Vec<(TabId, u64)>,
 }
 
 /// The saved-file version that holds workspaces (version 1 held sessions and their layouts).
@@ -231,6 +234,11 @@ pub enum SavedTab {
         mode: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The background service's id of the terminal its classic view opened in (R13): after a
+        /// restart its check counts on that terminal while it lives. Not written without one, so
+        /// older files load and the file reads as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        classic: Option<u64>,
     },
 }
 
@@ -517,6 +525,30 @@ impl Model {
         self.md_previews.contains(&tab)
     }
 
+    /// The background-service session agent tab `tab`'s classic view opened in, if it has one.
+    pub fn agent_classic(&self, tab: TabId) -> Option<u64> {
+        self.agent_classics
+            .iter()
+            .find(|(t, _)| *t == tab)
+            .map(|&(_, session)| session)
+    }
+
+    /// Note (or forget, `None`) the background-service session agent tab `tab`'s classic view
+    /// opened in. False when `tab` is unknown, not an agent tab, or already so.
+    pub fn set_agent_classic(&mut self, tab: TabId, session: Option<u64>) -> bool {
+        let is_agent = self
+            .tab(tab)
+            .is_some_and(|t| matches!(t.kind, TabKind::Agent { .. }));
+        if !is_agent || self.agent_classic(tab) == session {
+            return false;
+        }
+        self.agent_classics.retain(|(t, _)| *t != tab);
+        if let Some(session) = session {
+            self.agent_classics.push((tab, session));
+        }
+        true
+    }
+
     /// Turn file tab `tab`'s Markdown Preview on or off (M11ac). False when `tab` is unknown,
     /// not a file tab, or already so.
     pub fn set_md_preview(&mut self, tab: TabId, on: bool) -> bool {
@@ -575,6 +607,7 @@ impl Model {
     pub fn close_tab(&mut self, tab: TabId) -> Option<Closed> {
         let (taken, mut closed) = self.take_tab(tab)?;
         self.md_previews.retain(|&t| t != tab);
+        self.agent_classics.retain(|(t, _)| *t != tab);
         closed.tabs.insert(0, taken);
         Some(closed)
     }
@@ -896,6 +929,7 @@ impl Model {
                             conversation: conversation.clone(),
                             mode: mode.clone(),
                             title: title.clone(),
+                            classic: self.agent_classic(t.id),
                         },
                     };
                     if t.id == pane.active {
@@ -1136,6 +1170,7 @@ impl Model {
                     conversation,
                     mode,
                     title,
+                    ..
                 } => TabKind::Agent {
                     provider: provider.clone(),
                     cwd: cwd.clone(),
@@ -1150,6 +1185,13 @@ impl Model {
             }
             if let SavedTab::File { preview: true, .. } = st {
                 self.md_previews.push(id);
+            }
+            if let SavedTab::Agent {
+                classic: Some(session),
+                ..
+            } = st
+            {
+                self.agent_classics.push((id, *session));
             }
             tabs.push(Tab { id, kind });
         }
@@ -3187,6 +3229,44 @@ mod tests {
         assert_eq!(m2.to_saved(session), (saved, active));
     }
 
+    /// R13: an agent tab's classic view in a background-service terminal is kept across a
+    /// restart (by that session's id); without one the file reads as before, and an older file
+    /// (no such field) loads with none.
+    #[test]
+    fn agent_tab_keeps_its_classic_view_across_a_restart() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let g = m.split(a.pane, Axis::Row, agent(Some("c1"), None)).unwrap();
+        let session = |id: u64| Some((id - 1) as usize);
+        // None: written as before (no field), and read back as none.
+        let (saved, active) = m.to_saved(session);
+        let old = serde_json::to_string(&saved).unwrap();
+        assert!(!old.contains("classic"), "{old}");
+        let back: Vec<SavedWorkspace> = serde_json::from_str(&old).unwrap();
+        let m2 = Model::from_saved(&back, active, &[Some(1)]);
+        let tab = m2.agent_tabs(m2.workspaces()[0].id)[0];
+        assert_eq!(m2.agent_classic(tab), None);
+        // Noted: saved with the tab, and back after a restart.
+        assert!(m.set_agent_classic(g.tab, Some(7)));
+        assert!(!m.set_agent_classic(g.tab, Some(7)), "already so");
+        assert!(!m.set_agent_classic(TabId(999), Some(7)), "no such tab");
+        let (saved, active) = m.to_saved(session);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""classic":7"#), "{json}");
+        let back: Vec<SavedWorkspace> = serde_json::from_str(&json).unwrap();
+        let m2 = Model::from_saved(&back, active, &[Some(1)]);
+        ok(&m2);
+        let tab = m2.agent_tabs(m2.workspaces()[0].id)[0];
+        assert_eq!(m2.agent_classic(tab), Some(7));
+        assert_eq!(m2.to_saved(session), (saved, active));
+        // Forgotten, and gone with its tab.
+        assert!(m.set_agent_classic(g.tab, None));
+        assert_eq!(m.agent_classic(g.tab), None);
+        m.set_agent_classic(g.tab, Some(7));
+        m.close_tab(g.tab).unwrap();
+        assert_eq!(m.agent_classic(g.tab), None);
+    }
+
     /// R5: an agent tab is not a terminal, so two fresh ones in one folder are both kept.
     #[test]
     fn two_fresh_agent_tabs_in_one_folder_both_restore() {
@@ -3240,6 +3320,7 @@ mod tests {
                     conversation: None,
                     mode: None,
                     title: None,
+                    classic: None,
                 }],
                 active: 0,
             }),
