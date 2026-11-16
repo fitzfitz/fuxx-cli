@@ -47,6 +47,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/palette.rs",
             "src/tab_bar.rs",
             "src/layout_model.rs",
+            "src/name_input.rs",
+            "src/overlay_panel.rs",
         ],
     },
     Scene {
