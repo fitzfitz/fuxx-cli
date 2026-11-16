@@ -81,7 +81,7 @@ own notifications **without asking again**. Confirmed by you. (Side effect: M11d
 ## The Update Available button
 
 ```
-│   ~/code/proj                │
+│   ~/code                │
 │  ┌─────────────────────────┐  │
 │  │    Update Available     │  │   blue, rounded, clickable
 │  └─────────────────────────┘  │
