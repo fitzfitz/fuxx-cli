@@ -11,7 +11,9 @@
 # Usage: scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [--update-refs] [-j N]
 #   -j N: shards (default: CPU cores - 2, at most 8, at least 1).
 #   --update-refs: write the visual scenes' fingerprints to tests/ui-shots-ref/ (C3; a run without
-#   it only reports a shot that "looks different", never fails for it).
+#   it only reports a shot that "looks different", never fails for it). It shoots every theme
+#   (--all-themes is implied). Unfiltered, it replaces each scene's folder and removes the folders
+#   of scenes that are gone; with a filter or --changed, it rewrites only the shots it took.
 set -uo pipefail
 
 usage() {
@@ -42,6 +44,11 @@ while [ $# -gt 0 ]; do
             changed="$2"
             pass+=("$1" "$2")
             shift 2
+            ;;
+        --update-refs)
+            # A reference for every theme (the runner implies it too).
+            pass+=("$1" --all-themes)
+            shift
             ;;
         --shard | --serial-only)
             echo "ui-shots.sh: $1 is the script's own (it runs the shards and the serial scenes)" >&2

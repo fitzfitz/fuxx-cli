@@ -19,7 +19,9 @@
 //! Reference fingerprints (C3, a trial): each `Kind::Visual` scene that passes has its shots'
 //! fingerprints (`fingerprint`: greyscale at 1/8 of the point size) compared with
 //! `tests/ui-shots-ref/<scene>/<scene>-<slug>.fp`; a shot further than `TOLERANCE` prints
-//! "looks different" but never fails the run. `--update-refs` writes them instead.
+//! "looks different" (or "differs in size") but never fails the run. `--update-refs` writes them
+//! instead, in every theme: an unfiltered run replaces each scene's folder and removes the
+//! folders no visual scene claims; a filtered or `--changed` run rewrites only its own shots.
 
 use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
@@ -380,6 +382,14 @@ pub fn run(args: &[String]) -> ! {
     if fingerprints {
         measure_fingerprint_scale();
     }
+    // `--update-refs` over every scene replaces each scene's folder; narrowed by a filter or
+    // `--changed`, it rewrites only the shots it took.
+    let whole = options().filter.is_none() && options().changed.is_none();
+    let ref_mode = match (options().update_refs, whole) {
+        (false, _) => Refs::Compare,
+        (true, true) => Refs::Replace,
+        (true, false) => Refs::Overwrite,
+    };
     let mut times: Vec<(&str, f64, bool)> = Vec::new();
     for scene in picked {
         let name = scene.name;
@@ -401,7 +411,7 @@ pub fn run(args: &[String]) -> ! {
         if passed {
             println!("ui-shots: {name} ok ({secs:.1} s)");
             if fingerprints && scene.kind == Kind::Visual {
-                check_refs(name, options().update_refs, &mut refs);
+                check_refs(name, ref_mode, &mut refs);
             }
         } else {
             let dir = write_failed(name);
@@ -430,16 +440,33 @@ pub fn run(args: &[String]) -> ! {
         let RefCounts {
             same,
             different,
+            resized,
             missing,
             written,
         } = refs;
         if options().update_refs {
             println!("ui-shots: fingerprints: {written} written");
         } else {
+            let resized = if resized > 0 {
+                format!(", {resized} differ in size (another screen scale?)")
+            } else {
+                String::new()
+            };
             println!(
-                "ui-shots: fingerprints: {same} same, {different} look different, {missing} without a reference"
+                "ui-shots: fingerprints: {same} same, {different} look different{resized}, {missing} without a reference"
             );
         }
+    }
+    // An unfiltered `--update-refs`: the folders of scenes that are gone (or no longer visual)
+    // go too. Once: in the direct run, or the serial run (the script runs it after the
+    // shards), never in a shard or a child.
+    if ref_mode == Refs::Replace && options().shard.is_none() && !child {
+        let visual: Vec<&str> = scenes()
+            .iter()
+            .filter(|s| s.kind == Kind::Visual)
+            .map(|s| s.name)
+            .collect();
+        remove_orphans(&visual);
     }
     if let Some(part) = &part {
         // A shard or the serial run: its share may be empty; the script sums the parts.
@@ -852,6 +879,24 @@ fn shot_release() -> crate::update_release::Release {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_reference_folder_belongs_to_a_visual_scene() {
+        // A deleted or renamed scene's references would linger unnoticed: `--update-refs`
+        // (unfiltered) removes them; this keeps one from being committed.
+        let visual: Vec<&str> = scenes()
+            .iter()
+            .filter(|s| s.kind == Kind::Visual)
+            .map(|s| s.name)
+            .collect();
+        let found = ref_folders();
+        assert!(!found.is_empty(), "tests/ui-shots-ref/ has the references");
+        assert_eq!(
+            orphans(&found, &visual),
+            Vec::<String>::new(),
+            "folders in tests/ui-shots-ref/ that no visual scene claims"
+        );
+    }
 
     /// Each shard's summed seconds, from `timings` (an untimed name counts `untimed`).
     fn loads(timings: &[(&str, f64)], shards: &[Vec<&str>], untimed: f64) -> Vec<f64> {

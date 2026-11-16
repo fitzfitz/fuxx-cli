@@ -539,7 +539,8 @@ pub fn fingerprint(shot: &Shot) -> Vec<u8> {
 }
 
 /// How far apart two fingerprints are: the mean absolute difference of their cells (0-255);
-/// infinite when their sizes differ.
+/// infinite when their sizes differ. Two empty fingerprints (a shot with no pixels) are the
+/// same: 0.
 pub fn distance(a: &[u8], b: &[u8]) -> f32 {
     if a.len() != b.len() {
         return f32::INFINITY;
@@ -595,23 +596,79 @@ pub(super) fn ref_path(scene: &str, stem: &str) -> PathBuf {
     PathBuf::from(scene).join(format!("{name}.fp"))
 }
 
+/// The reference folders under `refs_dir()` (sorted; empty if there is none).
+pub(super) fn ref_folders() -> Vec<String> {
+    let mut found: Vec<String> = std::fs::read_dir(refs_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    found.sort();
+    found
+}
+
+/// The `folders` (in their order) that are no `visual` scene's: a deleted or renamed scene's,
+/// or a scene's that is no longer `Kind::Visual`.
+pub(super) fn orphans(folders: &[String], visual: &[&str]) -> Vec<String> {
+    folders
+        .iter()
+        .filter(|f| !visual.contains(&f.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Remove the reference folders no `visual` scene claims, saying which (an unfiltered
+/// `--update-refs` run, once).
+pub(super) fn remove_orphans(visual: &[&str]) {
+    for orphan in orphans(&ref_folders(), visual) {
+        let path = refs_dir().join(&orphan);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => println!(
+                "ui-shots: removed {} (no visual scene is called {orphan})",
+                path.display()
+            ),
+            Err(e) => eprintln!("ui-shots: can't remove {}: {e}", path.display()),
+        }
+    }
+}
+
+/// What a passing visual scene does with its shots' fingerprints.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Refs {
+    /// Compare them with the references (report only).
+    Compare,
+    /// `--update-refs` on every scene: the scene's folder is replaced by this run's shots, so a
+    /// shot it no longer takes loses its reference.
+    Replace,
+    /// `--update-refs` narrowed by a filter or `--changed`: only the shots this run took are
+    /// rewritten; the folder's other files stay.
+    Overwrite,
+}
+
 /// What one run's fingerprints came to.
 #[derive(Default, Clone, Copy)]
 pub(super) struct RefCounts {
     pub(super) same: usize,
     pub(super) different: usize,
+    /// Of a different size from their reference: another screen scale, or the view's size
+    /// changed.
+    pub(super) resized: usize,
     pub(super) missing: usize,
     pub(super) written: usize,
 }
 
 /// A visual scene passed: compare each of its kept shots' fingerprints with its reference and
-/// print `ui-shots: <scene>-<slug> looks different (<d>)` above `TOLERANCE` (never a failure);
-/// with `update`, write them as the references instead (the scene's folder is replaced). A shot
-/// kept twice under one stem counts once (its last). `VARIES` are skipped. With
-/// `UI_SHOTS_FP_DISTANCES=1` every distance is printed (for choosing `TOLERANCE`).
-pub(super) fn check_refs(scene: &str, update: bool, counts: &mut RefCounts) {
+/// print `ui-shots: <scene>-<slug> looks different (<d>)` above `TOLERANCE`, or `… differs in
+/// size` (never a failure); with `Refs::Replace` or `Refs::Overwrite`, write them as the
+/// references instead. A shot kept twice under one stem counts once (its last). `VARIES` are
+/// skipped. With `UI_SHOTS_FP_DISTANCES=1` every distance is printed (for choosing
+/// `TOLERANCE`).
+pub(super) fn check_refs(scene: &str, refs: Refs, counts: &mut RefCounts) {
     let dir = refs_dir();
-    if update {
+    let update = refs != Refs::Compare;
+    if refs == Refs::Replace {
         let _ = std::fs::remove_dir_all(dir.join(scene));
     }
     let all_distances = std::env::var("UI_SHOTS_FP_DISTANCES").is_ok_and(|v| v == "1");
@@ -643,7 +700,14 @@ pub(super) fn check_refs(scene: &str, update: bool, counts: &mut RefCounts) {
             if all_distances {
                 println!("ui-shots: fingerprint {id} {d:.4}");
             }
-            if d > TOLERANCE {
+            if print.len() != reference.len() {
+                counts.resized += 1;
+                println!(
+                    "ui-shots: {id} differs in size from its reference ({} cells, not {})",
+                    print.len(),
+                    reference.len()
+                );
+            } else if d > TOLERANCE {
                 counts.different += 1;
                 println!("ui-shots: {id} looks different ({d:.3})");
             } else {
@@ -1338,6 +1402,21 @@ mod tests {
         assert!(varies("files-panel-follows-active-tab-latte"));
         assert!(!varies("activity-switch-mocha"));
         assert_eq!(VARIES.len(), 11);
+    }
+
+    #[test]
+    fn orphans_are_folders_no_visual_scene_claims() {
+        let folders = ["tabs", "gone-scene", "smoke", "a-state-scene"].map(String::from);
+        assert_eq!(
+            orphans(&folders, &["smoke", "tabs", "tokens"]),
+            ["gone-scene", "a-state-scene"].map(String::from)
+        );
+        assert!(orphans(&[], &["smoke"]).is_empty());
+    }
+
+    #[test]
+    fn two_empty_fingerprints_are_the_same() {
+        assert_eq!(distance(&[], &[]), 0.0);
     }
 
     #[test]

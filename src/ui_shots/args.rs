@@ -17,7 +17,7 @@ pub struct RunOptions {
     /// With `--changed`: print what it picked and exit (0, or 3 when nothing changed), without
     /// running a scene (what `scripts/ui-shots.sh` asks first).
     pub plan: bool,
-    /// Accept the shots' fingerprints as the new references.
+    /// Accept the shots' fingerprints as the new references (implies `all_themes`).
     pub update_refs: bool,
     /// Run only the `serial` scenes (what `scripts/ui-shots.sh` runs after the shards).
     pub serial_only: bool,
@@ -57,6 +57,9 @@ pub fn parse_args(args: &[String]) -> Result<RunOptions, String> {
     if o.plan && o.changed.is_none() {
         return Err("--plan goes with --changed".into());
     }
+    // A reference for every theme a scene can be shot in: without the second theme, a `Both`
+    // scene's replaced folder would lose its Latte references.
+    o.all_themes |= o.update_refs;
     Ok(o)
 }
 
@@ -136,6 +139,15 @@ mod tests {
         let o = parse(&["--changed", "HEAD", "--plan"]).unwrap();
         assert!(o.plan);
         assert!(parse(&["--plan"]).is_err());
+    }
+
+    #[test]
+    fn update_refs_shoots_every_theme() {
+        // A reference for each theme a scene can be shot in, whatever else is asked.
+        let o = parse(&["--update-refs"]).unwrap();
+        assert!(o.all_themes);
+        assert!(parse(&["file-tab", "--update-refs"]).unwrap().all_themes);
+        assert!(!parse(&[]).unwrap().all_themes);
     }
 
     #[test]
