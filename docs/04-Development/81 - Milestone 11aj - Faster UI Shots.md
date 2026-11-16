@@ -1,6 +1,6 @@
 # Milestone 11aj — Faster UI Shots
 
-**Status:** 🟨 built 2026-11-17 on branch `m11aj-ui-shots` (from master `4883073`, not merged), all 11 plan tasks;
+**Status:** 🟨 built 2026-11-17 on branch `m11aj-ui-shots` (from master `4883073`), whole-branch review and fix wave clean, **merged to master 2026-11-17, not pushed**, all 11 plan tasks;
 waiting for your on-screen check (below). Design approved 2026-11-16 ("approved"); plan [[M11aj Plan - Faster UI Shots]].
 
 **Asked for:** 2026-11-16, by you: "let's talk about ui_shots. right now, the file is very bloated and it takes like
