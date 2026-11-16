@@ -1,6 +1,6 @@
 # Milestone 11ae — File Tab Chores
 
-**Status:** 🟨 built 2026-11-16 on branch `m11ae-file-tab` (from master `8d2b16f`; not merged, not pushed), waiting for
+**Status:** 🟨 built 2026-11-16 on branch `m11ae-file-tab` (from master `8d2b16f`), reviewed (whole-branch review and fixes clean), **merged to master 2026-11-16, not pushed**, waiting for
 your on-screen check (below). Plan [[M11ae Plan - File Tab Chores]], 6 / 6 tasks, each reviewed. At the branch tip:
 1681 tests pass, clippy 30 / 32 (= the baselines), `cargo fmt --check` clean, full `__ui-shots` 207 scenes ok in 8 min 21 s
 (after the whole-branch review's fix wave: see "Calls made" 7).
