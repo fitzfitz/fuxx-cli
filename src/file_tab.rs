@@ -3949,7 +3949,7 @@ impl Workspace {
             .filter(|t| !self.file_tabs.contains_key(&t.id))
             .filter_map(|t| match &t.kind {
                 TabKind::File { path, mode } => Some((t.id, path.clone(), *mode)),
-                TabKind::Terminal(_) | TabKind::Browser { .. } => None,
+                TabKind::Terminal(_) | TabKind::Browser { .. } | TabKind::Agent { .. } => None,
             })
             .collect();
         let focused = self.model.focused_tab();

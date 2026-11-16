@@ -92,7 +92,8 @@ pub struct BarTab {
 pub fn icon(kind: &TabKind, status: Status) -> TabIcon {
     match kind {
         TabKind::Browser { .. } => TabIcon::Globe,
-        TabKind::File { .. } => TabIcon::File,
+        // M11aa Tasks 8-10 give an agent tab its own icon.
+        TabKind::File { .. } | TabKind::Agent { .. } => TabIcon::File,
         TabKind::Terminal(_) if status == Status::Idle => TabIcon::Terminal,
         TabKind::Terminal(_) => TabIcon::Mark(status),
     }
@@ -133,6 +134,8 @@ pub fn bar_tabs(
                     (None, title, None, idle)
                 }
                 TabKind::File { path, .. } => (None, file_title(path), None, idle),
+                // The provider's name, until Tasks 8-10 title it.
+                TabKind::Agent { provider, .. } => (None, provider.clone().into(), None, idle),
             };
             let tip = match &t.kind {
                 TabKind::File { path, .. } => path.display().to_string(),
@@ -783,7 +786,10 @@ impl Workspace {
                 }
             }
             Some(TabKind::Browser { .. }) => self.close_browser_tab(tab, true, window, cx),
-            Some(TabKind::File { .. }) => self.close_file_tab(tab, window, cx),
+            // An agent tab closes like a file tab: out of the model, nothing else to tear down.
+            Some(TabKind::File { .. } | TabKind::Agent { .. }) => {
+                self.close_file_tab(tab, window, cx)
+            }
             None => {}
         }
     }

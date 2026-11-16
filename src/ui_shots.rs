@@ -5109,6 +5109,7 @@ fn tab_bar_scenes() {
                         }
                         TabKind::Browser { .. } => "browser".to_string(),
                         TabKind::File { .. } => "file".to_string(),
+                        TabKind::Agent { .. } => "agent".to_string(),
                     }
                 })
             };
@@ -5464,6 +5465,7 @@ fn tab_drag_scenes() {
                             }
                             TabKind::Browser { .. } => "browser".to_string(),
                             TabKind::File { .. } => "file".to_string(),
+                            TabKind::Agent { .. } => "agent".to_string(),
                         })
                         .collect()
                 })
@@ -5512,6 +5514,8 @@ fn tab_drag_scenes() {
                             let keys = view.read(cx).focus_handle(cx).is_focused(window);
                             ("file".to_string(), keys)
                         }
+                        // No view until M11aa Task 7.
+                        TabKind::Agent { .. } => ("agent".to_string(), false),
                     }
                 })
                 .expect("the window")
@@ -11398,6 +11402,7 @@ fn browser_tab_scenes() {
                             TabKind::Terminal(_) => "terminal",
                             TabKind::Browser { .. } => "browser",
                             TabKind::File { .. } => "file",
+                            TabKind::Agent { .. } => "agent",
                         })
                         .collect::<Vec<_>>()
                 })
@@ -11409,6 +11414,7 @@ fn browser_tab_scenes() {
                         TabKind::Terminal(_) => Some("terminal"),
                         TabKind::Browser { .. } => Some("browser"),
                         TabKind::File { .. } => Some("file"),
+                        TabKind::Agent { .. } => Some("agent"),
                     }
                 })
             };

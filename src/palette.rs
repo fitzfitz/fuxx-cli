@@ -1015,7 +1015,8 @@ impl Workspace {
             Some(TabKind::Terminal(_)) => Focused::Terminal,
             Some(TabKind::Browser { .. }) => Focused::Browser,
             Some(TabKind::File { .. }) => Focused::File,
-            None => Focused::Nothing,
+            // M11aa Task 8 gives an agent tab its own actions.
+            Some(TabKind::Agent { .. }) | None => Focused::Nothing,
         }
     }
 
@@ -1041,7 +1042,7 @@ impl Workspace {
             .flat_map(|p| &p.tabs)
             .filter_map(|t| match &t.kind {
                 TabKind::File { path, .. } => Some(path.clone()),
-                TabKind::Terminal(_) | TabKind::Browser { .. } => None,
+                TabKind::Terminal(_) | TabKind::Browser { .. } | TabKind::Agent { .. } => None,
             })
             .collect()
     }

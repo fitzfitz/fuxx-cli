@@ -1746,7 +1746,7 @@ impl Workspace {
     pub(crate) fn terminal_of(&self, tab: layout_model::TabId) -> Option<u64> {
         match self.model.tab(tab)?.kind {
             TabKind::Terminal(id) => Some(id),
-            TabKind::Browser { .. } | TabKind::File { .. } => None,
+            TabKind::Browser { .. } | TabKind::File { .. } | TabKind::Agent { .. } => None,
         }
     }
 

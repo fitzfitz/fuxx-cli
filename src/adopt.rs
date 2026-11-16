@@ -232,6 +232,11 @@ pub fn workspaces(saved: &SavedState, p: &Placement, ids: &[u64]) -> Model {
             .focused_tab()
             .and_then(|t| model.tab(t))
             .is_some_and(|t| matches!(t.kind, TabKind::File { .. })),
+        // Nor does an agent tab (M11aa).
+        Some(SavedFocus::Agent) => model
+            .focused_tab()
+            .and_then(|t| model.tab(t))
+            .is_some_and(|t| matches!(t.kind, TabKind::Agent { .. })),
         None => false,
     };
     if !came_back {
@@ -424,7 +429,9 @@ mod tests {
                             .iter()
                             .filter_map(|t| match t.kind {
                                 TabKind::Terminal(id) => Some(id),
-                                TabKind::Browser { .. } | TabKind::File { .. } => None,
+                                TabKind::Browser { .. }
+                                | TabKind::File { .. }
+                                | TabKind::Agent { .. } => None,
                             })
                             .collect()
                     })
@@ -436,7 +443,7 @@ mod tests {
     fn focused(m: &Model) -> Option<u64> {
         match m.tab(m.focused_tab()?)?.kind {
             TabKind::Terminal(id) => Some(id),
-            TabKind::Browser { .. } | TabKind::File { .. } => None,
+            TabKind::Browser { .. } | TabKind::File { .. } | TabKind::Agent { .. } => None,
         }
     }
     const INSTANCE: u64 = 0xfeed;
@@ -961,7 +968,7 @@ mod tests {
             .flat_map(|p| &p.tabs)
             .find_map(|t| match t.kind {
                 TabKind::Terminal(id) => Some(id),
-                TabKind::Browser { .. } | TabKind::File { .. } => None,
+                TabKind::Browser { .. } | TabKind::File { .. } | TabKind::Agent { .. } => None,
             })
             .unwrap_or(0)
     }

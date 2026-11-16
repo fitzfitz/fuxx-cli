@@ -28,8 +28,21 @@ pub struct TabId(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabKind {
     Terminal(u64),
-    Browser { url: Option<String> },
-    File { path: PathBuf, mode: FileMode },
+    Browser {
+        url: Option<String>,
+    },
+    File {
+        path: PathBuf,
+        mode: FileMode,
+    },
+    /// M11aa: an agent conversation. Not a terminal: no session, no scripting id.
+    Agent {
+        provider: String,
+        cwd: PathBuf,
+        conversation: Option<String>,
+        mode: Option<String>,
+        title: Option<String>,
+    },
 }
 
 /// How a file tab shows its file: as it is (with change bars), or as a diff against the last
@@ -208,6 +221,17 @@ pub enum SavedTab {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         preview: bool,
     },
+    /// M11aa: an agent tab keeps its provider, folder and (once it has one) conversation.
+    Agent {
+        provider: String,
+        cwd: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
 }
 
 impl Model {
@@ -262,8 +286,24 @@ impl Model {
             .flat_map(|p| &p.tabs)
             .filter_map(|t| match t.kind {
                 TabKind::Terminal(id) => Some(id),
-                TabKind::Browser { .. } | TabKind::File { .. } => None,
+                TabKind::Browser { .. } | TabKind::File { .. } | TabKind::Agent { .. } => None,
             })
+            .collect()
+    }
+
+    /// A workspace's agent tabs: panes in reading order, tabs in tab-bar order.
+    #[allow(dead_code)] // M11aa Task 8
+    pub fn agent_tabs(&self, workspace: WorkspaceId) -> Vec<TabId> {
+        let Some(w) = self.workspace(workspace) else {
+            return Vec::new();
+        };
+        w.layout
+            .leaves()
+            .into_iter()
+            .filter_map(|id| w.pane(id))
+            .flat_map(|p| &p.tabs)
+            .filter(|t| matches!(t.kind, TabKind::Agent { .. }))
+            .map(|t| t.id)
             .collect()
     }
 
@@ -845,6 +885,19 @@ impl Model {
                             mode: *mode,
                             preview: self.md_preview(t.id),
                         },
+                        TabKind::Agent {
+                            provider,
+                            cwd,
+                            conversation,
+                            mode,
+                            title,
+                        } => SavedTab::Agent {
+                            provider: provider.clone(),
+                            cwd: cwd.clone(),
+                            conversation: conversation.clone(),
+                            mode: mode.clone(),
+                            title: title.clone(),
+                        },
                     };
                     if t.id == pane.active {
                         shown = tabs.len();
@@ -1077,6 +1130,20 @@ impl Model {
                     path: path.clone(),
                     mode: *mode,
                 },
+                // An unknown provider comes back too: Task 7's view shows the error.
+                SavedTab::Agent {
+                    provider,
+                    cwd,
+                    conversation,
+                    mode,
+                    title,
+                } => TabKind::Agent {
+                    provider: provider.clone(),
+                    cwd: cwd.clone(),
+                    conversation: conversation.clone(),
+                    mode: mode.clone(),
+                    title: title.clone(),
+                },
             };
             let id = TabId(self.next());
             if i == saved.active {
@@ -1203,6 +1270,7 @@ pub fn saved_focus(state: &SavedState) -> Option<SavedFocus> {
         SavedTab::Terminal { session } => SavedFocus::Terminal(*session),
         SavedTab::Browser { .. } => SavedFocus::Browser,
         SavedTab::File { .. } => SavedFocus::File,
+        SavedTab::Agent { .. } => SavedFocus::Agent,
     })
 }
 
@@ -1213,6 +1281,7 @@ pub enum SavedFocus {
     Terminal(usize),
     Browser,
     File,
+    Agent,
 }
 
 /// `node`'s `n`th leaf in reading order.
@@ -1342,7 +1411,7 @@ mod tests {
             .flat_map(|p| &p.tabs)
             .filter_map(|t| match t.kind {
                 TabKind::Terminal(id) => Some(id),
-                TabKind::Browser { .. } | TabKind::File { .. } => None,
+                TabKind::Browser { .. } | TabKind::File { .. } | TabKind::Agent { .. } => None,
             })
             .collect()
     }
@@ -2830,7 +2899,7 @@ mod tests {
     fn m_terminal(w: &Workspace) -> u64 {
         match w.panes[0].tabs[0].kind {
             TabKind::Terminal(id) => id,
-            TabKind::Browser { .. } | TabKind::File { .. } => u64::MAX,
+            TabKind::Browser { .. } | TabKind::File { .. } | TabKind::Agent { .. } => u64::MAX,
         }
     }
 
@@ -3082,6 +3151,134 @@ mod tests {
             ]]
         );
         assert_eq!(m.focused_tab(), m.terminal_tab(101));
+    }
+
+    fn agent(conversation: Option<&str>, title: Option<&str>) -> TabKind {
+        TabKind::Agent {
+            provider: "claude".into(),
+            cwd: PathBuf::from("/w/app"),
+            conversation: conversation.map(str::to_string),
+            mode: None,
+            title: title.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn agent_tab_round_trips_through_saved() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        m.split(a.pane, Axis::Row, agent(Some("c1"), Some("fix")))
+            .unwrap();
+        let session = |id: u64| Some((id - 1) as usize);
+        let (saved, active) = m.to_saved(session);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""kind":"agent""#), "{json}");
+        assert!(json.contains(r#""cwd":"/w/app""#), "{json}");
+        assert!(json.contains(r#""conversation":"c1""#), "{json}");
+        assert!(!json.contains("mode"), "{json}");
+        let back: Vec<SavedWorkspace> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, saved);
+        let m2 = Model::from_saved(&back, active, &[Some(1)]);
+        ok(&m2);
+        assert_eq!(
+            shape(&m2),
+            [vec![vec![term(1)], vec![agent(Some("c1"), Some("fix"))]]]
+        );
+        assert_eq!(shape(&m2), shape(&m));
+        assert_eq!(m2.to_saved(session), (saved, active));
+    }
+
+    /// R5: an agent tab is not a terminal, so two fresh ones in one folder are both kept.
+    #[test]
+    fn two_fresh_agent_tabs_in_one_folder_both_restore() {
+        let fresh = || TabKind::Agent {
+            provider: "claude".into(),
+            cwd: PathBuf::from("/w"),
+            conversation: None,
+            mode: None,
+            title: None,
+        };
+        let mut m = Model::new();
+        let a = m.new_workspace(0, fresh()).unwrap();
+        m.add_tab(a.pane, fresh()).unwrap();
+        let (saved, active) = m.to_saved(|_| None);
+        let back = Model::from_saved(&saved, active, &[]);
+        ok(&back);
+        assert_eq!(shape(&back), [vec![vec![fresh(), fresh()]]]);
+    }
+
+    #[test]
+    fn old_files_without_agent_tabs_still_load() {
+        let state = restore::decode(RECORDED_V2).expect("the v2 file loads");
+        assert_eq!(state.version, 2);
+        let m = Model::from_state(&state, &started(2));
+        ok(&m);
+        assert!(m.agent_tabs(m.workspaces()[0].id).is_empty());
+        let with_file = RECORDED_V2.replace(
+            r#"{"kind": "browser", "url": "http://localhost:3000"}"#,
+            r#"{"kind": "file", "path": "/w/a.rs"}"#,
+        );
+        let state = restore::decode(&with_file).expect("terminal/file tabs load");
+        let m = Model::from_state(&state, &started(2));
+        ok(&m);
+        assert_eq!(
+            shape(&m),
+            [vec![vec![term(100), file("/w/a.rs")], vec![term(101)]]]
+        );
+    }
+
+    #[test]
+    fn unknown_provider_restores_as_error_tab() {
+        let saved = vec![SavedWorkspace {
+            name: None,
+            color: None,
+            pinned: false,
+            placed: None,
+            layout: Node::Leaf(SavedPane {
+                tabs: vec![SavedTab::Agent {
+                    provider: "gone".into(),
+                    cwd: PathBuf::from("/w"),
+                    conversation: None,
+                    mode: None,
+                    title: None,
+                }],
+                active: 0,
+            }),
+            focused: 0,
+        }];
+        let m = Model::from_saved(&saved, Some(0), &[]);
+        ok(&m);
+        assert_eq!(
+            shape(&m),
+            [vec![vec![TabKind::Agent {
+                provider: "gone".into(),
+                cwd: PathBuf::from("/w"),
+                conversation: None,
+                mode: None,
+                title: None,
+            }]]]
+        );
+    }
+
+    #[test]
+    fn agent_tabs_lists_only_agents() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        let g = m.add_tab(a.pane, agent(None, None)).unwrap();
+        m.add_tab(a.pane, file("/w/a.rs")).unwrap();
+        assert_eq!(m.agent_tabs(a.workspace), [g.tab]);
+        assert_eq!(m.terminals(a.workspace), [1]);
+        assert!(m.agent_tabs(WorkspaceId(999)).is_empty());
+    }
+
+    #[test]
+    fn a_focused_agent_tab_is_saved_focus_agent() {
+        let json = r#"{"version": 2, "sessions": [{"name": null, "project": "/w", "preset": null}],
+          "workspaces": [{"layout": {"leaf": {"tabs": [{"kind": "terminal", "session": 0},
+            {"kind": "agent", "provider": "claude", "cwd": "/w"}], "active": 1}}}],
+          "active_workspace": 0}"#;
+        let state = restore::decode(json).expect("an agent tab decodes");
+        assert_eq!(saved_focus(&state), Some(SavedFocus::Agent));
     }
 
     #[test]
