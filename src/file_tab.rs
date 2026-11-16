@@ -708,6 +708,19 @@ impl Doc {
         true
     }
 
+    /// Takes what `old` (the text shown before a reload) knew, until the new answers land: the
+    /// colours and the type (not for a `plain` text), the change bars and their counts.
+    fn carry_over(&mut self, old: &Doc, plain: bool) {
+        if !plain {
+            self.spans = old.spans.clone();
+            self.spans_version = old.spans_version;
+            self.syntax = old.syntax.clone();
+        }
+        self.changes = old.changes.clone();
+        self.changes_version = old.changes_version;
+        self.counts = old.counts;
+    }
+
     /// Change bars and counts asked for `version`, taken as colours are (`accept_spans`). True
     /// when they changed.
     pub fn accept_changes(
@@ -2182,12 +2195,7 @@ impl FileTab {
                 self.versions += 1;
                 doc.version = self.versions;
                 if let Some(old) = self.doc() {
-                    if !plain {
-                        doc.spans = old.spans.clone();
-                        doc.spans_version = old.spans_version;
-                    }
-                    doc.changes = old.changes.clone();
-                    doc.changes_version = old.changes_version;
+                    doc.carry_over(old, plain);
                 }
                 self.stamp = Some(stamp);
                 let was_refused = matches!(self.state, State::Refuse);
@@ -4495,6 +4503,22 @@ mod tests {
         // For the shown version, a new answer is taken and says it changed (counts only).
         assert!(doc.accept_changes(4, &lines, Some((2, 1, false))));
         assert_eq!(doc.counts, Some((2, 1, false)));
+    }
+
+    #[test]
+    fn a_reload_keeps_the_counts_and_the_type_until_new_ones_land() {
+        let mut old = Doc::new("a\n".into(), 1);
+        old.accept_changes(1, &[(1, LineChange::Added)], Some((1, 0, false)));
+        old.syntax = Some("Rust".into());
+        let mut fresh = Doc::new("a\nb\n".into(), 2);
+        fresh.carry_over(&old, false);
+        assert_eq!(fresh.counts, Some((1, 0, false)));
+        assert_eq!(fresh.syntax.as_deref(), Some("Rust"));
+        // A text too large to colour has no type, but keeps its counts.
+        let mut plain = Doc::new("a\nb\n".into(), 2);
+        plain.carry_over(&old, true);
+        assert_eq!(plain.counts, Some((1, 0, false)));
+        assert_eq!(plain.syntax, None);
     }
 
     #[test]
